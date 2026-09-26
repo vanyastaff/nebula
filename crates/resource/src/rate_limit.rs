@@ -633,7 +633,7 @@ impl KeyedLimits {
 /// `Provider::create` wraps a client with [`ResourceLimiter::wrap`], and
 /// [`PerAttempt`](Self::PerAttempt) from the moment a lease of the row is
 /// turned into a managed call facade
-/// ([`ResourceGuard::into_managed`](crate::ResourceGuard)); it keeps a latched
+/// ([`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed)); it keeps a latched
 /// profile for the row's life. A row whose instance has not been created yet
 /// reports the profile it has before any latch. When both latches fired,
 /// `InterimPerClosure` wins: closure calls still book their own permits.
@@ -1075,10 +1075,6 @@ impl ResourceLimiter {
     /// managed call facade books each granted attempt at its declared cost,
     /// so an acquire only honours pauses (see
     /// [`ready_to_acquire`](Self::ready_to_acquire)). Never unlatches.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the managed call facade latches it")
-    )]
     pub(crate) fn latch_per_attempt(&self) {
         self.per_attempt.store(true, Ordering::Release);
     }

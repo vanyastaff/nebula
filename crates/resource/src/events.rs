@@ -273,6 +273,15 @@ pub enum ResourceEvent {
         /// The limited resource.
         key: ResourceKey,
     },
+    /// A managed call unit failed after an attempt may have reached the
+    /// provider, and its operation's effect is not replay safe: the caller
+    /// got [`ErrorKind::OutcomeUnknown`](crate::ErrorKind::OutcomeUnknown)
+    /// and must reconcile before acting again. Published once per such unit,
+    /// never for units that settled cleanly.
+    UnitOutcomeUnknown {
+        /// The resource the unit ran against.
+        key: ResourceKey,
+    },
 }
 
 impl ResourceEvent {
@@ -303,7 +312,8 @@ impl ResourceEvent {
             | Self::RateLimitCleared { key }
             | Self::RateLimitPenalized { key, .. }
             | Self::RateLimitStoreUnavailable { key }
-            | Self::RateLimitStoreRecovered { key } => Some(key),
+            | Self::RateLimitStoreRecovered { key }
+            | Self::UnitOutcomeUnknown { key } => Some(key),
         }
     }
 }

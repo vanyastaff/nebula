@@ -34,6 +34,7 @@ pub enum ErrorKind {
     Revoked,
     Ambiguous,
     CredentialUnavailable { reason: CredentialUnavailableReason },
+    OutcomeUnknown,
 }
 impl fmt::Display for ErrorKind
 
@@ -360,10 +361,12 @@ impl Error {
     pub fn revoked(message: impl Into<String>) -> Self;
     pub fn ambiguous(message: impl Into<String>) -> Self;
     pub fn credential_unavailable(reason: CredentialUnavailableReason) -> Self;
+    pub fn outcome_unknown(message: impl Into<String>) -> Self;
     pub fn backpressure(message: impl Into<String>) -> Self;
     pub fn unknown_credential_slot(key: ResourceKey, slot_name: &str) -> Self;
     pub fn to_core_error(&self) -> nebula_core::CoreError;
 }
+impl From<OpError> for Error
 impl From<nebula_core::CoreError> for Error
 impl fmt::Display for Error
 impl nebula_error::Classify for Error
@@ -386,6 +389,7 @@ pub struct ResourceGuard<R: Provider> {
     /* private fields */
 }
 impl<R: Provider> ResourceGuard<R> {
+    pub fn into_managed(self) -> Managed<R> where R: PinSlots;
     pub fn taint(&mut self);
     pub fn hold_duration(&self) -> Duration;
     pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter>;

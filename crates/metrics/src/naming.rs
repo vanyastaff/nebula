@@ -656,6 +656,27 @@ pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL: &str =
 /// would explode cardinality on the hot release path.
 pub const NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL: &str = "nebula_resource_recycle_outcome_total";
 
+/// Counter: provider attempts decided by the resource managed call facade.
+///
+/// Labeled by `outcome` (see [`call_attempt_outcome`]): `granted` when the
+/// facade admitted and booked an attempt, `refused` when admission, the
+/// attempt budget or the rate limit turned it away. It counts the facade's
+/// grants only: retries a provider driver makes inside one granted attempt
+/// are not seen here.
+///
+/// Bounded cardinality (2 closed values) — no `resource_key` label.
+pub const NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL: &str = "nebula_resource_call_attempts_total";
+
+/// Counter: managed call units settled by the resource call facade.
+///
+/// Labeled by `sent` (see [`call_unit_sent`]): whether the unit's attempts
+/// reached the provider. A climbing `maybe_sent` series is the signal to
+/// look for unknown outcomes.
+///
+/// Bounded cardinality (3 closed values) — no `resource_key` label.
+pub const NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL: &str =
+    "nebula_resource_call_units_settled_total";
+
 /// Outcome labels for the credential rotation dispatch counters and
 /// histogram ([`NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL`],
 /// [`NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL`],
@@ -697,6 +718,30 @@ pub mod recycle_outcome {
     /// Lease torn down instead of pooled (tainted, reset error, evicted on
     /// return, or a non-pooling / `Drop` recycle decision).
     pub const DISCARDED: &str = "discarded";
+}
+
+/// Outcome labels for [`NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL`].
+///
+/// Closed set of two values: every attempt the facade decides is granted
+/// XOR refused.
+pub mod call_attempt_outcome {
+    /// The attempt was admitted and its cost booked.
+    pub const GRANTED: &str = "granted";
+    /// Admission, the attempt budget or the rate limit refused the attempt;
+    /// nothing reached the provider.
+    pub const REFUSED: &str = "refused";
+}
+
+/// Sent-state labels for [`NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL`].
+///
+/// Closed set of three values: every settled unit folds to exactly one.
+pub mod call_unit_sent {
+    /// No attempt reached the provider.
+    pub const NOT_SENT: &str = "not_sent";
+    /// The provider received and answered every attempt that reached it.
+    pub const SENT: &str = "sent";
+    /// An attempt may have reached the provider without an answer.
+    pub const MAYBE_SENT: &str = "maybe_sent";
 }
 
 // ---------------------------------------------------------------------------
