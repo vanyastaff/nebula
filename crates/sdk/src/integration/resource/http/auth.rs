@@ -5,7 +5,7 @@ use base64::Engine as _;
 use http::{HeaderMap, HeaderName, HeaderValue, header::AUTHORIZATION};
 use nebula_credential::{CredentialGuard, IdentityPassword, OAuth2Token, SecretToken};
 use nebula_resource::{CredentialUnavailableReason, ErrorKind, PinSlots, Provider, call::OpError};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use super::config::HttpTransport;
 
@@ -14,7 +14,9 @@ mod sealed {
     use nebula_resource::{ErrorKind, call::OpError};
 
     /// Seals [`BearerMaterial`](super::BearerMaterial) and reads the token.
-    pub trait Sealed {
+    /// Carries the `Zeroize` bound privately so it stays out of the SDK's
+    /// public API while every bearer material is still zeroizing.
+    pub trait Sealed: zeroize::Zeroize {
         /// The bearer token, or why it cannot be used now.
         fn bearer_token(&self) -> Result<&str, OpError>;
     }
@@ -40,7 +42,7 @@ mod sealed {
 
 /// Credential material that authenticates as `Authorization: Bearer …`:
 /// [`SecretToken`] (bearer tokens, API tokens) and [`OAuth2Token`]. Sealed.
-pub trait BearerMaterial: sealed::Sealed + Zeroize + Send + Sync + 'static {}
+pub trait BearerMaterial: sealed::Sealed + Send + Sync + 'static {}
 
 impl BearerMaterial for SecretToken {}
 impl BearerMaterial for OAuth2Token {}

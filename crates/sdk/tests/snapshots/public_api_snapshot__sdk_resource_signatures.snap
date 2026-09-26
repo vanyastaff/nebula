@@ -1222,7 +1222,7 @@ pub trait ResidentProvider: Provider {
 
 ## trait nebula_sdk::integration::resource::http::auth::BearerMaterial [cfg(feature = "resource-http")]
 exported as nebula_sdk::integration::resource::http::BearerMaterial
-pub trait BearerMaterial: sealed::Sealed + Zeroize + Send + Sync + 'static {
+pub trait BearerMaterial: sealed::Sealed + Send + Sync + 'static {
 }
 
 ## trait nebula_sdk::integration::resource::http::auth::HttpApi [cfg(feature = "resource-http")]
