@@ -330,10 +330,62 @@ async fn every_operation_status_maps_to_one_availability_from_one_head_read() {
         assert_eq!(observation.availability(), expected, "{answer:?}");
         assert_eq!(observation.material_epoch(), 1);
         assert_eq!(observation.revision(), 1);
+        // Only an `Open` status carries a use revision.
+        let expected_admission = match answer {
+            HeadAnswer::Status(CredentialOperationStatus::Open { .. }) | HeadAnswer::ReauthFlag => {
+                Some(1)
+            },
+            _ => None,
+        };
+        assert_eq!(
+            observation.admission_epoch(),
+            expected_admission,
+            "{answer:?}"
+        );
         store.assert_one_head_read_only();
         let rendered = format!("{observation:?}");
         assert!(!rendered.contains(SECRET_CANARY));
     }
+}
+
+/// The use revision comes from the same `Open` status as the availability,
+/// whether it admits or awaits reauthentication, from one head read.
+#[tokio::test]
+async fn an_open_status_reports_its_use_revision() {
+    let admission = CredentialAdmissionEpoch::try_from(7_u64).expect("a valid epoch");
+    for reauth_required in [false, true] {
+        let (store, scope, id, key) = fixture();
+        store.answer(HeadAnswer::Status(CredentialOperationStatus::Open {
+            version: CredentialVersion::MIN,
+            material_epoch: CredentialMaterialEpoch::MIN,
+            admission_epoch: admission,
+            reauth_required,
+        }));
+        let observation = observe(&store, &scope, id, key)
+            .await
+            .expect("a live head is observed");
+        assert_eq!(observation.admission_epoch(), Some(7));
+        assert_eq!(
+            observation.availability(),
+            if reauth_required {
+                CredentialAvailability::Blocked(CredentialBlock::ReauthRequired)
+            } else {
+                CredentialAvailability::Available
+            }
+        );
+        store.assert_one_head_read_only();
+    }
+}
+
+#[test]
+fn an_adapter_built_observation_has_no_use_revision_until_attached() {
+    let observation =
+        CredentialAvailabilityObservation::new(3, 4, CredentialAvailability::Available);
+    assert_eq!(observation.admission_epoch(), None);
+    assert_eq!(
+        observation.with_admission_epoch(9).admission_epoch(),
+        Some(9)
+    );
 }
 
 #[tokio::test]

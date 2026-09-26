@@ -209,6 +209,24 @@
 //!   publishes a fresh generation in a fresh span. Taint wins: a tainted
 //!   row never reopens. See `docs/credential-rotation.md`, "Same-material
 //!   blocks".
+//! - **I6 use revision.** The gate orders credential observations by use
+//!   revision `(material_epoch, admission_epoch)` (`CredentialObservedAt`),
+//!   per slot, against the higher of the installed projection's and the
+//!   last one it accepted. The ticket is checked first; the revision then
+//!   decides: a suspension read with its revision (reauthentication) is
+//!   cleared only by a strictly newer one, one read without (an operation
+//!   in flight or awaiting reconciliation) by the admitted revision or
+//!   newer; an observation older than the admitted revision, or at another
+//!   material than the installed one, is `StaleObservation`. Refusals
+//!   mutate nothing. On an admitting row a newer revision at the installed
+//!   material — use was denied and allowed again without this row
+//!   observing it — is `Readmitted`: a fresh generation is published like a
+//!   benign change (I4), the predecessor is **not** closed and nothing is
+//!   rebuilt. Closing admitted work is reserved for an observed block (I5);
+//!   refusing units admitted during an unobserved denial is the strict
+//!   per-acquire availability read, a separate contract. An install
+//!   reopens with the revision of the guard it resolved, so it publishes
+//!   once.
 //!
 //! The closing token is a cooperative notice: it stops no work, revokes no
 //! borrow, and rolls nothing back. A lease is still released normally, and
@@ -418,7 +436,7 @@ mod shutdown_session;
 mod shutdown_session_tests;
 
 pub use credential_gate::{
-    CredentialGateTicket, CredentialReopenOutcome, CredentialSuspendOutcome,
+    CredentialGateTicket, CredentialObservedAt, CredentialReopenOutcome, CredentialSuspendOutcome,
 };
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,

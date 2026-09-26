@@ -7,12 +7,21 @@
 //! observer answers from **one** operational-head read — the same
 //! owner-qualified, secret-free checks slot projection runs before it decrypts
 //! anything — and never loads or decrypts material. Consumers compare the
-//! observed `(material_epoch, revision)` with what they installed and project
-//! (decrypt) only when the material actually changed.
+//! observed material epoch with what they installed and project (decrypt)
+//! only when the material actually changed.
+//!
+//! An `Open` operation status also carries the credential's **use revision**
+//! (the backend-authored admission epoch), exposed as
+//! [`CredentialAvailabilityObservation::admission_epoch`]. A consumer that
+//! admitted work at one use revision compares it with the observed one: a
+//! higher revision at the same material means use was closed and reopened in
+//! between (an abandoned revoke claim, a cleared reauthentication), so the old
+//! admission must not continue (Design CONTRACT "old use revision does not
+//! admit"). In-flight and reconciliation statuses carry no use revision.
 
 use std::{future::Future, pin::Pin};
 
-use nebula_storage_port::store::CredentialOperationKind;
+use nebula_storage_port::store::{CredentialOperationKind, CredentialOperationStatus};
 use tokio_util::sync::CancellationToken;
 
 use crate::runtime::availability::{CredentialUseAvailability, CredentialUseDenial, classify_use};
@@ -56,11 +65,13 @@ pub enum CredentialBlock {
 pub struct CredentialAvailabilityObservation {
     material_epoch: u64,
     revision: u64,
+    admission_epoch: Option<u64>,
     availability: CredentialAvailability,
 }
 
 impl CredentialAvailabilityObservation {
-    /// Construct an observation for a trusted observer adapter.
+    /// Construct an observation for a trusted observer adapter, without a
+    /// use revision (see [`with_admission_epoch`](Self::with_admission_epoch)).
     #[must_use]
     pub const fn new(
         material_epoch: u64,
@@ -70,8 +81,26 @@ impl CredentialAvailabilityObservation {
         Self {
             material_epoch,
             revision,
+            admission_epoch: None,
             availability,
         }
+    }
+
+    /// Attach the use revision (admission epoch) the observation was read
+    /// with. Set it only from an `Open` operation status.
+    #[must_use]
+    pub const fn with_admission_epoch(mut self, admission_epoch: u64) -> Self {
+        self.admission_epoch = Some(admission_epoch);
+        self
+    }
+
+    /// Backend-authored use revision observed, when the operation status
+    /// carried one (`Open`, whether available or awaiting reauthentication).
+    /// `None` while an operation is in flight or awaits reconciliation, and
+    /// from an adapter that does not report it.
+    #[must_use]
+    pub const fn admission_epoch(&self) -> Option<u64> {
+        self.admission_epoch
     }
 
     /// Backend-authored material epoch observed.
@@ -169,7 +198,14 @@ pub(crate) async fn observe_availability_with(
     if actual_key != expected_key {
         return Err(CredentialObserveError::WrongCredentialKey);
     }
-    let availability = match classify_use(operational_head.status()) {
+    let status = operational_head.status();
+    let admission_epoch = match status {
+        CredentialOperationStatus::Open {
+            admission_epoch, ..
+        } => Some(admission_epoch.get() as u64),
+        _ => None,
+    };
+    let availability = match classify_use(status) {
         CredentialUseAvailability::Admit if head.reauth_required() => {
             CredentialAvailability::Blocked(CredentialBlock::ReauthRequired)
         },
@@ -190,6 +226,7 @@ pub(crate) async fn observe_availability_with(
     Ok(CredentialAvailabilityObservation {
         material_epoch: head.material_epoch().get() as u64,
         revision: head.version().get() as u64,
+        admission_epoch,
         availability,
     })
 }

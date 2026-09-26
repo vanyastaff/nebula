@@ -6,7 +6,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -177,6 +177,9 @@ struct ScriptedCredential {
     key: CredentialKey,
     owner: TenantScope,
     script: Mutex<Script>,
+    /// The use revision an `Open` status carries (available or awaiting
+    /// reauthentication) and a projection is admitted at.
+    admission: AtomicU64,
     /// Whether it exposes the availability observer.
     observes: bool,
     observations: AtomicUsize,
@@ -193,6 +196,15 @@ impl ScriptedCredential {
         *self.script.lock().expect("script lock")
     }
 
+    /// Moves the use revision, as a backend does on every close-use write.
+    fn set_admission(&self, admission_epoch: u64) {
+        self.admission.store(admission_epoch, Ordering::SeqCst);
+    }
+
+    fn admission(&self) -> u64 {
+        self.admission.load(Ordering::SeqCst)
+    }
+
     fn observations(&self) -> usize {
         self.observations.load(Ordering::SeqCst)
     }
@@ -205,6 +217,7 @@ impl ScriptedCredential {
         ErasedCredentialGuard::from_typed(
             CredentialGuard::new(epoch),
             CredentialGuardMetadata::new(self.credential_id, self.key.clone(), epoch, epoch)
+                .with_admission_epoch(self.admission())
                 .with_scope(self.owner.clone()),
         )
     }
@@ -273,8 +286,18 @@ impl CredentialAvailabilityObserver for ScriptedCredential {
                 availability,
             ))
         };
+        // Only an `Open` status (usable, or awaiting reauthentication)
+        // carries the use revision.
+        let open = |epoch, availability| {
+            observed(epoch, availability).map(|observation: CredentialAvailabilityObservation| {
+                observation.with_admission_epoch(self.admission())
+            })
+        };
         let result = match self.script() {
-            Script::Available(epoch) => observed(epoch, CredentialAvailability::Available),
+            Script::Available(epoch) => open(epoch, CredentialAvailability::Available),
+            Script::Blocked(REAUTH_BLOCK, epoch) => {
+                open(epoch, CredentialAvailability::Blocked(REAUTH_BLOCK))
+            },
             Script::Blocked(block, epoch) => {
                 observed(epoch, CredentialAvailability::Blocked(block))
             },
@@ -332,6 +355,7 @@ impl Fixture {
             key: "oauth".parse().expect("credential key"),
             owner: TenantScope::new("org-fanout", "workspace-fanout"),
             script: Mutex::new(Script::Available(1)),
+            admission: AtomicU64::new(1),
             observes,
             observations: AtomicUsize::new(0),
             projections: AtomicUsize::new(0),
@@ -396,6 +420,35 @@ impl Fixture {
             .credential_suspension()
     }
 
+    /// Sequence of the row's current admission generation.
+    fn admission_seq(&self) -> u64 {
+        self.manager
+            .lookup_any_for_slot_identity_structural(
+                &Bound::key(),
+                &ScopeLevel::Global,
+                &identity(),
+            )
+            .expect("row")
+            .as_any_arc()
+            .downcast::<crate::runtime::managed::ManagedResource<Bound>>()
+            .expect("row type")
+            .admission
+            .current()
+            .expect("the row admits")
+            .seq()
+    }
+
+    /// The `(material_epoch, admission_epoch)` installed in the slot.
+    fn installed(&self) -> (u64, u64) {
+        let metadata = self
+            .resource
+            .slot
+            .projection_snapshot()
+            .1
+            .expect("installed");
+        (metadata.material_epoch(), metadata.admission_epoch())
+    }
+
     fn gate_epoch(&self) -> crate::CredentialGateTicket {
         self.manager
             .credential_gate_ticket(&Bound::key(), &ScopeLevel::Global, &identity())
@@ -440,6 +493,7 @@ async fn a_refresh_in_flight_storm_never_suspends() {
     let fixture = Fixture::new(true).await;
     let projections = fixture.credential.projections();
     let epoch = fixture.gate_epoch();
+    let seq = fixture.admission_seq();
     let mut events = fixture.manager.subscribe_events();
     fixture.credential.set(Script::RefreshInFlight(1));
     for _ in 0..50 {
@@ -451,6 +505,7 @@ async fn a_refresh_in_flight_storm_never_suspends() {
         epoch,
         "no suspension advanced the gate"
     );
+    assert_eq!(fixture.admission_seq(), seq, "nothing was readmitted");
     assert_eq!(fixture.credential.observations(), 50);
     assert_eq!(fixture.credential.projections(), projections);
     while let Some(event) = events.try_recv() {
@@ -699,4 +754,120 @@ async fn a_reauth_event_triggers_a_targeted_availability_scan() {
         "an availability scan never refreshes a context-less binding"
     );
     driver.abort();
+}
+
+// ---------------------------------------------------------------------------
+// Use revisions.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_head_only_scan_readmits_a_missed_denial_interval() {
+    let fixture = Fixture::new(true).await;
+    let held = fixture.acquire().await.expect("acquire");
+    let seq = fixture.admission_seq();
+    let projections = fixture.credential.projections();
+    // An abandoned revoke claim came and went between two scans: same
+    // material, next use revision.
+    fixture.credential.set_admission(2);
+    fixture.scan().await;
+    assert_eq!(fixture.admission_seq(), seq + 1, "readmitted");
+    assert_eq!(
+        fixture.credential.projections(),
+        projections,
+        "a readmission decrypts nothing"
+    );
+    assert!(!held.is_closing(), "only an observed block closes a lease");
+    let fresh = fixture.acquire().await.expect("acquire");
+    assert_eq!(fresh.admission().seq(), seq + 1);
+    assert_eq!(fixture.resource.creates.load(Ordering::SeqCst), 1);
+    // The next scan at the same revision changes nothing.
+    fixture.scan().await;
+    assert_eq!(fixture.admission_seq(), seq + 1);
+}
+
+#[tokio::test]
+async fn a_reauth_block_survives_available_reads_at_its_own_revision() {
+    let fixture = Fixture::new(true).await;
+    // The reauthentication flag is written at revision 2.
+    fixture.credential.set_admission(2);
+    fixture.credential.set(Script::Blocked(REAUTH_BLOCK, 1));
+    fixture.scan().await;
+    assert!(fixture.suspension().is_some());
+    let epoch = fixture.gate_epoch();
+
+    // A lagging read still at revision 2 cannot have seen the flag clear.
+    fixture.credential.set(Script::Available(1));
+    for _ in 0..3 {
+        fixture.scan().await;
+        assert!(fixture.suspension().is_some());
+    }
+    assert_eq!(
+        fixture.gate_epoch(),
+        epoch,
+        "refused reopens mutate nothing"
+    );
+    assert_refused(
+        fixture.acquire().await,
+        CredentialUnavailableReason::ReauthRequired,
+    );
+
+    // Clearing the flag advanced the revision.
+    fixture.credential.set_admission(3);
+    fixture.scan().await;
+    assert!(fixture.suspension().is_none());
+    drop(fixture.acquire().await.expect("reopened"));
+}
+
+#[tokio::test]
+async fn a_refresh_commit_takes_the_install_path() {
+    let fixture = Fixture::new(true).await;
+    let held = fixture.acquire().await.expect("acquire");
+    let seq = fixture.admission_seq();
+    let projections = fixture.credential.projections();
+    // Sentinel (+1) then write-back (+1, new material).
+    fixture.credential.set_admission(3);
+    fixture.credential.set(Script::Available(2));
+    fixture.scan().await;
+    assert_eq!(fixture.credential.projections(), projections + 1);
+    assert_eq!(fixture.installed(), (2, 3));
+    assert_eq!(fixture.admission_seq(), seq + 1, "one publication");
+    assert!(!held.is_closing(), "a refresh is benign");
+}
+
+#[tokio::test]
+async fn a_refresh_released_without_material_readmits_without_closing() {
+    let fixture = Fixture::new(true).await;
+    let held = fixture.acquire().await.expect("acquire");
+    let seq = fixture.admission_seq();
+    let projections = fixture.credential.projections();
+    // The refresh claim marks its sentinel: in flight, then released with
+    // no state change.
+    fixture.credential.set(Script::RefreshInFlight(1));
+    fixture.scan().await;
+    assert_eq!(fixture.admission_seq(), seq);
+    fixture.credential.set_admission(2);
+    fixture.credential.set(Script::Available(1));
+    fixture.scan().await;
+    assert_eq!(fixture.admission_seq(), seq + 1);
+    assert!(fixture.suspension().is_none());
+    assert!(!held.is_closing());
+    assert_eq!(fixture.credential.projections(), projections);
+}
+
+#[tokio::test]
+async fn without_an_observer_a_projection_at_a_newer_revision_readmits() {
+    let fixture = Fixture::new(false).await;
+    let held = fixture.acquire().await.expect("acquire");
+    let seq = fixture.admission_seq();
+    fixture.credential.set_admission(2);
+    fixture.scan().await;
+    assert_eq!(
+        fixture.admission_seq(),
+        seq + 1,
+        "the stale install at the installed material readmits"
+    );
+    assert_eq!(fixture.installed(), (1, 1), "the installed guard is kept");
+    assert!(!held.is_closing());
+    fixture.scan().await;
+    assert_eq!(fixture.admission_seq(), seq + 1);
 }

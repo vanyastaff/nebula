@@ -322,6 +322,10 @@ struct ScriptedResolver {
     observations: AtomicUsize,
     /// The material a blocked credential is observed at.
     blocked_material: std::sync::Mutex<(u64, u64)>,
+    /// The use revision `Open` answers carry (a usable credential, and one
+    /// awaiting reauthentication) and guards are projected at; `None` models
+    /// an adapter that reports none.
+    admission: std::sync::Mutex<Option<u64>>,
 }
 
 impl Default for ScriptedResolver {
@@ -334,6 +338,7 @@ impl Default for ScriptedResolver {
             observes: std::sync::atomic::AtomicBool::new(false),
             observations: AtomicUsize::new(0),
             blocked_material: std::sync::Mutex::new((1, 1)),
+            admission: std::sync::Mutex::new(None),
         }
     }
 }
@@ -366,15 +371,21 @@ impl CredentialAvailabilityObserver for ScriptedResolver {
                 availability,
             ))
         };
+        let admission = *self.admission.lock().unwrap();
+        let open = |observation: CredentialAvailabilityObservation| match admission {
+            Some(admission_epoch) => observation.with_admission_epoch(admission_epoch),
+            None => observation,
+        };
         let observation = match *self.outcome.lock().unwrap() {
-            Ok((material_epoch, revision)) => Ok(CredentialAvailabilityObservation::new(
+            Ok((material_epoch, revision)) => Ok(open(CredentialAvailabilityObservation::new(
                 material_epoch,
                 revision,
                 CredentialAvailability::Available,
-            )),
+            ))),
             Err(CredentialSlotResolveError::ReauthRequired) => at_block(
                 CredentialAvailability::Blocked(CredentialBlock::ReauthRequired),
-            ),
+            )
+            .map(open),
             Err(CredentialSlotResolveError::OperationBlocked { operation }) => at_block(
                 CredentialAvailability::Blocked(CredentialBlock::OperationInFlight { operation }),
             ),
@@ -393,6 +404,11 @@ impl CredentialAvailabilityObserver for ScriptedResolver {
 impl ScriptedResolver {
     fn answer(&self, outcome: Result<(u64, u64), CredentialSlotResolveError>) {
         *self.outcome.lock().unwrap() = outcome;
+    }
+
+    /// Moves the use revision, as a backend does on every close-use write.
+    fn admit_at(&self, admission_epoch: u64) {
+        *self.admission.lock().unwrap() = Some(admission_epoch);
     }
 }
 
@@ -416,17 +432,22 @@ impl CredentialSlotResolver for ScriptedResolver {
         >,
     > {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let admission = *self.admission.lock().unwrap();
         let outcome = (*self.outcome.lock().unwrap()).map(|(material_epoch, revision)| {
+            let metadata = nebula_credential::CredentialGuardMetadata::new(
+                credential_id,
+                expected_key,
+                material_epoch,
+                revision,
+            );
+            let metadata = match admission {
+                Some(admission_epoch) => metadata.with_admission_epoch(admission_epoch),
+                None => metadata,
+            };
             nebula_credential::ErasedCredentialGuard::from_typed(
                 nebula_credential::CredentialGuard::new(String::from("secret")),
                 // Owner-qualified, as a production resolver stamps it.
-                nebula_credential::CredentialGuardMetadata::new(
-                    credential_id,
-                    expected_key,
-                    material_epoch,
-                    revision,
-                )
-                .with_scope(scope.durable_owner_scope()),
+                metadata.with_scope(scope.durable_owner_scope()),
             )
         });
         let stall =
@@ -1396,7 +1417,7 @@ fn binding(slot: &str, credential: CredentialId) -> BoundCredential {
         credential_id: credential,
         slot: slot.to_owned(),
         credential_key: CredentialKey::new("auth").expect("valid credential key"),
-        material: (1, 1),
+        at: (1, 1),
     }
 }
 
@@ -1736,3 +1757,232 @@ async fn the_availability_check_precedes_the_material_compare() {
     assert_eq!(fixture.resolver.calls.load(Ordering::SeqCst), projections);
     assert!(suspension(&fixture, &activated).is_some());
 }
+
+// ── Use revisions ──────────────────────────────────────────────────────────
+
+/// The `(material_epoch, admission_epoch)` the activator tracks for the
+/// row's only binding.
+fn tracked_at(fixture: &Fixture, resource_id: ResourceId) -> (u64, u64) {
+    let slot = fixture
+        .activator
+        .rows
+        .get(&(fixture.scope.clone(), resource_id))
+        .map(|entry| Arc::clone(entry.value()))
+        .expect("the row is tracked");
+    let tracked = slot.try_lock().expect("no activation holds the row");
+    tracked
+        .active
+        .as_ref()
+        .expect("the row is registered")
+        .bindings[0]
+        .at
+}
+
+/// Whether the row's gate already admits `at`: a fresh generation would be
+/// published for anything newer.
+fn gate_admits(
+    fixture: &Fixture,
+    activated: &ActivatedResource,
+    at: CredentialObservedAt,
+) -> nebula_resource::CredentialReopenOutcome {
+    let ticket = fixture
+        .manager
+        .credential_gate_ticket(
+            &activated.resource_key,
+            &activated.scope,
+            &activated.slot_identity,
+        )
+        .expect("ticket");
+    fixture
+        .manager
+        .reopen_credential_row(
+            &activated.resource_key,
+            &activated.scope,
+            &activated.slot_identity,
+            AUTH_SLOT,
+            ticket,
+            at,
+        )
+        .expect("reopen")
+}
+
+async fn a_rename_does_not_register_again(observes: bool) {
+    let fixture = Fixture::new();
+    fixture.resolver.observes.store(observes, Ordering::SeqCst);
+    fixture.resolver.admit_at(1);
+    let mut events = fixture.manager.subscribe_events();
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
+    assert_eq!(drain(&mut events).0, 1);
+    let projections = fixture.resolver.calls.load(Ordering::SeqCst);
+
+    // A display rename: new aggregate revision, same material and use
+    // revision (a `Preserve` write).
+    fixture.resolver.answer(Ok((1, 2)));
+    assert_eq!(
+        fixture.activate(resource_id, &key).await.unwrap(),
+        activated
+    );
+    assert_eq!(drain(&mut events), (0, 0), "observes: {observes}");
+    if observes {
+        assert_eq!(
+            fixture.resolver.calls.load(Ordering::SeqCst),
+            projections,
+            "a rename is never projected"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_rename_does_not_register_again_with_an_observer() {
+    a_rename_does_not_register_again(true).await;
+}
+
+#[tokio::test]
+async fn a_rename_does_not_register_again_without_an_observer() {
+    a_rename_does_not_register_again(false).await;
+}
+
+/// A revoke claim acquired and abandoned between two activations: the next
+/// activation sees only a higher use revision at the same material. The kept
+/// registration admits new work under a fresh generation; the lease already
+/// admitted is not closed and nothing registers again.
+#[tokio::test]
+async fn a_missed_denial_interval_readmits_the_kept_registration() {
+    let fixture = Fixture::new();
+    fixture.resolver.observes.store(true, Ordering::SeqCst);
+    fixture.resolver.admit_at(1);
+    let mut events = fixture.manager.subscribe_events();
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
+    let lease = acquire_row(&fixture, &key, &activated)
+        .await
+        .expect("the row serves")
+        .downcast::<nebula_resource::ResourceGuard<Slotted>>()
+        .expect("guard type");
+    drain(&mut events);
+    let projections = fixture.resolver.calls.load(Ordering::SeqCst);
+
+    fixture.resolver.admit_at(2);
+    assert_eq!(
+        fixture.activate(resource_id, &key).await.unwrap(),
+        activated
+    );
+    assert_eq!(drain(&mut events), (0, 0), "nothing registers again");
+    assert_eq!(fixture.resolver.calls.load(Ordering::SeqCst), projections);
+    assert!(!lease.is_closing(), "a readmission closes no lease");
+    assert_eq!(tracked_at(&fixture, resource_id), (1, 2));
+    assert_eq!(
+        gate_admits(
+            &fixture,
+            &activated,
+            CredentialObservedAt::new(1).with_admission_epoch(2)
+        ),
+        nebula_resource::CredentialReopenOutcome::NotSuspended,
+        "the activation already readmitted revision 2"
+    );
+
+    // Steady again: the tracked revision matches, so the gate is not asked.
+    fixture.activate(resource_id, &key).await.unwrap();
+    assert_eq!(tracked_at(&fixture, resource_id), (1, 2));
+    assert_eq!(drain(&mut events), (0, 0));
+    drop(
+        acquire_row(&fixture, &key, &activated)
+            .await
+            .expect("the readmitted row serves"),
+    );
+}
+
+/// A reauthentication flag read at revision N is not cleared by an
+/// `Available` read at N (a lagging read); the turn keeps failing with the
+/// credential error until the flag's clearing (N+1) is observed.
+#[tokio::test]
+async fn a_reauth_at_a_revision_stays_suspended_until_a_newer_one() {
+    let fixture = Fixture::new();
+    fixture.resolver.observes.store(true, Ordering::SeqCst);
+    fixture.resolver.admit_at(1);
+    let mut events = fixture.manager.subscribe_events();
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
+    drain(&mut events);
+
+    fixture.resolver.admit_at(2);
+    fixture
+        .resolver
+        .answer(Err(CredentialSlotResolveError::ReauthRequired));
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::Credential {
+            source: CredentialSlotResolveError::ReauthRequired,
+            ..
+        })
+    );
+    assert!(suspension(&fixture, &activated).is_some());
+
+    fixture.resolver.answer(Ok((1, 1)));
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::Credential {
+            source: CredentialSlotResolveError::ReauthRequired,
+            ..
+        }),
+        "an Available read at the denial's revision reopens nothing"
+    );
+    assert!(suspension(&fixture, &activated).is_some());
+    assert!(
+        fixture
+            .activator
+            .row_states()
+            .iter()
+            .any(|state| matches!(state, RowState::Failed { .. })),
+        "the turn's failure is recorded"
+    );
+    assert_eq!(drain(&mut events), (0, 0), "nothing registers again");
+
+    fixture.resolver.admit_at(3);
+    assert_eq!(
+        fixture.activate(resource_id, &key).await.unwrap(),
+        activated
+    );
+    assert!(suspension(&fixture, &activated).is_none());
+    assert_eq!(drain(&mut events), (0, 0));
+    assert!(
+        fixture
+            .activator
+            .row_states()
+            .iter()
+            .all(|state| !matches!(state, RowState::Failed { .. }))
+    );
+    drop(
+        acquire_row(&fixture, &key, &activated)
+            .await
+            .expect("the reopened row serves"),
+    );
+}
+
+#[path = "activation_sqlite_tests.rs"]
+mod sqlite_acceptance;

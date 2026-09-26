@@ -234,26 +234,74 @@ advance goes through the ordinary install, which also reopens when the
 installer captured a ticket. The public `install_and_refresh_slot_for_identity`
 never reopens.
 
+#### Use revision
+
+Every observation carries where it was made (`CredentialObservedAt`): the
+material epoch and, from an `Open` credential status, the **use revision** —
+the admission epoch the credential backend advances in the same write as every
+transition that closes use (a won revoke claim, a refresh sentinel, a
+reauthentication flag, any material advance). Two `Open` reads at one use
+revision saw no denial between them; a higher one at the same material means
+use was closed and reopened in between (Design CONTRACT "old use revision does
+not admit"). The row's gate orders observations by `(material_epoch,
+admission_epoch)`, per slot:
+
+| Observation | Row suspended | Row admitting |
+|---|---|---|
+| Denial read with its revision (reauthentication) | floor := that revision; only a **strictly newer** one reopens | suspend at that revision |
+| Denial read without one (operation in flight, reconciliation, resolver error) | floor := admitted revision; equal or newer reopens | suspend |
+| Usable, older than the admitted revision | `StaleObservation`, nothing changes | `StaleObservation` |
+| Usable, at the admitted revision | reopens an unwitnessed floor only | `NotSuspended`, nothing changes |
+| Usable, newer, same material | reopens | **`Readmitted`**: fresh generation, predecessor stays open |
+| Usable, another material than installed | `StaleObservation` (new material installs) | `StaleObservation` |
+
+The ticket is checked first: a suspension recorded after it was captured
+supersedes the reopen whatever the revision. Refusals mutate nothing. A
+readmission is the answer to a **missed interval**: an abandoned revoke claim
+acquired and lapsed between two scans or activations. Nothing observed the
+denial, so nothing was closed; new work is admitted under a fresh generation,
+and the leases admitted before stay open and are not rebuilt. That is a
+conscious relaxation of "do not revive cancelled units" for a true block that
+was missed — refusing those units needs the strict per-acquire availability
+read (A5). Readmission is logged (`info`), not published as a `ResourceEvent`.
+
+Witnessed floors come only from reads that carry the revision, and every
+backend (the reference store included) advances it when a reauthentication
+flag flips or material advances, so a strict floor always clears. A resolver or
+observer that reports no revision falls back to the ticket-only rule; one with
+a constant revision never readmits. A display rename moves the credential's
+aggregate revision only and neither re-registers nor readmits a row.
+
 Who suspends and reopens:
 
 - **Engine activation** re-checks a registered row's credentials on every
-  activation, availability before material. A same-material block suspends
-  the kept registration and fails the turn; the same material usable again
-  reopens it without registering again. Only a credential that can no longer
-  be resolved (revoked, missing, refused) retires the row.
+  activation, availability before material, and tracks each binding at
+  `(material_epoch, admission_epoch)`. A same-material block suspends the kept
+  registration and fails the turn; a newer use revision at the same material
+  reopens it (or readmits an admitting row) without registering again, while a
+  row still suspended after the check (an `Available` read at the denial's own
+  revision) fails the turn with the credential error. The gate is asked only
+  when the row is suspended or a revision advanced, so a steady row costs no
+  gate call. Only a material advance registers again; only a credential that
+  can no longer be resolved (revoked, missing, refused) retires the row.
 - **The rotation fan-out** (feature `rotation`) re-observes bound rows on its
   30 s scan and on a `CredentialEvent::ReauthRequired` hint (a targeted
   availability scan, which never dispatches the legacy refresh hook to
   context-less bindings). With a resolver exposing
   `CredentialAvailabilityObserver` the check reads the credential's
   operational head only and never decrypts; only an advanced material is
-  projected.
+  projected. Every usable observation at the installed material goes through
+  the gate (reopen or readmit); without an observer a projection at the
+  installed material does the same through the install path.
 
 ### What suspension does not cover
 
 - **It is cooperative.** Closing a lease stops no work, revokes no borrow and
   rolls nothing back remotely; an already-authenticated session is not
   terminated.
+- **A missed interval closes nothing.** A denial that came and went between
+  two observations is detected by its higher use revision, but only new work
+  is affected (readmission); units admitted before it keep running.
 - **Latency.** A row is suspended at the next activation of the stored row or
   at the next fan-out scan (30 s, sooner on a `ReauthRequired` event). A worker
   that neither activates the row nor runs the fan-out keeps serving admitted

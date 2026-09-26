@@ -270,10 +270,10 @@ pub use events::{ResourceEvent, RetirementFailureStage, RetirementOrigin};
 pub use ext::HasResourcesExt;
 pub use guard::{LeaseClosing, ReleaseOutcome, ResourceGuard};
 pub use manager::{
-    CredentialGateTicket, CredentialReopenOutcome, CredentialSuspendOutcome, DrainTimeoutPolicy,
-    Manager, ManagerConfig, RegisterOptions, RegistrationSpec, ResourceHealthSnapshot, RevokeTail,
-    ShutdownConfig, ShutdownError, ShutdownReport, SlotDeferralReason, SlotDispatchOutcome,
-    SlotDrainOutcome, TaintedSlot,
+    CredentialGateTicket, CredentialObservedAt, CredentialReopenOutcome, CredentialSuspendOutcome,
+    DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
+    ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport,
+    SlotDeferralReason, SlotDispatchOutcome, SlotDrainOutcome, TaintedSlot,
 };
 pub use metrics::{
     ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS, AcquireWaitSnapshot, OutcomeCountersSnapshot,

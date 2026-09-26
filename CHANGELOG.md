@@ -701,10 +701,11 @@ let admitted = recorded.readmit_against(fresh)?;
   trips the recovery gate), every lease admitted since the previous suspension
   observes `closing`, nothing is built or health-probed, and idle and retained
   owners are kept. The row reopens without a rebuild when the same material is
-  usable again; a newer material installs and reopens through the ordinary
-  refresh path; a taint always wins. `Manager` gains
-  `suspend_credential_row`, `reopen_credential_row` and
-  `credential_gate_ticket` (`CredentialGateTicket`,
+  usable again at a newer use revision; a newer material installs and reopens
+  through the ordinary refresh path; a taint always wins. `Manager` gains
+  `suspend_credential_row(.., observed: Option<CredentialObservedAt>)`,
+  `reopen_credential_row(.., ticket, observed: CredentialObservedAt)` and
+  `credential_gate_ticket` (`CredentialGateTicket`, `CredentialObservedAt`,
   `CredentialSuspendOutcome`, `CredentialReopenOutcome`), `ResourceEvent`
   gains `CredentialSuspended` / `CredentialReopened`, and the health snapshot
   and `ManagedResourceView` report `CredentialSuspension`. Engine activation
@@ -715,10 +716,26 @@ let admitted = recorded.readmit_against(fresh)?;
   `nebula-credential` adds `CredentialAvailabilityObserver`: one secret-free
   operational-head read, no decryption, implemented by
   `CredentialProjectionRuntime` and `CredentialService` and reachable through
-  the defaulted `CredentialSlotResolver::as_availability_observer`; it also
-  re-exports `CredentialOperationKind`. Suspension is cooperative and lands at
-  the next activation or fan-out scan (30 s); a strict per-acquire
-  availability read is follow-up work.
+  the defaulted `CredentialSlotResolver::as_availability_observer`; its
+  `CredentialAvailabilityObservation` carries the use revision
+  (`admission_epoch()`) of an `Open` status. It also re-exports
+  `CredentialOperationKind`. Suspension is cooperative and lands at the next
+  activation or fan-out scan (30 s); a strict per-acquire availability read is
+  follow-up work.
+
+  Every consumer honours the credential **use revision** (admission epoch):
+  observations are ordered by `(material_epoch, admission_epoch)`. A
+  reauthentication read at one revision is only cleared by a newer one (a
+  lagging `Available` read at the same revision is `StaleObservation`), an
+  operation block read without a revision reopens at the revision the row
+  admitted, and a late read older than what the row admitted is ignored. A
+  higher revision at the installed material on an admitting row — a denial
+  interval nobody observed, such as an abandoned revoke claim — answers
+  `CredentialReopenOutcome::Readmitted`: new work is admitted under a fresh
+  admission generation, leases admitted before stay open and nothing is
+  rebuilt (logged, no new `ResourceEvent`). Engine activation tracks bound
+  credentials at `(material_epoch, admission_epoch)`, so a credential display
+  rename no longer registers the stored row again.
 
 - **Per-resource rate limits, shared across workers.** `nebula-resilience`
   gains a GCRA limiter over a `LimitStore` contract (`reserve` with

@@ -425,15 +425,19 @@ async fn closing_g1_then_publishing_g2_closes_only_old_guards() {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(
-            row.admission
-                .suspend("db", crate::CredentialUnavailableReason::ReauthRequired),
+            row.admission.suspend(
+                "db",
+                crate::CredentialUnavailableReason::ReauthRequired,
+                crate::runtime::admission::SuspensionFloor::default()
+            ),
             crate::runtime::admission::SuspendTransition::Suspended {
                 closed_through: old.admission().seq()
             }
         );
         let ticket = row.admission.gate_epoch();
         assert!(matches!(
-            row.admission.reopen("db", ticket),
+            row.admission
+                .reopen("db", ticket, crate::CredentialObservedAt::new(1), None),
             crate::runtime::admission::ReopenTransition::Reopened { .. }
         ));
     }
@@ -450,9 +454,17 @@ async fn an_old_guard_keeps_its_own_closed_token_after_a_successor() {
     register(&manager, &tenant, 1);
     let row = row(&manager, &tenant);
     let old = acquire(&manager, &tenant).await;
-    row.admission
-        .suspend("db", crate::CredentialUnavailableReason::OperationBlocked);
-    row.admission.reopen("db", row.admission.gate_epoch());
+    row.admission.suspend(
+        "db",
+        crate::CredentialUnavailableReason::OperationBlocked,
+        crate::runtime::admission::SuspensionFloor::default(),
+    );
+    row.admission.reopen(
+        "db",
+        row.admission.gate_epoch(),
+        crate::CredentialObservedAt::new(1),
+        None,
+    );
     let successor = row.admission.current().expect("reopen published G2");
     // Asking again after G2 exists must not hand the old lease G2's open
     // token: the capture is immutable.

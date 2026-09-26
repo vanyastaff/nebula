@@ -132,24 +132,39 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// suspension landed in between.
     fn credential_gate_epoch(&self) -> u64;
 
-    /// Suspends admission because credential slot `slot` denies use, waking
-    /// phase waiters when the row becomes suspended. Caller holds
-    /// `Manager.admission` and validated `slot` with
+    /// Suspends admission because credential slot `slot` denies use at
+    /// `floor`, waking phase waiters when the row becomes suspended. Caller
+    /// holds `Manager.admission` and validated `slot` with
     /// [`accepts_credential_slot_name`](Self::accepts_credential_slot_name).
     fn suspend_credential(
         &self,
         slot: &str,
         reason: crate::error::CredentialUnavailableReason,
+        floor: crate::runtime::admission::SuspensionFloor,
     ) -> crate::runtime::admission::SuspendTransition;
 
-    /// Clears `slot`'s suspension if `ticket` is still current, reopening
-    /// admission once no slot remains suspended. Caller holds
-    /// `Manager.admission` and validated `slot`.
+    /// Records that `slot`'s credential is usable at `observed` given the
+    /// projection mark `installed`: reopens a suspended slot (when `ticket`
+    /// is still current and `observed` clears its floor) or readmits an
+    /// admitting row at a newer use revision. Wakes phase waiters only on a
+    /// reopen. Caller holds `Manager.admission` and validated `slot`.
     fn reopen_credential(
         &self,
         slot: &str,
         ticket: u64,
+        observed: crate::CredentialObservedAt,
+        installed: Option<crate::runtime::admission::UseMark>,
     ) -> crate::runtime::admission::ReopenTransition;
+
+    /// The use revision `slot` admits at: the higher of `installed` and the
+    /// last revision a reopen or readmit recorded.
+    fn credential_admitted(
+        &self,
+        _slot: &str,
+        installed: Option<crate::runtime::admission::UseMark>,
+    ) -> Option<crate::runtime::admission::UseMark> {
+        installed
+    }
 
     /// The row's current credential suspension, if any.
     fn credential_suspension(&self) -> Option<crate::state::CredentialSuspension>;
@@ -403,8 +418,9 @@ where
         &self,
         slot: &str,
         reason: crate::error::CredentialUnavailableReason,
+        floor: crate::runtime::admission::SuspensionFloor,
     ) -> crate::runtime::admission::SuspendTransition {
-        let transition = self.admission.suspend(slot, reason);
+        let transition = self.admission.suspend(slot, reason, floor);
         if matches!(
             transition,
             crate::runtime::admission::SuspendTransition::Suspended { .. }
@@ -418,8 +434,11 @@ where
         &self,
         slot: &str,
         ticket: u64,
+        observed: crate::CredentialObservedAt,
+        installed: Option<crate::runtime::admission::UseMark>,
     ) -> crate::runtime::admission::ReopenTransition {
-        let transition = self.admission.reopen(slot, ticket);
+        let transition = self.admission.reopen(slot, ticket, observed, installed);
+        // A readmission changes no phase: the row admitted all along.
         if matches!(
             transition,
             crate::runtime::admission::ReopenTransition::Reopened { .. }
@@ -427,6 +446,14 @@ where
             self.phase_changed.notify_waiters();
         }
         transition
+    }
+
+    fn credential_admitted(
+        &self,
+        slot: &str,
+        installed: Option<crate::runtime::admission::UseMark>,
+    ) -> Option<crate::runtime::admission::UseMark> {
+        self.admission.admitted(slot, installed)
     }
 
     fn credential_suspension(&self) -> Option<crate::state::CredentialSuspension> {
