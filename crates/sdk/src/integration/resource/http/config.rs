@@ -297,6 +297,8 @@ pub(super) struct Limits {
     pub(super) request_timeout: Duration,
     /// Largest buffered response body.
     pub(super) max_response_bytes: u64,
+    /// Largest streamed response body.
+    pub(super) max_stream_bytes: u64,
 }
 
 struct TransportInner {
@@ -355,6 +357,7 @@ impl HttpTransport {
                 limits: Limits {
                     request_timeout: Duration::from_millis(config.request_timeout_ms),
                     max_response_bytes: config.max_response_bytes,
+                    max_stream_bytes: config.max_stream_bytes,
                 },
             }),
         })

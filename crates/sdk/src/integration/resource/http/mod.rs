@@ -23,6 +23,12 @@
 //!   reported to the rate limit and fail `Exhausted`; a `Write` that may
 //!   have been sent is never re-attempted; a failed unit's error never
 //!   carries the provider's text.
+//! - **Streams.** [`open_stream`] runs one exchange as one streaming unit
+//!   and returns a [`ResponseStream`] once the head arrived; the body is
+//!   read in chunks through a small buffer, so a slow reader pushes back on
+//!   the provider. The lease closing, a dropped or cancelled stream, the
+//!   deadline and the stream byte budget end it. The 5-minute unit cap
+//!   applies; there is no interval profile for longer streams yet.
 //!
 //! Nothing here prints or logs a URL, a header value or a transport error;
 //! each attempt runs in a `nebula.sdk.http.attempt` span (method, attempt,
@@ -38,9 +44,11 @@ mod config;
 mod exchange;
 mod request;
 mod response;
+mod stream;
 
 pub use auth::{Authorize, BearerMaterial, HttpApi};
 pub use config::{HttpConfig, HttpTransport};
 pub use exchange::send;
 pub use request::{AsWrite, Delete, Get, Head, Keyed, Method, Options, Patch, Post, Put, Request};
 pub use response::Response;
+pub use stream::{ResponseStream, open_stream, open_stream_until};
