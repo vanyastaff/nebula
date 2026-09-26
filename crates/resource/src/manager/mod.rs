@@ -445,6 +445,7 @@ use crate::{
 };
 
 pub(crate) mod acquire;
+mod admission_link;
 mod credential_gate;
 mod credential_reads;
 #[cfg(test)]
@@ -466,6 +467,7 @@ mod strict_fixtures;
 #[cfg(test)]
 mod strict_profile_tests;
 
+pub(crate) use admission_link::AdmissionLink;
 pub use credential_gate::{
     CredentialAdmissionProfile, CredentialGateTicket, CredentialObservedAt,
     CredentialReopenOutcome, CredentialSuspendOutcome,
@@ -555,8 +557,9 @@ pub struct Manager {
     rotation_indexes:
         std::sync::Mutex<Vec<std::sync::Weak<crate::credential_fanout::ResourceFanoutIndex>>>,
     /// Serializes registry commits, credential admission/revoke and terminal snapshots.
-    /// Never held across await.
-    pub(super) admission: std::sync::Mutex<()>,
+    /// Never held across await. Shared with [`AdmissionLink`] so a managed
+    /// attempt applies its strict reading under the same lock.
+    pub(super) admission: Arc<std::sync::Mutex<()>>,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,
     /// Shared lifecycle-event sink. Held behind `Arc` so the same
@@ -577,7 +580,10 @@ pub struct Manager {
     /// Serializes shutdown drivers and retains the terminal task across caller cancellation.
     shutdown_state: tokio::sync::Mutex<shutdown_session::ShutdownState>,
     /// Fast admission fence flipped before the first shutdown await.
-    pub(super) shutting_down: AtomicBool,
+    pub(super) shutting_down: Arc<AtomicBool>,
+    /// The admission lock, shutdown fence, cancellation and event bus above,
+    /// as rows that admit work after acquire (managed attempts) reach them.
+    pub(super) link: AdmissionLink,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
     pub(super) lifecycle: Option<LayerLifecycle>,
     /// Manager-wide default acquire-slow-log threshold. See
@@ -643,6 +649,14 @@ impl Manager {
                     },
                 });
         let acquire_slow_threshold = config.acquire_slow_threshold;
+        let admission = Arc::new(std::sync::Mutex::new(()));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let link = AdmissionLink::new(
+            Arc::clone(&admission),
+            Arc::clone(&shutting_down),
+            cancel.clone(),
+            Arc::clone(&event_bus),
+        );
         let credential_reads = config.credential_observer.map(|observer| {
             let metrics = config.metrics_registry.as_ref().and_then(|registry| {
                 credential_reads::CredentialAdmissionMetrics::new(registry)
@@ -653,7 +667,7 @@ impl Manager {
             });
             Arc::new(CredentialReads::new(
                 observer.into_observer(),
-                cancel.clone(),
+                link.clone(),
                 metrics,
             ))
         });
@@ -666,7 +680,7 @@ impl Manager {
             registry: Registry::new(),
             #[cfg(feature = "rotation")]
             rotation_indexes: std::sync::Mutex::new(Vec::new()),
-            admission: std::sync::Mutex::new(()),
+            admission,
             cancel,
             metrics,
             event_bus,
@@ -676,7 +690,8 @@ impl Manager {
             retirement_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             retirement_supervisor,
             shutdown_state: tokio::sync::Mutex::new(shutdown_session::ShutdownState::Open),
-            shutting_down: AtomicBool::new(false),
+            shutting_down,
+            link,
             lifecycle: None,
             acquire_slow_threshold,
             local_limits: Arc::new(crate::rate_limit::MemoryLimitStore::new()),
@@ -807,10 +822,7 @@ impl Manager {
     /// we read with `Acquire`, so we synchronize-with that write and any
     /// observation here implies the cancel will follow.
     pub(crate) fn shutdown_guard(&self) -> Result<(), Error> {
-        if self.shutting_down.load(AtomicOrdering::Acquire) || self.cancel.is_cancelled() {
-            return Err(Error::cancelled());
-        }
-        Ok(())
+        self.link.shutdown_guard()
     }
 
     /// Maps a [`LookupOutcome`](crate::registry::LookupOutcome) onto the

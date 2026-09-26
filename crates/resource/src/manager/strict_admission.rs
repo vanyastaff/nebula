@@ -91,6 +91,18 @@ pub(crate) struct StrictReading {
     slots: Vec<(&'static str, SlotOutcome)>,
 }
 
+impl StrictReading {
+    /// The gate ticket captured before the read.
+    pub(crate) fn ticket(&self) -> super::CredentialGateTicket {
+        self.ticket
+    }
+
+    /// One outcome per bound slot read.
+    pub(crate) fn slots(&self) -> &[(&'static str, SlotOutcome)] {
+        &self.slots
+    }
+}
+
 /// The decision for one unit, before the gate is touched.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct StrictVerdict {
@@ -369,47 +381,8 @@ impl Manager {
         reading: &StrictReading,
         reads: &CredentialReads,
     ) -> Result<(), Error> {
-        let verdict = decide(&reading.slots, |slot| installed_mark(managed, slot));
-        if verdict.cancelled {
-            return Err(Error::cancelled().with_resource_key(key.clone()));
-        }
-        // Reopens first: a suspension recorded by this same unit would
-        // supersede its own ticket.
-        for &(slot, observed) in &verdict.usable {
-            let installed = installed_mark(managed, slot);
-            let newer_revision = UseMark::observed(observed)
-                .is_some_and(|mark| Some(mark) > managed.credential_admitted(slot, installed));
-            if managed.credential_suspension().is_some() || newer_revision {
-                let outcome =
-                    self.reopen_under_admission(key, slot, reading.ticket, observed, managed)?;
-                tracing::debug!(resource.key = %key, slot, ?outcome, "strict credential read: usable");
-            }
-        }
-        for &(slot, reason, observed) in &verdict.suspend {
-            let outcome =
-                self.suspend_under_admission(key, slot, reason, Some(observed), managed)?;
-            tracing::debug!(resource.key = %key, slot, ?outcome, "strict credential read: blocked");
-        }
-        let Some(reason) = verdict.deny else {
-            return Ok(());
-        };
-        match reason {
-            CredentialUnavailableReason::Absent => tracing::warn!(
-                resource.key = %key,
-                "strict credential read: bound credential absent — new work refused"
-            ),
-            CredentialUnavailableReason::CheckUnavailable => tracing::warn!(
-                resource.key = %key,
-                "strict credential read: availability could not be checked — new work refused"
-            ),
-            _ => {
-                tracing::debug!(resource.key = %key, %reason, "strict credential read refused new work");
-            },
-        }
-        if let Some(metrics) = reads.metrics() {
-            metrics.record_denied(reason);
-        }
-        Err(Self::credential_unavailable_error(key, reason))
+        self.link
+            .apply_strict_reading_under_admission(key, managed, reading, reads)
     }
 
     /// Both phases for a caller outside the acquire pipeline (an explicit

@@ -20,6 +20,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use super::{CredentialAdmissionMetrics, CredentialReads, Published, ReadFailure};
+use crate::manager::AdmissionLink;
 
 /// A scripted, counting availability observer. Each call reads its answer
 /// when it starts (so a read issued before a block committed answers with
@@ -171,7 +172,7 @@ fn reads(
     (
         Arc::new(CredentialReads::new(
             Arc::clone(observer) as Arc<dyn CredentialAvailabilityObserver>,
-            CancellationToken::new(),
+            AdmissionLink::detached(),
             Some(metrics),
         )),
         registry,
@@ -316,10 +317,10 @@ async fn a_read_that_does_not_answer_times_out_at_the_deadline() {
 #[tokio::test]
 async fn shutdown_ends_the_read_and_its_waiters_as_cancelled() {
     let observer = ScriptedObserver::gated(available());
-    let cancel = CancellationToken::new();
+    let link = AdmissionLink::detached();
     let reads = Arc::new(CredentialReads::new(
         Arc::clone(&observer) as Arc<dyn CredentialAvailabilityObserver>,
-        cancel.clone(),
+        link.clone(),
         None,
     ));
     let id = CredentialId::new();
@@ -328,7 +329,7 @@ async fn shutdown_ends_the_read_and_its_waiters_as_cancelled() {
     observer.until_calls(1).await;
     let waiter = spawn_read(&reads, scope("ws"), id);
     until_users(&reads, id, 2).await;
-    cancel.cancel();
+    link.cancel().cancel();
 
     assert_eq!(leader.await.expect("joined"), Err(ReadFailure::Cancelled));
     assert_eq!(waiter.await.expect("joined"), Err(ReadFailure::Cancelled));

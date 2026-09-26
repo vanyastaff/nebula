@@ -55,7 +55,7 @@
 //!   cancelled. A strict manager narrows the gap to an interval with no
 //!   acquire, create, activation or fan-out scan at all, because each
 //!   acquire reads the credential first. Readmission is traced, not
-//!   published as a [`ResourceEvent`].
+//!   published as a [`ResourceEvent`](crate::ResourceEvent).
 //!
 //! An observation without a revision (an adapter that reports none) falls
 //! back to the ticket-only rule.
@@ -77,9 +77,8 @@ use super::Manager;
 use crate::{
     dedup::SlotIdentity,
     error::{CredentialUnavailableReason, Error},
-    events::ResourceEvent,
     registry::ManagedHandle,
-    runtime::admission::{ReopenTransition, SuspendTransition, SuspensionFloor, UseMark},
+    runtime::admission::UseMark,
 };
 
 /// The credential gate's state when a caller began observing a credential.
@@ -414,9 +413,7 @@ impl Manager {
     }
 
     fn lock_admission(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.admission
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.link.lock()
     }
 
     /// Caller holds `Manager.admission` and resolved `managed` under it.
@@ -428,79 +425,8 @@ impl Manager {
         observed: Option<CredentialObservedAt>,
         managed: &dyn ManagedHandle,
     ) -> Result<CredentialSuspendOutcome, Error> {
-        if !managed.accepts_credential_slot_name(slot) {
-            return Err(Error::unknown_credential_slot(key.clone(), slot));
-        }
-        if managed.is_tainted() {
-            return Ok(CredentialSuspendOutcome::Tainted);
-        }
-        let installed = installed_mark(managed, slot);
-        if let (Some(observed), Some(installed)) = (observed, installed)
-            && observed.material_epoch() < installed.material_epoch()
-        {
-            tracing::debug!(
-                resource.key = %key,
-                slot,
-                observed = observed.material_epoch(),
-                installed = installed.material_epoch(),
-                "credential suspension ignored: observation predates installed material"
-            );
-            return Ok(CredentialSuspendOutcome::StaleObservation);
-        }
-        let admitted = managed.credential_admitted(slot, installed);
-        let floor = match observed.and_then(UseMark::observed) {
-            // Read with its use revision: a late read older than what the
-            // slot admitted since says nothing about the current state.
-            Some(mark) if admitted.is_some_and(|admitted| mark < admitted) => {
-                tracing::debug!(
-                    resource.key = %key,
-                    slot,
-                    "credential suspension ignored: observation predates the admitted use revision"
-                );
-                return Ok(CredentialSuspendOutcome::StaleObservation);
-            },
-            Some(mark) => {
-                SuspensionFloor::witnessed(admitted.map_or(mark, |admitted| admitted.max(mark)))
-            },
-            None => SuspensionFloor::unwitnessed(admitted),
-        };
-        let recorded = managed
-            .credential_suspension()
-            .and_then(|suspension| suspension.reason_for(slot));
-        match managed.suspend_credential(slot, reason, floor) {
-            SuspendTransition::Suspended { closed_through } => {
-                tracing::warn!(
-                    resource.key = %key,
-                    slot,
-                    %reason,
-                    closed_through,
-                    "credential denies use: row suspended, admitted leases closing"
-                );
-                self.emit(ResourceEvent::CredentialSuspended {
-                    key: key.clone(),
-                    slot: slot.to_owned(),
-                    reason,
-                });
-                Ok(CredentialSuspendOutcome::Suspended)
-            },
-            SuspendTransition::Updated => {
-                if recorded != Some(reason) {
-                    tracing::warn!(
-                        resource.key = %key,
-                        slot,
-                        %reason,
-                        "credential denies use: further slot recorded on a suspended row"
-                    );
-                    self.emit(ResourceEvent::CredentialSuspended {
-                        key: key.clone(),
-                        slot: slot.to_owned(),
-                        reason,
-                    });
-                }
-                Ok(CredentialSuspendOutcome::AlreadySuspended)
-            },
-            SuspendTransition::Retired => Err(Error::cancelled().with_resource_key(key.clone())),
-        }
+        self.link
+            .suspend_under_admission(key, slot, reason, observed, managed)
     }
 
     /// Reopens (or readmits) `slot` after a credential install proved it
@@ -542,59 +468,8 @@ impl Manager {
         observed: CredentialObservedAt,
         managed: &dyn ManagedHandle,
     ) -> Result<CredentialReopenOutcome, Error> {
-        if !managed.accepts_credential_slot_name(slot) {
-            return Err(Error::unknown_credential_slot(key.clone(), slot));
-        }
-        if managed.is_tainted() {
-            return Ok(CredentialReopenOutcome::Tainted);
-        }
-        // Read before the gate: the slot is never touched under its mutex.
-        let installed = installed_mark(managed, slot);
-        Ok(
-            match managed.reopen_credential(slot, ticket.epoch(), observed, installed) {
-                ReopenTransition::Reopened { seq } => {
-                    tracing::info!(
-                        resource.key = %key,
-                        slot,
-                        admission = seq,
-                        "credential usable again: row reopened under a fresh admission generation"
-                    );
-                    self.emit(ResourceEvent::CredentialReopened { key: key.clone() });
-                    CredentialReopenOutcome::Reopened
-                },
-                ReopenTransition::Readmitted { seq } => {
-                    tracing::info!(
-                        resource.key = %key,
-                        slot,
-                        admission = seq,
-                        "credential use revision advanced unobserved: new work admitted under a \
-                         fresh admission generation"
-                    );
-                    CredentialReopenOutcome::Readmitted
-                },
-                ReopenTransition::StillSuspended => CredentialReopenOutcome::StillSuspended,
-                ReopenTransition::NotSuspended => CredentialReopenOutcome::NotSuspended,
-                ReopenTransition::StaleObservation => {
-                    tracing::debug!(
-                        resource.key = %key,
-                        slot,
-                        "credential reopen ignored: observation predates the row's use revision"
-                    );
-                    CredentialReopenOutcome::StaleObservation
-                },
-                ReopenTransition::Superseded => {
-                    tracing::debug!(
-                        resource.key = %key,
-                        slot,
-                        "credential reopen superseded by a later suspension"
-                    );
-                    CredentialReopenOutcome::Superseded
-                },
-                ReopenTransition::Retired => {
-                    return Err(Error::cancelled().with_resource_key(key.clone()));
-                },
-            },
-        )
+        self.link
+            .reopen_under_admission(key, slot, ticket, observed, managed)
     }
 }
 
