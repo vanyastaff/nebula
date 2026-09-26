@@ -9,6 +9,10 @@ use std::{any::Any, fmt, future::Future, pin::Pin};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
+use crate::runtime::availability::{
+    CredentialUseAvailability, CredentialUseDenial, REFRESH_BUSY_RETRY_AFTER,
+    REFRESH_JOIN_FIRST_PAUSE, REFRESH_JOIN_MAX_PAUSE, REFRESH_JOIN_WAIT, classify_use,
+};
 use crate::runtime::state_source::StateSource;
 use crate::service::error::CredentialServiceError;
 use crate::{
@@ -35,9 +39,68 @@ pub(crate) async fn resolve_slot_with(
         return Err(CredentialSlotResolveError::SourceUnavailable);
     }
 
-    request
-        .cancel
-        .run_until_cancelled(async {
+    // A refresh crossing the provider boundary blocks new material only while
+    // its call is outstanding. Refusing every projection for that window would
+    // make each refresh an outage for the resources and actions using the
+    // credential, so a projection joins it for a bounded wait, as the resolver
+    // does, and then reports busy rather than blocked.
+    let deadline = tokio::time::Instant::now() + REFRESH_JOIN_WAIT;
+    let mut pause = REFRESH_JOIN_FIRST_PAUSE;
+    loop {
+        let attempt = request
+            .cancel
+            .run_until_cancelled(project_once(store, registry, ops, &request))
+            .await
+            .ok_or(CredentialSlotResolveError::Cancelled)??;
+        match attempt {
+            SlotAttempt::Projected(guard) => return Ok(guard),
+            SlotAttempt::RefreshCrossing if tokio::time::Instant::now() + pause <= deadline => {
+                request
+                    .cancel
+                    .run_until_cancelled(tokio::time::sleep(pause))
+                    .await
+                    .ok_or(CredentialSlotResolveError::Cancelled)?;
+                pause = (pause * 2).min(REFRESH_JOIN_MAX_PAUSE);
+            },
+            SlotAttempt::RefreshCrossing => {
+                return Err(CredentialSlotResolveError::RefreshInFlight {
+                    retry_after: REFRESH_BUSY_RETRY_AFTER,
+                });
+            },
+        }
+    }
+}
+
+/// One projection attempt: a guard, or a refresh still crossing the provider
+/// boundary that the caller may wait for.
+enum SlotAttempt {
+    Projected(ErasedCredentialGuard),
+    RefreshCrossing,
+}
+
+/// The error a refused use reports to slot consumers.
+fn denied(denial: CredentialUseDenial) -> CredentialSlotResolveError {
+    match denial {
+        CredentialUseDenial::ReauthRequired => CredentialSlotResolveError::ReauthRequired,
+        CredentialUseDenial::OperationInFlight { operation }
+        | CredentialUseDenial::Reconciliation { operation, .. } => {
+            tracing::warn!(
+                ?operation,
+                "credential slot projection blocked by durable operation"
+            );
+            CredentialSlotResolveError::OperationBlocked { operation }
+        },
+    }
+}
+
+async fn project_once(
+    store: &dyn crate::CredentialPersistence,
+    registry: &crate::CredentialRegistry,
+    ops: &crate::DispatchOps<ErasedPendingStore>,
+    request: &SlotResolutionRequest<'_>,
+) -> Result<SlotAttempt, CredentialSlotResolveError> {
+    {
+        {
             // Ownership is the first row-dependent decision. Until this
             // complete selector succeeds, key, capability, and lifecycle
             // state remain deliberately unobservable.
@@ -90,12 +153,12 @@ pub(crate) async fn resolve_slot_with(
             if !capabilities.contains(request.required_capabilities) {
                 return Err(CredentialSlotResolveError::MissingCapabilities);
             }
-            if let Some(operation) = operational_head.status().blocking_operation() {
-                tracing::warn!(
-                    ?operation,
-                    "credential slot admission blocked by durable operation"
-                );
-                return Err(CredentialSlotResolveError::OperationBlocked { operation });
+            match classify_use(operational_head.status()) {
+                CredentialUseAvailability::Admit => {},
+                CredentialUseAvailability::RefreshCrossing => {
+                    return Ok(SlotAttempt::RefreshCrossing);
+                },
+                CredentialUseAvailability::Denied(denial) => return Err(denied(denial)),
             }
             if head.reauth_required() {
                 return Err(CredentialSlotResolveError::ReauthRequired);
@@ -149,25 +212,20 @@ pub(crate) async fn resolve_slot_with(
             // snapshot as the bytes, so even a valid static secret cannot escape
             // an unresolved provider-side revocation.
             use nebula_storage_port::store::CredentialOperationStatus;
-            match status.ok_or(CredentialSlotResolveError::InvalidState)? {
-                CredentialOperationStatus::InFlight { operation }
-                | CredentialOperationStatus::ReconciliationRequired { operation, .. } => {
-                    tracing::warn!(
-                        ?operation,
-                        "credential slot projection blocked by durable operation"
-                    );
-                    return Err(CredentialSlotResolveError::OperationBlocked { operation });
+            let status = status.ok_or(CredentialSlotResolveError::InvalidState)?;
+            match classify_use(status) {
+                CredentialUseAvailability::Admit => {
+                    if let CredentialOperationStatus::Open { material_epoch, .. } = status
+                        && material_epoch != stored.material_epoch()
+                    {
+                        return Err(CredentialSlotResolveError::InvalidState);
+                    }
                 },
-                CredentialOperationStatus::Open {
-                    reauth_required: true,
-                    ..
-                } => return Err(CredentialSlotResolveError::ReauthRequired),
-                CredentialOperationStatus::Open { material_epoch, .. }
-                    if material_epoch != stored.material_epoch() =>
-                {
-                    return Err(CredentialSlotResolveError::InvalidState);
+                // A refresh began after the head check: wait for it and re-read.
+                CredentialUseAvailability::RefreshCrossing => {
+                    return Ok(SlotAttempt::RefreshCrossing);
                 },
-                CredentialOperationStatus::Open { .. } => {},
+                CredentialUseAvailability::Denied(denial) => return Err(denied(denial)),
             }
 
             let inner = ops
@@ -199,10 +257,11 @@ pub(crate) async fn resolve_slot_with(
                 credential.revision = metadata.revision(),
                 "credential projected for slot"
             );
-            Ok(ErasedCredentialGuard::new(inner, metadata))
-        })
-        .await
-        .ok_or(CredentialSlotResolveError::Cancelled)?
+            Ok(SlotAttempt::Projected(ErasedCredentialGuard::new(
+                inner, metadata,
+            )))
+        }
+    }
 }
 
 /// Secret-free ordering metadata attached to a resolved credential guard.
@@ -387,6 +446,14 @@ pub enum CredentialSlotResolveError {
     OperationBlocked {
         /// Secret-free operation retaining authority over this credential.
         operation: nebula_storage_port::store::CredentialOperationKind,
+    },
+    /// A refresh is crossing the provider boundary and did not finish within
+    /// the bounded wait. The credential is not blocked: retry after
+    /// `retry_after` and the refreshed material is served.
+    #[error("credential refresh is in progress")]
+    RefreshInFlight {
+        /// When to try again.
+        retry_after: std::time::Duration,
     },
 }
 

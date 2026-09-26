@@ -250,6 +250,13 @@ impl CredentialService {
                 CredentialSlotResolveError::OperationBlocked { operation } => {
                     CredentialServiceError::OperationBlocked { operation }
                 },
+                // The management read keeps its typed blocked answer, now only
+                // after the bounded wait for the refresh.
+                CredentialSlotResolveError::RefreshInFlight { .. } => {
+                    CredentialServiceError::OperationBlocked {
+                        operation: nebula_storage_port::store::CredentialOperationKind::Refresh,
+                    }
+                },
                 CredentialSlotResolveError::WrongCredentialKey
                 | CredentialSlotResolveError::MissingCapabilities
                 | CredentialSlotResolveError::InvalidState => {

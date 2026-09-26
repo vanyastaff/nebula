@@ -497,6 +497,15 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **Resource and action slots join a refresh in flight.** Slot projection
+  refused every new use while a refresh crossed the provider boundary, so each
+  refresh was an outage for the resources and actions using the credential,
+  and resource activation treated it as a lost credential and retired the
+  serving registration. Projection now decides through the same
+  credential-owned classification as the resolver: it joins the refresh for up
+  to five seconds and serves the refreshed material, or answers the new
+  transient `CredentialSlotResolveError::RefreshInFlight { retry_after }`.
+  Revoke and reconciliation are still refused at once.
 - **A credential admission reads its material and operation status in one
   statement.** `CredentialPersistence` gains a defaulted
   `get_with_operation_status`, which the SQLite and PostgreSQL adapters answer

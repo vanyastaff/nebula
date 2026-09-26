@@ -6,12 +6,13 @@
 //! backends are injected by the application composition roots.
 
 pub mod acquisition;
+/// Read-only projection shared by management and execution-worker runtimes.
+pub(crate) mod availability;
 pub mod dispatchers;
 pub mod executor;
 pub mod lease;
 mod lifecycle;
 pub mod oauth_egress;
-/// Read-only projection shared by management and execution-worker runtimes.
 pub(crate) mod projection;
 pub mod refresh;
 /// Resolution error taxonomy + fail-closed owner/tombstone gates (split from
