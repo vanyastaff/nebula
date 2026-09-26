@@ -285,6 +285,33 @@ enum EngineEvidenceInputs {
     RuntimeRepair(RuntimeRepairEvidenceInputs),
 }
 
+/// The resource manager configuration of a worker: metrics into the engine's
+/// registry, cluster rate limits through `shared_limits`, and strict
+/// per-acquire credential admission through `resolver`'s availability
+/// observer — every new credentialed unit reads its credential's
+/// availability first, so a credential store outage refuses new
+/// credentialed egress. A resolver without an observer leaves bound rows on
+/// the interim row gate, with a warning.
+fn resource_manager_config(
+    metrics: &MetricsRegistry,
+    shared_limits: Option<Arc<dyn nebula_engine::resource::rate_limit::ErasedLimitStore>>,
+    resolver: &Arc<dyn CredentialSlotResolver>,
+) -> nebula_engine::resource::ManagerConfig {
+    let mut config = nebula_engine::resource::ManagerConfig::default()
+        .with_metrics_registry(Arc::new(metrics.clone()));
+    if let Some(store) = shared_limits {
+        config = config.with_shared_limit_store(store);
+    }
+    if let Some(observer) = Arc::clone(resolver).into_availability_observer() {
+        return config.with_credential_observer(observer);
+    }
+    tracing::warn!(
+        "credential resolver has no availability observer: credential-bound resources admit \
+         new work without a per-acquire availability read (interim row gate)"
+    );
+    config
+}
+
 fn build_core_flavor_runtime_impl(
     execution_stores: ExecutionStores,
     turn_handoff: Arc<dyn ExecutionTurnHandoff>,
@@ -323,13 +350,11 @@ fn build_core_flavor_runtime_impl(
     };
     // Stored resource rows are activated lazily, per row, when an execution
     // that binds them is driven; nothing is read or connected at boot.
-    // The manager reports acquire, release, wait and hold metrics into the
-    // same registry as the engine.
-    let mut manager_config = nebula_engine::resource::ManagerConfig::default()
-        .with_metrics_registry(Arc::new(metrics.clone()));
-    if let Some(store) = resource_fanout.shared_limits.clone() {
-        manager_config = manager_config.with_shared_limit_store(store);
-    }
+    let manager_config = resource_manager_config(
+        &metrics,
+        resource_fanout.shared_limits.clone(),
+        &revisions.credential_resolver,
+    );
     let engine = WorkflowEngine::new(action_runtime, metrics.clone())?
         .with_execution_stores(execution_stores.clone())
         .with_credential_resolver(revisions.credential_resolver)
@@ -775,6 +800,83 @@ mod tests {
         assert!(
             matches!(result, Err(WorkerConfigError::DatabaseUrlNotUnicode)),
             "invalid-UTF-8 bytes must yield DatabaseUrlNotUnicode, not Ok(None)"
+        );
+    }
+
+    /// A projection resolver that is also its own availability observer, as
+    /// the first-party `CredentialProjectionRuntime` is.
+    struct ObservingResolver {
+        observer: bool,
+    }
+
+    impl CredentialSlotResolver for ObservingResolver {
+        fn resolve_slot<'a>(
+            &'a self,
+            _scope: &'a nebula_credential::TenantScope,
+            _credential_id: nebula_credential::CredentialId,
+            _expected_key: nebula_credential::CredentialKey,
+            _required_capabilities: nebula_credential::Capabilities,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            nebula_credential::ErasedCredentialGuard,
+                            nebula_credential::CredentialSlotResolveError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Err(nebula_credential::CredentialSlotResolveError::Unavailable) })
+        }
+
+        fn into_availability_observer(
+            self: Arc<Self>,
+        ) -> Option<Arc<dyn nebula_credential::CredentialAvailabilityObserver>> {
+            self.observer.then_some(self as Arc<_>)
+        }
+    }
+
+    impl nebula_credential::CredentialAvailabilityObserver for ObservingResolver {
+        fn observe_availability<'a>(
+            &'a self,
+            _scope: &'a nebula_credential::TenantScope,
+            _credential_id: nebula_credential::CredentialId,
+            _expected_key: nebula_credential::CredentialKey,
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            nebula_credential::CredentialAvailabilityObservation,
+                            nebula_credential::CredentialObserveError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Err(nebula_credential::CredentialObserveError::Unavailable) })
+        }
+    }
+
+    #[test]
+    fn the_worker_manager_reads_credential_availability_per_acquire() {
+        let resolver: Arc<dyn CredentialSlotResolver> =
+            Arc::new(ObservingResolver { observer: true });
+        let config = resource_manager_config(&MetricsRegistry::new(), None, &resolver);
+        assert!(
+            config.credential_observer.is_some(),
+            "the composed manager is strict"
+        );
+        assert!(config.metrics_registry.is_some());
+
+        let resolver: Arc<dyn CredentialSlotResolver> =
+            Arc::new(ObservingResolver { observer: false });
+        let config = resource_manager_config(&MetricsRegistry::new(), None, &resolver);
+        assert!(
+            config.credential_observer.is_none(),
+            "a resolver without an observer leaves the interim row gate"
         );
     }
 
