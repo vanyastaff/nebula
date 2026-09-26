@@ -233,6 +233,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+pub mod call;
 pub mod context;
 #[cfg(feature = "rotation")]
 pub mod credential_fanout;
@@ -261,6 +262,7 @@ pub mod state;
 pub mod topology;
 pub mod topology_tag;
 
+pub use call::PinSlots;
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
