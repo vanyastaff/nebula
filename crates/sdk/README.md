@@ -243,7 +243,35 @@ booked per `Cost`, and a failed unit's `OpError` says whether a retry is safe.
 The SDK-only fixture compiles a logger authored against it
 (`resource_managed_logger`) and proves `Managed` does not deref
 (`managed_no_deref`); runtime behaviour is tested in the resource crate. See
-the resource README, "Managed call facade".
+the resource README, "Managed call facade". Streaming units (`StreamOperation`,
+`StreamSink`, `Streaming`, `ConsumerGone`) run through the same facade with
+`Managed::submit_streaming`.
+
+**Credentialed resources:** `integration::resource` re-exports `CredentialSlot`
+and `CredentialGuard`, and `integration::credential` (and the prelude)
+`BearerTokenCredential`, so a `#[derive(Resource)]` struct with
+`#[credential(key = "token")] token: CredentialSlot<BearerTokenCredential>`
+compiles against the SDK alone (`resource_credentialed` fixture). A unit reads
+the slot only through its pinned snapshot, `attempt.slots().token()`.
+
+**HTTP resource adapter (feature `resource-http`):**
+`nebula_sdk::integration::resource::http` (not the prelude) turns HTTP calls
+into managed units. `HttpConfig` is the operator configuration (https, or http
+for a loopback host; bounds; extra PEM roots) and `HttpTransport::new` the
+auth-neutral transport built in `Provider::create`: no redirects followed, no
+client retries, no proxy, referer or cookies, platform TLS verification.
+A resource implements `HttpApi::authorize`, applying its pinned slots through
+`Authorize` (`bearer`, `basic`, `api_key_header`) after the attempt is granted.
+`Request::get` / `post` / … are `Operation`s whose method marker fixes the
+`Effect` (`Keyed<Post>` with an idempotency key, `AsWrite<Put>` for a
+non-idempotent provider); `send` classifies one attempt's answer, and
+`open_stream` returns a `ResponseStream` for a chunked body. No URL, header
+value or transport error reaches `Debug`, errors or logs. The SDK-only fixture
+compiles a GitHub-style resource against it (`resource_http`) and proves the
+raw client is private (`http_no_raw_client`); `tests/resource_http.rs` drives
+it against a raw TCP server through a real `Manager`. Out of scope: following
+next-page URLs, query-parameter keys, mTLS, a generic `Http<C>` resource,
+streaming request bodies and a `401` / `403` credential signal.
 
 **Release migration:** `ResourceGuard::release()` now returns
 `Result<ReleaseOutcome, Error>` instead of `Result<(), Error>`. Match

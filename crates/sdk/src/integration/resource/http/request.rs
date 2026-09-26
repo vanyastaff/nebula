@@ -374,31 +374,49 @@ impl<M: Method> Request<M> {
     }
 }
 
-macro_rules! constructor {
-    ($marker:ident, $name:ident, $doc:literal) => {
-        impl Request<$marker> {
-            #[doc = $doc]
-            ///
-            /// # Errors
-            ///
-            /// A permanent error when `path` breaks the path rules of
-            /// [`Request`].
-            pub fn $name(path: &str) -> Result<Self, OpError> {
-                Self::new(path)
-            }
-        }
-    };
+impl Request<Get> {
+    /// A `GET` of `path`.
+    ///
+    /// # Errors
+    ///
+    /// A permanent error when `path` breaks the path rules of [`Request`].
+    pub fn get(path: &str) -> Result<Self, OpError> {
+        Self::new(path)
+    }
 }
 
-constructor!(Get, get, "A `GET` of `path`.");
-constructor!(Head, head, "A `HEAD` of `path`.");
-constructor!(Options, options, "An `OPTIONS` of `path`.");
-constructor!(Put, put, "A `PUT` of `path`.");
-constructor!(Delete, delete, "A `DELETE` of `path`.");
-constructor!(Post, post, "A `POST` to `path`.");
-constructor!(Patch, patch, "A `PATCH` of `path`.");
+impl Request<Head> {
+    /// A `HEAD` of `path`.
+    ///
+    /// # Errors
+    ///
+    /// A permanent error when `path` breaks the path rules of [`Request`].
+    pub fn head(path: &str) -> Result<Self, OpError> {
+        Self::new(path)
+    }
+}
+
+impl Request<Options> {
+    /// An `OPTIONS` of `path`.
+    ///
+    /// # Errors
+    ///
+    /// A permanent error when `path` breaks the path rules of [`Request`].
+    pub fn options(path: &str) -> Result<Self, OpError> {
+        Self::new(path)
+    }
+}
 
 impl Request<Post> {
+    /// A `POST` to `path`.
+    ///
+    /// # Errors
+    ///
+    /// A permanent error when `path` breaks the path rules of [`Request`].
+    pub fn post(path: &str) -> Result<Self, OpError> {
+        Self::new(path)
+    }
+
     /// Sends the `POST` with an `Idempotency-Key`: the provider absorbs a
     /// repeat, so the request becomes `Idempotent` and a unit with an
     /// unknown outcome may be retried with the same key. An empty or invalid
@@ -410,6 +428,15 @@ impl Request<Post> {
 }
 
 impl Request<Patch> {
+    /// A `PATCH` of `path`.
+    ///
+    /// # Errors
+    ///
+    /// A permanent error when `path` breaks the path rules of [`Request`].
+    pub fn patch(path: &str) -> Result<Self, OpError> {
+        Self::new(path)
+    }
+
     /// Sends the `PATCH` with an `Idempotency-Key`, as
     /// [`Request::<Post>::idempotency_key`].
     #[must_use]
@@ -419,6 +446,15 @@ impl Request<Patch> {
 }
 
 impl Request<Put> {
+    /// A `PUT` of `path`.
+    ///
+    /// # Errors
+    ///
+    /// A permanent error when `path` breaks the path rules of [`Request`].
+    pub fn put(path: &str) -> Result<Self, OpError> {
+        Self::new(path)
+    }
+
     /// Declares that this provider applies a repeated `PUT` again: the
     /// request becomes a `Write`, never retried after it may have been sent.
     #[must_use]
@@ -428,6 +464,15 @@ impl Request<Put> {
 }
 
 impl Request<Delete> {
+    /// A `DELETE` of `path`.
+    ///
+    /// # Errors
+    ///
+    /// A permanent error when `path` breaks the path rules of [`Request`].
+    pub fn delete(path: &str) -> Result<Self, OpError> {
+        Self::new(path)
+    }
+
     /// Declares that this provider applies a repeated `DELETE` again, as
     /// [`Request::<Put>::as_write`].
     #[must_use]

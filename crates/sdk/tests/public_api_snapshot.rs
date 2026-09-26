@@ -10,8 +10,9 @@
 //!   The macro namespace `__private` is owned by the explicit allowlist in
 //!   `public_perimeter_external_contract.rs` and skipped here.
 //! - `sdk_resource_signatures` — every item re-exported through
-//!   `nebula_sdk::integration::resource` and every `nebula_resource` item in
-//!   the prelude, resolved through the `pub use` chain to its definition,
+//!   `nebula_sdk::integration::resource` (and its `http` adapter, whose items
+//!   the SDK defines) and every `nebula_resource` item in the prelude,
+//!   resolved through the `pub use` chain to its definition,
 //!   rendered as a signature (generics, bounds, derives, `non_exhaustive`,
 //!   public fields and variants, trait items) plus the impls in the defining
 //!   crate: inherent `pub` methods and trait impl headers. Items and methods
@@ -65,12 +66,18 @@ fn export_map(workspace: &Workspace) -> String {
 /// Resolved resource targets with the SDK paths that expose each one.
 fn resource_targets(workspace: &Workspace) -> BTreeMap<Target, Vec<String>> {
     let resource_module = ["integration".to_owned(), "resource".to_owned()];
+    let http_module = [
+        "integration".to_owned(),
+        "resource".to_owned(),
+        "http".to_owned(),
+    ];
     let mut targets: BTreeMap<Target, Vec<String>> = BTreeMap::new();
     for export in exports(workspace, "nebula_sdk", "__private") {
         let Some(origin) = &export.origin else {
             continue;
         };
-        let in_resource_module = export.module == resource_module;
+        // The HTTP adapter's items are the SDK's own, defined locally.
+        let in_resource_module = export.module == resource_module || export.module == http_module;
         let resource_in_prelude = export.module == ["prelude".to_owned()]
             && origin
                 .first()
@@ -161,6 +168,36 @@ fn managed_and_unit_have_no_deref() {
             );
         }
     }
+}
+
+/// The HTTP adapter's public signatures name no `reqwest` or `url` type,
+/// and its transport exposes nothing but its constructor.
+#[test]
+fn the_http_adapter_leaks_no_client_type() {
+    let text = resource_signatures(&workspace());
+    let http: Vec<&str> = text
+        .split("\n## ")
+        .filter(|section| section.contains("nebula_sdk::integration::resource::http::"))
+        .collect();
+    assert!(http.len() > 10, "the http sections must be rendered");
+    for section in &http {
+        assert!(
+            !section.contains("reqwest") && !section.contains("Url"),
+            "a client type leaked: {section}"
+        );
+    }
+    let transport = section(
+        &text,
+        "nebula_sdk::integration::resource::http::config::HttpTransport",
+    );
+    let methods: Vec<&&str> = transport
+        .iter()
+        .filter(|line| line.trim_start().starts_with("pub fn"))
+        .collect();
+    assert_eq!(
+        methods,
+        [&"    pub fn new(config: &HttpConfig) -> Result<Self, Error>;"]
+    );
 }
 
 /// Pins the walker to the facts the snapshot exists to show.

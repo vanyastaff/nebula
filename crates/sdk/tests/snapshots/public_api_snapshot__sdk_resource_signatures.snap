@@ -292,9 +292,49 @@ pub const fn on_error<F>(classify: F) -> OnError<F>;
 exported as nebula_sdk::integration::resource::retry_after_from_header
 pub fn retry_after_from_header(value: &str) -> Option<Duration>;
 
+## fn nebula_sdk::integration::resource::http::exchange::send [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::send
+pub async fn send<R, M>(attempt: Attempt<'_, R>, request: &Request<M>) -> Result<Response, OpError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
+
+## fn nebula_sdk::integration::resource::http::stream::open_stream [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::open_stream
+pub async fn open_stream<R, M>(managed: &Managed<R>, request: Request<M>) -> Result<ResponseStream, OpError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
+
+## fn nebula_sdk::integration::resource::http::stream::open_stream_until [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::open_stream_until
+pub async fn open_stream_until<R, M>(managed: &Managed<R>, request: Request<M>, deadline: Instant) -> Result<ResponseStream, OpError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
+
 ## macro-generated nebula_core::keys::ResourceKey
 exported as nebula_sdk::integration::resource::ResourceKey
 macro-generated: key_type!(pub ResourceKey, ResourceDomain);
+
+## macro-generated nebula_sdk::integration::resource::http::request::Delete
+exported as nebula_sdk::integration::resource::http::Delete
+macro-generated: method_marker!(#[doc = " `DELETE`: idempotent by HTTP semantics; [`Request::as_write`]"] #[doc = " declares a provider that breaks them."] Delete, DELETE, Idempotent);
+
+## macro-generated nebula_sdk::integration::resource::http::request::Get
+exported as nebula_sdk::integration::resource::http::Get
+macro-generated: method_marker!(#[doc = " `GET`: reads."] Get, GET, Read);
+
+## macro-generated nebula_sdk::integration::resource::http::request::Head
+exported as nebula_sdk::integration::resource::http::Head
+macro-generated: method_marker!(#[doc = " `HEAD`: reads."] Head, HEAD, Read);
+
+## macro-generated nebula_sdk::integration::resource::http::request::Options
+exported as nebula_sdk::integration::resource::http::Options
+macro-generated: method_marker!(#[doc = " `OPTIONS`: reads."] Options, OPTIONS, Read);
+
+## macro-generated nebula_sdk::integration::resource::http::request::Patch
+exported as nebula_sdk::integration::resource::http::Patch
+macro-generated: method_marker!(#[doc = " `PATCH`: a write; [`Request::idempotency_key`] makes it idempotent."] Patch, PATCH, Write);
+
+## macro-generated nebula_sdk::integration::resource::http::request::Post
+exported as nebula_sdk::integration::resource::http::Post
+macro-generated: method_marker!(#[doc = " `POST`: a write; [`Request::idempotency_key`] makes it idempotent."] Post, POST, Write);
+
+## macro-generated nebula_sdk::integration::resource::http::request::Put
+exported as nebula_sdk::integration::resource::http::Put
+macro-generated: method_marker!(#[doc = " `PUT`: idempotent by HTTP semantics; [`Request::as_write`] declares a"] #[doc = " provider that breaks them."] Put, PUT, Idempotent);
 
 ## macro_rules nebula_core::keys::resource_key
 exported as nebula_sdk::integration::resource::resource_key
@@ -925,6 +965,138 @@ impl<S> Clone for StoreView<'_, S>
 impl<S> Copy for StoreView<'_, S>
 impl<S> std::fmt::Debug for StoreView<'_, S>
 
+## struct nebula_sdk::integration::resource::http::auth::Authorize [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::Authorize
+pub struct Authorize<'a> {
+    /* private fields */
+}
+impl<'a> Authorize<'a> {
+    pub fn bearer<S: BearerMaterial>(&mut self, guard: Option<&CredentialGuard<S>>) -> Result<(), OpError>;
+    pub fn basic(&mut self, guard: Option<&CredentialGuard<IdentityPassword>>) -> Result<(), OpError>;
+    pub fn api_key_header(&mut self, name: &'static str, guard: Option<&CredentialGuard<SecretToken>>) -> Result<(), OpError>;
+    pub fn none(&mut self) -> Result<(), OpError>;
+}
+impl std::fmt::Debug for Authorize<'_>
+
+## struct nebula_sdk::integration::resource::http::config::HttpConfig [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::HttpConfig
+#[derive(Clone, PartialEq, Eq, Hash, Deserialize, nebula_schema::Schema)]
+#[non_exhaustive]
+pub struct HttpConfig {
+    pub base_url: String,
+    pub connect_timeout_ms: u64,
+    pub request_timeout_ms: u64,
+    pub read_idle_timeout_ms: u64,
+    pub max_response_bytes: u64,
+    pub max_stream_bytes: u64,
+    pub extra_root_certificates_pem: Vec<String>,
+    pub user_agent: Option<String>,
+}
+impl HttpConfig {
+    pub fn new(base_url: impl Into<String>) -> Self;
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self;
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Self;
+    pub fn with_read_idle_timeout(mut self, timeout: Duration) -> Self;
+    pub fn with_max_response_bytes(mut self, bytes: u64) -> Self;
+    pub fn with_max_stream_bytes(mut self, bytes: u64) -> Self;
+    pub fn with_extra_root_certificate_pem(mut self, pem: impl Into<String>) -> Self;
+    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self;
+}
+impl ResourceConfig for HttpConfig
+impl fmt::Debug for HttpConfig
+
+## struct nebula_sdk::integration::resource::http::config::HttpTransport [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::HttpTransport
+#[derive(Clone)]
+pub struct HttpTransport {
+    /* private fields */
+}
+impl HttpTransport {
+    pub fn new(config: &HttpConfig) -> Result<Self, Error>;
+}
+impl AsRef<HttpTransport> for HttpTransport
+impl fmt::Debug for HttpTransport
+
+## struct nebula_sdk::integration::resource::http::request::AsWrite [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::AsWrite
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AsWrite<M>(_);
+
+## struct nebula_sdk::integration::resource::http::request::Keyed [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::Keyed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Keyed<M>(_);
+
+## struct nebula_sdk::integration::resource::http::request::Request [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::Request
+pub struct Request<M: Method> {
+    /* private fields */
+}
+impl<M: Method> Request<M> {
+    pub fn query(mut self, pairs: &[(&str, &str)]) -> Self;
+    pub fn header(mut self, name: &'static str, value: impl Into<String>) -> Result<Self, OpError>;
+    pub fn body(mut self, body: impl Into<Bytes>) -> Self;
+    pub fn json<T: Serialize + ?Sized>(mut self, value: &T) -> Result<Self, OpError>;
+    pub fn cost(mut self, cost: Cost) -> Self;
+    pub fn max_attempts(mut self, attempts: NonZeroU32) -> Self;
+    pub fn accept_status(mut self, status: StatusCode) -> Self;
+    pub fn max_bytes(mut self, bytes: u64) -> Self;
+}
+impl Request<Get> {
+    pub fn get(path: &str) -> Result<Self, OpError>;
+}
+impl Request<Head> {
+    pub fn head(path: &str) -> Result<Self, OpError>;
+}
+impl Request<Options> {
+    pub fn options(path: &str) -> Result<Self, OpError>;
+}
+impl Request<Post> {
+    pub fn post(path: &str) -> Result<Self, OpError>;
+    pub fn idempotency_key(self, key: impl Into<String>) -> Request<Keyed<Post>>;
+}
+impl Request<Patch> {
+    pub fn patch(path: &str) -> Result<Self, OpError>;
+    pub fn idempotency_key(self, key: impl Into<String>) -> Request<Keyed<Patch>>;
+}
+impl Request<Put> {
+    pub fn put(path: &str) -> Result<Self, OpError>;
+    pub fn as_write(self) -> Request<AsWrite<Put>>;
+}
+impl Request<Delete> {
+    pub fn delete(path: &str) -> Result<Self, OpError>;
+    pub fn as_write(self) -> Request<AsWrite<Delete>>;
+}
+impl<M: Method> fmt::Debug for Request<M>
+impl<R, M> Operation<R> for Request<M> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method
+
+## struct nebula_sdk::integration::resource::http::response::Response [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::Response
+pub struct Response {
+    /* private fields */
+}
+impl Response {
+    pub fn status(&self) -> StatusCode;
+    pub fn headers(&self) -> &HeaderMap;
+    pub fn body(&self) -> &Bytes;
+    pub fn into_body(self) -> Bytes;
+    pub fn json<T: DeserializeOwned>(&self) -> Result<T, OpError>;
+}
+impl fmt::Debug for Response
+
+## struct nebula_sdk::integration::resource::http::stream::ResponseStream [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::ResponseStream
+pub struct ResponseStream {
+    /* private fields */
+}
+impl ResponseStream {
+    pub fn status(&self) -> StatusCode;
+    pub fn headers(&self) -> &HeaderMap;
+    pub async fn next(&mut self) -> Option<Result<Bytes, OpError>>;
+    pub fn cancel(&self);
+}
+impl fmt::Debug for ResponseStream
+
 ## trait nebula_resource::call::Operation
 exported as nebula_sdk::integration::resource::Operation
 pub trait Operation<R: Provider + PinSlots>: Send + 'static {
@@ -1046,6 +1218,24 @@ exported as nebula_sdk::prelude::ResidentProvider
 pub trait ResidentProvider: Provider {
     fn is_alive_sync(&self, _instance: &Self::Instance) -> bool { .. }
     fn stale_after(&self) -> Option<Duration> { .. }
+}
+
+## trait nebula_sdk::integration::resource::http::auth::BearerMaterial [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::BearerMaterial
+pub trait BearerMaterial: sealed::Sealed + Zeroize + Send + Sync + 'static {
+}
+
+## trait nebula_sdk::integration::resource::http::auth::HttpApi [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::HttpApi
+pub trait HttpApi: Provider + PinSlots where Self::Instance: AsRef<HttpTransport> {
+    fn authorize(slots: &Self::Pinned, auth: &mut Authorize<'_>) -> Result<(), OpError>;
+}
+
+## trait nebula_sdk::integration::resource::http::request::Method [cfg(feature = "resource-http")]
+exported as nebula_sdk::integration::resource::http::Method
+pub trait Method: sealed::Sealed + Send + 'static {
+    const METHOD: &'static str;
+    const EFFECT: Effect;
 }
 
 ## type nebula_resource::slot::CredentialSlot
