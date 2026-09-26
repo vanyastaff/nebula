@@ -753,9 +753,10 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
     }
 
     /// Settles the attempt with what happened to the request.
-    pub fn settle(mut self, sent: SentState) {
-        self.shared.record(sent);
-        self.settled = true;
+    pub fn settle(self, sent: SentState) {
+        let mut attempt = self;
+        attempt.shared.record(sent);
+        attempt.settled = true;
     }
 }
 

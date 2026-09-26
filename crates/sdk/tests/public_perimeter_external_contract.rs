@@ -6,7 +6,9 @@
 //! with a consuming terminal hook over a non-Clone instance, using the
 //! general-purpose `async-trait` dependency. This is a compile check, not runtime
 //! teardown coverage. A second positive binary checks custom resource topology
-//! authoring. Each negative binary targets one distinct authority or persistence
+//! authoring, a third the rate-limit declaration, and a fourth a logger
+//! authored against the managed call facade, whose `Managed` must not deref
+//! (`managed_no_deref`). Each negative binary targets one distinct authority or persistence
 //! escape hatch that must stay unavailable, including paths below `__private`:
 //! Rust documentation hiding is not access control. Procedural derives have a
 //! separate SDK-only compile-pass
@@ -24,6 +26,8 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/positive.rs",
     "src/bin/resource_topology.rs",
     "src/bin/resource_rate_limit.rs",
+    "src/bin/resource_managed_logger.rs",
+    "src/bin/managed_no_deref.rs",
     "src/bin/removed_resource_from_key.rs",
     "src/bin/removed_checkpoint_policy_action.rs",
     "src/bin/removed_checkpoint_policy_prelude.rs",
@@ -287,9 +291,27 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         render_output(&arity)
     );
 
+    let no_deref = cargo_probe(temp.path(), "check", "managed_no_deref");
+    assert!(
+        !no_deref.status.success(),
+        "a managed call facade unexpectedly dereferenced to its instance"
+    );
+    let diagnostics = compiler_errors(&no_deref);
+    std::assert_matches!(
+        diagnostics.as_slice(),
+        [error] if error.code.as_deref() == Some("E0614") && error.message.contains("Managed"),
+        "the managed facade must fail only for its missing `Deref`: {}",
+        render_output(&no_deref)
+    );
+
     // One strict clippy pass over every positive probe: separate passes
     // re-resolve the whole dependency graph each time for no extra coverage.
-    let positives = ["positive", "resource_topology", "resource_rate_limit"];
+    let positives = [
+        "positive",
+        "resource_topology",
+        "resource_rate_limit",
+        "resource_managed_logger",
+    ];
     let output = cargo_clippy_bins(temp.path(), &positives);
     assert!(
         output.status.success(),
@@ -314,6 +336,12 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         rate_limit.status.success(),
         "rate-limit authoring through the SDK alone must compile and execute:\n{}",
         render_output(&rate_limit)
+    );
+    let managed = cargo_probe(temp.path(), "run", "resource_managed_logger");
+    assert!(
+        managed.status.success(),
+        "managed call facade authoring through the SDK alone must compile and execute:\n{}",
+        render_output(&managed)
     );
 }
 
