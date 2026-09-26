@@ -1377,7 +1377,10 @@ impl WorkflowEngine {
             ) else {
                 continue;
             };
-            let (phase, healthy, accepting) = crate::resource_status::project(registry_row.phase());
+            let (phase, healthy, accepting) = crate::resource_status::project(
+                registry_row.phase(),
+                registry_row.credential_suspension().is_some(),
+            );
             view.live.push((
                 row.scope,
                 nebula_storage_port::dto::ResourceStatusSnapshot {
