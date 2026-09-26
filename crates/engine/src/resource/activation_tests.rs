@@ -1983,3 +1983,6 @@ async fn a_reauth_at_a_revision_stays_suspended_until_a_newer_one() {
             .expect("the reopened row serves"),
     );
 }
+
+#[path = "activation_sqlite_tests.rs"]
+mod sqlite_acceptance;
