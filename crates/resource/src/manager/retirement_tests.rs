@@ -122,6 +122,10 @@ impl ManagedHandle for DeferredRetirementHandle {
         None
     }
 
+    fn rate_limit_profile(&self) -> crate::RateLimitProfile {
+        crate::RateLimitProfile::PausesOnly
+    }
+
     fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
         true
     }

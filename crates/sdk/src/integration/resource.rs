@@ -14,6 +14,13 @@
 //! [`ResourceContext::limits`] and [`ResourceLimiter::wrap`], and a
 //! [`Throttle`] tells the provider's "slow down" apart from other outcomes.
 //!
+//! The wrapped-client calls — [`Limited::run`] and its `run_*` variants, and
+//! [`Limited::unlimited`] — are interim surface: each closure books one permit
+//! and counts as one provider call. A row that wraps a client reports the
+//! `InterimPerClosure` (`interim_per_closure`) rate-limit profile in resource
+//! status; the managed call facade replaces the closure family. Without a
+//! wrap, a declared rate books one permit per acquire.
+//!
 //! Runtime registration, dispatch, and cleanup queues remain engine-owned.
 
 pub use nebula_core::{ResourceKey, resource_key};
