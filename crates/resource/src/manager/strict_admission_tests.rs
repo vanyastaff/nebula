@@ -597,6 +597,26 @@ async fn a_refresh_in_flight_is_joined_for_a_bounded_wait() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_stalled_re_read_never_outlives_the_refresh_join() {
+    let observer = ScriptedObserver::gated(refreshing(1));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = resident(&manager);
+    bind(&resource.db, credential_id(), 1, 1);
+    // Fifteen reads answer "refresh in flight"; the last re-read, issued at
+    // 4775 ms, never answers.
+    observer.release(15);
+
+    let started = tokio::time::Instant::now();
+    assert_eq!(
+        refused::<StrictResident>(&manager).await,
+        Some(CredentialUnavailableReason::RefreshInFlight),
+        "a re-read cut off by the join reports the refresh still in flight"
+    );
+    assert_eq!(observer.calls(), 16);
+    assert_eq!(started.elapsed(), REFRESH_JOIN_WAIT);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_refresh_that_settles_mid_join_admits_or_rebinds() {
     let (observer, manager, _resource) = setup(available(1, 1));
     observer.then([refreshing(1), refreshing(1)]);

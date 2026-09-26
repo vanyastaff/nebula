@@ -11,7 +11,7 @@
 //!    capture the row's credential gate ticket, snapshot the bound slots'
 //!    installed projections ([`ManagedResource::credential_targets`]), then
 //!    read every slot concurrently through the manager's join-next
-//!    [`CredentialReads`](super::CredentialReads), each bounded by the
+//!    [`CredentialReads`], each bounded by the
 //!    caller's deadline and [`CREDENTIAL_READ_TIMEOUT`]. A refresh in flight
 //!    is joined for a bounded wait (the credential crate's
 //!    `REFRESH_JOIN_*` bounds).
@@ -321,24 +321,35 @@ async fn read_slot(
         deadline.map_or(join, |deadline| deadline.min(join))
     };
     let mut pause = REFRESH_JOIN_FIRST_PAUSE;
+    // The refresh last observed in flight, once the join has started: a
+    // re-read never outlives the join, and one cut off by it answers with
+    // this observation (still busy) rather than as an unreadable store.
+    let mut joined: Option<CredentialAvailabilityObservation> = None;
     loop {
+        let bound = if joined.is_some() {
+            read_deadline().min(join_deadline)
+        } else {
+            read_deadline()
+        };
         let result: ReadResult = reads
-            .read_after_arrival(
-                &target.scope,
-                target.credential_id,
-                &target.key,
-                read_deadline(),
-            )
+            .read_after_arrival(&target.scope, target.credential_id, &target.key, bound)
             .await;
         match result {
             Ok(observation)
                 if observation.availability() == CredentialAvailability::RefreshInFlight
                     && tokio::time::Instant::now() + pause <= join_deadline =>
             {
+                joined = Some(observation);
                 tokio::time::sleep(pause).await;
                 pause = (pause * 2).min(REFRESH_JOIN_MAX_PAUSE);
             },
             Ok(observation) => return SlotOutcome::Observed(observation),
+            Err(ReadFailure::TimedOut) if bound == join_deadline => {
+                if let Some(observation) = joined {
+                    return SlotOutcome::Observed(observation);
+                }
+                return SlotOutcome::Failed(ReadFailure::TimedOut);
+            },
             Err(failure) => return SlotOutcome::Failed(failure),
         }
     }
