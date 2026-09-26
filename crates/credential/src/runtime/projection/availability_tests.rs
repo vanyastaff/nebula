@@ -515,3 +515,74 @@ async fn the_projection_runtime_observes_through_its_resolver_upcast() {
     );
     store.assert_one_head_read_only();
 }
+
+#[tokio::test]
+async fn the_projection_runtime_hands_out_an_owned_observer() {
+    let (store, scope, id, key) = fixture();
+    let store = std::sync::Arc::new(store);
+    let mut registry = crate::CredentialRegistry::new();
+    registry
+        .register(BearerTokenCredential, "observe-test")
+        .expect("fixture registration is unique");
+    let mut ops = crate::DispatchOps::new();
+    crate::register_runtime_ops::<BearerTokenCredential, crate::ErasedPendingStore>(&mut ops)
+        .expect("fixture ops registration is unique");
+    let runtime = crate::CredentialProjectionRuntime::from_secure_parts(
+        std::sync::Arc::clone(&store) as std::sync::Arc<dyn CredentialPersistence>,
+        std::sync::Arc::new(registry),
+        std::sync::Arc::new(ops),
+        StateSource::LocalEncrypted,
+    )
+    .expect("projection runtime");
+    // Erased first, as a composition root holds it.
+    let resolver: std::sync::Arc<dyn CredentialSlotResolver> = std::sync::Arc::new(runtime);
+    let observer = std::sync::Arc::clone(&resolver)
+        .into_availability_observer()
+        .expect("the projection runtime is an observer");
+    drop(resolver);
+    let observation = observer
+        .observe_availability(&scope, id, key, CancellationToken::new())
+        .await
+        .expect("observed");
+    assert_eq!(
+        observation.availability(),
+        CredentialAvailability::Available
+    );
+    // The owned observer is the same secret-free head read: one head read,
+    // no material load, no decryption.
+    store.assert_one_head_read_only();
+}
+
+/// A resolver that implements only projection.
+struct ProjectionOnlyResolver;
+
+impl CredentialSlotResolver for ProjectionOnlyResolver {
+    fn resolve_slot<'a>(
+        &'a self,
+        _scope: &'a TenantScope,
+        _credential_id: CredentialId,
+        _expected_key: CredentialKey,
+        _required_capabilities: crate::Capabilities,
+        _cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        crate::ErasedCredentialGuard,
+                        crate::CredentialSlotResolveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(crate::CredentialSlotResolveError::Unavailable) })
+    }
+}
+
+#[test]
+fn a_resolver_without_an_observer_hands_out_none() {
+    let resolver: std::sync::Arc<dyn CredentialSlotResolver> =
+        std::sync::Arc::new(ProjectionOnlyResolver);
+    assert!(resolver.as_availability_observer().is_none());
+    assert!(resolver.into_availability_observer().is_none());
+}

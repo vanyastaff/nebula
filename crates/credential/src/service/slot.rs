@@ -300,6 +300,12 @@ impl CredentialSlotResolver for CredentialService {
     fn as_availability_observer(&self) -> Option<&dyn CredentialAvailabilityObserver> {
         Some(self)
     }
+
+    fn into_availability_observer(
+        self: std::sync::Arc<Self>,
+    ) -> Option<std::sync::Arc<dyn CredentialAvailabilityObserver>> {
+        Some(self)
+    }
 }
 
 impl CredentialAvailabilityObserver for CredentialService {

@@ -24,14 +24,18 @@ use nebula_storage_port::store::{
 
 /// How long a new use waits for a refresh already crossing the provider
 /// boundary before it is answered as busy.
-pub(crate) const REFRESH_JOIN_WAIT: Duration = Duration::from_secs(5);
+///
+/// Public so every consumer that joins a refresh (slot projection, the
+/// resolver, a resource manager's per-acquire availability read) waits the
+/// same bounded time.
+pub const REFRESH_JOIN_WAIT: Duration = Duration::from_secs(5);
 /// First re-check of a joined refresh; later re-checks back off to
 /// [`REFRESH_JOIN_MAX_PAUSE`].
-pub(crate) const REFRESH_JOIN_FIRST_PAUSE: Duration = Duration::from_millis(25);
+pub const REFRESH_JOIN_FIRST_PAUSE: Duration = Duration::from_millis(25);
 /// Longest pause between re-checks of a joined refresh.
-pub(crate) const REFRESH_JOIN_MAX_PAUSE: Duration = Duration::from_millis(400);
+pub const REFRESH_JOIN_MAX_PAUSE: Duration = Duration::from_millis(400);
 /// When a caller turned away by a refresh still in flight should try again.
-pub(crate) const REFRESH_BUSY_RETRY_AFTER: Duration = Duration::from_secs(1);
+pub const REFRESH_BUSY_RETRY_AFTER: Duration = Duration::from_secs(1);
 
 /// The decision for one new use of a credential.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

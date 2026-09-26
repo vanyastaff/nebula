@@ -513,6 +513,16 @@ pub trait CredentialSlotResolver: Send + Sync {
     ) -> Option<&dyn super::availability::CredentialAvailabilityObserver> {
         None
     }
+
+    /// The same observer as [`as_availability_observer`](Self::as_availability_observer),
+    /// as an owned handle a consumer can keep: a resource manager that reads
+    /// availability before every new unit of work holds the resolver's
+    /// observer for its whole life. `None` when the resolver has none.
+    fn into_availability_observer(
+        self: std::sync::Arc<Self>,
+    ) -> Option<std::sync::Arc<dyn super::availability::CredentialAvailabilityObserver>> {
+        None
+    }
 }
 
 #[cfg(test)]

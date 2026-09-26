@@ -3497,6 +3497,47 @@ async fn timed_retry_gate_blocks_all_replicas_until_backend_expiry() {
 }
 
 #[tokio::test]
+async fn the_management_service_hands_out_an_owned_observer() {
+    let scope = crate::TenantScope::new("test-org", "test-workspace");
+    let store = Arc::new(ScriptedStore::with_owner(
+        oauth2_row(Some("refresh-grant")),
+        false,
+        CredentialOwner::from_canonical(scope.owner_id()),
+    ));
+    let transport = Arc::new(ScriptedOAuthTransport::new(
+        OAuthTransportResult::InvalidClient401,
+    ));
+    let (service, shutdown) = oauth_service_with_runtime(
+        Arc::clone(&store),
+        Arc::new(StatefulClaimRepo::default()),
+        transport.clone(),
+    );
+    let resolver: Arc<dyn crate::CredentialSlotResolver> = Arc::new(service);
+    let observer = resolver
+        .into_availability_observer()
+        .expect("the management service is an observer");
+    let observation = observer
+        .observe_availability(
+            &scope,
+            test_id(),
+            crate::CredentialKey::new(OAuth2Credential::KEY).expect("static key is valid"),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .expect("observed");
+    shutdown.cancel();
+    assert_eq!(
+        observation.availability(),
+        crate::CredentialAvailability::Available
+    );
+    // The scripted head is served from the row it keeps: one read, nothing
+    // written, nothing resolved or refreshed.
+    assert_eq!(store.get_count(), 1);
+    assert_eq!(store.replacement_count(), 0);
+    assert_eq!(transport.call_count(), 0);
+}
+
+#[tokio::test]
 async fn service_forced_oauth_refresh_uses_resolver_transport_and_exact_k2_disposition() {
     let scope = crate::TenantScope::new("test-org", "test-workspace");
     let store = Arc::new(ScriptedStore::with_owner(
