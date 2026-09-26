@@ -391,6 +391,7 @@ drop(guard); // still released normally
 | `Manager::shutdown`, dropping the manager | yes |
 | Credential suspension (`suspend_credential_row`, the fan-out, activation) | yes — every lease admitted since the previous suspension |
 | Reopening a suspended row | no (it publishes a fresh generation; closed leases stay closed) |
+| Readmission (a newer credential use revision observed at the same material) | no (it publishes a fresh generation; earlier leases stay open) |
 | `reload_config` | no |
 | Credential refresh (`install_and_refresh_slot_for_identity`, `refresh_slot`) | no |
 | Same-identity replacement of the row | no |
@@ -612,8 +613,8 @@ See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/M
   `#![warn(missing_debug_implementations)]` active.
 - Integration tests: shared-resource cross-workflow path is verified in `crates/engine/tests/resource_integration.rs::shared_resource::cross_workflow_resource_sharing`.
 - Per-slot rotation fan-out: landed in this crate (`credential_fanout`, feature `rotation`) — see [`credential-rotation.md`](docs/credential-rotation.md).
-- Credential suspension: a credential that turns `ReauthRequired` or blocks new use without a material change suspends every bound row (acquires fail with `CredentialUnavailable`, admitted leases observe closing, owners are kept) and reopens it when the same material is usable again — see "Same-material blocks" in [`credential-rotation.md`](docs/credential-rotation.md).
-- Known gap: suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event); a strict per-acquire availability read is follow-up work (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
+- Credential suspension: a credential that turns `ReauthRequired` or blocks new use without a material change suspends every bound row (acquires fail with `CredentialUnavailable`, admitted leases observe closing, owners are kept) and reopens it when the same material is usable again at a newer use revision; a use revision that advanced unobserved readmits the row under a fresh generation — see "Same-material blocks" and "Use revision" in [`credential-rotation.md`](docs/credential-rotation.md).
+- Known gap: suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event), and a denial missed between two observations only affects new work; a strict per-acquire availability read is follow-up work (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
 
 ## Related
 

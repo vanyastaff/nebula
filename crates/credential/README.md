@@ -129,7 +129,8 @@ runtime proof and must not be used as a properties declaration.
 - `CredentialAvailabilityObserver` for a secret-free availability check: exactly one
   owner-qualified operational-head read answers whether the credential may be used now
   (`Available`, `RefreshInFlight`, or `Blocked` by reauthentication, a revoke in flight, or an
-  operation awaiting reconciliation) and at which `(material_epoch, revision)`; it never loads,
+  operation awaiting reconciliation) and at which `(material_epoch, revision)`, plus the use
+  revision (`admission_epoch`) when the status is `Open`; it never loads,
   decrypts or projects material. `CredentialProjectionRuntime` and `CredentialService` implement
   it and expose it through the defaulted `CredentialSlotResolver::as_availability_observer`
   upcast. Resource rows use it to suspend while a credential denies use at the material they

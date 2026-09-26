@@ -16,13 +16,48 @@
 //! authenticates), and still evicts stale or expired idle entries.
 //! [`Manager::reopen_credential_row`] clears a slot when the caller's
 //! [`CredentialGateTicket`] — captured before it observed the credential —
-//! is still current; clearing the last slot publishes a fresh generation.
-//! A material advance instead goes through the ordinary refresh install.
+//! is still current and the observation is newer than the denial; clearing
+//! the last slot publishes a fresh generation. A material advance instead
+//! goes through the ordinary refresh install.
 //!
 //! Only suspensions advance the ticket counter, so a deny observed late
 //! always lands while an admit observed before a later deny is refused.
 //! Taint wins: a tainted row reports [`CredentialSuspendOutcome::Tainted`]
 //! and [`CredentialReopenOutcome::Tainted`] and never reopens.
+//!
+//! # Use revision
+//!
+//! Every observation names where it was made, as a [`CredentialObservedAt`]:
+//! the material epoch and, from an `Open` credential status, the use
+//! revision (admission epoch) the backend advances on every write that
+//! closes use (Design CONTRACT: "old use revision does not admit"). The gate
+//! keeps, per slot, the highest revision it admitted (the installed
+//! projection's, or a later accepted observation) and, while suspended, the
+//! revision the denial was read at:
+//!
+//! - A denial read with its revision (reauthentication required) is
+//!   *witnessed*: only a strictly newer revision reopens it, because the
+//!   backend advances the revision when the flag clears. An `Available` read
+//!   at the same revision is a lagging read and is ignored.
+//! - A denial read without a revision (an operation in flight or awaiting
+//!   reconciliation, a resolver error) records the admitted revision; an
+//!   observation at it or newer reopens (the backend advanced the revision
+//!   when that denial began).
+//! - An observation older than the admitted revision is
+//!   [`StaleObservation`](CredentialReopenOutcome::StaleObservation), for a
+//!   suspend as for a reopen; refusals change nothing.
+//! - On an admitting row a newer revision at the installed material means a
+//!   denial interval nobody observed (an abandoned revoke claim). The row is
+//!   [`Readmitted`](CredentialReopenOutcome::Readmitted): new work is
+//!   admitted under a fresh generation, while leases admitted before stay
+//!   open and nothing is rebuilt. This is a conscious relaxation of "do not
+//!   revive cancelled units" for a missed true block — they were never
+//!   cancelled; refusing them needs the strict per-acquire availability
+//!   read, a separate contract. Readmission is traced, not published as a
+//!   [`ResourceEvent`].
+//!
+//! An observation without a revision (an adapter that reports none) falls
+//! back to the ticket-only rule.
 
 use nebula_core::{ResourceKey, ScopeLevel};
 

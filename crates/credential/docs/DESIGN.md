@@ -288,7 +288,11 @@ revision. Two `Open` observations at equal admission epochs therefore saw the sa
 and reauthentication state with no denying observation between them (invariant I-A), which is what
 lets a consumer that bound a projection at one epoch treat any other epoch as "old use revision
 does not admit". Only the SQL backends provide the claim-side bumps; the in-memory claim repository
-cannot. Consumer wiring (observer, activation, fan-out) is a follow-up.
+cannot. Resource consumers honour it: engine activation and the rotation fan-out track each bound
+row at `(material_epoch, admission_epoch)`, a denial read at one epoch is not cleared by an
+`Available` read at the same epoch, and a higher epoch at the same material admits new work under a
+fresh admission generation (leases admitted before are left open; refusing them is the strict
+per-acquire read). See `nebula-resource` `docs/credential-rotation.md`, "Use revision".
 
 Replacement carries material only on `Advance { material: MaterialUpdate::Replace(..) }`. A
 display edit or retry-gate write sends `Preserve` and the reauthentication decision sends
