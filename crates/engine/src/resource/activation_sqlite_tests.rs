@@ -18,8 +18,8 @@ use nebula_storage::credential::{
 };
 use nebula_storage_port::{
     CredentialCreate, CredentialMaterialEpoch, CredentialMaterialTransition, CredentialOwner,
-    CredentialPersistence, CredentialReplacement, CredentialSelector, RefreshRetryTransition,
-    SecretBytes,
+    CredentialPersistence, CredentialPersistenceError, CredentialReplacement, CredentialSelector,
+    RefreshRetryTransition, SecretBytes,
     store::{ClaimAttempt, CredentialOperationIntent, RefreshClaimStore, ReplicaId},
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -201,8 +201,190 @@ fn display(name: &str) -> serde_json::Map<String, serde_json::Value> {
 
 /// The real projection runtime, counting decrypting projections.
 struct CountingRuntime {
-    inner: CredentialProjectionRuntime,
+    inner: Arc<CredentialProjectionRuntime>,
     projections: AtomicUsize,
+}
+
+/// The real runtime's availability observer, as a strict manager holds it,
+/// counting head reads.
+struct CountingObserver {
+    inner: Arc<CredentialProjectionRuntime>,
+    reads: AtomicUsize,
+}
+
+impl CredentialAvailabilityObserver for CountingObserver {
+    fn observe_availability<'a>(
+        &'a self,
+        scope: &'a TenantScope,
+        credential_id: CredentialId,
+        expected_key: CredentialKey,
+        cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::CredentialAvailabilityObservation,
+                        CredentialObserveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .observe_availability(scope, credential_id, expected_key, cancel)
+    }
+}
+
+/// Credential persistence that can be switched off, as a store outage: every
+/// read and write fails `Unavailable` while it is down.
+#[derive(Debug)]
+struct SwitchableOutage {
+    inner: Arc<dyn CredentialPersistence>,
+    down: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SwitchableOutage {
+    fn check(&self) -> Result<(), CredentialPersistenceError> {
+        if self.down.load(Ordering::SeqCst) {
+            Err(CredentialPersistenceError::Unavailable)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialPersistence for SwitchableOutage {
+    async fn get(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<nebula_storage_port::StoredCredential, CredentialPersistenceError> {
+        self.check()?;
+        self.inner.get(selector).await
+    }
+
+    async fn get_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<nebula_storage_port::StoredCredentialHead, CredentialPersistenceError> {
+        self.check()?;
+        self.inner.get_head(selector).await
+    }
+
+    async fn operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<nebula_storage_port::store::CredentialOperationStatus, CredentialPersistenceError>
+    {
+        self.check()?;
+        self.inner.operation_status(selector).await
+    }
+
+    async fn get_operational_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<nebula_storage_port::StoredCredentialOperationalHead, CredentialPersistenceError>
+    {
+        self.check()?;
+        self.inner.get_operational_head(selector).await
+    }
+
+    async fn get_with_operation_status(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<
+        (
+            nebula_storage_port::StoredCredential,
+            Option<nebula_storage_port::store::CredentialOperationStatus>,
+        ),
+        CredentialPersistenceError,
+    > {
+        self.check()?;
+        self.inner.get_with_operation_status(selector).await
+    }
+
+    async fn list_operational_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<nebula_storage_port::StoredCredentialOperationalHead>, CredentialPersistenceError>
+    {
+        self.check()?;
+        self.inner.list_operational_heads(owner, state_kind).await
+    }
+
+    async fn refresh_retry_snapshot(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<nebula_storage_port::RefreshRetrySnapshot, CredentialPersistenceError> {
+        self.check()?;
+        self.inner.refresh_retry_snapshot(selector).await
+    }
+
+    async fn create(
+        &self,
+        selector: &CredentialSelector,
+        create: CredentialCreate,
+    ) -> Result<nebula_storage_port::CredentialCommit, CredentialPersistenceError> {
+        self.check()?;
+        self.inner.create(selector, create).await
+    }
+
+    async fn replace(
+        &self,
+        selector: &CredentialSelector,
+        replacement: CredentialReplacement,
+    ) -> Result<nebula_storage_port::CredentialCommit, CredentialPersistenceError> {
+        self.check()?;
+        self.inner.replace(selector, replacement).await
+    }
+
+    async fn tombstone(
+        &self,
+        selector: &CredentialSelector,
+        tombstone: nebula_storage_port::CredentialTombstone,
+    ) -> Result<nebula_storage_port::CredentialCommit, CredentialPersistenceError> {
+        self.check()?;
+        self.inner.tombstone(selector, tombstone).await
+    }
+
+    async fn tombstone_revoked_material(
+        &self,
+        selector: &CredentialSelector,
+        expected_material_epoch: CredentialMaterialEpoch,
+    ) -> Result<nebula_storage_port::CredentialCommit, CredentialPersistenceError> {
+        self.check()?;
+        self.inner
+            .tombstone_revoked_material(selector, expected_material_epoch)
+            .await
+    }
+
+    async fn list(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<CredentialId>, CredentialPersistenceError> {
+        self.check()?;
+        self.inner.list(owner, state_kind).await
+    }
+
+    async fn list_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<nebula_storage_port::StoredCredentialHead>, CredentialPersistenceError> {
+        self.check()?;
+        self.inner.list_heads(owner, state_kind).await
+    }
+
+    async fn exists(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<bool, CredentialPersistenceError> {
+        self.check()?;
+        self.inner.exists(selector).await
+    }
 }
 
 impl CredentialSlotResolver for CountingRuntime {
@@ -252,11 +434,25 @@ struct SqliteFixture {
     scope: Scope,
     cancel: CancellationToken,
     credential_id: CredentialId,
+    /// The strict manager's observer; `None` for an interim manager.
+    observer: Option<Arc<CountingObserver>>,
+    /// Switches the credential store off (an outage) and on.
+    outage: Arc<std::sync::atomic::AtomicBool>,
     _directory: tempfile::TempDir,
 }
 
 impl SqliteFixture {
+    /// An interim manager: no per-acquire availability read.
     async fn new() -> Self {
+        Self::build(false).await
+    }
+
+    /// A strict manager reading through the real runtime's observer.
+    async fn strict() -> Self {
+        Self::build(true).await
+    }
+
+    async fn build(strict: bool) -> Self {
         let directory = tempfile::tempdir().expect("temp db directory");
         let db = directory
             .path()
@@ -277,7 +473,11 @@ impl SqliteFixture {
             .expect("inspection pool");
         let claims = raw.refresh_claim_repo();
         let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("test key"));
-        let store: Arc<dyn CredentialPersistence> = Arc::new(EncryptionLayer::new(raw, key));
+        let outage = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let store: Arc<dyn CredentialPersistence> = Arc::new(SwitchableOutage {
+            inner: Arc::new(EncryptionLayer::new(raw, key)),
+            down: Arc::clone(&outage),
+        });
 
         let mut registry = CredentialRegistry::new();
         registry
@@ -286,13 +486,30 @@ impl SqliteFixture {
         let mut ops = DispatchOps::<ErasedPendingStore>::new();
         register_runtime_ops::<BearerTokenCredential, ErasedPendingStore>(&mut ops)
             .expect("runtime ops");
-        let runtime = CredentialProjectionRuntime::from_secure_parts(
-            Arc::clone(&store),
-            Arc::new(registry),
-            Arc::new(ops),
-            StateSource::LocalEncrypted,
-        )
-        .expect("projection runtime");
+        let runtime = Arc::new(
+            CredentialProjectionRuntime::from_secure_parts(
+                Arc::clone(&store),
+                Arc::new(registry),
+                Arc::new(ops),
+                StateSource::LocalEncrypted,
+            )
+            .expect("projection runtime"),
+        );
+        let observer = strict.then(|| {
+            Arc::new(CountingObserver {
+                inner: Arc::clone(&runtime),
+                reads: AtomicUsize::new(0),
+            })
+        });
+        let manager = match &observer {
+            Some(observer) => Manager::with_config(
+                nebula_resource::ManagerConfig::default()
+                    .with_credential_observer(
+                        Arc::clone(observer) as Arc<dyn CredentialAvailabilityObserver>
+                    ),
+            ),
+            None => Manager::new(),
+        };
 
         let mut registrars = ResourceActivatorRegistry::new();
         registrars
@@ -348,11 +565,13 @@ impl SqliteFixture {
             ),
             resources,
             registrars,
-            manager: Arc::new(Manager::new()),
+            manager: Arc::new(manager),
             expr_engine: ExpressionEngine::with_cache_size(16),
             scope,
             cancel: CancellationToken::new(),
             credential_id,
+            observer,
+            outage,
             _directory: directory,
         }
     }
@@ -528,6 +747,106 @@ impl SqliteFixture {
         .rows_affected();
         assert_eq!(affected, 1);
     }
+
+    /// Availability reads the strict manager issued.
+    fn reads(&self) -> usize {
+        self.observer
+            .as_ref()
+            .expect("a strict fixture")
+            .reads
+            .load(Ordering::SeqCst)
+    }
+
+    /// Flags the credential for reauthentication, as the durable decision
+    /// does (the backend advances the use revision).
+    async fn require_reauth(&self) {
+        let head = self.store.get_head(&self.selector()).await.expect("head");
+        let _committed = self
+            .store
+            .replace(
+                &self.selector(),
+                CredentialReplacement::new(
+                    head.version(),
+                    Some("acceptance".to_owned()),
+                    true,
+                    display("acceptance"),
+                    CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve),
+                ),
+            )
+            .await
+            .expect("reauthentication required");
+    }
+
+    /// Completes reauthentication with new material: the material epoch
+    /// advances and the flag clears.
+    async fn complete_reauth(&self) {
+        let head = self.store.get_head(&self.selector()).await.expect("head");
+        let token = SecretToken::new(SecretString::new("sqlite-acceptance-token-2"));
+        let data = nebula_credential::serde_secret::expose_for_serialization(|| {
+            serde_json::to_vec(&token)
+        })
+        .expect("token encodes");
+        let _committed = self
+            .store
+            .replace(
+                &self.selector(),
+                CredentialReplacement::new(
+                    head.version(),
+                    Some("acceptance".to_owned()),
+                    false,
+                    display("acceptance"),
+                    CredentialMaterialTransition::advance(
+                        nebula_storage_port::MaterialUpdate::Replace(
+                            nebula_storage_port::CredentialMaterial::new(
+                                SecretBytes::new(data),
+                                <SecretToken as CredentialState>::KIND.to_owned(),
+                                <SecretToken as CredentialState>::VERSION,
+                                None,
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .expect("reauthentication completed");
+    }
+
+    /// Acquires a refresh claim and marks its provider boundary crossed: new
+    /// uses see a refresh in flight.
+    async fn claim_refresh_crossing(&self) -> nebula_storage_port::store::ClaimToken {
+        let claimed = self
+            .claims
+            .try_claim(
+                &self.selector(),
+                &ReplicaId::new("refreshing-replica"),
+                Duration::from_secs(30),
+                CredentialOperationIntent::Refresh,
+            )
+            .await
+            .expect("the refresh claim reaches the backend");
+        let ClaimAttempt::Acquired(claim) = claimed else {
+            panic!("a fresh credential's refresh claim is acquired");
+        };
+        self.claims
+            .mark_sentinel(&claim.token)
+            .await
+            .expect("the refresh crosses the provider boundary");
+        claim.token
+    }
+}
+
+fn unavailable_reason(error: &ResourceError) -> Option<CredentialUnavailableReason> {
+    match error.kind() {
+        nebula_resource::ErrorKind::CredentialUnavailable { reason } => Some(*reason),
+        _ => None,
+    }
+}
+
+fn refusal<T>(result: Result<T, ResourceError>) -> ResourceError {
+    match result {
+        Ok(_) => panic!("expected a refusal"),
+        Err(error) => error,
+    }
 }
 
 /// A: the claim is acquired and lapses with no activation in between. The
@@ -675,4 +994,187 @@ async fn a_display_rename_does_not_register_the_row_again() {
     assert_eq!(drain(&mut events), (0, 0), "a rename registers nothing");
     assert_eq!(fixture.projections(), projections, "nothing is decrypted");
     assert_eq!(fixture.tracked_at(resource_id), at);
+}
+
+// ── Strict per-acquire admission over the real runtime ─────────────────────
+
+/// S1: a revoke claim held is seen by the acquire itself — no activation in
+/// between — and suspends the row; its lapse reopens the row by the next
+/// acquire alone, at the next use revision.
+#[tokio::test]
+async fn a_strict_acquire_refuses_a_held_revoke_and_reopens_by_itself_after_it_lapses() {
+    let fixture = SqliteFixture::strict().await;
+    let mut events = fixture.manager.subscribe_events();
+    let (resource_id, key) = fixture.store_row().await;
+    let activated = fixture
+        .activate(resource_id, &key)
+        .await
+        .expect("activates");
+    drain(&mut events);
+    let (material, admission) = fixture.tracked_at(resource_id);
+    let old = fixture.acquire(&key, &activated).await.expect("serves");
+    let projections = fixture.projections();
+
+    fixture.claim_revoke().await;
+    let error = refusal(fixture.acquire(&key, &activated).await);
+    assert_eq!(
+        unavailable_reason(&error),
+        Some(CredentialUnavailableReason::OperationBlocked)
+    );
+    assert!(fixture.suspended(&activated));
+    assert!(old.is_closing(), "the lease admitted before closes");
+    assert_eq!(fixture.projections(), projections, "nothing is decrypted");
+
+    fixture.lapse_claim().await;
+    let fresh = fixture
+        .acquire(&key, &activated)
+        .await
+        .expect("the acquire alone reopens the row");
+    assert!(!fresh.is_closing());
+    assert!(!fixture.suspended(&activated));
+    assert!(old.is_closing(), "the old lease stays closed");
+    assert_eq!(fixture.projections(), projections);
+    assert_eq!(
+        fixture.gate_outcome(
+            &activated,
+            CredentialObservedAt::new(material).with_admission_epoch(admission + 1)
+        ),
+        nebula_resource::CredentialReopenOutcome::NotSuspended,
+        "the acquire reopened at the next use revision"
+    );
+    assert_eq!(drain(&mut events), (0, 0), "nothing registers or retires");
+}
+
+/// S2: reauthentication required refuses and suspends; its completion with
+/// new material refuses as rebinding until activation installs it.
+#[tokio::test]
+async fn a_strict_acquire_waits_for_reauthentication_and_then_for_its_material() {
+    let fixture = SqliteFixture::strict().await;
+    let (resource_id, key) = fixture.store_row().await;
+    let activated = fixture
+        .activate(resource_id, &key)
+        .await
+        .expect("activates");
+    drop(fixture.acquire(&key, &activated).await.expect("serves"));
+
+    fixture.require_reauth().await;
+    let error = refusal(fixture.acquire(&key, &activated).await);
+    assert_eq!(
+        unavailable_reason(&error),
+        Some(CredentialUnavailableReason::ReauthRequired)
+    );
+    assert!(fixture.suspended(&activated));
+
+    fixture.complete_reauth().await;
+    let error = refusal(fixture.acquire(&key, &activated).await);
+    assert_eq!(
+        unavailable_reason(&error),
+        Some(CredentialUnavailableReason::Rebinding),
+        "new material is not installed yet"
+    );
+
+    let reactivated = fixture
+        .activate(resource_id, &key)
+        .await
+        .expect("activation installs the new material");
+    let lease = fixture
+        .acquire(&key, &reactivated)
+        .await
+        .expect("serves on the new material");
+    assert!(!lease.is_closing());
+}
+
+/// S3: a credential store outage refuses new credentialed work without
+/// suspending or retiring anything; the restored store serves again without
+/// a projection.
+#[tokio::test]
+async fn a_strict_acquire_refuses_during_a_store_outage_and_serves_after_it() {
+    let fixture = SqliteFixture::strict().await;
+    let mut events = fixture.manager.subscribe_events();
+    let (resource_id, key) = fixture.store_row().await;
+    let activated = fixture
+        .activate(resource_id, &key)
+        .await
+        .expect("activates");
+    drain(&mut events);
+    let projections = fixture.projections();
+
+    fixture.outage.store(true, Ordering::SeqCst);
+    for _ in 0..3 {
+        let error = refusal(fixture.acquire(&key, &activated).await);
+        assert_eq!(
+            unavailable_reason(&error),
+            Some(CredentialUnavailableReason::CheckUnavailable)
+        );
+    }
+    assert!(!fixture.suspended(&activated), "an outage suspends nothing");
+
+    fixture.outage.store(false, Ordering::SeqCst);
+    drop(fixture.acquire(&key, &activated).await.expect("serves"));
+    assert_eq!(fixture.projections(), projections, "nothing is decrypted");
+    assert_eq!(drain(&mut events), (0, 0), "nothing registers or retires");
+}
+
+/// S4: a refresh crossing the provider boundary is joined; released without
+/// new material while the acquire waits, it admits.
+#[tokio::test]
+async fn a_strict_acquire_joins_a_refresh_in_flight() {
+    let fixture = SqliteFixture::strict().await;
+    let (resource_id, key) = fixture.store_row().await;
+    let activated = fixture
+        .activate(resource_id, &key)
+        .await
+        .expect("activates");
+    let token = fixture.claim_refresh_crossing().await;
+    let reads = fixture.reads();
+
+    let release = async {
+        // The acquire has read the refresh in flight and is waiting on it.
+        while fixture.reads() == reads {
+            tokio::task::yield_now().await;
+        }
+        fixture
+            .claims
+            .release(token)
+            .await
+            .expect("the refresh releases without new material");
+    };
+    let (lease, ()) = tokio::join!(fixture.acquire(&key, &activated), release);
+    let lease = lease.expect("admitted once the refresh released");
+    assert!(!lease.is_closing());
+    assert!(fixture.reads() >= reads + 2, "joined, then read again");
+    assert!(!fixture.suspended(&activated));
+}
+
+/// S5: a resource without credential slots reads nothing on a strict
+/// manager.
+#[tokio::test]
+async fn a_slot_less_resource_on_a_strict_manager_reads_nothing() {
+    let fixture = SqliteFixture::strict().await;
+    fixture
+        .manager
+        .register(nebula_resource::RegistrationSpec {
+            resource: Plain,
+            config: LabelConfig {
+                label: "a".to_owned(),
+            },
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::from_bindings(std::iter::empty::<(&str, &str)>()),
+            topology: Resident::new(resident::config::Config::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register");
+    let ctx = ResourceContext::minimal(
+        nebula_core::scope::Scope::default(),
+        CancellationToken::new(),
+    );
+    drop(
+        fixture
+            .manager
+            .acquire::<Plain>(&ctx, &nebula_resource::AcquireOptions::default())
+            .await
+            .expect("serves"),
+    );
+    assert_eq!(fixture.reads(), 0);
 }
