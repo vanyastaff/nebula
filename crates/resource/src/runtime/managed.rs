@@ -430,12 +430,18 @@ impl<R: Provider> ManagedResource<R> {
         !self.is_tainted() && !self.admission.is_suspended() && self.status().phase.is_accepting()
     }
 
-    /// How new work on this row is admitted against its bound credentials.
+    /// How new work on this row is admitted against its bound credentials:
+    /// strict per attempt once a lease became a managed call facade (the
+    /// per-attempt latch of the row's limiter), strict per acquire before.
     pub(crate) fn credential_admission_profile(&self) -> crate::CredentialAdmissionProfile {
         if !R::declares_credential_slots() {
             crate::CredentialAdmissionProfile::Unbound
         } else if self.credential_reads.is_some() {
-            crate::CredentialAdmissionProfile::StrictPerAcquire
+            if self.rate_limiter.per_attempt_latched() {
+                crate::CredentialAdmissionProfile::StrictPerAttempt
+            } else {
+                crate::CredentialAdmissionProfile::StrictPerAcquire
+            }
         } else {
             crate::CredentialAdmissionProfile::InterimRowGate
         }

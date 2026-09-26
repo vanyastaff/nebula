@@ -514,8 +514,9 @@ pub struct ResourceHealthSnapshot {
     /// before `Provider::create` wraps a client.
     pub rate_limit_profile: crate::rate_limit::RateLimitProfile,
     /// How new work is admitted against the row's bound credentials: read
-    /// per acquire (strict), gated on the row only (interim), or nothing to
-    /// read.
+    /// per acquire (strict), also per managed attempt once a lease became a
+    /// facade (strict per attempt), gated on the row only (interim), or
+    /// nothing to read.
     pub credential_admission: CredentialAdmissionProfile,
 }
 

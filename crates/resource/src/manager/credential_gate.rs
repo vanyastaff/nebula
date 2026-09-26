@@ -169,7 +169,10 @@ impl From<&nebula_credential::CredentialAvailabilityObservation> for CredentialO
 /// and on [`ManagedResourceView`](crate::ManagedResourceView). Chosen at
 /// registration from the resource's declared slots and whether the manager
 /// was configured with a credential availability observer
-/// ([`ManagerConfig::with_credential_observer`](crate::ManagerConfig::with_credential_observer)).
+/// ([`ManagerConfig::with_credential_observer`](crate::ManagerConfig::with_credential_observer)),
+/// then observed: a strict row reports
+/// [`StrictPerAttempt`](Self::StrictPerAttempt) once one of its leases became
+/// a managed call facade, and keeps it for the row's life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum CredentialAdmissionProfile {
@@ -180,6 +183,13 @@ pub enum CredentialAdmissionProfile {
     /// at the installed material. A credential store outage refuses new
     /// credentialed work.
     StrictPerAcquire,
+    /// As [`StrictPerAcquire`](Self::StrictPerAcquire), and a lease of the
+    /// row became a managed call facade
+    /// ([`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed)):
+    /// every provider attempt also reads the bound credentials after its
+    /// waits and is refused unless each is usable at the material the unit
+    /// pinned.
+    StrictPerAttempt,
     /// No availability read before new work: the row admits until a
     /// credential denial reaches it (engine activation, the rotation fan-out
     /// or a caller suspends it). Interim — the production worker is strict;
@@ -195,12 +205,13 @@ impl CredentialAdmissionProfile {
     }
 
     /// Stable lowercase name for logs and status views: `unbound`,
-    /// `strict_per_acquire` or `interim_row_gate`.
+    /// `strict_per_acquire`, `strict_per_attempt` or `interim_row_gate`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Unbound => "unbound",
             Self::StrictPerAcquire => "strict_per_acquire",
+            Self::StrictPerAttempt => "strict_per_attempt",
             Self::InterimRowGate => "interim_row_gate",
         }
     }

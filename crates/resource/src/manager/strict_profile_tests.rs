@@ -1,6 +1,7 @@
-//! Credential admission profiles: chosen at registration, visible in the
-//! health snapshot and the erased view; a strict manager refuses a row it
-//! cannot observe.
+//! Credential admission profiles: chosen at registration, latched per
+//! attempt when a strict row's lease becomes a managed call facade, visible
+//! in the health snapshot, the erased view and the erased handle; a strict
+//! manager refuses a row it cannot observe.
 
 use std::sync::{Arc, atomic::Ordering};
 
@@ -11,10 +12,13 @@ use super::{
     Manager,
     credential_reads::tests::{ScriptedObserver, seen},
     strict_fixtures::{
-        ProjectionlessRow, StrictResident, UnboundRow, register, resident, strict_manager, tenant,
+        ProjectionlessRow, StrictResident, UnboundRow, bind, context, credential_id, register,
+        resident, strict_manager, tenant,
     },
 };
-use crate::{CredentialAdmissionProfile, ErrorKind, Provider, Resident, ResidentConfig};
+use crate::{
+    AcquireOptions, CredentialAdmissionProfile, ErrorKind, Provider, Resident, ResidentConfig,
+};
 
 fn observer() -> Arc<dyn CredentialAvailabilityObserver> {
     ScriptedObserver::answering(seen(1, 1, CredentialAvailability::Available))
@@ -35,12 +39,99 @@ fn profile_names_are_stable() {
         "strict_per_acquire"
     );
     assert_eq!(
+        CredentialAdmissionProfile::StrictPerAttempt.as_str(),
+        "strict_per_attempt"
+    );
+    assert_eq!(
         CredentialAdmissionProfile::InterimRowGate.as_str(),
         "interim_row_gate"
     );
     assert!(CredentialAdmissionProfile::InterimRowGate.is_interim());
     assert!(!CredentialAdmissionProfile::StrictPerAcquire.is_interim());
+    assert!(!CredentialAdmissionProfile::StrictPerAttempt.is_interim());
     assert!(!CredentialAdmissionProfile::Unbound.is_interim());
+}
+
+async fn into_managed<R: Provider + crate::PinSlots>(manager: &Manager) -> crate::call::Managed<R> {
+    manager
+        .acquire_for_identity::<R>(&context(), &AcquireOptions::default(), &tenant())
+        .await
+        .expect("acquire")
+        .into_managed()
+}
+
+/// The profile as the health snapshot, the erased view and the erased
+/// handle report it; all three must agree.
+fn reported<R: Provider>(manager: &Manager) -> CredentialAdmissionProfile {
+    let health = manager
+        .health_check::<R>(&ScopeLevel::Global)
+        .expect("health")
+        .credential_admission;
+    let handle = manager
+        .lookup_any_for_slot_identity_structural(&R::key(), &ScopeLevel::Global, &tenant())
+        .expect("row")
+        .credential_admission_profile();
+    assert_eq!(health, view_profile::<R>(manager));
+    assert_eq!(health, handle);
+    health
+}
+
+#[tokio::test]
+async fn a_strict_row_reports_per_attempt_once_a_lease_becomes_a_facade() {
+    let metrics = Arc::new(nebula_metrics::MetricsRegistry::new());
+    let manager = strict_manager(observer(), &metrics);
+    let resource = resident(&manager);
+    bind(&resource.db, credential_id(), 1, 1);
+    register(
+        &manager,
+        UnboundRow(Arc::default()),
+        Resident::new(ResidentConfig::default()),
+    )
+    .expect("register unbound");
+
+    let guard = manager
+        .acquire_for_identity::<StrictResident>(&context(), &AcquireOptions::default(), &tenant())
+        .await
+        .expect("acquire");
+    assert_eq!(
+        reported::<StrictResident>(&manager),
+        CredentialAdmissionProfile::StrictPerAcquire,
+        "a plain lease leaves the row per acquire"
+    );
+    let managed = guard.into_managed();
+    assert_eq!(
+        reported::<StrictResident>(&manager),
+        CredentialAdmissionProfile::StrictPerAttempt
+    );
+    drop(managed);
+    assert_eq!(
+        reported::<StrictResident>(&manager),
+        CredentialAdmissionProfile::StrictPerAttempt,
+        "latched for the row's life"
+    );
+    let view = manager
+        .get_row(&StrictResident::key(), &ScopeLevel::Global, &tenant())
+        .expect("row");
+    assert!(format!("{view:?}").contains("credential_admission_profile: StrictPerAttempt"));
+
+    // A slot-less row stays unbound through the facade.
+    drop(into_managed::<UnboundRow>(&manager).await);
+    assert_eq!(
+        reported::<UnboundRow>(&manager),
+        CredentialAdmissionProfile::Unbound
+    );
+}
+
+#[tokio::test]
+async fn an_interim_row_stays_on_the_row_gate_through_the_facade() {
+    let manager = Manager::new();
+    let resource = resident(&manager);
+    bind(&resource.db, credential_id(), 1, 1);
+    drop(into_managed::<StrictResident>(&manager).await);
+    assert_eq!(
+        reported::<StrictResident>(&manager),
+        CredentialAdmissionProfile::InterimRowGate
+    );
 }
 
 #[tokio::test]

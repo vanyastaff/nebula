@@ -1079,6 +1079,12 @@ impl ResourceLimiter {
         self.per_attempt.store(true, Ordering::Release);
     }
 
+    /// Whether a lease of the row became a managed call facade, whatever
+    /// else latched (the closure family wins the rate profile, not this).
+    pub(crate) fn per_attempt_latched(&self) -> bool {
+        self.per_attempt.load(Ordering::Acquire)
+    }
+
     /// What an acquire of the row waits for: a permit, as [`ready`](Self::ready),
     /// or, once a client has been [`wrap`](Self::wrap)ped or a lease has
     /// become a managed call facade, only the end of a pause. Wrapped calls
