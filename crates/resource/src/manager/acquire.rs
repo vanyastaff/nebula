@@ -506,6 +506,11 @@ impl Manager {
             ready = managed.rate_limiter.ready_to_acquire(options.deadline) => ready?,
             () = self.cancel.cancelled() => return Err(Error::cancelled()),
         }
+        // Strict credential admission, phase 1: read every bound credential's
+        // availability now, outside every lock (zero reads for a slot-less or
+        // interim row). Phase 2 applies it under `Manager.admission` below.
+        // Dropping this acquire drops the read.
+        let strict = managed.read_credentials_strict(options.remaining()).await;
         // Pre-count this acquire on both the manager-wide and per-resource
         // in-flight trackers, from the moment `lookup()` succeeds. RAII
         // decrements + notifies on every failure / cancel / panic path; on
@@ -530,6 +535,13 @@ impl Manager {
             // taint (closes the revoke-vs-acquire TOCTOU) and `shutting_down`
             // (closes the symmetric shutdown-vs-acquire use-after-drain).
             self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
+            // Strict credential admission, phase 2: re-check the installed
+            // material and apply what the read saw (reopen, readmit, suspend)
+            // before the suspension check below reads the gate. See
+            // `strict_admission` and invariant I7.
+            if let (Some(reading), Some(reads)) = (&strict, managed.credential_reads.as_deref()) {
+                self.apply_strict_reading_under_admission(&R::key(), &*managed, reading, reads)?;
+            }
             // A bound credential denying use suspends the row: refuse before
             // the phase check (a suspended row keeps its phase) and before
             // the recovery gate (suspension is not backend ill health).
@@ -871,6 +883,9 @@ impl Manager {
         let _in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
         self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
+        // Creating is a unit of work of its own: a strict row reads its bound
+        // credentials first and builds nothing when one refuses.
+        self.strict_credential_admission(&managed, None).await?;
         // The framework-owned warmup creates `warmup_target` entries via the
         // topology's `create_entry` (which runs the author's `Provider::create`)
         // and deposits them (fenced) into the framework store. `config` is read

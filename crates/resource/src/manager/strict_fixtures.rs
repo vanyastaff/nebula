@@ -4,7 +4,7 @@
 
 use std::sync::{
     Arc, OnceLock,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use nebula_core::{CredentialId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
@@ -12,20 +12,29 @@ use nebula_credential::{
     CredentialAvailabilityObserver, CredentialGuard, CredentialGuardMetadata, CredentialKey,
     ErasedCredentialGuard, TenantScope,
 };
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::{Manager, ManagerConfig, RegistrationSpec};
 use crate::{
-    Error, Provider, Resident, ResidentConfig, ResourceConfig, ResourceContext, SlotCell,
-    SlotIdentity, SlotInstallError, SlotUpdate,
+    Bounded, Error, PoolConfig, Pooled, Provider, Resident, ResidentConfig, ResourceConfig,
+    ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
     resource::{HasCredentialSlots, ResourceMetadataDraft},
     runtime::managed::ManagedResource,
-    topology::ResidentProvider,
+    topology::{
+        BoundedProvider, PoolProvider, ResidentProvider,
+        pooled::{RecycleDecision, config::WarmupStrategy},
+    },
 };
 
 #[derive(Clone, nebula_schema::Schema)]
 pub(crate) struct Config {
     version: u64,
+}
+
+/// The row config at `version`.
+pub(crate) fn config(version: u64) -> Config {
+    Config { version }
 }
 
 impl ResourceConfig for Config {
@@ -34,15 +43,31 @@ impl ResourceConfig for Config {
     }
 }
 
-/// Counts provider creates.
+/// Counts provider creates and can park the next one.
 #[derive(Default)]
 pub(crate) struct Probe {
     creates: AtomicUsize,
+    park_create: AtomicBool,
+    pub(crate) create_entered: Notify,
+    pub(crate) release_create: Notify,
 }
 
 impl Probe {
     pub(crate) fn creates(&self) -> usize {
         self.creates.load(Ordering::SeqCst)
+    }
+
+    /// Parks the next `create` until [`release_create`](Self::release_create).
+    pub(crate) fn park_next_create(&self) {
+        self.park_create.store(true, Ordering::SeqCst);
+    }
+
+    async fn create(&self) -> u64 {
+        if self.park_create.swap(false, Ordering::SeqCst) {
+            self.create_entered.notify_one();
+            self.release_create.notified().await;
+        }
+        self.creates.fetch_add(1, Ordering::SeqCst) as u64
     }
 }
 
@@ -93,7 +118,7 @@ macro_rules! strict_provider {
             }
 
             async fn create(&self, _: &Config, _: &ResourceContext) -> Result<u64, Error> {
-                Ok(self.probe.creates.fetch_add(1, Ordering::SeqCst) as u64)
+                Ok(self.probe.create().await)
             }
         }
 
@@ -167,8 +192,24 @@ macro_rules! strict_provider {
 }
 
 strict_provider!(StrictResident, "strict-resident", Resident<Self>, ["db"]);
+strict_provider!(StrictPooled, "strict-pooled", Pooled<Self>, ["db"]);
+strict_provider!(StrictBounded, "strict-bounded", Bounded<Self>, ["db"]);
+strict_provider!(
+    StrictTwoSlot,
+    "strict-two-slot",
+    Resident<Self>,
+    ["db", "cache"]
+);
 
 impl ResidentProvider for StrictResident {}
+impl ResidentProvider for StrictTwoSlot {}
+impl BoundedProvider for StrictBounded {}
+
+impl PoolProvider for StrictPooled {
+    async fn recycle(&self, _: &u64, _: &crate::InstanceMetrics) -> Result<RecycleDecision, Error> {
+        Ok(RecycleDecision::Keep)
+    }
+}
 
 /// Declares a slot but does not implement the projection port.
 #[derive(Clone)]
@@ -255,8 +296,61 @@ pub(crate) fn credential_id() -> CredentialId {
     *ID.get_or_init(CredentialId::new)
 }
 
+/// A second credential, bound to the `cache` slot of [`StrictTwoSlot`].
+pub(crate) fn cache_credential_id() -> CredentialId {
+    static ID: OnceLock<CredentialId> = OnceLock::new();
+    *ID.get_or_init(CredentialId::new)
+}
+
 pub(crate) fn credential_key() -> CredentialKey {
     "oauth".parse().expect("credential key")
+}
+
+/// Owner-qualified metadata of material `material` at use revision
+/// `admission` for `credential_id`.
+pub(crate) fn metadata_for(
+    credential_id: CredentialId,
+    material: u64,
+    admission: u64,
+) -> CredentialGuardMetadata {
+    CredentialGuardMetadata::new(credential_id, credential_key(), material, material)
+        .with_admission_epoch(admission)
+        .with_scope(owner())
+}
+
+/// The projected guard of [`credential_id`] at `(material, admission)`.
+pub(crate) fn guard(material: u64, admission: u64) -> ErasedCredentialGuard {
+    ErasedCredentialGuard::from_typed(
+        CredentialGuard::new(material),
+        metadata_for(credential_id(), material, admission),
+    )
+}
+
+/// Installs material directly into `cell`, as activation did before.
+pub(crate) fn bind(
+    cell: &SlotCell<CredentialGuard<u64>>,
+    credential_id: CredentialId,
+    material: u64,
+    admission: u64,
+) {
+    let _update = cell
+        .install_projected(
+            metadata_for(credential_id, material, admission),
+            Arc::new(CredentialGuard::new(material)),
+        )
+        .expect("install");
+}
+
+pub(crate) fn pool_config() -> PoolConfig {
+    PoolConfig {
+        min_size: 2,
+        max_size: 4,
+        idle_timeout: None,
+        max_lifetime: None,
+        warmup: WarmupStrategy::None,
+        maintenance_interval: std::time::Duration::from_hours(1),
+        ..PoolConfig::default()
+    }
 }
 
 pub(crate) fn context() -> ResourceContext {

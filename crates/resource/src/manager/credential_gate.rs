@@ -587,7 +587,7 @@ impl Manager {
 }
 
 /// The use revision of the projection installed in `slot`, if any.
-fn installed_mark(managed: &dyn ManagedHandle, slot: &str) -> Option<UseMark> {
+pub(super) fn installed_mark(managed: &dyn ManagedHandle, slot: &str) -> Option<UseMark> {
     managed
         .credential_slot_projection(slot)
         .and_then(|(_, metadata)| metadata)

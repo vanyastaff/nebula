@@ -63,6 +63,25 @@ impl ScriptedObserver {
         self.gate.add_permits(calls);
     }
 
+    /// Answers `answers` to the next calls, in order, before the others.
+    pub(crate) fn then(&self, answers: impl IntoIterator<Item = Published>) {
+        self.queued.lock().expect("script lock").extend(answers);
+    }
+
+    /// Answers `answer` for `credential_id` only.
+    pub(crate) fn answer_for(&self, credential_id: CredentialId, answer: Published) {
+        self.per_credential
+            .lock()
+            .expect("script lock")
+            .insert(credential_id, answer);
+    }
+
+    /// Stops gating: every waiting and later call completes.
+    pub(crate) fn open(&self) {
+        self.gated.store(false, Ordering::SeqCst);
+        self.gate.add_permits(1024);
+    }
+
     /// Observer calls so far.
     pub(crate) fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)

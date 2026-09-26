@@ -80,7 +80,7 @@ impl From<CredentialObserveError> for ReadFailure {
 pub(crate) type ReadResult = Result<CredentialAvailabilityObservation, ReadFailure>;
 
 /// The answer an observer call produced, as published to a lane.
-type Published = Result<CredentialAvailabilityObservation, CredentialObserveError>;
+pub(crate) type Published = Result<CredentialAvailabilityObservation, CredentialObserveError>;
 
 /// Per-lane state. `issued` counts reads started on the lane, `latest` is the
 /// last read that answered, tagged with its number.
