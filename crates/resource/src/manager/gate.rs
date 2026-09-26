@@ -117,8 +117,10 @@ pub(super) fn admit_through_gate(gate: &Option<Arc<RecoveryGate>>) -> Result<Gat
 /// `true` when an acquire failure says something about the backend's health.
 ///
 /// Only [`ErrorKind::Transient`] and [`ErrorKind::Exhausted`] qualify.
-/// [`ErrorKind::Backpressure`] (local capacity exhausted) and
-/// [`ErrorKind::Revoked`] (credential taint) are retryable, but they are
+/// [`ErrorKind::Backpressure`] (local capacity exhausted),
+/// [`ErrorKind::Revoked`] (credential taint) and
+/// [`ErrorKind::CredentialUnavailable`] (credential suspension) are
+/// retryable, but they are
 /// this process's own state: counting them would push a healthy backend into
 /// recovery backoff and fail every acquire whenever the pool saturates.
 fn is_backend_health_signal(error: &Error) -> bool {
@@ -171,6 +173,8 @@ mod gate_admission_tests {
         for error in [
             Error::backpressure("pool full"),
             Error::revoked("tainted by revoke"),
+            Error::credential_unavailable(crate::CredentialUnavailableReason::ReauthRequired),
+            Error::credential_unavailable(crate::CredentialUnavailableReason::OperationBlocked),
         ] {
             let gate = idle_gate();
             let admission = admit_through_gate(&Some(Arc::clone(&gate))).expect("idle admits");

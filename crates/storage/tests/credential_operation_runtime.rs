@@ -26,14 +26,14 @@ use nebula_credential::runtime::{
     RefreshTransportError, TokenPostRequest, TokenPostResponse,
 };
 use nebula_credential::{
-    AuthorizationDecision, CredentialActor, CredentialAuthorizationError, CredentialCommand,
-    CredentialCommandResult, CredentialContext, CredentialController, CredentialControllerError,
-    CredentialDisplay, CredentialDisplayPatch, CredentialMetadataDraft, CredentialOperation,
-    CredentialProjectionRuntime, CredentialRegistry, CredentialService, CredentialServiceError,
-    CredentialSlotResolveError, CredentialSlotResolver, CredentialTenantAuthority, DispatchOps,
-    ErasedPendingStore, NoopObserver, RefreshAttempt, RefreshReport, StateSource,
-    StateWireFingerprint, TenantScope, identity_state, register_refreshable_ops,
-    register_revocable_ops, register_runtime_ops, register_testable_ops,
+    AuthorizationDecision, CredentialActor, CredentialAuthorizationError, CredentialAvailability,
+    CredentialBlock, CredentialCommand, CredentialCommandResult, CredentialContext,
+    CredentialController, CredentialControllerError, CredentialDisplay, CredentialDisplayPatch,
+    CredentialMetadataDraft, CredentialOperation, CredentialProjectionRuntime, CredentialRegistry,
+    CredentialService, CredentialServiceError, CredentialSlotResolveError, CredentialSlotResolver,
+    CredentialTenantAuthority, DispatchOps, ErasedPendingStore, NoopObserver, RefreshAttempt,
+    RefreshReport, StateSource, StateWireFingerprint, TenantScope, identity_state,
+    register_refreshable_ops, register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
 use nebula_storage::credential::{
     CacheConfig, CacheLayer, EncryptionLayer, EnvKeyProvider, InMemoryPendingStore,
@@ -446,13 +446,20 @@ impl CredentialPersistence for FailFirstTombstone {
     }
 }
 
+/// Both read-only consumers of the same secure store: the worker projection
+/// runtime and the management service behind the controller.
+struct Projections {
+    runtime: CredentialProjectionRuntime,
+    service: Arc<CredentialService>,
+}
+
 fn compose_runtime<P, C>(
     raw: P,
     claims: Arc<C>,
 ) -> (
     CredentialController,
     CredentialResolver<dyn CredentialPersistence>,
-    CredentialProjectionRuntime,
+    Projections,
     Arc<FailFirstTombstone>,
 )
 where
@@ -511,18 +518,23 @@ where
         StateSource::LocalEncrypted,
     ));
     let controller = CredentialController::new(
-        service,
+        Arc::clone(&service),
         Arc::new(AllowAuthority),
         claims as Arc<dyn RefreshClaimAdjudicator>,
         None,
     );
-    (controller, resolver, projection, tombstone_fault)
+    let projections = Projections {
+        runtime: projection,
+        service,
+    };
+    (controller, resolver, projections, tombstone_fault)
 }
 
 struct Fixture {
     controller: CredentialController,
     resolver: CredentialResolver<dyn CredentialPersistence>,
     projection: CredentialProjectionRuntime,
+    service: Arc<CredentialService>,
     tombstone_fault: Arc<FailFirstTombstone>,
     raw: SqliteCredentialPersistence,
     claims: Arc<nebula_storage::credential::SqliteRefreshClaimRepo>,
@@ -553,13 +565,14 @@ impl Fixture {
             .await
             .expect("inspection pool");
         let claims = Arc::new(raw.refresh_claim_repo());
-        let (controller, resolver, projection, tombstone_fault) =
+        let (controller, resolver, projections, tombstone_fault) =
             compose_runtime(raw.clone(), Arc::clone(&claims));
 
         Self {
             controller,
             resolver,
-            projection,
+            projection: projections.runtime,
+            service: projections.service,
             tombstone_fault,
             raw,
             claims,
@@ -592,6 +605,37 @@ impl Fixture {
             panic!("create returns head")
         };
         CredentialId::parse(&head.id).expect("credential id")
+    }
+
+    /// Observes `id` through the projection runtime and the management
+    /// service, asserting both observers agree on one head read's answer.
+    async fn observe_both(&self, id: CredentialId) -> CredentialAvailability {
+        let scope = TenantScope::from_scope(&self.scope);
+        let key = nebula_core::credential_key!("operation_incident_probe");
+        let base =
+            BaseContext::builder(nebula_core::Scope::default()).build_with(Principal::System);
+        let mut observed = Vec::new();
+        for resolver in [
+            &self.projection as &dyn CredentialSlotResolver,
+            self.service.as_ref() as &dyn CredentialSlotResolver,
+        ] {
+            let observer = resolver
+                .as_availability_observer()
+                .expect("both read-only consumers observe availability");
+            observed.push(
+                observer
+                    .observe_availability(
+                        &scope,
+                        id,
+                        key.clone(),
+                        base.cancellation().child_token(),
+                    )
+                    .await
+                    .expect("a live credential is observed"),
+            );
+        }
+        assert_eq!(observed[0], observed[1], "service parity");
+        observed[0].availability()
     }
 
     fn selector(&self, id: CredentialId) -> CredentialSelector {
@@ -645,6 +689,11 @@ async fn revoke_incident_blocks_use_and_only_matching_adjudication_tombstones() 
     let fixture = Fixture::new().await;
     let id = fixture.create().await;
     let selector = fixture.selector(id);
+    assert_eq!(
+        fixture.observe_both(id).await,
+        CredentialAvailability::Available,
+        "a fresh credential is usable"
+    );
 
     let revoke = fixture
         .command(CredentialCommand::Revoke { credential_id: id })
@@ -671,8 +720,20 @@ async fn revoke_incident_blocks_use_and_only_matching_adjudication_tombstones() 
             operation: CredentialOperationKind::Revoke
         }
     ));
+    assert_eq!(
+        fixture.observe_both(id).await,
+        CredentialAvailability::Blocked(CredentialBlock::OperationInFlight {
+            operation: CredentialOperationKind::Revoke
+        })
+    );
 
     fixture.expire_claim(id, 99).await;
+    assert_eq!(
+        fixture.observe_both(id).await,
+        CredentialAvailability::Blocked(CredentialBlock::ReconciliationRequired {
+            operation: CredentialOperationKind::Revoke
+        })
+    );
     let status = fixture
         .raw
         .operation_status(&selector)

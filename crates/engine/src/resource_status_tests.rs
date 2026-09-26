@@ -76,7 +76,7 @@ fn projection_matches_canonical_display_and_phase_predicates() {
         ResourcePhase::ShuttingDown,
         ResourcePhase::Failed,
     ] {
-        let (persisted, healthy, accepting) = project(phase);
+        let (persisted, healthy, accepting) = project(phase, false);
         assert_eq!(
             persisted.as_str(),
             phase.to_string(),
@@ -84,6 +84,14 @@ fn projection_matches_canonical_display_and_phase_predicates() {
         );
         assert_eq!(healthy, matches!(phase, ResourcePhase::Ready));
         assert_eq!(accepting, phase.is_accepting());
+
+        let (suspended_phase, suspended_healthy, suspended_accepting) = project(phase, true);
+        assert_eq!(suspended_phase, persisted, "a suspension keeps the phase");
+        assert_eq!(suspended_healthy, healthy);
+        assert!(
+            !suspended_accepting,
+            "a credential-suspended row accepts nothing ({phase:?})"
+        );
     }
 }
 

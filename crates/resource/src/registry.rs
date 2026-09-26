@@ -127,6 +127,33 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// `Manager.admission`.
     fn publish_admission(&self) -> Option<u64>;
 
+    /// The credential gate's current ticket counter. Capture it before
+    /// observing a credential; a reopen presenting it is refused once a
+    /// suspension landed in between.
+    fn credential_gate_epoch(&self) -> u64;
+
+    /// Suspends admission because credential slot `slot` denies use, waking
+    /// phase waiters when the row becomes suspended. Caller holds
+    /// `Manager.admission` and validated `slot` with
+    /// [`accepts_credential_slot_name`](Self::accepts_credential_slot_name).
+    fn suspend_credential(
+        &self,
+        slot: &str,
+        reason: crate::error::CredentialUnavailableReason,
+    ) -> crate::runtime::admission::SuspendTransition;
+
+    /// Clears `slot`'s suspension if `ticket` is still current, reopening
+    /// admission once no slot remains suspended. Caller holds
+    /// `Manager.admission` and validated `slot`.
+    fn reopen_credential(
+        &self,
+        slot: &str,
+        ticket: u64,
+    ) -> crate::runtime::admission::ReopenTransition;
+
+    /// The row's current credential suspension, if any.
+    fn credential_suspension(&self) -> Option<crate::state::CredentialSuspension>;
+
     /// Woken on every phase or taint change of this row.
     fn phase_changed(&self) -> &tokio::sync::Notify;
 
@@ -364,6 +391,44 @@ where
         self.admission.publish().map(|generation| generation.seq())
     }
 
+    fn credential_gate_epoch(&self) -> u64 {
+        self.admission.gate_epoch()
+    }
+
+    fn suspend_credential(
+        &self,
+        slot: &str,
+        reason: crate::error::CredentialUnavailableReason,
+    ) -> crate::runtime::admission::SuspendTransition {
+        let transition = self.admission.suspend(slot, reason);
+        if matches!(
+            transition,
+            crate::runtime::admission::SuspendTransition::Suspended { .. }
+        ) {
+            self.phase_changed.notify_waiters();
+        }
+        transition
+    }
+
+    fn reopen_credential(
+        &self,
+        slot: &str,
+        ticket: u64,
+    ) -> crate::runtime::admission::ReopenTransition {
+        let transition = self.admission.reopen(slot, ticket);
+        if matches!(
+            transition,
+            crate::runtime::admission::ReopenTransition::Reopened { .. }
+        ) {
+            self.phase_changed.notify_waiters();
+        }
+        transition
+    }
+
+    fn credential_suspension(&self) -> Option<crate::state::CredentialSuspension> {
+        self.admission.suspension()
+    }
+
     fn phase_changed(&self) -> &tokio::sync::Notify {
         &self.phase_changed
     }
@@ -515,6 +580,13 @@ impl ManagedResourceView {
     pub fn admission_load(&self) -> Option<crate::topology::Load> {
         self.managed.admission_load()
     }
+
+    /// Returns the bound credential slots currently suspending this row, or
+    /// `None` when it admits work. A suspended row refuses acquires even
+    /// while its [`phase`](Self::phase) accepts them.
+    pub fn credential_suspension(&self) -> Option<crate::state::CredentialSuspension> {
+        self.managed.credential_suspension()
+    }
 }
 
 impl std::fmt::Debug for ManagedResourceView {
@@ -525,6 +597,7 @@ impl std::fmt::Debug for ManagedResourceView {
             .field("phase", &self.phase())
             .field("topology_tag", &self.topology_tag())
             .field("admission_phase", &self.admission_phase())
+            .field("credential_suspension", &self.credential_suspension())
             .field("admission_load", &self.admission_load())
             .finish()
     }

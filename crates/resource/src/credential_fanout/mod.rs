@@ -20,3 +20,6 @@ mod orchestrator;
 
 pub use driver::ResourceFanoutDriver;
 pub use index::{Bind, ResourceFanoutIndex, RotationOutcome};
+
+#[cfg(test)]
+mod suspension_tests;

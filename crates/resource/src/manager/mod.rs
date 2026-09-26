@@ -186,8 +186,29 @@
 //! - **I4 publish under the lock.** A benign change — `reload_config`, or a
 //!   credential install that returns `SlotUpdate::Installed` — publishes a
 //!   successor generation under `Manager.admission` and leaves the
-//!   predecessor open. A retired cell publishes nothing. (Credential
-//!   suspension will store the successor before cancelling the old one.)
+//!   predecessor open. A retired or credential-suspended cell publishes
+//!   nothing; a suspended row admits again only when the suspension is
+//!   reopened, which publishes a fresh generation after the suspension
+//!   already closed every generation of the previous span.
+//! - **I5 credential suspension.** A bound credential that denies use at its
+//!   current material (`CredentialUnavailableReason`) suspends the row
+//!   through `suspend_credential_row` (or the fan-out and engine activation
+//!   on its behalf), under `Manager.admission`: the first suspended slot
+//!   records the close cause, closes the whole admission span — every
+//!   generation published since the previous suspension, including benign
+//!   ones still held by leases — and leaves the row with no current
+//!   generation. While suspended, `run_acquire` refuses with
+//!   `CredentialUnavailable` after the post-count re-check and before the
+//!   phase check and the recovery gate; `until_accepting` fails fast; the
+//!   hand-out check (I3) reports the captured generation's close cause;
+//!   nothing is built (`accepts_new_instances`) and idle entries are not
+//!   probed, but owners are kept. Every suspension advances the gate
+//!   epoch; `reopen_credential_row` must present a `CredentialGateTicket`
+//!   equal to it, so a deny observed late always lands and an admit
+//!   observed before a later deny is `Superseded`. Clearing the last slot
+//!   publishes a fresh generation in a fresh span. Taint wins: a tainted
+//!   row never reopens. See `docs/credential-rotation.md`, "Same-material
+//!   blocks".
 //!
 //! The closing token is a cooperative notice: it stops no work, revokes no
 //! borrow, and rolls nothing back. A lease is still released normally, and
@@ -381,6 +402,9 @@ use crate::{
 };
 
 pub(crate) mod acquire;
+mod credential_gate;
+#[cfg(test)]
+mod credential_suspension_tests;
 #[cfg(test)]
 mod event_bus_tests;
 mod gate;
@@ -393,9 +417,14 @@ mod shutdown_session;
 #[cfg(test)]
 mod shutdown_session_tests;
 
+pub use credential_gate::{
+    CredentialGateTicket, CredentialReopenOutcome, CredentialSuspendOutcome,
+};
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
 };
+#[cfg(feature = "rotation")]
+pub(crate) use rotation::ResolvedAt;
 pub use rotation::{
     EpochRefreshOutcome, EpochRevokeOutcome, RevokeTail, SlotDeferralReason, SlotDispatchOutcome,
     SlotDrainOutcome, TaintedSlot,
@@ -422,6 +451,9 @@ pub struct ResourceHealthSnapshot {
     /// outstanding leases still hold after a reload or recreate; more than one
     /// means a successor is serving while older generations drain.
     pub live_instances: Option<usize>,
+    /// The bound credential slots suspending this row, if any. A suspended
+    /// row refuses acquires whatever its `phase`.
+    pub credential_suspension: Option<crate::state::CredentialSuspension>,
 }
 
 /// Central registry and lifecycle manager for all resources.
@@ -817,6 +849,7 @@ impl Manager {
             metrics: self.metrics.as_ref().map(ResourceOpsMetrics::snapshot),
             generation: managed.generation(),
             live_instances: crate::topology::Topology::<R>::live_instances(&managed.topology),
+            credential_suspension: managed.admission.suspension(),
         })
     }
 
@@ -875,6 +908,9 @@ impl Manager {
     /// - [`NotFound`](crate::ErrorKind::NotFound) — no such row.
     /// - [`Revoked`](crate::ErrorKind::Revoked) — a credential revoke tainted
     ///   the row.
+    /// - [`CredentialUnavailable`](crate::ErrorKind::CredentialUnavailable) —
+    ///   a bound credential suspends the row; returned at once rather than
+    ///   waited out, because reauthentication is operator-paced.
     /// - [`Backpressure`](crate::ErrorKind::Backpressure) — the row left
     ///   `Initializing` for a phase that refuses acquires (draining, shutting
     ///   down, failed), or `deadline` passed first.
@@ -904,6 +940,11 @@ impl Manager {
                     "{key}: resource was revoked before it could serve"
                 ))
                 .with_resource_key(key.clone()));
+            }
+            // Reauthentication is operator-paced, so waiting out a
+            // suspension here would only stall the caller: fail fast.
+            if let Some(suspension) = managed.credential_suspension() {
+                return Err(Self::credential_unavailable_error(key, suspension.reason()));
             }
             let phase = managed.phase();
             if phase.is_accepting() {

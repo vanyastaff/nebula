@@ -106,6 +106,17 @@ pub enum SlotDispatchOutcome {
     },
 }
 
+/// What an installer observed of the row before it resolved the guard it
+/// installs; see `Manager::install_and_refresh_resolved`.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ResolvedAt {
+    /// Install only while the slot is still at this projection generation.
+    pub(crate) slot_generation: Option<u64>,
+    /// The credential gate ticket captured before resolving; lets the
+    /// install reopen a same-material suspension.
+    pub(crate) gate_ticket: Option<super::CredentialGateTicket>,
+}
+
 /// Result of an epoch-ordered guard installation and refresh-hook dispatch.
 #[derive(Debug)]
 #[must_use = "refresh installation and hook outcomes must be observed"]
@@ -569,19 +580,30 @@ impl Manager {
             slot,
             managed,
             guard,
-            None,
+            ResolvedAt::default(),
             (|| Ok(()), || {}, || {}),
         )
         .await
     }
 
+    /// Installs `guard` into `slot` of `managed` and admits its refresh hook.
+    ///
+    /// `resolved_at` carries what the caller observed before it resolved
+    /// `guard`. With an expected slot generation the install is conditional
+    /// on it. With a credential gate ticket the install also reopens `slot`'s
+    /// credential suspension — resolving the guard proved the credential
+    /// usable at its material — after an `Installed` update, or after a
+    /// `Stale` one at exactly the resolved material. A suspension recorded
+    /// after the ticket was captured wins (the reopen is superseded), and a
+    /// tainted row never reopens. Without a ticket a suspension is left as
+    /// it is.
     pub(crate) async fn install_and_refresh_resolved<C, F, H>(
         &self,
         key: &ResourceKey,
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
         guard: nebula_credential::ErasedCredentialGuard,
-        expected_generation: Option<u64>,
+        resolved_at: ResolvedAt,
         callbacks: (C, F, H),
     ) -> Result<EpochRefreshOutcome, Error>
     where
@@ -590,6 +612,10 @@ impl Manager {
         H: FnOnce() + Send + 'static,
     {
         let (admission_check, projection_complete, hook_completed) = callbacks;
+        let ResolvedAt {
+            slot_generation: expected_generation,
+            gate_ticket: reopen,
+        } = resolved_at;
         let started = Instant::now();
         let accepted = {
             // Same gate as registration, retirement and terminal revoke. No await
@@ -621,8 +647,11 @@ impl Manager {
                     // New material is live: acquires from here on are admitted
                     // under a successor generation. A refresh is benign, so
                     // leases admitted under the predecessor stay open.
+                    // A suspended row publishes nothing here; the reopen
+                    // below publishes once no slot denies use any more.
                     let admission = managed.publish_admission();
                     tracing::debug!(?admission, "admission generation after credential install");
+                    self.reopen_after_install(key, slot, reopen, &*managed);
                     let Some((generation, Some(metadata))) =
                         managed.credential_slot_projection(slot)
                     else {
@@ -647,6 +676,12 @@ impl Manager {
                 crate::SlotUpdate::Stale {
                     current_material_epoch,
                 } => {
+                    // The row already holds exactly the material just proven
+                    // usable: that clears a same-material suspension. A newer
+                    // installed material says nothing about this observation.
+                    if current_material_epoch == epoch {
+                        self.reopen_after_install(key, slot, reopen, &*managed);
+                    }
                     let live = managed.credential_slot_projection(slot).and_then(
                         |(generation, metadata)| {
                             metadata.map(|metadata| (metadata.material_epoch(), generation))

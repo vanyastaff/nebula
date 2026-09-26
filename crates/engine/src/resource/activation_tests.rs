@@ -316,6 +316,12 @@ struct ScriptedResolver {
     stall: std::sync::atomic::AtomicBool,
     /// Answer the calls before this one, then stall.
     stall_from: AtomicUsize,
+    /// Also expose the head-only availability observer, answering from the
+    /// same script.
+    observes: std::sync::atomic::AtomicBool,
+    observations: AtomicUsize,
+    /// The material a blocked credential is observed at.
+    blocked_material: std::sync::Mutex<(u64, u64)>,
 }
 
 impl Default for ScriptedResolver {
@@ -325,7 +331,62 @@ impl Default for ScriptedResolver {
             outcome: std::sync::Mutex::new(Err(CredentialSlotResolveError::NotFound)),
             stall: std::sync::atomic::AtomicBool::new(false),
             stall_from: AtomicUsize::new(usize::MAX),
+            observes: std::sync::atomic::AtomicBool::new(false),
+            observations: AtomicUsize::new(0),
+            blocked_material: std::sync::Mutex::new((1, 1)),
         }
+    }
+}
+
+impl CredentialAvailabilityObserver for ScriptedResolver {
+    fn observe_availability<'a>(
+        &'a self,
+        _scope: &'a TenantScope,
+        _credential_id: CredentialId,
+        _expected_key: CredentialKey,
+        _cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::CredentialAvailabilityObservation,
+                        CredentialObserveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        use nebula_credential::CredentialAvailabilityObservation;
+        self.observations.fetch_add(1, Ordering::SeqCst);
+        let (blocked_epoch, blocked_revision) = *self.blocked_material.lock().unwrap();
+        let at_block = |availability| {
+            Ok(CredentialAvailabilityObservation::new(
+                blocked_epoch,
+                blocked_revision,
+                availability,
+            ))
+        };
+        let observation = match *self.outcome.lock().unwrap() {
+            Ok((material_epoch, revision)) => Ok(CredentialAvailabilityObservation::new(
+                material_epoch,
+                revision,
+                CredentialAvailability::Available,
+            )),
+            Err(CredentialSlotResolveError::ReauthRequired) => at_block(
+                CredentialAvailability::Blocked(CredentialBlock::ReauthRequired),
+            ),
+            Err(CredentialSlotResolveError::OperationBlocked { operation }) => at_block(
+                CredentialAvailability::Blocked(CredentialBlock::OperationInFlight { operation }),
+            ),
+            Err(CredentialSlotResolveError::RefreshInFlight { .. }) => {
+                at_block(CredentialAvailability::RefreshInFlight)
+            },
+            Err(CredentialSlotResolveError::NotFound | CredentialSlotResolveError::Revoked) => {
+                Err(CredentialObserveError::Absent)
+            },
+            Err(_) => Err(CredentialObserveError::Unavailable),
+        };
+        Box::pin(async move { observation })
     }
 }
 
@@ -376,6 +437,12 @@ impl CredentialSlotResolver for ScriptedResolver {
             }
             outcome
         })
+    }
+
+    fn as_availability_observer(&self) -> Option<&dyn CredentialAvailabilityObserver> {
+        self.observes
+            .load(Ordering::SeqCst)
+            .then_some(self as &dyn CredentialAvailabilityObserver)
     }
 }
 
@@ -1403,4 +1470,269 @@ fn account_limit_key_is_per_tenant_credential_set_and_secret() {
         ),
         account_only
     );
+}
+
+// ── Credential suspension ──────────────────────────────────────────────────
+
+/// Acquires the activated row as a node's turn would.
+async fn acquire_row(
+    fixture: &Fixture,
+    key: &ResourceKey,
+    activated: &ActivatedResource,
+) -> Result<Box<dyn std::any::Any + Send + Sync>, ResourceError> {
+    let workspace = WorkspaceId::parse(&fixture.scope.workspace_id).expect("workspace id");
+    let ctx = ResourceContext::minimal(
+        nebula_core::scope::Scope {
+            workspace_id: Some(workspace),
+            ..Default::default()
+        },
+        CancellationToken::new(),
+    );
+    Manager::acquire_any(
+        Arc::clone(&fixture.manager),
+        key,
+        &ctx,
+        &nebula_resource::AcquireOptions::default(),
+        &activated.slot_identity,
+    )
+    .await
+}
+
+fn suspension(
+    fixture: &Fixture,
+    activated: &ActivatedResource,
+) -> Option<nebula_resource::CredentialSuspension> {
+    fixture
+        .manager
+        .get_row(
+            &activated.resource_key,
+            &activated.scope,
+            &activated.slot_identity,
+        )
+        .expect("the registration is kept")
+        .credential_suspension()
+}
+
+/// A credential that denies use at the material the row holds suspends the
+/// row instead of retiring it; the same material usable again reopens it.
+async fn blocked_then_usable_again(
+    fixture: &Fixture,
+    blocked: CredentialSlotResolveError,
+    reason: CredentialUnavailableReason,
+) {
+    let mut events = fixture.manager.subscribe_events();
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
+    let lease = acquire_row(fixture, &key, &activated)
+        .await
+        .expect("the row serves");
+    assert_eq!(drain(&mut events).0, 1);
+
+    fixture.resolver.answer(Err(blocked));
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::Credential { source, .. }) if source == blocked,
+        "the turn cannot use a blocked credential"
+    );
+    assert_eq!(
+        drain(&mut events),
+        (0, 0),
+        "the row is neither registered again nor removed"
+    );
+    assert_eq!(
+        suspension(fixture, &activated).and_then(|s| s.reason_for(AUTH_SLOT)),
+        Some(reason)
+    );
+    let refused = acquire_row(fixture, &key, &activated)
+        .await
+        .expect_err("a suspended row refuses acquires");
+    assert!(
+        matches!(
+            refused.kind(),
+            nebula_resource::ErrorKind::CredentialUnavailable { reason: got } if *got == reason
+        ),
+        "got {refused:?}"
+    );
+    let lease = lease
+        .downcast::<nebula_resource::ResourceGuard<Slotted>>()
+        .expect("guard type");
+    assert!(lease.is_closing(), "the lease admitted before closes");
+
+    fixture.resolver.answer(Ok((1, 1)));
+    assert_eq!(
+        fixture.activate(resource_id, &key).await.unwrap(),
+        activated
+    );
+    assert_eq!(
+        drain(&mut events),
+        (0, 0),
+        "the same material reopens the kept registration"
+    );
+    assert!(suspension(fixture, &activated).is_none());
+    drop(
+        acquire_row(fixture, &key, &activated)
+            .await
+            .expect("the reopened row serves"),
+    );
+    assert!(
+        fixture
+            .activator
+            .row_states()
+            .iter()
+            .all(|state| !matches!(state, RowState::Failed { .. }))
+    );
+}
+
+#[tokio::test]
+async fn a_reauth_block_suspends_the_row_and_the_same_material_reopens_it() {
+    let fixture = Fixture::new();
+    blocked_then_usable_again(
+        &fixture,
+        CredentialSlotResolveError::ReauthRequired,
+        CredentialUnavailableReason::ReauthRequired,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn an_operation_block_suspends_the_row_and_the_same_material_reopens_it() {
+    let fixture = Fixture::new();
+    blocked_then_usable_again(
+        &fixture,
+        CredentialSlotResolveError::OperationBlocked {
+            operation: nebula_credential::CredentialOperationKind::Revoke,
+        },
+        CredentialUnavailableReason::OperationBlocked,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn with_an_observer_a_block_suspends_the_row_the_same_way() {
+    let fixture = Fixture::new();
+    fixture.resolver.observes.store(true, Ordering::SeqCst);
+    blocked_then_usable_again(
+        &fixture,
+        CredentialSlotResolveError::ReauthRequired,
+        CredentialUnavailableReason::ReauthRequired,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_revoked_or_missing_credential_still_retires_the_row() {
+    for terminal in [
+        CredentialSlotResolveError::Revoked,
+        CredentialSlotResolveError::NotFound,
+    ] {
+        let fixture = Fixture::new();
+        fixture.resolver.observes.store(true, Ordering::SeqCst);
+        let credential = CredentialId::new().to_string();
+        let (resource_id, key) = fixture
+            .store_row(
+                "activation.slotted",
+                "a",
+                &[(AUTH_SLOT, credential.as_str())],
+            )
+            .await;
+        fixture.resolver.answer(Ok((1, 1)));
+        let activated = fixture.activate(resource_id, &key).await.unwrap();
+        fixture.resolver.answer(Err(terminal));
+        std::assert_matches!(
+            fixture.activate(resource_id, &key).await,
+            Err(StoredResourceActivationError::Credential { source, .. }) if source == terminal
+        );
+        assert!(
+            fixture
+                .manager
+                .get_row(
+                    &activated.resource_key,
+                    &activated.scope,
+                    &activated.slot_identity
+                )
+                .is_none(),
+            "{terminal:?} retires the row"
+        );
+    }
+}
+
+#[tokio::test]
+async fn with_an_observer_unchanged_credentials_are_never_projected() {
+    let fixture = Fixture::new();
+    fixture.resolver.observes.store(true, Ordering::SeqCst);
+    let mut events = fixture.manager.subscribe_events();
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    fixture.activate(resource_id, &key).await.unwrap();
+    let projections = fixture.resolver.calls.load(Ordering::SeqCst);
+    for _ in 0..5 {
+        fixture.activate(resource_id, &key).await.unwrap();
+    }
+    assert_eq!(
+        fixture.resolver.calls.load(Ordering::SeqCst),
+        projections,
+        "an unchanged credential is checked head-only"
+    );
+    assert_eq!(fixture.resolver.observations.load(Ordering::SeqCst), 5);
+    assert_eq!(drain(&mut events).0, 1);
+
+    fixture.resolver.answer(Ok((2, 1)));
+    fixture.activate(resource_id, &key).await.unwrap();
+    assert_eq!(
+        fixture.resolver.calls.load(Ordering::SeqCst),
+        projections + 1,
+        "only a changed credential is projected, by the registration"
+    );
+    assert_eq!(drain(&mut events).0, 1);
+}
+
+#[tokio::test]
+async fn the_availability_check_precedes_the_material_compare() {
+    let fixture = Fixture::new();
+    fixture.resolver.observes.store(true, Ordering::SeqCst);
+    let mut events = fixture.manager.subscribe_events();
+    let credential = CredentialId::new().to_string();
+    let (resource_id, key) = fixture
+        .store_row(
+            "activation.slotted",
+            "a",
+            &[(AUTH_SLOT, credential.as_str())],
+        )
+        .await;
+    fixture.resolver.answer(Ok((1, 1)));
+    let activated = fixture.activate(resource_id, &key).await.unwrap();
+    drain(&mut events);
+
+    // Blocked at a material newer than the row's: still a block, not a
+    // change to register again.
+    *fixture.resolver.blocked_material.lock().unwrap() = (2, 2);
+    fixture
+        .resolver
+        .answer(Err(CredentialSlotResolveError::ReauthRequired));
+    let projections = fixture.resolver.calls.load(Ordering::SeqCst);
+    std::assert_matches!(
+        fixture.activate(resource_id, &key).await,
+        Err(StoredResourceActivationError::Credential {
+            source: CredentialSlotResolveError::ReauthRequired,
+            ..
+        })
+    );
+    assert_eq!(drain(&mut events), (0, 0));
+    assert_eq!(fixture.resolver.calls.load(Ordering::SeqCst), projections);
+    assert!(suspension(&fixture, &activated).is_some());
 }

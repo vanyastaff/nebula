@@ -178,8 +178,13 @@ fn aggregate(live: &[LiveResourceStatus]) -> Option<ResourceRuntimeStatus> {
 ///
 /// `ResourcePhase` is `#[non_exhaustive]`: a variant this build does not
 /// name maps to `unknown` and is conservatively reported not healthy.
+///
+/// A row a bound credential suspends keeps its phase (its physical owners
+/// are kept for reuse) but accepts nothing: `credential_suspended` forces
+/// `accepting` off.
 pub(crate) fn project(
     phase: nebula_resource::state::ResourcePhase,
+    credential_suspended: bool,
 ) -> (ResourceStatusPhase, bool, bool) {
     use nebula_resource::state::ResourcePhase;
     let persisted = match phase {
@@ -194,7 +199,7 @@ pub(crate) fn project(
     (
         persisted,
         matches!(phase, ResourcePhase::Ready),
-        phase.is_accepting(),
+        phase.is_accepting() && !credential_suspended,
     )
 }
 

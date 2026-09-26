@@ -98,6 +98,30 @@ impl ManagedHandle for DeferredRetirementHandle {
 
     fn bump_revoke_epoch(&self) {}
 
+    fn credential_gate_epoch(&self) -> u64 {
+        0
+    }
+
+    fn suspend_credential(
+        &self,
+        _slot: &str,
+        _reason: crate::CredentialUnavailableReason,
+    ) -> crate::runtime::admission::SuspendTransition {
+        unreachable!("retirement fake never suspends credentials")
+    }
+
+    fn reopen_credential(
+        &self,
+        _slot: &str,
+        _ticket: u64,
+    ) -> crate::runtime::admission::ReopenTransition {
+        unreachable!("retirement fake never reopens credentials")
+    }
+
+    fn credential_suspension(&self) -> Option<crate::CredentialSuspension> {
+        None
+    }
+
     fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
         true
     }

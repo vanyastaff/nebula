@@ -202,17 +202,67 @@ All of these counts are observability signals, not durable audit records.
   so `on_credential_refresh` / `on_credential_revoke` never observe an
   undeclared slot.
 
-### What the fence does not cover
+### Same-material blocks: credential suspension
 
-The fan-out reacts to material rotation and revoke only. A credential that
-turns `ReauthRequired`, or whose provider operation blocks new use
-(`OperationBlocked`, for example a revoke whose outcome is not yet known)
-without changing its material, emits no rotation event
-(`credential_fanout/driver.rs` ignores `ReauthRequired` on purpose). A
-resource built from that material keeps serving it, and a pool keeps creating
-new instances from the credential guard it already holds, until material
-changes or the row is re-activated; a fresh resolve would refuse it. Treat
-that window as part of the credential's revocation latency.
+A credential can deny use without changing its material: it needs
+reauthentication, a revoke is in flight, or an operation's outcome is unknown
+and awaits reconciliation. That is not a rotation, so nothing is re-projected;
+instead every row bound to the credential is **suspended**
+(`Manager::suspend_credential_row`, reason
+`CredentialUnavailableReason::{ReauthRequired, OperationBlocked}`):
+
+- New acquires, `Manager::until_accepting` and `Limited` waits end with
+  `ErrorKind::CredentialUnavailable` (retryable; 30 s hint for
+  reauthentication, 1 s for an operation block). It never trips the recovery
+  gate.
+- Every lease admitted since the previous suspension observes
+  `ResourceGuard::closing` — the whole admission span, not only the current
+  generation (Design CONTRACT "same-material block"; review ADM-N1). A create
+  in flight across the suspension is refused at hand-out, even if the row
+  reopened meanwhile.
+- No instance is built (warmup, min-idle refill), idle entries are kept but
+  not health-probed (a probe authenticates), and stale or lifetime eviction
+  continues. The resident master and retained owners stay.
+- A taint still wins: a tainted row reports `Tainted` and never reopens.
+
+The row **reopens** when the credential is usable again at the same material
+(`Manager::reopen_credential_row`, presenting a `CredentialGateTicket`
+captured before the credential was observed; a suspension recorded after the
+ticket supersedes it). It reuses its physical owners under a fresh admission
+generation; leases admitted before the suspension stay closed. A material
+advance goes through the ordinary install, which also reopens when the
+installer captured a ticket. The public `install_and_refresh_slot_for_identity`
+never reopens.
+
+Who suspends and reopens:
+
+- **Engine activation** re-checks a registered row's credentials on every
+  activation, availability before material. A same-material block suspends
+  the kept registration and fails the turn; the same material usable again
+  reopens it without registering again. Only a credential that can no longer
+  be resolved (revoked, missing, refused) retires the row.
+- **The rotation fan-out** (feature `rotation`) re-observes bound rows on its
+  30 s scan and on a `CredentialEvent::ReauthRequired` hint (a targeted
+  availability scan, which never dispatches the legacy refresh hook to
+  context-less bindings). With a resolver exposing
+  `CredentialAvailabilityObserver` the check reads the credential's
+  operational head only and never decrypts; only an advanced material is
+  projected.
+
+### What suspension does not cover
+
+- **It is cooperative.** Closing a lease stops no work, revokes no borrow and
+  rolls nothing back remotely; an already-authenticated session is not
+  terminated.
+- **Latency.** A row is suspended at the next activation of the stored row or
+  at the next fan-out scan (30 s, sooner on a `ReauthRequired` event). A worker
+  that neither activates the row nor runs the fan-out keeps serving admitted
+  work until then; the strict per-acquire availability read that closes this
+  window is follow-up work (A5).
+- **Outages decide nothing.** A credential store or source outage during a
+  check or scan changes no gate: an admitting row keeps admitting and a
+  suspended row stays suspended (the periodic reconcile only updates caches;
+  a delayed scan does not decide the safety of a new call).
 
 ---
 

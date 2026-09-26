@@ -165,6 +165,24 @@ pub enum ResourceEvent {
         /// Fixed framework-selected message; never provider error text.
         message: SecretFreeMessage,
     },
+    /// A bound credential denies use at its current material and suspended
+    /// this row: new acquires are refused and leases admitted before observe
+    /// closing. Published when the row becomes suspended and when a further
+    /// slot or reason is recorded while it is.
+    CredentialSuspended {
+        /// The suspended resource.
+        key: ResourceKey,
+        /// The credential slot that denies use.
+        slot: String,
+        /// Why the credential denies use (secret-free).
+        reason: crate::error::CredentialUnavailableReason,
+    },
+    /// Every suspended credential slot of this row is usable again; the row
+    /// admits work under a fresh admission generation.
+    CredentialReopened {
+        /// The reopened resource.
+        key: ResourceKey,
+    },
     /// Framework-owned cleanup of retained generations failed after a
     /// credential hook had already reached its independent terminal result.
     #[non_exhaustive]
@@ -275,6 +293,8 @@ impl ResourceEvent {
             | Self::SlotRevoked { key, .. }
             | Self::SlotRefreshFailed { key, .. }
             | Self::SlotRevokeFailed { key, .. }
+            | Self::CredentialSuspended { key, .. }
+            | Self::CredentialReopened { key }
             | Self::RetiredCleanupFailed { key, .. }
             | Self::ResourceTeardownFailed { key, .. }
             | Self::MaintenanceEvicted { key, .. }

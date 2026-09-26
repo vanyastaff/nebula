@@ -644,6 +644,34 @@ let admitted = recorded.readmit_against(fresh)?;
   replacement. The notice is cooperative: it stops no work and revokes no
   borrow, and the guard is released normally.
 
+- **Credential-bound resource rows suspend while their credential denies use.**
+  A credential that needs reauthentication, or that a revoke in flight or an
+  unreconciled operation blocks, without changing its material now suspends
+  every bound row: acquires, `until_accepting` and `Limited` waits fail with
+  the new retryable `ErrorKind::CredentialUnavailable { reason }`
+  (`CredentialUnavailableReason::{ReauthRequired, OperationBlocked}`; it never
+  trips the recovery gate), every lease admitted since the previous suspension
+  observes `closing`, nothing is built or health-probed, and idle and retained
+  owners are kept. The row reopens without a rebuild when the same material is
+  usable again; a newer material installs and reopens through the ordinary
+  refresh path; a taint always wins. `Manager` gains
+  `suspend_credential_row`, `reopen_credential_row` and
+  `credential_gate_ticket` (`CredentialGateTicket`,
+  `CredentialSuspendOutcome`, `CredentialReopenOutcome`), `ResourceEvent`
+  gains `CredentialSuspended` / `CredentialReopened`, and the health snapshot
+  and `ManagedResourceView` report `CredentialSuspension`. Engine activation
+  suspends (instead of retiring) a stored row whose credential is blocked and
+  reopens it on the next activation that finds it usable; the worker status
+  reports a suspended row as not accepting. The rotation fan-out re-observes
+  bound rows on its scan and on `CredentialEvent::ReauthRequired`.
+  `nebula-credential` adds `CredentialAvailabilityObserver`: one secret-free
+  operational-head read, no decryption, implemented by
+  `CredentialProjectionRuntime` and `CredentialService` and reachable through
+  the defaulted `CredentialSlotResolver::as_availability_observer`; it also
+  re-exports `CredentialOperationKind`. Suspension is cooperative and lands at
+  the next activation or fan-out scan (30 s); a strict per-acquire
+  availability read is follow-up work.
+
 - **Per-resource rate limits, shared across workers.** `nebula-resilience`
   gains a GCRA limiter over a `LimitStore` contract (`reserve` with
   `ReserveRequest::not_before`, `penalize`, `cancel`, `penalty`), with the

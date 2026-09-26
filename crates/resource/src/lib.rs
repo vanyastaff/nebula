@@ -265,14 +265,15 @@ pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
 pub use dedup::{DedupKey, SlotIdentity};
-pub use error::{Error, ErrorKind};
+pub use error::{CredentialUnavailableReason, Error, ErrorKind};
 pub use events::{ResourceEvent, RetirementFailureStage, RetirementOrigin};
 pub use ext::HasResourcesExt;
 pub use guard::{LeaseClosing, ReleaseOutcome, ResourceGuard};
 pub use manager::{
-    DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
-    ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport,
-    SlotDeferralReason, SlotDispatchOutcome, SlotDrainOutcome, TaintedSlot,
+    CredentialGateTicket, CredentialReopenOutcome, CredentialSuspendOutcome, DrainTimeoutPolicy,
+    Manager, ManagerConfig, RegisterOptions, RegistrationSpec, ResourceHealthSnapshot, RevokeTail,
+    ShutdownConfig, ShutdownError, ShutdownReport, SlotDeferralReason, SlotDispatchOutcome,
+    SlotDrainOutcome, TaintedSlot,
 };
 pub use metrics::{
     ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS, AcquireWaitSnapshot, OutcomeCountersSnapshot,
@@ -408,7 +409,7 @@ pub use runtime::{
     pool::{PoolStats, Pooled},
     resident::Resident,
 };
-pub use state::{ResourceErrorSummary, ResourcePhase, ResourceStatus};
+pub use state::{CredentialSuspension, ResourceErrorSummary, ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
     AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, HookFault, IdleRead, InstanceStore,

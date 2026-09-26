@@ -3,7 +3,7 @@
 //! [`ResourcePhase`] represents the current lifecycle phase of a resource,
 //! and [`ResourceStatus`] bundles phase with generation and error information.
 
-use crate::error::ErrorKind;
+use crate::error::{CredentialUnavailableReason, ErrorKind};
 
 /// Lifecycle phase of a managed resource.
 #[non_exhaustive]
@@ -90,6 +90,54 @@ impl ResourceStatus {
         Self {
             phase: ResourcePhase::Ready,
             ..Self::new()
+        }
+    }
+}
+
+/// The bound credential slots currently denying use to a row, and why.
+///
+/// While any slot is listed the row admits no new work: acquires are
+/// refused, leases admitted before the suspension observe
+/// [`closing`](crate::ResourceGuard::closing), and no new instance is built.
+/// Idle and retained instances are kept for reuse once every slot reopens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialSuspension {
+    slots: Vec<(String, CredentialUnavailableReason)>,
+}
+
+impl CredentialSuspension {
+    /// `slots` must be non-empty and sorted by slot name.
+    pub(crate) fn new(slots: Vec<(String, CredentialUnavailableReason)>) -> Self {
+        Self { slots }
+    }
+
+    /// Each suspended slot with its reason, ordered by slot name.
+    pub fn slots(&self) -> impl ExactSizeIterator<Item = (&str, CredentialUnavailableReason)> {
+        self.slots
+            .iter()
+            .map(|(slot, reason)| (slot.as_str(), *reason))
+    }
+
+    /// The reason `slot` is suspended, if it is.
+    pub fn reason_for(&self, slot: &str) -> Option<CredentialUnavailableReason> {
+        self.slots
+            .iter()
+            .find(|(name, _)| name == slot)
+            .map(|(_, reason)| *reason)
+    }
+
+    /// The reason reported to a refused caller: reauthentication when any
+    /// slot needs it (operator-paced, the longer wait), otherwise an
+    /// operation block.
+    pub fn reason(&self) -> CredentialUnavailableReason {
+        if self
+            .slots
+            .iter()
+            .any(|(_, reason)| *reason == CredentialUnavailableReason::ReauthRequired)
+        {
+            CredentialUnavailableReason::ReauthRequired
+        } else {
+            CredentialUnavailableReason::OperationBlocked
         }
     }
 }
