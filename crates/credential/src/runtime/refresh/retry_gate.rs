@@ -3,8 +3,9 @@
 
 use nebula_storage_port::{
     CredentialMaterialTransition, CredentialPersistence, CredentialPersistenceError,
-    CredentialReplacement, CredentialSelector, RefreshRetryAdmission, RefreshRetryBlock,
-    RefreshRetryEvidence, RefreshRetryTransition, StoredCredential, StoredLiveCredential,
+    CredentialReplacement, CredentialSelector, MaterialUpdate, RefreshRetryAdmission,
+    RefreshRetryBlock, RefreshRetryEvidence, RefreshRetryTransition, StoredCredential,
+    StoredLiveCredential,
 };
 
 use crate::error::{RefreshFailureSpec, RefreshNotAppliedContext, RetryAdvice};
@@ -202,28 +203,22 @@ fn unchanged_replacement(
 ) -> CredentialReplacement {
     CredentialReplacement::new(
         current.version(),
-        current.data().clone(),
-        current.state_kind().to_owned(),
-        current.state_version(),
         current.name().map(str::to_owned),
-        current.expires_at(),
         reauth_required,
         current.metadata().clone(),
         CredentialMaterialTransition::preserve(transition),
     )
 }
 
+/// The durable reauthentication decision advances refresh authority over the
+/// stored material without rewriting it.
 fn reauth_replacement(current: &StoredLiveCredential) -> CredentialReplacement {
     CredentialReplacement::new(
         current.version(),
-        current.data().clone(),
-        current.state_kind().to_owned(),
-        current.state_version(),
         current.name().map(str::to_owned),
-        current.expires_at(),
         true,
         current.metadata().clone(),
-        CredentialMaterialTransition::advance(),
+        CredentialMaterialTransition::advance(MaterialUpdate::Unchanged),
     )
 }
 

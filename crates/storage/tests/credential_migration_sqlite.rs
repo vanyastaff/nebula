@@ -76,6 +76,87 @@ async fn migration_0057_preserves_legacy_incidents_without_guessing_operation_ki
     );
 }
 
+/// Every aggregate column of a credential row, in one comparable value.
+const CREDENTIAL_ROW_SNAPSHOT: &str = "SELECT json_object(
+         'id', id, 'name', name, 'owner_id', owner_id,
+         'credential_key', credential_key, 'state_kind', state_kind,
+         'state_version', state_version, 'data', hex(data), 'version', version,
+         'material_epoch', material_epoch, 'created_at', created_at,
+         'updated_at', updated_at, 'expires_at', expires_at,
+         'reauth_required', reauth_required, 'metadata', metadata,
+         'record_state', record_state, 'tombstoned_at', tombstoned_at,
+         'refresh_retry_mode', refresh_retry_mode,
+         'refresh_retry_not_before', refresh_retry_not_before,
+         'refresh_retry_phase', refresh_retry_phase,
+         'refresh_retry_kind', refresh_retry_kind,
+         'refresh_retry_diagnostic_code', refresh_retry_diagnostic_code)
+     FROM credentials ORDER BY id";
+
+#[tokio::test]
+async fn migration_0061_starts_every_row_at_admission_epoch_one_and_changes_nothing_else() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let pool = file_pool(&directory.path().join("admission-epoch-migration.sqlite")).await;
+    MIGRATOR
+        .run_to(59, &pool)
+        .await
+        .expect("migrate through 0059");
+    sqlx::query(
+        "INSERT INTO credentials (
+             id, name, owner_id, credential_key, state_kind, state_version,
+             data, version, material_epoch, created_at, updated_at, expires_at,
+             reauth_required, metadata, record_state, tombstoned_at,
+             refresh_retry_mode, refresh_retry_not_before, refresh_retry_phase,
+             refresh_retry_kind, refresh_retry_diagnostic_code
+         ) VALUES
+             (?1, 'Primary', 'owner-a', 'provider.token', 'ready', 3, x'0102', 9, 4,
+              1700000000000, 1700000000500, 1800000000000, 1,
+              '{\"display\":{\"display_name\":\"Primary\"}}', 'live', NULL,
+              'never', NULL, 'before_dispatch', 'protocol_error', 'oauth.contract'),
+             (?2, NULL, 'owner-a', 'provider.token', 'ready', 1, zeroblob(0), 5, 2,
+              1700000000000, 1700000000900, NULL, 0, '{}', 'tombstoned', 1700000000900,
+              NULL, NULL, NULL, NULL, NULL)",
+    )
+    .bind(NAMED_ID)
+    .bind(UNNAMED_ID)
+    .execute(&pool)
+    .await
+    .expect("seed a live and a tombstoned 0059 row");
+    let before: Vec<String> = sqlx::query_scalar(CREDENTIAL_ROW_SNAPSHOT)
+        .fetch_all(&pool)
+        .await
+        .expect("snapshot before 0061");
+
+    MIGRATOR.run(&pool).await.expect("migrate through 0061");
+
+    let after: Vec<String> = sqlx::query_scalar(CREDENTIAL_ROW_SNAPSHOT)
+        .fetch_all(&pool)
+        .await
+        .expect("snapshot after 0061");
+    assert_eq!(after, before, "0061 must not touch any other column");
+    let epochs: Vec<(String, i64)> =
+        sqlx::query_as("SELECT id, admission_epoch FROM credentials ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .expect("read backfilled admission epochs");
+    assert_eq!(
+        epochs,
+        vec![(NAMED_ID.to_owned(), 1), (UNNAMED_ID.to_owned(), 1)],
+        "history is not guessed: every existing row starts at 1"
+    );
+
+    for invalid in ["0", "-1", "'not-an-integer'", "1.5"] {
+        let rejected = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE credentials SET admission_epoch = {invalid} WHERE id = '{NAMED_ID}'"
+        )))
+        .execute(&pool)
+        .await;
+        assert!(
+            rejected.is_err(),
+            "the named range check must reject admission_epoch = {invalid}"
+        );
+    }
+}
+
 async fn seed_legacy_rows(pool: &sqlx::SqlitePool) {
     sqlx::query(
         "INSERT INTO users (id, email, display_name, created_at)
@@ -278,6 +359,12 @@ async fn assert_final_schema(pool: &sqlx::SqlitePool) {
         column("material_epoch").get::<Option<String>, _>("dflt_value"),
         None,
         "runtime writes must choose material authority explicitly"
+    );
+    assert_eq!(column("admission_epoch").get::<i64, _>("notnull"), 1);
+    assert_eq!(
+        column("admission_epoch").get::<Option<String>, _>("dflt_value"),
+        Some("1".to_owned()),
+        "SQLite keeps the 0061 backfill default; it cannot drop one in place"
     );
     for gate_column in [
         "refresh_retry_mode",

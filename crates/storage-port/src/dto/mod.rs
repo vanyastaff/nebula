@@ -33,10 +33,11 @@ mod workflow;
 
 pub use control::{ControlCommand, ControlMsg, ResumeTarget};
 pub use credential::{
-    CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialMaterialEpochError,
+    CredentialAdmissionEpoch, CredentialAdmissionEpochError, CredentialCommit, CredentialCreate,
+    CredentialMaterial, CredentialMaterialEpoch, CredentialMaterialEpochError,
     CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
     CredentialReplacementFence, CredentialSelector, CredentialTombstone, CredentialVersion,
-    CredentialVersionError, SecretBytes, StoredCredential, StoredCredentialHead,
+    CredentialVersionError, MaterialUpdate, SecretBytes, StoredCredential, StoredCredentialHead,
     StoredLiveCredential, StoredTombstonedCredential,
 };
 pub use credential_refresh_retry::{

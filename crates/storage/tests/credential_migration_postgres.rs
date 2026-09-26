@@ -1098,3 +1098,121 @@ async fn migration_0057_preserves_legacy_incidents_without_guessing_operation_ki
     database.cleanup().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn migration_0061_starts_every_row_at_admission_epoch_one_and_changes_nothing_else()
+-> TestResult<()> {
+    let Some(database) = IsolatedDatabase::connect().await else {
+        panic!(
+            "migration_0061_starts_every_row_at_admission_epoch_one_and_changes_nothing_else: \
+             backend unreachable — the case cannot run and must fail rather than pass \
+             unchecked; reach the backend (set DATABASE_URL for postgres) or run without this \
+             feature"
+        );
+    };
+    MIGRATOR.run_to(60, &database.pool).await?;
+    let live_id = CredentialId::new().to_string();
+    let tombstoned_id = CredentialId::new().to_string();
+    sqlx::query(
+        "INSERT INTO credentials (
+             id, name, owner_id, credential_key, state_kind, state_version,
+             data, version, material_epoch, created_at, updated_at, expires_at,
+             reauth_required, metadata, record_state, tombstoned_at,
+             refresh_retry_mode, refresh_retry_not_before, refresh_retry_phase,
+             refresh_retry_kind, refresh_retry_diagnostic_code
+         ) VALUES
+             ($1, 'Primary', 'owner-a', 'provider.token', 'ready', 3,
+              '\\x0102'::bytea, 9, 4, now(), now(), now() + INTERVAL '1 day',
+              TRUE, '{\"display\":{\"display_name\":\"Primary\"}}', 'live', NULL,
+              'never', NULL, 'before_dispatch', 'protocol_error', 'oauth.contract'),
+             ($2, NULL, 'owner-a', 'provider.token', 'ready', 1,
+              '\\x'::bytea, 5, 2, now(), now(), NULL,
+              FALSE, '{}', 'tombstoned', now(),
+              NULL, NULL, NULL, NULL, NULL)",
+    )
+    .bind(&live_id)
+    .bind(&tombstoned_id)
+    .execute(&database.pool)
+    .await?;
+    let before: Vec<String> =
+        sqlx::query_scalar("SELECT row_to_json(c)::jsonb::text FROM credentials AS c ORDER BY id")
+            .fetch_all(&database.pool)
+            .await?;
+
+    MIGRATOR.run(&database.pool).await?;
+    assert_eq!(applied_head(&database.pool).await?, 61);
+
+    let after: Vec<String> = sqlx::query_scalar(
+        "SELECT (row_to_json(c)::jsonb - 'admission_epoch')::text
+         FROM credentials AS c ORDER BY id",
+    )
+    .fetch_all(&database.pool)
+    .await?;
+    assert_eq!(after, before, "0061 must not touch any other column");
+    let mut epochs: Vec<(String, i64)> =
+        sqlx::query_as("SELECT id, admission_epoch FROM credentials")
+            .fetch_all(&database.pool)
+            .await?;
+    epochs.sort();
+    let mut expected = vec![(live_id.clone(), 1), (tombstoned_id, 1)];
+    expected.sort();
+    assert_eq!(
+        epochs, expected,
+        "history is not guessed: every existing row starts at 1"
+    );
+
+    let column = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT data_type::text, is_nullable::text, column_default::text
+         FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'credentials'
+           AND column_name = 'admission_epoch'",
+    )
+    .fetch_one(&database.pool)
+    .await?;
+    assert_eq!(
+        column,
+        ("bigint".to_owned(), "NO".to_owned(), None),
+        "the backfill default is dropped in the same migration"
+    );
+    let constraint: String = sqlx::query_scalar(
+        "SELECT pg_get_constraintdef(oid, true)
+         FROM pg_constraint
+         WHERE conrelid = 'credentials'::regclass
+           AND conname = 'credentials_admission_epoch_range'",
+    )
+    .fetch_one(&database.pool)
+    .await?;
+    assert_eq!(
+        constraint,
+        "CHECK (admission_epoch >= 1 AND admission_epoch <= '9223372036854775807'::bigint)"
+    );
+    assert!(
+        update_is_rejected(
+            &database.pool,
+            "UPDATE credentials SET admission_epoch = 0 WHERE id = $1",
+            &live_id,
+        )
+        .await?,
+        "the named range check must reject zero"
+    );
+
+    let old_writer = sqlx::query(
+        "INSERT INTO credentials (
+             id, name, owner_id, credential_key, state_kind, state_version,
+             data, version, material_epoch, created_at, updated_at, expires_at,
+             reauth_required, metadata, record_state, tombstoned_at
+         ) VALUES ($1, NULL, 'owner-a', 'provider.token', 'ready', 1,
+                   '\\x'::bytea, 1, 1, now(), now(), NULL, FALSE, '{}', 'live', NULL)",
+    )
+    .bind(CredentialId::new().to_string())
+    .execute(&database.pool)
+    .await;
+    assert!(
+        old_writer.is_err(),
+        "0061 must reject an old writer's insert that omits the admission epoch"
+    );
+
+    database.cleanup().await;
+    Ok(())
+}

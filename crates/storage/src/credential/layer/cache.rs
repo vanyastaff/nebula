@@ -357,7 +357,9 @@ mod tests {
     };
     use tokio::sync::Notify;
 
-    use crate::credential::test_support::{make_credential, make_replacement};
+    use crate::credential::test_support::{
+        make_credential, make_preserve_replacement, make_replacement,
+    };
 
     use super::{super::super::sqlite::SqliteCredentialPersistence, *};
 
@@ -542,9 +544,8 @@ mod tests {
         inner
             .replace(
                 &selector,
-                make_replacement(
+                make_preserve_replacement(
                     created.version(),
-                    b"v2",
                     RefreshRetryTransition::SetNever {
                         evidence: evidence.clone(),
                     },
@@ -579,10 +580,7 @@ mod tests {
 
         // Replace with new data.
         store
-            .replace(
-                &selector,
-                make_replacement(created.version(), b"v2", RefreshRetryTransition::Clear),
-            )
+            .replace(&selector, make_replacement(created.version(), b"v2"))
             .await?;
 
         // Should see the new data (not stale cache).
@@ -711,10 +709,7 @@ mod tests {
             .await;
         assert_eq!(foreign_tombstone, Err(CredentialPersistenceError::NotFound));
         let foreign_replace = store
-            .replace(
-                &owner_b,
-                make_replacement(version(1), b"owner-b-write", RefreshRetryTransition::Clear),
-            )
+            .replace(&owner_b, make_replacement(version(1), b"owner-b-write"))
             .await;
         assert_eq!(foreign_replace, Err(CredentialPersistenceError::NotFound));
 
@@ -758,10 +753,7 @@ mod tests {
         let writer = tokio::spawn(async move {
             writer_started_signal.notify_one();
             writer_store
-                .replace(
-                    &writer_selector,
-                    make_replacement(version(1), b"v2", RefreshRetryTransition::Clear),
-                )
+                .replace(&writer_selector, make_replacement(version(1), b"v2"))
                 .await
         });
         writer_started.notified().await;

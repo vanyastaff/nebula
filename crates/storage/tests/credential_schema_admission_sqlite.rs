@@ -1067,6 +1067,163 @@ async fn wrong_current_column_type_and_default_are_rejected() {
     }
 }
 
+/// The 0061 column exactly as SQLite records it after `ADD COLUMN`.
+const ADMISSION_EPOCH_COLUMN: &str = ", admission_epoch INTEGER NOT NULL DEFAULT 1
+        CONSTRAINT credentials_admission_epoch_range
+        CHECK (
+            typeof(admission_epoch) = 'integer'
+            AND admission_epoch BETWEEN 1 AND 9223372036854775807
+        )";
+
+#[tokio::test]
+async fn canonical_22_column_shape_is_admitted_and_create_writes_admission_epoch_one() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let path = directory.path().join("admission-epoch-head.sqlite");
+    let pool = raw_pool(&path).await;
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("canonical current schema must install");
+    let table_sql: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'credentials'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("canonical credentials SQL must exist");
+    assert!(
+        table_sql.contains(ADMISSION_EPOCH_COLUMN),
+        "the fixture text must match the recorded 0061 column"
+    );
+    let columns: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('credentials')")
+        .fetch_one(&pool)
+        .await
+        .expect("column inventory must be readable");
+    assert_eq!(columns, 22);
+    pool.close().await;
+
+    let store = SqliteCredentialPersistence::connect(&file_url(&path))
+        .await
+        .expect("the canonical 22-column shape must be admitted");
+    let selector = nebula_storage_port::CredentialSelector::new(
+        nebula_storage_port::CredentialOwner::from_canonical("admission-owner"),
+        CredentialId::new(),
+    );
+    nebula_storage_port::CredentialPersistence::create(
+        &store,
+        &selector,
+        nebula_storage_port::CredentialCreate::new(
+            "provider.token".to_owned(),
+            nebula_storage_port::SecretBytes::new(b"material".to_vec()),
+            "active".to_owned(),
+            1,
+            None,
+            None,
+            false,
+            Default::default(),
+        ),
+    )
+    .await
+    .expect("create at head");
+    drop(store);
+
+    let pool = raw_pool(&path).await;
+    let epoch: i64 = sqlx::query_scalar("SELECT admission_epoch FROM credentials WHERE id = ?")
+        .bind(selector.credential_id().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("created row must be readable");
+    assert_eq!(epoch, 1);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn admission_epoch_column_and_constraint_drift_are_rejected() {
+    let drifted_type = ADMISSION_EPOCH_COLUMN.replacen("INTEGER", "TEXT", 1);
+    let drifted_default = ADMISSION_EPOCH_COLUMN.replacen("DEFAULT 1", "DEFAULT 2", 1);
+    let dropped_default = ADMISSION_EPOCH_COLUMN.replacen(" DEFAULT 1", "", 1);
+    let dropped_check = ", admission_epoch INTEGER NOT NULL DEFAULT 1";
+    for (file_name, replacement) in [
+        ("admission-missing.sqlite", ""),
+        ("admission-wrong-type.sqlite", drifted_type.as_str()),
+        ("admission-wrong-default.sqlite", drifted_default.as_str()),
+        ("admission-no-default.sqlite", dropped_default.as_str()),
+        ("admission-no-check.sqlite", dropped_check),
+    ] {
+        let directory = tempfile::tempdir().expect("temporary directory must be created");
+        let path = directory.path().join(file_name);
+        let pool = raw_pool(&path).await;
+        MIGRATOR
+            .run(&pool)
+            .await
+            .expect("canonical current schema must install");
+        rewrite_schema_sql(
+            &pool,
+            "table",
+            "credentials",
+            ADMISSION_EPOCH_COLUMN,
+            replacement,
+        )
+        .await;
+        pool.close().await;
+
+        assert_invalid_current_shape(&path).await;
+    }
+}
+
+#[tokio::test]
+async fn out_of_range_admission_epoch_row_is_rejected() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let path = directory.path().join("admission-epoch-zero.sqlite");
+    let pool = raw_pool(&path).await;
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("canonical current schema must install");
+    let credential_id = CredentialId::new().to_string();
+    sqlx::query(
+        "INSERT INTO credentials (
+             id, name, owner_id, credential_key, state_kind, state_version,
+             data, version, material_epoch, admission_epoch, created_at, updated_at,
+             expires_at, reauth_required, metadata, record_state, tombstoned_at
+         ) VALUES (?1, NULL, 'owner-a', 'provider.token', 'active', 1,
+                   zeroblob(0), 1, 1, 1, 1700000000000, 1700000000000,
+                   NULL, 0, '{}', 'live', NULL)",
+    )
+    .bind(&credential_id)
+    .execute(&pool)
+    .await
+    .expect("valid live fixture must seed");
+    let rejected = sqlx::query("UPDATE credentials SET admission_epoch = 0 WHERE id = ?1")
+        .bind(&credential_id)
+        .execute(&pool)
+        .await;
+    assert!(
+        rejected.is_err(),
+        "the physical CHECK must reject a zero epoch"
+    );
+    sqlx::query("PRAGMA ignore_check_constraints = ON")
+        .execute(&pool)
+        .await
+        .expect("test fixture must bypass checks deliberately");
+    sqlx::query("UPDATE credentials SET admission_epoch = 0 WHERE id = ?1")
+        .bind(&credential_id)
+        .execute(&pool)
+        .await
+        .expect("corrupt fixture must be representable with checks bypassed");
+    pool.close().await;
+
+    let error = reject_file_unchanged(&path).await;
+    assert!(
+        matches!(
+            error,
+            CredentialStoreStartupError::UnsupportedSchemaVersion(ref unsupported)
+                if unsupported.reason()
+                    == &CredentialSchemaAdmissionReason::InvalidAdmissionEpoch
+        ),
+        "expected an invalid admission epoch, got {error:?}"
+    );
+}
+
 #[tokio::test]
 async fn refresh_retry_check_and_admission_reject_unknown_codes() {
     let directory = tempfile::tempdir().expect("temporary directory must be created");

@@ -616,7 +616,9 @@ impl ScriptedStore {
         let version = current.version().next_live()?;
         let updated_at = Utc::now();
         let (material_epoch, refresh_retry_gate) = match replacement.material_transition() {
-            CredentialMaterialTransition::Advance => (current.material_epoch().next()?, None),
+            CredentialMaterialTransition::Advance { .. } => {
+                (current.material_epoch().next()?, None)
+            },
             CredentialMaterialTransition::Preserve { refresh_retry } => {
                 let gate = match refresh_retry {
                     RefreshRetryTransition::Preserve => current.refresh_retry_gate().cloned(),
@@ -638,18 +640,33 @@ impl ScriptedStore {
                 (current.material_epoch(), gate)
             },
         };
+        let (data, state_kind, state_version, expires_at) =
+            match replacement.material_transition().material() {
+                Some(material) => (
+                    material.data().clone(),
+                    material.state_kind().to_owned(),
+                    material.state_version(),
+                    material.expires_at(),
+                ),
+                None => (
+                    current.data().clone(),
+                    current.state_kind().to_owned(),
+                    current.state_version(),
+                    current.expires_at(),
+                ),
+            };
         let committed = StoredLiveCredential::new(
             current.credential_id(),
             replacement.name().map(str::to_owned),
             current.credential_key().to_owned(),
-            replacement.data().clone(),
-            replacement.state_kind().to_owned(),
-            replacement.state_version(),
+            data,
+            state_kind,
+            state_version,
             version,
             material_epoch,
             current.created_at(),
             updated_at,
-            replacement.expires_at(),
+            expires_at,
             replacement.reauth_required(),
             replacement.metadata().clone(),
             refresh_retry_gate,
@@ -704,6 +721,28 @@ impl ScriptedStore {
     }
 }
 
+/// An open status for this double. The resolver under test never reads the
+/// use revision, so the double advances it in lockstep with the material
+/// epoch — every material advance closes use — rather than modelling the
+/// claim-side close edges it has no claims for.
+fn scripted_open_status(
+    version: CredentialVersion,
+    material_epoch: CredentialMaterialEpoch,
+    reauth_required: bool,
+) -> Result<nebula_storage_port::store::CredentialOperationStatus, CredentialPersistenceError> {
+    Ok(
+        nebula_storage_port::store::CredentialOperationStatus::Open {
+            version,
+            material_epoch,
+            admission_epoch: nebula_storage_port::CredentialAdmissionEpoch::try_from(
+                material_epoch.get(),
+            )
+            .map_err(|_| CredentialPersistenceError::CorruptRecord)?,
+            reauth_required,
+        },
+    )
+}
+
 #[async_trait::async_trait]
 impl CredentialPersistence for ScriptedStore {
     async fn get_operational_head(
@@ -712,11 +751,11 @@ impl CredentialPersistence for ScriptedStore {
     ) -> Result<nebula_storage_port::StoredCredentialOperationalHead, CredentialPersistenceError>
     {
         let head = self.get_head(selector).await?;
-        let status = nebula_storage_port::store::CredentialOperationStatus::Open {
-            version: head.version(),
-            material_epoch: head.material_epoch(),
-            reauth_required: head.reauth_required(),
-        };
+        let status = scripted_open_status(
+            head.version(),
+            head.material_epoch(),
+            head.reauth_required(),
+        )?;
         Ok(nebula_storage_port::StoredCredentialOperationalHead::new(
             head, status,
         ))
@@ -728,19 +767,20 @@ impl CredentialPersistence for ScriptedStore {
         state_kind: Option<&str>,
     ) -> Result<Vec<nebula_storage_port::StoredCredentialOperationalHead>, CredentialPersistenceError>
     {
-        Ok(self
-            .list_heads(owner, state_kind)
+        self.list_heads(owner, state_kind)
             .await?
             .into_iter()
             .map(|head| {
-                let status = nebula_storage_port::store::CredentialOperationStatus::Open {
-                    version: head.version(),
-                    material_epoch: head.material_epoch(),
-                    reauth_required: head.reauth_required(),
-                };
-                nebula_storage_port::StoredCredentialOperationalHead::new(head, status)
+                let status = scripted_open_status(
+                    head.version(),
+                    head.material_epoch(),
+                    head.reauth_required(),
+                )?;
+                Ok(nebula_storage_port::StoredCredentialOperationalHead::new(
+                    head, status,
+                ))
             })
-            .collect())
+            .collect()
     }
 
     async fn operation_status(
@@ -789,12 +829,10 @@ impl CredentialPersistence for ScriptedStore {
         let StoredCredential::Live(live) = &*row else {
             return Err(CredentialPersistenceError::NotFound);
         };
-        Ok(
-            nebula_storage_port::store::CredentialOperationStatus::Open {
-                version: live.version(),
-                material_epoch: live.material_epoch(),
-                reauth_required: live.reauth_required(),
-            },
+        scripted_open_status(
+            live.version(),
+            live.material_epoch(),
+            live.reauth_required(),
         )
     }
 
@@ -4068,14 +4106,17 @@ async fn refresh_write_back_bounds_display_churn_and_stops_at_a_tombstone() {
     let rebuild = |base: &StoredLiveCredential| {
         CredentialReplacement::new(
             base.version(),
-            b"refreshed".to_vec().into(),
-            base.state_kind().to_owned(),
-            base.state_version(),
             base.name().map(str::to_owned),
-            base.expires_at(),
             false,
             base.metadata().clone(),
-            CredentialMaterialTransition::advance(),
+            CredentialMaterialTransition::advance(MaterialUpdate::Replace(
+                CredentialMaterial::new(
+                    b"refreshed".to_vec().into(),
+                    base.state_kind().to_owned(),
+                    base.state_version(),
+                    base.expires_at(),
+                ),
+            )),
         )
     };
 

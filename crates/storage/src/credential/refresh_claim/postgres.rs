@@ -14,7 +14,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialMaterialEpoch, CredentialOwner, CredentialSelector, CredentialVersion,
+    CredentialAdmissionEpoch, CredentialMaterialEpoch, CredentialOwner, CredentialSelector,
+    CredentialVersion,
 };
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -47,6 +48,25 @@ const TRY_CLAIM_SQL: &str = "INSERT INTO credential_refresh_claims \
      WHERE credential_refresh_claims.expires_at < CURRENT_TIMESTAMP \
        AND credential_refresh_claims.sentinel = 0 \
      RETURNING claim_id, generation, acquired_at, expires_at";
+
+/// A won revoke claim closes credential use: advance the live credential's
+/// admission epoch, fenced by the material epoch the revoke observed. The
+/// range guard makes an exhausted epoch match no row instead of overflowing.
+/// Neither `version` nor `updated_at` moves.
+const REVOKE_ADMISSION_SQL: &str = "UPDATE credentials \
+     SET admission_epoch = admission_epoch + 1 \
+     WHERE owner_id = $1 AND id = $2 AND record_state = 'live' \
+       AND material_epoch = $3 \
+       AND admission_epoch < 9223372036854775807 \
+     RETURNING admission_epoch";
+
+/// Crossing the provider boundary closes credential use for either operation
+/// kind. Same shape as [`REVOKE_ADMISSION_SQL`] without the material fence.
+const SENTINEL_ADMISSION_SQL: &str = "UPDATE credentials \
+     SET admission_epoch = admission_epoch + 1 \
+     WHERE owner_id = $1 AND id = $2 AND record_state = 'live' \
+       AND admission_epoch < 9223372036854775807 \
+     RETURNING admission_epoch";
 
 const HEARTBEAT_SQL: &str = "UPDATE credential_refresh_claims \
      SET expires_at = CURRENT_TIMESTAMP + ($1 * INTERVAL '1 microsecond') \
@@ -139,7 +159,7 @@ pub struct PgRefreshClaimRepo {
 
 impl PgRefreshClaimRepo {
     /// Wrap an existing pool. Caller is responsible for running migrations
-    /// through 0057.
+    /// through 0061.
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
@@ -184,28 +204,45 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
 
         if let Some((claim_id, generation, acquired, expires)) = row {
             if let CredentialOperationIntent::Revoke { material_epoch } = intent {
-                let aggregate: Option<(i64, String)> = sqlx::query_as(
-                    "SELECT material_epoch, record_state FROM credentials \
-                     WHERE owner_id = $1 AND id = $2 FOR UPDATE",
-                )
-                .bind(owner)
-                .bind(&cid_str)
-                .fetch_optional(&mut *transaction)
-                .await
-                .store_err()?;
-                let Some((actual, state)) = aggregate else {
-                    return Err(RepoError::AggregateUnavailable);
-                };
-                if state != "live" {
-                    return Err(RepoError::AggregateUnavailable);
-                }
-                let actual = CredentialMaterialEpoch::try_from(actual)
-                    .map_err(|_| RepoError::InvalidState)?;
-                if actual != material_epoch {
-                    return Err(RepoError::MaterialEpochConflict {
-                        expected: material_epoch,
-                        actual,
-                    });
+                // A won revoke closes credential use: the fenced admission
+                // bump is the aggregate lock, taken after the claim row as in
+                // every claim/credential transaction. Any failure below drops
+                // the transaction, so the claim is not acquired either.
+                let advanced: Option<(i64,)> = sqlx::query_as(REVOKE_ADMISSION_SQL)
+                    .bind(owner)
+                    .bind(&cid_str)
+                    .bind(material_epoch.get())
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .store_err()?;
+                if advanced.is_none() {
+                    let aggregate: Option<(i64, String, i64)> = sqlx::query_as(
+                        "SELECT material_epoch, record_state, admission_epoch FROM credentials \
+                         WHERE owner_id = $1 AND id = $2",
+                    )
+                    .bind(owner)
+                    .bind(&cid_str)
+                    .fetch_optional(&mut *transaction)
+                    .await
+                    .store_err()?;
+                    let Some((actual, state, admission)) = aggregate else {
+                        return Err(RepoError::AggregateUnavailable);
+                    };
+                    if state != "live" {
+                        return Err(RepoError::AggregateUnavailable);
+                    }
+                    let actual = CredentialMaterialEpoch::try_from(actual)
+                        .map_err(|_| RepoError::InvalidState)?;
+                    if actual != material_epoch {
+                        return Err(RepoError::MaterialEpochConflict {
+                            expected: material_epoch,
+                            actual,
+                        });
+                    }
+                    if admission == CredentialAdmissionEpoch::MAX.get() {
+                        return Err(RepoError::AdmissionEpochExhausted);
+                    }
+                    return Err(RepoError::InvalidState);
                 }
             }
             let generation = u64::try_from(generation).map_err(|_| RepoError::InvalidState)?;
@@ -318,8 +355,17 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         // Mirrors heartbeat's claim-validity check: zero rows affected means
         // the claim is absent, superseded, or expired. Returning Ok here
         // would authorize provider egress after the holder's TTL elapsed.
-        // `CURRENT_TIMESTAMP` is evaluated by Postgres in the same statement,
-        // so connection-pool wait time cannot stale a caller-bound timestamp.
+        // `CURRENT_TIMESTAMP` is evaluated by Postgres in the same transaction,
+        // begun immediately before, so connection-pool wait time cannot stale
+        // a caller-bound timestamp.
+        //
+        // Crossing the provider boundary closes credential use, so the
+        // sentinel and the admission epoch commit together. The claim row is
+        // locked before the credential row, the order every claim/credential
+        // transaction uses.
+        let owner = token.selector.owner().as_str();
+        let cid_str = token.selector.credential_id().to_string();
+        let mut transaction = self.pool.begin().await.store_err()?;
         let rows = sqlx::query(
             "UPDATE credential_refresh_claims \
              SET sentinel = 1 \
@@ -327,11 +373,11 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
                AND generation = $4 \
                AND expires_at > CURRENT_TIMESTAMP",
         )
-        .bind(token.selector.owner().as_str())
-        .bind(token.selector.credential_id().to_string())
+        .bind(owner)
+        .bind(&cid_str)
         .bind(token.claim_id)
         .bind(generation)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .store_err()?
         .rows_affected();
@@ -339,6 +385,33 @@ impl RefreshClaimRepo for PgRefreshClaimRepo {
         if rows == 0 {
             return Err(RepoError::InvalidState);
         }
+        let advanced: Option<(i64,)> = sqlx::query_as(SENTINEL_ADMISSION_SQL)
+            .bind(owner)
+            .bind(&cid_str)
+            .fetch_optional(&mut *transaction)
+            .await
+            .store_err()?;
+        if advanced.is_none() {
+            // No live row matched: either the credential is terminal or
+            // absent — no use is left to close — or its epoch is exhausted.
+            let live: Option<(i64,)> = sqlx::query_as(
+                "SELECT admission_epoch FROM credentials \
+                 WHERE owner_id = $1 AND id = $2 AND record_state = 'live'",
+            )
+            .bind(owner)
+            .bind(&cid_str)
+            .fetch_optional(&mut *transaction)
+            .await
+            .store_err()?;
+            match live {
+                None => {},
+                Some((admission,)) if admission == CredentialAdmissionEpoch::MAX.get() => {
+                    return Err(RepoError::AdmissionEpochExhausted);
+                },
+                Some(_) => return Err(RepoError::InvalidState),
+            }
+        }
+        transaction.commit().await.store_err()?;
         Ok(())
     }
 }
@@ -434,8 +507,9 @@ impl RefreshClaimReclaimer for PgRefreshClaimRepo {
                     let escalation = if operation == CredentialOperationKind::Refresh
                         && event_count >= policy.threshold()
                     {
-                        let aggregate: Option<(i64, i64, bool, String)> = sqlx::query_as(
-                            "SELECT version, material_epoch, reauth_required, record_state \
+                        let aggregate: Option<(i64, i64, bool, String, i64)> = sqlx::query_as(
+                            "SELECT version, material_epoch, reauth_required, record_state, \
+                                    admission_epoch \
                              FROM credentials WHERE owner_id = $1 AND id = $2 FOR UPDATE",
                         )
                         .bind(&owner)
@@ -444,7 +518,9 @@ impl RefreshClaimReclaimer for PgRefreshClaimRepo {
                         .await
                         .store_err()?;
                         match aggregate {
-                            Some((version, epoch, reauth_required, state)) if state == "live" => {
+                            Some((version, epoch, reauth_required, state, admission))
+                                if state == "live" =>
+                            {
                                 let version = CredentialVersion::try_from(version)
                                     .map_err(|_| RepoError::InvalidState)?;
                                 let epoch = CredentialMaterialEpoch::try_from(epoch)
@@ -460,9 +536,15 @@ impl RefreshClaimReclaimer for PgRefreshClaimRepo {
                                         version.next_live().map_err(|_| RepoError::InvalidState)?;
                                     let next_epoch =
                                         epoch.next().map_err(|_| RepoError::InvalidState)?;
+                                    let next_admission =
+                                        CredentialAdmissionEpoch::try_from(admission)
+                                            .map_err(|_| RepoError::InvalidState)?
+                                            .next()
+                                            .map_err(|_| RepoError::AdmissionEpochExhausted)?;
                                     let updated: Option<(i64, i64)> = sqlx::query_as(
                                         "UPDATE credentials SET reauth_required = TRUE, \
                                              version = $3, material_epoch = $4, \
+                                             admission_epoch = $5, \
                                              updated_at = clock_timestamp(), \
                                              refresh_retry_mode = NULL, \
                                              refresh_retry_not_before = NULL, \
@@ -477,6 +559,7 @@ impl RefreshClaimReclaimer for PgRefreshClaimRepo {
                                     .bind(&cid)
                                     .bind(next_version.get())
                                     .bind(next_epoch.get())
+                                    .bind(next_admission.get())
                                     .fetch_optional(&mut *transaction)
                                     .await
                                     .store_err()?;
@@ -490,7 +573,7 @@ impl RefreshClaimReclaimer for PgRefreshClaimRepo {
                                     }
                                 }
                             },
-                            Some((_, _, _, state)) if state == "tombstoned" => {
+                            Some((_, _, _, state, _)) if state == "tombstoned" => {
                                 ReauthEscalation::AggregateTerminal
                             },
                             Some(_) => return Err(RepoError::InvalidState),

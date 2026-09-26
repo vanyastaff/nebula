@@ -73,6 +73,13 @@ Migration `0060_rate_limits.sql` adds `port_rate_limits` and
 (`PgLimitStore`). It is PostgreSQL-only: a SQLite deployment is one process
 and keeps its limits in memory.
 
+Migration `0061_credential_admission_epoch.sql` adds the credential admission
+epoch (the use revision) with a named range check. Every existing row starts
+at 1 — history is not guessed, so no pre-cutover binding matches a later
+observation. The backfill default is dropped in the same migration, so an old
+writer's insert fails closed; old credential writers do not advance the epoch
+and must be stopped before it applies.
+
 ## Storage-port adapter schema (0027)
 
 `0027_port_adapter_schema.sql` is the historical migration that introduced

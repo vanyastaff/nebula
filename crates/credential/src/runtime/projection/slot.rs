@@ -6,6 +6,7 @@
 
 use std::{any::Any, fmt, future::Future, pin::Pin};
 
+use nebula_storage_port::CredentialAdmissionEpoch;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
@@ -213,20 +214,23 @@ async fn project_once(
             // an unresolved provider-side revocation.
             use nebula_storage_port::store::CredentialOperationStatus;
             let status = status.ok_or(CredentialSlotResolveError::InvalidState)?;
-            match classify_use(status) {
-                CredentialUseAvailability::Admit => {
-                    if let CredentialOperationStatus::Open { material_epoch, .. } = status
-                        && material_epoch != stored.material_epoch()
-                    {
-                        return Err(CredentialSlotResolveError::InvalidState);
-                    }
+            // The projection is admitted at the use revision read with the
+            // bytes — never at the earlier head's.
+            let admission_epoch = match classify_use(status) {
+                CredentialUseAvailability::Admit => match status {
+                    CredentialOperationStatus::Open {
+                        material_epoch,
+                        admission_epoch,
+                        ..
+                    } if material_epoch == stored.material_epoch() => admission_epoch,
+                    _ => return Err(CredentialSlotResolveError::InvalidState),
                 },
                 // A refresh began after the head check: wait for it and re-read.
                 CredentialUseAvailability::RefreshCrossing => {
                     return Ok(SlotAttempt::RefreshCrossing);
                 },
                 CredentialUseAvailability::Denied(denial) => return Err(denied(denial)),
-            }
+            };
 
             let inner = ops
                 .project_guard(
@@ -247,6 +251,7 @@ async fn project_once(
                 credential_id: request.credential_id,
                 credential_key: actual_key,
                 material_epoch: stored.material_epoch().get() as u64,
+                admission_epoch: admission_epoch.get() as u64,
                 revision: stored.version().get() as u64,
                 scope: Some(request.scope.durable_owner_scope()),
             };
@@ -254,6 +259,7 @@ async fn project_once(
             tracing::debug!(
                 credential.key = metadata.credential_key().as_str(),
                 credential.material_epoch = metadata.material_epoch(),
+                credential.admission_epoch = metadata.admission_epoch(),
                 credential.revision = metadata.revision(),
                 "credential projected for slot"
             );
@@ -270,12 +276,17 @@ pub struct CredentialGuardMetadata {
     credential_id: CredentialId,
     credential_key: CredentialKey,
     material_epoch: u64,
+    admission_epoch: u64,
     revision: u64,
     scope: Option<TenantScope>,
 }
 
 impl CredentialGuardMetadata {
     /// Construct ordering metadata for a trusted projection adapter.
+    ///
+    /// The admission epoch starts at the first backend-authored value; an
+    /// adapter that observed one attaches it with
+    /// [`with_admission_epoch`](Self::with_admission_epoch).
     #[must_use]
     pub fn new(
         credential_id: CredentialId,
@@ -287,9 +298,17 @@ impl CredentialGuardMetadata {
             credential_id,
             credential_key,
             material_epoch,
+            admission_epoch: CredentialAdmissionEpoch::MIN.get() as u64,
             revision,
             scope: None,
         }
+    }
+
+    /// Attach the use revision the projection was admitted at.
+    #[must_use]
+    pub const fn with_admission_epoch(mut self, admission_epoch: u64) -> Self {
+        self.admission_epoch = admission_epoch;
+        self
     }
 
     /// Retain the owner-qualified read scope for durable reprojection.
@@ -324,6 +343,14 @@ impl CredentialGuardMetadata {
         self.material_epoch
     }
 
+    /// Use revision the projection was admitted at, read in the same
+    /// snapshot as the material. A consumer holding this guard must stop
+    /// using it once the credential reports a different admission epoch.
+    #[must_use]
+    pub const fn admission_epoch(&self) -> u64 {
+        self.admission_epoch
+    }
+
     /// Persisted aggregate revision observed with the material epoch.
     #[must_use]
     pub const fn revision(&self) -> u64 {
@@ -338,6 +365,7 @@ impl fmt::Debug for CredentialGuardMetadata {
             .field("credential_id", &"[redacted]")
             .field("credential_key", &self.credential_key)
             .field("material_epoch", &self.material_epoch)
+            .field("admission_epoch", &self.admission_epoch)
             .field("revision", &self.revision)
             .finish()
     }

@@ -44,6 +44,13 @@ relations with an immutable operation kind and a revoke-only observed material
 epoch. Historical rows become `legacy_unclassified`; the new required column
 has no default, so an old writer fails closed during a rolling upgrade.
 
+Migration `0061_credential_admission_epoch.sql` adds the credential admission
+epoch (the use revision) with a named range check. Every existing row starts
+at 1 — history is not guessed. SQLite cannot drop a column default in place,
+so the backfill default remains; stop old credential writers before applying
+it, because they do not advance the epoch. SQLite has no `0060`
+(PostgreSQL-only rate limits), so its head jumps from `0059` to `0061`.
+
 ## Storage-port adapter schema (0027)
 
 `crates/storage/src/sqlite/schema.sql` is the **cumulative** `port_*` schema,

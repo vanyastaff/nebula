@@ -92,7 +92,8 @@ pub use sqlite::{SqliteCredentialPersistence, SqliteCredentialRefreshSchedule};
 #[cfg(all(test, feature = "sqlite"))]
 pub(crate) mod test_support {
     use nebula_storage_port::{
-        CredentialCreate, CredentialReplacement, CredentialVersion, SecretBytes,
+        CredentialCreate, CredentialMaterial, CredentialMaterialTransition, CredentialReplacement,
+        CredentialVersion, MaterialUpdate, RefreshRetryTransition, SecretBytes,
     };
 
     pub(crate) fn make_credential(data: &[u8]) -> CredentialCreate {
@@ -108,27 +109,38 @@ pub(crate) mod test_support {
         )
     }
 
+    /// An `Advance { Replace }` that installs `data` as new material.
     pub(crate) fn make_replacement(
         expected_version: CredentialVersion,
         data: &[u8],
-        refresh_retry_transition: nebula_storage_port::RefreshRetryTransition,
     ) -> CredentialReplacement {
-        let material_transition = match refresh_retry_transition {
-            nebula_storage_port::RefreshRetryTransition::Clear => {
-                nebula_storage_port::CredentialMaterialTransition::advance()
-            },
-            transition => nebula_storage_port::CredentialMaterialTransition::preserve(transition),
-        };
         CredentialReplacement::new(
             expected_version,
-            SecretBytes::new(data.to_vec()),
-            "test".to_owned(),
-            1,
-            None,
             None,
             false,
             Default::default(),
-            material_transition,
+            CredentialMaterialTransition::advance(MaterialUpdate::Replace(
+                CredentialMaterial::new(
+                    SecretBytes::new(data.to_vec()),
+                    "test".to_owned(),
+                    1,
+                    None,
+                ),
+            )),
+        )
+    }
+
+    /// A `Preserve` that applies only `transition` and carries no material.
+    pub(crate) fn make_preserve_replacement(
+        expected_version: CredentialVersion,
+        transition: RefreshRetryTransition,
+    ) -> CredentialReplacement {
+        CredentialReplacement::new(
+            expected_version,
+            None,
+            false,
+            Default::default(),
+            CredentialMaterialTransition::preserve(transition),
         )
     }
 }

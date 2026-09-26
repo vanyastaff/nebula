@@ -21,7 +21,8 @@ use std::time::Duration;
 use chrono::{DateTime, TimeZone, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialMaterialEpoch, CredentialOwner, CredentialSelector, CredentialVersion,
+    CredentialAdmissionEpoch, CredentialMaterialEpoch, CredentialOwner, CredentialSelector,
+    CredentialVersion,
 };
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -110,7 +111,7 @@ pub struct SqliteRefreshClaimRepo {
 
 impl SqliteRefreshClaimRepo {
     /// Wrap an existing pool. Caller is responsible for running migrations
-    /// through 0057.
+    /// through 0061.
     #[must_use]
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -153,9 +154,12 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         let exp_ms = new_expires.timestamp_millis();
         let claim_id_str = new_claim_id.to_string();
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await.store_err()?;
-        if let CredentialOperationIntent::Revoke { material_epoch } = intent {
-            let aggregate: Option<(i64, String)> = sqlx::query_as(
-                "SELECT material_epoch, record_state FROM credentials \
+        // The admission epoch a won revoke claim must advance, read under the
+        // same write lock as the claim CAS.
+        let revoke_admission = if let CredentialOperationIntent::Revoke { material_epoch } = intent
+        {
+            let aggregate: Option<(i64, String, i64)> = sqlx::query_as(
+                "SELECT material_epoch, record_state, admission_epoch FROM credentials \
                  WHERE owner_id = ?1 AND id = ?2",
             )
             .bind(owner)
@@ -163,7 +167,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
             .fetch_optional(&mut *transaction)
             .await
             .store_err()?;
-            let Some((actual, state)) = aggregate else {
+            let Some((actual, state, admission)) = aggregate else {
                 return Err(RepoError::AggregateUnavailable);
             };
             if state != "live" {
@@ -177,7 +181,14 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
                     actual,
                 });
             }
-        }
+            Some((
+                material_epoch,
+                CredentialAdmissionEpoch::try_from(admission)
+                    .map_err(|_| RepoError::InvalidState)?,
+            ))
+        } else {
+            None
+        };
 
         // Atomic CAS via UPSERT with conditional UPDATE clause. Mirrors the
         // Postgres `INSERT ... ON CONFLICT DO UPDATE WHERE expires_at < ...
@@ -219,6 +230,21 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .store_err()?;
 
         if let Some((claim_id_str, generation, acquired_ms, expires_ms)) = row {
+            // A won revoke closes credential use in the same transaction.
+            if let Some((material_epoch, admission)) = revoke_admission {
+                let next = admission
+                    .next()
+                    .map_err(|_| RepoError::AdmissionEpochExhausted)?;
+                advance_admission_epoch(
+                    &mut transaction,
+                    owner,
+                    &cid_str,
+                    admission,
+                    next,
+                    Some(material_epoch),
+                )
+                .await?;
+            }
             let acquired_at = millis_to_utc(acquired_ms)?;
             let expires_at = millis_to_utc(expires_ms)?;
             let claim_id = claim_id_str
@@ -349,6 +375,14 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         // would authorize provider egress after the holder's TTL elapsed.
         // The expiry comparison uses SQLite's clock inside the UPDATE so
         // connection-pool wait time cannot stale a caller-bound timestamp.
+        //
+        // Crossing the provider boundary closes credential use, so the
+        // sentinel and the admission epoch commit together. `BEGIN IMMEDIATE`
+        // takes the write lock first; the claim row is written before the
+        // credential row, the order every claim/credential transaction uses.
+        let owner = token.selector.owner().as_str();
+        let cid_str = token.selector.credential_id().to_string();
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await.store_err()?;
         let rows = sqlx::query(
             "UPDATE credential_refresh_claims \
              SET sentinel = 1 \
@@ -359,11 +393,11 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
                    + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) \
                )",
         )
-        .bind(token.selector.owner().as_str())
-        .bind(token.selector.credential_id().to_string())
+        .bind(owner)
+        .bind(&cid_str)
         .bind(&claim_id_str)
         .bind(generation)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .store_err()?
         .rows_affected();
@@ -371,6 +405,26 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         if rows == 0 {
             return Err(RepoError::InvalidState);
         }
+        let admission: Option<(i64,)> = sqlx::query_as(
+            "SELECT admission_epoch FROM credentials \
+             WHERE owner_id = ?1 AND id = ?2 AND record_state = 'live'",
+        )
+        .bind(owner)
+        .bind(&cid_str)
+        .fetch_optional(&mut *transaction)
+        .await
+        .store_err()?;
+        // A terminal or absent credential has no use left to close.
+        if let Some((admission,)) = admission {
+            let admission = CredentialAdmissionEpoch::try_from(admission)
+                .map_err(|_| RepoError::InvalidState)?;
+            let next = admission
+                .next()
+                .map_err(|_| RepoError::AdmissionEpochExhausted)?;
+            advance_admission_epoch(&mut transaction, owner, &cid_str, admission, next, None)
+                .await?;
+        }
+        transaction.commit().await.store_err()?;
         Ok(())
     }
 }
@@ -490,8 +544,9 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
                     let escalation = if operation == CredentialOperationKind::Refresh
                         && event_count >= policy.threshold()
                     {
-                        let aggregate: Option<(i64, i64, i64, String)> = sqlx::query_as(
-                            "SELECT version, material_epoch, reauth_required, record_state \
+                        let aggregate: Option<(i64, i64, i64, String, i64)> = sqlx::query_as(
+                            "SELECT version, material_epoch, reauth_required, record_state, \
+                                    admission_epoch \
                              FROM credentials WHERE owner_id = ?1 AND id = ?2",
                         )
                         .bind(&owner)
@@ -500,7 +555,9 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
                         .await
                         .store_err()?;
                         match aggregate {
-                            Some((version, epoch, reauth_required, state)) if state == "live" => {
+                            Some((version, epoch, reauth_required, state, admission))
+                                if state == "live" =>
+                            {
                                 let version = CredentialVersion::try_from(version)
                                     .map_err(|_| RepoError::InvalidState)?;
                                 let epoch = CredentialMaterialEpoch::try_from(epoch)
@@ -517,9 +574,15 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
                                             .map_err(|_| RepoError::InvalidState)?;
                                         let next_epoch =
                                             epoch.next().map_err(|_| RepoError::InvalidState)?;
+                                        let next_admission =
+                                            CredentialAdmissionEpoch::try_from(admission)
+                                                .map_err(|_| RepoError::InvalidState)?
+                                                .next()
+                                                .map_err(|_| RepoError::AdmissionEpochExhausted)?;
                                         let updated = sqlx::query(
                                             "UPDATE credentials SET reauth_required = 1, \
                                                  version = ?3, material_epoch = ?4, updated_at = ?5, \
+                                                 admission_epoch = ?6, \
                                                  refresh_retry_mode = NULL, refresh_retry_not_before = NULL, \
                                                  refresh_retry_phase = NULL, refresh_retry_kind = NULL, \
                                                  refresh_retry_diagnostic_code = NULL \
@@ -531,6 +594,7 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
                                         .bind(next_version.get())
                                         .bind(next_epoch.get())
                                         .bind(now_ms)
+                                        .bind(next_admission.get())
                                         .execute(&mut *transaction)
                                         .await
                                         .store_err()?
@@ -547,7 +611,7 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
                                     _ => return Err(RepoError::InvalidState),
                                 }
                             },
-                            Some((_, _, _, state)) if state == "tombstoned" => {
+                            Some((_, _, _, state, _)) if state == "tombstoned" => {
                                 ReauthEscalation::AggregateTerminal
                             },
                             Some(_) | None => return Err(RepoError::InvalidState),
@@ -573,6 +637,41 @@ impl RefreshClaimReclaimer for SqliteRefreshClaimRepo {
         transaction.commit().await.store_err()?;
         Ok(out)
     }
+}
+
+/// Advance a live credential's admission epoch from `current` to `next` inside
+/// the caller's claim transaction, fenced by the material epoch when one is
+/// given.
+///
+/// This write closes credential use and nothing else: it never moves the row
+/// `version` or `updated_at`, so it cannot conflict with an ordinary
+/// version-fenced replacement.
+async fn advance_admission_epoch(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    owner: &str,
+    credential_id: &str,
+    current: CredentialAdmissionEpoch,
+    next: CredentialAdmissionEpoch,
+    material_epoch: Option<CredentialMaterialEpoch>,
+) -> Result<(), RepoError> {
+    let rows = sqlx::query(
+        "UPDATE credentials SET admission_epoch = ?3 \
+         WHERE owner_id = ?1 AND id = ?2 AND record_state = 'live' \
+           AND admission_epoch = ?4 AND (?5 IS NULL OR material_epoch = ?5)",
+    )
+    .bind(owner)
+    .bind(credential_id)
+    .bind(next.get())
+    .bind(current.get())
+    .bind(material_epoch.map(CredentialMaterialEpoch::get))
+    .execute(&mut **transaction)
+    .await
+    .store_err()?
+    .rows_affected();
+    if rows != 1 {
+        return Err(RepoError::InvalidState);
+    }
+    Ok(())
 }
 
 impl SqliteRefreshClaimRepo {

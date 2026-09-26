@@ -1113,6 +1113,148 @@ async fn revoke_sweep_never_applies_refresh_reauthentication_escalation() {
     assert_eq!(REFRESH_CALLS.load(Ordering::SeqCst), 0);
 }
 
+/// The contract's "old use revision does not admit": a revoke claim that was
+/// acquired and then abandoned before the provider boundary closes use by
+/// itself and reopens by expiry alone. A consumer that bound the first
+/// projection must see a different use revision on the next one, although
+/// the material authority is unchanged.
+#[tokio::test]
+async fn abandoned_revoke_claim_reprojects_at_the_next_admission_epoch() {
+    let _serial = TEST_SERIAL.lock().await;
+    let fixture = Fixture::new().await;
+    let id = fixture.create().await;
+    let selector = fixture.selector(id);
+    let project = || async {
+        let base =
+            BaseContext::builder(nebula_core::Scope::default()).build_with(Principal::System);
+        fixture
+            .projection
+            .resolve_slot(
+                &TenantScope::from_scope(&fixture.scope),
+                id,
+                nebula_core::credential_key!("operation_incident_probe"),
+                nebula_credential::Capabilities::empty(),
+                base.cancellation().child_token(),
+            )
+            .await
+            .expect("an open credential projects")
+    };
+
+    let first = project().await;
+    let first_material = first.metadata().material_epoch();
+    let first_admission = first.metadata().admission_epoch();
+    drop(first);
+
+    let material_epoch = CredentialMaterialEpoch::try_from(first_material)
+        .expect("the projected material epoch is valid");
+    let claimed = fixture
+        .claims
+        .try_claim(
+            &selector,
+            &ReplicaId::new("abandoning-revoker"),
+            Duration::from_secs(30),
+            CredentialOperationIntent::Revoke { material_epoch },
+        )
+        .await
+        .expect("the revoke claim reaches the backend");
+    assert!(matches!(claimed, ClaimAttempt::Acquired(_)));
+    assert!(matches!(
+        fixture
+            .projection
+            .resolve_slot(
+                &TenantScope::from_scope(&fixture.scope),
+                id,
+                nebula_core::credential_key!("operation_incident_probe"),
+                nebula_credential::Capabilities::empty(),
+                BaseContext::builder(nebula_core::Scope::default())
+                    .build_with(Principal::System)
+                    .cancellation()
+                    .child_token(),
+            )
+            .await,
+        Err(CredentialSlotResolveError::OperationBlocked {
+            operation: CredentialOperationKind::Revoke
+        })
+    ));
+    // Abandon it: the holder never marks the sentinel, and the claim lapses.
+    let affected =
+        sqlx::query("UPDATE credential_refresh_claims SET expires_at = 0 WHERE credential_id = ?1")
+            .bind(id.to_string())
+            .execute(&fixture.sql_pool)
+            .await
+            .expect("backdate the abandoned claim")
+            .rows_affected();
+    assert_eq!(affected, 1);
+
+    let second = project().await;
+    assert_eq!(
+        second.metadata().material_epoch(),
+        first_material,
+        "an abandoned revoke changes no material"
+    );
+    assert_eq!(
+        second.metadata().admission_epoch(),
+        first_admission + 1,
+        "the first projection's use revision no longer admits"
+    );
+    assert_eq!(REVOKE_CALLS.load(Ordering::SeqCst), 0);
+}
+
+/// A refresh marks its sentinel before the provider call. That write closes use
+/// by advancing the admission epoch alone — never the row version — so the
+/// refresh write-back lands on the version it read, with no rebase.
+#[tokio::test]
+async fn refresh_write_back_needs_no_rebase_over_its_own_sentinel() {
+    let _serial = TEST_SERIAL.lock().await;
+    let fixture = Fixture::new().await;
+    let id = fixture.create().await;
+    let selector = fixture.selector(id);
+    let CredentialOperationStatus::Open {
+        version: before_version,
+        material_epoch: before_material,
+        admission_epoch: before_admission,
+        ..
+    } = fixture
+        .raw
+        .operation_status(&selector)
+        .await
+        .expect("initial status")
+    else {
+        panic!("a new credential starts open")
+    };
+
+    let refreshed = fixture
+        .command(CredentialCommand::Refresh { credential_id: id })
+        .await
+        .expect("refresh succeeds");
+    assert!(matches!(refreshed, CredentialCommandResult::Refreshed(_)));
+    assert_eq!(REFRESH_CALLS.load(Ordering::SeqCst), 1);
+
+    // The claim is released after the command answers, so read the committed
+    // aggregate columns directly rather than waiting for the status to reopen.
+    let (version, material_epoch, admission_epoch, reauth_required): (i64, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT version, material_epoch, admission_epoch, reauth_required \
+             FROM credentials WHERE id = ?1",
+        )
+        .bind(id.to_string())
+        .fetch_one(&fixture.sql_pool)
+        .await
+        .expect("the refreshed row is readable");
+    assert_eq!(
+        version,
+        before_version.get() + 1,
+        "the write-back is the only version step: the sentinel never moved it"
+    );
+    assert_eq!(material_epoch, before_material.get() + 1);
+    assert_eq!(
+        admission_epoch,
+        before_admission.get() + 2,
+        "the sentinel and the material advance each closed use once"
+    );
+    assert_eq!(reauth_required, 0);
+}
+
 #[tokio::test]
 async fn legacy_unclassified_poison_refuses_inference_but_allows_terminal_recovery() {
     let _serial = TEST_SERIAL.lock().await;

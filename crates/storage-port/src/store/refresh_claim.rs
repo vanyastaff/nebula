@@ -57,7 +57,9 @@
 
 use std::time::Duration;
 
-use crate::{CredentialMaterialEpoch, CredentialSelector, CredentialVersion};
+use crate::{
+    CredentialAdmissionEpoch, CredentialMaterialEpoch, CredentialSelector, CredentialVersion,
+};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
@@ -139,6 +141,10 @@ pub enum CredentialOperationStatus {
         version: CredentialVersion,
         /// Current material authority.
         material_epoch: CredentialMaterialEpoch,
+        /// Current use revision. A use admitted at one value must not
+        /// continue at another; see [`CredentialAdmissionEpoch`] for the
+        /// invariant it carries.
+        admission_epoch: CredentialAdmissionEpoch,
         /// Whether interactive reauthorization is required.
         reauth_required: bool,
     },
@@ -333,6 +339,11 @@ pub enum RefreshClaimError {
     /// The owner-qualified aggregate is absent or terminal.
     #[error("credential operation aggregate is unavailable")]
     AggregateUnavailable,
+    /// A claim transition that closes credential use could not advance the
+    /// credential's admission epoch past its terminal value. Nothing was
+    /// committed: the claim was neither acquired nor marked.
+    #[error("credential admission epoch exhausted")]
+    AdmissionEpochExhausted,
 }
 
 /// Sentinel mark applied to an in-flight refresh row (sub-spec §3.4).
@@ -465,6 +476,13 @@ pub trait RefreshClaimStore: Send + Sync + 'static {
     /// A missing row or expired [`SentinelState::Normal`] row can
     /// be acquired. An expired [`SentinelState::RefreshInFlight`] row returns
     /// [`ClaimAttempt::OutcomeUnknown`] and remains durable fail-closed poison.
+    ///
+    /// A won revoke claim closes credential use: the backend advances the
+    /// live credential's [`CredentialAdmissionEpoch`] in the same transaction
+    /// that installs the claim, fenced by the intent's material epoch. A
+    /// refresh claim, a lost claim, and a material-epoch conflict leave it.
+    /// If the epoch cannot advance, the claim is not acquired and
+    /// [`RefreshClaimError::AdmissionEpochExhausted`] is returned.
     async fn try_claim(
         &self,
         selector: &CredentialSelector,
@@ -517,6 +535,12 @@ pub trait RefreshClaimStore: Send + Sync + 'static {
     /// Mark the claim `RefreshInFlight` immediately before the IdP POST.
     /// The token must still identify an unexpired claim; an expired token
     /// cannot authorize provider egress.
+    ///
+    /// Crossing the provider boundary closes credential use for either
+    /// operation kind: the sentinel and the live credential's
+    /// [`CredentialAdmissionEpoch`] advance in one transaction, taking the
+    /// claim row before the credential row. A rejected token advances
+    /// nothing; an exhausted epoch leaves the sentinel unmarked.
     async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RefreshClaimError>;
 }
 
@@ -533,8 +557,10 @@ pub trait RefreshClaimReclaimer: Send + Sync + 'static {
     /// Normal claims are deleted. For an expired in-flight claim the backend
     /// inserts its unique incident, evaluates `policy` against the same
     /// database clock, and, when the threshold is met, advances the live
-    /// credential's material authority and installs `reauth_required`. The
-    /// incident and aggregate transition either both commit or neither does.
+    /// credential's material authority and admission epoch and installs
+    /// `reauth_required` in one statement. The incident and aggregate
+    /// transition either both commit or neither does. Deleting a normal claim
+    /// and below-threshold accounting advance no epoch.
     async fn reclaim_stuck(
         &self,
         policy: SentinelEscalationPolicy,
@@ -861,6 +887,10 @@ mod tests {
                 RefreshClaimError::AggregateUnavailable,
                 "credential operation aggregate is unavailable",
             ),
+            (
+                RefreshClaimError::AdmissionEpochExhausted,
+                "credential admission epoch exhausted",
+            ),
         ] {
             match &error {
                 RefreshClaimError::Storage => {},
@@ -868,6 +898,7 @@ mod tests {
                 RefreshClaimError::ReleaseRefused => {},
                 RefreshClaimError::MaterialEpochConflict { .. } => {},
                 RefreshClaimError::AggregateUnavailable => {},
+                RefreshClaimError::AdmissionEpochExhausted => {},
             }
             assert_eq!(error.to_string(), expected);
         }

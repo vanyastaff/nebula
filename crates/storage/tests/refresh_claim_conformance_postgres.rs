@@ -34,12 +34,22 @@
 //! This runner asserts **all 33** shared cases when the backend is reachable.
 //! Without a database every case fails naming the backend, so the denominator
 //! can never hold green cases that asserted nothing.
+//!
+//! It also asserts the **8** claim-side admission-epoch cases
+//! (`support/admission_epoch_claims.rs`), which only the two SQL runners carry.
+//! Each of those runs in its own private schema behind a real
+//! `PgCredentialPersistence`, so its sweeps see only its own rows and need no
+//! session lock, and its status reads go through the adapter.
 
 #![cfg(feature = "postgres")]
 
 #[macro_use]
 #[path = "support/refresh_claim_oracle.rs"]
 mod oracle;
+
+#[macro_use]
+#[path = "support/admission_epoch_claims.rs"]
+mod admission_epoch_claims;
 
 use std::{sync::Mutex, time::Duration};
 
@@ -185,8 +195,9 @@ impl RefreshClaimRepo for PgRefreshClaimFixture {
     ) -> Result<ClaimAttempt, RepoError> {
         sqlx::query(
             "INSERT INTO credentials (id, owner_id, credential_key, state_kind, state_version, \
-             data, version, material_epoch, created_at, updated_at, reauth_required, metadata, record_state) \
-             VALUES ($1, $2, 'test.key', 'test.state', 1, '\\x00', 1, 1, \
+             data, version, material_epoch, admission_epoch, created_at, updated_at, reauth_required, \
+             metadata, record_state) \
+             VALUES ($1, $2, 'test.key', 'test.state', 1, '\\x00', 1, 1, 1, \
                      clock_timestamp(), clock_timestamp(), FALSE, '{}', 'live') \
              ON CONFLICT (id) DO NOTHING",
         )
@@ -425,6 +436,131 @@ async fn fixture() -> Option<PgRefreshClaimFixture> {
     let pool = pool().await?;
     Some(PgRefreshClaimFixture::new(pool).await)
 }
+
+/// A credential store and the claim repository sharing its pool, in a private
+/// schema, plus a raw inspection pool pinned to the same schema.
+struct PgAdmissionBackend {
+    store: nebula_storage::credential::PgCredentialPersistence,
+    claims: PgRefreshClaimRepo,
+    pool: PgPool,
+}
+
+async fn admission_fixture() -> Option<PgAdmissionBackend> {
+    let url = match std::env::var("DATABASE_URL") {
+        Ok(url) => url,
+        Err(std::env::VarError::NotPresent) => {
+            assert_ne!(
+                std::env::var("NEBULA_REQUIRE_POSTGRES").as_deref(),
+                Ok("1"),
+                "DATABASE_URL must be set when NEBULA_REQUIRE_POSTGRES=1: \
+                 PostgreSQL is a deployment backend and is never substituted"
+            );
+            return None;
+        },
+        Err(error) => panic!("DATABASE_URL is set but invalid: {error}"),
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    // Only `[a-z0-9_]` by construction, so interpolating it is injection-safe.
+    let schema = format!("nebula_admission_claims_{}_{nanos}", std::process::id());
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("connect to DATABASE_URL");
+    sqlx::query(AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+        .execute(&admin)
+        .await
+        .expect("create the private schema");
+    admin.close().await;
+    let options = <sqlx::postgres::PgConnectOptions as std::str::FromStr>::from_str(&url)
+        .expect("parse DATABASE_URL")
+        .options([("search_path", schema.as_str())]);
+    let store = nebula_storage::credential::PgCredentialPersistence::connect_with(options.clone())
+        .await
+        .expect("an admitted PostgreSQL credential store");
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .expect("an inspection pool on the private schema");
+    Some(PgAdmissionBackend {
+        claims: store.refresh_claim_repo(),
+        store,
+        pool,
+    })
+}
+
+#[async_trait::async_trait]
+impl admission_epoch_claims::AdmissionEpochBackend for PgAdmissionBackend {
+    type Store = nebula_storage::credential::PgCredentialPersistence;
+    type Claims = PgRefreshClaimRepo;
+
+    fn store(&self) -> &Self::Store {
+        &self.store
+    }
+
+    fn claims(&self) -> &Self::Claims {
+        &self.claims
+    }
+
+    async fn expire_claim(&self, selector: &CredentialSelector) {
+        sqlx::query(
+            "UPDATE credential_refresh_claims \
+             SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' \
+             WHERE owner_id = $1 AND credential_id = $2",
+        )
+        .bind(selector.owner().as_str())
+        .bind(selector.credential_id().to_string())
+        .execute(&self.pool)
+        .await
+        .expect("backdating the claim row must not fail");
+    }
+
+    async fn authority(&self, selector: &CredentialSelector) -> admission_epoch_claims::Authority {
+        let (version, material_epoch, admission_epoch, updated_at, reauth_required): (
+            i64,
+            i64,
+            i64,
+            String,
+            bool,
+        ) = sqlx::query_as(
+            "SELECT version, material_epoch, admission_epoch, updated_at::text, reauth_required \
+             FROM credentials WHERE owner_id = $1 AND id = $2",
+        )
+        .bind(selector.owner().as_str())
+        .bind(selector.credential_id().to_string())
+        .fetch_one(&self.pool)
+        .await
+        .expect("the credential row is readable");
+        admission_epoch_claims::Authority {
+            version,
+            material_epoch,
+            admission_epoch,
+            updated_at,
+            reauth_required,
+        }
+    }
+
+    async fn force_admission_epoch(&self, selector: &CredentialSelector, epoch: i64) {
+        let updated = sqlx::query(
+            "UPDATE credentials SET admission_epoch = $1 \
+             WHERE owner_id = $2 AND id = $3 AND record_state = 'live'",
+        )
+        .bind(epoch)
+        .bind(selector.owner().as_str())
+        .bind(selector.credential_id().to_string())
+        .execute(&self.pool)
+        .await
+        .expect("placing the admission epoch must not fail")
+        .rows_affected();
+        assert_eq!(updated, 1);
+    }
+}
+
+admission_epoch_claim_cases!(admission_fixture());
 
 refresh_claim_conformance_suite!(fixture());
 

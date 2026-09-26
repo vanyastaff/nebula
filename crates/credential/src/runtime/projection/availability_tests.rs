@@ -6,10 +6,10 @@ use std::sync::{
 use async_trait::async_trait;
 use chrono::Utc;
 use nebula_storage_port::{
-    CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialOwner,
-    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
-    RefreshRetrySnapshot, SecretBytes, StoredCredentialHead, StoredCredentialOperationalHead,
-    StoredLiveCredential,
+    CredentialAdmissionEpoch, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
+    CredentialOwner, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, RefreshRetrySnapshot, SecretBytes, StoredCredentialHead,
+    StoredCredentialOperationalHead, StoredLiveCredential,
     store::{CredentialIncidentRef, CredentialOperationStatus},
 };
 
@@ -73,6 +73,7 @@ impl CredentialPersistence for CountingStore {
         let open = |reauth_required| CredentialOperationStatus::Open {
             version: head.version(),
             material_epoch: head.material_epoch(),
+            admission_epoch: CredentialAdmissionEpoch::MIN,
             reauth_required,
         };
         match answer {
@@ -228,6 +229,7 @@ fn fixture() -> (CountingStore, TenantScope, CredentialId, CredentialKey) {
         answer: Mutex::new(HeadAnswer::Status(CredentialOperationStatus::Open {
             version: CredentialVersion::MIN,
             material_epoch: CredentialMaterialEpoch::MIN,
+            admission_epoch: CredentialAdmissionEpoch::MIN,
             reauth_required: false,
         })),
         head_reads: AtomicUsize::new(0),
@@ -268,6 +270,7 @@ async fn every_operation_status_maps_to_one_availability_from_one_head_read() {
         HeadAnswer::Status(CredentialOperationStatus::Open {
             version: CredentialVersion::MIN,
             material_epoch: CredentialMaterialEpoch::MIN,
+            admission_epoch: CredentialAdmissionEpoch::MIN,
             reauth_required,
         })
     };

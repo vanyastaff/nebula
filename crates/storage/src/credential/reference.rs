@@ -8,9 +8,9 @@ use std::{collections::HashMap, fmt, sync::Arc};
 use async_trait::async_trait;
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
-    CredentialMaterialTransition, CredentialOperationStatus, CredentialOwner,
-    CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
+    CredentialAdmissionEpoch, CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate,
+    CredentialMaterialEpoch, CredentialMaterialTransition, CredentialOperationStatus,
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialRefreshCursor,
     CredentialRefreshHorizon, CredentialRefreshPageSize, CredentialRefreshSchedule,
     CredentialRefreshScheduleError, CredentialReplacement, CredentialSelector, CredentialTombstone,
     CredentialVersion, DueCredentialRefresh, RefreshRetryAdmission, RefreshRetryProjection,
@@ -24,6 +24,21 @@ use serde_json::{Map, Value};
 struct OwnedRecord {
     owner: CredentialOwner,
     record: StoredCredential,
+    /// Use revision. Only replacements advance it here: this store has no
+    /// claim ledger, so the claim-side close edges (a won revoke, a sentinel,
+    /// threshold escalation) are exercised by the SQL backends alone.
+    admission_epoch: CredentialAdmissionEpoch,
+}
+
+impl OwnedRecord {
+    fn open_status(&self, live: &StoredLiveCredential) -> CredentialOperationStatus {
+        CredentialOperationStatus::Open {
+            version: live.version(),
+            material_epoch: live.material_epoch(),
+            admission_epoch: self.admission_epoch,
+            reauth_required: live.reauth_required(),
+        }
+    }
 }
 
 /// Test/reference credential persistence with the same lifecycle semantics as
@@ -270,6 +285,22 @@ impl super::CredentialPersistenceConformance for ReferenceCredentialPersistence 
         Ok(())
     }
 
+    async fn force_live_admission_epoch_for_conformance(
+        &self,
+        selector: &CredentialSelector,
+        admission_epoch: CredentialAdmissionEpoch,
+    ) -> Result<(), CredentialPersistenceError> {
+        let mut records = self.records.lock();
+        let owned = records
+            .get_mut(&selector.credential_id())
+            .ok_or(CredentialPersistenceError::NotFound)?;
+        if &owned.owner != selector.owner() || owned.record.as_live().is_none() {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        owned.admission_epoch = admission_epoch;
+        Ok(())
+    }
+
     async fn corrupt_live_projection_for_conformance(
         &self,
         selector: &CredentialSelector,
@@ -354,11 +385,7 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
         let StoredCredential::Live(live) = &owned.record else {
             return Err(CredentialPersistenceError::NotFound);
         };
-        Ok(CredentialOperationStatus::Open {
-            version: live.version(),
-            material_epoch: live.material_epoch(),
-            reauth_required: live.reauth_required(),
-        })
+        Ok(owned.open_status(live))
     }
 
     async fn get_operational_head(
@@ -376,12 +403,10 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             return Err(CredentialPersistenceError::NotFound);
         };
         let head = project_head(live, self.backend_now())?;
-        let status = CredentialOperationStatus::Open {
-            version: live.version(),
-            material_epoch: live.material_epoch(),
-            reauth_required: live.reauth_required(),
-        };
-        Ok(StoredCredentialOperationalHead::new(head, status))
+        Ok(StoredCredentialOperationalHead::new(
+            head,
+            owned.open_status(live),
+        ))
     }
 
     async fn list_operational_heads(
@@ -402,12 +427,10 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
                 }
                 Some((|| {
                     let head = project_head(live, self.backend_now())?;
-                    let status = CredentialOperationStatus::Open {
-                        version: live.version(),
-                        material_epoch: live.material_epoch(),
-                        reauth_required: live.reauth_required(),
-                    };
-                    Ok(StoredCredentialOperationalHead::new(head, status))
+                    Ok(StoredCredentialOperationalHead::new(
+                        head,
+                        owned.open_status(live),
+                    ))
                 })())
             })
             .collect()
@@ -481,6 +504,7 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             OwnedRecord {
                 owner: selector.owner().clone(),
                 record: live.into(),
+                admission_epoch: CredentialAdmissionEpoch::MIN,
             },
         );
         CredentialCommit::live(selector.credential_id(), version, now, now)
@@ -534,6 +558,11 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             });
         }
 
+        let admission_epoch = if replacement.advances_admission_epoch(current.reauth_required()) {
+            existing.admission_epoch.next()?
+        } else {
+            existing.admission_epoch
+        };
         let credential_key = current.credential_key().to_owned();
         let created_at = current.created_at();
         let now = self.backend_now();
@@ -546,20 +575,38 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
                     now,
                 )?,
             ),
-            CredentialMaterialTransition::Advance => (current.material_epoch().next()?, None),
+            CredentialMaterialTransition::Advance { .. } => {
+                (current.material_epoch().next()?, None)
+            },
         };
+        // Material columns change only for `Advance { Replace }`.
+        let (data, state_kind, state_version, expires_at) =
+            match replacement.material_transition().material() {
+                Some(material) => (
+                    material.data().clone(),
+                    material.state_kind().to_owned(),
+                    material.state_version(),
+                    material.expires_at(),
+                ),
+                None => (
+                    current.data().clone(),
+                    current.state_kind().to_owned(),
+                    current.state_version(),
+                    current.expires_at(),
+                ),
+            };
         let live = StoredLiveCredential::new(
             selector.credential_id(),
             replacement.name().map(str::to_owned),
             credential_key,
-            replacement.data().clone(),
-            replacement.state_kind().to_owned(),
-            replacement.state_version(),
+            data,
+            state_kind,
+            state_version,
             next_version,
             material_epoch,
             created_at,
             now,
-            replacement.expires_at(),
+            expires_at,
             replacement.reauth_required(),
             replacement.metadata().clone(),
             refresh_retry_gate,
@@ -569,6 +616,7 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             OwnedRecord {
                 owner: selector.owner().clone(),
                 record: live.into(),
+                admission_epoch,
             },
         );
         CredentialCommit::live(selector.credential_id(), next_version, created_at, now)
@@ -596,6 +644,7 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             });
         }
         let next_version = current.version().next_tombstone()?;
+        let admission_epoch = existing.admission_epoch;
         let credential_key = current.credential_key().to_owned();
         let state_kind = current.state_kind().to_owned();
         let state_version = current.state_version();
@@ -616,6 +665,7 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             OwnedRecord {
                 owner: selector.owner().clone(),
                 record: terminal.into(),
+                admission_epoch,
             },
         );
         Ok(CredentialCommit::tombstoned(

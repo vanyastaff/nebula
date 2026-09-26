@@ -20,6 +20,12 @@
 //! run the shared suite (its reference checks live beside the adapter), and
 //! postgres asserts all 33 only when it can reach a database (see that runner's
 //! module doc).
+//!
+//! It also asserts the **8** claim-side admission-epoch cases
+//! (`support/admission_epoch_claims.rs`), which only the two SQL runners carry:
+//! they need claims and credentials in one transactional database, which the
+//! in-memory claim repository does not have. Those cases use a file database
+//! with a real credential store, so status reads go through the adapter.
 
 #![cfg(feature = "sqlite")]
 
@@ -27,6 +33,10 @@
 #[path = "support/refresh_claim_oracle.rs"]
 mod oracle;
 use oracle::RefreshClaimFixture as _;
+
+#[macro_use]
+#[path = "support/admission_epoch_claims.rs"]
+mod admission_epoch_claims;
 
 use std::{str::FromStr, sync::Mutex, time::Duration};
 
@@ -344,6 +354,109 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
         exists != 0
     }
 }
+
+/// A file-backed credential store and the claim repository sharing its pool,
+/// plus a raw inspection pool on the same file.
+struct SqliteAdmissionBackend {
+    store: nebula_storage::credential::SqliteCredentialPersistence,
+    claims: SqliteRefreshClaimRepo,
+    pool: SqlitePool,
+    _directory: tempfile::TempDir,
+}
+
+async fn admission_fixture() -> Option<SqliteAdmissionBackend> {
+    let directory = tempfile::tempdir().expect("temporary database directory");
+    let path = directory
+        .path()
+        .join("admission-epoch-claims.sqlite")
+        .to_string_lossy()
+        .into_owned();
+    let store = nebula_storage::credential::SqliteCredentialPersistence::connect(&path)
+        .await
+        .expect("an admitted SQLite credential store");
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(SqliteConnectOptions::from_str(&path).expect("database path"))
+        .await
+        .expect("an inspection pool on the same file");
+    Some(SqliteAdmissionBackend {
+        claims: store.refresh_claim_repo(),
+        store,
+        pool,
+        _directory: directory,
+    })
+}
+
+#[async_trait::async_trait]
+impl admission_epoch_claims::AdmissionEpochBackend for SqliteAdmissionBackend {
+    type Store = nebula_storage::credential::SqliteCredentialPersistence;
+    type Claims = SqliteRefreshClaimRepo;
+
+    fn store(&self) -> &Self::Store {
+        &self.store
+    }
+
+    fn claims(&self) -> &Self::Claims {
+        &self.claims
+    }
+
+    async fn expire_claim(&self, selector: &CredentialSelector) {
+        let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_millis();
+        sqlx::query(
+            "UPDATE credential_refresh_claims SET expires_at = ?1 \
+             WHERE owner_id = ?2 AND credential_id = ?3",
+        )
+        .bind(expired_at)
+        .bind(selector.owner().as_str())
+        .bind(selector.credential_id().to_string())
+        .execute(&self.pool)
+        .await
+        .expect("backdating the claim row must not fail");
+    }
+
+    async fn authority(&self, selector: &CredentialSelector) -> admission_epoch_claims::Authority {
+        let (version, material_epoch, admission_epoch, updated_at, reauth_required): (
+            i64,
+            i64,
+            i64,
+            String,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT version, material_epoch, admission_epoch, CAST(updated_at AS TEXT), \
+                    reauth_required \
+             FROM credentials WHERE owner_id = ?1 AND id = ?2",
+        )
+        .bind(selector.owner().as_str())
+        .bind(selector.credential_id().to_string())
+        .fetch_one(&self.pool)
+        .await
+        .expect("the credential row is readable");
+        admission_epoch_claims::Authority {
+            version,
+            material_epoch,
+            admission_epoch,
+            updated_at,
+            reauth_required: reauth_required != 0,
+        }
+    }
+
+    async fn force_admission_epoch(&self, selector: &CredentialSelector, epoch: i64) {
+        let updated = sqlx::query(
+            "UPDATE credentials SET admission_epoch = ?1 \
+             WHERE owner_id = ?2 AND id = ?3 AND record_state = 'live'",
+        )
+        .bind(epoch)
+        .bind(selector.owner().as_str())
+        .bind(selector.credential_id().to_string())
+        .execute(&self.pool)
+        .await
+        .expect("placing the admission epoch must not fail")
+        .rows_affected();
+        assert_eq!(updated, 1);
+    }
+}
+
+admission_epoch_claim_cases!(admission_fixture());
 
 async fn fixture() -> Option<SqliteRefreshClaimFixture> {
     Some(SqliteRefreshClaimFixture::new().await)

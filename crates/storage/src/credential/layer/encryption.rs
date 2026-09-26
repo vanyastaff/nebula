@@ -24,8 +24,11 @@
 //!
 //! - If `key_id` matches the provider's atomic current snapshot, decrypt with that key.
 //! - If `key_id` differs, look it up in the optional `legacy_keys` map and decrypt with that key.
-//!   Reads never rewrite durable state. The next real mutation encrypts with the current key and
-//!   advances the record version exactly once. `legacy_keys` is populated via
+//!   Reads never rewrite durable state. The next write that installs new material
+//!   (`Advance { material: MaterialUpdate::Replace(..) }`) encrypts with the current key and
+//!   advances the record version exactly once. Writes that carry no material — `Preserve` and
+//!   `Advance { Unchanged }` — leave the stored ciphertext, and so its key id, byte-identical;
+//!   they never rotate a record. `legacy_keys` is populated via
 //!   [`EncryptionLayer::with_legacy_keys`] while an operator is migrating off an older key.
 
 use std::{collections::HashMap, fmt, sync::Arc};
@@ -33,9 +36,10 @@ use std::{collections::HashMap, fmt, sync::Arc};
 use async_trait::async_trait;
 use nebula_crypto::{EncryptedData, EncryptionKey, decrypt_with_aad, encrypt_with_key_id};
 use nebula_storage_port::{
-    CredentialCommit, CredentialCreate, CredentialOperationStatus, CredentialOwner,
-    CredentialPersistence, CredentialPersistenceError, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, RefreshRetrySnapshot, SecretBytes, StoredCredential, StoredCredentialHead,
+    CredentialCommit, CredentialCreate, CredentialMaterial, CredentialMaterialTransition,
+    CredentialOperationStatus, CredentialOwner, CredentialPersistence, CredentialPersistenceError,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, MaterialUpdate,
+    RefreshRetrySnapshot, SecretBytes, StoredCredential, StoredCredentialHead,
     StoredCredentialOperationalHead, StoredLiveCredential,
 };
 
@@ -46,7 +50,7 @@ use super::super::key_provider::{KeyProvider, KeySnapshot};
 /// The current key is supplied by the configured [`KeyProvider`]. Records
 /// encrypted with an older key may optionally be decrypted via `legacy_keys`
 /// (populated by [`Self::with_legacy_keys`]). Reads are side-effect free;
-/// subsequent writes always use the current key.
+/// every write that installs material uses the current key.
 ///
 /// # Examples
 ///
@@ -108,8 +112,9 @@ impl<S> EncryptionLayer<S> {
     /// # }
     /// ```
     ///
-    /// A subsequent real mutation will re-encrypt any successfully read
-    /// `""` record with the provider's current version.
+    /// A subsequent write that installs new material will re-encrypt any
+    /// successfully read `""` record with the provider's current version;
+    /// material-free writes leave the envelope untouched.
     pub fn new(inner: S, key_provider: Arc<dyn KeyProvider>) -> Self {
         Self {
             inner,
@@ -124,8 +129,8 @@ impl<S> EncryptionLayer<S> {
     /// `key_provider` supplies the current encrypt/decrypt key; `legacy_keys`
     /// contains historical keys that remain valid for reads. On read of a
     /// record whose envelope `key_id` matches a legacy entry, the layer
-    /// decrypts with the legacy key without rewriting it. The next real
-    /// mutation encrypts with the current key.
+    /// decrypts with the legacy key without rewriting it. The next write that
+    /// installs new material encrypts with the current key.
     ///
     /// Legacy entries do not include the current key — that is always the
     /// provider's concern.
@@ -281,18 +286,32 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
         selector: &CredentialSelector,
         replacement: CredentialReplacement,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
-        let encrypted = self.encrypt_data(replacement.data(), selector.credential_id())?;
+        // Only newly installed material is sealed. `Preserve` and
+        // `Advance { Unchanged }` carry no bytes, so the stored ciphertext —
+        // including its key id — stays byte-identical below this layer.
+        let material_transition = match replacement.material_transition() {
+            CredentialMaterialTransition::Advance {
+                material: MaterialUpdate::Replace(material),
+            } => CredentialMaterialTransition::advance(MaterialUpdate::Replace(
+                CredentialMaterial::new(
+                    SecretBytes::new(self.encrypt_data(material.data(), selector.credential_id())?),
+                    material.state_kind().to_owned(),
+                    material.state_version(),
+                    material.expires_at(),
+                ),
+            )),
+            transition @ (CredentialMaterialTransition::Preserve { .. }
+            | CredentialMaterialTransition::Advance {
+                material: MaterialUpdate::Unchanged,
+            }) => transition.clone(),
+        };
         let fence = replacement.fence().cloned();
         let encrypted_replacement = CredentialReplacement::new(
             replacement.expected_version(),
-            SecretBytes::new(encrypted),
-            replacement.state_kind().to_owned(),
-            replacement.state_version(),
             replacement.name().map(str::to_owned),
-            replacement.expires_at(),
             replacement.reauth_required(),
             replacement.metadata().clone(),
-            replacement.material_transition().clone(),
+            material_transition,
         );
         let encrypted_replacement = match fence {
             Some(fence) => encrypted_replacement.with_fence(fence),
@@ -399,7 +418,9 @@ mod tests {
         StoredCredential, StoredLiveCredential,
     };
 
-    use crate::credential::test_support::{make_credential, make_replacement};
+    use crate::credential::test_support::{
+        make_credential, make_preserve_replacement, make_replacement,
+    };
     use nebula_crypto::encrypt_with_key_id;
 
     use super::{
@@ -476,9 +497,8 @@ mod tests {
             RefreshRetryKind::TransientNetwork,
             None,
         );
-        let replacement = make_replacement(
+        let replacement = make_preserve_replacement(
             created.version(),
-            b"v2",
             RefreshRetryTransition::SetNever {
                 evidence: evidence.clone(),
             },
@@ -503,14 +523,110 @@ mod tests {
         store
             .replace(
                 &selector,
-                make_replacement(replaced.version(), b"v3", RefreshRetryTransition::Preserve),
+                make_preserve_replacement(replaced.version(), RefreshRetryTransition::Preserve),
             )
             .await?;
+        let live = into_live(store.get(&selector).await?);
         assert!(matches!(
-            into_live(store.get(&selector).await?).refresh_retry_gate(),
+            live.refresh_retry_gate(),
             Some(nebula_storage_port::RefreshRetryGate::Never { evidence: stored })
                 if stored == &evidence
         ));
+        assert_eq!(live.data().as_ref(), b"v1");
+        Ok(())
+    }
+
+    /// `Preserve` carries no bytes, so the decorator has nothing to seal: the
+    /// raw ciphertext below it — nonce, key id and all — stays byte-identical,
+    /// and so do the other material columns.
+    #[tokio::test]
+    async fn preserve_leaves_inner_ciphertext_byte_identical()
+    -> Result<(), CredentialPersistenceError> {
+        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let store = EncryptionLayer::new(inner.clone(), default_provider());
+        let selector = selector(CredentialId::new());
+        let created = store.create(&selector, make_credential(b"v1")).await?;
+        let raw_before = into_live(inner.get(&selector).await?);
+
+        let committed = store
+            .replace(
+                &selector,
+                make_preserve_replacement(
+                    created.version(),
+                    RefreshRetryTransition::SetNever {
+                        evidence: RefreshRetryEvidence::new(
+                            RefreshRetryPhase::BeforeDispatch,
+                            RefreshRetryKind::TransientNetwork,
+                            None,
+                        ),
+                    },
+                ),
+            )
+            .await?;
+
+        let raw_after = into_live(inner.get(&selector).await?);
+        assert_eq!(raw_after.version(), committed.version());
+        assert_eq!(raw_after.data(), raw_before.data());
+        assert_eq!(raw_after.state_kind(), raw_before.state_kind());
+        assert_eq!(raw_after.state_version(), raw_before.state_version());
+        assert_eq!(raw_after.expires_at(), raw_before.expires_at());
+        assert_eq!(raw_after.material_epoch(), raw_before.material_epoch());
+        assert_eq!(
+            into_live(store.get(&selector).await?).data().as_ref(),
+            b"v1"
+        );
+        Ok(())
+    }
+
+    /// `Advance { Unchanged }` advances refresh authority over the stored
+    /// ciphertext without re-sealing it — not even under a rotated key.
+    #[tokio::test]
+    async fn advance_unchanged_keeps_ciphertext_and_advances_the_material_epoch()
+    -> Result<(), CredentialPersistenceError> {
+        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let key1_bytes = [0x01; 32];
+        let store_old = EncryptionLayer::new(
+            inner.clone(),
+            static_provider_with_version(key1_bytes, "key-1"),
+        );
+        let selector = selector(CredentialId::new());
+        let created = store_old.create(&selector, make_credential(b"v1")).await?;
+        let raw_before = into_live(inner.get(&selector).await?);
+
+        let store_new = EncryptionLayer::with_legacy_keys(
+            inner.clone(),
+            static_provider_with_version([0x02; 32], "key-2"),
+            vec![(
+                "key-1".to_string(),
+                Arc::new(EncryptionKey::from_bytes(key1_bytes)),
+            )],
+        );
+        store_new
+            .replace(
+                &selector,
+                CredentialReplacement::new(
+                    created.version(),
+                    None,
+                    true,
+                    Default::default(),
+                    CredentialMaterialTransition::advance(MaterialUpdate::Unchanged),
+                ),
+            )
+            .await?;
+
+        let raw_after = into_live(inner.get(&selector).await?);
+        assert_eq!(raw_after.data(), raw_before.data());
+        let envelope: EncryptedData = serde_json::from_slice(raw_after.data()).unwrap();
+        assert_eq!(envelope.key_id, "key-1");
+        assert_eq!(
+            raw_after.material_epoch(),
+            raw_before.material_epoch().next()?
+        );
+        assert!(raw_after.reauth_required());
+        assert_eq!(
+            into_live(store_new.get(&selector).await?).data().as_ref(),
+            b"v1"
+        );
         Ok(())
     }
 
@@ -539,15 +655,12 @@ mod tests {
         );
         let selector = selector(CredentialId::new());
         let created = store.create(&selector, make_credential(b"v1")).await?;
-        let replacement = make_replacement(
-            created.version(),
-            b"must-not-apply",
-            RefreshRetryTransition::Preserve,
-        )
-        .with_fence(CredentialReplacementFence::new(
-            CredentialMaterialEpoch::MIN.next()?,
-            "test".to_owned(),
-        ));
+        let replacement = make_replacement(created.version(), b"must-not-apply").with_fence(
+            CredentialReplacementFence::new(
+                CredentialMaterialEpoch::MIN.next()?,
+                "test".to_owned(),
+            ),
+        );
 
         assert_eq!(
             store
@@ -901,11 +1014,7 @@ mod tests {
         let updated = store_new
             .replace(
                 &selector,
-                make_replacement(
-                    originally_stored.version(),
-                    b"rotated",
-                    RefreshRetryTransition::Clear,
-                ),
+                make_replacement(originally_stored.version(), b"rotated"),
             )
             .await?;
         assert_eq!(updated.version(), version(2));

@@ -1,4 +1,4 @@
-use nebula_storage_port::{CredentialMaterialEpoch, CredentialVersion};
+use nebula_storage_port::{CredentialAdmissionEpoch, CredentialMaterialEpoch, CredentialVersion};
 
 use super::*;
 
@@ -6,6 +6,7 @@ fn open(reauth_required: bool) -> CredentialOperationStatus {
     CredentialOperationStatus::Open {
         version: CredentialVersion::MIN,
         material_epoch: CredentialMaterialEpoch::MIN,
+        admission_epoch: CredentialAdmissionEpoch::MIN,
         reauth_required,
     }
 }

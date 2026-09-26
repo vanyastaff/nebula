@@ -6,9 +6,10 @@ use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage::credential::SqliteCredentialPersistence;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCreate, CredentialOwner, CredentialPersistence,
-    CredentialPersistenceError, CredentialRecordState, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, CredentialVersion, SecretBytes, StoredCredential,
+    CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterial, CredentialMaterialTransition,
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialRecordState,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
+    MaterialUpdate, SecretBytes, StoredCredential,
 };
 use serde_json::{Map, Value};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -51,15 +52,20 @@ fn replacement(
 ) -> CredentialReplacement {
     CredentialReplacement::new(
         expected_version,
+        name.map(str::to_owned),
+        false,
+        name.map(metadata).unwrap_or_else(unnamed_metadata),
+        material(secret),
+    )
+}
+
+fn material(secret: &[u8]) -> CredentialMaterialTransition {
+    CredentialMaterialTransition::advance(MaterialUpdate::Replace(CredentialMaterial::new(
         SecretBytes::new(secret.to_vec()),
         "oauth2_refreshed".to_owned(),
         4,
-        name.map(str::to_owned),
         Some(instant(2_000_000_000)),
-        false,
-        name.map(metadata).unwrap_or_else(unnamed_metadata),
-        nebula_storage_port::CredentialMaterialTransition::advance(),
-    )
+    )))
 }
 
 fn version(value: i64) -> CredentialVersion {
@@ -505,14 +511,10 @@ async fn malformed_or_mismatched_display_projection_is_rejected_before_write() {
         .expect("valid fixture create must commit");
     let mismatched_replacement = CredentialReplacement::new(
         version(1),
-        SecretBytes::new(b"forbidden".to_vec()),
-        "oauth2_state".to_owned(),
-        2,
         Some("Changed".to_owned()),
-        None,
         false,
         metadata("Different"),
-        nebula_storage_port::CredentialMaterialTransition::advance(),
+        material(b"forbidden"),
     );
     assert_eq!(
         store

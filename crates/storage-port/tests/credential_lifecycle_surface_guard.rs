@@ -64,16 +64,23 @@ fn mutation_dtos_have_private_fields_and_no_authority_or_identity_smuggling() {
         field_names(replacement),
         [
             "expected_version",
-            "data",
-            "state_kind",
-            "state_version",
             "name",
-            "expires_at",
             "reauth_required",
             "metadata",
             "material_transition",
             "fence",
         ]
+    );
+    let material = struct_body(DTO_SOURCE, "CredentialMaterial");
+    assert!(
+        !material
+            .lines()
+            .any(|line| line.trim_start().starts_with("pub")),
+        "CredentialMaterial fields must stay private"
+    );
+    assert_eq!(
+        field_names(material),
+        ["data", "state_kind", "state_version", "expires_at"]
     );
     assert_eq!(field_names(tombstone), ["expected_version"]);
 }

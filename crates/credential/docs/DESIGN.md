@@ -278,6 +278,23 @@ monomorphized projection registered in `DispatchOps`. Callers receive an opaque
 only way to recover `CredentialGuard<S>`. Its secret-free metadata carries both material epoch and
 aggregate revision so resource slots can reject stale replacement attempts.
 
+The metadata also carries the admission epoch — the contract's use revision — read in the same
+snapshot as the material, never from the earlier head. The backend advances that epoch in the same
+transaction as every write that closes use: every advancing replacement (new material, and the
+durable reauthentication decision, which advances authority over unchanged bytes), any change of
+`reauth_required`, a won revoke claim, the provider-egress sentinel, and threshold escalation.
+Display edits and retry-gate writes preserve it, and none of these writes moves the aggregate
+revision. Two `Open` observations at equal admission epochs therefore saw the same material epoch
+and reauthentication state with no denying observation between them (invariant I-A), which is what
+lets a consumer that bound a projection at one epoch treat any other epoch as "old use revision
+does not admit". Only the SQL backends provide the claim-side bumps; the in-memory claim repository
+cannot. Consumer wiring (observer, activation, fan-out) is a follow-up.
+
+Replacement carries material only on `Advance { material: MaterialUpdate::Replace(..) }`. A
+display edit or retry-gate write sends `Preserve` and the reauthentication decision sends
+`Advance { Unchanged }`; neither carries bytes, so neither can restore stale material captured at
+load time, and the encryption layer re-seals only newly installed material.
+
 `CredentialAvailabilityObserver` is the availability-only half of that boundary: the same
 owner-qualified checks up to and including the operation-status classification (`classify_use`)
 and the head's reauthentication bit, from exactly one `get_operational_head` read and nothing

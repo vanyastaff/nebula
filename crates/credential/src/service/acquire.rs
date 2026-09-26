@@ -279,14 +279,17 @@ impl CredentialService {
         );
         let replacement = CredentialReplacement::new(
             existing.version(),
-            resolved.data.to_vec().into(),
-            resolved.state_kind,
-            resolved.state_version,
             display.display_name.clone(),
-            resolved.expires_at,
             false,
             metadata,
-            CredentialMaterialTransition::advance(),
+            CredentialMaterialTransition::advance(crate::MaterialUpdate::Replace(
+                crate::CredentialMaterial::new(
+                    resolved.data.to_vec().into(),
+                    resolved.state_kind,
+                    resolved.state_version,
+                    resolved.expires_at,
+                ),
+            )),
         )
         .with_fence(CredentialReplacementFence::new(
             existing.material_epoch(),

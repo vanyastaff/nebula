@@ -1323,13 +1323,25 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
-    /// PostgreSQL head 0060 creates only the empty rate-limit and
+    /// Head 0061, on both backends, adds the credential admission epoch (the
+    /// use revision) with the constant 1 on every existing row and a named
+    /// range check. Nothing is inspected or inferred: the constant claims no
+    /// history, and because no binding carried an admission epoch before the
+    /// cutover, none can match a later observation — bindings are invalidated
+    /// conservatively rather than guessed. Material, version, and every other
+    /// aggregate column are untouched. It is aggregate-neutral and the floor
+    /// remains at 0040. Old credential writers do not advance the epoch, so
+    /// they must be stopped before it applies; PostgreSQL drops the backfill
+    /// default so an old writer's insert fails closed. SQLite keeps its
+    /// PostgreSQL-only gap at 0060.
+    ///
+    /// PostgreSQL 0060 creates only the empty rate-limit and
     /// rate-limit-reservation relations, their constraints, and two time
     /// indexes. They reference no aggregate and nothing is inspected,
     /// inferred, or backfilled; a missing row behaves exactly like an idle
     /// limit, which is how every key starts. It is aggregate-neutral and the
     /// floor remains at 0040. SQLite reserves 0060 (one process keeps its
-    /// limits in memory), so its head stays at 0059.
+    /// limits in memory).
     ///
     /// Head 0059 creates only the empty worker-heartbeat and resource-status
     /// relations, their constraints, and a worker index. They reference no
@@ -1395,9 +1407,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 59);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 61);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 60);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 61);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

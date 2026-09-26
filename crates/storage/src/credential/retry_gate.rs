@@ -83,7 +83,7 @@ pub(crate) fn encode_material_transition(
         CredentialMaterialTransition::Preserve { refresh_retry } => {
             encode_transition(refresh_retry)
         },
-        CredentialMaterialTransition::Advance => Ok(EncodedTransition {
+        CredentialMaterialTransition::Advance { .. } => Ok(EncodedTransition {
             code: TRANSITION_CLEAR,
             delay_seconds: None,
             phase: None,

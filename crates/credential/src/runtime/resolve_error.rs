@@ -72,6 +72,7 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
             | CredentialPersistenceError::AlreadyExists { .. }
             | CredentialPersistenceError::VersionExhausted
             | CredentialPersistenceError::MaterialEpochExhausted
+            | CredentialPersistenceError::AdmissionEpochExhausted
             | CredentialPersistenceError::CorruptRecord,
         ) => CredentialError::InvalidInput,
         // A post-provider commit with a lost acknowledgement is operational but

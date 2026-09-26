@@ -213,13 +213,13 @@ async fn insert_semantically_invalid_current_record(pool: &PgPool) -> TestResult
     sqlx::query(
         "INSERT INTO credentials (
              id, name, owner_id, credential_key, state_kind, state_version,
-             data, version, material_epoch, created_at, updated_at, expires_at,
-             reauth_required, metadata, record_state, tombstoned_at,
+             data, version, material_epoch, admission_epoch, created_at, updated_at,
+             expires_at, reauth_required, metadata, record_state, tombstoned_at,
              refresh_retry_mode, refresh_retry_not_before, refresh_retry_phase,
              refresh_retry_kind, refresh_retry_diagnostic_code
          ) VALUES (
              'not-a-credential-id', NULL, 'owner-catalog-only',
-             'provider.catalog-only', 'ready', 0, $1, 1, 1,
+             'provider.catalog-only', 'ready', 0, $1, 1, 1, 1,
              now(), now(), NULL, FALSE, '{}', 'live', NULL,
              NULL, NULL, NULL, NULL, NULL
          )",
@@ -953,6 +953,112 @@ async fn current_schema_rejects_column_and_index_drift() -> TestResult<()> {
             if unsupported.reason() == &CredentialSchemaAdmissionReason::InvalidMigrationLedger
     ));
     ledger_drift.cleanup().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_22_column_shape_is_admitted_and_create_writes_admission_epoch_one()
+-> TestResult<()> {
+    let Some(database) = IsolatedSchema::connect().await else {
+        panic!(
+            "canonical_22_column_shape_is_admitted_and_create_writes_admission_epoch_one: \
+             backend unreachable — the case cannot run and must fail rather than pass \
+             unchecked; reach the backend (set DATABASE_URL for postgres) or run without this \
+             feature"
+        );
+    };
+    let store = PgCredentialPersistence::connect_with(database.options.clone()).await?;
+    let selector = nebula_storage_port::CredentialSelector::new(
+        nebula_storage_port::CredentialOwner::from_canonical("admission-owner"),
+        CredentialId::new(),
+    );
+    nebula_storage_port::CredentialPersistence::create(
+        &store,
+        &selector,
+        nebula_storage_port::CredentialCreate::new(
+            "provider.token".to_owned(),
+            nebula_storage_port::SecretBytes::new(b"material".to_vec()),
+            "active".to_owned(),
+            1,
+            None,
+            None,
+            false,
+            Default::default(),
+        ),
+    )
+    .await?;
+    drop(store);
+
+    let pool = database.raw_pool().await;
+    let column = sqlx::query_as::<_, (i32, String, String, Option<String>)>(
+        "SELECT ordinal_position::int, udt_name::text, is_nullable::text,
+                column_default::text
+         FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'credentials'
+           AND column_name = 'admission_epoch'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        column,
+        (22, "int8".to_owned(), "NO".to_owned(), None),
+        "0061 appends a required epoch whose backfill default is dropped"
+    );
+    let epoch: i64 = sqlx::query_scalar("SELECT admission_epoch FROM credentials WHERE id = $1")
+        .bind(selector.credential_id().to_string())
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(
+        epoch, 1,
+        "create writes the first admission epoch explicitly"
+    );
+    let zero_rejected = sqlx::query("UPDATE credentials SET admission_epoch = 0 WHERE id = $1")
+        .bind(selector.credential_id().to_string())
+        .execute(&pool)
+        .await
+        .is_err();
+    assert!(zero_rejected, "the named range check must reject zero");
+    pool.close().await;
+
+    drop(PgCredentialPersistence::connect_with(database.options.clone()).await?);
+    database.cleanup().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn current_schema_rejects_admission_epoch_drift() -> TestResult<()> {
+    for drift in [
+        "ALTER TABLE credentials DROP COLUMN admission_epoch",
+        "ALTER TABLE credentials ALTER COLUMN admission_epoch SET DEFAULT 1",
+        "ALTER TABLE credentials ALTER COLUMN admission_epoch TYPE NUMERIC",
+        "ALTER TABLE credentials DROP CONSTRAINT credentials_admission_epoch_range",
+        "ALTER TABLE credentials ALTER COLUMN admission_epoch DROP NOT NULL",
+    ] {
+        let Some(database) = IsolatedSchema::connect().await else {
+            panic!(
+                "current_schema_rejects_admission_epoch_drift: backend unreachable — the case \
+                 cannot run and must fail rather than pass unchecked; reach the backend (set \
+                 DATABASE_URL for postgres) or run without this feature"
+            );
+        };
+        drop(PgCredentialPersistence::connect_with(database.options.clone()).await?);
+        let pool = database.raw_pool().await;
+        sqlx::query(drift).execute(&pool).await?;
+        pool.close().await;
+
+        let error = reject_logically_unchanged(&database).await?;
+        assert!(
+            matches!(
+                error,
+                CredentialStoreStartupError::UnsupportedSchemaVersion(ref unsupported)
+                    if unsupported.reason()
+                        == &CredentialSchemaAdmissionReason::InvalidCredentialsRelation
+            ),
+            "`{drift}` must not pass admission, got {error:?}"
+        );
+        database.cleanup().await;
+    }
     Ok(())
 }
 
