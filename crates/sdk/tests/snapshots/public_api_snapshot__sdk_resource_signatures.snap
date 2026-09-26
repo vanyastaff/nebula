@@ -329,6 +329,20 @@ exported as nebula_sdk::prelude::ResourceConfig
 #[proc_macro_derive(ResourceConfig, attributes(config))]
 pub fn derive_resource_config(input: TokenStream) -> TokenStream;
 
+## struct nebula_credential::secrets::guard::CredentialGuard
+exported as nebula_sdk::integration::resource::CredentialGuard
+pub struct CredentialGuard<S: Zeroize> {
+    /* private fields */
+}
+impl<S: Zeroize> CredentialGuard<S> {
+    pub fn new(inner: S) -> Self;
+}
+impl<S: Zeroize + Send + Sync + 'static> Guard for CredentialGuard<S>
+impl<S: Zeroize + Send + Sync + 'static> TypedGuard for CredentialGuard<S>
+impl<S: Zeroize + Send + Sync + 'static> fmt::Debug for CredentialGuard<S>
+impl<S: Zeroize> Deref for CredentialGuard<S>
+impl<S: Zeroize> Drop for CredentialGuard<S>
+
 ## struct nebula_resilience::rate_limiter::gcra::Rate
 exported as nebula_sdk::integration::resource::Rate
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -445,6 +459,38 @@ impl<T> Unit<T> {
 }
 impl<T> Future for Unit<T>
 impl<T> fmt::Debug for Unit<T>
+
+## struct nebula_resource::call::stream::ConsumerGone
+exported as nebula_sdk::integration::resource::ConsumerGone
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsumerGone;
+impl fmt::Display for ConsumerGone
+impl std::error::Error for ConsumerGone
+
+## struct nebula_resource::call::stream::StreamSink
+exported as nebula_sdk::integration::resource::StreamSink
+pub struct StreamSink<T> {
+    /* private fields */
+}
+impl<T> StreamSink<T> {
+    pub async fn send(&mut self, item: T) -> Result<(), ConsumerGone>;
+    pub async fn closed(&self);
+    pub fn is_closed(&self) -> bool;
+}
+impl<T> fmt::Debug for StreamSink<T>
+
+## struct nebula_resource::call::stream::Streaming
+exported as nebula_sdk::integration::resource::Streaming
+pub struct Streaming<T, O = ()> {
+    /* private fields */
+}
+impl<T, O> Streaming<T, O> {
+    pub async fn next(&mut self) -> Option<Result<T, OpError>>;
+    pub async fn finish(mut self) -> Result<O, OpError>;
+    pub fn cancel(&self);
+    pub fn with_deadline(mut self, deadline: Instant) -> Self;
+}
+impl<T, O> fmt::Debug for Streaming<T, O>
 
 ## struct nebula_resource::context::ResourceContext
 exported as nebula_sdk::integration::resource::ResourceContext
@@ -895,6 +941,16 @@ pub trait PinSlots: HasCredentialSlots {
     fn pin_slots(&self) -> Self::Pinned;
 }
 
+## trait nebula_resource::call::stream::StreamOperation
+exported as nebula_sdk::integration::resource::StreamOperation
+pub trait StreamOperation<R: Provider + PinSlots>: Send + 'static {
+    type Item: Send + 'static;
+    type Output: Send + 'static;
+    const EFFECT: Effect = Effect::Write;
+    fn max_attempts(&self) -> NonZeroU32 { .. }
+    fn run(self, cx: &mut OpCx<'_, R>, sink: StreamSink<Self::Item>) -> impl Future<Output = Result<Self::Output, OpError>> + Send;
+}
+
 ## trait nebula_resource::rate_limit::Throttle
 exported as nebula_sdk::integration::resource::Throttle
 pub trait Throttle<T, E>: Send + Sync {
@@ -991,3 +1047,7 @@ pub trait ResidentProvider: Provider {
     fn is_alive_sync(&self, _instance: &Self::Instance) -> bool { .. }
     fn stale_after(&self) -> Option<Duration> { .. }
 }
+
+## type nebula_resource::slot::CredentialSlot
+exported as nebula_sdk::integration::resource::CredentialSlot
+pub type CredentialSlot<C> = SlotCell<nebula_credential::CredentialGuard<<C as nebula_credential::Credential>::Scheme>>;

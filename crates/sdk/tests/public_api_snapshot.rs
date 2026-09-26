@@ -41,6 +41,8 @@ const CRATES: &[(&str, &str)] = &[
     ("nebula_core", "crates/core/src"),
     // `rate_limit::Rate` is the resilience GCRA rate, re-exported.
     ("nebula_resilience", "crates/resilience/src"),
+    // `CredentialGuard`, re-exported for credential slots.
+    ("nebula_credential", "crates/credential/src"),
 ];
 
 fn workspace() -> Workspace {

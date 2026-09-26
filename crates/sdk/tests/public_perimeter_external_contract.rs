@@ -8,7 +8,9 @@
 //! teardown coverage. A second positive binary checks custom resource topology
 //! authoring, a third the rate-limit declaration, and a fourth a logger
 //! authored against the managed call facade, whose `Managed` must not deref
-//! (`managed_no_deref`). Each negative binary targets one distinct authority or persistence
+//! (`managed_no_deref`), and a fifth a derived credentialed resource
+//! (`resource_credentialed`: `CredentialSlot<BearerTokenCredential>` read
+//! through pinned slots). Each negative binary targets one distinct authority or persistence
 //! escape hatch that must stay unavailable, including paths below `__private`:
 //! Rust documentation hiding is not access control. Procedural derives have a
 //! separate SDK-only compile-pass
@@ -27,6 +29,7 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/resource_topology.rs",
     "src/bin/resource_rate_limit.rs",
     "src/bin/resource_managed_logger.rs",
+    "src/bin/resource_credentialed.rs",
     "src/bin/managed_no_deref.rs",
     "src/bin/removed_resource_from_key.rs",
     "src/bin/removed_checkpoint_policy_action.rs",
@@ -311,6 +314,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         "resource_topology",
         "resource_rate_limit",
         "resource_managed_logger",
+        "resource_credentialed",
     ];
     let output = cargo_clippy_bins(temp.path(), &positives);
     assert!(
@@ -342,6 +346,12 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         managed.status.success(),
         "managed call facade authoring through the SDK alone must compile and execute:\n{}",
         render_output(&managed)
+    );
+    let credentialed = cargo_probe(temp.path(), "run", "resource_credentialed");
+    assert!(
+        credentialed.status.success(),
+        "a derived credentialed resource through the SDK alone must compile and execute:\n{}",
+        render_output(&credentialed)
     );
 }
 
