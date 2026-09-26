@@ -185,6 +185,29 @@ stricter overflow limit (`MemoryLimitStore::overflowed` counts it) rather
 than growing without bound; a shared store's rows live only while a key is
 busy.
 
+#### Rate-limit profiles
+
+What a row's limit budgets depends on how the resource uses its limiter. The
+row reports it as a `RateLimitProfile` (`as_str()` in parentheses):
+
+| Profile | When | A permit is booked per | Calls inside a lease | Support |
+|---|---|---|---|---|
+| `PausesOnly` (`pauses_only`) | no rate declared or set, no wrapped client | nothing | not paced; a provider pause holds acquires | supported |
+| `PerAcquire` (`per_acquire`) | a rate, no wrapped client | acquire | bounded interval: one permit per lease, however many calls it makes | supported |
+| `InterimPerClosure` (`interim_per_closure`) | `Provider::create` wrapped a client | `Limited::run*` closure | strict: each closure is one permit; acquires only honour pauses | **interim** — replaced by the managed call facade |
+
+Only `InterimPerClosure` is interim (`RateLimitProfile::is_interim`): the
+closure family (`Limited::run`, `run_until`, `run_for`, `run_for_until`) and
+`Limited::unlimited` are the surface the managed call facade replaces. The
+profile is observed, not declared: it latches to `InterimPerClosure` at the
+first `ResourceLimiter::wrap` and keeps it for the row's life, so a row whose
+instance is created lazily reports its pre-wrap profile (`PausesOnly` or
+`PerAcquire`) until the first acquire creates it. In-process status carries it
+— `ResourceHealthSnapshot::rate_limit_profile` and
+`ManagedResourceView::rate_limit_profile()`; the cross-process resource status
+does not yet. `RateLimitProfile` is a status fact, not authoring surface, so
+the SDK does not re-export it.
+
 A caller waits for its slot but never past its deadline: a slot after the
 deadline fails fast with `Exhausted` + `retry_after` and consumes nothing; an
 unreachable shared store fails closed as `Backpressure`. Denials never trip the

@@ -998,6 +998,14 @@ impl ResourceLimiter {
     ///
     /// Build the wrapper once, in [`Provider::create`](crate::Provider::create),
     /// from [`ResourceContext::limits`](crate::ResourceContext::limits).
+    ///
+    /// # Interim
+    ///
+    /// Wrapping latches this row's [`profile`](Self::profile) to
+    /// [`RateLimitProfile::InterimPerClosure`] for the row's life: from then
+    /// on each [`Limited::run`] closure books one permit and acquires only
+    /// honour pauses. The closure family is interim surface; the managed call
+    /// facade replaces it.
     #[must_use]
     pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T> {
         // Calls through the client now book their own slots; an acquire must
@@ -1872,6 +1880,15 @@ where
 /// [`run`](Self::run); there is deliberately no `Deref` to the client, so a
 /// call cannot skip the limit by accident. [`unlimited`](Self::unlimited) is
 /// the explicit, reviewable way to do so.
+///
+/// # Interim
+///
+/// **Interim surface.** Each `run*` closure books one permit and counts as
+/// one provider call, whatever it does inside; the row reports
+/// [`RateLimitProfile::InterimPerClosure`]. The managed call facade replaces
+/// the closure family and [`unlimited`](Self::unlimited); until then they
+/// are supported, and the crate README's rate-limit profile table says what
+/// each profile budgets.
 pub struct Limited<C, T = NoThrottle> {
     client: C,
     throttle: T,
@@ -1935,6 +1952,8 @@ impl<C, T> Limited<C, T> {
     /// Runs one call under the limit, waiting for a permit never past
     /// `deadline`.
     ///
+    /// **Interim surface**, as [`run`](Self::run).
+    ///
     /// # Errors
     ///
     /// As [`run`](Self::run); a permit past `deadline` is
@@ -1963,6 +1982,8 @@ impl<C, T> Limited<C, T> {
     /// limit, waiting for both as long as needed. A
     /// [`Verdict::KeyThrottled`] pauses only this key.
     ///
+    /// **Interim surface**, as [`run`](Self::run).
+    ///
     /// # Errors
     ///
     /// As [`run`](Self::run); a permanent [`LimitedError::Limit`] when the
@@ -1980,6 +2001,8 @@ impl<C, T> Limited<C, T> {
     }
 
     /// As [`run_for`](Self::run_for), never waiting past `deadline`.
+    ///
+    /// **Interim surface**, as [`run`](Self::run).
     ///
     /// # Errors
     ///

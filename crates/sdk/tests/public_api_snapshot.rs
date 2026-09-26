@@ -155,7 +155,17 @@ fn limited_has_no_deref_and_marks_interim_calls() {
             "Limited must not deref to its client: {line}"
         );
     }
-    for method in ["fn run<", "fn unlimited("] {
+    assert!(
+        text.contains("\n## struct nebula_resource::rate_limit::Limited [interim]\n"),
+        "Limited itself is documented as interim surface"
+    );
+    for method in [
+        "fn run<",
+        "fn run_until<",
+        "fn run_for<",
+        "fn run_for_until<",
+        "fn unlimited(",
+    ] {
         let line = limited
             .iter()
             .find(|line| line.contains(method))

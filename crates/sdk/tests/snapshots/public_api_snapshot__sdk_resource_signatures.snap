@@ -402,16 +402,16 @@ impl<R: Provider> nebula_core::Guard for ResourceGuard<R>
 impl<R: Provider> nebula_core::TypedGuard for ResourceGuard<R>
 impl<R: Provider> std::fmt::Debug for ResourceGuard<R>
 
-## struct nebula_resource::rate_limit::Limited
+## struct nebula_resource::rate_limit::Limited [interim]
 exported as nebula_sdk::integration::resource::Limited
 pub struct Limited<C, T = NoThrottle> {
     /* private fields */
 }
 impl<C, T> Limited<C, T> {
     pub async fn run<R, E>(&self, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>; [interim]
-    pub async fn run_until<R, E>(&self, deadline: Option<std::time::Instant>, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>;
-    pub async fn run_for<R, E>(&self, dimension: &str, value: impl fmt::Display, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>;
-    pub async fn run_for_until<R, E>(&self, dimension: &str, value: impl fmt::Display, deadline: Option<std::time::Instant>, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>;
+    pub async fn run_until<R, E>(&self, deadline: Option<std::time::Instant>, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>; [interim]
+    pub async fn run_for<R, E>(&self, dimension: &str, value: impl fmt::Display, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>; [interim]
+    pub async fn run_for_until<R, E>(&self, dimension: &str, value: impl fmt::Display, deadline: Option<std::time::Instant>, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>; [interim]
     pub const fn unlimited(&self) -> &C; [interim]
     pub const fn limits(&self) -> &Arc<ResourceLimiter>;
 }
