@@ -152,6 +152,49 @@ impl From<&nebula_credential::CredentialAvailabilityObservation> for CredentialO
     }
 }
 
+/// How a row admits new work against its bound credentials.
+///
+/// Reported per row in [`ResourceHealthSnapshot`](crate::ResourceHealthSnapshot)
+/// and on [`ManagedResourceView`](crate::ManagedResourceView). Chosen at
+/// registration from the resource's declared slots and whether the manager
+/// was configured with a credential availability observer
+/// ([`ManagerConfig::with_credential_observer`](crate::ManagerConfig::with_credential_observer)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CredentialAdmissionProfile {
+    /// The resource declares no credential slots; nothing is read.
+    Unbound,
+    /// Every new unit of work — an acquire, a create — reads the bound
+    /// credentials' availability first and is refused unless each is usable
+    /// at the installed material. A credential store outage refuses new
+    /// credentialed work.
+    StrictPerAcquire,
+    /// No availability read before new work: the row admits until a
+    /// credential denial reaches it (engine activation, the rotation fan-out
+    /// or a caller suspends it). Interim — the production worker is strict;
+    /// the default becomes strict before the API freeze.
+    InterimRowGate,
+}
+
+impl CredentialAdmissionProfile {
+    /// Whether this profile is interim surface that a later release replaces.
+    #[must_use]
+    pub const fn is_interim(self) -> bool {
+        matches!(self, Self::InterimRowGate)
+    }
+
+    /// Stable lowercase name for logs and status views: `unbound`,
+    /// `strict_per_acquire` or `interim_row_gate`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unbound => "unbound",
+            Self::StrictPerAcquire => "strict_per_acquire",
+            Self::InterimRowGate => "interim_row_gate",
+        }
+    }
+}
+
 /// Result of [`Manager::suspend_credential_row`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

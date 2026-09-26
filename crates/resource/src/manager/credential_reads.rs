@@ -501,4 +501,4 @@ impl Drop for Leadership<'_> {
 
 #[cfg(test)]
 #[path = "credential_reads_tests.rs"]
-mod tests;
+pub(crate) mod tests;

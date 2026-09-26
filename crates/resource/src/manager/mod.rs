@@ -439,12 +439,23 @@ pub(crate) mod shutdown;
 mod shutdown_session;
 #[cfg(test)]
 mod shutdown_session_tests;
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "fixtures for the strict acquire tests that land with the acquire read"
+)]
+mod strict_fixtures;
+#[cfg(test)]
+mod strict_profile_tests;
 
 pub use credential_gate::{
-    CredentialGateTicket, CredentialObservedAt, CredentialReopenOutcome, CredentialSuspendOutcome,
+    CredentialAdmissionProfile, CredentialGateTicket, CredentialObservedAt,
+    CredentialReopenOutcome, CredentialSuspendOutcome,
 };
+pub(crate) use credential_reads::CredentialReads;
 pub use options::{
-    DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
+    CredentialObserverHandle, DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec,
+    ShutdownConfig,
 };
 #[cfg(feature = "rotation")]
 pub(crate) use rotation::ResolvedAt;
@@ -481,6 +492,10 @@ pub struct ResourceHealthSnapshot {
     /// whose instance has not been created yet reports the profile it has
     /// before `Provider::create` wraps a client.
     pub rate_limit_profile: crate::rate_limit::RateLimitProfile,
+    /// How new work is admitted against the row's bound credentials: read
+    /// per acquire (strict), gated on the row only (interim), or nothing to
+    /// read.
+    pub credential_admission: CredentialAdmissionProfile,
 }
 
 /// Central registry and lifecycle manager for all resources.
@@ -557,6 +572,12 @@ pub struct Manager {
     pub(super) local_limits: Arc<crate::rate_limit::MemoryLimitStore>,
     /// Store shared by every worker for cluster-scoped limits.
     pub(super) shared_limits: Option<crate::rate_limit::SharedLimitStore>,
+    /// Join-next availability reads of bound credentials, when the manager
+    /// was configured with an observer (strict per-acquire admission).
+    pub(super) credential_reads: Option<Arc<CredentialReads>>,
+    /// Set once the first credential-bound row registered without an
+    /// observer has been warned about.
+    pub(super) interim_credential_warned: AtomicBool,
 }
 
 impl std::fmt::Debug for Manager {
@@ -604,6 +625,20 @@ impl Manager {
                     },
                 });
         let acquire_slow_threshold = config.acquire_slow_threshold;
+        let credential_reads = config.credential_observer.map(|observer| {
+            let metrics = config.metrics_registry.as_ref().and_then(|registry| {
+                credential_reads::CredentialAdmissionMetrics::new(registry)
+                    .inspect_err(|err| {
+                        tracing::warn!(?err, "failed to initialize credential admission metrics");
+                    })
+                    .ok()
+            });
+            Arc::new(CredentialReads::new(
+                observer.into_observer(),
+                cancel.clone(),
+                metrics,
+            ))
+        });
         let retirement_supervisor = Arc::new(retirement::RetirementSupervisor::new(
             Arc::clone(&release_queue),
             config.release_queue_workers,
@@ -628,6 +663,8 @@ impl Manager {
             acquire_slow_threshold,
             local_limits: Arc::new(crate::rate_limit::MemoryLimitStore::new()),
             shared_limits: config.shared_limit_store,
+            credential_reads,
+            interim_credential_warned: AtomicBool::new(false),
         }
     }
 
@@ -878,6 +915,7 @@ impl Manager {
             live_instances: crate::topology::Topology::<R>::live_instances(&managed.topology),
             credential_suspension: managed.admission.suspension(),
             rate_limit_profile: managed.rate_limiter.profile(),
+            credential_admission: managed.credential_admission_profile(),
         })
     }
 
