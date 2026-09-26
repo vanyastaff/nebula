@@ -385,6 +385,7 @@ pub use factory::{
 };
 pub use nebula_schema::{HasSchema, Schema, ValidSchema, impl_empty_has_schema};
 pub use options::AcquireOptions;
+pub use rate_limit::RateLimitProfile;
 pub use recovery::{
     GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter, TryBeginError,
 };

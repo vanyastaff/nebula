@@ -454,6 +454,10 @@ pub struct ResourceHealthSnapshot {
     /// The bound credential slots suspending this row, if any. A suspended
     /// row refuses acquires whatever its `phase`.
     pub credential_suspension: Option<crate::state::CredentialSuspension>,
+    /// How the row's rate limit is enforced, observed on its limiter. A row
+    /// whose instance has not been created yet reports the profile it has
+    /// before `Provider::create` wraps a client.
+    pub rate_limit_profile: crate::rate_limit::RateLimitProfile,
 }
 
 /// Central registry and lifecycle manager for all resources.
@@ -850,6 +854,7 @@ impl Manager {
             generation: managed.generation(),
             live_instances: crate::topology::Topology::<R>::live_instances(&managed.topology),
             credential_suspension: managed.admission.suspension(),
+            rate_limit_profile: managed.rate_limiter.profile(),
         })
     }
 

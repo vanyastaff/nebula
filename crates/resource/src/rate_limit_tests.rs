@@ -315,6 +315,39 @@ async fn a_limiter_without_a_rate_only_honours_pauses() {
     assert_eq!(wait_for_slot(&limits).await, Duration::ZERO);
 }
 
+#[test]
+fn a_detached_limiter_only_honours_pauses_until_wrapped() {
+    let limits = ResourceLimiter::detached();
+    assert_eq!(limits.profile(), RateLimitProfile::PausesOnly);
+    assert!(!limits.profile().is_interim());
+    let _client = limits.wrap((), NoThrottle);
+    assert_eq!(limits.profile(), RateLimitProfile::InterimPerClosure);
+}
+
+#[test]
+fn a_rate_is_booked_per_acquire_until_a_wrap_latches_per_closure() {
+    let limits = Arc::new(limiter(per_second(1, 1)));
+    assert_eq!(limits.profile(), RateLimitProfile::PerAcquire);
+    assert!(!limits.profile().is_interim());
+    let client = limits.wrap((), NoThrottle);
+    assert_eq!(limits.profile(), RateLimitProfile::InterimPerClosure);
+    assert!(limits.profile().is_interim());
+    // Dropping the wrapper does not unlatch: the row's calls still book
+    // their own permits through any clone of the client.
+    drop(client);
+    assert_eq!(limits.profile(), RateLimitProfile::InterimPerClosure);
+}
+
+#[test]
+fn profile_names_are_stable() {
+    assert_eq!(RateLimitProfile::PausesOnly.as_str(), "pauses_only");
+    assert_eq!(RateLimitProfile::PerAcquire.as_str(), "per_acquire");
+    assert_eq!(
+        RateLimitProfile::InterimPerClosure.as_str(),
+        "interim_per_closure"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_refused_permit_never_reaches_the_client() {
     let client = Arc::new(limiter(per_second(10, 1))).wrap((), NoThrottle);
