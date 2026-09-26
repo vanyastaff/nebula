@@ -1,0 +1,844 @@
+---
+source: crates/sdk/tests/public_api_snapshot.rs
+expression: resource_signatures(&workspace)
+---
+## const nebula_resource::rate_limit::DEFAULT_MAX_PENALTY
+exported as nebula_sdk::integration::resource::DEFAULT_MAX_PENALTY
+pub const DEFAULT_MAX_PENALTY: Duration = Duration::from_mins(5);
+
+## enum nebula_resource::error::CredentialUnavailableReason
+exported as nebula_sdk::integration::resource::CredentialUnavailableReason
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CredentialUnavailableReason {
+    ReauthRequired,
+    OperationBlocked,
+}
+impl CredentialUnavailableReason {
+    pub fn retry_after(self) -> Duration;
+}
+impl fmt::Display for CredentialUnavailableReason
+
+## enum nebula_resource::error::ErrorKind
+exported as nebula_sdk::integration::resource::ErrorKind
+exported as nebula_sdk::prelude::ErrorKind
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorKind {
+    Transient,
+    Permanent,
+    Exhausted { retry_after: Option<Duration> },
+    Backpressure,
+    NotFound,
+    Cancelled,
+    Revoked,
+    Ambiguous,
+    CredentialUnavailable { reason: CredentialUnavailableReason },
+}
+impl fmt::Display for ErrorKind
+
+## enum nebula_resource::guard::ReleaseOutcome
+exported as nebula_sdk::integration::resource::ReleaseOutcome
+exported as nebula_sdk::prelude::ReleaseOutcome
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReleaseOutcome {
+    Completed,
+    Deferred,
+}
+
+## enum nebula_resource::rate_limit::LimitScope
+exported as nebula_sdk::integration::resource::LimitScope
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum LimitScope {
+    #[default] Cluster,
+    Process,
+}
+
+## enum nebula_resource::rate_limit::LimitedError
+exported as nebula_sdk::integration::resource::LimitedError
+#[derive(Debug)]
+pub enum LimitedError<E> {
+    Limit(Error),
+    Call(E),
+}
+impl<E: fmt::Display> fmt::Display for LimitedError<E>
+impl<E: std::error::Error + 'static> std::error::Error for LimitedError<E>
+
+## enum nebula_resource::rate_limit::Override
+exported as nebula_sdk::integration::resource::Override
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum Override {
+    Fixed,
+    #[default] TightenOnly,
+    UpTo(Rate),
+}
+
+## enum nebula_resource::rate_limit::Verdict
+exported as nebula_sdk::integration::resource::Verdict
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Verdict {
+    Pass,
+    Throttled { retry_after: Option<Duration> },
+    KeyThrottled { retry_after: Option<Duration> },
+}
+
+## enum nebula_resource::reload::ReloadOutcome
+exported as nebula_sdk::prelude::ReloadOutcome
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReloadOutcome {
+    SwappedImmediately,
+    NoChange,
+}
+
+## enum nebula_resource::resource::CheckCost
+exported as nebula_sdk::integration::resource::CheckCost
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CheckCost {
+    Cheap,
+    Moderate,
+    Expensive,
+}
+impl CheckCost {
+    pub fn probe_every_n_sweeps(self) -> u64;
+}
+
+## enum nebula_resource::resource::TeardownReason
+exported as nebula_sdk::integration::resource::TeardownReason
+exported as nebula_sdk::prelude::TeardownReason
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeardownReason {
+    Released,
+    Evicted,
+    Revoked,
+    Shutdown,
+}
+
+## enum nebula_resource::runtime::retained_store::ReplaceStatus
+exported as nebula_sdk::integration::resource::ReplaceStatus
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReplaceStatus {
+    Replaced,
+    Retired(StoreRejection),
+}
+
+## enum nebula_resource::runtime::retained_store::RetainStatus
+exported as nebula_sdk::integration::resource::RetainStatus
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RetainStatus {
+    Published(RetainedId),
+    Retired(StoreRejection),
+}
+
+## enum nebula_resource::runtime::retained_store::RetireStatus
+exported as nebula_sdk::integration::resource::RetireStatus
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RetireStatus {
+    Retired,
+    NotFound,
+}
+
+## enum nebula_resource::runtime::retained_store::StoreRejection
+exported as nebula_sdk::integration::resource::StoreRejection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StoreRejection {
+    Closed,
+    UnknownId,
+    IdentifierExhausted,
+}
+
+## enum nebula_resource::topology::bounded::BoundedMode
+exported as nebula_sdk::integration::resource::BoundedMode
+exported as nebula_sdk::prelude::BoundedMode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BoundedMode {
+    Capped(NonZeroUsize),
+    Exclusive,
+    Unbounded,
+}
+
+## enum nebula_resource::topology::contract::AdmissionPhase
+exported as nebula_sdk::integration::resource::AdmissionPhase
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AdmissionPhase {
+    Ready,
+    Saturated,
+    Warming,
+    Recovering,
+    Tainted,
+}
+impl std::fmt::Display for AdmissionPhase
+
+## enum nebula_resource::topology::contract::HookFault
+exported as nebula_sdk::integration::resource::HookFault
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum HookFault {
+    Failed(Error),
+    TimedOut,
+}
+
+## enum nebula_resource::topology::contract::Unavailable
+exported as nebula_sdk::integration::resource::Unavailable
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum Unavailable {
+    Saturated { retry_after: Option<Duration> },
+    Warming,
+    Recovering,
+    Tainted,
+}
+impl Unavailable {
+    pub fn into_error(self, context: impl std::fmt::Display) -> Error;
+}
+impl std::fmt::Display for Unavailable
+
+## enum nebula_resource::topology::pooled::BrokenCheck
+exported as nebula_sdk::integration::resource::BrokenCheck
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub enum BrokenCheck {
+    Healthy,
+    Broken(String),
+}
+impl BrokenCheck {
+    pub fn is_broken(&self) -> bool;
+}
+
+## enum nebula_resource::topology::pooled::RecycleDecision
+exported as nebula_sdk::integration::resource::RecycleDecision
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecycleDecision {
+    Keep,
+    Drop,
+}
+
+## enum nebula_resource::topology::store::PoolStrategy
+exported as nebula_sdk::integration::resource::PoolStrategy
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PoolStrategy {
+    #[default] Lifo,
+    Fifo,
+}
+
+## enum nebula_resource::topology_tag::TopologyTag
+exported as nebula_sdk::integration::resource::TopologyTag
+exported as nebula_sdk::prelude::TopologyTag
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TopologyTag {
+    Pool,
+    Resident,
+    Bounded,
+    Custom,
+}
+impl TopologyTag {
+    pub fn as_str(self) -> &'static str;
+}
+impl fmt::Display for TopologyTag
+
+## fn nebula_resource::rate_limit::on_error
+exported as nebula_sdk::integration::resource::on_error
+pub const fn on_error<F>(classify: F) -> OnError<F>;
+
+## fn nebula_resource::rate_limit::retry_after_from_header
+exported as nebula_sdk::integration::resource::retry_after_from_header
+pub fn retry_after_from_header(value: &str) -> Option<Duration>;
+
+## macro-generated nebula_core::keys::ResourceKey
+exported as nebula_sdk::integration::resource::ResourceKey
+macro-generated: key_type!(pub ResourceKey, ResourceDomain);
+
+## macro_rules nebula_core::keys::resource_key
+exported as nebula_sdk::integration::resource::resource_key
+#[macro_export]
+macro_rules! resource_key {
+    ($s:literal) => { .. };
+}
+
+## macro_rules nebula_resource::resource::no_credential_slots
+exported as nebula_sdk::integration::resource::no_credential_slots
+exported as nebula_sdk::prelude::no_credential_slots
+#[macro_export]
+macro_rules! no_credential_slots {
+    ($ty:ty) => { .. };
+}
+
+## proc_macro nebula_resource_macros::ClassifyError
+exported as nebula_sdk::integration::resource::ClassifyError
+exported as nebula_sdk::prelude::ClassifyError
+#[proc_macro_derive(ClassifyError, attributes(classify))]
+pub fn derive_classify_error(input: TokenStream) -> TokenStream;
+
+## proc_macro nebula_resource_macros::Resource
+exported as nebula_sdk::integration::resource::Resource
+exported as nebula_sdk::prelude::Resource
+#[proc_macro_derive(Resource, attributes(credential, topology))]
+pub fn derive_resource(input: TokenStream) -> TokenStream;
+
+## proc_macro nebula_resource_macros::ResourceConfig
+exported as nebula_sdk::integration::resource::ResourceConfig
+exported as nebula_sdk::prelude::ResourceConfig
+#[proc_macro_derive(ResourceConfig, attributes(config))]
+pub fn derive_resource_config(input: TokenStream) -> TokenStream;
+
+## struct nebula_resilience::rate_limiter::gcra::Rate
+exported as nebula_sdk::integration::resource::Rate
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Rate {
+    /* private fields */
+}
+impl Rate {
+    pub fn new(requests: NonZeroU32, period: Duration) -> Result<Self, ConfigError>;
+    pub const fn per_second(requests: NonZeroU32) -> Self;
+    pub fn with_burst(self, burst: NonZeroU32) -> Result<Self, ConfigError>;
+    pub fn per_window(limit: NonZeroU32, window: Duration, burst: NonZeroU32, safety_margin_percent: u8) -> Result<Self, ConfigError>;
+    pub fn from_interval(interval: Duration, burst: NonZeroU32) -> Result<Self, ConfigError>;
+    pub fn stricter(&self, other: &Self) -> Self;
+    pub const fn emission_interval(&self) -> Duration;
+    pub const fn burst(&self) -> NonZeroU32;
+    pub fn per_second_f64(&self) -> f64;
+    pub const fn is_no_looser_than(&self, other: &Self) -> bool;
+}
+impl TryFrom<RateConfig> for Rate
+impl fmt::Debug for Rate
+
+## struct nebula_resource::context::ResourceContext
+exported as nebula_sdk::integration::resource::ResourceContext
+exported as nebula_sdk::prelude::ResourceContext
+pub struct ResourceContext {
+    /* private fields */
+}
+impl ResourceContext {
+    pub fn new(base: BaseContext, resources: Arc<dyn ResourceAccessor>, credentials: Arc<dyn CredentialAccessor>) -> Self;
+    pub fn limits(&self) -> Arc<ResourceLimiter>;
+    pub fn minimal(scope: Scope, cancellation: CancellationToken) -> Self;
+    pub fn scope_level(&self) -> ScopeLevel;
+    pub fn cancel_token(&self) -> &CancellationToken;
+    pub fn execution_id(&self) -> Option<nebula_core::ExecutionId>;
+    pub fn clone_for_acquire(&self) -> Self;
+}
+impl Context for ResourceContext
+impl HasCredentials for ResourceContext
+impl HasResources for ResourceContext
+impl std::fmt::Debug for ResourceContext
+
+## struct nebula_resource::error::Error
+exported as nebula_sdk::integration::resource::Error
+exported as nebula_sdk::prelude::Error
+#[derive(Debug)]
+pub struct Error {
+    /* private fields */
+}
+impl Error {
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self;
+    pub fn kind(&self) -> &ErrorKind;
+    pub fn resource_key(&self) -> Option<&ResourceKey>;
+    pub fn is_retryable(&self) -> bool;
+    pub fn retry_after(&self) -> Option<Duration>;
+    pub fn with_resource_key(mut self, key: ResourceKey) -> Self;
+    pub fn with_source(mut self, source: impl std::error::Error + Send + Sync + 'static) -> Self;
+    pub fn transient(message: impl Into<String>) -> Self;
+    pub fn permanent(message: impl Into<String>) -> Self;
+    pub fn exhausted(message: impl Into<String>, retry_after: Option<Duration>) -> Self;
+    pub fn not_found(key: &ResourceKey) -> Self;
+    pub fn cancelled() -> Self;
+    pub fn revoked(message: impl Into<String>) -> Self;
+    pub fn ambiguous(message: impl Into<String>) -> Self;
+    pub fn credential_unavailable(reason: CredentialUnavailableReason) -> Self;
+    pub fn backpressure(message: impl Into<String>) -> Self;
+    pub fn unknown_credential_slot(key: ResourceKey, slot_name: &str) -> Self;
+    pub fn to_core_error(&self) -> nebula_core::CoreError;
+}
+impl From<nebula_core::CoreError> for Error
+impl fmt::Display for Error
+impl nebula_error::Classify for Error
+impl std::error::Error for Error
+
+## struct nebula_resource::guard::LeaseClosing
+exported as nebula_sdk::integration::resource::LeaseClosing
+#[derive(Clone, Debug)]
+pub struct LeaseClosing(_);
+impl LeaseClosing {
+    pub fn is_closing(&self) -> bool;
+    pub fn closed(&self) -> impl Future<Output = ()> + Send + '_;
+    pub fn into_closed(self) -> impl Future<Output = ()> + Send + 'static;
+}
+
+## struct nebula_resource::guard::ResourceGuard
+exported as nebula_sdk::integration::resource::ResourceGuard
+exported as nebula_sdk::prelude::ResourceGuard
+pub struct ResourceGuard<R: Provider> {
+    /* private fields */
+}
+impl<R: Provider> ResourceGuard<R> {
+    pub fn taint(&mut self);
+    pub fn hold_duration(&self) -> Duration;
+    pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter>;
+    pub fn resource_key(&self) -> &ResourceKey;
+    pub fn topology_tag(&self) -> TopologyTag;
+    pub fn generation(&self) -> u64;
+    pub fn closing(&self) -> LeaseClosing;
+    pub fn is_closing(&self) -> bool;
+    pub async fn release(mut self) -> Result<ReleaseOutcome, crate::Error>;
+}
+impl<R: Provider> Deref for ResourceGuard<R>
+impl<R: Provider> Drop for ResourceGuard<R>
+impl<R: Provider> nebula_core::Guard for ResourceGuard<R>
+impl<R: Provider> nebula_core::TypedGuard for ResourceGuard<R>
+impl<R: Provider> std::fmt::Debug for ResourceGuard<R>
+
+## struct nebula_resource::rate_limit::Limited
+exported as nebula_sdk::integration::resource::Limited
+pub struct Limited<C, T = NoThrottle> {
+    /* private fields */
+}
+impl<C, T> Limited<C, T> {
+    pub async fn run<R, E>(&self, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>; [interim]
+    pub async fn run_until<R, E>(&self, deadline: Option<std::time::Instant>, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>;
+    pub async fn run_for<R, E>(&self, dimension: &str, value: impl fmt::Display, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>;
+    pub async fn run_for_until<R, E>(&self, dimension: &str, value: impl fmt::Display, deadline: Option<std::time::Instant>, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>;
+    pub const fn unlimited(&self) -> &C; [interim]
+    pub const fn limits(&self) -> &Arc<ResourceLimiter>;
+}
+impl<C, T> fmt::Debug for Limited<C, T>
+impl<C: Clone, T: Clone> Clone for Limited<C, T>
+
+## struct nebula_resource::rate_limit::NoThrottle
+exported as nebula_sdk::integration::resource::NoThrottle
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoThrottle;
+impl<T, E> Throttle<T, E> for NoThrottle
+
+## struct nebula_resource::rate_limit::OnError
+exported as nebula_sdk::integration::resource::OnError
+#[derive(Debug, Clone, Copy)]
+pub struct OnError<F>(_);
+impl<T, E, F> Throttle<T, E> for OnError<F> where F: Fn(&E) -> Verdict + Send + Sync
+
+## struct nebula_resource::rate_limit::RateLimitSettings
+exported as nebula_sdk::integration::resource::RateLimitSettings
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
+#[non_exhaustive]
+pub struct RateLimitSettings {
+    pub requests: u32,
+    pub period_ms: u64,
+    pub burst: Option<u32>,
+}
+impl RateLimitSettings {
+    pub const fn new(requests: u32, period_ms: u64) -> Self;
+    pub const fn with_burst(mut self, burst: u32) -> Self;
+    pub fn to_rate(self) -> Result<Rate, Error>;
+}
+
+## struct nebula_resource::rate_limit::ResiliencePolicy
+exported as nebula_sdk::integration::resource::ResiliencePolicy
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResiliencePolicy {
+    /* private fields */
+}
+impl ResiliencePolicy {
+    pub const fn new() -> Self;
+    pub const fn rate(mut self, rate: Rate) -> Self;
+    pub fn keyed(mut self, dimension: &'static str, rate: Rate) -> Self;
+    pub fn account_credential(mut self, slot: &'static str) -> Self;
+    pub fn account_slots(&self) -> &[&'static str];
+    pub fn keyed_rates(&self) -> &[(&'static str, Rate)];
+    pub const fn scope(mut self, scope: LimitScope) -> Self;
+    pub const fn overrides(mut self, overrides: Override) -> Self;
+    pub const fn max_penalty(mut self, max_penalty: Duration) -> Self;
+    pub const fn declared_rate(&self) -> Option<Rate>;
+    pub const fn limit_scope(&self) -> LimitScope;
+    pub const fn penalty_cap(&self) -> Duration;
+    pub fn effective_rate(&self, requested: Option<Rate>) -> Result<Option<Rate>, Error>;
+    pub fn effective_keyed(&self, requested: &[(String, Rate)]) -> Result<Vec<(&'static str, Rate)>, Error>;
+}
+impl Default for ResiliencePolicy
+
+## struct nebula_resource::rate_limit::ResourceLimiter
+exported as nebula_sdk::integration::resource::ResourceLimiter
+pub struct ResourceLimiter {
+    /* private fields */
+}
+impl ResourceLimiter {
+    pub fn rate(&self) -> Option<Rate>;
+    pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T>;
+    pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error>;
+    pub async fn ready_for(&self, dimension: &str, value: impl fmt::Display, deadline: Option<std::time::Instant>) -> Result<(), Error>;
+    pub async fn penalize(&self, retry_after: Duration) -> Result<(), Error>;
+    pub async fn penalize_for(&self, dimension: &str, value: impl fmt::Display, retry_after: Duration) -> Result<(), Error>;
+}
+impl fmt::Debug for ResourceLimiter
+
+## struct nebula_resource::resource::ResourceMetadataDraft
+exported as nebula_sdk::integration::resource::ResourceMetadataDraft
+exported as nebula_sdk::prelude::ResourceMetadataDraft
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceMetadataDraft {
+    /* private fields */
+}
+impl ResourceMetadataDraft {
+    pub fn new(key: ResourceKey, name: nebula_metadata::MetadataName, description: impl Into<String>) -> Self;
+    pub fn try_new(key: ResourceKey, name: impl Into<String>, description: impl Into<String>) -> Result<Self, nebula_metadata::MetadataError>;
+    pub fn with_version(mut self, version: Version) -> Self;
+    pub fn with_icon(mut self, icon: nebula_metadata::Icon) -> Self;
+    pub fn with_inline_icon(mut self, name: impl Into<String>) -> Self;
+    pub fn with_url_icon(mut self, url: impl Into<String>) -> Self;
+    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self;
+    pub fn with_categories(mut self, categories: impl IntoIterator<Item = nebula_metadata::CatalogCategoryKey>) -> Self;
+    pub fn add_link(mut self, link: nebula_metadata::CatalogLink) -> Self;
+    pub fn with_tags<I, S>(mut self, tags: I) -> Self where I: IntoIterator<Item = S>, S: Into<String>;
+    pub fn add_tag(mut self, tag: impl Into<String>) -> Self;
+    pub fn mark_experimental(mut self) -> Self;
+    pub fn mark_beta(mut self) -> Self;
+    pub fn mark_stable(mut self) -> Self;
+    pub fn with_deprecation(mut self, notice: nebula_metadata::DeprecationNotice) -> Self;
+}
+
+## struct nebula_resource::resource::TeardownCx
+exported as nebula_sdk::integration::resource::TeardownCx
+exported as nebula_sdk::prelude::TeardownCx
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+pub struct TeardownCx {
+    pub deadline: std::time::Instant,
+    pub reason: TeardownReason,
+}
+impl TeardownCx {
+    pub fn new(deadline: std::time::Instant, reason: TeardownReason) -> Self;
+}
+
+## struct nebula_resource::runtime::bounded::Bounded
+exported as nebula_sdk::integration::resource::Bounded
+exported as nebula_sdk::prelude::Bounded
+pub struct Bounded<R: Provider> {
+    /* private fields */
+}
+impl<R: Provider> Bounded<R> {
+    pub fn capped(n: usize) -> Result<Self, Error>;
+    pub fn exclusive() -> Self;
+    pub fn unbounded() -> Self;
+    pub fn mode(&self) -> BoundedMode;
+    pub fn set_cap(&self, n: usize) -> Result<(), Error>;
+}
+impl<R: Provider> std::fmt::Debug for Bounded<R>
+impl<R> ConfigurableTopology<R> for Bounded<R> where R: Provider<Topology = Bounded<R>> + BoundedProvider + Send + Sync + 'static
+impl<R> Topology<R> for Bounded<R> where R: Provider<Topology = Bounded<R>> + crate::topology::bounded::BoundedProvider + Send + Sync + 'static
+
+## struct nebula_resource::runtime::pool::Pooled
+exported as nebula_sdk::integration::resource::Pooled
+exported as nebula_sdk::prelude::Pooled
+pub struct Pooled<R: Provider> {
+    /* private fields */
+}
+impl<R: Provider> Pooled<R> {
+    pub fn try_new(config: Config, fingerprint: u64) -> Result<Self, Error>;
+    pub fn new(config: Config, fingerprint: u64) -> Self;
+    pub fn config(&self) -> &Config;
+    pub async fn stats(&self, store: &InstanceStore<PoolEntry<R>>) -> PoolStats;
+}
+impl<R: Provider> std::fmt::Debug for Pooled<R>
+impl<R> ConfigurableTopology<R> for Pooled<R> where R: Provider<Topology = Pooled<R>> + PoolProvider + Clone + Send + Sync + 'static
+impl<R> Topology<R> for Pooled<R> where R: Provider<Topology = Pooled<R>> + PoolProvider + Clone + Send + Sync + 'static
+
+## struct nebula_resource::runtime::resident::Resident
+exported as nebula_sdk::integration::resource::Resident
+exported as nebula_sdk::prelude::Resident
+pub struct Resident<R: Provider> {
+    /* private fields */
+}
+impl<R: Provider> Resident<R> {
+    pub fn new(config: Config) -> Self;
+    pub fn config(&self) -> &Config;
+    pub fn live_generations(&self) -> usize;
+    pub async fn is_initialized(&self) -> bool;
+}
+impl<R: Provider> std::fmt::Debug for Resident<R>
+impl<R> ConfigurableTopology<R> for Resident<R> where R: Provider<Topology = Resident<R>> + ResidentProvider + Send + Sync + 'static
+impl<R> Topology<R> for Resident<R> where R: Provider<Topology = Resident<R>> + crate::topology::resident::ResidentProvider + Send + Sync + 'static
+
+## struct nebula_resource::runtime::retained_store::RetainedId
+exported as nebula_sdk::integration::resource::RetainedId
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RetainedId(_);
+impl std::fmt::Debug for RetainedId
+
+## struct nebula_resource::runtime::retained_store::RetainedLease
+exported as nebula_sdk::integration::resource::RetainedLease
+pub struct RetainedLease<'store, E> {
+    /* private fields */
+}
+impl<E> Deref for RetainedLease<'_, E>
+impl<E> std::fmt::Debug for RetainedLease<'_, E>
+
+## struct nebula_resource::runtime::retained_store::RetainedStore
+exported as nebula_sdk::integration::resource::RetainedStore
+pub struct RetainedStore<E> {
+    /* private fields */
+}
+impl<E> RetainedStore<E> {
+    pub fn retain(&self, entry: E) -> RetainStatus;
+    pub fn replace(&self, id: RetainedId, entry: E) -> ReplaceStatus;
+    pub fn retire(&self, id: RetainedId) -> RetireStatus;
+    pub fn lease(&self, id: RetainedId) -> Option<RetainedLease<'_, E>> where E: Clone;
+}
+impl<E> std::fmt::Debug for RetainedStore<E>
+
+## struct nebula_resource::slot::SlotCell
+exported as nebula_sdk::integration::resource::SlotCell
+exported as nebula_sdk::prelude::SlotCell
+#[derive(Debug)]
+pub struct SlotCell<S> {
+    /* private fields */
+}
+impl<S> SlotCell<S> {
+    pub fn empty() -> Self;
+    pub fn store(&self, value: Arc<S>);
+    pub fn install_at_material_epoch(&self, material_epoch: u64, value: Arc<S>) -> Result<SlotUpdate, SlotInstallError>;
+    pub fn install_projected(&self, metadata: nebula_credential::CredentialGuardMetadata, value: Arc<S>) -> Result<SlotUpdate, SlotInstallError>;
+    pub fn install_projected_at_generation(&self, expected_generation: u64, metadata: nebula_credential::CredentialGuardMetadata, value: Arc<S>) -> Result<SlotUpdate, SlotInstallError>;
+    pub fn projection_snapshot(&self) -> (u64, Option<nebula_credential::CredentialGuardMetadata>);
+    pub fn fence_projection_at_generation(&self, expected_generation: u64, fence: &mut dyn FnMut()) -> Result<(), SlotInstallError>;
+    pub fn projection_metadata(&self) -> Option<nebula_credential::CredentialGuardMetadata>;
+    pub fn load(&self) -> Option<Arc<S>>;
+    pub fn load_versioned(&self) -> Option<(u64, Arc<S>)>;
+    pub fn load_material_versioned(&self) -> Option<(u64, Arc<S>)>;
+    pub fn material_epoch(&self) -> Option<u64>;
+    pub fn generation(&self) -> u64;
+    pub fn take(&self) -> Option<Arc<S>>;
+    pub fn revoke(&self) -> SlotUpdate;
+    pub fn is_some(&self) -> bool;
+}
+impl<S> Default for SlotCell<S>
+
+## struct nebula_resource::topology::contract::CreatedEntry
+exported as nebula_sdk::integration::resource::CreatedEntry
+#[derive(Debug)]
+pub struct CreatedEntry<E> {
+    /* private fields */
+}
+impl<E> CreatedEntry<E> {
+    pub fn new(entry: E) -> Self;
+    pub fn entry(&self) -> &E;
+    pub fn into_entry(self) -> E;
+}
+
+## struct nebula_resource::topology::contract::Load
+exported as nebula_sdk::integration::resource::Load
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct Load {
+    pub saturation: f32,
+}
+impl Load {
+    pub fn permits(used: usize, total: usize) -> Self;
+}
+
+## struct nebula_resource::topology::contract::MaintenanceSchedule
+exported as nebula_sdk::integration::resource::MaintenanceSchedule
+#[derive(Debug, Clone, Copy)]
+pub struct MaintenanceSchedule {
+    pub idle_timeout: Option<Duration>,
+    pub max_lifetime: Option<Duration>,
+    pub maintenance_interval: Duration,
+}
+
+## struct nebula_resource::topology::contract::NoTopology
+exported as nebula_sdk::integration::resource::NoTopology
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoTopology;
+impl<R: Provider> Topology<R> for NoTopology
+
+## struct nebula_resource::topology::contract::Ticket
+exported as nebula_sdk::integration::resource::Ticket
+pub struct Ticket {
+    /* private fields */
+}
+impl Ticket {
+    pub fn permit(permit: OwnedSemaphorePermit) -> Self;
+    pub fn infallible() -> Self;
+    pub fn into_permit(self) -> Option<OwnedSemaphorePermit>;
+}
+impl std::fmt::Debug for Ticket
+
+## struct nebula_resource::topology::pooled::InstanceMetrics
+exported as nebula_sdk::integration::resource::InstanceMetrics
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct InstanceMetrics {
+    pub checkout_count: u64,
+    pub created_at: std::time::Instant,
+}
+impl InstanceMetrics {
+    pub fn age(&self) -> std::time::Duration;
+}
+
+## struct nebula_resource::topology::pooled::config::Config
+exported as nebula_sdk::integration::resource::PoolConfig
+exported as nebula_sdk::prelude::PoolConfig
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub min_size: u32,
+    pub max_size: u32,
+    pub idle_timeout: Option<Duration>,
+    pub max_lifetime: Option<Duration>,
+    pub create_timeout: Duration,
+    pub strategy: PoolStrategy,
+    pub warmup: WarmupStrategy,
+    pub test_on_checkout: bool,
+    pub maintenance_interval: Duration,
+    pub max_concurrent_creates: u32,
+}
+impl Default for Config
+
+## struct nebula_resource::topology::resident::config::Config
+exported as nebula_sdk::integration::resource::ResidentConfig
+exported as nebula_sdk::prelude::ResidentConfig
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub recreate_on_failure: bool,
+    pub create_timeout: Duration,
+}
+impl Default for Config
+
+## struct nebula_resource::topology::store::IdleRead
+exported as nebula_sdk::integration::resource::IdleRead
+pub struct IdleRead<'a, S> {
+    /* private fields */
+}
+impl<S> IdleRead<'_, S> {
+    pub fn iter(&self) -> impl Iterator<Item = &S>;
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+}
+impl<S> std::fmt::Debug for IdleRead<'_, S>
+
+## struct nebula_resource::topology::store::StoreView
+exported as nebula_sdk::integration::resource::StoreView
+pub struct StoreView<'a, S> {
+    /* private fields */
+}
+impl<'a, S: Send + 'static> StoreView<'a, S> {
+    pub const fn new(store: &'a InstanceStore<S>) -> Self;
+    pub async fn len(&self) -> usize;
+    pub async fn is_empty(&self) -> bool;
+    pub fn capacity(&self) -> Option<usize>;
+    pub fn strategy(&self) -> PoolStrategy;
+    pub fn current_revoke_epoch(&self) -> u64;
+    pub async fn read_idle(&self) -> IdleRead<'a, S>;
+}
+impl<S> Clone for StoreView<'_, S>
+impl<S> Copy for StoreView<'_, S>
+impl<S> std::fmt::Debug for StoreView<'_, S>
+
+## trait nebula_resource::rate_limit::Throttle
+exported as nebula_sdk::integration::resource::Throttle
+pub trait Throttle<T, E>: Send + Sync {
+    fn check(&self, outcome: &Result<T, E>) -> Verdict;
+}
+
+## trait nebula_resource::resource::HasCredentialSlots
+exported as nebula_sdk::integration::resource::HasCredentialSlots
+exported as nebula_sdk::prelude::HasCredentialSlots
+pub trait HasCredentialSlots {
+    fn credential_slot_epoch(&self) -> u64;
+    fn declares_credential_slots() -> bool;
+    fn credential_slot_names() -> &'static [&'static str] { .. }
+    fn supports_credential_slot_projection(&self, _slot: &str) -> bool { .. }
+    fn credential_slot_metadata(&self, _slot: &str) -> Option<nebula_credential::CredentialGuardMetadata> { .. }
+    fn credential_slot_projection(&self, _slot: &str) -> Option<(u64, Option<nebula_credential::CredentialGuardMetadata>)> { .. }
+    fn install_credential_slot_at_generation(&self, _slot: &str, _guard: nebula_credential::ErasedCredentialGuard, _expected_generation: u64) -> Result<crate::SlotUpdate, crate::SlotInstallError> { .. }
+    fn fence_credential_slot_at_generation(&self, _slot: &str, _expected_generation: u64, _fence: &mut dyn FnMut()) -> Result<(), crate::SlotInstallError> { .. }
+    fn install_credential_slot(&self, _slot: &str, _guard: nebula_credential::ErasedCredentialGuard) -> Result<crate::SlotUpdate, crate::SlotInstallError> { .. }
+    fn revoke_credential_slot(&self, _slot: &str) -> Result<crate::SlotUpdate, crate::SlotInstallError> { .. }
+}
+
+## trait nebula_resource::resource::Provider
+exported as nebula_sdk::integration::resource::Provider
+exported as nebula_sdk::prelude::Provider
+#[async_trait]
+pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
+    type Config: ResourceConfig;
+    type Instance: Send + Sync + 'static;
+    type Topology: crate::topology::Topology<Self>;
+    fn key() -> ResourceKey;
+    async fn create(&self, config: &Self::Config, ctx: &ResourceContext) -> Result<Self::Instance, crate::Error>;
+    async fn on_credential_refresh(&self, slot_name: &str, instance: &Self::Instance) -> Result<(), crate::Error> { .. }
+    async fn on_credential_revoke(&self, slot_name: &str, instance: &Self::Instance) -> Result<(), crate::Error> { .. }
+    async fn check(&self, _instance: &Self::Instance) -> Result<(), crate::Error> { .. }
+    fn check_cost(&self) -> CheckCost { .. }
+    fn teardown_budget(&self) -> std::time::Duration { .. }
+    fn max_hold_duration() -> Option<std::time::Duration> { .. }
+    async fn destroy(&self, instance: Self::Instance, cx: TeardownCx) -> Result<(), crate::Error> { .. }
+    fn metadata() -> ResourceMetadataDraft;
+    fn resilience() -> crate::rate_limit::ResiliencePolicy { .. }
+}
+
+## trait nebula_resource::topology::bounded::BoundedProvider
+exported as nebula_sdk::integration::resource::BoundedProvider
+exported as nebula_sdk::prelude::BoundedProvider
+pub trait BoundedProvider: Provider {
+    fn reset(&self, _instance: &mut Self::Instance) -> impl Future<Output = Result<(), Error>> + Send { .. }
+}
+
+## trait nebula_resource::topology::contract::Topology
+exported as nebula_sdk::integration::resource::Topology
+pub trait Topology<R: Provider>: Send + Sync + 'static {
+    type Entry: Send + Sync + 'static;
+    fn try_reserve(&self, store: StoreView<'_, Self::Entry>) -> Result<Ticket, Unavailable>;
+    fn create_entry(&self, resource: &R, config: &R::Config, ctx: &ResourceContext, retained: &RetainedStore<Self::Entry>) -> impl Future<Output = Result<CreatedEntry<Self::Entry>, Error>> + Send;
+    fn entry_instance<'s>(&self, entry: &'s Self::Entry) -> &'s R::Instance;
+    fn into_owned_instance(&self, entry: Self::Entry) -> Option<R::Instance>;
+    fn quiesce(&self) -> impl Future<Output = Result<(), Error>> + Send { .. }
+    fn accept(&self, _entry: &mut Self::Entry, _resource: &R, _ctx: &ResourceContext) -> impl Future<Output = bool> + Send { .. }
+    fn prepare(&self, _entry: &mut Self::Entry, _resource: &R, _ctx: &ResourceContext) -> impl Future<Output = Result<(), Error>> + Send { .. }
+    fn on_release(&self, _entry: &mut Self::Entry, _resource: &R) -> impl Future<Output = Result<bool, Error>> + Send { .. }
+    fn pools(&self) -> bool { .. }
+    fn handles_own_revoke(&self) -> bool { .. }
+    fn store_capacity(&self) -> Option<usize> { .. }
+    fn queue_strategy(&self) -> PoolStrategy { .. }
+    fn warmup_target(&self, _config: &R::Config) -> usize { .. }
+    fn warmup_strategy(&self) -> crate::topology::pooled::config::WarmupStrategy { .. }
+    fn idle_evictable(&self, _entry: &Self::Entry) -> bool { .. }
+    fn maintenance_schedule(&self) -> Option<MaintenanceSchedule> { .. }
+    fn dispatch_credential_hook(&self, _resource: &R, _store: StoreView<'_, Self::Entry>, _retained: &RetainedStore<Self::Entry>, _slot: &str, _refresh: bool) -> impl Future<Output = Result<(), HookFault>> + Send { .. }
+    fn set_fingerprint(&self, _fingerprint: u64) { .. }
+    fn inherit_from(&self, _previous: &Self) { .. }
+    fn leases_out(&self) -> Option<usize> { .. }
+    fn live_instances(&self) -> Option<usize> { .. }
+    fn phase(&self, _store: StoreView<'_, Self::Entry>) -> AdmissionPhase { .. }
+    fn load(&self, _store: StoreView<'_, Self::Entry>) -> Option<Load> { .. }
+    fn tag(&self) -> TopologyTag { .. }
+}
+
+## trait nebula_resource::topology::pooled::PoolProvider
+exported as nebula_sdk::integration::resource::PoolProvider
+exported as nebula_sdk::prelude::PoolProvider
+pub trait PoolProvider: Provider {
+    fn is_broken(&self, _instance: &Self::Instance) -> BrokenCheck { .. }
+    fn recycle(&self, _instance: &Self::Instance, _metrics: &InstanceMetrics) -> impl Future<Output = Result<RecycleDecision, crate::Error>> + Send { .. }
+    fn prepare(&self, _instance: &Self::Instance, _ctx: &ResourceContext) -> impl Future<Output = Result<(), crate::Error>> + Send { .. }
+}
+
+## trait nebula_resource::topology::resident::ResidentProvider
+exported as nebula_sdk::integration::resource::ResidentProvider
+exported as nebula_sdk::prelude::ResidentProvider
+pub trait ResidentProvider: Provider {
+    fn is_alive_sync(&self, _instance: &Self::Instance) -> bool { .. }
+    fn stale_after(&self) -> Option<Duration> { .. }
+}
