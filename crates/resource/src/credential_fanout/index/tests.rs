@@ -1240,7 +1240,12 @@ mod fanout_dispatch {
         index.remember_pending_revoke(credential_id, CtlResource::key(), "db", managed);
 
         let outcome = index
-            .reconcile_material(&manager, &UnusedResolver, None)
+            .reconcile_material(
+                &manager,
+                &UnusedResolver,
+                None,
+                crate::credential_fanout::orchestrator::ScanHint::Availability,
+            )
             .await;
         assert_eq!(outcome.dispatched(), 0);
         assert_eq!(ledger.revoke_entered.load(Ordering::SeqCst), 0);
@@ -1400,11 +1405,39 @@ mod fanout_dispatch {
             setup(std::slice::from_ref(&identity)).await;
 
         let outcome = index
-            .reconcile_material(&manager, &UnusedResolver, Some(credential_id))
+            .reconcile_material(
+                &manager,
+                &UnusedResolver,
+                Some(credential_id),
+                crate::credential_fanout::orchestrator::ScanHint::Refreshed,
+            )
             .await;
 
         assert_eq!(outcome.success(), 1);
         assert_eq!(ledger.refresh_entered.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn targeted_availability_reconciliation_never_refreshes_event_only_bindings() {
+        let identity = SlotIdentity::from_bindings([("db", "event-only-availability")]);
+        let (index, manager, credential_id, _scope, _org, ledger) =
+            setup(std::slice::from_ref(&identity)).await;
+
+        let outcome = index
+            .reconcile_material(
+                &manager,
+                &UnusedResolver,
+                Some(credential_id),
+                crate::credential_fanout::orchestrator::ScanHint::Availability,
+            )
+            .await;
+
+        assert_eq!(outcome.dispatched(), 0);
+        assert_eq!(
+            ledger.refresh_entered.load(Ordering::SeqCst),
+            0,
+            "an availability hint is not a material refresh"
+        );
     }
 
     #[tokio::test]

@@ -158,6 +158,71 @@ impl Manager {
         self.reopen_under_admission(key, slot, ticket, &*managed)
     }
 
+    /// Suspends the exact row `pinned` that the fan-out resolved for
+    /// `binding`, revalidating reverse-index ownership in the same
+    /// lifecycle-admission critical section. A replacement row with
+    /// identical routing keys never receives this result.
+    #[cfg(feature = "rotation")]
+    pub(crate) fn suspend_published_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+        pinned: &std::sync::Arc<dyn ManagedHandle>,
+        reason: CredentialUnavailableReason,
+        observed_material_epoch: Option<u64>,
+    ) -> Result<CredentialSuspendOutcome, Error> {
+        let _admission = self.lock_admission();
+        let managed = self.revalidate_published_binding(index, credential_id, binding, pinned)?;
+        self.suspend_under_admission(
+            &binding.resource_key,
+            &binding.slot_name,
+            reason,
+            observed_material_epoch,
+            &*managed,
+        )
+    }
+
+    /// Reopens the exact row `pinned`; see
+    /// [`suspend_published_credential_binding`](Self::suspend_published_credential_binding).
+    #[cfg(feature = "rotation")]
+    pub(crate) fn reopen_published_credential_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+        pinned: &std::sync::Arc<dyn ManagedHandle>,
+        ticket: CredentialGateTicket,
+    ) -> Result<CredentialReopenOutcome, Error> {
+        let _admission = self.lock_admission();
+        let managed = self.revalidate_published_binding(index, credential_id, binding, pinned)?;
+        self.reopen_under_admission(&binding.resource_key, &binding.slot_name, ticket, &*managed)
+    }
+
+    /// Caller holds `Manager.admission`.
+    #[cfg(feature = "rotation")]
+    fn revalidate_published_binding(
+        &self,
+        index: &crate::ResourceFanoutIndex,
+        credential_id: &nebula_credential::CredentialId,
+        binding: &crate::Bind,
+        pinned: &std::sync::Arc<dyn ManagedHandle>,
+    ) -> Result<std::sync::Arc<dyn ManagedHandle>, Error> {
+        self.shutdown_guard()?;
+        if !index.contains_published_binding(credential_id, binding) {
+            return Err(Error::not_found(&binding.resource_key));
+        }
+        let managed = self.lookup_any_for_slot_identity_structural(
+            &binding.resource_key,
+            &binding.scope,
+            &binding.slot_identity,
+        )?;
+        if !std::sync::Arc::ptr_eq(&managed, pinned) {
+            return Err(Error::not_found(&binding.resource_key));
+        }
+        Ok(managed)
+    }
+
     fn lock_admission(&self) -> std::sync::MutexGuard<'_, ()> {
         self.admission
             .lock()

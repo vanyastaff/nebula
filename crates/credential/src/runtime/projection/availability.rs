@@ -60,6 +60,20 @@ pub struct CredentialAvailabilityObservation {
 }
 
 impl CredentialAvailabilityObservation {
+    /// Construct an observation for a trusted observer adapter.
+    #[must_use]
+    pub const fn new(
+        material_epoch: u64,
+        revision: u64,
+        availability: CredentialAvailability,
+    ) -> Self {
+        Self {
+            material_epoch,
+            revision,
+            availability,
+        }
+    }
+
     /// Backend-authored material epoch observed.
     #[must_use]
     pub const fn material_epoch(&self) -> u64 {
