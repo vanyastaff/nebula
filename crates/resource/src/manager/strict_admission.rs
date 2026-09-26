@@ -1,9 +1,10 @@
 //! Strict per-acquire credential admission.
 //!
 //! On a manager configured with a credential availability observer, every
-//! new unit of work on a credential-bound row — an acquire, an explicit pool
-//! warmup, a background create — first reads the availability of each bound
-//! credential (Design CONTRACT: every new credentialed unit reads
+//! new unit of work on a credential-bound row — an acquire, each create of an
+//! explicit pool warmup, each background create — first reads the
+//! availability of each bound credential (Design CONTRACT: every new
+//! credentialed unit reads
 //! availability first; no cached admission; an outage denies). The protocol
 //! is two-phase so no lock is held across the read:
 //!
@@ -11,10 +12,13 @@
 //!    capture the row's credential gate ticket, snapshot the bound slots'
 //!    installed projections ([`ManagedResource::credential_targets`]), then
 //!    read every slot concurrently through the manager's join-next
-//!    [`CredentialReads`], each bounded by the
+//!    [`CredentialReads`] — slots bound to the same credential lane share
+//!    one read — each bounded by the
 //!    caller's deadline and [`CREDENTIAL_READ_TIMEOUT`]. A refresh in flight
 //!    is joined for a bounded wait (the credential crate's
-//!    `REFRESH_JOIN_*` bounds).
+//!    `REFRESH_JOIN_*` bounds), each pause jittered over the upper half of
+//!    its step so a fleet that met the same refresh does not re-read in
+//!    lockstep.
 //! 2. **Decide and apply, under `Manager.admission`**
 //!    ([`Manager::apply_strict_reading_under_admission`]): re-snapshot the
 //!    installed material, decide per slot ([`decide`], pure), then apply the
@@ -260,40 +264,57 @@ impl<R: Provider> ManagedResource<R> {
             resource.key = %R::key(),
             slots = targets.len(),
         );
-        let read_one = |target: Result<CredentialTarget, &'static str>| async move {
-            match target {
-                Ok(target) => (
-                    target.slot,
-                    read_slot(reads, &target, started, deadline).await,
-                ),
-                Err(slot) => (slot, SlotOutcome::Unobservable),
-            }
-        };
         let slots = if targets.len() == 1 {
             // The common single-slot row: no join set to allocate.
             let mut targets = targets;
             let mut slots = Vec::with_capacity(1);
-            if let Some(target) = targets.pop() {
-                slots.push(tracing::Instrument::instrument(read_one(target), span).await);
+            match targets.pop() {
+                Some(Ok(target)) => {
+                    let outcome = tracing::Instrument::instrument(
+                        read_slot(reads, &target, started, deadline),
+                        span,
+                    )
+                    .await;
+                    slots.push((target.slot, outcome));
+                },
+                Some(Err(slot)) => slots.push((slot, SlotOutcome::Unobservable)),
+                None => {},
             }
             slots
         } else {
-            tracing::Instrument::instrument(
-                futures::future::join_all(targets.into_iter().map(read_one)),
+            // Slots bound to the same credential lane share one read: two
+            // reads of one lane from one unit would run one after the other
+            // (join-next) under the same deadline and could refuse falsely.
+            let (lanes, mut slots) = group_by_lane(targets);
+            let outcomes = tracing::Instrument::instrument(
+                futures::future::join_all(
+                    lanes
+                        .iter()
+                        .map(|(target, _)| read_slot(reads, target, started, deadline)),
+                ),
                 span,
             )
-            .await
+            .await;
+            for ((_, lane_slots), outcome) in lanes.iter().zip(outcomes) {
+                slots.extend(lane_slots.iter().map(|&slot| (slot, outcome)));
+            }
+            slots
         };
         Some(StrictReading { ticket, slots })
     }
 
     /// Whether a background create (the registration warmup, the
-    /// maintenance refill) may build instances now: one strict read per
-    /// pass, admitting only when every bound slot is usable at the installed
-    /// material. It changes no gate state — a blocked or unreadable
-    /// credential just builds nothing; the next acquire's read applies what
-    /// it sees. Always `true` for a row that is not strict.
+    /// maintenance refill) may build one instance now: one strict read per
+    /// create, issued immediately before it, admitting only when every bound
+    /// slot is usable at the installed material. It changes no gate state —
+    /// a blocked or unreadable credential just builds nothing; the next
+    /// acquire's read applies what it sees. A row that accepts no new
+    /// instances (tainted, suspended, not ready) reads nothing and refuses.
+    /// Always `true` for an accepting row that is not strict.
     pub(crate) async fn credentials_admit_creation(&self) -> bool {
+        if !self.accepts_new_instances() {
+            return false;
+        }
         let Some(reading) = self.read_credentials_strict(None).await else {
             return true;
         };
@@ -317,7 +338,48 @@ impl<R: Provider> ManagedResource<R> {
     }
 }
 
-/// Reads one slot, joining a refresh in flight for a bounded wait.
+/// One credential lane to read and the slots it answers for.
+type LaneRead = (CredentialTarget, Vec<&'static str>);
+
+/// Groups `targets` by credential lane — `(credential id, owner scope,
+/// contract key)` — so each lane is read once per unit. Unobservable slots
+/// are returned as outcomes already.
+fn group_by_lane(
+    targets: Vec<Result<CredentialTarget, &'static str>>,
+) -> (Vec<LaneRead>, Vec<(&'static str, SlotOutcome)>) {
+    let mut lanes: Vec<LaneRead> = Vec::with_capacity(targets.len());
+    let mut slots = Vec::with_capacity(targets.len());
+    for target in targets {
+        match target {
+            Ok(target) => {
+                let same_lane = lanes.iter_mut().find(|(lane, _)| {
+                    lane.credential_id == target.credential_id
+                        && lane.scope == target.scope
+                        && lane.key == target.key
+                });
+                if let Some((_, lane_slots)) = same_lane {
+                    lane_slots.push(target.slot);
+                } else {
+                    let slot = target.slot;
+                    lanes.push((target, vec![slot]));
+                }
+            },
+            Err(slot) => slots.push((slot, SlotOutcome::Unobservable)),
+        }
+    }
+    (lanes, slots)
+}
+
+/// A refresh-join pause drawn uniformly from `[pause / 2, pause]` by `unit`
+/// in `[0, 1]` ("equal jitter"): never longer than the schedule's bound.
+pub(crate) fn jittered(pause: Duration, unit: f64) -> Duration {
+    let half = pause / 2;
+    half + pause.saturating_sub(half).mul_f64(unit.clamp(0.0, 1.0))
+}
+
+/// Reads one slot, joining a refresh in flight for a bounded wait. The
+/// pauses between re-reads double from `REFRESH_JOIN_FIRST_PAUSE` to
+/// `REFRESH_JOIN_MAX_PAUSE`, each jittered below its bound.
 async fn read_slot(
     reads: &CredentialReads,
     target: &CredentialTarget,
@@ -346,13 +408,20 @@ async fn read_slot(
         let result: ReadResult = reads
             .read_after_arrival(&target.scope, target.credential_id, &target.key, bound)
             .await;
+        // Jittered below its bound: acquires that met the same refresh do not
+        // re-read it in lockstep across the fleet.
+        let wait = if reads.jitters_join_pauses() {
+            jittered(pause, fastrand::f64())
+        } else {
+            pause
+        };
         match result {
             Ok(observation)
                 if observation.availability() == CredentialAvailability::RefreshInFlight
-                    && tokio::time::Instant::now() + pause <= join_deadline =>
+                    && tokio::time::Instant::now() + wait <= join_deadline =>
             {
                 joined = Some(observation);
-                tokio::time::sleep(pause).await;
+                tokio::time::sleep(wait).await;
                 pause = (pause * 2).min(REFRESH_JOIN_MAX_PAUSE);
             },
             Ok(observation) => return SlotOutcome::Observed(observation),

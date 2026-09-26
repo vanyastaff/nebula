@@ -680,14 +680,14 @@ pub const NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READ_DURATION_SECONDS: &str =
 /// Counter: new units of work a strict credential read refused.
 ///
 /// Labeled by `reason` (see [`credential_admission_denied_reason`]); one
-/// increment per refused acquire or create pass, whatever the number of
+/// increment per refused acquire or create, whatever the number of
 /// slots that denied.
 pub const NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL: &str =
     "nebula_resource_credential_admission_denied_total";
 
 /// Outcome labels for [`NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READS_TOTAL`].
 ///
-/// Closed set of six values; every issued read records exactly one.
+/// Closed set of seven values; every issued read records exactly one.
 pub mod credential_admission_read_outcome {
     /// New uses are admitted at the observed material.
     pub const AVAILABLE: &str = "available";
@@ -701,6 +701,9 @@ pub mod credential_admission_read_outcome {
     pub const UNAVAILABLE: &str = "unavailable";
     /// The read did not answer within its bound.
     pub const TIMED_OUT: &str = "timed_out";
+    /// The manager shut down while the read was in flight. Not a store
+    /// outage: kept apart from [`UNAVAILABLE`].
+    pub const CANCELLED: &str = "cancelled";
 }
 
 /// Reason labels for [`NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL`],

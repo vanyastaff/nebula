@@ -435,8 +435,17 @@ impl Manager {
         // framework ceiling caps the worst case so a blocking hook can never
         // hang forever. The dropped loop future releases the permit and
         // destroys any in-flight entry via `EntryCreateGuard`.
-        let hook_timeout = options.remaining().unwrap_or(DEFAULT_AUTHOR_HOOK_CEILING);
+        //
+        // The hook timeout is what is left of the caller's budget when the
+        // hooks run, not the budget at entry: the rate-limit wait and the
+        // strict credential read spend the same budget first, and the
+        // acquire must not end past its deadline.
+        let budget = options.remaining();
+        let entered = tokio::time::Instant::now();
         self.run_acquire(Arc::clone(&managed), ctx, options, || {
+            let hook_timeout = budget.map_or(DEFAULT_AUTHOR_HOOK_CEILING, |budget| {
+                budget.saturating_sub(entered.elapsed())
+            });
             let managed = Arc::clone(&managed);
             let metrics = self.metrics.clone();
             async move {
@@ -883,9 +892,26 @@ impl Manager {
         let _in_flight =
             InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
         self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
-        // Creating is a unit of work of its own: a strict row reads its bound
-        // credentials first and builds nothing when one refuses.
-        self.strict_credential_admission(&managed, None).await?;
+        // Every create is a unit of work of its own: a strict row reads its
+        // bound credentials immediately before each create, applies what the
+        // read saw to the row's gate, and stops at the first refusal. A
+        // refusal before anything was built is the warmup's error.
+        let refusal = std::sync::Mutex::new(None);
+        let admit = {
+            let (managed, refusal) = (&managed, &refusal);
+            move || async move {
+                match self.strict_credential_admission(managed, None).await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        refusal
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get_or_insert(error);
+                        false
+                    },
+                }
+            }
+        };
         // The framework-owned warmup creates `warmup_target` entries via the
         // topology's `create_entry` (which runs the author's `Provider::create`)
         // and deposits them (fenced) into the framework store. `config` is read
@@ -896,7 +922,13 @@ impl Manager {
         // `warmup` bounds and isolates each `create_entry` hook under the
         // author-hook ceiling itself (the stagger interval between creates is
         // not part of that budget) and reports the first fault.
-        let count = match managed.warmup(ctx).await {
+        let count = match managed.warmup_admitted(ctx, admit).await {
+            Ok(0) => {
+                let refused = refusal
+                    .into_inner()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                return refused.map_or(Ok(0), Err);
+            },
             Ok(n) => n,
             Err(fault) => {
                 fault.observe(&R::key(), "warmup");

@@ -231,11 +231,12 @@
 //!   resolved, so it publishes once.
 //! - **I7 strict per-acquire read.** On a manager with a credential
 //!   observer, every new unit of work on a credential-bound row — each
-//!   acquire through `run_acquire` (including `acquire_any`), an explicit
-//!   `warmup_pool`, each background create pass — reads every bound slot's
+//!   acquire through `run_acquire` (including `acquire_any`), each create of
+//!   an explicit `warmup_pool`, each background create — reads every bound slot's
 //!   availability before it runs (`strict_admission`). The read runs after
 //!   the rate-limit wait and **outside every lock**: the row's gate ticket is
-//!   captured first, then all slots are read concurrently through the
+//!   captured first, then all slots are read concurrently (one read per
+//!   credential lane, shared by the slots bound to it) through the
 //!   manager's join-next `CredentialReads` (a caller only takes a read issued
 //!   after it arrived), each bounded by the caller's deadline and 2 s.
 //!   Under `Manager.admission`, after the post-count re-check (so a taint
@@ -247,7 +248,8 @@
 //!   before the suspension check, the phase check and the recovery gate. A
 //!   refusal that is not a denial at the current material (`Rebinding`,
 //!   `RefreshInFlight`, `CheckUnavailable`, `Absent`) changes no gate state.
-//!   Background creates only read and skip. The lock is never held across
+//!   Background creates only read and skip; every create reads just before
+//!   it runs, never once for a batch. The lock is never held across
 //!   the read; no task is spawned per read, so dropping an acquire drops its
 //!   read. Slot-less rows and interim managers read nothing. A unit that
 //!   waits for capacity after its read is not read again here (a per-call

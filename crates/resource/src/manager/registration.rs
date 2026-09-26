@@ -1017,15 +1017,9 @@ impl Manager {
         let managed = Arc::clone(managed);
         tokio::spawn(async move {
             let _in_flight = in_flight;
-            // A strict row reads its bound credentials before it builds;
+            // A strict row reads its bound credentials before each create;
             // `warmup` bounds and isolates each author `create` hook itself.
-            let warmup = async {
-                if managed.credentials_admit_creation().await {
-                    managed.warmup(&ctx).await
-                } else {
-                    Ok(0)
-                }
-            };
+            let warmup = managed.warmup(&ctx);
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {},

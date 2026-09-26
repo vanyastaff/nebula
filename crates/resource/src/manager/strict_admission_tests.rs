@@ -300,7 +300,7 @@ async fn an_available_credential_admits_after_one_read_per_slot() {
         "no gate change"
     );
     assert_eq!(current_seq::<StrictResident>(&manager), seq);
-    assert_eq!(metrics(&manager).reads(), [1, 0, 0, 0, 0, 0]);
+    assert_eq!(metrics(&manager).reads(), [1, 0, 0, 0, 0, 0, 0]);
 }
 
 #[tokio::test]
@@ -322,6 +322,31 @@ async fn two_bound_slots_are_read_concurrently() {
     observer.release(2);
     pending.await.expect("joined").expect("admitted");
     assert_eq!(observer.calls(), 2);
+}
+
+#[tokio::test]
+async fn two_slots_bound_to_one_credential_share_one_read() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = Arc::new(strict_manager(erased(&observer), &Arc::default()));
+    let resource = register(
+        &manager,
+        StrictTwoSlot::new(),
+        Resident::new(ResidentConfig::default()),
+    )
+    .expect("register");
+    // Both slots name the same credential, owner and contract: one lane.
+    bind(&resource.db, credential_id(), 1, 1);
+    bind(&resource.cache, credential_id(), 1, 1);
+
+    for acquire in 1..=2 {
+        let pending = spawn_acquire::<StrictTwoSlot>(&manager);
+        observer.until_calls(acquire).await;
+        observer.release(1);
+        pending.await.expect("joined").expect("admitted");
+        assert_eq!(observer.calls(), acquire, "one observer call per acquire");
+    }
+    assert_eq!(metrics(&manager).reads()[0], 2);
+    assert_eq!(metrics(&manager).joined(), 0);
 }
 
 #[tokio::test]
@@ -581,8 +606,72 @@ async fn a_read_that_does_not_answer_refuses_at_the_earlier_of_its_bound_and_the
 }
 
 #[tokio::test(start_paused = true)]
+async fn the_topology_hooks_get_only_the_budget_the_read_left() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = Arc::new(strict_manager(erased(&observer), &Arc::default()));
+    let resource = resident(&manager);
+    bind(&resource.db, credential_id(), 1, 1);
+    // The create hook never finishes on its own.
+    resource.probe.park_next_create();
+
+    let started = tokio::time::Instant::now();
+    let pending = {
+        let manager = Arc::clone(&manager);
+        tokio::spawn(async move {
+            manager
+                .acquire_for_identity::<StrictResident>(
+                    &context(),
+                    &AcquireOptions::default()
+                        .with_deadline(std::time::Instant::now() + Duration::from_millis(500)),
+                    &tenant(),
+                )
+                .await
+                .map(drop)
+        })
+    };
+    // The read takes 400 ms of the 500 ms budget.
+    observer.until_calls(1).await;
+    tokio::time::advance(Duration::from_millis(400)).await;
+    observer.release(1);
+
+    let error = pending.await.expect("joined").refused();
+    assert!(
+        matches!(error.kind(), ErrorKind::Backpressure),
+        "the hook timed out: {error:?}"
+    );
+    assert!(
+        started.elapsed() <= Duration::from_millis(500),
+        "the acquire ended past its deadline: {:?}",
+        started.elapsed()
+    );
+    resource.probe.release_create.notify_one();
+}
+
+/// Pauses every refresh-join step for its full bound, so counts and elapsed
+/// times are exact.
+fn fix_join_pauses(manager: &Manager) {
+    manager
+        .credential_reads
+        .as_deref()
+        .expect("strict manager")
+        .fix_join_pauses();
+}
+
+#[test]
+fn a_join_pause_is_jittered_over_the_upper_half_of_its_step() {
+    let pause = Duration::from_millis(400);
+    assert_eq!(super::jittered(pause, 0.0), Duration::from_millis(200));
+    assert_eq!(super::jittered(pause, 1.0), pause);
+    assert_eq!(super::jittered(pause, 0.5), Duration::from_millis(300));
+    // Out-of-range draws stay within the step.
+    assert_eq!(super::jittered(pause, 7.0), pause);
+    assert_eq!(super::jittered(pause, -1.0), Duration::from_millis(200));
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_refresh_in_flight_is_joined_for_a_bounded_wait() {
     let (observer, manager, _resource) = setup(refreshing(1));
+    fix_join_pauses(&manager);
     let started = tokio::time::Instant::now();
     assert_eq!(
         refused::<StrictResident>(&manager).await,
@@ -597,9 +686,34 @@ async fn a_refresh_in_flight_is_joined_for_a_bounded_wait() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn jittered_join_pauses_keep_the_schedule_bounds_and_the_join_deadline() {
+    for _ in 0..16 {
+        let (observer, manager, _resource) = setup(refreshing(1));
+        let started = tokio::time::Instant::now();
+        assert_eq!(
+            refused::<StrictResident>(&manager).await,
+            Some(CredentialUnavailableReason::RefreshInFlight)
+        );
+        // Every pause is at most its fixed bound and at least half of it:
+        // at least the fixed schedule's 16 reads, at most those of a
+        // schedule of half pauses (12.5, 25, 50, 100, then 200 ms: 1 + 4 + 24).
+        let calls = observer.calls();
+        assert!((16..=29).contains(&calls), "{calls} reads");
+        assert!(started.elapsed() <= REFRESH_JOIN_WAIT);
+        // The last re-read was issued with less than one full pause left.
+        assert!(
+            started.elapsed() + Duration::from_millis(400) > REFRESH_JOIN_WAIT,
+            "the join gave up early: {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_stalled_re_read_never_outlives_the_refresh_join() {
     let observer = ScriptedObserver::gated(refreshing(1));
     let manager = strict_manager(erased(&observer), &Arc::default());
+    fix_join_pauses(&manager);
     let resource = resident(&manager);
     bind(&resource.db, credential_id(), 1, 1);
     // Fifteen reads answer "refresh in flight"; the last re-read, issued at
@@ -790,13 +904,7 @@ async fn a_pooled_row_reads_before_checkout_and_keeps_its_idle_entry_when_refuse
 async fn an_explicit_warmup_reads_first_and_creates_nothing_when_refused() {
     let observer = ScriptedObserver::answering(reauth(1, 2));
     let manager = strict_manager(erased(&observer), &Arc::default());
-    let resource = register(
-        &manager,
-        StrictPooled::new(),
-        Pooled::new(pool_config(), config(1).fingerprint()),
-    )
-    .expect("register");
-    bind(&resource.db, credential_id(), 1, 1);
+    let resource = sequential_pool(&manager);
 
     let error = manager
         .warmup_pool::<StrictPooled>(&context())
@@ -804,15 +912,48 @@ async fn an_explicit_warmup_reads_first_and_creates_nothing_when_refused() {
         .refused();
     assert_eq!(reason(&error), Some(REAUTH));
     assert_eq!(resource.probe.creates(), 0);
+    assert_eq!(observer.calls(), 1);
+    assert_eq!(suspended_for::<StrictPooled>(&manager), Some(REAUTH));
 
-    // Usable again (reauthenticated): the warmup's read reopens the row and
-    // the warmup proceeds under the pool's strategy (none here).
+    // Usable again (reauthenticated): the first create's read reopens the
+    // row, and each create reads before it builds.
     observer.answer(available(1, 3));
-    manager
-        .warmup_pool::<StrictPooled>(&context())
-        .await
-        .expect("admitted");
+    assert_eq!(
+        manager
+            .warmup_pool::<StrictPooled>(&context())
+            .await
+            .expect("admitted"),
+        2
+    );
     assert_eq!(suspended_for::<StrictPooled>(&manager), None);
+    assert_eq!(resource.probe.creates(), 2);
+    assert_eq!(observer.calls(), 3, "one read per create");
+}
+
+#[tokio::test]
+async fn an_explicit_warmup_reads_before_each_create_and_stops_at_a_block() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = sequential_pool(&manager);
+    // The first create's read sees the credential usable; a reauthentication
+    // requirement commits before the second create's read.
+    observer.then([available(1, 1), reauth(1, 2)]);
+    observer.release(2);
+
+    assert_eq!(
+        manager
+            .warmup_pool::<StrictPooled>(&context())
+            .await
+            .expect("the first create was admitted"),
+        1
+    );
+    assert_eq!(resource.probe.creates(), 1, "exactly one create");
+    assert_eq!(observer.calls(), 2, "one read per create attempted");
+    assert_eq!(
+        suspended_for::<StrictPooled>(&manager),
+        Some(REAUTH),
+        "the explicit warmup applies what its read saw"
+    );
 }
 
 #[tokio::test]
@@ -903,7 +1044,7 @@ async fn a_burst_of_acquires_shares_reads() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn the_refill_reads_once_and_builds_nothing_while_a_credential_refuses() {
+async fn the_refill_reads_before_each_create_and_builds_nothing_while_a_credential_refuses() {
     for refusal in [
         reauth(1, 2),
         revoking(1),
@@ -923,34 +1064,63 @@ async fn the_refill_reads_once_and_builds_nothing_while_a_credential_refuses() {
 
         assert_eq!(row.refill_min_idle(&context()).await, 0);
         assert_eq!(resource.probe.creates(), 0);
-        assert_eq!(observer.calls(), 1, "one read for the pass");
+        assert_eq!(observer.calls(), 1, "the first create's read refused");
         assert_eq!(
             suspended_for::<StrictPooled>(&manager),
             None,
-            "a background pass changes no gate state"
+            "a background create changes no gate state"
         );
         assert_eq!(gate_epoch::<StrictPooled>(&manager), epoch);
 
         observer.answer(available(1, 1));
         assert_eq!(row.refill_min_idle(&context()).await, 2);
         assert_eq!(resource.probe.creates(), 2);
-        assert_eq!(observer.calls(), 2);
+        assert_eq!(observer.calls(), 3, "one read per create");
     }
 }
 
-/// A pool warmed at registration, bound before it registers (the slot cell
-/// is shared with the registered value).
-fn warmed_pool(manager: &Manager) -> StrictPooled {
+#[tokio::test]
+async fn the_refill_stops_at_a_block_committed_between_its_creates() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = register(
+        &manager,
+        StrictPooled::new(),
+        Pooled::new(pool_config(), config(1).fingerprint()),
+    )
+    .expect("register");
+    bind(&resource.db, credential_id(), 1, 1);
+    let row = row::<StrictPooled>(&manager);
+    let epoch = gate_epoch::<StrictPooled>(&manager);
+    // The block commits after the first create's read.
+    observer.then([available(1, 1), revoking(1)]);
+    observer.release(2);
+
+    assert_eq!(row.refill_min_idle(&context()).await, 1);
+    assert_eq!(resource.probe.creates(), 1, "exactly one create");
+    assert_eq!(observer.calls(), 2, "one read per create attempted");
+    assert_eq!(suspended_for::<StrictPooled>(&manager), None);
+    assert_eq!(gate_epoch::<StrictPooled>(&manager), epoch);
+}
+
+/// A pool with a sequential warmup of two, bound before it registers (the
+/// slot cell is shared with the registered value).
+fn sequential_pool(manager: &Manager) -> StrictPooled {
     let resource = StrictPooled::new();
     bind(&resource.db, credential_id(), 1, 1);
     let mut warmed = pool_config();
     warmed.warmup = crate::topology::pooled::config::WarmupStrategy::Sequential;
-    let resource = register(
+    register(
         manager,
         resource,
         Pooled::new(warmed, config(1).fingerprint()),
     )
-    .expect("register");
+    .expect("register")
+}
+
+/// A pool warmed at registration.
+fn warmed_pool(manager: &Manager) -> StrictPooled {
+    let resource = sequential_pool(manager);
     // As activation does after registering a stored row.
     manager.spawn_warmup(
         &row::<StrictPooled>(manager),
@@ -984,10 +1154,31 @@ async fn the_registration_warmup_builds_once_the_credential_is_usable() {
     let observer = ScriptedObserver::gated(available(1, 1));
     let manager = strict_manager(erased(&observer), &Arc::default());
     let resource = warmed_pool(&manager);
-    observer.until_calls(1).await;
-    observer.release(1);
+    for read in 1..=2 {
+        observer.until_calls(read).await;
+        observer.release(1);
+    }
     until_warmup_settled(&manager).await;
 
     assert_eq!(resource.probe.creates(), 2);
-    assert_eq!(observer.calls(), 1);
+    assert_eq!(observer.calls(), 2, "one read per create");
+}
+
+#[tokio::test]
+async fn the_registration_warmup_reads_before_each_create_and_stops_at_a_block() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    observer.then([available(1, 1), reauth(1, 2)]);
+    observer.release(2);
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = warmed_pool(&manager);
+    observer.until_calls(2).await;
+    until_warmup_settled(&manager).await;
+
+    assert_eq!(resource.probe.creates(), 1, "exactly one create");
+    assert_eq!(observer.calls(), 2, "one read per create attempted");
+    assert_eq!(
+        suspended_for::<StrictPooled>(&manager),
+        None,
+        "a background create changes no gate state"
+    );
 }
