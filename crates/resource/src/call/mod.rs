@@ -144,6 +144,7 @@ mod cost;
 mod error;
 mod managed;
 mod pin;
+mod session;
 mod strict;
 
 use std::{future::Future, num::NonZeroU32};
@@ -152,6 +153,10 @@ pub use cost::{Cost, Effect, SentState};
 pub use error::OpError;
 pub use managed::{Attempt, Managed, OpCx, UNIT_DEADLINE_CAP, Unit};
 pub use pin::PinSlots;
+pub use session::{
+    SessionBinding, SessionClosed, SessionCx, SessionEnd, SessionFuture, SessionProvider,
+    SessionSpec,
+};
 
 use crate::resource::Provider;
 

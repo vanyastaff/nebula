@@ -157,6 +157,12 @@ pub struct ResourceGuard<R: Provider> {
 pub struct LeaseClosing(tokio_util::sync::CancellationToken);
 
 impl LeaseClosing {
+    /// A notice no generation fires (tests).
+    #[cfg(test)]
+    pub(crate) fn detached() -> Self {
+        Self(tokio_util::sync::CancellationToken::new())
+    }
+
     /// Whether the lease's admission generation is closed.
     #[must_use]
     pub fn is_closing(&self) -> bool {
