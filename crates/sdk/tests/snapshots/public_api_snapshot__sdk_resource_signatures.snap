@@ -13,6 +13,10 @@ exported as nebula_sdk::integration::resource::CredentialUnavailableReason
 pub enum CredentialUnavailableReason {
     ReauthRequired,
     OperationBlocked,
+    RefreshInFlight,
+    Rebinding,
+    CheckUnavailable,
+    Absent,
 }
 impl CredentialUnavailableReason {
     pub fn retry_after(self) -> Duration;

@@ -734,6 +734,10 @@ mod tests {
         for reason in [
             nebula_resource::CredentialUnavailableReason::ReauthRequired,
             nebula_resource::CredentialUnavailableReason::OperationBlocked,
+            nebula_resource::CredentialUnavailableReason::RefreshInFlight,
+            nebula_resource::CredentialUnavailableReason::Rebinding,
+            nebula_resource::CredentialUnavailableReason::CheckUnavailable,
+            nebula_resource::CredentialUnavailableReason::Absent,
         ] {
             assert!(
                 matches!(
