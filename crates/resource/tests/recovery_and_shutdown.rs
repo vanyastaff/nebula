@@ -822,6 +822,11 @@ async fn health_check_gate_state_is_none_without_a_gate() {
         health.gate_state.is_none(),
         "no gate attached ⇒ no gate_state"
     );
+    assert_eq!(
+        health.rate_limit_profile,
+        nebula_resource::RateLimitProfile::PausesOnly,
+        "no rate declared or set ⇒ acquires only honour pauses"
+    );
 }
 
 #[tokio::test]

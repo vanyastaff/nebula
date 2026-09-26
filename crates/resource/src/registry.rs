@@ -154,6 +154,10 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// The row's current credential suspension, if any.
     fn credential_suspension(&self) -> Option<crate::state::CredentialSuspension>;
 
+    /// How the row's rate limit is enforced right now (observed on its
+    /// limiter; latches once `Provider::create` wraps a client).
+    fn rate_limit_profile(&self) -> crate::rate_limit::RateLimitProfile;
+
     /// Woken on every phase or taint change of this row.
     fn phase_changed(&self) -> &tokio::sync::Notify;
 
@@ -429,6 +433,10 @@ where
         self.admission.suspension()
     }
 
+    fn rate_limit_profile(&self) -> crate::rate_limit::RateLimitProfile {
+        self.rate_limiter.profile()
+    }
+
     fn phase_changed(&self) -> &tokio::sync::Notify {
         &self.phase_changed
     }
@@ -587,6 +595,14 @@ impl ManagedResourceView {
     pub fn credential_suspension(&self) -> Option<crate::state::CredentialSuspension> {
         self.managed.credential_suspension()
     }
+
+    /// Returns how the row's rate limit is enforced right now. A row whose
+    /// instance has not been created yet reports the profile it has before
+    /// `Provider::create` wraps a client; see
+    /// [`RateLimitProfile`](crate::rate_limit::RateLimitProfile).
+    pub fn rate_limit_profile(&self) -> crate::rate_limit::RateLimitProfile {
+        self.managed.rate_limit_profile()
+    }
 }
 
 impl std::fmt::Debug for ManagedResourceView {
@@ -598,6 +614,7 @@ impl std::fmt::Debug for ManagedResourceView {
             .field("topology_tag", &self.topology_tag())
             .field("admission_phase", &self.admission_phase())
             .field("credential_suspension", &self.credential_suspension())
+            .field("rate_limit_profile", &self.rate_limit_profile())
             .field("admission_load", &self.admission_load())
             .finish()
     }

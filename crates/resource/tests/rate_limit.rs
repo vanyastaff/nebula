@@ -5,6 +5,7 @@
 //! and the acquire path share one pause, and publishes transitions only. A
 //! wrapped client's wait ends when its row stops admitting work (revoke,
 //! shutdown) but not on a reload, and a detached limiter never ends one.
+//! Row status reports the observed rate-limit profile.
 
 mod common;
 
@@ -12,9 +13,9 @@ use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 use common::{ResidentTestResource, test_config, test_ctx};
 use nebula_resource::{
-    AcquireOptions, ErrorKind, GateState, Manager, RecoveryGate, RecoveryGateConfig,
-    RegistrationSpec, Resident, ResidentConfig, ResourceContext, ResourceEvent, ScopeLevel,
-    SlotIdentity,
+    AcquireOptions, ErrorKind, GateState, Manager, RateLimitProfile, RecoveryGate,
+    RecoveryGateConfig, RegistrationSpec, Resident, ResidentConfig, ResourceContext, ResourceEvent,
+    ScopeLevel, SlotIdentity,
     rate_limit::{LimitKey, Limited, LimitedError, Rate, RowLimit, Throttle, Verdict},
     resource::{Provider, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
@@ -336,6 +337,115 @@ fn register_chat(manager: &Manager, limit: Option<RowLimit>) {
             rate_limit: limit,
         })
         .expect("registration succeeds");
+}
+
+fn view_profile<R: Provider>(manager: &Manager) -> RateLimitProfile {
+    manager
+        .get_any(&R::key(), &ScopeLevel::Global)
+        .expect("row is registered")
+        .rate_limit_profile()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_wrapped_row_reports_the_interim_per_closure_profile_after_first_create() {
+    let manager = Manager::new();
+    register_chat(&manager, None);
+
+    // Resident creates lazily: before the first acquire nothing has wrapped
+    // the client, and this row declares no account rate.
+    let before = manager
+        .health_check::<ChatResource>(&ScopeLevel::Global)
+        .expect("row is registered");
+    assert_eq!(before.rate_limit_profile, RateLimitProfile::PausesOnly);
+    assert_eq!(
+        view_profile::<ChatResource>(&manager),
+        RateLimitProfile::PausesOnly
+    );
+
+    drop(
+        manager
+            .acquire::<ChatResource>(&test_ctx(), &AcquireOptions::default())
+            .await
+            .expect("acquire creates and wraps the client"),
+    );
+
+    let after = manager
+        .health_check::<ChatResource>(&ScopeLevel::Global)
+        .expect("row is registered");
+    assert_eq!(
+        after.rate_limit_profile,
+        RateLimitProfile::InterimPerClosure
+    );
+    assert!(after.rate_limit_profile.is_interim());
+    let view = manager
+        .get_any(&ChatResource::key(), &ScopeLevel::Global)
+        .expect("row is registered");
+    assert_eq!(
+        view.rate_limit_profile(),
+        RateLimitProfile::InterimPerClosure
+    );
+    assert!(
+        format!("{view:?}").contains("rate_limit_profile: InterimPerClosure"),
+        "the erased view's Debug carries the profile: {view:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_undeclared_row_reports_pauses_only() {
+    let manager = Manager::new();
+    manager
+        .register(RegistrationSpec {
+            resource: ResidentTestResource::new(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("registration succeeds");
+    drop(
+        manager
+            .acquire::<ResidentTestResource>(&test_ctx(), &AcquireOptions::default())
+            .await
+            .expect("acquire succeeds"),
+    );
+
+    let health = manager
+        .health_check::<ResidentTestResource>(&ScopeLevel::Global)
+        .expect("row is registered");
+    assert_eq!(health.rate_limit_profile, RateLimitProfile::PausesOnly);
+    assert_eq!(
+        view_profile::<ResidentTestResource>(&manager),
+        RateLimitProfile::PausesOnly
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rated_row_without_a_wrapped_client_reports_per_acquire() {
+    let manager = Manager::new();
+    register(
+        &manager,
+        ScopeLevel::Global,
+        RowLimit::rate(per_second(10, 1)),
+        None,
+    );
+    drop(
+        manager
+            .acquire::<ResidentTestResource>(&test_ctx(), &AcquireOptions::default())
+            .await
+            .expect("acquire succeeds"),
+    );
+
+    let health = manager
+        .health_check::<ResidentTestResource>(&ScopeLevel::Global)
+        .expect("row is registered");
+    assert_eq!(health.rate_limit_profile, RateLimitProfile::PerAcquire);
+    assert!(!health.rate_limit_profile.is_interim());
+    assert_eq!(
+        view_profile::<ResidentTestResource>(&manager),
+        RateLimitProfile::PerAcquire
+    );
 }
 
 #[tokio::test(start_paused = true)]
