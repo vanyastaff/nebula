@@ -190,6 +190,25 @@
 //!   nothing; a suspended row admits again only when the suspension is
 //!   reopened, which publishes a fresh generation after the suspension
 //!   already closed every generation of the previous span.
+//! - **I5 credential suspension.** A bound credential that denies use at its
+//!   current material (`CredentialUnavailableReason`) suspends the row
+//!   through `suspend_credential_row` (or the fan-out and engine activation
+//!   on its behalf), under `Manager.admission`: the first suspended slot
+//!   records the close cause, closes the whole admission span — every
+//!   generation published since the previous suspension, including benign
+//!   ones still held by leases — and leaves the row with no current
+//!   generation. While suspended, `run_acquire` refuses with
+//!   `CredentialUnavailable` after the post-count re-check and before the
+//!   phase check and the recovery gate; `until_accepting` fails fast; the
+//!   hand-out check (I3) reports the captured generation's close cause;
+//!   nothing is built (`accepts_new_instances`) and idle entries are not
+//!   probed, but owners are kept. Every suspension advances the gate
+//!   epoch; `reopen_credential_row` must present a `CredentialGateTicket`
+//!   equal to it, so a deny observed late always lands and an admit
+//!   observed before a later deny is `Superseded`. Clearing the last slot
+//!   publishes a fresh generation in a fresh span. Taint wins: a tainted
+//!   row never reopens. See `docs/credential-rotation.md`, "Same-material
+//!   blocks".
 //!
 //! The closing token is a cooperative notice: it stops no work, revokes no
 //! borrow, and rolls nothing back. A lease is still released normally, and

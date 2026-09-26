@@ -131,6 +131,7 @@ pub struct ResourceGuard<R: Provider> {
 /// | [`Manager::remove`](crate::Manager::remove) / [`remove_for`](crate::Manager::remove_for) | yes |
 /// | [`graceful_shutdown`](crate::Manager::graceful_shutdown) | yes, when the drain starts |
 /// | [`shutdown`](crate::Manager::shutdown) or dropping the manager | yes |
+/// | Credential suspension ([`suspend_credential_row`](crate::Manager::suspend_credential_row)) | yes, for every lease admitted since the previous suspension |
 /// | [`reload_config`](crate::Manager::reload_config) | no |
 /// | Credential refresh | no |
 /// | Same-identity replacement of the row | no |
