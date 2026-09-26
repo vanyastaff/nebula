@@ -43,6 +43,9 @@
 //!
 //! Runtime registration, dispatch, and cleanup queues remain engine-owned.
 
+#[cfg(feature = "resource-http")]
+pub mod http;
+
 pub use nebula_core::{ResourceKey, resource_key};
 pub use nebula_credential::CredentialGuard;
 pub use nebula_resource::call::{

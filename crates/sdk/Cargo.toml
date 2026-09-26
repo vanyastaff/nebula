@@ -62,6 +62,8 @@ default = ["derive", "testing"]
 derive = []
 testing = ["dep:uuid"]
 http = ["dep:reqwest", "dep:httpdate", "dep:tracing", "dep:zeroize"]
+# HTTP resource adapter: `integration::resource::http`.
+resource-http = ["dep:reqwest"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -90,4 +92,8 @@ allowed_external_types = [
   "chrono::*",
   "semver::*",
   "thiserror_impl::*",
+  # `integration::resource::http` (`resource-http`): status codes, header
+  # maps and body bytes; no reqwest or url type is public.
+  "http::*",
+  "bytes::*",
 ]
