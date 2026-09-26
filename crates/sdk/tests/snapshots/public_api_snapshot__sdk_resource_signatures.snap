@@ -381,6 +381,7 @@ impl OpError {
     pub fn is_retryable(&self) -> bool;
     pub fn retry_after(&self) -> Option<Duration>;
 }
+impl From<ConsumerGone> for OpError
 impl From<Error> for OpError
 impl fmt::Display for OpError
 impl std::error::Error for OpError
@@ -412,6 +413,9 @@ impl<R: Provider> Managed<R> {
 }
 impl<R: Provider + PinSlots> Managed<R> {
     pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output>;
+}
+impl<R: Provider + PinSlots> Managed<R> {
+    pub fn submit_streaming<O: StreamOperation<R>>(&self, operation: O, capacity: NonZeroUsize) -> Streaming<O::Item, O::Output>;
 }
 impl<R: Provider + PinSlots> From<ResourceGuard<R>> for Managed<R>
 impl<R: Provider> Clone for Managed<R>
