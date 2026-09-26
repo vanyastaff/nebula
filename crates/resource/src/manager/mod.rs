@@ -252,8 +252,23 @@
 //!   it runs, never once for a batch. The lock is never held across
 //!   the read; no task is spawned per read, so dropping an acquire drops its
 //!   read. Slot-less rows and interim managers read nothing. A unit that
-//!   waits for capacity after its read is not read again here (a per-call
-//!   facade re-reads per attempt with the same two functions).
+//!   waits for capacity after its read is not read again here; the managed
+//!   call facade reads per attempt instead (below).
+//!
+//!   **Per attempt.** Every attempt of a managed call unit (`OpCx::attempt`)
+//!   on such a row repeats the two phases with the same functions, after
+//!   every wait of the attempt (its quota booking): the read outside every
+//!   lock, raced against the lease's own generation and the unit's cancel;
+//!   then, under `Manager.admission` (reached through the row's
+//!   `AdmissionLink`), the taint and shutdown re-check, the reading applied
+//!   as above, the row's suspension, the lease's generation, and the unit's
+//!   credential pin — captured at the unit's first grant, after its read,
+//!   and refused `Rebinding` once a rotation superseded it — before the
+//!   grant, still under the lock. Every refusal is unsent. The attempt's
+//!   read and a concurrent acquire's read of the same credential share
+//!   join-next reads. The lock order is `Manager.admission`, the row's gate,
+//!   each slot's writer lock. A row serving a facade reports
+//!   `CredentialAdmissionProfile::StrictPerAttempt`.
 //!
 //! The closing token is a cooperative notice: it stops no work, revokes no
 //! borrow, and rolls nothing back. A lease is still released normally, and

@@ -13,7 +13,7 @@
 
 ## Key files
 
-- `src/integration/resource.rs` — curated trusted custom-topology authoring; the public-perimeter fixture compiles non-Clone provider/instance and lifecycle signatures using only SDK plus `async-trait`. This is authoring coverage, not a runtime lifecycle proof. Registration-local store mutation is trusted capability; Manager/Registry/ReleaseQueue remain excluded.
+- `src/integration/resource.rs` — curated trusted custom-topology authoring; the public-perimeter fixture compiles non-Clone provider/instance and lifecycle signatures using only SDK plus `async-trait`. This is authoring coverage, not a runtime lifecycle proof. Registration-local store mutation is trusted capability; Manager/Registry/ReleaseQueue remain excluded. Provider calls are authored against the managed call facade (`resource_rate_limit`, `resource_managed_logger` fixtures); the deprecated `Limited` closure family stays re-exported under `#[expect(deprecated)]` until its removal, and `resource_limited_deprecated` proves `wrap` is flagged.
 
 - `src/lib.rs` — curated persona modules, SDK `Error`, and `params!` / `workflow!` / `simple_action!` / `json!` macros; `__private` exists only for macro hygiene and is not an integration surface.
 - `src/resource_contribution.rs` — sealed SDK-owned token and typed bridge for topology-bearing

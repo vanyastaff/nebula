@@ -716,6 +716,21 @@ let admitted = recorded.readmit_against(fresh)?;
   defaults (5-minute unit deadline cap, one unit per exclusive lease and 64
   per shared one, no refund on cancel) are listed in the resource README.
 
+- **Strict per-attempt credential admission for managed calls.** On a
+  manager with a credential availability observer, every `OpCx::attempt` on
+  a credential-bound row reads the bound credentials' availability after
+  the attempt's quota wait — outside every lock, join-next shared with
+  acquires, raced against the lease closing and `Unit::cancel` — and is
+  registered under `Manager.admission`: taint and shutdown re-checked, the
+  reading applied to the row (a block suspends it and closes its leases, an
+  outage refuses `CheckUnavailable` without changing it, uninstalled
+  material refuses `Rebinding`), and the unit's credential pin verified
+  current before the grant. A later attempt whose pin a rotation superseded
+  is refused `CredentialUnavailable { Rebinding }`, unsent; the unit's
+  settled outcome decides the retry. Interim managers and slot-less rows read
+  nothing. A strict row serving a facade reports the new
+  `CredentialAdmissionProfile::StrictPerAttempt` (`strict_per_attempt`).
+
 - **Resource rows report how their rate limit is enforced.**
   `nebula_resource::RateLimitProfile` names it: `PausesOnly` (no rate),
   `PerAcquire` (one permit per lease) or `InterimPerClosure` (a client wrapped
@@ -944,6 +959,18 @@ let admitted = recorded.readmit_against(fresh)?;
   identity decision, and `POST /api/v1/auth/login/mfa` consumes the challenge
   to complete login and mint the session.
 
+### Deprecated
+
+- **The `Limited` closure family is deprecated since 0.21.0** in favour of
+  the managed call facade: `ResourceLimiter::wrap`, `Limited` (`run`,
+  `run_until`, `run_for`, `run_for_until`, `unlimited`) and `LimitedError`.
+  Migrate each call to an `Operation` on `ResourceGuard::into_managed`: `run`
+  becomes `OpCx::attempt(Cost::ONE)`, `run_for` becomes `Cost::keyed`,
+  `run_until` becomes `Unit::with_deadline`, a `Throttle` becomes
+  `Attempt::report(Verdict)`, and `unlimited` has no replacement by design.
+  They still work and stay re-exported by the SDK until their removal before
+  the API freeze; the resource README carries the migration table.
+
 ### Breaking
 
 - The workspace advances from `0.1` to `0.2`. Durable runtime ports now require
@@ -1100,6 +1127,14 @@ let admitted = recorded.readmit_against(fresh)?;
   classifications map to wire code `other`.
 
 ### Changed
+
+- **A managed unit pins its credential slots at its first grant**, not when
+  it starts: the first attempt runs on the binding its final admission (and,
+  on a strict manager, its credential read) validated. The pin is bracketed
+  by the slots' generations and retaken when a rotation races it; a refused
+  first attempt keeps no pin. `Attempt::slots()` is unchanged for every
+  attempt of a unit. The SDK's `integration::resource` docs now lead with
+  the managed call facade.
 
 - **The worker's resource manager is strict per acquire.** `apps/worker`
   composes its resource manager with the credential resolver's availability

@@ -6,7 +6,7 @@
 //! read's second phase: `Manager.admission` (the same mutex), the shutdown
 //! fence, the manager's cancellation, and the event bus the gate reports
 //! on. It is reached through the row's
-//! [`CredentialReads`](super::CredentialReads), so only strict rows carry it.
+//! [`CredentialReads`], so only strict rows carry it.
 //!
 //! The gate changes a strict reading applies — suspend, reopen, readmit —
 //! live here, so the acquire pipeline and a facade attempt apply them

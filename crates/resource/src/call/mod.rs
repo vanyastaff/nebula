@@ -11,12 +11,13 @@
 //!
 //! - A **unit** ([`Unit`]) is one submitted operation: owned intent, a
 //!   runtime-owned task, a deadline, an attempt budget, the credential slots
-//!   pinned when it started, and exactly one settled outcome (Design
+//!   pinned at its first grant, and exactly one settled outcome (Design
 //!   CONTRACT.md:36-46, DX-API.md:106-114).
 //! - An **attempt** ([`Attempt`]) is one admitted provider call.
 //!   [`OpCx::attempt`] is the unit's single linearization point: budget,
 //!   admission against the lease, quota booking at the attempt's [`Cost`],
-//!   final admission, grant (CONTRACT.md:64, :88-92). There is no retry loop
+//!   the strict credential read, registration and grant (CONTRACT.md:64,
+//!   :88-92). There is no retry loop
 //!   here: an operation that retries asks for another attempt, within
 //!   [`Operation::max_attempts`] (DX-API.md:36, CONTRACT.md:96).
 //!
@@ -48,6 +49,8 @@
 //! | lease closing (removal, shutdown) | `Cancelled` | `NotSent` |
 //! | credential suspension closed the lease | `CredentialUnavailable` | `NotSent` |
 //! | credential revoke tainted the row | `Revoked` | `NotSent` |
+//! | strict read refused (blocked, outage, absent, new material) | `CredentialUnavailable` | `NotSent` |
+//! | the unit's pinned slots were rotated since its first grant | `CredentialUnavailable { Rebinding }` | `NotSent` |
 //! | local quota slot past the deadline | `Exhausted` | `NotSent` |
 //! | limit store down, unit slots full until the deadline | `Backpressure` | `NotSent` |
 //! | provider throttled (`Attempt::report(Verdict::Throttled)`) | `Exhausted` | `Sent` |
@@ -66,13 +69,30 @@
 //! (CONTRACT.md:74). A credential refresh or a config reload leaves the
 //! lease's generation open, so neither interrupts a unit (canon §13.2).
 //!
-//! # Credential slots
+//! # Credentials
 //!
-//! [`PinSlots::pin_slots`] runs once when a unit starts; every attempt of the
-//! unit sees that snapshot through [`Attempt::slots`], the only way the
-//! facade discloses credential material (CONTRACT.md:73, DX-API.md:136). A
-//! rotation mid-unit reaches the next unit. Slots are pinned one by one;
-//! there is no cross-slot atomicity (CONTRACT.md:68).
+//! On a manager with a credential availability observer (a strict manager),
+//! every attempt on a credential-bound row reads each bound credential's
+//! availability after every wait of the attempt, outside every lock, and is
+//! registered under the manager's admission lock: a blocked credential
+//! suspends the row and closes its leases, a store outage refuses without
+//! changing the row, newer material refuses `Rebinding` until it is
+//! installed (CONTRACT.md:40-41, :64, :77; QUOTA-DX.md:33). Attempts share
+//! reads join-next with each other and with acquires; an attempt only takes
+//! a read issued after it arrived. A slot-less row and an interim manager
+//! read nothing. A row serving a facade reports
+//! [`CredentialAdmissionProfile::StrictPerAttempt`](crate::CredentialAdmissionProfile::StrictPerAttempt).
+//!
+//! [`PinSlots::pin_slots`] runs once per unit, at its first grant — after
+//! that attempt's read, so the first attempt runs on the binding its read
+//! validated — bracketed by the slots' generations and retaken when a
+//! rotation raced it. Every attempt of the unit sees that snapshot through
+//! [`Attempt::slots`], the only way the facade discloses credential material
+//! (CONTRACT.md:73, DX-API.md:136). A rotation mid-unit reaches the next
+//! unit: on a strict manager a later attempt whose pin it superseded is
+//! refused `Rebinding`, unsent, and the unit's settled outcome decides
+//! whether it is retried (a `Write` whose earlier attempt was sent has an
+//! unknown outcome). There is no re-pin mid-unit.
 //!
 //! # Rate limit
 //!
@@ -98,15 +118,17 @@
 //!   deadline, then fail with `Backpressure`.
 //! - A cost booked for an attempt that is cancelled before it reaches the
 //!   provider is not refunded (QUOTA-DX.md:32 baseline).
-//! - A pooled lease stays checked out while its units wait for quota; that
-//!   occupancy is the price of lease-wide units until per-unit checkout
-//!   (QUOTA-DX.md:41).
+//! - A pooled lease stays checked out while its units wait for quota and
+//!   while their strict credential reads run; that occupancy is the price of
+//!   lease-wide units until per-unit checkout (QUOTA-DX.md:41, :43).
 //! - `Sent` with `Exhausted` means the provider refused and applied
 //!   nothing, so it stays retryable for any effect.
 //! - The effect vocabulary is [`Effect::Read`], [`Effect::Idempotent`] and
 //!   [`Effect::Write`] (the default; DX-API.md:110).
-//! - The final admission re-checks local admission only; the strict
-//!   per-attempt credential read plugs in at that step later.
+//! - A superseded pin refuses `Rebinding` with the reason's one-second
+//!   retry hint; the unit is not re-prepared on the new material by the
+//!   runtime (an opt-in resubmission of a cloneable operation is a
+//!   follow-up).
 //!
 //! # Observability
 //!

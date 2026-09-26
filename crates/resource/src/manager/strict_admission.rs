@@ -20,7 +20,9 @@
 //!    its step so a fleet that met the same refresh does not re-read in
 //!    lockstep.
 //! 2. **Decide and apply, under `Manager.admission`**
-//!    ([`Manager::apply_strict_reading_under_admission`]): re-snapshot the
+//!    ([`AdmissionLink::apply_strict_reading_under_admission`](super::AdmissionLink::apply_strict_reading_under_admission),
+//!    which [`Manager::apply_strict_reading_under_admission`] delegates to):
+//!    re-snapshot the
 //!    installed material, decide per slot ([`decide`], pure), then apply the
 //!    gate changes — reopen or readmit slots read usable (only when the row is
 //!    suspended or the use revision advanced), suspend slots read blocked —
@@ -42,8 +44,11 @@
 //! `CheckUnavailable`. A strict refusal never takes a recovery-gate ticket.
 //!
 //! A later unit that waits a long time for capacity after this read is not
-//! re-read here; a per-call facade reads per attempt with the same two
-//! functions.
+//! re-read here. The managed call facade reads per attempt with the same two
+//! functions: [`read_credentials_strict`](ManagedResource::read_credentials_strict)
+//! after the attempt's quota wait, then the second phase through the row's
+//! [`AdmissionLink`](super::AdmissionLink), with the unit's credential pin
+//! checked under the same lock (`call::strict`).
 
 use std::time::Duration;
 
