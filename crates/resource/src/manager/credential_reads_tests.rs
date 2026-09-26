@@ -244,7 +244,7 @@ async fn a_burst_during_one_read_costs_exactly_one_more_read() {
     }
     assert_eq!(observer.calls(), 2, "read #1 plus one read for the burst");
     let metrics = reads.metrics().expect("metrics");
-    assert_eq!(metrics.reads(), [2, 0, 0, 0, 0, 0]);
+    assert_eq!(metrics.reads(), [2, 0, 0, 0, 0, 0, 0]);
     assert_eq!(metrics.joined(), 7, "one of the eight led read #2");
     assert_eq!(reads.lane_count(), 0);
 }
@@ -317,10 +317,11 @@ async fn a_read_that_does_not_answer_times_out_at_the_deadline() {
 async fn shutdown_ends_the_read_and_its_waiters_as_cancelled() {
     let observer = ScriptedObserver::gated(available());
     let cancel = CancellationToken::new();
+    let registry = nebula_metrics::MetricsRegistry::new();
     let reads = Arc::new(CredentialReads::new(
         Arc::clone(&observer) as Arc<dyn CredentialAvailabilityObserver>,
         cancel.clone(),
-        None,
+        Some(CredentialAdmissionMetrics::new(&registry).expect("metrics register")),
     ));
     let id = CredentialId::new();
 
@@ -334,6 +335,25 @@ async fn shutdown_ends_the_read_and_its_waiters_as_cancelled() {
     assert_eq!(waiter.await.expect("joined"), Err(ReadFailure::Cancelled));
     assert_eq!(observer.calls(), 1);
     assert_eq!(reads.lane_count(), 0);
+    assert_eq!(
+        reads.metrics().expect("metrics").reads(),
+        [0, 0, 0, 0, 0, 0, 1],
+        "the cancelled read is counted once, as cancelled, not as unavailable"
+    );
+}
+
+#[tokio::test]
+async fn an_observer_that_reports_cancellation_is_not_counted_unavailable() {
+    let observer = ScriptedObserver::answering(Err(CredentialObserveError::Cancelled));
+    let (reads, _registry) = reads(&observer);
+    let result = reads
+        .read_after_arrival(&scope("ws"), CredentialId::new(), &key(), later())
+        .await;
+    assert_eq!(result, Err(ReadFailure::Cancelled));
+    assert_eq!(
+        reads.metrics().expect("metrics").reads(),
+        [0, 0, 0, 0, 0, 0, 1]
+    );
 }
 
 #[tokio::test]

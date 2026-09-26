@@ -144,8 +144,9 @@ fn credential_admission_labels_are_closed_sets() {
                 credential_admission_read_outcome::ABSENT,
                 credential_admission_read_outcome::UNAVAILABLE,
                 credential_admission_read_outcome::TIMED_OUT,
+                credential_admission_read_outcome::CANCELLED,
             ][..],
-            6,
+            7,
         ),
         (
             &[
