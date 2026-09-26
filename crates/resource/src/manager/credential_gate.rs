@@ -54,6 +54,69 @@ impl CredentialGateTicket {
     }
 }
 
+/// Where a credential observation was made: the material epoch and, when the
+/// observation carried it, the credential's use revision (admission epoch).
+///
+/// Build it from what was read: `From<&CredentialGuardMetadata>` for a
+/// projected guard (material and use revision),
+/// `From<&CredentialAvailabilityObservation>` for a head-only observation
+/// (the use revision only from an `Open` status), or [`new`](Self::new) when
+/// only the material epoch is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CredentialObservedAt {
+    material_epoch: u64,
+    admission_epoch: Option<u64>,
+}
+
+impl CredentialObservedAt {
+    /// An observation at `material_epoch`, without a use revision.
+    #[must_use]
+    pub const fn new(material_epoch: u64) -> Self {
+        Self {
+            material_epoch,
+            admission_epoch: None,
+        }
+    }
+
+    /// The same observation, read together with use revision
+    /// `admission_epoch`.
+    #[must_use]
+    pub const fn with_admission_epoch(self, admission_epoch: u64) -> Self {
+        Self {
+            material_epoch: self.material_epoch,
+            admission_epoch: Some(admission_epoch),
+        }
+    }
+
+    /// The material epoch observed.
+    #[must_use]
+    pub const fn material_epoch(self) -> u64 {
+        self.material_epoch
+    }
+
+    /// The use revision observed, when the observation carried one.
+    #[must_use]
+    pub const fn admission_epoch(self) -> Option<u64> {
+        self.admission_epoch
+    }
+}
+
+impl From<&nebula_credential::CredentialGuardMetadata> for CredentialObservedAt {
+    fn from(metadata: &nebula_credential::CredentialGuardMetadata) -> Self {
+        Self::new(metadata.material_epoch()).with_admission_epoch(metadata.admission_epoch())
+    }
+}
+
+impl From<&nebula_credential::CredentialAvailabilityObservation> for CredentialObservedAt {
+    fn from(observation: &nebula_credential::CredentialAvailabilityObservation) -> Self {
+        let observed = Self::new(observation.material_epoch());
+        match observation.admission_epoch() {
+            Some(admission_epoch) => observed.with_admission_epoch(admission_epoch),
+            None => observed,
+        }
+    }
+}
+
 /// Result of [`Manager::suspend_credential_row`].
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,10 +140,20 @@ pub enum CredentialReopenOutcome {
     /// The last suspended slot cleared; the row admits work again under a
     /// fresh admission generation.
     Reopened,
+    /// The row was not suspended, but the credential's use revision advanced
+    /// at the same material past what the row admitted: use was denied and
+    /// allowed again unobserved. The row admits new work under a fresh
+    /// admission generation; leases admitted before stay open, and nothing is
+    /// rebuilt.
+    Readmitted,
     /// The slot cleared but another bound slot still suspends the row.
     StillSuspended,
     /// The row was not suspended; nothing changed.
     NotSuspended,
+    /// The observation is older than what the row already admitted or was
+    /// denied at, or is at another material than the one installed; nothing
+    /// changed.
+    StaleObservation,
     /// A suspension was recorded after the ticket was captured; nothing
     /// changed. Observe the credential again with a fresh ticket.
     Superseded,
@@ -353,8 +426,26 @@ impl Manager {
                 self.emit(ResourceEvent::CredentialReopened { key: key.clone() });
                 CredentialReopenOutcome::Reopened
             },
+            ReopenTransition::Readmitted { seq } => {
+                tracing::info!(
+                    resource.key = %key,
+                    slot,
+                    admission = seq,
+                    "credential use revision advanced unobserved: new work admitted under a \
+                     fresh admission generation"
+                );
+                CredentialReopenOutcome::Readmitted
+            },
             ReopenTransition::StillSuspended => CredentialReopenOutcome::StillSuspended,
             ReopenTransition::NotSuspended => CredentialReopenOutcome::NotSuspended,
+            ReopenTransition::StaleObservation => {
+                tracing::debug!(
+                    resource.key = %key,
+                    slot,
+                    "credential reopen ignored: observation predates the row's use revision"
+                );
+                CredentialReopenOutcome::StaleObservation
+            },
             ReopenTransition::Superseded => {
                 tracing::debug!(
                     resource.key = %key,

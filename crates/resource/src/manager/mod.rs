@@ -418,7 +418,7 @@ mod shutdown_session;
 mod shutdown_session_tests;
 
 pub use credential_gate::{
-    CredentialGateTicket, CredentialReopenOutcome, CredentialSuspendOutcome,
+    CredentialGateTicket, CredentialObservedAt, CredentialReopenOutcome, CredentialSuspendOutcome,
 };
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,

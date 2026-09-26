@@ -22,6 +22,15 @@
 //!   nothing until [`AdmissionCell::reopen`] clears the last suspended slot
 //!   and publishes a fresh generation in a fresh span. Retained physical
 //!   owners stay; only the admission (logical binding) generation changes.
+//! - **Readmission** ([`AdmissionCell::reopen`] on an admitting row) — the
+//!   credential's use revision (admission epoch) advanced at the same
+//!   material past everything the slot admitted: use was closed and reopened
+//!   in between without this row observing the denial. A fresh generation is
+//!   published so new work is admitted under the new revision (Design
+//!   CONTRACT "old use revision does not admit"); like a benign publication
+//!   it leaves the predecessor open, because only an observed block closes
+//!   admitted work. Refusing work admitted during an unobserved interval is
+//!   the strict per-acquire availability read, a separate contract.
 //! - **Retirement** ([`AdmissionCell::retire`]) — credential taint/revoke,
 //!   row removal, shutdown, manager drop. It cancels the row's terminal token
 //!   and so every generation ever published, in every span.
@@ -49,7 +58,9 @@ use std::{
 use arc_swap::{ArcSwap, ArcSwapOption};
 use tokio_util::sync::CancellationToken;
 
-use crate::{error::CredentialUnavailableReason, state::CredentialSuspension};
+use crate::{
+    error::CredentialUnavailableReason, manager::CredentialObservedAt, state::CredentialSuspension,
+};
 
 /// Why an admission span closed, when something other than retirement closed
 /// it. Read by the hand-out refusal and by `Limited` waits so the caller
@@ -158,23 +169,167 @@ pub(crate) enum ReopenTransition {
         /// Sequence number of the fresh generation.
         seq: u64,
     },
+    /// The row was not suspended, but the credential's use revision advanced
+    /// past everything the slot admitted at the same material (a denial
+    /// interval nobody observed): generation `seq` is current. The
+    /// predecessor stays open.
+    Readmitted {
+        /// Sequence number of the fresh generation.
+        seq: u64,
+    },
     /// The slot cleared (or was not suspended) but another slot still is.
     StillSuspended,
-    /// The row was not suspended.
+    /// The row was not suspended, and the observation adds nothing.
     NotSuspended,
+    /// The observation is older than what the slot already admitted or was
+    /// denied at, or is at another material than the one installed.
+    StaleObservation,
     /// A suspension happened after the ticket was captured.
     Superseded,
     /// The row is retired.
     Retired,
 }
 
-/// Which bound slots currently deny use, and the ticket counter a reopen must
-/// present. Only suspensions advance `epoch`: a late deny always lands, while
-/// an admit observed before a later deny is refused.
+/// A credential use revision: the material epoch and the admission epoch it
+/// was admitted or denied at, ordered lexicographically (a material advance
+/// dominates any admission epoch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct UseMark {
+    material_epoch: u64,
+    admission_epoch: u64,
+}
+
+impl UseMark {
+    pub(crate) const fn new(material_epoch: u64, admission_epoch: u64) -> Self {
+        Self {
+            material_epoch,
+            admission_epoch,
+        }
+    }
+
+    /// The mark an observation carries, when it carries a use revision.
+    pub(crate) const fn observed(observed: CredentialObservedAt) -> Option<Self> {
+        match observed.admission_epoch() {
+            Some(admission_epoch) => Some(Self::new(observed.material_epoch(), admission_epoch)),
+            None => None,
+        }
+    }
+
+    /// The mark of an installed projection.
+    #[expect(
+        dead_code,
+        reason = "guard-justified: the manager reads installed marks in the next change"
+    )]
+    pub(crate) fn installed(metadata: &nebula_credential::CredentialGuardMetadata) -> Self {
+        Self::new(metadata.material_epoch(), metadata.admission_epoch())
+    }
+
+    pub(crate) const fn material_epoch(self) -> u64 {
+        self.material_epoch
+    }
+}
+
+/// The use revision a suspended slot was denied at: a reopen must present a
+/// newer one.
+///
+/// **Witnessed** floors come from a denial read together with its use
+/// revision (an `Open` status awaiting reauthentication); a reopen then needs
+/// a strictly higher revision, because every backend advances the admission
+/// epoch when such a denial clears. **Unwitnessed** floors come from a
+/// denial without a revision (an operation in flight or awaiting
+/// reconciliation, a resolver without an observer); the backend bumped the
+/// revision when that denial began, so the floor is only what the slot had
+/// admitted, and a reopen at an equal revision is accepted.
+///
+/// Ordered by `(mark, witnessed)`, so the larger of two floors is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub(crate) struct SuspensionFloor {
+    mark: Option<UseMark>,
+    witnessed: bool,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "guard-justified: the manager computes floors in the next change"
+    )
+)]
+impl SuspensionFloor {
+    /// A denial observed at `mark` together with its use revision.
+    pub(crate) const fn witnessed(mark: UseMark) -> Self {
+        Self {
+            mark: Some(mark),
+            witnessed: true,
+        }
+    }
+
+    /// A denial observed without a use revision; `admitted` is what the slot
+    /// had admitted, if known.
+    pub(crate) const fn unwitnessed(admitted: Option<UseMark>) -> Self {
+        Self {
+            mark: admitted,
+            witnessed: false,
+        }
+    }
+
+    /// Whether a use at `observed` clears this floor.
+    fn cleared_by(self, observed: Option<UseMark>) -> bool {
+        match (self.mark, observed) {
+            // Nothing to compare: the pre-revision (ticket-only) rule.
+            (None, _) | (_, None) => true,
+            (Some(floor), Some(observed)) if self.witnessed => observed > floor,
+            (Some(floor), Some(observed)) => {
+                if observed == floor {
+                    tracing::debug!(
+                        material_epoch = observed.material_epoch,
+                        admission_epoch = observed.admission_epoch,
+                        "credential reopened at the use revision it had admitted: the denial \
+                         carried no revision of its own"
+                    );
+                }
+                observed >= floor
+            },
+        }
+    }
+}
+
+/// Why one slot denies use, and the use revision a reopen must beat.
+#[derive(Debug, Clone, Copy)]
+struct SlotDenial {
+    reason: CredentialUnavailableReason,
+    floor: SuspensionFloor,
+}
+
+/// Which bound slots currently deny use, the use revision each slot last
+/// admitted beyond its installed projection, and the ticket counter a reopen
+/// must present. Only suspensions advance `epoch`: a late deny always lands,
+/// while an admit observed before a later deny is refused.
 #[derive(Debug, Default)]
 struct CredentialGate {
-    by_slot: BTreeMap<Box<str>, CredentialUnavailableReason>,
+    by_slot: BTreeMap<Box<str>, SlotDenial>,
+    admitted: BTreeMap<Box<str>, UseMark>,
     epoch: u64,
+}
+
+impl CredentialGate {
+    /// The use revision `slot` admits at: the higher of the installed
+    /// projection's and the last one a reopen or readmit recorded.
+    fn admitted(&self, slot: &str, installed: Option<UseMark>) -> Option<UseMark> {
+        installed.max(self.admitted.get(slot).copied())
+    }
+
+    fn record_admitted(&mut self, slot: &str, observed: Option<UseMark>) {
+        let Some(observed) = observed else {
+            return;
+        };
+        match self.admitted.get_mut(slot) {
+            Some(admitted) => *admitted = (*admitted).max(observed),
+            None => {
+                self.admitted.insert(slot.into(), observed);
+            },
+        }
+    }
 }
 
 /// A row's admission state: the current generation, the span it belongs to,
@@ -264,18 +419,25 @@ impl AdmissionCell {
     /// span — every generation published since the previous suspension,
     /// including older benign ones still held by leases — and leaves the row
     /// with no current generation. Every call advances the gate epoch, so a
-    /// reopen ticket captured before it is refused.
+    /// reopen ticket captured before it is refused. A repeated suspension of
+    /// the same slot records the new reason and keeps the higher `floor`.
     pub(crate) fn suspend(
         &self,
         slot: &str,
         reason: CredentialUnavailableReason,
+        floor: SuspensionFloor,
     ) -> SuspendTransition {
         if self.terminal.is_cancelled() {
             return SuspendTransition::Retired;
         }
         let mut gate = self.gate();
         let first = gate.by_slot.is_empty();
-        gate.by_slot.insert(slot.into(), reason);
+        let floor = gate
+            .by_slot
+            .get(slot)
+            .map_or(floor, |denial| denial.floor.max(floor));
+        gate.by_slot
+            .insert(slot.into(), SlotDenial { reason, floor });
         gate.epoch += 1;
         if !first {
             return SuspendTransition::Updated;
@@ -294,21 +456,75 @@ impl AdmissionCell {
         }
     }
 
-    /// Clears `slot`'s suspension if `ticket` still equals the gate epoch.
-    /// Clearing the last suspended slot publishes a fresh generation in the
-    /// span opened by the suspension; the generations it closed stay closed.
-    pub(crate) fn reopen(&self, slot: &str, ticket: u64) -> ReopenTransition {
+    /// Records that `slot`'s credential is usable at `observed`, given the
+    /// projection `installed` in the slot (if known).
+    ///
+    /// - An observation at another material than the installed one is
+    ///   [`StaleObservation`](ReopenTransition::StaleObservation): newer
+    ///   material reaches the row through its install.
+    /// - **Suspended row**: `ticket` must still equal the gate epoch
+    ///   ([`Superseded`](ReopenTransition::Superseded) otherwise). A denied
+    ///   slot clears only when `observed` clears its [`SuspensionFloor`];
+    ///   clearing the last one publishes a fresh generation in the span the
+    ///   suspension opened, and the generations it closed stay closed.
+    /// - **Admitting row**: a use revision above everything the slot admitted
+    ///   means a denial interval came and went unobserved. A fresh generation
+    ///   is published ([`Readmitted`](ReopenTransition::Readmitted)) so that
+    ///   new work is admitted under the new revision; the predecessor is not
+    ///   closed — closing is reserved for an observed block — and nothing is
+    ///   rebuilt.
+    ///
+    /// Every accepted observation raises the slot's admitted revision.
+    pub(crate) fn reopen(
+        &self,
+        slot: &str,
+        ticket: u64,
+        observed: CredentialObservedAt,
+        installed: Option<UseMark>,
+    ) -> ReopenTransition {
         if self.terminal.is_cancelled() {
             return ReopenTransition::Retired;
         }
+        if installed
+            .is_some_and(|installed| installed.material_epoch() != observed.material_epoch())
+        {
+            return ReopenTransition::StaleObservation;
+        }
+        let mark = UseMark::observed(observed);
         let mut gate = self.gate();
         if gate.by_slot.is_empty() {
-            return ReopenTransition::NotSuspended;
+            let admitted = gate.admitted(slot, installed);
+            return match (mark, admitted) {
+                (Some(mark), Some(admitted)) if mark > admitted => {
+                    gate.record_admitted(slot, Some(mark));
+                    match self.publish_in_span() {
+                        Some(generation) => ReopenTransition::Readmitted {
+                            seq: generation.seq(),
+                        },
+                        None => ReopenTransition::Retired,
+                    }
+                },
+                (Some(mark), Some(admitted)) if mark < admitted => {
+                    ReopenTransition::StaleObservation
+                },
+                _ => {
+                    gate.record_admitted(slot, mark);
+                    ReopenTransition::NotSuspended
+                },
+            };
         }
         if gate.epoch != ticket {
             return ReopenTransition::Superseded;
         }
+        let Some(denial) = gate.by_slot.get(slot).copied() else {
+            gate.record_admitted(slot, mark);
+            return ReopenTransition::StillSuspended;
+        };
+        if !denial.floor.cleared_by(mark) {
+            return ReopenTransition::StaleObservation;
+        }
         gate.by_slot.remove(slot);
+        gate.record_admitted(slot, mark);
         if !gate.by_slot.is_empty() {
             return ReopenTransition::StillSuspended;
         }
@@ -319,6 +535,19 @@ impl AdmissionCell {
             },
             None => ReopenTransition::Retired,
         }
+    }
+
+    /// The use revision `slot` currently admits at: the higher of
+    /// `installed` and the last revision a reopen or readmit recorded.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "guard-justified: the manager reads admitted marks in the next change"
+        )
+    )]
+    pub(crate) fn admitted(&self, slot: &str, installed: Option<UseMark>) -> Option<UseMark> {
+        self.gate().admitted(slot, installed)
     }
 
     /// The ticket a later [`reopen`](Self::reopen) must present: capture it
@@ -340,7 +569,7 @@ impl AdmissionCell {
             CredentialSuspension::new(
                 gate.by_slot
                     .iter()
-                    .map(|(slot, reason)| (slot.to_string(), *reason))
+                    .map(|(slot, denial)| (slot.to_string(), denial.reason))
                     .collect(),
             )
         })

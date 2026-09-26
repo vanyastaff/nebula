@@ -400,7 +400,11 @@ where
         slot: &str,
         reason: crate::error::CredentialUnavailableReason,
     ) -> crate::runtime::admission::SuspendTransition {
-        let transition = self.admission.suspend(slot, reason);
+        let transition = self.admission.suspend(
+            slot,
+            reason,
+            crate::runtime::admission::SuspensionFloor::default(),
+        );
         if matches!(
             transition,
             crate::runtime::admission::SuspendTransition::Suspended { .. }
@@ -415,7 +419,10 @@ where
         slot: &str,
         ticket: u64,
     ) -> crate::runtime::admission::ReopenTransition {
-        let transition = self.admission.reopen(slot, ticket);
+        // No use revision yet: the ticket-only rule.
+        let transition =
+            self.admission
+                .reopen(slot, ticket, crate::CredentialObservedAt::new(0), None);
         if matches!(
             transition,
             crate::runtime::admission::ReopenTransition::Reopened { .. }
