@@ -2,6 +2,16 @@
 //!
 //! Single-process scope — no cross-replica coordination. CAS uses a
 //! `parking_lot::Mutex` over `HashMap<CredentialSelector, ClaimRow>`.
+//!
+//! # Limitation: no admission-epoch bumps
+//!
+//! This repository is a separate object from any credential store, so it
+//! cannot advance a credential's admission epoch when a revoke claim is won,
+//! a sentinel is marked, or reclaim escalates. The port's invariant I-A (see
+//! `CredentialAdmissionEpoch`) therefore holds only for the SQL backends,
+//! which commit claims and credentials in one transaction. Consumers that pin
+//! admission epochs must not treat this desktop / `credential-in-memory`
+//! pairing as a deployment backend.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
