@@ -315,6 +315,17 @@ fn classify_resource_error(res_err: nebula_resource::Error) -> ActionError {
             );
             ActionError::retryable(res_err.to_string())
         },
+        // A bound credential denies use at its current material (reauth
+        // required, an operation blocking use). The row is suspended, not
+        // broken: it serves again once the credential is usable, so this is
+        // retryable, never fatal.
+        ResourceErrorKind::CredentialUnavailable { .. } => {
+            tracing::warn!(
+                error = %res_err,
+                "event_source: subscribe rejected (bound credential unavailable); retryable",
+            );
+            ActionError::retryable(res_err.to_string())
+        },
         ResourceErrorKind::Cancelled => {
             tracing::info!(error = %res_err, "event_source: subscribe cancelled");
             ActionError::Cancelled
@@ -386,6 +397,15 @@ fn classify_resource_error_outcome(res_err: nebula_resource::Error) -> RecvOutco
             tracing::warn!(
                 error = %res_err,
                 "event_source: recv rejected (resource tainted by credential revoke); continuing",
+            );
+            RecvOutcome::Continue
+        },
+        // Credential suspension — transient: the row serves again once the
+        // bound credential is usable, so continue the loop.
+        ResourceErrorKind::CredentialUnavailable { .. } => {
+            tracing::warn!(
+                error = %res_err,
+                "event_source: recv rejected (bound credential unavailable); continuing",
             );
             RecvOutcome::Continue
         },
@@ -706,6 +726,31 @@ mod tests {
         match classify_resource_error(err) {
             ActionError::Retryable { .. } => {},
             other => panic!("Revoked must classify retryable on subscribe, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn credential_unavailable_is_retryable_and_continues() {
+        for reason in [
+            nebula_resource::CredentialUnavailableReason::ReauthRequired,
+            nebula_resource::CredentialUnavailableReason::OperationBlocked,
+        ] {
+            assert!(
+                matches!(
+                    classify_resource_error(ResourceError::credential_unavailable(reason, None)),
+                    ActionError::Retryable { .. }
+                ),
+                "a suspended row is retryable on subscribe",
+            );
+            assert!(
+                matches!(
+                    classify_resource_error_outcome(ResourceError::credential_unavailable(
+                        reason, None
+                    )),
+                    RecvOutcome::Continue
+                ),
+                "a suspended row continues the recv loop",
+            );
         }
     }
 

@@ -15,6 +15,7 @@
 //! | [`Cancelled`](ErrorKind::Cancelled) | No | Propagate cancellation — the caller's own `CancellationToken` fired or the manager is shutting down. |
 //! | [`Revoked`](ErrorKind::Revoked) | Yes, after re-bind | Retry after the credential is re-registered; the resource is tainted until then, not permanently broken. |
 //! | [`Ambiguous`](ErrorKind::Ambiguous) | No | Fail the operation and fix the caller: acquire through a slot-identity-pinned path (`acquire_<topology>_for_identity`) instead of the identity-agnostic one. |
+//! | [`CredentialUnavailable`](ErrorKind::CredentialUnavailable) | Yes, after `retry_after` | A bound credential denies use at its current material (reauthentication required, or an operation blocks use); the row is suspended, not broken. Retry after the hint; reauthentication is operator-paced. |
 //!
 //! Use [`Error::is_retryable`] to branch without matching every variant, and
 //! [`Error::retry_after`] to respect a rate-limit hint. `ErrorKind` is
@@ -38,6 +39,16 @@ pub enum CredentialUnavailableReason {
     /// A credential operation (a revoke in flight, or one awaiting
     /// reconciliation) blocks use for now.
     OperationBlocked,
+}
+
+impl CredentialUnavailableReason {
+    /// The default wait before retrying a call refused for this reason.
+    fn default_retry_after(self) -> Duration {
+        match self {
+            Self::ReauthRequired => Duration::from_secs(30),
+            Self::OperationBlocked => Duration::from_secs(1),
+        }
+    }
 }
 
 impl fmt::Display for CredentialUnavailableReason {
@@ -91,6 +102,19 @@ pub enum ErrorKind {
     /// resolves the resource), classified as a client conflict, **not** a
     /// server (5xx) failure.
     Ambiguous,
+    /// A credential bound to the row denies use at its current material, so
+    /// the row is suspended: it admits no new work until the credential is
+    /// usable again (for example after reauthentication), and leases
+    /// admitted before the suspension observe closing.
+    ///
+    /// Non-terminal and not a backend fault: it never trips the recovery
+    /// gate. Retry after `retry_after`.
+    CredentialUnavailable {
+        /// Why the credential denies use.
+        reason: CredentialUnavailableReason,
+        /// Suggested wait before retrying.
+        retry_after: Option<Duration>,
+    },
 }
 
 impl ErrorKind {
@@ -116,17 +140,26 @@ impl ErrorKind {
             Self::Cancelled => (nebula_error::ErrorCategory::Cancelled, "RESOURCE:CANCELLED"),
             Self::Revoked => (nebula_error::ErrorCategory::Unavailable, "RESOURCE:REVOKED"),
             Self::Ambiguous => (nebula_error::ErrorCategory::Conflict, "RESOURCE:AMBIGUOUS"),
+            Self::CredentialUnavailable { .. } => (
+                nebula_error::ErrorCategory::Unavailable,
+                "RESOURCE:CREDENTIAL_UNAVAILABLE",
+            ),
         }
     }
 
     /// Whether this error kind is retryable by default.
     ///
-    /// `Transient`, `Exhausted`, `Backpressure`, and `Revoked` represent
-    /// conditions that resolve with time or backoff.
+    /// `Transient`, `Exhausted`, `Backpressure`, `Revoked`, and
+    /// `CredentialUnavailable` represent conditions that resolve with time or
+    /// backoff.
     fn is_default_retryable(&self) -> bool {
         matches!(
             self,
-            Self::Transient | Self::Exhausted { .. } | Self::Backpressure | Self::Revoked
+            Self::Transient
+                | Self::Exhausted { .. }
+                | Self::Backpressure
+                | Self::Revoked
+                | Self::CredentialUnavailable { .. }
         )
     }
 }
@@ -148,6 +181,9 @@ impl fmt::Display for ErrorKind {
             Self::Cancelled => f.write_str("cancelled"),
             Self::Revoked => f.write_str("revoked"),
             Self::Ambiguous => f.write_str("ambiguous"),
+            Self::CredentialUnavailable { reason, .. } => {
+                write!(f, "credential unavailable ({reason})")
+            },
         }
     }
 }
@@ -198,11 +234,18 @@ impl Error {
     /// - `Backpressure` errors return a default 50ms hint (pool slots free up quickly).
     /// - `Revoked` errors return a 100ms hint (re-registration is operator-paced;
     ///   a short floor avoids a hot retry loop without stalling recovery).
+    /// - `CredentialUnavailable` errors return their explicit hint, or by
+    ///   default 1 s for an operation block (operations settle quickly) and
+    ///   30 s for reauthentication (operator-paced).
     pub fn retry_after(&self) -> Option<Duration> {
         match &self.kind {
             ErrorKind::Exhausted { retry_after } => *retry_after,
             ErrorKind::Backpressure => Some(Duration::from_millis(50)),
             ErrorKind::Revoked => Some(Duration::from_millis(100)),
+            ErrorKind::CredentialUnavailable {
+                reason,
+                retry_after,
+            } => Some(retry_after.unwrap_or_else(|| reason.default_retry_after())),
             _ => None,
         }
     }
@@ -266,6 +309,23 @@ impl Error {
         Self::new(ErrorKind::Ambiguous, message)
     }
 
+    /// Creates a credential-unavailable error: a bound credential denies use
+    /// at its current material and the row is suspended. With no explicit
+    /// `retry_after`, [`retry_after`](Self::retry_after) reports the
+    /// reason's default.
+    pub fn credential_unavailable(
+        reason: CredentialUnavailableReason,
+        retry_after: Option<Duration>,
+    ) -> Self {
+        Self::new(
+            ErrorKind::CredentialUnavailable {
+                reason,
+                retry_after,
+            },
+            format!("bound credential unavailable: {reason}"),
+        )
+    }
+
     /// Creates a backpressure error.
     pub fn backpressure(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Backpressure, message)
@@ -310,12 +370,15 @@ impl Error {
             ErrorKind::Transient
             | ErrorKind::Exhausted { .. }
             | ErrorKind::Backpressure
-            | ErrorKind::Revoked => nebula_core::CoreError::resource_unavailable(
-                key_label,
-                detail,
-                true,
-                self.retry_after(),
-            ),
+            | ErrorKind::Revoked
+            | ErrorKind::CredentialUnavailable { .. } => {
+                nebula_core::CoreError::resource_unavailable(
+                    key_label,
+                    detail,
+                    true,
+                    self.retry_after(),
+                )
+            },
         }
     }
 }
@@ -540,6 +603,55 @@ mod tests {
         );
         let hint = Classify::retry_hint(&err).expect("Revoked has a retry hint");
         assert_eq!(hint.after, Some(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn credential_unavailable_is_retryable_unavailable_with_reason_hints() {
+        use nebula_error::{Classify, ErrorCategory};
+
+        let reauth =
+            Error::credential_unavailable(CredentialUnavailableReason::ReauthRequired, None);
+        assert_eq!(
+            *reauth.kind(),
+            ErrorKind::CredentialUnavailable {
+                reason: CredentialUnavailableReason::ReauthRequired,
+                retry_after: None,
+            }
+        );
+        assert!(reauth.is_retryable());
+        assert_eq!(Classify::category(&reauth), ErrorCategory::Unavailable);
+        assert_eq!(
+            Classify::code(&reauth).as_str(),
+            "RESOURCE:CREDENTIAL_UNAVAILABLE"
+        );
+        assert_eq!(reauth.retry_after(), Some(Duration::from_secs(30)));
+        assert_eq!(
+            Classify::retry_hint(&reauth).and_then(|hint| hint.after),
+            Some(Duration::from_secs(30))
+        );
+
+        let blocked =
+            Error::credential_unavailable(CredentialUnavailableReason::OperationBlocked, None);
+        assert_eq!(blocked.retry_after(), Some(Duration::from_secs(1)));
+
+        let explicit = Error::credential_unavailable(
+            CredentialUnavailableReason::OperationBlocked,
+            Some(Duration::from_millis(250)),
+        );
+        assert_eq!(explicit.retry_after(), Some(Duration::from_millis(250)));
+
+        let core = reauth.to_core_error();
+        assert!(matches!(
+            core,
+            nebula_core::CoreError::ResourceUnavailable {
+                retryable: true,
+                ..
+            }
+        ));
+        assert!(
+            !reauth.to_string().contains("secret"),
+            "the message names the reason only"
+        );
     }
 
     #[test]

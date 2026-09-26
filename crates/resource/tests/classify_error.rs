@@ -188,3 +188,30 @@ fn runtime_retry_after_named_field() {
     assert_eq!(err.retry_after(), Some(Duration::from_millis(250)));
     assert!(std::error::Error::source(&err).is_some());
 }
+
+/// A credential suspension is its own retryable kind: it is neither a
+/// backend fault nor a taint, and it carries a reason-specific retry hint.
+#[test]
+fn credential_unavailable_is_retryable_with_reason_hints() {
+    use nebula_resource::CredentialUnavailableReason;
+
+    let reauth = Error::credential_unavailable(CredentialUnavailableReason::ReauthRequired, None);
+    assert!(matches!(
+        reauth.kind(),
+        ErrorKind::CredentialUnavailable {
+            reason: CredentialUnavailableReason::ReauthRequired,
+            ..
+        }
+    ));
+    assert!(reauth.is_retryable());
+    assert_eq!(reauth.retry_after(), Some(Duration::from_secs(30)));
+    assert_eq!(
+        nebula_error::Classify::code(&reauth).as_str(),
+        "RESOURCE:CREDENTIAL_UNAVAILABLE"
+    );
+
+    let blocked =
+        Error::credential_unavailable(CredentialUnavailableReason::OperationBlocked, None);
+    assert!(blocked.is_retryable());
+    assert_eq!(blocked.retry_after(), Some(Duration::from_secs(1)));
+}
