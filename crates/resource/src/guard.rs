@@ -114,6 +114,12 @@ pub struct ResourceGuard<R: Provider> {
     /// The admission generation this lease was admitted under; immutable for
     /// the lease's lifetime.
     admission: Arc<AdmissionGeneration>,
+    /// Whether the entry was created for this checkout rather than taken
+    /// from the idle store.
+    created: bool,
+    /// The row-gate permit of a managed row attempt's checkout; freed with
+    /// the topology permit when the release settles.
+    row_slot: Option<OwnedSemaphorePermit>,
 }
 
 /// A cooperative notice that the row a lease came from stopped admitting
@@ -157,6 +163,17 @@ pub struct ResourceGuard<R: Provider> {
 pub struct LeaseClosing(tokio_util::sync::CancellationToken);
 
 impl LeaseClosing {
+    /// The closing notice of `generation`.
+    pub(crate) fn of(generation: &AdmissionGeneration) -> Self {
+        Self(generation.token().clone())
+    }
+
+    /// A notice no generation fires (tests).
+    #[cfg(test)]
+    pub(crate) fn detached() -> Self {
+        Self(tokio_util::sync::CancellationToken::new())
+    }
+
     /// Whether the lease's admission generation is closed.
     #[must_use]
     pub fn is_closing(&self) -> bool {
@@ -230,7 +247,31 @@ impl<R: Provider> ResourceGuard<R> {
             drain_counters: None,
             event_bus: None,
             hold_watchdog: None,
+            created: false,
+            row_slot: None,
         }
+    }
+
+    /// Records whether the entry was created for this checkout.
+    pub(crate) fn with_created(mut self, created: bool) -> Self {
+        self.created = created;
+        self
+    }
+
+    /// Whether the entry was created for this checkout rather than taken
+    /// from the idle store: a created instance was built after the
+    /// checkout's admission read, so a strict row reads again before it
+    /// grants the checkout.
+    pub(crate) fn created(&self) -> bool {
+        self.created
+    }
+
+    /// Hands a managed row attempt's row-gate permit to the lease. The
+    /// permit is freed when the release settles, after the topology permit,
+    /// so a caller woken by the gate finds the checkout capacity free.
+    pub(crate) fn with_row_slot(mut self, permit: OwnedSemaphorePermit) -> Self {
+        self.row_slot = Some(permit);
+        self
     }
 
     /// Attaches the manager-wide + per-resource drain trackers for shutdown
@@ -500,6 +541,7 @@ impl<R: Provider> ResourceGuard<R> {
         let metrics = self.metrics.take();
         let settlement = ReleaseSettlement {
             permit: self.permit.take(),
+            row_slot: self.row_slot.take(),
             drain_counters: self.drain_counters.take(),
             event_bus: self.event_bus.take(),
             metrics: metrics.clone(),
@@ -524,10 +566,36 @@ impl<R: Provider> ResourceGuard<R> {
     }
 }
 
+impl<R> ResourceGuard<R>
+where
+    R: crate::topology::PoolProvider + Provider<Topology = crate::topology::Pooled<R>> + Clone,
+{
+    /// The checked-out pooled instance, mutably: the lease holds it
+    /// exclusively. For the managed row facade's sessions only — the guard
+    /// itself stays shared-borrow (`Deref`, no `DerefMut`). `None` only for
+    /// a consumed guard, which no caller can observe.
+    pub(crate) fn pooled_instance_mut(&mut self) -> Option<&mut R::Instance> {
+        self.entry
+            .as_mut()
+            .map(crate::runtime::pool::PoolEntry::instance_mut)
+    }
+
+    /// The credential slot epoch the pooled instance was built at (see
+    /// [`PoolEntry`](crate::runtime::pool::PoolEntry)); `None` only for a
+    /// consumed guard.
+    pub(crate) fn built_slot_epoch(&self) -> Option<u64> {
+        self.entry
+            .as_ref()
+            .map(crate::runtime::pool::PoolEntry::built_slot_epoch)
+    }
+}
+
 /// Owns reservation settlement even when a queued factory or future is never
 /// polled, while emitting `Released` only after cleanup actually returns.
 struct ReleaseSettlement {
     permit: Option<OwnedSemaphorePermit>,
+    /// Freed after `permit` (see [`ResourceGuard::with_row_slot`]).
+    row_slot: Option<OwnedSemaphorePermit>,
     drain_counters: Option<DrainTrackers>,
     event_bus: Option<Arc<EventBus<ResourceEvent>>>,
     metrics: Option<ResourceOpsMetrics>,
@@ -558,6 +626,7 @@ impl Drop for ReleaseSettlement {
             );
         }
         self.permit.take();
+        self.row_slot.take();
         settle(
             self.drain_counters.take(),
             self.event_bus.take(),

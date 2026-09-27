@@ -665,6 +665,32 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Managed row facade and sessions.** `Manager::managed_row` /
+  `managed_row_for_identity` return `nebula_resource::call::ManagedRow<R>`:
+  the managed call facade without a lease. Each attempt of a submitted
+  `Operation` books its quota and waits on a FIFO row gate (sized to the
+  topology's capacity) with nothing checked out, reads its bound credentials
+  outside every lock, then checks out an instance of its own through the
+  acquire pipeline's admission and releases it when the attempt ends; a
+  checkout that created its instance on a strict row is read again and
+  granted under `Manager.admission`. Refusals are unsent and a refused
+  checkout returns to the pool. On a pooled provider implementing
+  `call::SessionProvider` (`open` / `close` over a `Session<'c>` borrowing
+  the instance), `ManagedRow::session(SessionSpec, body)` runs one
+  transaction per unit: the cost is booked once, the unannotated
+  higher-ranked body borrows the session (`SessionFuture`, `SessionCx`), and
+  `close` commits or rolls back (`SessionEnd`); `SessionClosed::Committed` is
+  `Sent`, `RolledBack` `NotSent`, `Unknown` `MaybeSent` with the instance
+  destroyed. A `SessionBinding::Connection` session only runs on an instance
+  built at the credential slot epoch its unit pinned. New metrics
+  `nebula_resource_row_checkouts_total{created}` and
+  `nebula_resource_sessions_total{outcome}`, reported in
+  `ResourceOpsSnapshot::{row_checkouts, sessions}`. The SDK curates
+  `ManagedRow` and the session vocabulary in
+  `nebula_sdk::integration::resource` (not the prelude). The engine accepts
+  sessions on real PostgreSQL connections (PG1–PG8, run by the PostgreSQL
+  CI job). Interim: `Pooled`-only sessions, the 5-minute unit deadline (no
+  `LISTEN` / `NOTIFY` or IMAP `IDLE`), and no engine accessor yet.
 - **HTTP resource adapter in the SDK (feature `resource-http`).**
   `nebula_sdk::integration::resource::http` sends HTTP calls as managed
   units: `HttpConfig` (https, or http for a loopback host; timeouts, byte
@@ -691,6 +717,9 @@ let admitted = recorded.readmit_against(fresh)?;
   ordinary unit, through a bounded buffer; the unit's error follows the
   items once, and a dropped or cancelled consumer ends the operation. The
   SDK re-exports the family in `integration::resource`.
+  `ManagedRow::submit_streaming` runs one on a managed row: each attempt
+  waits for quota and the row gate with nothing checked out, and a consumer
+  gone mid-stream releases the attempt's checkout and gate permit.
 - **SDK-only credentialed resources.** `integration::resource` re-exports
   `CredentialSlot` and `CredentialGuard`, and `integration::credential` and
   the prelude `BearerTokenCredential`, so a derived credentialed resource

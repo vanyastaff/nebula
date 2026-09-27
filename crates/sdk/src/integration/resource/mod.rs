@@ -21,6 +21,18 @@
 //! `PerAttempt` (`per_attempt`) rate-limit profile. The facade is not frozen
 //! yet, so it is not in the prelude.
 //!
+//! A [`ManagedRow`] is the same facade without a lease: each attempt checks
+//! out an instance of its own only after its quota and row-gate waits, so a
+//! unit waiting for its rate limit holds no connection. On a pooled
+//! [`SessionProvider`] it also runs sessions — several native calls on one
+//! connection as one unit: [`ManagedRow::session`] books the
+//! [`SessionSpec`]'s cost once, opens the session, runs the body with it
+//! borrowed ([`SessionFuture`], [`SessionCx`]) and closes it with a commit
+//! or a rollback ([`SessionEnd`], [`SessionClosed`]). A
+//! [`SessionBinding::Connection`] provider only runs on a connection built
+//! with the credentials the unit pinned. A `ManagedRow` is obtained from the
+//! engine-owned manager, not built here.
+//!
 //! Rate limits are declared by overriding [`Provider::resilience`] with a
 //! [`ResiliencePolicy`]. The facade books each attempt at its [`Cost`] —
 //! [`Cost::keyed`] for a per-key limit such as one chat's — and
@@ -34,8 +46,8 @@
 //! [`Throttle`] becomes [`Attempt::report`], and `unlimited` has no
 //! replacement by design.
 //!
-//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] runs as
-//! one unit that also sends items through a bounded [`StreamSink`]; the
+//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] or
+//! [`ManagedRow::submit_streaming`] runs as one unit that also sends items through a bounded [`StreamSink`]; the
 //! caller reads them from [`Streaming`], then the unit's error, if any, once.
 //!
 //! Credentials are declared on the resource struct with
@@ -52,8 +64,9 @@ pub mod http;
 pub use nebula_core::{ResourceKey, resource_key};
 pub use nebula_credential::CredentialGuard;
 pub use nebula_resource::call::{
-    Attempt, ConsumerGone, Cost, Effect, Managed, OpCx, OpError, Operation, PinSlots, SentState,
-    StreamOperation, StreamSink, Streaming, Unit,
+    Attempt, ConsumerGone, Cost, Effect, Managed, ManagedRow, OpCx, OpError, Operation, PinSlots,
+    SentState, SessionBinding, SessionClosed, SessionCx, SessionEnd, SessionFuture,
+    SessionProvider, SessionSpec, StreamOperation, StreamSink, Streaming, Unit,
 };
 pub use nebula_resource::rate_limit::{
     DEFAULT_MAX_PENALTY, LimitScope, NoThrottle, OnError, Override, Rate, RateLimitSettings,

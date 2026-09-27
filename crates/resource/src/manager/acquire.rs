@@ -6,13 +6,11 @@ use std::{any::Any, future::Future, sync::Arc, time::Instant};
 
 use nebula_core::{Context, ResourceKey, ScopeLevel};
 
-use super::{InFlightCounter, Manager, gate::admit_through_gate, gate::settle_gate_admission};
-use crate::registry::ManagedHandle as _;
+use super::{InFlightCounter, Manager};
 use crate::{
     context::ResourceContext,
     error::Error,
-    events::ResourceEvent,
-    hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, HookFault, guard_author_hook},
+    hook_guard::{DEFAULT_AUTHOR_HOOK_CEILING, HookFault},
     options::AcquireOptions,
     resource::Provider,
     runtime::managed::ManagedResource,
@@ -119,7 +117,7 @@ impl Manager {
     /// The single typed error both taint checks return — keeps the message
     /// and `Revoked` (→ `Unavailable`) classification identical at the
     /// pre-count gate and the post-count re-check.
-    fn tainted_error<R: Provider>() -> Error {
+    pub(super) fn tainted_error<R: Provider>() -> Error {
         Error::revoked(format!(
             "{}: resource tainted by credential revoke — new acquires rejected",
             R::key()
@@ -132,7 +130,7 @@ impl Manager {
     /// `CredentialUnavailable` when a credential suspension closed the
     /// `captured` generation, otherwise `Cancelled` (the row was removed or
     /// the manager is closing). None trips the recovery gate.
-    fn closed_admission_error<R: Provider>(
+    pub(super) fn closed_admission_error<R: Provider>(
         managed: &ManagedResource<R>,
         captured: Option<&crate::runtime::admission::AdmissionGeneration>,
     ) -> Error {
@@ -311,6 +309,56 @@ impl Manager {
         self.run_acquire_dispatch(managed, ctx, options).await
     }
 
+    /// The per-unit checkout facade of the row of `R` registered for `ctx`'s
+    /// scope: every attempt of a unit submitted on it checks out an
+    /// instance of its own only after its quota and row-gate waits (see
+    /// [`ManagedRow`](crate::call::ManagedRow)).
+    ///
+    /// Latches the row's rate-limit profile to
+    /// [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt).
+    /// The facade is bound to this registration: once it is removed or
+    /// replaced, its units fail `Cancelled`.
+    ///
+    /// # Errors
+    ///
+    /// As the acquire lookup: [`NotFound`](crate::ErrorKind::NotFound),
+    /// [`Ambiguous`](crate::ErrorKind::Ambiguous) (use
+    /// [`managed_row_for_identity`](Self::managed_row_for_identity)),
+    /// [`Cancelled`](crate::ErrorKind::Cancelled) while shutting down,
+    /// [`Revoked`](crate::ErrorKind::Revoked) for a tainted row.
+    pub fn managed_row<R: Provider + crate::call::PinSlots>(
+        &self,
+        ctx: &ResourceContext,
+    ) -> Result<crate::call::ManagedRow<R>, Error> {
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
+        Ok(crate::call::ManagedRow::new(
+            managed,
+            self.acquire.clone(),
+            ctx,
+        ))
+    }
+
+    /// [`managed_row`](Self::managed_row) pinned to the **collision-free
+    /// structural** resolved per-slot credential identity.
+    ///
+    /// # Errors
+    ///
+    /// [`NotFound`](crate::ErrorKind::NotFound) if no row of type `R`
+    /// matches `(scope, slot_identity)`; otherwise as
+    /// [`managed_row`](Self::managed_row).
+    pub fn managed_row_for_identity<R: Provider + crate::call::PinSlots>(
+        &self,
+        ctx: &ResourceContext,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<crate::call::ManagedRow<R>, Error> {
+        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
+        Ok(crate::call::ManagedRow::new(
+            managed,
+            self.acquire.clone(),
+            ctx,
+        ))
+    }
+
     /// Acquires a handle to a pooled resource.
     ///
     /// Performs typed lookup, then dispatches to the pool runtime's acquire.
@@ -446,38 +494,8 @@ impl Manager {
             let hook_timeout = budget.map_or(DEFAULT_AUTHOR_HOOK_CEILING, |budget| {
                 budget.saturating_sub(entered.elapsed())
             });
-            let managed = Arc::clone(&managed);
-            let metrics = self.metrics.clone();
-            async move {
-                // SAFETY (unwind): any instance in flight inside the acquire
-                // loop is held by an `EntryCreateGuard` whose `Drop` destroys it,
-                // and the revoke-epoch/taint reads happen before the guarded
-                // await — so a caught panic unwinds through the `EntryCreateGuard`
-                // (tearing the half-built slot down) and leaves no torn state.
-                match guard_author_hook(
-                    hook_timeout,
-                    managed.run_acquire_loop(ctx, options, metrics),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(fault) => {
-                        fault.observe(&R::key(), "acquire");
-                        match fault {
-                            HookFault::Panicked => Err(Error::permanent(format!(
-                                "{}: topology acquire pipeline panicked — the resource's \
-                                 `impl Topology` hook unwound (isolated, caller not crashed)",
-                                R::key()
-                            ))),
-                            HookFault::TimedOut => Err(Error::backpressure(format!(
-                                "{}: acquire exceeded {hook_timeout:?} — the topology's \
-                                 create/accept/prepare hooks did not complete in time",
-                                R::key()
-                            ))),
-                        }
-                    },
-                }
-            }
+            self.acquire
+                .dispatch_checkout(&managed, ctx, options, hook_timeout)
         })
         .await
     }
@@ -498,7 +516,7 @@ impl Manager {
         managed: Arc<ManagedResource<R>>,
         ctx: &ResourceContext,
         options: &AcquireOptions,
-        mut dispatch: F,
+        dispatch: F,
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: Provider,
@@ -520,131 +538,11 @@ impl Manager {
         // interim row). Phase 2 applies it under `Manager.admission` below.
         // Dropping this acquire drops the read.
         let strict = managed.read_credentials_strict(options.remaining()).await;
-        // Pre-count this acquire on both the manager-wide and per-resource
-        // in-flight trackers, from the moment `lookup()` succeeds. RAII
-        // decrements + notifies on every failure / cancel / panic path; on
-        // success the slot is handed off to the resulting `ResourceGuard` and
-        // held continuously until the guard drops. The `AcqRel` increment here
-        // is strictly before the post-taint re-check below. Two-phase-revoke
-        // invariant: see the `manager` module documentation.
-        let (in_flight, admission) = {
-            // Serialize readiness admission with credential demotion and
-            // promotion. Once this counter is installed under the same gate,
-            // a later replacement may demote the row but cannot retroactively
-            // invalidate an acquire admitted against the preceding material.
-            let _admission = self
-                .admission
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let in_flight =
-                InFlightCounter::new(self.drain_tracker.clone(), managed.in_flight_tracker());
-            // Post-count re-check — now that this acquire is reflected in the
-            // per-resource counter `revoke_slot` drains *and* the manager-wide
-            // `drain_tracker` `graceful_shutdown` drains, re-observe both revoke
-            // taint (closes the revoke-vs-acquire TOCTOU) and `shutting_down`
-            // (closes the symmetric shutdown-vs-acquire use-after-drain).
-            self.reject_if_tainted_or_shutting_down_post_count::<R>(&managed)?;
-            // Strict credential admission, phase 2: re-check the installed
-            // material and apply what the read saw (reopen, readmit, suspend)
-            // before the suspension check below reads the gate. See
-            // `strict_admission` and invariant I7.
-            if let (Some(reading), Some(reads)) = (&strict, managed.credential_reads.as_deref()) {
-                self.apply_strict_reading_under_admission(&R::key(), &*managed, reading, reads)?;
-            }
-            // A bound credential denying use suspends the row: refuse before
-            // the phase check (a suspended row keeps its phase) and before
-            // the recovery gate (suspension is not backend ill health).
-            if let Some(suspension) = managed.admission.suspension() {
-                return Err(Self::credential_unavailable_error(
-                    &R::key(),
-                    suspension.reason(),
-                ));
-            }
-            if !managed.phase().is_accepting() {
-                return Err(Error::backpressure(format!(
-                    "{}: resource is {} and cannot accept acquires",
-                    R::key(),
-                    managed.phase()
-                ))
-                .with_resource_key(R::key()));
-            }
-            // Capture the admission generation under the same gate that
-            // publishes and retires it: this lease is admitted under exactly
-            // this generation and observes its closing notice. A row with no
-            // current generation was retired after the checks above could
-            // observe why (a removed or dropped-manager row).
-            let admission = managed
-                .admission
-                .current()
-                .ok_or_else(|| Self::closed_admission_error::<R>(&managed, None))?;
-            (in_flight, admission)
-        };
-        let gate_admission = admit_through_gate(&managed.recovery_gate)?;
-
-        // Publish a `RetryAttempt` event when this acquire is the recovery
-        // probe (the CAS-claimed single-probe slot that follows a transient
-        // backend failure). `backoff_on_fail` carries the delay the gate
-        // would impose *if this probe fails again* — the next caller's wait,
-        // not a wait this acquire incurs. Emitted **before** `dispatch()` so
-        // observers see the attempt go out rather than only the result. The
-        // error field carries the prior failure message snapshotted in
-        // `admit_through_gate` before the CAS rotated the gate.
-        if let super::gate::GateAdmission::Probe {
-            attempt,
-            backoff_on_fail,
-            last_failure,
-            ..
-        } = &gate_admission
-        {
-            self.emit(ResourceEvent::RetryAttempt {
-                key: R::key(),
-                attempt: *attempt,
-                backoff: *backoff_on_fail,
-                error: last_failure.clone().unwrap_or_default(),
-            });
-        }
-
-        let result = match dispatch().await {
-            // Hand-out check: the generation this acquire was admitted under
-            // closed while it was in flight (a taint, removal or shutdown
-            // straddled the create). The caller never receives the lease.
-            // The built guard carries the in-flight slot into ordinary
-            // release, so the entry returns (or, fenced, is destroyed)
-            // before the revoke / shutdown drain observes the slot free.
-            // See the `manager` module docs, "Admission generations".
-            Ok(guard) if admission.is_closed() => {
-                drop(guard.with_drain_tracker(in_flight.release_to_guard()));
-                let refused = Self::closed_admission_error::<R>(&managed, Some(&admission));
-                tracing::debug!(
-                    resource.key = %R::key(),
-                    admission = admission.seq(),
-                    error.kind = ?refused.kind(),
-                    "acquire refused at hand-out: admission generation closed in flight"
-                );
-                Err(refused)
-            },
-            Ok(guard) => Ok(guard
-                .with_admission(admission)
-                .with_drain_tracker(in_flight.release_to_guard())),
-            Err(error) => Err(error),
-        };
-
-        // Settle the gate ticket based on the acquire result. #322: this
-        // makes the ticket ownership end-to-end — on success we `resolve`,
-        // on retryable error we `fail_transient`, on permanent error we
-        // `fail_permanent`. The `Drop` impl of `RecoveryTicket` covers
-        // cancellation/panic paths. A hand-out refusal is `Revoked` or
-        // `Cancelled`, neither of which is a backend-health signal.
-        settle_gate_admission(gate_admission, &result);
-        self.record_acquire_result(&result, started, ctx, options);
-        // Attach the manager's event bus so the guard's `Drop` emits
-        // `ResourceEvent::Released`. Done here, on the success path only,
-        // because failed acquires never minted a guard to begin with —
-        // there is nothing to release.
-        result.map(|h| {
-            h.with_event_bus(Arc::clone(&self.event_bus))
-                .with_hold_watchdog(R::max_hold_duration(), ctx, self.metrics.clone())
-        })
+        // Lock #1, the recovery gate, the dispatch and the hand-out check:
+        // the part a managed row attempt shares (`AcquireLink`).
+        self.acquire
+            .acquire_admitted(managed, ctx, options, strict.as_ref(), started, dispatch)
+            .await
     } // visible cross-module after impl split
 
     /// Acquires a handle to a resident resource.

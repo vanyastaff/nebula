@@ -170,6 +170,26 @@ fn managed_and_unit_have_no_deref() {
     }
 }
 
+/// The per-unit checkout facade holds no instance: it neither derefs nor
+/// exposes one, and sessions borrow theirs only inside the body.
+#[test]
+fn managed_row_has_no_deref() {
+    let text = resource_signatures(&workspace());
+    let lines = section(&text, "nebula_resource::call::row::ManagedRow");
+    for method in ["pub fn submit<", "pub fn session<"] {
+        assert!(
+            lines.iter().any(|line| line.contains(method)),
+            "ManagedRow's `{method}` must be rendered: {lines:#?}"
+        );
+    }
+    for line in &lines {
+        assert!(
+            !(line.starts_with("impl") && line.contains("Deref")),
+            "ManagedRow must not deref: {line}"
+        );
+    }
+}
+
 /// The HTTP adapter's public signatures name no `reqwest` or `url` type,
 /// and its transport exposes nothing but its constructor.
 #[test]

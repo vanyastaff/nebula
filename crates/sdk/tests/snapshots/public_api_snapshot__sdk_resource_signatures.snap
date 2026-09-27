@@ -34,6 +34,34 @@ impl SentState {
 }
 impl fmt::Display for SentState
 
+## enum nebula_resource::call::session::SessionBinding
+exported as nebula_sdk::integration::resource::SessionBinding
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SessionBinding {
+    Connection,
+    Session,
+}
+
+## enum nebula_resource::call::session::SessionClosed
+exported as nebula_sdk::integration::resource::SessionClosed
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum SessionClosed {
+    Committed,
+    RolledBack { refused: Option<OpError> },
+    Unknown(OpError),
+}
+
+## enum nebula_resource::call::session::SessionEnd
+exported as nebula_sdk::integration::resource::SessionEnd
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SessionEnd {
+    Commit,
+    Rollback,
+}
+
 ## enum nebula_resource::error::CredentialUnavailableReason
 exported as nebula_sdk::integration::resource::CredentialUnavailableReason
 #[non_exhaustive]
@@ -500,6 +528,51 @@ impl<T> Unit<T> {
 }
 impl<T> Future for Unit<T>
 impl<T> fmt::Debug for Unit<T>
+
+## struct nebula_resource::call::row::ManagedRow
+exported as nebula_sdk::integration::resource::ManagedRow
+pub struct ManagedRow<R: Provider> {
+    /* private fields */
+}
+impl<R: Provider> ManagedRow<R> {
+    pub fn resource_key(&self) -> &ResourceKey;
+}
+impl<R: Provider + PinSlots> ManagedRow<R> {
+    pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output>;
+}
+impl<R> ManagedRow<R> where R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone {
+    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Unit<T> where T: Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
+}
+impl<R: Provider + PinSlots> ManagedRow<R> {
+    pub fn submit_streaming<O: StreamOperation<R>>(&self, operation: O, capacity: NonZeroUsize) -> Streaming<O::Item, O::Output>;
+}
+impl<R: Provider> Clone for ManagedRow<R>
+impl<R: Provider> fmt::Debug for ManagedRow<R>
+
+## struct nebula_resource::call::session::SessionCx
+exported as nebula_sdk::integration::resource::SessionCx
+pub struct SessionCx {
+    /* private fields */
+}
+impl SessionCx {
+    pub fn deadline(&self) -> Instant;
+    pub fn closing(&self) -> &LeaseClosing;
+    pub fn resource_key(&self) -> &ResourceKey;
+}
+impl fmt::Debug for SessionCx
+
+## struct nebula_resource::call::session::SessionSpec
+exported as nebula_sdk::integration::resource::SessionSpec
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSpec {
+    /* private fields */
+}
+impl SessionSpec {
+    pub fn new(cost: Cost) -> Self;
+    pub fn with_effect(mut self, effect: Effect) -> Self;
+    pub fn cost(&self) -> &Cost;
+    pub fn effect(&self) -> Effect;
+}
 
 ## struct nebula_resource::call::stream::ConsumerGone
 exported as nebula_sdk::integration::resource::ConsumerGone
@@ -1115,6 +1188,15 @@ pub trait PinSlots: HasCredentialSlots {
     fn pin_slots(&self) -> Self::Pinned;
 }
 
+## trait nebula_resource::call::session::SessionProvider
+exported as nebula_sdk::integration::resource::SessionProvider
+pub trait SessionProvider: Provider + PinSlots {
+    type Session<'c>: Send where Self: 'c;
+    const BINDING: SessionBinding = SessionBinding::Connection;
+    fn open<'c>(&'c self, instance: &'c mut Self::Instance, slots: &'c Self::Pinned) -> impl Future<Output = Result<Self::Session<'c>, OpError>> + Send + 'c;
+    fn close<'c>(&'c self, session: Self::Session<'c>, end: SessionEnd) -> impl Future<Output = SessionClosed> + Send + 'c;
+}
+
 ## trait nebula_resource::call::stream::StreamOperation
 exported as nebula_sdk::integration::resource::StreamOperation
 pub trait StreamOperation<R: Provider + PinSlots>: Send + 'static {
@@ -1239,6 +1321,10 @@ pub trait Method: sealed::Sealed + Send + 'static {
     const METHOD: &'static str;
     const EFFECT: Effect;
 }
+
+## type nebula_resource::call::session::SessionFuture
+exported as nebula_sdk::integration::resource::SessionFuture
+pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> + Send + 's>>;
 
 ## type nebula_resource::slot::CredentialSlot
 exported as nebula_sdk::integration::resource::CredentialSlot

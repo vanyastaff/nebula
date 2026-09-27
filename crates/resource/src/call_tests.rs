@@ -1114,12 +1114,25 @@ async fn a_rotation_before_the_first_grant_reaches_the_unit() {
 
 // ── observability ────────────────────────────────────────────────────────
 
-type CapturedSpans = Vec<(&'static str, Vec<(String, String)>)>;
+pub(super) type CapturedSpans = Vec<(&'static str, Vec<(String, String)>)>;
 
 /// Captures span names and recorded fields on this thread.
 #[derive(Clone, Default)]
-struct SpanCapture {
-    spans: Arc<Mutex<CapturedSpans>>,
+pub(super) struct SpanCapture {
+    pub(super) spans: Arc<Mutex<CapturedSpans>>,
+}
+
+impl SpanCapture {
+    /// The last value recorded for `field` on the first span named `name`.
+    pub(super) fn field(&self, name: &str, field: &str) -> Option<String> {
+        let spans = self.spans.lock().expect("spans");
+        let (_, fields) = spans.iter().find(|(span, _)| *span == name)?;
+        fields
+            .iter()
+            .rev()
+            .find(|(recorded, _)| recorded == field)
+            .map(|(_, value)| value.clone())
+    }
 }
 
 struct FieldVisitor<'a>(&'a mut Vec<(String, String)>);

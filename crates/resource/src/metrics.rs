@@ -45,10 +45,23 @@ use nebula_metrics::{
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_OBSERVATIONS_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
         NEBULA_RESOURCE_HOLD_DEADLINE_EXCEEDED_TOTAL, NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL,
-        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL, call_attempt_outcome,
-        call_unit_sent, recycle_outcome, rotation_outcome,
+        NEBULA_RESOURCE_RELEASE_ERROR_TOTAL, NEBULA_RESOURCE_RELEASE_TOTAL,
+        NEBULA_RESOURCE_ROW_CHECKOUTS_TOTAL, NEBULA_RESOURCE_SESSIONS_TOTAL, call_attempt_outcome,
+        call_unit_sent, recycle_outcome, rotation_outcome, row_checkout_created, session_outcome,
     },
 };
+
+/// How a managed session ended, for
+/// [`NEBULA_RESOURCE_SESSIONS_TOTAL`].
+/// Closed set mirroring `nebula_metrics::naming::session_outcome`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionOutcome {
+    Committed,
+    RolledBack,
+    Unknown,
+    OpenFailed,
+    Abandoned,
+}
 
 /// Upper bounds (in seconds) for the acquire wait-time histogram's finite
 /// buckets — fixed, µs-scale log buckets tuned for acquire waits
@@ -165,6 +178,15 @@ pub struct ResourceOpsMetrics {
     call_units_not_sent: Counter,
     call_units_sent: Counter,
     call_units_maybe_sent: Counter,
+    /// Managed row checkouts, `created={true,false}`.
+    row_checkouts_created: Counter,
+    row_checkouts_idle: Counter,
+    /// Managed sessions by outcome.
+    sessions_committed: Counter,
+    sessions_rolled_back: Counter,
+    sessions_unknown: Counter,
+    sessions_open_failed: Counter,
+    sessions_abandoned: Counter,
 }
 
 /// How a single per-slot dispatch resolved.
@@ -367,7 +389,60 @@ impl ResourceOpsMetrics {
                 NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL,
                 &sent_label(registry, call_unit_sent::MAYBE_SENT),
             )?,
+            row_checkouts_created: registry.counter_labeled(
+                NEBULA_RESOURCE_ROW_CHECKOUTS_TOTAL,
+                &registry
+                    .interner()
+                    .single("created", row_checkout_created::CREATED),
+            )?,
+            row_checkouts_idle: registry.counter_labeled(
+                NEBULA_RESOURCE_ROW_CHECKOUTS_TOTAL,
+                &registry
+                    .interner()
+                    .single("created", row_checkout_created::IDLE),
+            )?,
+            sessions_committed: registry.counter_labeled(
+                NEBULA_RESOURCE_SESSIONS_TOTAL,
+                &outcome_label(registry, session_outcome::COMMITTED),
+            )?,
+            sessions_rolled_back: registry.counter_labeled(
+                NEBULA_RESOURCE_SESSIONS_TOTAL,
+                &outcome_label(registry, session_outcome::ROLLED_BACK),
+            )?,
+            sessions_unknown: registry.counter_labeled(
+                NEBULA_RESOURCE_SESSIONS_TOTAL,
+                &outcome_label(registry, session_outcome::UNKNOWN),
+            )?,
+            sessions_open_failed: registry.counter_labeled(
+                NEBULA_RESOURCE_SESSIONS_TOTAL,
+                &outcome_label(registry, session_outcome::OPEN_FAILED),
+            )?,
+            sessions_abandoned: registry.counter_labeled(
+                NEBULA_RESOURCE_SESSIONS_TOTAL,
+                &outcome_label(registry, session_outcome::ABANDONED),
+            )?,
         })
+    }
+
+    /// Records one instance checked out by a granted managed row attempt:
+    /// created for it, or taken from the idle store.
+    pub(crate) fn record_row_checkout(&self, created: bool) {
+        if created {
+            self.row_checkouts_created.inc();
+        } else {
+            self.row_checkouts_idle.inc();
+        }
+    }
+
+    /// Records how one managed session ended.
+    pub(crate) fn record_session(&self, outcome: SessionOutcome) {
+        match outcome {
+            SessionOutcome::Committed => self.sessions_committed.inc(),
+            SessionOutcome::RolledBack => self.sessions_rolled_back.inc(),
+            SessionOutcome::Unknown => self.sessions_unknown.inc(),
+            SessionOutcome::OpenFailed => self.sessions_open_failed.inc(),
+            SessionOutcome::Abandoned => self.sessions_abandoned.inc(),
+        }
     }
 
     /// Records one attempt decided by the managed call facade: granted, or
@@ -545,6 +620,17 @@ impl ResourceOpsMetrics {
                 sent: self.call_units_sent.get(),
                 maybe_sent: self.call_units_maybe_sent.get(),
             },
+            row_checkouts: RowCheckoutsSnapshot {
+                created: self.row_checkouts_created.get(),
+                idle: self.row_checkouts_idle.get(),
+            },
+            sessions: SessionsSnapshot {
+                committed: self.sessions_committed.get(),
+                rolled_back: self.sessions_rolled_back.get(),
+                unknown: self.sessions_unknown.get(),
+                open_failed: self.sessions_open_failed.get(),
+                abandoned: self.sessions_abandoned.get(),
+            },
         }
     }
 
@@ -718,6 +804,39 @@ pub struct ResourceOpsSnapshot {
     pub call_attempts: CallAttemptsSnapshot,
     /// Managed call units settled, by sent state. See [`CallUnitsSnapshot`].
     pub call_units: CallUnitsSnapshot,
+    /// Instances checked out by managed row attempts. See
+    /// [`RowCheckoutsSnapshot`].
+    pub row_checkouts: RowCheckoutsSnapshot,
+    /// Managed sessions by how they ended. See [`SessionsSnapshot`].
+    pub sessions: SessionsSnapshot,
+}
+
+/// Snapshot of the `created`-labeled series of the managed row checkout
+/// counter: one count per granted row attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct RowCheckoutsSnapshot {
+    /// Checkouts that created their instance.
+    pub created: u64,
+    /// Checkouts that took an idle instance.
+    pub idle: u64,
+}
+
+/// Snapshot of the `outcome`-labeled series of the managed session
+/// counter: one count per session granted a checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct SessionsSnapshot {
+    /// Sessions the provider committed.
+    pub committed: u64,
+    /// Sessions rolled back (the body failed or the commit was refused).
+    pub rolled_back: u64,
+    /// Sessions whose commit may or may not have applied.
+    pub unknown: u64,
+    /// Sessions that could not be opened.
+    pub open_failed: u64,
+    /// Sessions cut off before they closed (deadline, panic).
+    pub abandoned: u64,
 }
 
 /// Snapshot of the `outcome`-labeled series of the managed-call attempt

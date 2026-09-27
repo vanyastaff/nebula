@@ -50,17 +50,20 @@ use super::{
     NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL,
     NEBULA_RESOURCE_CREDENTIAL_ADMISSION_JOINED_TOTAL,
     NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READ_DURATION_SECONDS,
-    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READS_TOTAL, credential_admission_denied_reason,
-    credential_admission_read_outcome,
+    NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READS_TOTAL, NEBULA_RESOURCE_ROW_CHECKOUTS_TOTAL,
+    NEBULA_RESOURCE_SESSIONS_TOTAL, credential_admission_denied_reason,
+    credential_admission_read_outcome, row_checkout_created, session_outcome,
 };
 
-const RESOURCE_METRIC_NAMES: [&str; 30] = [
+const RESOURCE_METRIC_NAMES: [&str; 32] = [
     NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READS_TOTAL,
     NEBULA_RESOURCE_CREDENTIAL_ADMISSION_JOINED_TOTAL,
     NEBULA_RESOURCE_CREDENTIAL_ADMISSION_READ_DURATION_SECONDS,
     NEBULA_RESOURCE_CREDENTIAL_ADMISSION_DENIED_TOTAL,
     NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL,
     NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL,
+    NEBULA_RESOURCE_ROW_CHECKOUTS_TOTAL,
+    NEBULA_RESOURCE_SESSIONS_TOTAL,
     NEBULA_RESOURCE_CREATE_TOTAL,
     NEBULA_RESOURCE_ACQUIRE_TOTAL,
     NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -128,7 +131,7 @@ fn resource_constants_are_accessible_unique_and_registry_safe() {
         }
     }
 
-    assert_eq!(unique.len(), 30);
+    assert_eq!(unique.len(), 32);
 }
 
 #[test]
@@ -216,6 +219,26 @@ fn call_facade_labels_are_closed_sets() {
     let mut unique = HashSet::new();
     for label in attempts.into_iter().chain(units) {
         assert!(!label.is_empty());
+        assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+        assert!(unique.insert(label));
+    }
+    assert_eq!(unique.len(), 5);
+}
+
+#[test]
+fn row_facade_labels_are_closed_sets() {
+    // One `created` value per granted checkout, one outcome per session.
+    let checkouts = [row_checkout_created::CREATED, row_checkout_created::IDLE];
+    assert_eq!(checkouts, ["true", "false"]);
+    let sessions = [
+        session_outcome::COMMITTED,
+        session_outcome::ROLLED_BACK,
+        session_outcome::UNKNOWN,
+        session_outcome::OPEN_FAILED,
+        session_outcome::ABANDONED,
+    ];
+    let mut unique = HashSet::new();
+    for label in sessions {
         assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
         assert!(unique.insert(label));
     }

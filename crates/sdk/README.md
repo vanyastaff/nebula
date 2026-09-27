@@ -245,7 +245,8 @@ The SDK-only fixture compiles a logger authored against it
 (`managed_no_deref`); runtime behaviour is tested in the resource crate. See
 the resource README, "Managed call facade". Streaming units (`StreamOperation`,
 `StreamSink`, `Streaming`, `ConsumerGone`) run through the same facade with
-`Managed::submit_streaming`.
+`Managed::submit_streaming`, or per-attempt checkout with
+`ManagedRow::submit_streaming`.
 
 **Credentialed resources:** `integration::resource` re-exports `CredentialSlot`
 and `CredentialGuard`, and `integration::credential` (and the prelude)
@@ -272,6 +273,20 @@ raw client is private (`http_no_raw_client`); `tests/resource_http.rs` drives
 it against a raw TCP server through a real `Manager`. Out of scope: following
 next-page URLs, query-parameter keys, mTLS, a generic `Http<C>` resource,
 streaming request bodies and a `401` / `403` credential signal.
+
+**Managed row and sessions:** the same persona re-exports `ManagedRow` — the
+facade without a lease, checking out an instance per attempt after its quota
+and row-gate waits — and the session vocabulary `SessionProvider`,
+`SessionSpec`, `SessionCx`, `SessionEnd`, `SessionClosed`, `SessionBinding`
+and `SessionFuture`. `ManagedRow::session` runs several native calls on one
+pooled connection as one unit, committed or rolled back by the provider.
+A `ManagedRow` is obtained from the engine-owned manager (reaching it from
+action code is a follow-up), so the SDK-only fixture compiles a session
+provider and the action-side call (`resource_session`), proves a
+`ManagedRow` does not deref (`managed_row_no_deref`) and that a body cannot
+keep its borrowed session (`session_escape`); the runtime is tested in the
+resource crate and on real PostgreSQL in the engine. See the resource
+README, "Managed row facade and sessions".
 
 **Release migration:** `ResourceGuard::release()` now returns
 `Result<ReleaseOutcome, Error>` instead of `Result<(), Error>`. Match

@@ -103,6 +103,24 @@
 //! generation and against [`Unit::cancel`], so a closed lease never sends
 //! (CONTRACT.md:88-92).
 //!
+//! # Per-unit checkout and sessions
+//!
+//! A [`ManagedRow`] ([`Manager::managed_row`](crate::Manager::managed_row))
+//! runs the same [`Operation`]s without a lease: every attempt books its
+//! quota and waits for the row gate with nothing held, then checks out an
+//! instance of its own through the acquire pipeline's admission and
+//! releases it when the attempt ends (see the `row` module docs for the
+//! order, including the second read after a create and the second lock of a
+//! strict row). On a pooled [`SessionProvider`],
+//! [`ManagedRow::session`] runs one session per unit — one attempt, never
+//! retried, the cost booked once — and settles it from what
+//! [`SessionProvider::close`] reported: `Committed` is `Sent`, `RolledBack`
+//! `NotSent`, `Unknown` `MaybeSent` with the instance destroyed; an
+//! abandoned session (deadline, panic) is `MaybeSent` and destroys its
+//! instance too. A [`SessionBinding::Connection`] session runs only on an
+//! instance built at the credential slot epoch its unit pinned
+//! (CONTRACT.md:73, :80, :110-114; DX-API.md:136, :151-153).
+//!
 //! # Interim defaults
 //!
 //! Where the design package leaves a value open, this module picks one and
@@ -118,9 +136,24 @@
 //!   deadline, then fail with `Backpressure`.
 //! - A cost booked for an attempt that is cancelled before it reaches the
 //!   provider is not refunded (QUOTA-DX.md:32 baseline).
-//! - A pooled lease stays checked out while its units wait for quota and
-//!   while their strict credential reads run; that occupancy is the price of
-//!   lease-wide units until per-unit checkout (QUOTA-DX.md:41, :43).
+//! - A pooled [`Managed`] lease stays checked out while its units wait for
+//!   quota and while their strict credential reads run; a [`ManagedRow`]
+//!   checks out per attempt instead, after those waits (QUOTA-DX.md:41,
+//!   :43).
+//! - The row gate of a [`ManagedRow`] is sized to the topology's capacity
+//!   at its first use and ignores a reload that resizes the pool; a pool
+//!   saturated by plain leases refuses a row attempt `Backpressure` (the
+//!   booked cost is forfeited).
+//! - A row attempt refuses a suspended row without reading it; the next
+//!   acquire or activation reopens it.
+//! - Sessions are `Pooled`-only; the unit deadline cap also bounds a
+//!   session, so long-lived subscriptions (`LISTEN`/`NOTIFY`, IMAP `IDLE`)
+//!   are not supported (an interval profile needs an ADR revising the
+//!   per-unit rule). A unit of a row awaited inside a session of the same
+//!   row is refused `Permanent`; other nested-session semantics, refunds,
+//!   ordering across several budgets, the owner of commit-unknown
+//!   recovery and sessions on shared instances are open in the design
+//!   package.
 //! - `Sent` with `Exhausted` means the provider refused and applied
 //!   nothing, so it stays retryable for any effect.
 //! - The effect vocabulary is [`Effect::Read`], [`Effect::Idempotent`] and
@@ -132,13 +165,17 @@
 //!
 //! # Streaming
 //!
-//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] runs
-//! as one ordinary unit that also sends items through a bounded
-//! [`StreamSink`]; the caller pulls them from [`Streaming`], then the unit's
-//! error, if any, once. A mid-stream failure is never an item, a dropped or
-//! cancelled consumer ends the operation at its next send, and the lease
-//! closing is honoured by selecting on [`OpCx::closing`] (CONTRACT.md:57).
-//! [`StreamOperation`] documents the delivery rules.
+//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] or
+//! [`ManagedRow::submit_streaming`] runs as one ordinary unit that also
+//! sends items through a bounded [`StreamSink`]; the caller pulls them from
+//! [`Streaming`], then the unit's error, if any, once. A mid-stream failure
+//! is never an item, a dropped or cancelled consumer ends the operation at
+//! its next send, and the lease closing is honoured by selecting on
+//! [`OpCx::closing`] (CONTRACT.md:57). On a row, each attempt still checks
+//! out per attempt after its quota and gate waits; items sent while an
+//! attempt is alive keep its checkout, and a consumer gone mid-stream
+//! releases it with its gate permit. [`StreamOperation`] documents the
+//! delivery rules.
 //!
 //! # Observability
 //!
@@ -146,7 +183,9 @@
 //! operation type, attempts granted, sent state and outcome.
 //! [`ResourceOpsMetrics`](crate::ResourceOpsMetrics) counts attempts granted
 //! and refused by the facade — separate from a driver's own retries inside
-//! an attempt (CONTRACT.md:134) — and units settled by sent state. A unit
+//! an attempt (CONTRACT.md:134) — units settled by sent state, row
+//! checkouts by whether they created their instance, and sessions by how
+//! they ended; a session unit's span names its operation `session`. A unit
 //! that ends with an unknown outcome publishes
 //! [`ResourceEvent::UnitOutcomeUnknown`](crate::ResourceEvent::UnitOutcomeUnknown).
 
@@ -154,6 +193,8 @@ mod cost;
 mod error;
 mod managed;
 mod pin;
+mod row;
+mod session;
 mod stream;
 mod strict;
 
@@ -163,6 +204,11 @@ pub use cost::{Cost, Effect, SentState};
 pub use error::OpError;
 pub use managed::{Attempt, Managed, OpCx, UNIT_DEADLINE_CAP, Unit};
 pub use pin::PinSlots;
+pub use row::ManagedRow;
+pub use session::{
+    SessionBinding, SessionClosed, SessionCx, SessionEnd, SessionFuture, SessionProvider,
+    SessionSpec,
+};
 pub use stream::{ConsumerGone, StreamOperation, StreamSink, Streaming};
 
 use crate::resource::Provider;

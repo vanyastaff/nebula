@@ -18,11 +18,12 @@ use super::{
     error::OpError,
     managed::{Managed, OpCx, Unit},
     pin::PinSlots,
+    row::ManagedRow,
 };
 use crate::{error::ErrorKind, resource::Provider};
 
 /// A provider call that yields items while it runs, submitted with
-/// [`Managed::submit_streaming`].
+/// [`Managed::submit_streaming`] or [`ManagedRow::submit_streaming`].
 ///
 /// For a response read in chunks, a subscription, a long poll. It runs as
 /// one ordinary [`Unit`]: the same lazy start, unit slot, deadline, attempt
@@ -215,6 +216,33 @@ where
     }
 }
 
+/// Wraps `operation` with a sink of `capacity` items, hands it to `submit`
+/// as an ordinary unit, and returns the caller's side.
+fn streaming<O, T, Out>(
+    operation: O,
+    capacity: NonZeroUsize,
+    submit: impl FnOnce(Streamed<O, T>) -> Unit<Out>,
+) -> Streaming<T, Out> {
+    // Tokio's bounded channel refuses a buffer above its permit limit.
+    let capacity = capacity.get().min(Semaphore::MAX_PERMITS);
+    let (items, receiver) = mpsc::channel(capacity);
+    let cancel = CancellationToken::new();
+    let unit = submit(Streamed {
+        operation,
+        sink: StreamSink {
+            items,
+            cancel: cancel.clone(),
+        },
+    });
+    Streaming {
+        unit: Some(unit),
+        items: receiver,
+        cancel,
+        outcome: None,
+        error_yielded: false,
+    }
+}
+
 impl<R: Provider + PinSlots> Managed<R> {
     /// Submits `operation` as one streaming unit whose items reach the
     /// returned [`Streaming`] through a buffer of `capacity` items.
@@ -226,24 +254,31 @@ impl<R: Provider + PinSlots> Managed<R> {
         operation: O,
         capacity: NonZeroUsize,
     ) -> Streaming<O::Item, O::Output> {
-        // Tokio's bounded channel refuses a buffer above its permit limit.
-        let capacity = capacity.get().min(Semaphore::MAX_PERMITS);
-        let (items, receiver) = mpsc::channel(capacity);
-        let cancel = CancellationToken::new();
-        let unit = self.submit(Streamed {
-            operation,
-            sink: StreamSink {
-                items,
-                cancel: cancel.clone(),
-            },
-        });
-        Streaming {
-            unit: Some(unit),
-            items: receiver,
-            cancel,
-            outcome: None,
-            error_yielded: false,
-        }
+        streaming(operation, capacity, |streamed| self.submit(streamed))
+    }
+}
+
+impl<R: Provider + PinSlots> ManagedRow<R> {
+    /// Submits `operation` as one streaming unit whose items reach the
+    /// returned [`Streaming`] through a buffer of `capacity` items.
+    ///
+    /// It runs as a [`submit`](Self::submit)ted unit does: each attempt
+    /// books its quota and waits for the row gate with nothing checked out,
+    /// then checks out an instance of its own, released when that attempt
+    /// ends. Items sent while an [`Attempt`](super::Attempt) is alive keep
+    /// its checkout (a slow consumer holds the connection through
+    /// backpressure); items sent after it settled hold nothing. A dropped
+    /// or cancelled consumer ends the operation at its next send, which
+    /// releases the checkout and its row-gate permit.
+    ///
+    /// The unit is lazy: nothing happens until the first
+    /// [`Streaming::next`] or [`Streaming::finish`].
+    pub fn submit_streaming<O: StreamOperation<R>>(
+        &self,
+        operation: O,
+        capacity: NonZeroUsize,
+    ) -> Streaming<O::Item, O::Output> {
+        streaming(operation, capacity, |streamed| self.submit(streamed))
     }
 }
 

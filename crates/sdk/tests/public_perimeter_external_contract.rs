@@ -10,11 +10,14 @@
 //! call facade, and a fourth a logger authored against the facade, whose
 //! `Managed` must not deref (`managed_no_deref`), a fifth a derived
 //! credentialed resource (`resource_credentialed`:
-//! `CredentialSlot<BearerTokenCredential>` read through pinned slots), and a
+//! `CredentialSlot<BearerTokenCredential>` read through pinned slots), a
 //! sixth an HTTP API resource over the `resource-http` adapter
 //! (`resource_http`), whose transport keeps its raw client private
-//! (`http_no_raw_client`); the deprecated closure family fails under
-//! `deny(deprecated)` (`resource_limited_deprecated`).
+//! (`http_no_raw_client`), and a seventh authors a session provider and runs
+//! a session through a `ManagedRow` (`resource_session`), which must not
+//! deref either (`managed_row_no_deref`) and whose body cannot keep the
+//! borrowed session (`session_escape`); the deprecated closure family fails
+//! under `deny(deprecated)` (`resource_limited_deprecated`).
 //! Each negative binary targets one distinct authority or persistence
 //! escape hatch that must stay unavailable, including paths below `__private`:
 //! Rust documentation hiding is not access control. Procedural derives have a
@@ -39,6 +42,9 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/resource_http.rs",
     "src/bin/http_no_raw_client.rs",
     "src/bin/managed_no_deref.rs",
+    "src/bin/resource_session.rs",
+    "src/bin/managed_row_no_deref.rs",
+    "src/bin/session_escape.rs",
     "src/bin/removed_resource_from_key.rs",
     "src/bin/removed_checkpoint_policy_action.rs",
     "src/bin/removed_checkpoint_policy_prelude.rs",
@@ -315,6 +321,34 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         render_output(&no_deref)
     );
 
+    let row_no_deref = cargo_probe(temp.path(), "check", "managed_row_no_deref");
+    assert!(
+        !row_no_deref.status.success(),
+        "a managed row unexpectedly dereferenced to an instance"
+    );
+    let diagnostics = compiler_errors(&row_no_deref);
+    std::assert_matches!(
+        diagnostics.as_slice(),
+        [error] if error.code.as_deref() == Some("E0614") && error.message.contains("ManagedRow"),
+        "the managed row must fail only for its missing `Deref`: {}",
+        render_output(&row_no_deref)
+    );
+
+    let escape = cargo_probe(temp.path(), "check", "session_escape");
+    assert!(
+        !escape.status.success(),
+        "a session body unexpectedly kept its borrowed session"
+    );
+    let diagnostics = compiler_errors(&escape);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|error| error.code.as_deref() == Some("E0521")
+                && error.highlighted == "escaped = Some(tx)"),
+        "the escape must fail as borrowed data escaping the session body: {}",
+        render_output(&escape)
+    );
+
     let deprecated = cargo_probe(temp.path(), "check", "resource_limited_deprecated");
     assert!(
         !deprecated.status.success(),
@@ -353,6 +387,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         "resource_topology",
         "resource_rate_limit",
         "resource_managed_logger",
+        "resource_session",
         "resource_credentialed",
         "resource_http",
     ];
@@ -386,6 +421,12 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         managed.status.success(),
         "managed call facade authoring through the SDK alone must compile and execute:\n{}",
         render_output(&managed)
+    );
+    let session = cargo_probe(temp.path(), "run", "resource_session");
+    assert!(
+        session.status.success(),
+        "session provider authoring through the SDK alone must compile and execute:\n{}",
+        render_output(&session)
     );
     let credentialed = cargo_probe(temp.path(), "run", "resource_credentialed");
     assert!(

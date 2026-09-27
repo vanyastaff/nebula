@@ -363,6 +363,10 @@ jobs:
 
           cargo nextest run -p nebula-engine --profile ci \
             --test durable_checkpoint_reconnect --test effect_protocol
+          # Managed row sessions on real PostgreSQL connections (PG1–PG8):
+          # each test logs in as a fresh role in a private schema.
+          cargo nextest run -p nebula-engine --profile ci --lib --no-tests=fail \
+            -E 'test(/session_postgres::/)'
           cargo nextest run -p nebula-worker --profile ci --test accepted_turn_recovery
 
           NEBULA_ACTIVATION_DIAGNOSTICS_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/activation-diagnostics/report.json \

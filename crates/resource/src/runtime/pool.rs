@@ -107,6 +107,26 @@ pub struct PoolEntry<R: Provider> {
     /// eviction timing flap non-deterministically between ticks for the
     /// same entry instead of converging once.
     jittered_max_lifetime: Option<Duration>,
+    /// The resource's credential slot epoch
+    /// ([`credential_slot_epoch`](crate::HasCredentialSlots::credential_slot_epoch)),
+    /// read immediately before the instance was created: the material a
+    /// connection-bound instance authenticated with is at most this new. A
+    /// connection-bound session runs only on an instance built at the slot
+    /// epoch its unit pinned.
+    built_slot_epoch: u64,
+}
+
+impl<R: Provider> PoolEntry<R> {
+    /// The instance, mutably: the framework holds the entry exclusively for
+    /// the whole lease.
+    pub(crate) fn instance_mut(&mut self) -> &mut R::Instance {
+        &mut self.instance
+    }
+
+    /// The credential slot epoch the instance was built at.
+    pub(crate) fn built_slot_epoch(&self) -> u64 {
+        self.built_slot_epoch
+    }
 }
 
 impl<R: Provider> std::fmt::Debug for PoolEntry<R> {
@@ -115,6 +135,7 @@ impl<R: Provider> std::fmt::Debug for PoolEntry<R> {
             .field("fingerprint", &self.fingerprint)
             .field("checkout_count", &self.metrics.checkout_count)
             .field("returned_at", &self.returned_at)
+            .field("built_slot_epoch", &self.built_slot_epoch)
             .finish()
     }
 }
@@ -517,6 +538,10 @@ where
             Err(_timeout) => return Err(Error::backpressure(ERR_CREATE_SEMAPHORE_TIMEOUT)),
         };
 
+        // Read before the create: a rotation landing while it runs leaves the
+        // entry stamped older than the material it may have used, so a
+        // connection-bound session evicts it rather than trusting it.
+        let built_slot_epoch = resource.credential_slot_epoch();
         // Use `timeout_at` with the same absolute deadline so the budget is
         // shared: a long permit wait shortens the time available to
         // `resource.create`.
@@ -539,6 +564,7 @@ where
                 .config
                 .max_lifetime
                 .map(|max| crate::jitter::apply_jitter(max, MAX_LIFETIME_JITTER_SPREAD)),
+            built_slot_epoch,
         })
     }
 }

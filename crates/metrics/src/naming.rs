@@ -744,6 +744,26 @@ pub const NEBULA_RESOURCE_CALL_ATTEMPTS_TOTAL: &str = "nebula_resource_call_atte
 pub const NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL: &str =
     "nebula_resource_call_units_settled_total";
 
+/// Counter: instances checked out by managed row attempts
+/// (`ManagedRow`), one per granted attempt.
+///
+/// Labeled by `created` (see [`row_checkout_created`]): whether the attempt
+/// created its instance or took an idle one. A climbing `created="true"`
+/// share on a warm pool is the signal that idle instances keep being
+/// evicted (for example by connection-bound sessions after a rotation).
+///
+/// Bounded cardinality (2 closed values) — no `resource_key` label.
+pub const NEBULA_RESOURCE_ROW_CHECKOUTS_TOTAL: &str = "nebula_resource_row_checkouts_total";
+
+/// Counter: managed sessions (`ManagedRow::session`) by how they ended.
+///
+/// Labeled by `outcome` (see [`session_outcome`]). A climbing `unknown` or
+/// `abandoned` series is the signal to reconcile writes whose commit may
+/// or may not have applied.
+///
+/// Bounded cardinality (5 closed values) — no `resource_key` label.
+pub const NEBULA_RESOURCE_SESSIONS_TOTAL: &str = "nebula_resource_sessions_total";
+
 /// Outcome labels for the credential rotation dispatch counters and
 /// histogram ([`NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL`],
 /// [`NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL`],
@@ -809,6 +829,35 @@ pub mod call_unit_sent {
     pub const SENT: &str = "sent";
     /// An attempt may have reached the provider without an answer.
     pub const MAYBE_SENT: &str = "maybe_sent";
+}
+
+/// `created` labels for [`NEBULA_RESOURCE_ROW_CHECKOUTS_TOTAL`].
+///
+/// Closed set of two values: every granted row checkout either created its
+/// instance or took an idle one.
+pub mod row_checkout_created {
+    /// The attempt created its instance.
+    pub const CREATED: &str = "true";
+    /// The attempt took an idle instance.
+    pub const IDLE: &str = "false";
+}
+
+/// Outcome labels for [`NEBULA_RESOURCE_SESSIONS_TOTAL`].
+///
+/// Closed set of five values: every session granted a checkout ends in
+/// exactly one.
+pub mod session_outcome {
+    /// The provider committed the session.
+    pub const COMMITTED: &str = "committed";
+    /// The provider rolled the session back (the body failed, or the
+    /// provider refused the commit): nothing applied.
+    pub const ROLLED_BACK: &str = "rolled_back";
+    /// The provider could not say whether the commit applied.
+    pub const UNKNOWN: &str = "unknown";
+    /// The session could not be opened; nothing was sent.
+    pub const OPEN_FAILED: &str = "open_failed";
+    /// The session was cut off before it closed (deadline, panic).
+    pub const ABANDONED: &str = "abandoned";
 }
 
 // ---------------------------------------------------------------------------
