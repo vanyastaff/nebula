@@ -26,7 +26,7 @@ use tracing::Instrument as _;
 
 use super::{
     Operation,
-    cost::{Cost, SentState},
+    cost::{Cost, Effect, SentState},
     error::OpError,
     pin::PinSlots,
     strict::{UnitPin, capture_pin},
@@ -87,26 +87,75 @@ impl<R: Provider> ManagedLease<R> {
     /// The same mapping as the acquire path's hand-out refusal, applied to
     /// the lease's own generation rather than the row's current one.
     pub(super) fn admission_refusal(&self) -> Result<(), OpError> {
-        if self.managed.is_tainted() {
-            return Err(OpError::new(
-                ErrorKind::Revoked,
-                "resource tainted by a credential revoke; new attempts refused",
-            ));
+        generation_refusal(&self.managed, &self.generation)
+    }
+}
+
+/// The refusal of new work under `generation` on `managed`: `Revoked` for a
+/// tainted row, then, once the generation closed, `CredentialUnavailable`
+/// when a credential suspension closed it and `Cancelled` otherwise.
+pub(super) fn generation_refusal<R: Provider>(
+    managed: &ManagedResource<R>,
+    generation: &AdmissionGeneration,
+) -> Result<(), OpError> {
+    if managed.is_tainted() {
+        return Err(OpError::new(
+            ErrorKind::Revoked,
+            "resource tainted by a credential revoke; new attempts refused",
+        ));
+    }
+    if !generation.is_closed() {
+        return Ok(());
+    }
+    Err(match generation.close_cause() {
+        Some(CloseCause::Credential(reason)) => OpError::new(
+            ErrorKind::CredentialUnavailable { reason },
+            "bound credential unavailable; new attempts refused",
+        ),
+        None => OpError::new(ErrorKind::Cancelled, "lease closing; new attempts refused"),
+    })
+}
+
+/// What a unit runs against: the lease a [`Managed`] facade owns.
+pub(super) enum UnitHost<R: Provider> {
+    /// A lease-wide facade: every attempt runs on the lease's instance.
+    Lease(Arc<ManagedLease<R>>),
+}
+
+impl<R: Provider> UnitHost<R> {
+    fn key(&self) -> &ResourceKey {
+        match self {
+            Self::Lease(lease) => &lease.key,
         }
-        if !self.generation.is_closed() {
-            return Ok(());
+    }
+
+    pub(super) fn managed(&self) -> &Arc<ManagedResource<R>> {
+        match self {
+            Self::Lease(lease) => &lease.managed,
         }
-        Err(match self.generation.close_cause() {
-            Some(CloseCause::Credential(reason)) => OpError::new(
-                ErrorKind::CredentialUnavailable { reason },
-                "bound credential unavailable; new attempts refused",
-            ),
-            None => OpError::new(ErrorKind::Cancelled, "lease closing; new attempts refused"),
-        })
+    }
+
+    fn metrics(&self) -> Option<&ResourceOpsMetrics> {
+        match self {
+            Self::Lease(lease) => lease.metrics.as_ref(),
+        }
+    }
+
+    fn events(&self) -> Option<&Arc<EventBus<ResourceEvent>>> {
+        match self {
+            Self::Lease(lease) => lease.events.as_ref(),
+        }
+    }
+
+    /// The admission generation new work of this host is refused under.
+    fn generation(&self) -> &Arc<AdmissionGeneration> {
+        match self {
+            Self::Lease(lease) => &lease.generation,
+        }
     }
 
     fn record_attempt(&self, granted: bool) {
-        if let Some(metrics) = &self.metrics {
+        if let Some(metrics) = self.metrics() {
             metrics.record_call_attempt(granted);
         }
     }
@@ -128,21 +177,21 @@ impl<R: Provider> ManagedLease<R> {
         span.record("attempts", attempts);
         span.record("sent", sent.as_str());
         span.record("outcome", outcome);
-        if let Some(metrics) = &self.metrics {
+        if let Some(metrics) = self.metrics() {
             metrics.record_call_unit(sent);
         }
         if let Err(error) = result {
             if error.is_outcome_unknown() {
                 tracing::warn!(
                     parent: span,
-                    resource.key = %self.key,
+                    resource.key = %self.key(),
                     kind = %error.kind(),
                     sent = sent.as_str(),
                     "managed unit failed with an unknown outcome; reconcile before retrying"
                 );
-                if let Some(events) = &self.events {
+                if let Some(events) = self.events() {
                     let _ = events.emit(ResourceEvent::UnitOutcomeUnknown {
-                        key: self.key.clone(),
+                        key: self.key().clone(),
                     });
                 }
             } else {
@@ -277,9 +326,10 @@ impl<R: Provider + PinSlots> Managed<R> {
             outcome = tracing::field::Empty,
         );
         let run = start_unit::<R, O>(
-            Arc::clone(&self.lease),
+            UnitHost::Lease(Arc::clone(&self.lease)),
             Arc::clone(&shared),
             operation,
+            O::EFFECT,
             span.clone(),
         )
         .instrument(span);
@@ -451,20 +501,13 @@ impl<T> fmt::Debug for Unit<T> {
     }
 }
 
-/// The caller's side of a unit: waits for a unit slot on the lease, then
-/// spawns the runtime task and waits for its outcome.
-async fn start_unit<R, O>(
-    lease: Arc<ManagedLease<R>>,
-    shared: Arc<UnitShared>,
-    operation: O,
-    span: tracing::Span,
-) -> Result<O::Output, OpError>
-where
-    R: Provider + PinSlots,
-    O: Operation<R>,
-{
-    let deadline = shared.deadline();
-    let permit = tokio::select! {
+/// Waits for one of `lease`'s unit slots, until the unit's deadline.
+async fn lease_unit_slot<R: Provider>(
+    lease: &ManagedLease<R>,
+    shared: &UnitShared,
+    deadline: tokio::time::Instant,
+) -> Result<OwnedSemaphorePermit, OpError> {
+    tokio::select! {
         biased;
         () = shared.cancel.cancelled() => Err(cancelled_before_grant()),
         () = lease.generation.token().cancelled() => {
@@ -479,20 +522,42 @@ where
             ErrorKind::Backpressure,
             "the lease's unit slots stayed full until the unit deadline",
         )),
+    }
+}
+
+/// The caller's side of a unit: waits for a unit slot on a lease host, then
+/// spawns the runtime task and waits for its outcome. `effect` is what the
+/// unit's settled error reports.
+async fn start_unit<R, O>(
+    host: UnitHost<R>,
+    shared: Arc<UnitShared>,
+    operation: O,
+    effect: Effect,
+    span: tracing::Span,
+) -> Result<O::Output, OpError>
+where
+    R: Provider + PinSlots,
+    O: Operation<R>,
+{
+    let deadline = shared.deadline();
+    let permit = match &host {
+        UnitHost::Lease(lease) => lease_unit_slot(lease, &shared, deadline).await,
     };
     let permit = match permit {
         Ok(permit) => permit,
         Err(refusal) => {
-            let result = Err(refusal.settled(SentState::NotSent, O::EFFECT, &lease.key));
-            lease.record_settled(&span, &result, SentState::NotSent, 0);
+            let result = Err(refusal.settled(SentState::NotSent, effect, host.key()));
+            host.record_settled(&span, &result, SentState::NotSent, 0);
             return result;
         },
     };
+    let key = host.key().clone();
     let runtime = tokio::spawn(
         run_unit::<R, O>(
-            Arc::clone(&lease),
+            host,
             Arc::clone(&shared),
             operation,
+            effect,
             permit,
             deadline,
             span.clone(),
@@ -506,7 +571,7 @@ where
             ErrorKind::Cancelled,
             "the runtime stopped before the unit settled",
         )
-        .settled(shared.fold(true), O::EFFECT, &lease.key)),
+        .settled(shared.fold(true), effect, &key)),
     }
 }
 
@@ -514,9 +579,10 @@ where
 /// settles the outcome whether or not anyone waits. The slots are pinned at
 /// the unit's first grant, not here.
 async fn run_unit<R, O>(
-    lease: Arc<ManagedLease<R>>,
+    host: UnitHost<R>,
     shared: Arc<UnitShared>,
     operation: O,
+    effect: Effect,
     _permit: OwnedSemaphorePermit,
     deadline: tokio::time::Instant,
     span: tracing::Span,
@@ -528,7 +594,7 @@ where
     let max_attempts = operation.max_attempts();
     let outcome = {
         let mut cx = OpCx {
-            lease: &lease,
+            host: &host,
             pin: None,
             shared: &shared,
             deadline,
@@ -553,8 +619,8 @@ where
         },
     };
     let sent = shared.fold(abnormal);
-    let result = result.map_err(|error| error.settled(sent, O::EFFECT, &lease.key));
-    lease.record_settled(&span, &result, sent, shared.attempts());
+    let result = result.map_err(|error| error.settled(sent, effect, host.key()));
+    host.record_settled(&span, &result, sent, shared.attempts());
     result
 }
 
@@ -562,7 +628,7 @@ where
 /// budget and the lease's closing notice, and the only way to reach the
 /// provider — [`attempt`](Self::attempt).
 pub struct OpCx<'u, R: Provider + PinSlots> {
-    lease: &'u ManagedLease<R>,
+    host: &'u UnitHost<R>,
     /// The unit's slots, pinned at its first grant.
     pin: Option<UnitPin<R::Pinned>>,
     shared: &'u UnitShared,
@@ -574,14 +640,14 @@ impl<R: Provider + PinSlots> fmt::Debug for OpCx<'_, R> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("OpCx")
-            .field("resource_key", &self.lease.key)
+            .field("resource_key", self.host.key())
             .field("attempts", &self.shared.attempts())
             .field("max_attempts", &self.max_attempts)
             .finish_non_exhaustive()
     }
 }
 
-impl<R: Provider + PinSlots> OpCx<'_, R> {
+impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
     /// Asks for one provider attempt costing `cost`.
     ///
     /// The single linearization point of a unit. In order:
@@ -633,12 +699,13 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     /// Dropping the future before it resolves forfeits any booked slot and
     /// grants nothing.
     pub async fn attempt(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OpError> {
-        let (lease, shared) = (self.lease, self.shared);
+        let (host, shared) = (self.host, self.shared);
         let admitted = self.admit(&cost).await;
-        lease.record_attempt(admitted.is_ok());
-        let pin = admitted?;
+        host.record_attempt(admitted.is_ok());
+        let (target, pin) = admitted?;
         Ok(Attempt {
-            lease,
+            target,
+            managed: host.managed(),
             pinned: pin.pinned(),
             shared,
             cost,
@@ -646,32 +713,40 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
         })
     }
 
-    /// Steps 1–6 of [`attempt`](Self::attempt); on a grant, the unit's pin.
-    async fn admit(&mut self, cost: &Cost) -> Result<&UnitPin<R::Pinned>, OpError> {
-        self.admit_local(cost).await?;
-        let cancel = (!self.shared.is_granted()).then_some(&self.shared.cancel);
-        let reading = self.lease.read_credentials(self.deadline, cancel).await?;
-        // No await from here on: the pin is never lost to a dropped future.
-        // The first grant pins the slots; a refused first attempt keeps no
-        // pin, so the next attempt pins afresh.
-        let (pin, fresh) = match self.pin.take() {
-            Some(pin) => (pin, false),
-            None => (capture_pin(&self.lease.managed), true),
-        };
-        let granted = self.lease.register(reading.as_ref(), &pin, self.shared);
-        match granted {
-            Ok(()) => Ok(&*self.pin.insert(pin)),
-            Err(refusal) => {
-                if !fresh {
-                    self.pin = Some(pin);
+    /// Steps 1–6 of [`attempt`](Self::attempt); on a grant, what the
+    /// attempt runs on and the unit's pin.
+    async fn admit(
+        &mut self,
+        cost: &Cost,
+    ) -> Result<(AttemptTarget<'u, R>, &UnitPin<R::Pinned>), OpError> {
+        match self.host {
+            UnitHost::Lease(lease) => {
+                self.admit_local(cost).await?;
+                let cancel = (!self.shared.is_granted()).then_some(&self.shared.cancel);
+                let reading = lease.read_credentials(self.deadline, cancel).await?;
+                // No await from here on: the pin is never lost to a dropped
+                // future. The first grant pins the slots; a refused first
+                // attempt keeps no pin, so the next attempt pins afresh.
+                let (pin, fresh) = match self.pin.take() {
+                    Some(pin) => (pin, false),
+                    None => (capture_pin(&lease.managed), true),
+                };
+                let granted = lease.register(reading.as_ref(), &pin, self.shared);
+                match granted {
+                    Ok(()) => Ok((AttemptTarget::Lease(lease), &*self.pin.insert(pin))),
+                    Err(refusal) => {
+                        if !fresh {
+                            self.pin = Some(pin);
+                        }
+                        Err(refusal)
+                    },
                 }
-                Err(refusal)
             },
         }
     }
 
-    /// Budget, lease admission and the quota booking: every step before the
-    /// unit's slots are pinned.
+    /// Budget, the host's admission and the quota booking: every step
+    /// before the unit's slots are pinned.
     async fn admit_local(&self, cost: &Cost) -> Result<(), OpError> {
         if self.shared.attempts() >= self.max_attempts.get() {
             return Err(OpError::new(
@@ -679,9 +754,11 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
                 "attempt budget exhausted",
             ));
         }
-        self.lease.admission_refusal()?;
+        let managed = self.host.managed();
+        let generation = self.host.generation();
+        generation_refusal(managed, generation)?;
         if !cost.is_free() {
-            let limiter = &self.lease.managed.rate_limiter;
+            let limiter = &managed.rate_limiter;
             let deadline = Some(self.deadline.into_std());
             let cancel = (!self.shared.is_granted()).then_some(&self.shared.cancel);
             let booking = async {
@@ -694,11 +771,8 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
                     None => limiter.ready_weighted(cost.permits(), deadline).await,
                 }
             };
-            if let Err(error) = limiter
-                .wait_under(&self.lease.generation, cancel, booking)
-                .await
-            {
-                self.lease.admission_refusal()?;
+            if let Err(error) = limiter.wait_under(generation, cancel, booking).await {
+                generation_refusal(managed, generation)?;
                 return Err(quota_refusal(&error));
             }
         }
@@ -717,7 +791,9 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     /// [`LeaseClosing::closed`].
     #[must_use]
     pub fn closing(&self) -> LeaseClosing {
-        self.lease.guard.closing()
+        match self.host {
+            UnitHost::Lease(lease) => lease.guard.closing(),
+        }
     }
 
     /// Attempts granted to this unit so far.
@@ -745,18 +821,28 @@ fn quota_refusal(error: &Error) -> OpError {
 /// slots. Settle it with what happened to the request; an attempt dropped
 /// unsettled counts as [`SentState::MaybeSent`].
 pub struct Attempt<'a, R: Provider + PinSlots> {
-    lease: &'a ManagedLease<R>,
+    target: AttemptTarget<'a, R>,
+    managed: &'a Arc<ManagedResource<R>>,
     pinned: &'a R::Pinned,
     shared: &'a UnitShared,
     cost: Cost,
     settled: bool,
 }
 
+/// The instance one granted attempt runs on.
+enum AttemptTarget<'a, R: Provider> {
+    /// The facade's lease, shared by every attempt of every unit.
+    Lease(&'a ManagedLease<R>),
+}
+
 impl<R: Provider + PinSlots> fmt::Debug for Attempt<'_, R> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let key = match &self.target {
+            AttemptTarget::Lease(lease) => &lease.key,
+        };
         formatter
             .debug_struct("Attempt")
-            .field("resource_key", &self.lease.key)
+            .field("resource_key", key)
             .field("cost", &self.cost)
             .field("settled", &self.settled)
             .finish_non_exhaustive()
@@ -764,10 +850,12 @@ impl<R: Provider + PinSlots> fmt::Debug for Attempt<'_, R> {
 }
 
 impl<R: Provider + PinSlots> Attempt<'_, R> {
-    /// The instance the lease holds.
+    /// The instance the attempt runs on.
     #[must_use]
     pub fn instance(&self) -> &R::Instance {
-        &self.lease.guard
+        match &self.target {
+            AttemptTarget::Lease(lease) => &lease.guard,
+        }
     }
 
     /// The credential slots pinned at the unit's first grant; the same for
@@ -782,17 +870,19 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
     /// cost's [`Verdict::KeyThrottled`] pauses only its key), a
     /// [`Verdict::Pass`] resets the backoff. Bounded; never fails the unit.
     pub async fn report(&self, verdict: Verdict) {
-        self.lease
-            .managed
+        self.managed
             .rate_limiter
             .report(verdict, self.cost.key())
             .await;
     }
 
-    /// Marks the lease tainted: when it is released it is destroyed, not
-    /// recycled. Use it when the instance is left in an unknown state.
+    /// Marks the instance tainted: when its lease is released it is
+    /// destroyed, not recycled. Use it when the instance is left in an
+    /// unknown state.
     pub fn taint(&self) {
-        self.lease.tainted.store(true, Ordering::Release);
+        match &self.target {
+            AttemptTarget::Lease(lease) => lease.tainted.store(true, Ordering::Release),
+        }
     }
 
     /// Settles the attempt with what happened to the request.
