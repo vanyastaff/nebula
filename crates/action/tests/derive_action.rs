@@ -165,3 +165,240 @@ fn macro_and_manual_metadata_preserve_the_exact_full_semver() {
     assert_eq!(generated.metadata().base().version(), &version);
     assert_eq!(**generated.metadata(), **manual.metadata());
 }
+
+// -- Managed row fields -----------------------------------------------------
+
+mod managed_row_fields {
+    use std::{any::Any, future::Future, pin::Pin, sync::Arc};
+
+    use nebula_action::{FromWorkflowNode, testing::TestContextBuilder};
+    use nebula_core::{
+        CoreError, ResourceKey, ScopeLevel, accessor::ResourceAccessor, node_key, resource_key,
+        scope::Scope,
+    };
+    use nebula_resource::{
+        AcquireOptions, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig,
+        ResourceConfig, ResourceContext, SlotIdentity,
+        call::{Cost, Effect, ManagedRow, OpCx, OpError, Operation, SentState},
+        resource::{Provider, ResourceMetadataDraft},
+        topology::ResidentProvider,
+    };
+    use nebula_workflow::NodeDefinition;
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+
+    #[derive(Clone, nebula_schema::Schema)]
+    struct Config;
+
+    impl ResourceConfig for Config {
+        fn fingerprint(&self) -> u64 {
+            0
+        }
+    }
+
+    macro_rules! resident {
+        ($ty:ident, $key:literal, $value:expr) => {
+            #[derive(Clone)]
+            struct $ty;
+
+            #[async_trait::async_trait]
+            impl Provider for $ty {
+                type Config = Config;
+                type Instance = u64;
+                type Topology = Resident<Self>;
+
+                fn key() -> ResourceKey {
+                    resource_key!($key)
+                }
+
+                fn metadata() -> ResourceMetadataDraft {
+                    ResourceMetadataDraft::new(
+                        Self::key(),
+                        nebula_resource::metadata_name!($key),
+                        "",
+                    )
+                }
+
+                async fn create(
+                    &self,
+                    _: &Config,
+                    _: &ResourceContext,
+                ) -> Result<u64, nebula_resource::Error> {
+                    Ok($value)
+                }
+            }
+
+            nebula_resource::no_credential_slots!($ty);
+
+            impl ResidentProvider for $ty {}
+        };
+    }
+
+    resident!(Db, "derive.row.db", 7);
+    resident!(Cache, "derive.row.cache", 9);
+
+    #[derive(Action)]
+    #[action(
+        key = "test.managed_row_fields",
+        name = "Managed row fields",
+        description = "row facade slots",
+        input = serde_json::Value,
+        output = serde_json::Value
+    )]
+    struct RowAction {
+        #[resource]
+        db: ManagedRow<Db>,
+        #[resource(key = "cache")]
+        cache: Option<ManagedRow<Cache>>,
+    }
+
+    impl StatelessAction for RowAction {
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            Ok(ActionResult::success(input))
+        }
+    }
+
+    /// Reads the instance in one free attempt.
+    struct Read;
+
+    impl<R: Provider<Instance = u64> + PinSlots> Operation<R> for Read {
+        type Output = u64;
+        const EFFECT: Effect = Effect::Read;
+
+        async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+            let attempt = cx.attempt(Cost::FREE).await?;
+            let value = *attempt.instance();
+            attempt.settle(SentState::Sent);
+            Ok(value)
+        }
+    }
+
+    /// Serves the manager's rows for the unbound identity at the global
+    /// scope.
+    struct RowsOf(Arc<Manager>);
+
+    type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+    impl ResourceAccessor for RowsOf {
+        fn has(&self, _key: &ResourceKey) -> bool {
+            true
+        }
+
+        fn acquire_any(
+            &self,
+            _key: &ResourceKey,
+        ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+            Box::pin(async {
+                Err(CoreError::resource_unavailable(
+                    "lease", "unused", false, None,
+                ))
+            })
+        }
+
+        fn try_acquire_any(
+            &self,
+            _key: &ResourceKey,
+        ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn managed_row_any(
+            &self,
+            key: &ResourceKey,
+        ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
+            self.0
+                .managed_row_any(
+                    key,
+                    &ResourceContext::minimal(Scope::default(), CancellationToken::new()),
+                    &AcquireOptions::default(),
+                    &SlotIdentity::Unbound,
+                )
+                .map_err(|error| error.to_core_error())
+        }
+    }
+
+    fn register<R>(manager: &Manager, resource: R)
+    where
+        R: Provider<Config = Config, Topology = Resident<R>> + ResidentProvider + Clone,
+    {
+        manager
+            .register(RegistrationSpec {
+                resource,
+                config: Config,
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: Resident::new(ResidentConfig::default()),
+                recovery_gate: None,
+                rate_limit: None,
+            })
+            .expect("register");
+    }
+
+    fn node() -> NodeDefinition {
+        NodeDefinition::new(node_key!("rows"), "Rows", "test", "test.managed_row_fields")
+            .expect("valid node")
+            .with_resource_binding("db", "derive.row.db")
+    }
+
+    #[test]
+    fn row_fields_declare_their_resources() {
+        let deps = RowAction::dependencies();
+        let slots = deps.slot_fields();
+        assert_eq!(slots.len(), 2);
+        let db = slots.iter().find(|s| s.slot_key == "db").expect("db slot");
+        assert!(db.required && !db.lazy);
+        assert!(matches!(
+            &db.kind,
+            nebula_core::SlotKind::Resource { key, type_id, .. }
+                if *key == Db::key() && *type_id == std::any::TypeId::of::<Db>()
+        ));
+        let cache = slots
+            .iter()
+            .find(|s| s.slot_key == "cache")
+            .expect("cache slot");
+        assert!(!cache.required && !cache.lazy);
+    }
+
+    #[tokio::test]
+    async fn row_fields_resolve_to_usable_facades() {
+        let manager = Arc::new(Manager::new());
+        register(&manager, Db);
+        register(&manager, Cache);
+        let context = TestContextBuilder::new()
+            .build()
+            .with_resources(Arc::new(RowsOf(Arc::clone(&manager))));
+
+        let node = node().with_resource_binding("cache", "derive.row.cache");
+        let action = RowAction::from_workflow_node(&node, &context)
+            .await
+            .expect("both rows resolve");
+        assert_eq!(action.db.submit(Read).await.expect("db unit"), 7);
+        let cache = action.cache.expect("bound cache row");
+        assert_eq!(cache.submit(Read).await.expect("cache unit"), 9);
+    }
+
+    #[tokio::test]
+    async fn an_optional_row_is_absent_unbound_and_fatal_when_bound_to_nothing() {
+        let manager = Arc::new(Manager::new());
+        register(&manager, Db);
+        let context = TestContextBuilder::new()
+            .build()
+            .with_resources(Arc::new(RowsOf(Arc::clone(&manager))));
+
+        let action = RowAction::from_workflow_node(&node(), &context)
+            .await
+            .expect("the optional row is absent");
+        assert!(action.cache.is_none());
+
+        let bound = node().with_resource_binding("cache", "derive.row.cache");
+        let Err(error) = RowAction::from_workflow_node(&bound, &context).await else {
+            panic!("an explicit binding to an unregistered row must fail");
+        };
+        assert!(matches!(error, ActionError::Fatal { .. }), "{error}");
+    }
+}

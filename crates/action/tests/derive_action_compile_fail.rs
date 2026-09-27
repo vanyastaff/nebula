@@ -8,7 +8,8 @@
 //! - `#[resource]` on a non-`ResourceGuard` field type,
 //! - `#[credential]` on a non-`CredentialGuard` field type,
 //! - both `#[resource]` and `#[credential]` on the same field,
-//! - unknown keys inside `#[action(...)]`.
+//! - unknown keys inside `#[action(...)]`,
+//! - `Lazy<ManagedRow<R>>` (a row facade acquires nothing to defer).
 //!
 //! The positive probe (`tests/probes/derive_positive_guard_shapes.rs`)
 //! checks all four allowed guard shapes compile in a single struct:
@@ -28,6 +29,7 @@ fn derive_action_compile_fail_probes() {
     t.compile_fail("tests/probes/derive_credential_on_wrong_type.rs");
     t.compile_fail("tests/probes/derive_both_resource_and_credential.rs");
     t.compile_fail("tests/probes/derive_tuple_struct.rs");
+    t.compile_fail("tests/probes/derive_lazy_managed_row.rs");
 }
 
 #[test]

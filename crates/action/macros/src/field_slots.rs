@@ -9,6 +9,10 @@
 //! - `Lazy<ResourceGuard<R>>` / `Lazy<CredentialGuard<C>>` — required + lazy
 //! - `Option<Lazy<ResourceGuard<R>>>` / `Option<Lazy<CredentialGuard<C>>>` — optional + lazy
 //!
+//! A `#[resource]` field may instead hold the row's per-unit checkout
+//! facade: `ManagedRow<R>` (required) or `Option<ManagedRow<R>>` (optional).
+//! Resolving it checks nothing out, so `Lazy<ManagedRow<R>>` is rejected.
+//!
 //! Detection is by path-tail name (last `PathSegment::ident`) so the
 //! macro accepts both bare `ResourceGuard<...>` and fully-qualified
 //! `nebula_resource::ResourceGuard<...>`.
@@ -38,6 +42,9 @@ pub(crate) struct ParsedSlotField {
     pub optional: bool,
     /// Whether the field is wrapped in `Lazy<...>`.
     pub lazy: bool,
+    /// Whether a resource field holds the row facade `ManagedRow<R>`
+    /// rather than a `ResourceGuard<R>` lease.
+    pub row: bool,
     /// The inner concrete type (`R` for resource, `C` for credential).
     pub inner_type: Type,
 }
@@ -119,7 +126,12 @@ fn parse_one_slot(field: &Field, args: attrs::AttrArgs, kind: SlotKind) -> Resul
 
     let key_override = args.get_string("key");
 
-    let (optional, lazy, inner_type) = decode_field_type(&field.ty, kind)?;
+    let FieldShape {
+        optional,
+        lazy,
+        row,
+        inner,
+    } = decode_field_type(&field.ty, kind)?;
 
     Ok(ParsedSlotField {
         field_ident,
@@ -127,7 +139,8 @@ fn parse_one_slot(field: &Field, args: attrs::AttrArgs, kind: SlotKind) -> Resul
         kind,
         optional,
         lazy,
-        inner_type,
+        row,
+        inner_type: inner,
     })
 }
 
@@ -148,11 +161,20 @@ impl ParsedSlotField {
     }
 }
 
-/// Decode the field type, recognising the four allowed shapes.
-///
-/// Returns `(optional, lazy, inner)` where `inner` is the concrete `R` or
-/// `C` underneath the wrappers.
-fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<(bool, bool, Type)> {
+/// A decoded slot field type.
+struct FieldShape {
+    /// Wrapped in `Option<...>`.
+    optional: bool,
+    /// Wrapped in `Lazy<...>`.
+    lazy: bool,
+    /// A `ManagedRow<R>` resource field.
+    row: bool,
+    /// The concrete `R` or `C` underneath the wrappers.
+    inner: Type,
+}
+
+/// Decode the field type, recognising the allowed shapes.
+fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<FieldShape> {
     let guard_ident = match kind {
         SlotKind::Resource => "ResourceGuard",
         SlotKind::Credential => "CredentialGuard",
@@ -172,24 +194,51 @@ fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<(bool, bool, Type)> {
         (false, after_option)
     };
 
+    // A resource field may hold the row facade instead of a lease.
+    if kind == SlotKind::Resource
+        && let Some(inner) = strip_path_tail(&after_lazy, "ManagedRow")
+    {
+        if lazy {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "a ManagedRow acquires nothing at resolution; drop `Lazy`",
+            ));
+        }
+        return Ok(FieldShape {
+            optional,
+            lazy,
+            row: true,
+            inner,
+        });
+    }
+
     // The remaining type must be ResourceGuard<R> / CredentialGuard<C>.
     let Some(inner) = strip_path_tail(&after_lazy, guard_ident) else {
         let kw = match kind {
             SlotKind::Resource => "resource",
             SlotKind::Credential => "credential",
         };
+        let row_shape = match kind {
+            SlotKind::Resource => ", or `ManagedRow<T>` (optionally wrapped in `Option<...>`)",
+            SlotKind::Credential => "",
+        };
         return Err(syn::Error::new_spanned(
             ty,
             format!(
                 "field with `#[{kw}]` must have type `{guard_ident}<T>` \
-                 (optionally wrapped in `Option<...>` and/or `Lazy<...>`) \
+                 (optionally wrapped in `Option<...>` and/or `Lazy<...>`){row_shape} \
                  — got: {}",
                 quote!(#ty),
             ),
         ));
     };
 
-    Ok((optional, lazy, inner))
+    Ok(FieldShape {
+        optional,
+        lazy,
+        row: false,
+        inner,
+    })
 }
 
 /// Match `Wrapper<Inner>` by path-tail (last segment ident == `wrapper_name`).
@@ -283,8 +332,13 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
             SlotKind::Credential => quote! { #slot_key_lit },
         };
 
-        // Resolution call dispatched through `ActionContextExt`.
+        // Resolution call dispatched through `ActionContextExt`. A row
+        // facade checks nothing out, so its resolution is synchronous.
         let resolve_call = match slot.kind {
+            SlotKind::Resource if slot.row => quote! {
+                <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
+                    ::managed_row_by_id::<#inner_ty>(ctx, #lookup_id)
+            },
             SlotKind::Resource => quote! {
                 <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
                     ::acquire_resource_by_id::<#inner_ty>(ctx, #lookup_id)
@@ -413,8 +467,92 @@ mod tests {
             kind,
             optional: false,
             lazy: false,
+            row: false,
             inner_type: syn::parse_quote!(DemoCredential),
         }
+    }
+
+    fn decoded(ty: Type) -> Result<FieldShape> {
+        decode_field_type(&ty, SlotKind::Resource)
+    }
+
+    #[test]
+    fn a_managed_row_field_decodes_required_or_optional() {
+        let shape = decoded(syn::parse_quote!(ManagedRow<Db>)).expect("required row");
+        assert!(shape.row && !shape.optional && !shape.lazy);
+        let inner = &shape.inner;
+        assert_eq!(quote!(#inner).to_string(), "Db");
+
+        let shape = decoded(syn::parse_quote!(
+            Option<nebula_sdk::integration::resource::ManagedRow<Db>>
+        ))
+        .expect("optional row");
+        assert!(shape.row && shape.optional && !shape.lazy);
+
+        let shape = decoded(syn::parse_quote!(ResourceGuard<Db>)).expect("a lease");
+        assert!(!shape.row);
+    }
+
+    #[test]
+    fn a_lazy_managed_row_is_rejected() {
+        for ty in [
+            syn::parse_quote!(Lazy<ManagedRow<Db>>),
+            syn::parse_quote!(Option<Lazy<ManagedRow<Db>>>),
+        ] {
+            let Err(error) = decoded(ty) else {
+                panic!("a lazy row must be rejected");
+            };
+            assert!(error.to_string().contains("drop `Lazy`"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_credential_field_never_decodes_as_a_row() {
+        let error = decode_field_type(&syn::parse_quote!(ManagedRow<Db>), SlotKind::Credential)
+            .err()
+            .expect("credentials have no row facade");
+        assert!(error.to_string().contains("CredentialGuard<T>"), "{error}");
+    }
+
+    #[test]
+    fn a_row_field_resolves_synchronously_through_managed_row_by_id() {
+        for optional in [false, true] {
+            let row = ParsedSlotField {
+                field_ident: format_ident!("db"),
+                row: true,
+                optional,
+                inner_type: syn::parse_quote!(Db),
+                ..slot(SlotKind::Resource)
+            };
+            let (block, idents) = emit_slot_resolution_block(&[row]);
+            let expanded = block.to_string();
+            assert!(
+                expanded.contains("managed_row_by_id :: < Db > (ctx , slot_id)"),
+                "{expanded}"
+            );
+            assert!(!expanded.contains("acquire_resource_by_id"), "{expanded}");
+            assert!(!expanded.contains(". await"), "{expanded}");
+            assert_eq!(expanded.contains("Some (guard)"), optional, "{expanded}");
+            assert_eq!(idents, [format_ident!("db")]);
+        }
+    }
+
+    #[test]
+    fn a_row_field_registers_as_its_resource() {
+        let row = ParsedSlotField {
+            row: true,
+            inner_type: syn::parse_quote!(Db),
+            ..slot(SlotKind::Resource)
+        };
+        let registration = emit_slot_field_registrations(&[row]).to_string();
+        assert!(
+            registration.contains("< Db as :: nebula_resource :: resource :: Provider > :: key ()"),
+            "{registration}"
+        );
+        assert!(
+            registration.contains("TypeId :: of :: < Db >"),
+            "{registration}"
+        );
     }
 
     #[test]
