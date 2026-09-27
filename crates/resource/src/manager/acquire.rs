@@ -235,11 +235,7 @@ impl Manager {
                     rows,
                     "acquire_any: ambiguous scope/slot identity"
                 );
-                Err(Error::ambiguous(format!(
-                    "{key}: {rows} resolved-credential registrations exist at this scope; \
-                     acquire must target a resolved row via slot identity"
-                ))
-                .with_resource_key(key.clone()))
+                Err(Self::ambiguous_row_error(key, rows))
             },
         }
     }
@@ -363,6 +359,81 @@ impl Manager {
     ) -> Result<crate::call::ManagedRow<R>, Error> {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         Ok(Self::row_facade(managed, self.acquire.clone(), ctx))
+    }
+
+    /// The type-erased [`managed_row_for_identity`](Self::managed_row_for_identity):
+    /// a boxed [`ManagedRow<R>`](crate::call::ManagedRow) for the row
+    /// registered under `key` for `(ctx`'s scope, `slot_identity)`, for a
+    /// caller that knows the row only by its key (the engine's resource
+    /// accessor). The caller downcasts it to the `ManagedRow<R>` it expects.
+    ///
+    /// Synchronous and checks out nothing: the row's capacity is each
+    /// attempt's to wait for, so a pool saturated by plain leases still
+    /// yields a facade. Latches the row's rate-limit profile to
+    /// [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt).
+    /// The facade's units inherit `ctx`'s cancellation token and
+    /// `options.deadline` (see [`ManagedRow`](crate::call::ManagedRow)).
+    ///
+    /// # Errors
+    ///
+    /// As [`acquire_any`](Self::acquire_any)'s lookup:
+    /// [`NotFound`](crate::ErrorKind::NotFound) — also for an unbound
+    /// identity at a scope that has only credential-bound rows (fail
+    /// closed: never one tenant's row) —,
+    /// [`Ambiguous`](crate::ErrorKind::Ambiguous),
+    /// [`Cancelled`](crate::ErrorKind::Cancelled) while shutting down,
+    /// [`Revoked`](crate::ErrorKind::Revoked) for a tainted row.
+    pub fn managed_row_any(
+        &self,
+        key: &ResourceKey,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+        use crate::registry::AcquireLookupOutcome;
+
+        self.shutdown_guard()?;
+        match self
+            .registry
+            .get_acquire_for(key, ctx.scope(), slot_identity)
+        {
+            AcquireLookupOutcome::Found { managed } => {
+                tracing::debug!(
+                    target: "nebula.resource",
+                    %key,
+                    ?slot_identity,
+                    "managed_row_any: row facade resolved"
+                );
+                managed.managed_row_any(
+                    self.acquire.clone(),
+                    ctx,
+                    crate::call::UnitScope::from_parts(ctx, options),
+                )
+            },
+            AcquireLookupOutcome::NotFound => {
+                tracing::debug!(target: "nebula.resource", %key, "managed_row_any: not found");
+                Err(Error::not_found(key))
+            },
+            AcquireLookupOutcome::Ambiguous { rows } => {
+                tracing::warn!(
+                    target: "nebula.resource",
+                    %key,
+                    rows,
+                    "managed_row_any: ambiguous scope/slot identity"
+                );
+                Err(Self::ambiguous_row_error(key, rows))
+            },
+        }
+    }
+
+    /// The refusal of an erased lookup that matched `rows` resolved-credential
+    /// rows of `key` without a slot identity to tell them apart.
+    fn ambiguous_row_error(key: &ResourceKey, rows: usize) -> Error {
+        Error::ambiguous(format!(
+            "{key}: {rows} resolved-credential registrations exist at this scope; \
+             acquire must target a resolved row via slot identity"
+        ))
+        .with_resource_key(key.clone())
     }
 
     /// Acquires a handle to a pooled resource.

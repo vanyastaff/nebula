@@ -29,7 +29,7 @@ use super::super::{
 use crate::{
     AcquireOptions, CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind,
     Manager, PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec, ResourceContext,
-    ResourceGuard, ShutdownConfig,
+    ResourceGuard, ShutdownConfig, SlotIdentity,
     manager::{
         CredentialReads,
         strict_fixtures::{
@@ -1244,4 +1244,238 @@ async fn the_scope_deadline_bounds_the_unit_and_with_deadline_cannot_extend_it()
     assert_eq!(started.elapsed(), Duration::from_secs(10));
     a.release.notify_one();
     holder.await.expect("joined").expect("holder");
+}
+
+// ── the erased row facade ────────────────────────────────────────────────
+
+/// The erased facade of `key` for `(ctx, identity)`.
+fn erased_row(
+    manager: &Manager,
+    key: &ResourceKey,
+    ctx: &ResourceContext,
+    options: &AcquireOptions,
+    identity: &SlotIdentity,
+) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
+    manager.managed_row_any(key, ctx, options, identity)
+}
+
+/// The erased facade of the strict-fixture row, downcast.
+fn typed_row(
+    manager: &Manager,
+    ctx: &ResourceContext,
+    options: &AcquireOptions,
+) -> ManagedRow<StrictPooled> {
+    let erased = erased_row(manager, &StrictPooled::key(), ctx, options, &tenant())
+        .expect("erased row facade");
+    *erased
+        .downcast::<ManagedRow<StrictPooled>>()
+        .expect("a ManagedRow<StrictPooled>")
+}
+
+/// A pooled strict-fixture row of one instance for `identity`.
+fn pooled_for(manager: &Manager, identity: SlotIdentity) -> StrictPooled {
+    let resource = StrictPooled::new();
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: config(1),
+            scope: ScopeLevel::Global,
+            slot_identity: identity,
+            topology: Pooled::new(pool(1), config(1).fingerprint()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register");
+    bind(&resource.db, credential_id(), 1, 1);
+    resource
+}
+
+fn identity(tenant: &str) -> SlotIdentity {
+    SlotIdentity::from_bindings([("db", tenant)])
+}
+
+#[test]
+fn the_erased_facade_is_send_sync_and_static() {
+    fn erasable<T: Send + Sync + 'static>() {}
+    erasable::<ManagedRow<StrictPooled>>();
+}
+
+#[tokio::test]
+async fn the_erased_facade_downcasts_to_its_row_and_nothing_else() {
+    let manager = Manager::new();
+    let resource = pooled(&manager, 1, None);
+    let options = AcquireOptions::default();
+
+    let row = typed_row(&manager, &context(), &options);
+    assert_eq!(row.resource_key(), &StrictPooled::key());
+    row.submit(Once(Cost::FREE)).await.expect("granted");
+    assert_eq!(resource.probe.creates(), 1);
+
+    let erased = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect("erased row facade");
+    assert!(erased.downcast::<ManagedRow<PlainPool>>().is_err());
+    let erased = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect("erased row facade");
+    assert!(
+        erased.downcast::<ResourceGuard<StrictPooled>>().is_err(),
+        "a row facade is no lease"
+    );
+}
+
+#[tokio::test]
+async fn the_erased_facade_refuses_a_missing_or_ambiguous_row() {
+    let manager = Arc::new(Manager::new());
+    let options = AcquireOptions::default();
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect_err("nothing registered");
+    assert_eq!(*error.kind(), ErrorKind::NotFound);
+
+    pooled_for(&manager, identity("tenant-a"));
+    pooled_for(&manager, identity("tenant-b"));
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &SlotIdentity::Unbound,
+    )
+    .expect_err("two credential rows, no identity");
+    // Fails closed exactly as the erased acquire does: an unbound identity
+    // never aliases one tenant's row.
+    assert_eq!(*error.kind(), ErrorKind::NotFound);
+    let acquired = Manager::acquire_any(
+        Arc::clone(&manager),
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &SlotIdentity::Unbound,
+    )
+    .await
+    .err()
+    .map(|error| error.kind().clone());
+    assert_eq!(acquired, Some(ErrorKind::NotFound));
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &identity("tenant-c"),
+    )
+    .expect_err("no such tenant");
+    assert_eq!(*error.kind(), ErrorKind::NotFound);
+}
+
+#[tokio::test]
+async fn a_pinned_identity_reaches_its_own_row() {
+    let manager = Manager::new();
+    let a = pooled_for(&manager, identity("tenant-a"));
+    let b = pooled_for(&manager, identity("tenant-b"));
+    let row = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &AcquireOptions::default(),
+        &identity("tenant-b"),
+    )
+    .expect("tenant b's row")
+    .downcast::<ManagedRow<StrictPooled>>()
+    .expect("typed");
+    row.submit(Once(Cost::FREE)).await.expect("granted");
+    assert_eq!(b.probe.creates(), 1, "tenant b's instance");
+    assert_eq!(a.probe.creates(), 0, "never tenant a's");
+}
+
+#[tokio::test]
+async fn the_erased_facade_refuses_a_tainted_row_and_a_shutting_down_manager() {
+    let manager = Arc::new(Manager::new());
+    pooled(&manager, 1, None);
+    let options = AcquireOptions::default();
+    runtime::<StrictPooled>(&manager).taint();
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect_err("tainted");
+    assert_eq!(*error.kind(), ErrorKind::Revoked);
+
+    let manager = Arc::new(Manager::new());
+    pooled(&manager, 1, None);
+    let _report = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect("nothing to drain");
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect_err("shut down");
+    assert_eq!(*error.kind(), ErrorKind::Cancelled);
+}
+
+#[tokio::test]
+async fn a_pool_saturated_by_leases_still_yields_a_facade_whose_attempt_is_backpressure() {
+    let observer = ScriptedObserver::answering(available(1, 1));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    pooled(&manager, 1, None);
+    let managed = runtime::<StrictPooled>(&manager);
+    let lease: ResourceGuard<StrictPooled> = manager
+        .acquire_for_identity::<StrictPooled>(&context(), &AcquireOptions::default(), &tenant())
+        .await
+        .expect("acquire");
+
+    let row = typed_row(&manager, &context(), &AcquireOptions::default());
+    assert_eq!(managed.rate_limiter.profile(), RateLimitProfile::PerAttempt);
+    assert_eq!(
+        managed.credential_admission_profile(),
+        CredentialAdmissionProfile::StrictPerAttempt
+    );
+    let error = row
+        .submit(Once(Cost::ONE))
+        .await
+        .expect_err("the pool is full");
+    assert_eq!(*error.kind(), ErrorKind::Backpressure);
+    assert_eq!(error.sent(), SentState::NotSent);
+    drop(lease);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_options_deadline_and_the_context_cancel_reach_the_units() {
+    let manager = Manager::new();
+    pooled(&manager, 1, None);
+    let deadline = in_one(Duration::from_secs(30));
+    let token = CancellationToken::new();
+    let row = typed_row(
+        &manager,
+        &context_of(&token),
+        &AcquireOptions::default().with_deadline(deadline),
+    );
+    assert_eq!(row.submit(Deadline).await.expect("deadline"), deadline);
+
+    token.cancel();
+    let error = row.submit(Once(Cost::FREE)).await.expect_err("cancelled");
+    assert_cancelled_unsent(&error);
 }
