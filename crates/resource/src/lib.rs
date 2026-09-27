@@ -283,6 +283,7 @@ pub use manager::{
 pub use metrics::{
     ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS, AcquireWaitSnapshot, CallAttemptsSnapshot,
     CallUnitsSnapshot, OutcomeCountersSnapshot, ResourceOpsMetrics, ResourceOpsSnapshot,
+    RowCheckoutsSnapshot, SessionsSnapshot,
 };
 pub use nebula_core::{ExecutionId, ResourceKey, ScopeLevel, WorkflowId, resource_key};
 /// Re-export [`Subscriber`] and [`EventBusStats`] so callers of

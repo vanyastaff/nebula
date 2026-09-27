@@ -518,3 +518,65 @@ async fn a_nested_session_on_the_same_row_is_refused_permanently() {
     assert_eq!(inner.sent(), SentState::NotSent);
     assert!(!inner.is_retryable());
 }
+
+// ── observability ────────────────────────────────────────────────────────
+
+#[tokio::test(start_paused = true)]
+async fn sessions_are_counted_by_outcome_and_checkouts_by_creation() {
+    let manager = Manager::with_config(
+        crate::ManagerConfig::default()
+            .with_metrics_registry(Arc::new(nebula_metrics::MetricsRegistry::new())),
+    );
+    let resource = pooled(&manager);
+    let row = facade::<StrictPooled>(&manager);
+
+    add(&row, write(), 0).await.expect("committed"); // created
+    add(&row, write(), 0).await.expect("committed"); // idle
+    resource
+        .probe
+        .close_next_with(SessionClosed::RolledBack { refused: None });
+    add(&row, write(), 0).await.expect_err("rolled back"); // idle
+    resource
+        .probe
+        .close_next_with(SessionClosed::Unknown(OpError::new(
+            ErrorKind::Transient,
+            "lost",
+        )));
+    add(&row, write(), 0).await.expect_err("unknown"); // idle, destroyed
+    resource.probe.fail_next_open();
+    add(&row, write(), 0).await.expect_err("open failed"); // created, destroyed
+    row.session(read(), |_tx, _cx| {
+        Box::pin(async {
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+    })
+    .with_deadline(Instant::now().into_std() + Duration::from_secs(1))
+    .await
+    .expect_err("abandoned"); // created, destroyed
+
+    let snapshot = manager.metrics().expect("metrics").snapshot();
+    assert_eq!(snapshot.sessions.committed, 2);
+    assert_eq!(snapshot.sessions.rolled_back, 1);
+    assert_eq!(snapshot.sessions.unknown, 1);
+    assert_eq!(snapshot.sessions.open_failed, 1);
+    assert_eq!(snapshot.sessions.abandoned, 1);
+    assert_eq!(snapshot.row_checkouts.created, 3);
+    assert_eq!(snapshot.row_checkouts.idle, 3);
+    assert_eq!(snapshot.call_attempts.granted, 6);
+}
+
+#[tokio::test]
+async fn a_session_runs_in_a_unit_span_named_session() {
+    let capture = super::super::tests::SpanCapture::default();
+    let _default = tracing::subscriber::set_default(capture.clone());
+    let manager = Manager::new();
+    pooled(&manager);
+    let row = facade::<StrictPooled>(&manager);
+    add(&row, write(), 0).await.expect("committed");
+
+    let span = "nebula.resource.unit";
+    assert_eq!(capture.field(span, "operation").as_deref(), Some("session"));
+    assert_eq!(capture.field(span, "sent").as_deref(), Some("sent"));
+    assert_eq!(capture.field(span, "outcome").as_deref(), Some("ok"));
+}

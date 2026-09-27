@@ -327,3 +327,61 @@ fn record_hold_deadline_exceeded_increments() {
     metrics.record_hold_deadline_exceeded();
     assert_eq!(metrics.snapshot().hold_deadline_exceeded, 2);
 }
+
+// ── managed row checkouts and sessions ──────────────────────────────────
+
+#[test]
+fn row_checkouts_and_sessions_are_counted_by_their_closed_labels() {
+    let registry = MetricsRegistry::new();
+    let metrics = ResourceOpsMetrics::new(&registry).unwrap();
+    metrics.record_row_checkout(true);
+    metrics.record_row_checkout(false);
+    metrics.record_row_checkout(false);
+    for outcome in [
+        SessionOutcome::Committed,
+        SessionOutcome::Committed,
+        SessionOutcome::RolledBack,
+        SessionOutcome::Unknown,
+        SessionOutcome::OpenFailed,
+        SessionOutcome::Abandoned,
+    ] {
+        metrics.record_session(outcome);
+    }
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.row_checkouts,
+        RowCheckoutsSnapshot {
+            created: 1,
+            idle: 2
+        }
+    );
+    assert_eq!(
+        snapshot.sessions,
+        SessionsSnapshot {
+            committed: 2,
+            rolled_back: 1,
+            unknown: 1,
+            open_failed: 1,
+            abandoned: 1,
+        }
+    );
+    let created = registry
+        .counter_labeled(
+            NEBULA_RESOURCE_ROW_CHECKOUTS_TOTAL,
+            &registry
+                .interner()
+                .single("created", row_checkout_created::CREATED),
+        )
+        .unwrap();
+    assert_eq!(created.get(), 1, "registry-bound under `created`");
+    let abandoned = registry
+        .counter_labeled(
+            NEBULA_RESOURCE_SESSIONS_TOTAL,
+            &registry
+                .interner()
+                .single("outcome", session_outcome::ABANDONED),
+        )
+        .unwrap();
+    assert_eq!(abandoned.get(), 1, "registry-bound under `outcome`");
+}

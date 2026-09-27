@@ -37,7 +37,7 @@ use crate::{
     error::{Error, ErrorKind},
     events::ResourceEvent,
     guard::{LeaseClosing, ResourceGuard},
-    metrics::ResourceOpsMetrics,
+    metrics::{ResourceOpsMetrics, SessionOutcome},
     rate_limit::{DEFAULT_MAX_PENALTY, Verdict},
     resource::Provider,
     runtime::{
@@ -770,7 +770,7 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
     /// A session's single attempt on a row host: admitted like a row
     /// attempt, on a checkout that fits the provider's
     /// [`SessionBinding`], and destroyed on release unless the session
-    /// closed cleanly ([`Attempt::keep_instance`]).
+    /// closed cleanly ([`Attempt::end_session`]).
     pub(super) async fn attempt_session(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OpError>
     where
         R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
@@ -790,6 +790,9 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
         host.record_attempt(admitted.is_ok());
         let (mut checkout, pin) = admitted?;
         checkout.taint_on_abandon = true;
+        checkout.session = Some(SessionWatch {
+            metrics: row.link.metrics().cloned(),
+        });
         Ok(Attempt {
             target: AttemptTarget::Checkout(Box::new(checkout)),
             managed: host.managed(),
@@ -966,7 +969,15 @@ pub(super) struct Checkout<R: Provider> {
     /// Set for a session's checkout until the session closed cleanly: an
     /// instance whose session was cut off (deadline, panic, drop) is in an
     /// unknown state.
-    pub(super) taint_on_abandon: bool,
+    taint_on_abandon: bool,
+    /// Set while a session runs on the checkout; a checkout dropped with it
+    /// set was abandoned mid-session and is counted so.
+    session: Option<SessionWatch>,
+}
+
+/// A session in progress on a checkout, for its outcome counter.
+struct SessionWatch {
+    metrics: Option<ResourceOpsMetrics>,
 }
 
 impl<R: Provider> Checkout<R> {
@@ -975,6 +986,7 @@ impl<R: Provider> Checkout<R> {
             guard,
             tainted: AtomicBool::new(false),
             taint_on_abandon: false,
+            session: None,
         }
     }
 }
@@ -983,6 +995,12 @@ impl<R: Provider> Drop for Checkout<R> {
     fn drop(&mut self) {
         if *self.tainted.get_mut() || self.taint_on_abandon {
             self.guard.taint();
+        }
+        if let Some(SessionWatch {
+            metrics: Some(metrics),
+        }) = self.session.take()
+        {
+            metrics.record_session(SessionOutcome::Abandoned);
         }
     }
 }
@@ -1075,11 +1093,19 @@ where
         Some((&managed.resource, instance, pinned, closing))
     }
 
-    /// The session closed cleanly: its instance goes back to the pool when
-    /// the checkout is released.
-    pub(super) fn keep_instance(&mut self) {
+    /// The session ended as `outcome`; with `keep` its instance goes back
+    /// to the pool when the checkout is released, otherwise it is destroyed.
+    pub(super) fn end_session(&mut self, outcome: SessionOutcome, keep: bool) {
         if let AttemptTarget::Checkout(checkout) = &mut self.target {
-            checkout.taint_on_abandon = false;
+            if keep {
+                checkout.taint_on_abandon = false;
+            }
+            if let Some(SessionWatch {
+                metrics: Some(metrics),
+            }) = checkout.session.take()
+            {
+                metrics.record_session(outcome);
+            }
         }
     }
 }

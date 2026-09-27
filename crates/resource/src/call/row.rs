@@ -421,6 +421,14 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
             pin,
             self.shared,
         )?;
+        if let Some(metrics) = row.link.metrics() {
+            metrics.record_row_checkout(guard.created());
+        }
+        tracing::debug!(
+            resource.key = %row.key,
+            created = guard.created(),
+            "managed row attempt granted a checkout"
+        );
         Ok((Checkout::new(guard), pin))
     }
 }

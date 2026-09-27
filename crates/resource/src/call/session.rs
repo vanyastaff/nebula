@@ -46,6 +46,7 @@ use super::{
 use crate::{
     error::ErrorKind,
     guard::LeaseClosing,
+    metrics::SessionOutcome,
     resource::Provider,
     topology::{PoolProvider, Pooled},
 };
@@ -374,26 +375,34 @@ where
             UnitHost::Lease(_) => None,
         };
         let mut attempt = cx.attempt_session(spec.cost().clone()).await?;
-        let (sent, keep, outcome) = match attempt.session_parts() {
+        let ended = match attempt.session_parts() {
             Some((provider, instance, slots, closing)) => {
                 let session_cx = SessionCx::new(deadline, closing, R::key());
                 drive_session(provider, instance, slots, &session_cx, marker, body).await
             },
-            None => (
-                SentState::NotSent,
-                false,
-                Err(OpError::new(
+            None => SessionEnded {
+                sent: SentState::NotSent,
+                keep: false,
+                outcome: SessionOutcome::OpenFailed,
+                result: Err(OpError::new(
                     ErrorKind::Permanent,
                     "session attempt without a checkout",
                 )),
-            ),
+            },
         };
-        if keep {
-            attempt.keep_instance();
-        }
-        attempt.settle(sent);
-        outcome
+        attempt.end_session(ended.outcome, ended.keep);
+        attempt.settle(ended.sent);
+        ended.result
     }
+}
+
+/// How a session ended: the attempt's sent state, whether its instance is
+/// reused, the outcome counted, and the unit's result.
+struct SessionEnded<T> {
+    sent: SentState,
+    keep: bool,
+    outcome: SessionOutcome,
+    result: Result<T, OpError>,
 }
 
 /// Open, body (inside the nested-session marker), close; settled by
@@ -406,7 +415,7 @@ async fn drive_session<R, F, T>(
     session_cx: &SessionCx,
     marker: Option<usize>,
     body: F,
-) -> (SentState, bool, Result<T, OpError>)
+) -> SessionEnded<T>
 where
     R: SessionProvider,
     T: Send + 'static,
@@ -416,7 +425,14 @@ where
 {
     let mut session = match provider.open(instance, slots).await {
         Ok(session) => session,
-        Err(error) => return (SentState::NotSent, false, Err(error)),
+        Err(error) => {
+            return SessionEnded {
+                sent: SentState::NotSent,
+                keep: false,
+                outcome: SessionOutcome::OpenFailed,
+                result: Err(error),
+            };
+        },
     };
     let mut rows = SESSION_ROWS.try_with(Clone::clone).unwrap_or_default();
     rows.extend(marker);
@@ -435,15 +451,15 @@ where
 /// The session's settled state, whether its instance is reused, and the
 /// unit's outcome, from the body's result and what the provider said at
 /// close (the table on [`ManagedRow::session`](super::ManagedRow::session)).
-fn settle_session<T>(
-    result: Result<T, OpError>,
-    closed: SessionClosed,
-) -> (SentState, bool, Result<T, OpError>) {
-    match (result, closed) {
-        (Ok(value), SessionClosed::Committed) => (SentState::Sent, true, Ok(value)),
+fn settle_session<T>(result: Result<T, OpError>, closed: SessionClosed) -> SessionEnded<T> {
+    let (sent, keep, outcome, result) = match (result, closed) {
+        (Ok(value), SessionClosed::Committed) => {
+            (SentState::Sent, true, SessionOutcome::Committed, Ok(value))
+        },
         (Ok(_), SessionClosed::RolledBack { refused }) => (
             SentState::NotSent,
             true,
+            SessionOutcome::RolledBack,
             Err(refused.unwrap_or_else(|| {
                 OpError::new(
                     ErrorKind::Transient,
@@ -451,11 +467,29 @@ fn settle_session<T>(
                 )
             })),
         ),
-        (Err(error), SessionClosed::RolledBack { .. }) => (SentState::NotSent, true, Err(error)),
+        (Err(error), SessionClosed::RolledBack { .. }) => (
+            SentState::NotSent,
+            true,
+            SessionOutcome::RolledBack,
+            Err(error),
+        ),
         // Asked to roll back, the provider reports a commit: whatever the
         // body did was applied.
-        (Err(error), SessionClosed::Committed) => (SentState::Sent, true, Err(error)),
-        (_, SessionClosed::Unknown(error)) => (SentState::MaybeSent, false, Err(error)),
+        (Err(error), SessionClosed::Committed) => {
+            (SentState::Sent, true, SessionOutcome::Committed, Err(error))
+        },
+        (_, SessionClosed::Unknown(error)) => (
+            SentState::MaybeSent,
+            false,
+            SessionOutcome::Unknown,
+            Err(error),
+        ),
+    };
+    SessionEnded {
+        sent,
+        keep,
+        outcome,
+        result,
     }
 }
 
