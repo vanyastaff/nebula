@@ -16,8 +16,10 @@
 //! (`http_no_raw_client`), and a seventh authors a session provider and runs
 //! a session through a `ManagedRow` (`resource_session`), which must not
 //! deref either (`managed_row_no_deref`) and whose body cannot keep the
-//! borrowed session (`session_escape`); the deprecated closure family fails
-//! under `deny(deprecated)` (`resource_limited_deprecated`).
+//! borrowed session (`session_escape`), and an eighth derives an action whose
+//! `#[resource]` fields are managed rows (`action_managed_row`); the
+//! deprecated closure family fails under `deny(deprecated)`
+//! (`resource_limited_deprecated`).
 //! Each negative binary targets one distinct authority or persistence
 //! escape hatch that must stay unavailable, including paths below `__private`:
 //! Rust documentation hiding is not access control. Procedural derives have a
@@ -45,6 +47,7 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/resource_session.rs",
     "src/bin/managed_row_no_deref.rs",
     "src/bin/session_escape.rs",
+    "src/bin/action_managed_row.rs",
     "src/bin/removed_resource_from_key.rs",
     "src/bin/removed_checkpoint_policy_action.rs",
     "src/bin/removed_checkpoint_policy_prelude.rs",
@@ -390,6 +393,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         "resource_session",
         "resource_credentialed",
         "resource_http",
+        "action_managed_row",
     ];
     let output = cargo_clippy_bins(temp.path(), &positives);
     assert!(
@@ -439,6 +443,12 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         http.status.success(),
         "an HTTP API resource through the SDK alone must compile and execute:\n{}",
         render_output(&http)
+    );
+    let action_row = cargo_probe(temp.path(), "run", "action_managed_row");
+    assert!(
+        action_row.status.success(),
+        "an action with managed row fields through the SDK alone must compile and execute:\n{}",
+        render_output(&action_row)
     );
 }
 
