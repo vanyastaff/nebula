@@ -244,6 +244,7 @@ async fn hook_receipt_settles_before_blocked_retained_cleanup() {
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         maintenance_sweeps: AtomicU64::new(0),
         credential_reads: None,
+        row_gate: std::sync::OnceLock::new(),
         maintenance: Default::default(),
         rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
     });
@@ -525,6 +526,7 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
         in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
         maintenance_sweeps: AtomicU64::new(0),
         credential_reads: None,
+        row_gate: std::sync::OnceLock::new(),
         maintenance: Default::default(),
         rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
     })
@@ -578,6 +580,7 @@ async fn cancelled_acquire_during_accept_destroys_the_popped_entry() {
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             credential_reads: None,
+            row_gate: std::sync::OnceLock::new(),
             maintenance: Default::default(),
             rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
@@ -668,6 +671,7 @@ async fn cancelled_warmup_between_create_and_deposit_destroys_the_entry() {
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             credential_reads: None,
+            row_gate: std::sync::OnceLock::new(),
             maintenance: Default::default(),
             rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
@@ -737,6 +741,7 @@ async fn entry_create_guard_drop_destroys_via_release_queue() {
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             credential_reads: None,
+            row_gate: std::sync::OnceLock::new(),
             maintenance: Default::default(),
             rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
@@ -1124,6 +1129,7 @@ async fn refill_min_idle_does_not_overshoot_when_pool_is_fully_leased() {
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             credential_reads: None,
+            row_gate: std::sync::OnceLock::new(),
             maintenance: Default::default(),
             rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
@@ -1195,6 +1201,7 @@ async fn refill_min_idle_skips_when_gate_not_idle() {
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             credential_reads: None,
+            row_gate: std::sync::OnceLock::new(),
             maintenance: Default::default(),
             rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })
@@ -1255,6 +1262,7 @@ async fn refill_min_idle_shutdown_race_destroys_in_flight_entry() {
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             credential_reads: None,
+            row_gate: std::sync::OnceLock::new(),
             maintenance: Default::default(),
             rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
         })

@@ -238,6 +238,15 @@ pub struct ManagedResource<R: Provider> {
     /// work (acquire, create) reads its bound credentials through it first.
     /// `None` for a slot-less row and for an interim (row-gate) manager.
     pub(crate) credential_reads: Option<Arc<crate::manager::CredentialReads>>,
+    /// The row gate of the managed row facade
+    /// ([`ManagedRow`](crate::call::ManagedRow)): one permit per checkout a
+    /// row attempt holds, so attempts queue FIFO for the row's capacity with
+    /// nothing checked out rather than failing on a full topology. Sized to
+    /// the topology's [`store_capacity`](Topology::store_capacity) at first
+    /// use and shared by every facade of the row; `None` for a topology
+    /// with no capacity. Interim: a reload that resizes the topology does
+    /// not resize the gate.
+    pub(crate) row_gate: std::sync::OnceLock<Option<Arc<tokio::sync::Semaphore>>>,
 }
 
 impl<R: Provider> std::fmt::Debug for ManagedResource<R> {
@@ -523,6 +532,17 @@ where
     pub(crate) fn admission_load(&self) -> Option<Load> {
         self.topology
             .load(crate::topology::store::StoreView::new(&self.store))
+    }
+
+    /// The row gate (see the field docs), created at first use.
+    pub(crate) fn row_gate(&self) -> Option<Arc<tokio::sync::Semaphore>> {
+        self.row_gate
+            .get_or_init(|| {
+                self.topology
+                    .store_capacity()
+                    .map(|capacity| Arc::new(tokio::sync::Semaphore::new(capacity)))
+            })
+            .clone()
     }
 
     /// Sync capacity gate from the topology — an **advisory** yes/no pre-check

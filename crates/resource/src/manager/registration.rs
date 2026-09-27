@@ -360,6 +360,7 @@ impl Manager {
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
             credential_reads,
+            row_gate: std::sync::OnceLock::new(),
             maintenance: crate::runtime::managed::Maintenance::new(self.cancel.child_token()),
         });
         // `Limited` waits on this row end when its admission generation closes.

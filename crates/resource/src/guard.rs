@@ -163,6 +163,11 @@ pub struct ResourceGuard<R: Provider> {
 pub struct LeaseClosing(tokio_util::sync::CancellationToken);
 
 impl LeaseClosing {
+    /// The closing notice of `generation`.
+    pub(crate) fn of(generation: &AdmissionGeneration) -> Self {
+        Self(generation.token().clone())
+    }
+
     /// A notice no generation fires (tests).
     #[cfg(test)]
     pub(crate) fn detached() -> Self {
@@ -257,10 +262,6 @@ impl<R: Provider> ResourceGuard<R> {
     /// from the idle store: a created instance was built after the
     /// checkout's admission read, so a strict row reads again before it
     /// grants the checkout.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the managed row facade's attempts")
-    )]
     pub(crate) fn created(&self) -> bool {
         self.created
     }
@@ -268,10 +269,6 @@ impl<R: Provider> ResourceGuard<R> {
     /// Hands a managed row attempt's row-gate permit to the lease. The
     /// permit is freed when the release settles, after the topology permit,
     /// so a caller woken by the gate finds the checkout capacity free.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by the managed row facade's attempts")
-    )]
     pub(crate) fn with_row_slot(mut self, permit: OwnedSemaphorePermit) -> Self {
         self.row_slot = Some(permit);
         self

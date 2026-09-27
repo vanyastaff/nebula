@@ -153,6 +153,7 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
         maintenance_sweeps: AtomicU64::new(0),
         maintenance: Default::default(),
         credential_reads: None,
+        row_gate: std::sync::OnceLock::new(),
         rate_limiter: crate::rate_limit::ResourceLimiter::detached(),
     })
 }

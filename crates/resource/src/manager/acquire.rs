@@ -309,6 +309,56 @@ impl Manager {
         self.run_acquire_dispatch(managed, ctx, options).await
     }
 
+    /// The per-unit checkout facade of the row of `R` registered for `ctx`'s
+    /// scope: every attempt of a unit submitted on it checks out an
+    /// instance of its own only after its quota and row-gate waits (see
+    /// [`ManagedRow`](crate::call::ManagedRow)).
+    ///
+    /// Latches the row's rate-limit profile to
+    /// [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt).
+    /// The facade is bound to this registration: once it is removed or
+    /// replaced, its units fail `Cancelled`.
+    ///
+    /// # Errors
+    ///
+    /// As the acquire lookup: [`NotFound`](crate::ErrorKind::NotFound),
+    /// [`Ambiguous`](crate::ErrorKind::Ambiguous) (use
+    /// [`managed_row_for_identity`](Self::managed_row_for_identity)),
+    /// [`Cancelled`](crate::ErrorKind::Cancelled) while shutting down,
+    /// [`Revoked`](crate::ErrorKind::Revoked) for a tainted row.
+    pub fn managed_row<R: Provider + crate::call::PinSlots>(
+        &self,
+        ctx: &ResourceContext,
+    ) -> Result<crate::call::ManagedRow<R>, Error> {
+        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
+        Ok(crate::call::ManagedRow::new(
+            managed,
+            self.acquire.clone(),
+            ctx,
+        ))
+    }
+
+    /// [`managed_row`](Self::managed_row) pinned to the **collision-free
+    /// structural** resolved per-slot credential identity.
+    ///
+    /// # Errors
+    ///
+    /// [`NotFound`](crate::ErrorKind::NotFound) if no row of type `R`
+    /// matches `(scope, slot_identity)`; otherwise as
+    /// [`managed_row`](Self::managed_row).
+    pub fn managed_row_for_identity<R: Provider + crate::call::PinSlots>(
+        &self,
+        ctx: &ResourceContext,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<crate::call::ManagedRow<R>, Error> {
+        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
+        Ok(crate::call::ManagedRow::new(
+            managed,
+            self.acquire.clone(),
+            ctx,
+        ))
+    }
+
     /// Acquires a handle to a pooled resource.
     ///
     /// Performs typed lookup, then dispatches to the pool runtime's acquire.

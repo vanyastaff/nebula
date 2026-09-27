@@ -74,6 +74,16 @@ impl AcquireLink {
         }
     }
 
+    /// `Manager.admission`, the shutdown fence, cancellation and events.
+    pub(crate) fn admission(&self) -> &AdmissionLink {
+        &self.admission
+    }
+
+    /// The manager's operation counters, when configured.
+    pub(crate) fn metrics(&self) -> Option<&ResourceOpsMetrics> {
+        self.metrics.as_ref()
+    }
+
     /// The manager-wide slow-acquire threshold.
     pub(crate) fn slow_threshold(&self) -> Option<Duration> {
         self.slow_threshold
