@@ -556,6 +556,30 @@ let id = managed.submit(Send { chat, text }).await?;
   (granted / refused by the facade, not a driver's own retries) and
   `call_units` (by sent state).
 
+**Streaming units.** `Managed::submit_streaming(op, capacity)` runs a
+`StreamOperation` — `run(self, cx, sink)` — as one ordinary unit and hands
+back `Streaming<Item, Output>`:
+
+```rust,ignore
+let mut stream = managed.submit_streaming(Tail { from }, NonZeroUsize::new(8).unwrap());
+while let Some(line) = stream.next().await {
+    handle(line?); // the unit's error arrives once, after every item it sent
+}
+```
+
+- The `StreamSink` buffer is bounded (`capacity` items): a slow consumer
+  holds the operation at `send`, which is how a streamed body pushes back on
+  the provider. Mid-stream failures are never items; the unit's stamped
+  `OpError` follows the items it sent.
+- Dropped before its first `next`, the unit never ran. `Streaming::cancel`
+  before the first grant settles `Cancelled` / `NotSent`; after it — or when
+  the handle is dropped — the sink closes (`send` fails with `ConsumerGone`,
+  `StreamSink::closed` resolves) and the operation ends. The lease is
+  released after the unit ends.
+- The facade never aborts a granted attempt: a stream that should stop on
+  removal or shutdown selects on `OpCx::closing()`. The 5-minute unit cap
+  applies to streams too.
+
 Interim defaults, revisited before the surface is frozen (it is not in any
 prelude): the 5-minute unit deadline cap; the per-lease unit caps above; no
 refund of a cost booked for an attempt cancelled or refused before it

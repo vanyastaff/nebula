@@ -691,7 +691,36 @@ let admitted = recorded.readmit_against(fresh)?;
   sessions on real PostgreSQL connections (PG1–PG8, run by the PostgreSQL
   CI job). Interim: `Pooled`-only sessions, the 5-minute unit deadline (no
   `LISTEN` / `NOTIFY` or IMAP `IDLE`), and no engine accessor yet.
-
+- **HTTP resource adapter in the SDK (feature `resource-http`).**
+  `nebula_sdk::integration::resource::http` sends HTTP calls as managed
+  units: `HttpConfig` (https, or http for a loopback host; timeouts, byte
+  budgets, extra PEM roots; permanent validation errors that never echo the
+  URL) and an auth-neutral `HttpTransport` built once in `Provider::create`
+  and reused across rotations — no redirects followed, no client retries,
+  no proxy, referer or cookies, platform TLS verification. A resource
+  implements `HttpApi::authorize`; `Authorize::{bearer, basic,
+  api_key_header}` apply the unit's pinned slots last as zeroized, sensitive
+  headers (an unbound slot is `CredentialUnavailable { Absent }` and sends
+  nothing; an expired OAuth2 token is `Transient`). `Request<M>` is an
+  `Operation` whose method marker fixes the `Effect` (`Get`/`Head`/`Options`
+  read, `Put`/`Delete` idempotent, `Post`/`Patch` write, `Keyed<_>` with an
+  `Idempotency-Key`, `AsWrite<_>`); `send` classifies one attempt (connect
+  failure `NotSent`, later failure `MaybeSent`, `429` / `503`+`Retry-After`
+  reported and `Exhausted`, `408`/`425`/`5xx` `Transient`, other `4xx`
+  `Permanent`), and a unit re-attempts only what cannot apply twice.
+  `open_stream` / `open_stream_until` return a `ResponseStream` for chunked
+  bodies with backpressure. No `reqwest` or `url` type is public; no URL,
+  header value or transport error reaches `Debug`, errors or logs.
+- **Streaming units in the managed call facade.** `nebula-resource`
+  `call::{StreamOperation, StreamSink, Streaming, ConsumerGone}` and
+  `Managed::submit_streaming` run an operation that yields items as one
+  ordinary unit, through a bounded buffer; the unit's error follows the
+  items once, and a dropped or cancelled consumer ends the operation. The
+  SDK re-exports the family in `integration::resource`.
+- **SDK-only credentialed resources.** `integration::resource` re-exports
+  `CredentialSlot` and `CredentialGuard`, and `integration::credential` and
+  the prelude `BearerTokenCredential`, so a derived credentialed resource
+  compiles against `nebula-sdk` alone.
 - **Strict per-acquire credential admission.** A `Manager` configured with
   `ManagerConfig::with_credential_observer` makes every credential-bound row
   `CredentialAdmissionProfile::StrictPerAcquire`: each acquire (and each

@@ -163,6 +163,16 @@
 //!   runtime (an opt-in resubmission of a cloneable operation is a
 //!   follow-up).
 //!
+//! # Streaming
+//!
+//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] runs
+//! as one ordinary unit that also sends items through a bounded
+//! [`StreamSink`]; the caller pulls them from [`Streaming`], then the unit's
+//! error, if any, once. A mid-stream failure is never an item, a dropped or
+//! cancelled consumer ends the operation at its next send, and the lease
+//! closing is honoured by selecting on [`OpCx::closing`] (CONTRACT.md:57).
+//! [`StreamOperation`] documents the delivery rules.
+//!
 //! # Observability
 //!
 //! Each unit runs in a `nebula.resource.unit` span recording its key,
@@ -181,6 +191,7 @@ mod managed;
 mod pin;
 mod row;
 mod session;
+mod stream;
 mod strict;
 
 use std::{future::Future, num::NonZeroU32};
@@ -194,6 +205,7 @@ pub use session::{
     SessionBinding, SessionClosed, SessionCx, SessionEnd, SessionFuture, SessionProvider,
     SessionSpec,
 };
+pub use stream::{ConsumerGone, StreamOperation, StreamSink, Streaming};
 
 use crate::resource::Provider;
 
