@@ -445,7 +445,7 @@ use std::{
     time::Instant,
 };
 
-use nebula_core::{LayerLifecycle, ResourceKey, ScopeLevel, context::Context as _};
+use nebula_core::{LayerLifecycle, ResourceKey, ScopeLevel};
 use nebula_eventbus::EventBus;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -462,6 +462,7 @@ use crate::{
 };
 
 pub(crate) mod acquire;
+mod acquire_link;
 mod admission_link;
 mod credential_gate;
 mod credential_reads;
@@ -484,6 +485,7 @@ pub(crate) mod strict_fixtures;
 #[cfg(test)]
 mod strict_profile_tests;
 
+pub(crate) use acquire_link::AcquireLink;
 pub(crate) use admission_link::AdmissionLink;
 pub use credential_gate::{
     CredentialAdmissionProfile, CredentialGateTicket, CredentialObservedAt,
@@ -605,11 +607,12 @@ pub struct Manager {
     pub(super) link: AdmissionLink,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
     pub(super) lifecycle: Option<LayerLifecycle>,
-    /// Manager-wide default acquire-slow-log threshold. See
-    /// [`ManagerConfig::acquire_slow_threshold`] for the WARN contract;
+    /// The acquire pipeline past lookup — the admission link, the drain
+    /// tracker, the metrics and the manager-wide slow-acquire threshold
+    /// (see [`ManagerConfig::acquire_slow_threshold`] for the WARN contract;
     /// [`AcquireOptions::acquire_slow_threshold`](crate::options::AcquireOptions::acquire_slow_threshold)
-    /// overrides this per call.
-    pub(super) acquire_slow_threshold: Option<std::time::Duration>,
+    /// overrides it per call) — as acquires and managed row attempts share it.
+    pub(crate) acquire: AcquireLink,
     /// Rate-limit state for process-scoped limits (and for cluster-scoped
     /// ones while no shared store is configured).
     pub(super) local_limits: Arc<crate::rate_limit::MemoryLimitStore>,
@@ -636,7 +639,7 @@ impl std::fmt::Debug for Manager {
                     .load(std::sync::atomic::Ordering::Relaxed),
             )
             .field("has_metrics", &self.metrics.is_some())
-            .field("acquire_slow_threshold", &self.acquire_slow_threshold)
+            .field("acquire_slow_threshold", &self.acquire.slow_threshold())
             .finish_non_exhaustive()
     }
 }
@@ -667,7 +670,6 @@ impl Manager {
                         None
                     },
                 });
-        let acquire_slow_threshold = config.acquire_slow_threshold;
         let admission = Arc::new(std::sync::Mutex::new(()));
         let shutting_down = Arc::new(AtomicBool::new(false));
         let link = AdmissionLink::new(
@@ -690,6 +692,13 @@ impl Manager {
                 metrics,
             ))
         });
+        let drain_tracker = Arc::new((AtomicU64::new(0), Notify::new()));
+        let acquire = AcquireLink::new(
+            link.clone(),
+            Arc::clone(&drain_tracker),
+            metrics.clone(),
+            config.acquire_slow_threshold,
+        );
         let retirement_supervisor = Arc::new(retirement::RetirementSupervisor::new(
             Arc::clone(&release_queue),
             config.release_queue_workers,
@@ -705,14 +714,14 @@ impl Manager {
             event_bus,
             release_queue,
             release_queue_handle: Arc::new(tokio::sync::Mutex::new(Some(release_queue_handle))),
-            drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
+            drain_tracker,
             retirement_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             retirement_supervisor,
             shutdown_state: tokio::sync::Mutex::new(shutdown_session::ShutdownState::Open),
             shutting_down,
             link,
             lifecycle: None,
-            acquire_slow_threshold,
+            acquire,
             local_limits: Arc::new(crate::rate_limit::MemoryLimitStore::new()),
             shared_limits: config.shared_limit_store,
             credential_reads,
@@ -1114,86 +1123,6 @@ impl Manager {
             phase: handle.admission_phase(),
             load: handle.admission_load(),
         })
-    }
-
-    /// Records acquire success/failure in aggregate metrics, the acquire-wait
-    /// histogram, and emits the corresponding [`ResourceEvent`]; also checks
-    /// the acquire-slow-log threshold.
-    fn record_acquire_result<R: Provider>(
-        &self,
-        result: &Result<crate::guard::ResourceGuard<R>, Error>,
-        started: Instant,
-        ctx: &crate::context::ResourceContext,
-        options: &crate::options::AcquireOptions,
-    ) {
-        // Resolve the resource key once: `R::key()` re-validates and re-interns
-        // the literal on each call, and the error path emits up to two events.
-        let key = R::key();
-        let elapsed = started.elapsed();
-        match result {
-            Ok(_) => {
-                if let Some(m) = &self.metrics {
-                    m.record_acquire();
-                }
-                self.emit(ResourceEvent::AcquireSuccess {
-                    key: key.clone(),
-                    duration: elapsed,
-                });
-            },
-            Err(e) => {
-                if let Some(m) = &self.metrics {
-                    m.record_acquire_error();
-                }
-                // `BackpressureDetected` is a topology-pressure signal
-                // (semaphore full, max sessions reached). It is a strict
-                // subset of `AcquireFailed` — we emit both so subscribers
-                // that filter on pressure get a typed event without having
-                // to parse error strings, while the unified
-                // `AcquireFailed` stream remains the canonical "acquire
-                // didn't succeed" feed.
-                if matches!(e.kind(), crate::error::ErrorKind::Backpressure) {
-                    self.emit(ResourceEvent::BackpressureDetected { key: key.clone() });
-                }
-                self.emit(ResourceEvent::AcquireFailed {
-                    key: key.clone(),
-                    kind: e.kind().clone(),
-                    error: e.to_string(),
-                });
-            },
-        }
-
-        // Acquire wait-time histogram + waited/timed-out counters. A
-        // deadline is "timed out" when it had already elapsed by the time
-        // this (failed) acquire completed — mirrors sqlx/bb8's notion of an
-        // acquire timeout, independent of which internal error path produced
-        // the failure. Reuses the completion instant already captured in
-        // `elapsed` (`started + elapsed`) rather than a fresh `Instant::now()`
-        // here: the event emission above takes nonzero time, so a fresh read
-        // could observe the deadline as elapsed even for a failure that
-        // actually completed strictly before it.
-        if let Some(m) = &self.metrics {
-            let completed_at = started + elapsed;
-            let timed_out = result.is_err() && options.deadline.is_some_and(|d| completed_at >= d);
-            m.record_acquire_wait(elapsed, timed_out);
-        }
-
-        // Acquire-slow-log threshold — at most one WARN per acquire,
-        // checked once here at completion. `AcquireOptions` overrides the
-        // manager-wide default.
-        if let Some(threshold) = options
-            .acquire_slow_threshold
-            .or(self.acquire_slow_threshold)
-            && elapsed > threshold
-        {
-            tracing::warn!(
-                target: "resource",
-                %key,
-                scope = ?ctx.scope(),
-                elapsed = ?elapsed,
-                threshold = ?threshold,
-                "acquire exceeded the slow-acquire threshold"
-            );
-        }
     }
 
     /// Best-effort event emission. The `PublishOutcome` is intentionally

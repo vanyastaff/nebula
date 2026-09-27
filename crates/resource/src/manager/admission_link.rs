@@ -105,6 +105,11 @@ impl AdmissionLink {
         Ok(())
     }
 
+    /// The manager's event bus, for guards that emit on release.
+    pub(crate) fn events(&self) -> &Arc<EventBus<ResourceEvent>> {
+        &self.events
+    }
+
     /// Best-effort event emission, as the manager's own.
     pub(crate) fn emit(&self, event: ResourceEvent) {
         let _ = self.events.emit(event);
