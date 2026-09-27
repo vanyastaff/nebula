@@ -1,4 +1,5 @@
-//! PostgreSQL acceptance of managed row sessions (PG1–PG8).
+//! PostgreSQL acceptance of managed row sessions (PG1–PG8), and of the
+//! action path to them (PG9).
 //!
 //! A pooled resource whose instance is a real `PgConnection`, authenticated
 //! with a `basic_auth` credential projected by the real runtime over the
@@ -511,6 +512,25 @@ impl Pg {
             .expect("the row facade")
     }
 
+    /// The facade of the activated row as an action resolves it: through
+    /// the engine's resource accessor, cancelled with `cancel`.
+    fn action_row(
+        &self,
+        activated: &ActivatedResource,
+        cancel: &CancellationToken,
+    ) -> ManagedRow<PgRow> {
+        use nebula_action::ActionContextExt as _;
+        action_context(
+            &self.fixture.manager,
+            &self.fixture.scope,
+            &self.key,
+            &activated.slot_identity,
+            cancel,
+        )
+        .managed_row_by_id::<PgRow>(self.key.as_str())
+        .expect("the action's row facade")
+    }
+
     /// Commits `insert into ledger values (id)`; yields the backend pid.
     fn insert(&self, row: &ManagedRow<PgRow>, id: i32) -> nebula_resource::call::Unit<i32> {
         row.session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
@@ -947,6 +967,92 @@ async fn a_session_past_its_deadline_is_cut_off_and_applies_nothing() {
         "the transaction died with its backend"
     );
     drop(row);
+    pg.cleanup().await;
+}
+
+/// PG9: an action's session commits visibly; a session queued behind a
+/// connection held on an advisory lock is refused unsent when the
+/// execution's token is cancelled, and no new backend is started.
+#[tokio::test]
+async fn an_action_session_commits_and_a_cancelled_queued_session_starts_no_backend() {
+    let Some(pg) = setup().await else { return };
+    let holder_token = CancellationToken::new();
+    let holder_row = pg.action_row(&pg.activated, &holder_token);
+    let pid = pg
+        .insert(&holder_row, 1)
+        .await
+        .expect("an action session commits");
+    assert!(pg.has_row(1).await, "visible to the admin");
+
+    // The only connection waits on an advisory lock the admin holds.
+    let lock = i64::try_from(ulid::Ulid::new().random() & 0x7fff_ffff).expect("fits");
+    let mut admin_lock = pg.admin.acquire().await.expect("a lock holder");
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(lock)
+        .execute(&mut *admin_lock)
+        .await
+        .expect("the admin holds the lock");
+    let holding = tokio::spawn(
+        holder_row.session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
+            Box::pin(async move {
+                sqlx::query("SELECT pg_advisory_lock($1)")
+                    .bind(lock)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(query_failed)?;
+                sqlx::query("INSERT INTO ledger (id) VALUES (2)")
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(query_failed)?;
+                Ok(())
+            })
+        }),
+    );
+    pg.until("the held session waits on the lock", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+             WHERE l.locktype = 'advisory' AND NOT l.granted AND a.usename = $1",
+        )
+        .bind(&pg.role)
+        .fetch_one(&pg.admin)
+        .await
+        .expect("the admin reads pg_locks")
+            == 1
+    })
+    .await;
+
+    // A second action's session queues for the row gate, then its
+    // execution is cancelled.
+    let queued_token = CancellationToken::new();
+    let queued_row = pg.action_row(&pg.activated, &queued_token);
+    let mut queued = pg.insert(&queued_row, 3);
+    assert!(futures::poll!(&mut queued).is_pending(), "queued");
+    tokio::task::yield_now().await;
+    assert!(futures::poll!(&mut queued).is_pending(), "still queued");
+    queued_token.cancel();
+    let error = queued.await.expect_err("cancelled");
+    assert_eq!(*error.kind(), nebula_resource::ErrorKind::Cancelled);
+    assert_eq!(error.sent(), SentState::NotSent);
+    let backends = pg.backends().await;
+    assert_eq!(backends.len(), 1, "no new backend: {backends:?}");
+    assert_eq!(backends[0].0, pid);
+
+    sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(lock)
+        .execute(&mut *admin_lock)
+        .await
+        .expect("the lock opens");
+    drop(admin_lock);
+    holding
+        .await
+        .expect("joined")
+        .expect("the held session commits");
+    assert!(pg.has_row(2).await);
+    assert!(
+        !pg.has_row(3).await,
+        "the cancelled session applied nothing"
+    );
+    drop((holder_row, queued_row));
     pg.cleanup().await;
 }
 

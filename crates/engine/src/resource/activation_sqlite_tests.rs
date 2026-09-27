@@ -10,7 +10,9 @@
 //! The strict manager's admission is accepted per acquire (S1–S5) and, for
 //! the managed call facade, per attempt (F1–F6): each provider attempt reads
 //! the credential's availability through the real runtime, and a change
-//! landing between two attempts of one unit refuses the later one.
+//! landing between two attempts of one unit refuses the later one. F7 takes
+//! the action path: the engine's resource accessor and
+//! `ActionContextExt::managed_row_by_id`.
 use std::{num::NonZeroU32, str::FromStr, time::Duration};
 
 use nebula_credential::{
@@ -1510,6 +1512,136 @@ async fn a_slot_less_facade_on_a_strict_manager_reads_nothing() {
         .into_managed();
     managed.submit(Attempts(2)).await.expect("granted");
     assert_eq!(fixture.reads(), 0);
+}
+
+// ── F7: the action path to a managed row ───────────────────────────────────
+
+/// An action context whose resources are the engine's accessor over
+/// `manager`, at `scope`'s workspace, serving `key` under `identity`, and
+/// cancelled with `cancel`.
+fn action_context(
+    manager: &Arc<Manager>,
+    scope: &Scope,
+    key: &ResourceKey,
+    identity: &SlotIdentity,
+    cancel: &CancellationToken,
+) -> nebula_action::ActionRuntimeContext {
+    let workspace = WorkspaceId::parse(&scope.workspace_id).expect("workspace id");
+    let accessor = crate::resource_accessor::EngineResourceAccessor::new(
+        Arc::clone(manager),
+        nebula_core::scope::Scope {
+            workspace_id: Some(workspace),
+            ..Default::default()
+        },
+        cancel.clone(),
+    )
+    .with_slot_identities(std::collections::HashMap::from([(
+        key.clone(),
+        identity.clone(),
+    )]));
+    nebula_action::testing::TestContextBuilder::new()
+        .build()
+        .with_resources(Arc::new(accessor))
+}
+
+/// The bearer row as an action resolves it.
+fn action_row(
+    fixture: &SqliteFixture,
+    key: &ResourceKey,
+    identity: &SlotIdentity,
+) -> Result<nebula_resource::call::ManagedRow<BearerRow>, nebula_action::ActionError> {
+    use nebula_action::ActionContextExt as _;
+    action_context(
+        &fixture.manager,
+        &fixture.scope,
+        key,
+        identity,
+        &CancellationToken::new(),
+    )
+    .managed_row_by_id::<BearerRow>(key.as_str())
+}
+
+/// F7: an action's managed row reads the credential once per attempt
+/// through the real runtime; a revoke claim or a reauthentication flag
+/// refuses its unit unsent, retryable with the reason's hint; another
+/// identity's row is not served.
+#[tokio::test]
+async fn an_action_managed_row_reads_per_attempt_and_refuses_retryably() {
+    // One read per attempt, nothing decrypted.
+    let fixture = SqliteFixture::strict().await;
+    let (resource_id, key) = fixture.store_row().await;
+    let activated = fixture
+        .activate(resource_id, &key)
+        .await
+        .expect("activates");
+    let row = action_row(&fixture, &key, &activated.slot_identity).expect("the action's row");
+    row.submit(Attempts(1)).await.expect("warm");
+    let (reads, projections) = (fixture.reads(), fixture.projections());
+    row.submit(Attempts(1)).await.expect("granted");
+    // A resident checkout clones the master, which counts as a create:
+    // each attempt reads before and after its checkout (R1, R2).
+    let per_attempt = fixture.reads() - reads;
+    assert!(per_attempt >= 1, "every attempt reads");
+    let reads = fixture.reads();
+    row.submit(Attempts(3)).await.expect("granted");
+    assert_eq!(
+        fixture.reads(),
+        reads + 3 * per_attempt,
+        "reads per attempt"
+    );
+    assert_eq!(fixture.projections(), projections, "nothing is decrypted");
+
+    // A held revoke claim refuses the next unit, unsent and retryable.
+    fixture.claim_revoke().await;
+    let refused = row.submit(Attempts(1)).await.expect_err("revoke claim");
+    assert_eq!(
+        op_reason(&refused),
+        Some(CredentialUnavailableReason::OperationBlocked)
+    );
+    assert_eq!(refused.sent(), SentState::NotSent);
+    let error = nebula_action::ActionError::from(refused);
+    assert!(
+        matches!(error, nebula_action::ActionError::Retryable { .. }),
+        "{error}"
+    );
+    assert_eq!(
+        error.backoff_hint(),
+        Some(CredentialUnavailableReason::OperationBlocked.retry_after())
+    );
+
+    // A reauthentication flag refuses likewise, with its own hint.
+    let fixture = SqliteFixture::strict().await;
+    let (resource_id, key) = fixture.store_row().await;
+    let activated = fixture
+        .activate(resource_id, &key)
+        .await
+        .expect("activates");
+    let row = action_row(&fixture, &key, &activated.slot_identity).expect("the action's row");
+    fixture.require_reauth().await;
+    let refused = row.submit(Attempts(1)).await.expect_err("reauth");
+    assert_eq!(
+        op_reason(&refused),
+        Some(CredentialUnavailableReason::ReauthRequired)
+    );
+    assert_eq!(refused.sent(), SentState::NotSent);
+    let error = nebula_action::ActionError::from(refused);
+    assert!(
+        matches!(error, nebula_action::ActionError::Retryable { .. }),
+        "{error}"
+    );
+    assert_eq!(
+        error.backoff_hint(),
+        Some(CredentialUnavailableReason::ReauthRequired.retry_after())
+    );
+
+    // Another identity's row is not served: fatal at resolution.
+    let stranger = CredentialId::new().to_string();
+    let other = SlotIdentity::from_bindings([(AUTH_SLOT, stranger.as_str())]);
+    let error = action_row(&fixture, &key, &other).expect_err("not this identity's row");
+    assert!(
+        matches!(error, nebula_action::ActionError::Fatal { .. }),
+        "{error}"
+    );
 }
 
 #[path = "session_postgres_tests.rs"]
