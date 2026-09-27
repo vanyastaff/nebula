@@ -499,9 +499,16 @@ impl SqliteFixture {
         registry
             .register(BearerTokenCredential, "nebula-engine-test")
             .expect("bearer registration");
+        registry
+            .register(nebula_credential::BasicAuthCredential, "nebula-engine-test")
+            .expect("basic auth registration");
         let mut ops = DispatchOps::<ErasedPendingStore>::new();
         register_runtime_ops::<BearerTokenCredential, ErasedPendingStore>(&mut ops)
             .expect("runtime ops");
+        register_runtime_ops::<nebula_credential::BasicAuthCredential, ErasedPendingStore>(
+            &mut ops,
+        )
+        .expect("basic auth runtime ops");
         let runtime = Arc::new(
             CredentialProjectionRuntime::from_secure_parts(
                 Arc::clone(&store),
@@ -601,6 +608,22 @@ impl SqliteFixture {
     }
 
     async fn store_row(&self) -> (ResourceId, ResourceKey) {
+        self.store_row_as(
+            BEARER_KIND,
+            serde_json::json!({ "label": "a" }),
+            self.credential_id,
+        )
+        .await
+    }
+
+    /// Stores a row of resource kind `kind` whose `auth` slot is bound to
+    /// `credential_id`.
+    async fn store_row_as(
+        &self,
+        kind: &str,
+        config: serde_json::Value,
+        credential_id: CredentialId,
+    ) -> (ResourceId, ResourceKey) {
         let resource_id = ResourceId::new();
         self.resources
             .create(
@@ -610,11 +633,11 @@ impl SqliteFixture {
                     workspace_id: self.scope.workspace_id.clone(),
                     slug: format!("row-{resource_id}"),
                     display_name: "row".to_owned(),
-                    kind: BEARER_KIND.to_owned(),
-                    config: serde_json::json!({ "label": "a" }),
+                    kind: kind.to_owned(),
+                    config,
                     credential_bindings: BTreeMap::from([(
                         AUTH_SLOT.to_owned(),
-                        self.credential_id.to_string(),
+                        credential_id.to_string(),
                     )]),
                     topology: None,
                     resilience_override: None,
@@ -628,7 +651,7 @@ impl SqliteFixture {
             .expect("row stored");
         (
             resource_id,
-            ResourceKey::new(BEARER_KIND).expect("valid resource key"),
+            ResourceKey::new(kind).expect("valid resource key"),
         )
     }
 
@@ -1488,3 +1511,6 @@ async fn a_slot_less_facade_on_a_strict_manager_reads_nothing() {
     managed.submit(Attempts(2)).await.expect("granted");
     assert_eq!(fixture.reads(), 0);
 }
+
+#[path = "session_postgres_tests.rs"]
+mod session_postgres;
