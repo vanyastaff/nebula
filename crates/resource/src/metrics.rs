@@ -52,7 +52,7 @@ use nebula_metrics::{
 };
 
 /// How a managed session ended, for
-/// [`NEBULA_RESOURCE_SESSIONS_TOTAL`](nebula_metrics::naming::NEBULA_RESOURCE_SESSIONS_TOTAL).
+/// [`NEBULA_RESOURCE_SESSIONS_TOTAL`].
 /// Closed set mirroring `nebula_metrics::naming::session_outcome`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionOutcome {

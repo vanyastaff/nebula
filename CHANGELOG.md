@@ -665,6 +665,33 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Managed row facade and sessions.** `Manager::managed_row` /
+  `managed_row_for_identity` return `nebula_resource::call::ManagedRow<R>`:
+  the managed call facade without a lease. Each attempt of a submitted
+  `Operation` books its quota and waits on a FIFO row gate (sized to the
+  topology's capacity) with nothing checked out, reads its bound credentials
+  outside every lock, then checks out an instance of its own through the
+  acquire pipeline's admission and releases it when the attempt ends; a
+  checkout that created its instance on a strict row is read again and
+  granted under `Manager.admission`. Refusals are unsent and a refused
+  checkout returns to the pool. On a pooled provider implementing
+  `call::SessionProvider` (`open` / `close` over a `Session<'c>` borrowing
+  the instance), `ManagedRow::session(SessionSpec, body)` runs one
+  transaction per unit: the cost is booked once, the unannotated
+  higher-ranked body borrows the session (`SessionFuture`, `SessionCx`), and
+  `close` commits or rolls back (`SessionEnd`); `SessionClosed::Committed` is
+  `Sent`, `RolledBack` `NotSent`, `Unknown` `MaybeSent` with the instance
+  destroyed. A `SessionBinding::Connection` session only runs on an instance
+  built at the credential slot epoch its unit pinned. New metrics
+  `nebula_resource_row_checkouts_total{created}` and
+  `nebula_resource_sessions_total{outcome}`, reported in
+  `ResourceOpsSnapshot::{row_checkouts, sessions}`. The SDK curates
+  `ManagedRow` and the session vocabulary in
+  `nebula_sdk::integration::resource` (not the prelude). The engine accepts
+  sessions on real PostgreSQL connections (PG1–PG8, run by the PostgreSQL
+  CI job). Interim: `Pooled`-only sessions, the 5-minute unit deadline (no
+  `LISTEN` / `NOTIFY` or IMAP `IDLE`), and no engine accessor yet.
+
 - **Strict per-acquire credential admission.** A `Manager` configured with
   `ManagerConfig::with_credential_observer` makes every credential-bound row
   `CredentialAdmissionProfile::StrictPerAcquire`: each acquire (and each

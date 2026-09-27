@@ -11,8 +11,8 @@
 //! await, and never waiting for quota or the row gate while holding a
 //! checkout):
 //!
-//! 1. **Budget** — past [`Operation::max_attempts`](super::Operation::max_attempts)
-//!    granted attempts it is refused permanently.
+//! 1. **Budget** — past [`Operation::max_attempts`] granted attempts it is
+//!    refused permanently.
 //! 2. **Row pre-check**, lock-free — a tainted row is `Revoked`; a
 //!    shutting-down manager, a removed or replaced row `Cancelled`; the
 //!    unit's admission generation closed maps as a lease's does; a

@@ -559,12 +559,104 @@ let id = managed.submit(Send { chat, text }).await?;
 Interim defaults, revisited before the surface is frozen (it is not in any
 prelude): the 5-minute unit deadline cap; the per-lease unit caps above; no
 refund of a cost booked for an attempt cancelled or refused before it
-reached the provider; a pooled lease stays checked out while its units wait
-for quota and while their credential reads run (per-unit checkout is a
-follow-up); `Sent` with `Exhausted` means the provider refused and applied
+reached the provider; a pooled `Managed` lease stays checked out while its
+units wait for quota and while their credential reads run — use a
+`ManagedRow` (below) to check out per attempt instead; `Sent` with
+`Exhausted` means the provider refused and applied
 nothing, so it stays retryable; the `Read` / `Idempotent` / `Write` effect
 vocabulary; `Rebinding` with a one-second hint for a superseded pin, with no
 runtime-owned re-preparation of the unit.
+
+### Managed row facade and sessions
+
+`Manager::managed_row::<R>(&ctx)` (or `managed_row_for_identity`) returns a
+`call::ManagedRow<R>`: the same `Operation` / `Unit` / `Attempt` vocabulary,
+but the facade holds no lease. Each attempt checks out an instance of its
+own and releases it when the attempt ends, in this order — nothing is held
+across a wait, and `Manager.admission` is never held across an await:
+
+1. budget, then a lock-free row pre-check (taint `Revoked`; shutdown,
+   removal or replacement `Cancelled`; the unit's generation closed as for a
+   lease; suspension `CredentialUnavailable`; a phase that refuses acquires
+   `Backpressure`);
+2. the quota at the attempt's `Cost`, holding nothing (`FREE` only waits out
+   a pause);
+3. the **row gate**: one permit per checkout, FIFO, sized to the topology's
+   capacity at first use — attempts queue here rather than failing on a full
+   pool; full until the deadline is `Backpressure`;
+4. the strict read R1 outside every lock (zero reads for a slot-less or
+   interim row), the unit's pin on its first attempt;
+5. the acquire pipeline's own admission under `Manager.admission` (lock #1),
+   the recovery gate, the checkout outside every lock (bounded by the unit's
+   deadline), and the hand-out check;
+6. after a checkout that **created** its instance on a strict row, a
+   join-next re-read R2 (an idle hit is served by R1); then, on a strict row,
+   lock #2: taint, shutdown, R2 applied, suspension, the checkout's
+   generation and the unit's pin (`Rebinding`), and the grant.
+
+Every refusal is `NotSent` (a booked cost is forfeited) and a refused
+checkout goes back to the pool untainted. A later attempt of the unit redoes
+every step and may land on another instance; its pin is not retaken. The
+facade latches the row to `PerAttempt`; a strict row reports
+`StrictPerAttempt`. It is bound to one registration: removed or replaced,
+its units fail `Cancelled`.
+
+A pooled provider that implements `call::SessionProvider` runs **sessions**
+— several native calls on one connection as one unit:
+
+```rust,ignore
+let rows = row
+    .session(SessionSpec::new(Cost::ONE), |tx, _cx| {
+        Box::pin(async move {
+            sqlx::query("INSERT INTO ledger (id) VALUES ($1)")
+                .bind(id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|_| OpError::new(ErrorKind::Transient, "insert failed"))?;
+            Ok(1)
+        })
+    })
+    .await?;
+```
+
+One unit, one attempt, never retried by the runtime: the cost is booked once
+before the checkout, the calls inside are not counted. `open` starts the
+session on the checked-out instance with the unit's pinned slots, the body
+borrows it (it cannot escape), and `close` commits when the body succeeded
+and rolls back otherwise:
+
+| Body | Close | Unit | Sent | Instance |
+|---|---|---|---|---|
+| `Ok(t)` | `Committed` | `Ok(t)` | `Sent` | recycled |
+| `Ok` | `RolledBack { refused: Some(e) }` | `Err(e)` | `NotSent` | recycled |
+| `Err(e)` | `RolledBack` | `Err(e)` | `NotSent` | recycled |
+| any | `Unknown(e)` | `Err(e)` | `MaybeSent` (a `Write` is `OutcomeUnknown`) | destroyed |
+
+A failed `open` is `NotSent` and destroys the instance; the deadline or a
+panic mid-session is `MaybeSent` and destroys it. `SessionCx::closing()` is
+cooperative: a granted session is never aborted. With
+`SessionBinding::Connection` (the default: a database login) a session only
+runs on an instance built at the credential slot epoch its unit pinned — an
+older idle instance is destroyed and replaced; `SessionBinding::Session`
+reuses any healthy instance. A session (or any unit) of the same row awaited
+inside a session body is refused `Permanent`: it would wait for the row
+gate while the session holds a checkout. Counted by
+`nebula_resource_row_checkouts_total{created}` and
+`nebula_resource_sessions_total{outcome}`
+(`committed | rolled_back | unknown | open_failed | abandoned`).
+
+Interim, and open in the design package: sessions are `Pooled`-only; the
+row gate ignores a reload that resizes the pool, and a pool saturated by
+plain leases refuses `Backpressure`; a suspended row is not reopened by a
+row attempt (it refuses before reading — the next acquire or activation
+reopens it); the unit deadline stays capped at 5 minutes, so long-lived
+subscriptions (`LISTEN` / `NOTIFY`, IMAP `IDLE`) are not supported (an
+interval profile needs an ADR); refunds, the visibility split by TTL,
+ordering across several budgets, nested same-row semantics beyond the typed
+refusal, the owner of commit-unknown recovery, sessions on shared
+instances, and bounded overlap under a strict cap during rotation. Reaching
+a `ManagedRow` from action code (an engine accessor or a `#[resource]`
+field) is a follow-up.
 
 ### Other public API
 
@@ -768,7 +860,7 @@ See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/M
 - Per-slot rotation fan-out: landed in this crate (`credential_fanout`, feature `rotation`) — see [`credential-rotation.md`](docs/credential-rotation.md).
 - Credential suspension: a credential that turns `ReauthRequired` or blocks new use without a material change suspends every bound row (acquires fail with `CredentialUnavailable`, admitted leases observe closing, owners are kept) and reopens it when the same material is usable again at a newer use revision; a use revision that advanced unobserved readmits the row under a fresh generation — see "Same-material blocks" and "Use revision" in [`credential-rotation.md`](docs/credential-rotation.md).
 - Strict per-acquire credential admission: a manager with a credential observer (the worker's) reads every bound credential's availability before each acquire and create — see "Strict per-acquire admission" in [`credential-rotation.md`](docs/credential-rotation.md).
-- Known gaps: on an interim manager (no observer) suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event); on a strict one only an interval with no acquire, create, activation or scan at all goes unobserved, and a denial missed that way only affects new work. An acquire that waits for capacity after its read is not read again; the managed call facade reads per attempt. Readmission at the installed material with an advanced use revision admits later attempts on leases admitted before it (nothing closes them). Configurable read timeout/jitter, batched multi-slot reads, an interval profile (needs an ADR revising the per-acquire rule), letting activation skip its own head read on a strict manager, per-unit checkout for pooled leases, a bound from admission to egress, refunds of refused bookings, an opt-in runtime-owned re-preparation of a unit whose pin was superseded, and the composition-time rejection of an observer-less manager (the strict default) are follow-ups (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
+- Known gaps: on an interim manager (no observer) suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event); on a strict one only an interval with no acquire, create, activation or scan at all goes unobserved, and a denial missed that way only affects new work. An acquire that waits for capacity after its read is not read again; the managed call facade reads per attempt. Readmission at the installed material with an advanced use revision admits later attempts on leases admitted before it (nothing closes them). Configurable read timeout/jitter, batched multi-slot reads, an interval profile (needs an ADR revising the per-acquire rule), letting activation skip its own head read on a strict manager, reaching a `ManagedRow` from action code, a bound from admission to egress, refunds of refused bookings, an opt-in runtime-owned re-preparation of a unit whose pin was superseded, and the composition-time rejection of an observer-less manager (the strict default) are follow-ups (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
 
 ## Related
 

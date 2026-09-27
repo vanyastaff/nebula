@@ -405,18 +405,70 @@ later attempt whose pin a rotation superseded is refused `Rebinding` (retry
 after 1 s) rather than switching material mid-unit; the unit's settled
 outcome decides the retry — `Read` / `Idempotent` units are retryable, a
 `Write` whose earlier attempt was sent ends `OutcomeUnknown`. The next unit
-pins the new material. A pooled lease stays checked out while its units wait
-for quota and read. Interim managers and slot-less rows read nothing and
-register without the lock.
+pins the new material. A pooled `Managed` lease stays checked out while its
+units wait for quota and read; a `ManagedRow` checks out per attempt (below).
+Interim managers and slot-less rows read nothing and register without the
+lock.
 
 Open in the design package and chosen here for now: the refusal code and
 hint of a superseded pin (`Rebinding`, 1 s); no bound on how often a caller
 re-submits after a rebinding and no runtime-owned re-preparation of the unit
 (an opt-in resubmission of a cloneable operation is a follow-up); no
 deadline between an attempt's admission and its egress; one read per
-credential lane per attempt (no batched multi-slot reads); per-unit checkout
-of pooled leases and its ordering against the read; refunds; and an engine
-that does not yet act on the refusals' backoff hints.
+credential lane per attempt (no batched multi-slot reads); refunds; and an
+engine that does not yet act on the refusals' backoff hints.
+
+### Sessions and connection-bound pools
+
+A `ManagedRow` (`Manager::managed_row`) holds no lease: each attempt books
+its quota and waits for the row gate with nothing checked out, then reads
+(R1) outside every lock, pins the unit's slots on its first attempt, and
+checks out through the acquire pipeline's own admission (lock #1: the read
+applied, the row's suspension and phase, the checkout's generation
+captured). Two reads bracket a checkout that **creates** its instance on a
+strict row: R1 decides admission, and a join-next R2 after the create — the
+instance was built after R1 — is applied under a second hold of
+`Manager.admission` (lock #2) together with the checkout's generation and
+the unit's pin, before the grant. An idle hit is served by R1 alone (no
+freshness window is assumed beyond it). A block observed by either read
+refuses unsent and suspends the row; the refused checkout returns to the
+pool untainted. A row with no bound slot, or an interim manager, reads
+nothing and skips lock #2.
+
+A database login is bound to the **connection**, not to each call: once a
+connection authenticated, rotating the slot does not change what it is
+logged in as. A pooled entry therefore records the credential slot epoch
+read immediately before its instance was created, and a
+`SessionBinding::Connection` session (the default) runs only on an instance
+built at the slot epoch its unit pinned:
+
+- an idle instance built before a rotation is destroyed and the checkout
+  retried (until the unit's deadline) — the next one is created with the
+  new material;
+- a created instance that already does not match means the unit's pin was
+  superseded while it was being built: the attempt refuses `Rebinding`,
+  unsent.
+
+A `SessionBinding::Session` provider (a token sent with each request) may
+reuse any healthy instance; it authenticates each session with the pinned
+slots itself.
+
+On a strict manager a rotation reaches a session only once activation
+installs the new material: until then the read sees newer material than
+the row installed and refuses `Rebinding`. After activation the next
+session evicts the connection logged in with the old password and opens a
+new one (the engine's PostgreSQL acceptance, PG5). A reauthentication flag
+refuses before any connection is made and suspends the row (PG4); a row
+attempt refuses a suspended row without reading, so the row is reopened by
+the next acquire or activation that reads the cleared flag.
+
+A session's outcome is what the provider said at close: `Committed` is
+`Sent`, `RolledBack` `NotSent`, and `Unknown` — the connection lost during
+the commit — `MaybeSent`, so a `Write` session is `OutcomeUnknown` and its
+connection is destroyed (PG3). Who reconciles an unknown commit is open in
+the design package. Long-lived subscriptions (`LISTEN` / `NOTIFY`, IMAP
+`IDLE`) are not supported: the unit deadline stays capped at five minutes,
+and an interval profile needs an ADR revising the per-unit rule.
 
 **Default.** A manager without an observer stays `InterimRowGate`; the
 default is not flipped here. The plan is a composition-time rejection of a

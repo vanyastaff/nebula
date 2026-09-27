@@ -270,6 +270,23 @@
 //!   each slot's writer lock. A row serving a facade reports
 //!   `CredentialAdmissionProfile::StrictPerAttempt`.
 //!
+//!   **Per-unit checkout.** An attempt of a managed row facade
+//!   (`ManagedRow`) holds no lease between attempts: it books its quota and
+//!   waits for the row gate (one permit per checkout, sized to the store's
+//!   capacity) with nothing checked out, reads (R1) outside every lock, then
+//!   runs the acquire pipeline's own admission — the in-flight count and
+//!   lock #1 above, through `AcquireLink::acquire_admitted` — and checks
+//!   out. A checkout that created its instance on a strict row is read again
+//!   (R2, join-next) before a second hold of `Manager.admission` (lock #2)
+//!   applies R2 and checks the checkout's generation and the unit's pin
+//!   before the grant; an idle hit is served by R1, and a row that reads
+//!   nothing grants lock-free. Never wait for quota or the row gate while
+//!   holding a checkout, and never hold `Manager.admission` across R1, R2 or
+//!   the checkout. The gate permit rides on the checkout and is freed with
+//!   its topology permit, so a caller the gate wakes finds the capacity
+//!   free. Lock order: `Manager.admission`, the row gate's cell, each slot's
+//!   writer lock.
+//!
 //! The closing token is a cooperative notice: it stops no work, revokes no
 //! borrow, and rolls nothing back. A lease is still released normally, and
 //! the per-resource and shutdown drains still wait for it.

@@ -54,8 +54,9 @@ use crate::{
 pub const UNIT_DEADLINE_CAP: std::time::Duration = DEFAULT_MAX_PENALTY;
 
 /// Units that may run at once on one lease whose topology checks out an
-/// instance exclusively ([`Pooled`](crate::Pooled), [`Bounded`](crate::Bounded)).
-/// Interim: per-unit checkout replaces the lease-wide cap later.
+/// instance exclusively ([`Pooled`], [`Bounded`](crate::Bounded)). A
+/// [`ManagedRow`](super::ManagedRow) has no lease-wide cap: it checks out
+/// per attempt.
 const EXCLUSIVE_UNIT_CAP: usize = 1;
 
 /// Units that may run at once on one lease of a shared instance
