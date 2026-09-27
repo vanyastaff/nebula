@@ -390,6 +390,50 @@ impl Manager {
         options: &AcquireOptions,
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+        self.managed_row_any_with_scope(
+            key,
+            ctx,
+            slot_identity,
+            crate::call::UnitScope::from_parts(ctx, options),
+        )
+    }
+
+    /// The type-erased managed row restricted to read-only operations.
+    ///
+    /// This is the engine action boundary for a caller whose admitted action
+    /// contract declares no external business effects. An operation declaring
+    /// [`Effect::Idempotent`](crate::call::Effect::Idempotent) or
+    /// [`Effect::Write`](crate::call::Effect::Write) is refused before its
+    /// first provider attempt. Library callers that own effect semantics use
+    /// [`managed_row_any`](Self::managed_row_any).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same lookup and lifecycle errors as
+    /// [`managed_row_any`](Self::managed_row_any).
+    pub fn managed_row_any_read_only(
+        &self,
+        key: &ResourceKey,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+        self.managed_row_any_with_scope(
+            key,
+            ctx,
+            slot_identity,
+            crate::call::UnitScope::from_parts(ctx, options).read_only(),
+        )
+    }
+
+    /// Resolves one erased row under the supplied unit authority.
+    fn managed_row_any_with_scope(
+        &self,
+        key: &ResourceKey,
+        ctx: &ResourceContext,
+        slot_identity: &crate::dedup::SlotIdentity,
+        unit_scope: crate::call::UnitScope,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
         use crate::registry::AcquireLookupOutcome;
 
         self.shutdown_guard()?;
@@ -404,11 +448,7 @@ impl Manager {
                     ?slot_identity,
                     "managed_row_any: row facade resolved"
                 );
-                managed.managed_row_any(
-                    self.acquire.clone(),
-                    ctx,
-                    crate::call::UnitScope::from_parts(ctx, options),
-                )
+                managed.managed_row_any(self.acquire.clone(), ctx, unit_scope)
             },
             AcquireLookupOutcome::NotFound => {
                 tracing::debug!(target: "nebula.resource", %key, "managed_row_any: not found");

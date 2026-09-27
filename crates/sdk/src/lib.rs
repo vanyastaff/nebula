@@ -75,8 +75,9 @@ pub mod __private {
     #[doc(hidden)]
     pub mod action {
         pub use nebula_action::{
-            Action, ActionContext, ActionContextExt, ActionError, ActionMetadataDraft,
-            ActionResult, FromWorkflowNode, MetadataVersion, StatelessAction, metadata_name,
+            Action, ActionContext, ActionContextExt, ActionEffectContract, ActionError,
+            ActionMetadataDraft, ActionResult, FromWorkflowNode, MetadataVersion, StatelessAction,
+            metadata_name,
         };
     }
 

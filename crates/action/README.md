@@ -268,6 +268,11 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   `ReadOnlyEffectQuery` capability. Known applied outputs are replayed from bounded
   persisted evidence; oversized or unsupported outputs become `OutputUnavailable`
   without another effect call.
+- **Derived no-effect actions.** `#[action(no_external_effects)]` is an
+  explicit author attestation and emits `ActionEffectContract::NoExternalEffects`.
+  Omitting the flag keeps the safe `Undeclared` default. The flag never grants
+  remote-effect authority: effecting adapters still use the execution-owned
+  preparation, operation-ledger, invocation, and recovery protocol above.
 - **[L2-§13.4]** For `TriggerAction`-backed workflow starts, tests must cover the declared delivery contract (at-least-once): no silent drop, and duplicate delivery is handled via stable event identity and dedup/idempotency. Seam: `TriggerAction::start`, `TriggerEvent`.
 - **[ADR-0022]** `WebhookAction::config()` is the declarative seam for webhook-transport signature enforcement. Default is `SignaturePolicy::Required` with an empty secret (fail-closed); the HTTP transport returns `401 problem+json` on signature mismatch and `500 problem+json` when `Required` is used without a secret. `OptionalAcceptUnsigned` is the explicit opt-out; `Custom(fn)` composes the primitives in `webhook.rs`. Secret material never flows through the dyn `TriggerHandler` surface — webhook configuration is read from the typed action at activation time and forwarded to `WebhookTransport::activate` as an explicit parameter.
 - **[L2-§13.5]** For ordinary `StatelessAction` instances that cause irreversible external

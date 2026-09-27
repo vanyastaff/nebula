@@ -1032,6 +1032,7 @@ fn bounded(manager: &Manager, deadline: std::time::Instant) -> ManagedRow<Strict
     facade::<StrictPooled>(manager).with_unit_scope(UnitScope {
         cancel: None,
         deadline: Some(deadline),
+        ..UnitScope::default()
     })
 }
 

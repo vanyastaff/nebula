@@ -348,12 +348,23 @@ impl<R: Provider + PinSlots> Managed<R> {
 /// DX-API.md:114). The parent deadline bounds every unit's deadline, below
 /// [`UNIT_DEADLINE_CAP`]; [`Unit::with_deadline`] can only shorten it
 /// further. A lease facade's units inherit nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) enum UnitEffectPolicy {
+    /// Library callers may submit every declared operation effect.
+    #[default]
+    Any,
+    /// Action execution without effect-owner authority may perform reads only.
+    ReadOnly,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UnitScope {
     /// The parent cancellation: each unit's own cancel is a child of it.
     pub(crate) cancel: Option<CancellationToken>,
     /// The parent deadline.
     pub(crate) deadline: Option<Instant>,
+    /// Effects this caller is authorized to submit.
+    pub(crate) effect_policy: UnitEffectPolicy,
 }
 
 impl UnitScope {
@@ -366,7 +377,19 @@ impl UnitScope {
         Self {
             cancel: Some(ctx.cancel_token().clone()),
             deadline: options.deadline,
+            effect_policy: UnitEffectPolicy::Any,
         }
+    }
+
+    /// Restricts the facade to operations that declare [`Effect::Read`].
+    pub(crate) fn read_only(mut self) -> Self {
+        self.effect_policy = UnitEffectPolicy::ReadOnly;
+        self
+    }
+
+    /// Whether the caller's authority admits `effect`.
+    fn admits(&self, effect: Effect) -> bool {
+        matches!(self.effect_policy, UnitEffectPolicy::Any) || effect == Effect::Read
     }
 }
 
@@ -393,13 +416,31 @@ where
         sent = tracing::field::Empty,
         outcome = tracing::field::Empty,
     );
-    let run = start_unit::<R, O>(host, Arc::clone(&shared), operation, effect, span.clone())
-        .instrument(span);
-    Unit {
-        shared,
-        key,
-        run: Box::pin(run),
-    }
+    let run: Pin<Box<dyn Future<Output = Result<O::Output, OpError>> + Send>> =
+        if scope.admits(effect) {
+            Box::pin(
+                start_unit::<R, O>(host, Arc::clone(&shared), operation, effect, span.clone())
+                    .instrument(span),
+            )
+        } else {
+            span.record("attempts", 0);
+            span.record("sent", SentState::NotSent.as_str());
+            span.record("outcome", "effect_not_admitted");
+            tracing::warn!(
+                target: "nebula.resource",
+                parent: &span,
+                effect = effect.as_str(),
+                "managed row refused an external effect without execution-owner authority"
+            );
+            let error = OpError::new(
+                ErrorKind::Permanent,
+                "managed row effect requires execution-owner authority",
+            )
+            .settled(SentState::NotSent, effect, &key);
+            debug_assert_eq!(error.sent(), SentState::NotSent);
+            Box::pin(async move { Err(error) }.instrument(span))
+        };
+    Unit { shared, key, run }
 }
 
 /// State one unit shares between its handle, its runtime task and its

@@ -36,16 +36,11 @@ mod field_slots;
 /// - `name = "..."` - Human-readable name (required)
 /// - `description = "..."` - Short description (required)
 /// - `version = "..."` - Interface version, e.g., "1.0" (default: "1.0")
-/// - `credential = Type` - Single credential type for `DeclaresDependencies` (optional)
-/// - `credentials = [Type1, Type2]` - Multiple credential types (optional)
-/// - `resource = Type` - Single resource type for `DeclaresDependencies` (optional)
-/// - `resources = [Type1, Type2]` - Multiple resource types (optional)
-/// - `parameters = Type` - Type with `parameters()` for `ActionMetadata` (optional)
-///
-/// Note: `credential = "key"` (string) is ignored; use `credential = CredentialType` for type-based
-/// refs.
-///
-/// Action structs must be unit structs with no fields (e.g. `struct MyAction;`).
+/// - `input = Type` - Action input type (required)
+/// - `output = Type` - Action output type (required)
+/// - `no_external_effects` - Explicit author attestation that the action performs no external
+///   business effects. Without it the effect contract remains `Undeclared` and durable admission
+///   rejects the action.
 ///
 /// # Example
 ///
@@ -55,14 +50,15 @@ mod field_slots;
 /// ```text
 /// #[derive(Action)]
 /// #[action(
-/// key = "slack.send",
-/// name = "Send Slack Message",
-/// description = "Sends a message to a Slack channel",
-/// version = "2.1",
-/// credential = SlackOAuthCredential,
-/// resources = [HttpClient]
+///     key = "directory.lookup",
+///     name = "Directory lookup",
+///     description = "Reads one directory entry",
+///     version = "2.1",
+///     input = LookupRequest,
+///     output = LookupResult,
+///     no_external_effects
 /// )]
-/// pub struct SlackSendAction;
+/// pub struct DirectoryLookupAction;
 /// ```
 #[proc_macro_derive(Action, attributes(action, nebula, resource, credential))]
 pub fn derive_action(input: TokenStream) -> TokenStream {

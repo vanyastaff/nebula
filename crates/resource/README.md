@@ -694,7 +694,12 @@ An action reaches a row through a derived field — the supported route:
 
 ```rust,ignore
 #[derive(Action)]
-#[action(key = "example.audit", input = u64, output = u64)]
+#[action(
+    key = "example.audit",
+    input = u64,
+    output = u64,
+    no_external_effects
+)]
 struct Audit {
     #[resource]
     directory: ManagedRow<Directory>,
@@ -709,7 +714,12 @@ The factory resolves it synchronously through
 with `Manager::managed_row_any`: the row is looked up by key, scope and the
 node's recorded slot identity, nothing is checked out, and a missing row is
 fatal at resolution (`Lazy<ManagedRow<R>>` is rejected: there is nothing to
-defer). The facade is bound to the execution:
+defer). Because `no_external_effects` grants generic action dispatch without
+effect-owner authority, the engine serves this facade read-only: only
+`Effect::Read` units are admitted. `Effect::Idempotent`, `Effect::Write`, and
+the default write session are refused `NotSent` before checkout or provider
+code. A manager-created row outside action dispatch retains the full operation
+surface. The action facade is bound to the execution:
 
 - **Cancellation.** Its units inherit the node's cancellation token. A unit
   whose first attempt was not granted yet — waiting for quota, the row
@@ -728,10 +738,12 @@ cancellation token the same way. A `ResourceGuard<R>` field (or
 `acquire_resource_by_id`) still takes a lease for the whole action — the
 raw-escape profile; prefer a `ManagedRow<R>` field for provider calls (its
 deprecation is scheduled with the `Limited` family's removal, MIGRATION
-P10). `#[derive(Action)]` cannot declare an effect contract yet, so generic
-dispatch refuses a derived action (`EFFECT_REQUIRES_OWNER`) until it can; a
-public ad-hoc accessor for actions and an SDK testing hook that builds rows
-are follow-ups too.
+P10). A derived action must opt into `no_external_effects`; omitting it leaves
+the action's effect contract `Undeclared` and generic dispatch refuses it.
+Mutating row operations require the engine-owned remote-effect protocol; the
+current action-row surface does not turn a resource-local retry declaration
+into durable effect authority. A public ad-hoc accessor for actions and an SDK
+testing hook that builds rows are follow-ups too.
 
 ### Other public API
 

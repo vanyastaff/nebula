@@ -158,7 +158,7 @@ impl ResourceAccessor for EngineResourceAccessor {
             None => AcquireOptions::default(),
         };
         self.manager
-            .managed_row_any(
+            .managed_row_any_read_only(
                 key,
                 &self.resource_ctx(),
                 &options,

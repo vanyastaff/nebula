@@ -1216,6 +1216,7 @@ async fn a_parent_cancel_refuses_the_first_grant_and_is_ignored_after_it() {
     let scope = UnitScope {
         cancel: Some(parent.clone()),
         deadline: None,
+        ..UnitScope::default()
     };
     let unit = UnitShared::new(&scope);
     parent.cancel();
@@ -1232,6 +1233,7 @@ async fn a_parent_cancel_refuses_the_first_grant_and_is_ignored_after_it() {
     let unit = UnitShared::new(&UnitScope {
         cancel: Some(parent.clone()),
         deadline: None,
+        ..UnitScope::default()
     });
     unit.grant().expect("granted");
     parent.cancel();

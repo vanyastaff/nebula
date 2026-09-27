@@ -1311,7 +1311,7 @@ mod managed_row {
         time::{Duration, Instant},
     };
 
-    use nebula_action::{ActionContext, ActionContextExt, FromWorkflowNode};
+    use nebula_action::ActionContext;
     use nebula_core::id::ExecutionId;
     use nebula_execution::ExecutionStatus;
     use nebula_resource::{
@@ -1405,6 +1405,10 @@ mod managed_row {
     /// The ledger's committed entries, shared by every connection.
     type Committed = Arc<Mutex<Vec<String>>>;
 
+    /// Session bodies entered by action-scoped rows. A write session must be
+    /// refused before this counter changes.
+    static SESSION_BODIES: AtomicU32 = AtomicU32::new(0);
+
     #[derive(Clone)]
     struct Ledger(Committed);
 
@@ -1465,63 +1469,50 @@ mod managed_row {
 
     // ── engine plumbing ──────────────────────────────────────────────────
 
-    /// A stateless action holding one required `ManagedRow<$provider>`
-    /// field, spelled out exactly as `#[derive(Action)]` expands a
-    /// `#[resource] $field: ManagedRow<$provider>` field (the slot
-    /// declaration and `managed_row_by_id` resolution), but declaring no
-    /// external effects: the derive cannot declare an effect contract yet,
-    /// and generic dispatch refuses an undeclared one. The derive's own
-    /// expansion is covered by nebula-action's `derive_action` suite.
+    /// A derived stateless action holding one required
+    /// `ManagedRow<$provider>` field and explicitly declaring that its body
+    /// performs no external business effects. The engine consequently serves
+    /// a row facade that admits `Effect::Read` only.
     macro_rules! row_action {
         ($ty:ident, $key:literal, $field:ident: $provider:ty) => {
+            #[derive(nebula_action::Action)]
+            #[action(
+                                                    key = $key,
+                                                    name = $key,
+                                                    description = "managed row integration action",
+                                                    input = serde_json::Value,
+                                                    output = serde_json::Value,
+                                                    no_external_effects
+                                                )]
             struct $ty {
+                #[resource]
                 $field: ManagedRow<$provider>,
             }
-
-            impl Action for $ty {
-                type Input = serde_json::Value;
-                type Output = serde_json::Value;
-
-                fn metadata() -> ActionMetadataDraft {
-                    meta(action_key!($key))
-                }
-
-                fn dependencies() -> &'static Dependencies {
-                    static DEPS: OnceLock<Dependencies> = OnceLock::new();
-                    DEPS.get_or_init(|| {
-                        Dependencies::new().slot_field(nebula_core::SlotField {
-                            slot_key: stringify!($field),
-                            default_id: stringify!($field),
-                            kind: nebula_core::SlotKind::Resource {
-                                type_id: std::any::TypeId::of::<$provider>(),
-                                type_name: std::any::type_name::<$provider>(),
-                                key: <$provider as Provider>::key(),
-                            },
-                            required: true,
-                            lazy: false,
-                            purpose: None,
-                        })
-                    })
-                }
-            }
-
-            impl FromWorkflowNode for $ty {
-                type Error = ActionError;
-
-                async fn from_workflow_node(
-                    node: &NodeDefinition,
-                    ctx: &dyn ActionContext,
-                ) -> Result<Self, ActionError> {
-                    let slot_id = node
-                        .resource_binding(stringify!($field))
-                        .unwrap_or(stringify!($field));
-                    let $field = <dyn ActionContext as ActionContextExt>::managed_row_by_id::<
-                        $provider,
-                    >(ctx, slot_id)?;
-                    Ok(Self { $field })
-                }
-            }
         };
+    }
+
+    #[derive(nebula_action::Action)]
+    #[action(
+        key = "test.managed_row.undeclared",
+        name = "Undeclared managed row",
+        description = "safe-default integration action",
+        input = serde_json::Value,
+        output = serde_json::Value
+    )]
+    struct UndeclaredRow {
+        #[resource]
+        svc: ManagedRow<Svc>,
+    }
+
+    impl StatelessAction for UndeclaredRow {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let calls = self.svc.submit(Call(Cost::ONE)).await?;
+            Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
+        }
     }
 
     fn engine(manager: Arc<Manager>, register: impl FnOnce(&ActionRegistry)) -> WorkflowEngine {
@@ -1571,6 +1562,27 @@ mod managed_row {
     }
 
     // ── (a) a unit runs on the row ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_derived_action_without_effect_attestation_is_rejected_before_instantiation() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<UndeclaredRow>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            node_of("test.managed_row.undeclared", "svc", &Svc::key()),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(!result.is_success());
+        assert_eq!(calls.count(), 0, "the action was never instantiated");
+    }
 
     row_action!(ReadSvc, "test.managed_row.read", svc: Svc);
 
@@ -1623,6 +1635,7 @@ mod managed_row {
                 .ledger
                 .session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
                     Box::pin(async move {
+                        SESSION_BODIES.fetch_add(1, Ordering::SeqCst);
                         tx.pending.push(entry);
                         if fail {
                             return Err(OpError::new(ErrorKind::Transient, "body failed"));
@@ -1642,7 +1655,7 @@ mod managed_row {
     }
 
     #[tokio::test]
-    async fn a_session_commits_on_success_and_rolls_back_a_failed_body() {
+    async fn an_action_scoped_write_session_is_refused_before_its_body() {
         let manager = Arc::new(Manager::new());
         let committed = Committed::default();
         manager
@@ -1661,27 +1674,19 @@ mod managed_row {
                 .register_stateless_factory::<Book>()
                 .expect("register");
         });
-        let node = || node_of("test.managed_row.book", "ledger", &Ledger::key());
+        SESSION_BODIES.store(0, Ordering::SeqCst);
 
         let result = run(
             &engine,
-            node(),
+            node_of("test.managed_row.book", "ledger", &Ledger::key()),
             serde_json::json!({ "entry": "a", "fail": false }),
-            ExecutionBudget::default(),
-        )
-        .await;
-        assert_eq!(output(&result)["committed"], true);
-
-        let result = run(
-            &engine,
-            node(),
-            serde_json::json!({ "entry": "b", "fail": true }),
             ExecutionBudget::default(),
         )
         .await;
         assert_eq!(output(&result)["committed"], false);
         assert_eq!(output(&result)["sent"], "not_sent");
-        assert_eq!(*committed.lock().expect("ledger lock"), ["a"]);
+        assert_eq!(SESSION_BODIES.load(Ordering::SeqCst), 0);
+        assert!(committed.lock().expect("ledger lock").is_empty());
     }
 
     // ── (c) cancelling the execution refuses a queued unit ───────────────
@@ -1862,7 +1867,7 @@ mod managed_row {
 
     impl Operation<Svc> for Throttled {
         type Output = ();
-        const EFFECT: Effect = Effect::Write;
+        const EFFECT: Effect = Effect::Read;
 
         async fn run(self, _cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
             Err(OpError::new(
@@ -1925,7 +1930,62 @@ mod managed_row {
         );
     }
 
-    // ── (f) a write with an unknown outcome is never retried ─────────────
+    // ── (f) replay-safe mutation still requires effect-owner authority ───
+
+    /// A provider mutation that claims repeats are absorbed.
+    struct AbsorbedWrite;
+
+    impl Operation<Svc> for AbsorbedWrite {
+        type Output = ();
+        const EFFECT: Effect = Effect::Idempotent;
+
+        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
+            let attempt = cx.attempt(Cost::ONE).await?;
+            attempt.instance().0.fetch_add(1, Ordering::SeqCst);
+            attempt.settle(SentState::Sent);
+            Ok(())
+        }
+    }
+
+    row_action!(IdempotentWrite, "test.managed_row.idempotent", svc: Svc);
+
+    impl StatelessAction for IdempotentWrite {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let error = self
+                .svc
+                .submit(AbsorbedWrite)
+                .await
+                .expect_err("an idempotent mutation still needs effect authority");
+            Err(error.into())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_action_scoped_idempotent_write_is_refused_before_the_provider() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<IdempotentWrite>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            node_of("test.managed_row.idempotent", "svc", &Svc::key()),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(!result.is_success());
+        assert_eq!(calls.count(), 0, "the mutation never reached the provider");
+    }
+
+    // ── (g) a write is refused before the provider boundary ──────────────
 
     /// Dispatches of the unknown-outcome action.
     static UNKNOWN_DISPATCHES: AtomicU32 = AtomicU32::new(0);
@@ -1961,7 +2021,7 @@ mod managed_row {
     }
 
     #[tokio::test]
-    async fn a_maybe_sent_write_is_fatal_and_never_retried() {
+    async fn an_action_scoped_write_is_fatal_before_the_provider_and_never_retried() {
         let manager = Arc::new(Manager::new());
         let calls = register_svc(&manager, None);
         let engine = engine(manager, |registry| {
@@ -1981,6 +2041,6 @@ mod managed_row {
         .await;
         assert!(!result.is_success());
         assert_eq!(UNKNOWN_DISPATCHES.load(Ordering::SeqCst), 1, "no retry");
-        assert_eq!(calls.count(), 1);
+        assert_eq!(calls.count(), 0, "the write never reached the provider");
     }
 }

@@ -671,8 +671,8 @@ let admitted = recorded.readmit_against(fresh)?;
   synchronously through the new `ActionContextExt::managed_row_by_id`, over
   the provided `nebula_core::accessor::ResourceAccessor::managed_row_any`
   seam (the default refuses: an accessor serves no rows unless it opts in).
-  The engine's `EngineResourceAccessor` serves it with the new
-  `Manager::managed_row_any` under the node's recorded slot identity; the
+  The engine's `EngineResourceAccessor` serves it with the new read-only
+  `Manager::managed_row_any_read_only` under the node's recorded slot identity; the
   layered accessor fails closed for a key a branch scope holds. The facade's
   units inherit the node's cancellation token — a unit not granted yet
   settles `Cancelled` / `NotSent`, a granted one runs on to its deadline —
@@ -680,9 +680,12 @@ let admitted = recorded.readmit_against(fresh)?;
   (`EngineResourceAccessor::with_deadline`) bounds every unit's deadline.
   Accepted through the engine end to end, over encrypted SQLite (F7) and on
   real PostgreSQL (PG9); the SDK perimeter proves the derived field
-  (`action_managed_row`). Interim: `#[derive(Action)]` cannot declare an
-  effect contract yet, so generic dispatch still refuses a derived action;
-  no public ad-hoc accessor or SDK testing hook builds a row.
+  (`action_managed_row`). `#[action(no_external_effects)]` explicitly emits
+  the no-effect contract; omitting it remains fail-closed `Undeclared`.
+  Action-scoped rows admit `Effect::Read` only: idempotent/write operations
+  and write sessions are refused `NotSent` before provider code because their
+  business effects require execution-owner authority. No public ad-hoc
+  accessor or SDK testing hook builds a row.
 - **Managed row facade and sessions.** `Manager::managed_row` /
   `managed_row_for_identity` return `nebula_resource::call::ManagedRow<R>`:
   the managed call facade without a lease. Each attempt of a submitted

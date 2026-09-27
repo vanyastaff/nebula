@@ -9,6 +9,7 @@
 //! - `#[credential]` on a non-`CredentialGuard` field type,
 //! - both `#[resource]` and `#[credential]` on the same field,
 //! - unknown keys inside `#[action(...)]`,
+//! - a value assigned to the `no_external_effects` flag,
 //! - `Lazy<ManagedRow<R>>` (a row facade acquires nothing to defer).
 //!
 //! The positive probe (`tests/probes/derive_positive_guard_shapes.rs`)
@@ -24,6 +25,7 @@ fn derive_action_compile_fail_probes() {
     t.compile_fail("tests/probes/derive_missing_input.rs");
     t.compile_fail("tests/probes/derive_missing_output.rs");
     t.compile_fail("tests/probes/derive_unknown_attr_key.rs");
+    t.compile_fail("tests/probes/derive_no_external_effects_value.rs");
     t.compile_fail("tests/probes/derive_conflicting_slot_keys.rs");
     t.compile_fail("tests/probes/derive_resource_on_wrong_type.rs");
     t.compile_fail("tests/probes/derive_credential_on_wrong_type.rs");

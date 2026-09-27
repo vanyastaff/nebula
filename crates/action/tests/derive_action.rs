@@ -5,7 +5,7 @@
 
 use nebula_action::{
     Action, ActionContext, ActionError, ActionFactory, ActionResult, MetadataVersion,
-    StatelessAction,
+    StatelessAction, effect::ActionEffectContract,
 };
 use nebula_schema::HasSchema;
 
@@ -49,6 +49,43 @@ fn metadata_key_matches_attribute() {
     assert_eq!(meta.base().key().as_str(), "test.no_cred");
     assert_eq!(meta.base().name().to_owned(), "No Cred");
     assert_eq!(meta.base().description().to_owned(), "no credentials");
+}
+
+#[derive(Action)]
+#[action(
+    key = "test.no_external_effects",
+    description = "explicit no-effect contract",
+    input = serde_json::Value,
+    output = serde_json::Value,
+    no_external_effects
+)]
+struct NoExternalEffectsAction;
+
+impl StatelessAction for NoExternalEffectsAction {
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        _: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        Ok(ActionResult::success(input))
+    }
+}
+
+#[test]
+fn effect_contract_requires_an_explicit_author_attestation() {
+    let undeclared = nebula_action::GenericStatelessFactory::<NoCredAction>::new()
+        .expect("valid undeclared definition");
+    let declared = nebula_action::GenericStatelessFactory::<NoExternalEffectsAction>::new()
+        .expect("valid no-effect definition");
+
+    assert_eq!(
+        undeclared.metadata().effect_contract(),
+        &ActionEffectContract::Undeclared
+    );
+    assert_eq!(
+        declared.metadata().effect_contract(),
+        &ActionEffectContract::NoExternalEffects
+    );
 }
 
 #[test]
@@ -244,7 +281,8 @@ mod managed_row_fields {
         name = "Managed row fields",
         description = "row facade slots",
         input = serde_json::Value,
-        output = serde_json::Value
+        output = serde_json::Value,
+        no_external_effects
     )]
     struct RowAction {
         #[resource]

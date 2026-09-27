@@ -1,13 +1,12 @@
 //! An SDK-only action whose resource slots are managed rows: a required
 //! `#[resource] ManagedRow<Directory>` field, an optional pooled
-//! `Option<ManagedRow<Ledger>>`, a custom `Operation`, `?` from a unit's
-//! `OpError` into `ActionError`, and one session — all through
-//! `nebula_sdk`.
+//! `Option<ManagedRow<Ledger>>`, a custom read `Operation`, and `?` from a
+//! unit's `OpError` into `ActionError` — all through `nebula_sdk`.
 
 use nebula_sdk::integration::resource::{
     Cost, Effect, Error, ManagedRow, OpCx, OpError, Operation, PoolProvider, Pooled, Provider,
     Resident, ResidentProvider, ResourceContext, ResourceKey, ResourceMetadataDraft, SentState,
-    SessionClosed, SessionEnd, SessionProvider, SessionSpec, no_credential_slots, resource_key,
+    no_credential_slots, resource_key,
 };
 use nebula_sdk::prelude::{
     Action, ActionContext, ActionError, ActionResult, StatelessAction, metadata_name,
@@ -59,15 +58,7 @@ impl Operation<Directory> for Lookup {
 struct Ledger;
 no_credential_slots!(Ledger);
 
-#[derive(Default)]
-struct Conn {
-    applied: Vec<u64>,
-}
-
-struct Tx<'c> {
-    conn: &'c mut Conn,
-    pending: Vec<u64>,
-}
+struct Conn;
 
 #[async_trait::async_trait]
 impl Provider for Ledger {
@@ -84,39 +75,20 @@ impl Provider for Ledger {
     }
 
     async fn create(&self, (): &(), _: &ResourceContext) -> Result<Conn, Error> {
-        Ok(Conn::default())
+        Ok(Conn)
     }
 }
 
 impl PoolProvider for Ledger {}
 
-impl SessionProvider for Ledger {
-    type Session<'c> = Tx<'c>;
-
-    async fn open<'c>(&'c self, conn: &'c mut Conn, (): &'c ()) -> Result<Tx<'c>, OpError> {
-        Ok(Tx {
-            conn,
-            pending: Vec::new(),
-        })
-    }
-
-    async fn close<'c>(&'c self, tx: Tx<'c>, end: SessionEnd) -> SessionClosed {
-        if end == SessionEnd::Commit {
-            tx.conn.applied.extend(tx.pending);
-            SessionClosed::Committed
-        } else {
-            SessionClosed::RolledBack { refused: None }
-        }
-    }
-}
-
-/// Records a user's lookup in the ledger when one is bound.
+/// Looks a user up through an action-scoped, read-only managed row.
 #[derive(Action)]
 #[action(
     key = "example.audit_lookup",
     name = "Audit lookup",
     input = u64,
-    output = u64
+    output = u64,
+    no_external_effects
 )]
 struct AuditLookup {
     #[resource]
@@ -128,20 +100,11 @@ struct AuditLookup {
 impl StatelessAction for AuditLookup {
     async fn execute(
         &self,
-        input: u64,
+        _input: u64,
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<u64>, ActionError> {
         let found = self.directory.submit(Lookup).await?;
-        if let Some(ledger) = &self.ledger {
-            ledger
-                .session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
-                    Box::pin(async move {
-                        tx.pending.push(input);
-                        Ok(())
-                    })
-                })
-                .await?;
-        }
+        let _optional_row = self.ledger.as_ref().map(ManagedRow::resource_key);
         Ok(ActionResult::success(found))
     }
 }
