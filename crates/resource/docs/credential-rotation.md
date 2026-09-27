@@ -311,6 +311,7 @@ admission; an outage denies). Each row reports its profile
 |---|---|---|
 | `Unbound` | the resource declares no credential slots | nothing is read |
 | `StrictPerAcquire` | the manager has an observer | each acquire and each create (of `warmup_pool`, the registration warmup or the maintenance refill) reads availability first |
+| `StrictPerAttempt` | the manager has an observer and a lease of the row became a managed call facade | as `StrictPerAcquire`, and each provider attempt reads availability after its quota wait (below) |
 | `InterimRowGate` (interim) | no observer | admitted until activation, the fan-out or a caller suspends the row; one warning per manager |
 
 The strict read of one acquire:
@@ -371,6 +372,57 @@ cache and cleanup — but the safety of a new call is decided by the acquire's
 own read; the 30 s scan interval is not a safety parameter on a strict
 manager.
 
+### Strict per-attempt admission (managed call facade)
+
+A lease turned into a managed call facade (`ResourceGuard::into_managed`)
+makes each provider call an attempt of a unit (`OpCx::attempt`). On a strict
+manager every attempt on a credential-bound row is a new credentialed unit
+of work and reads its credentials the same way, with the same two functions:
+
+1. Budget and the lease's own admission (a closed lease refuses before any
+   read), then the attempt's quota booking.
+2. After every wait of the attempt, outside every lock: the strict read
+   above — join-next, shared with acquires and other attempts of the same
+   credential lane, bounded by the unit's deadline and 2 s, and raced against
+   the lease's generation and the unit's cancel (a lease that closes or a unit
+   cancelled before its first grant ends the read, unsent). `Cost::FREE`
+   attempts read too.
+3. At the unit's first grant only: pin the slots (`PinSlots::pin_slots`),
+   bracketed by the slots' generations and retaken (up to three times) when
+   a rotation raced the pin.
+4. Under `Manager.admission` (reached through the row's `AdmissionLink`):
+   taint (`Revoked`) and shutdown (`Cancelled`) re-checked; the reading
+   decided and applied exactly as the table above (a block suspends the row
+   and closes its leases, this one included); the row's suspension and the
+   lease's generation checked; the unit's pin checked current — a pin whose
+   slot generations moved since it was taken refuses `Rebinding`; then the
+   grant, still under the lock.
+
+Every refusal is unsent; a quota slot booked for it is forfeited (no
+refund). The first attempt runs on the binding its own read validated,
+because the pin is taken after that read and checked under the lock. A
+later attempt whose pin a rotation superseded is refused `Rebinding` (retry
+after 1 s) rather than switching material mid-unit; the unit's settled
+outcome decides the retry — `Read` / `Idempotent` units are retryable, a
+`Write` whose earlier attempt was sent ends `OutcomeUnknown`. The next unit
+pins the new material. A pooled lease stays checked out while its units wait
+for quota and read. Interim managers and slot-less rows read nothing and
+register without the lock.
+
+Open in the design package and chosen here for now: the refusal code and
+hint of a superseded pin (`Rebinding`, 1 s); no bound on how often a caller
+re-submits after a rebinding and no runtime-owned re-preparation of the unit
+(an opt-in resubmission of a cloneable operation is a follow-up); no
+deadline between an attempt's admission and its egress; one read per
+credential lane per attempt (no batched multi-slot reads); per-unit checkout
+of pooled leases and its ordering against the read; refunds; and an engine
+that does not yet act on the refusals' backoff hints.
+
+**Default.** A manager without an observer stays `InterimRowGate`; the
+default is not flipped here. The plan is a composition-time rejection of a
+manager that has credential-bound rows and no observer (MIGRATION P8),
+landing before the API freeze (P10).
+
 ### What suspension does not cover
 
 - **It is cooperative.** Closing a lease stops no work, revokes no borrow and
@@ -386,7 +438,11 @@ manager.
   `ReauthRequired` event); until then it keeps admitting. A strict manager
   observes the block at the next acquire.
 - **A long wait after the read.** An acquire that waits for capacity after its
-  read is not read again; a per-call facade re-reads per attempt.
+  read is not read again; the managed call facade reads per attempt, after
+  the attempt's own waits.
+- **Readmission keeps old leases.** A usable read at the installed material
+  with an advanced use revision readmits the row without closing anything,
+  so later attempts on a lease admitted before the denial are admitted too.
 - **Outages decide no suspension.** A credential store or source outage
   changes no gate: an admitting row stays admitting and a suspended row stays
   suspended. On a strict manager new credentialed work is refused while it

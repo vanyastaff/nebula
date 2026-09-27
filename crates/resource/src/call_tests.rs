@@ -400,6 +400,27 @@ fn pinned_token(attempt: &Attempt<'_, Api>) -> Option<String> {
     attempt.slots().as_deref().cloned()
 }
 
+/// Parks after the unit started and before its first attempt, then yields
+/// the token its first attempt was pinned on.
+struct PinAfterRelease {
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+impl Operation<Api> for PinAfterRelease {
+    type Output = Option<String>;
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OpCx<'_, Api>) -> Result<Self::Output, OpError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        let attempt = cx.attempt(Cost::FREE).await?;
+        let token = pinned_token(&attempt);
+        attempt.settle(SentState::Sent);
+        Ok(token)
+    }
+}
+
 // ── compile gates ────────────────────────────────────────────────────────
 
 #[test]
@@ -1064,6 +1085,31 @@ async fn a_unit_keeps_its_pinned_slot_and_the_next_unit_sees_the_rotation() {
         .await
         .expect("next unit");
     assert_eq!(next.as_deref(), Some("v2"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rotation_before_the_first_grant_reaches_the_unit() {
+    let manager = Manager::new();
+    let api = resident(&manager, None);
+    api.token.store(Arc::new("v1".to_owned()));
+    let facade = managed::<Api>(&manager).await;
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+
+    let unit = tokio::spawn(facade.submit(PinAfterRelease {
+        entered: Arc::clone(&entered),
+        release: Arc::clone(&release),
+    }));
+    entered.notified().await;
+    api.token.store(Arc::new("v2".to_owned()));
+    release.notify_one();
+
+    let pinned = unit.await.expect("joined").expect("granted");
+    assert_eq!(
+        pinned.as_deref(),
+        Some("v2"),
+        "the slots are pinned at the first grant, not when the unit starts"
+    );
 }
 
 // ── observability ────────────────────────────────────────────────────────

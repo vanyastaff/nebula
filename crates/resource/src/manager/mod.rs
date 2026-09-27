@@ -252,8 +252,23 @@
 //!   it runs, never once for a batch. The lock is never held across
 //!   the read; no task is spawned per read, so dropping an acquire drops its
 //!   read. Slot-less rows and interim managers read nothing. A unit that
-//!   waits for capacity after its read is not read again here (a per-call
-//!   facade re-reads per attempt with the same two functions).
+//!   waits for capacity after its read is not read again here; the managed
+//!   call facade reads per attempt instead (below).
+//!
+//!   **Per attempt.** Every attempt of a managed call unit (`OpCx::attempt`)
+//!   on such a row repeats the two phases with the same functions, after
+//!   every wait of the attempt (its quota booking): the read outside every
+//!   lock, raced against the lease's own generation and the unit's cancel;
+//!   then, under `Manager.admission` (reached through the row's
+//!   `AdmissionLink`), the taint and shutdown re-check, the reading applied
+//!   as above, the row's suspension, the lease's generation, and the unit's
+//!   credential pin — captured at the unit's first grant, after its read,
+//!   and refused `Rebinding` once a rotation superseded it — before the
+//!   grant, still under the lock. Every refusal is unsent. The attempt's
+//!   read and a concurrent acquire's read of the same credential share
+//!   join-next reads. The lock order is `Manager.admission`, the row's gate,
+//!   each slot's writer lock. A row serving a facade reports
+//!   `CredentialAdmissionProfile::StrictPerAttempt`.
 //!
 //! The closing token is a cooperative notice: it stops no work, revokes no
 //! borrow, and rolls nothing back. A lease is still released normally, and
@@ -447,6 +462,7 @@ use crate::{
 };
 
 pub(crate) mod acquire;
+mod admission_link;
 mod credential_gate;
 mod credential_reads;
 #[cfg(test)]
@@ -464,10 +480,11 @@ mod shutdown_session;
 mod shutdown_session_tests;
 mod strict_admission;
 #[cfg(test)]
-mod strict_fixtures;
+pub(crate) mod strict_fixtures;
 #[cfg(test)]
 mod strict_profile_tests;
 
+pub(crate) use admission_link::AdmissionLink;
 pub use credential_gate::{
     CredentialAdmissionProfile, CredentialGateTicket, CredentialObservedAt,
     CredentialReopenOutcome, CredentialSuspendOutcome,
@@ -484,6 +501,7 @@ pub use rotation::{
     SlotDrainOutcome, TaintedSlot,
 };
 pub use shutdown::{ShutdownError, ShutdownReport};
+pub(crate) use strict_admission::StrictReading;
 
 /// Snapshot of a resource's health and operational state.
 #[derive(Debug, Clone)]
@@ -513,8 +531,9 @@ pub struct ResourceHealthSnapshot {
     /// before `Provider::create` wraps a client.
     pub rate_limit_profile: crate::rate_limit::RateLimitProfile,
     /// How new work is admitted against the row's bound credentials: read
-    /// per acquire (strict), gated on the row only (interim), or nothing to
-    /// read.
+    /// per acquire (strict), also per managed attempt once a lease became a
+    /// facade (strict per attempt), gated on the row only (interim), or
+    /// nothing to read.
     pub credential_admission: CredentialAdmissionProfile,
 }
 
@@ -557,8 +576,9 @@ pub struct Manager {
     rotation_indexes:
         std::sync::Mutex<Vec<std::sync::Weak<crate::credential_fanout::ResourceFanoutIndex>>>,
     /// Serializes registry commits, credential admission/revoke and terminal snapshots.
-    /// Never held across await.
-    pub(super) admission: std::sync::Mutex<()>,
+    /// Never held across await. Shared with [`AdmissionLink`] so a managed
+    /// attempt applies its strict reading under the same lock.
+    pub(super) admission: Arc<std::sync::Mutex<()>>,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,
     /// Shared lifecycle-event sink. Held behind `Arc` so the same
@@ -579,7 +599,10 @@ pub struct Manager {
     /// Serializes shutdown drivers and retains the terminal task across caller cancellation.
     shutdown_state: tokio::sync::Mutex<shutdown_session::ShutdownState>,
     /// Fast admission fence flipped before the first shutdown await.
-    pub(super) shutting_down: AtomicBool,
+    pub(super) shutting_down: Arc<AtomicBool>,
+    /// The admission lock, shutdown fence, cancellation and event bus above,
+    /// as rows that admit work after acquire (managed attempts) reach them.
+    pub(super) link: AdmissionLink,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
     pub(super) lifecycle: Option<LayerLifecycle>,
     /// Manager-wide default acquire-slow-log threshold. See
@@ -645,6 +668,14 @@ impl Manager {
                     },
                 });
         let acquire_slow_threshold = config.acquire_slow_threshold;
+        let admission = Arc::new(std::sync::Mutex::new(()));
+        let shutting_down = Arc::new(AtomicBool::new(false));
+        let link = AdmissionLink::new(
+            Arc::clone(&admission),
+            Arc::clone(&shutting_down),
+            cancel.clone(),
+            Arc::clone(&event_bus),
+        );
         let credential_reads = config.credential_observer.map(|observer| {
             let metrics = config.metrics_registry.as_ref().and_then(|registry| {
                 credential_reads::CredentialAdmissionMetrics::new(registry)
@@ -655,7 +686,7 @@ impl Manager {
             });
             Arc::new(CredentialReads::new(
                 observer.into_observer(),
-                cancel.clone(),
+                link.clone(),
                 metrics,
             ))
         });
@@ -668,7 +699,7 @@ impl Manager {
             registry: Registry::new(),
             #[cfg(feature = "rotation")]
             rotation_indexes: std::sync::Mutex::new(Vec::new()),
-            admission: std::sync::Mutex::new(()),
+            admission,
             cancel,
             metrics,
             event_bus,
@@ -678,7 +709,8 @@ impl Manager {
             retirement_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             retirement_supervisor,
             shutdown_state: tokio::sync::Mutex::new(shutdown_session::ShutdownState::Open),
-            shutting_down: AtomicBool::new(false),
+            shutting_down,
+            link,
             lifecycle: None,
             acquire_slow_threshold,
             local_limits: Arc::new(crate::rate_limit::MemoryLimitStore::new()),
@@ -809,10 +841,7 @@ impl Manager {
     /// we read with `Acquire`, so we synchronize-with that write and any
     /// observation here implies the cancel will follow.
     pub(crate) fn shutdown_guard(&self) -> Result<(), Error> {
-        if self.shutting_down.load(AtomicOrdering::Acquire) || self.cancel.is_cancelled() {
-            return Err(Error::cancelled());
-        }
-        Ok(())
+        self.link.shutdown_guard()
     }
 
     /// Maps a [`LookupOutcome`](crate::registry::LookupOutcome) onto the

@@ -5,21 +5,31 @@ use crate::resource::HasCredentialSlots;
 /// Pins a resource's credential slots for one unit of work.
 ///
 /// A unit (one submitted operation) snapshots every `#[credential]` slot once,
-/// when it starts, by loading each slot's current `Arc` (`SlotCell::load`).
-/// Every attempt of that unit sees the same snapshot: a rotation that lands
-/// mid-unit swaps the slot for later units but never changes material under
-/// a unit already running (Design CONTRACT.md:73, DX-API.md:136). The pinned
-/// `Arc`s keep the old guards alive until the unit ends, however often the
-/// slot rotates meanwhile.
+/// at its first grant, by loading each slot's current `Arc` (`SlotCell::load`).
+/// Pinning at the grant rather than when the unit starts means the first
+/// attempt runs on the binding its final admission validated: on a strict
+/// manager that is the material its credential read saw. Every attempt of
+/// that unit sees the same snapshot: a rotation that lands mid-unit swaps the
+/// slot for later units but never changes material under a unit already
+/// running (Design CONTRACT.md:73, DX-API.md:136). The pinned `Arc`s keep the
+/// old guards alive until the unit ends, however often the slot rotates
+/// meanwhile.
 ///
-/// The snapshot is per slot. Two slots are loaded one after the other, so a
-/// unit may pin one slot before a rotation and the next after it; nothing
-/// promises cross-slot atomicity (Design CONTRACT.md:68). A provider whose
-/// slots must change together has to model them as one slot.
+/// The facade reads each slot's generation before and after the pin and
+/// retakes a pin that raced a rotation, a bounded number of times. On a
+/// strict manager a later attempt whose pin a rotation superseded is refused
+/// with [`CredentialUnavailableReason::Rebinding`](crate::CredentialUnavailableReason::Rebinding)
+/// (nothing sent); the next unit pins the new material.
 ///
-/// A pinned slot is `None` when the slot was unbound (or revoked) when the
-/// unit started. Handle it like any other absent credential: refuse the
-/// attempt, never fall back to reading the live cell.
+/// The snapshot is per slot. Two slots are loaded one after the other, so
+/// without that check a unit may pin one slot before a rotation and the
+/// next after it; nothing promises cross-slot atomicity (Design
+/// CONTRACT.md:68). A provider whose slots must change together has to model
+/// them as one slot.
+///
+/// A pinned slot is `None` when the slot was unbound (or revoked) at the
+/// unit's first grant. Handle it like any other absent credential: refuse
+/// the attempt, never fall back to reading the live cell.
 ///
 /// This is a bound on the managed call facade only, not a [`Provider`]
 /// supertrait: rows that never use the facade do not need it.
@@ -68,8 +78,9 @@ pub trait PinSlots: HasCredentialSlots {
     /// without credential slots.
     type Pinned: Send + Sync + 'static;
 
-    /// Loads every slot's current value once. Called by the facade when a
-    /// unit starts, never per attempt.
+    /// Loads every slot's current value once. Called by the facade at a
+    /// unit's first grant (again only if a rotation raced it), never per
+    /// attempt.
     fn pin_slots(&self) -> Self::Pinned;
 }
 

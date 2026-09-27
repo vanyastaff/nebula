@@ -1,6 +1,7 @@
-//! Shared fixtures for strict per-acquire credential admission tests:
-//! providers whose declared slots implement the projection port, a counting
-//! probe, and material installed with owner-qualified metadata.
+//! Shared fixtures for strict credential admission tests (per acquire and,
+//! through the managed call facade, per attempt): providers whose declared
+//! slots implement the projection port and pin their material epochs, a
+//! counting probe, and material installed with owner-qualified metadata.
 
 use std::sync::{
     Arc, OnceLock,
@@ -15,10 +16,14 @@ use nebula_credential::{
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+pub(crate) use super::credential_reads::{
+    CREDENTIAL_READ_TIMEOUT,
+    tests::{ScriptedObserver, seen},
+};
 use super::{Manager, ManagerConfig, RegistrationSpec};
 use crate::{
-    Bounded, Error, PoolConfig, Pooled, Provider, Resident, ResidentConfig, ResourceConfig,
-    ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
+    Bounded, Error, PinSlots, PoolConfig, Pooled, Provider, Resident, ResidentConfig,
+    ResourceConfig, ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
     resource::{HasCredentialSlots, ResourceMetadataDraft},
     runtime::managed::ManagedResource,
     topology::{
@@ -71,8 +76,14 @@ impl Probe {
     }
 }
 
+/// Material epoch each declared slot held when a unit pinned it, in slot
+/// order; `None` for an unbound or revoked slot.
+pub(crate) type PinnedEpochs = Vec<(&'static str, Option<u64>)>;
+
 /// A provider per topology with declared credential slots (`db`, and
-/// optionally `cache`) that implement the projection port.
+/// optionally `cache`) that implement the projection port. `PinSlots` pins
+/// each slot's material epoch ([`PinnedEpochs`]); `pin_rotations` makes a
+/// pin race a rotation.
 macro_rules! strict_provider {
     ($ty:ident, $key:literal, $topology:ty, [$($slot:literal),+]) => {
         #[derive(Clone)]
@@ -80,6 +91,12 @@ macro_rules! strict_provider {
             pub(crate) probe: Arc<Probe>,
             pub(crate) db: Arc<SlotCell<CredentialGuard<u64>>>,
             pub(crate) cache: Arc<SlotCell<CredentialGuard<u64>>>,
+            /// Pins left that re-store `db` while they load it, bumping its
+            /// generation as a rotation landing mid-pin would;
+            /// `usize::MAX` rotates on every pin.
+            pub(crate) pin_rotations: Arc<AtomicUsize>,
+            /// `pin_slots` calls so far.
+            pub(crate) pins: Arc<AtomicUsize>,
         }
 
         impl $ty {
@@ -88,6 +105,8 @@ macro_rules! strict_provider {
                     probe: Arc::default(),
                     db: Arc::new(SlotCell::empty()),
                     cache: Arc::new(SlotCell::empty()),
+                    pin_rotations: Arc::default(),
+                    pins: Arc::default(),
                 }
             }
 
@@ -188,6 +207,37 @@ macro_rules! strict_provider {
                 Ok(self.cell(slot).ok_or(SlotInstallError::UnknownSlot)?.revoke())
             }
         }
+
+        impl PinSlots for $ty {
+            type Pinned = PinnedEpochs;
+
+            fn pin_slots(&self) -> PinnedEpochs {
+                self.pins.fetch_add(1, Ordering::SeqCst);
+                let rotate = self
+                    .pin_rotations
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| match left {
+                        0 => None,
+                        usize::MAX => Some(usize::MAX),
+                        left => Some(left - 1),
+                    })
+                    .is_ok();
+                Self::credential_slot_names()
+                    .iter()
+                    .map(|&slot| {
+                        let cell = self.cell(slot);
+                        let pinned = cell
+                            .and_then(SlotCell::load_material_versioned)
+                            .map(|(material, _)| material);
+                        if rotate && slot == "db" {
+                            if let Some(current) = self.db.load() {
+                                self.db.store(current);
+                            }
+                        }
+                        (slot, pinned)
+                    })
+                    .collect()
+            }
+        }
     };
 }
 
@@ -200,9 +250,11 @@ strict_provider!(
     Resident<Self>,
     ["db", "cache"]
 );
+strict_provider!(RotatingPin, "strict-rotating-pin", Resident<Self>, ["db"]);
 
 impl ResidentProvider for StrictResident {}
 impl ResidentProvider for StrictTwoSlot {}
+impl ResidentProvider for RotatingPin {}
 impl BoundedProvider for StrictBounded {}
 
 impl PoolProvider for StrictPooled {
@@ -401,4 +453,68 @@ pub(crate) fn row<R: Provider>(manager: &Manager) -> Arc<ManagedResource<R>> {
         .as_any_arc()
         .downcast::<ManagedResource<R>>()
         .expect("row type")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, atomic::Ordering};
+
+    use nebula_credential::{CredentialAvailability, CredentialAvailabilityObserver};
+
+    use super::{
+        PinSlots, RotatingPin, ScriptedObserver, StrictResident, StrictTwoSlot, bind,
+        cache_credential_id, context, credential_id, resident, seen, strict_manager, tenant,
+    };
+    use crate::AcquireOptions;
+
+    #[test]
+    fn strict_rows_pin_each_slot_material_epoch() {
+        let row = StrictTwoSlot::new();
+        bind(&row.db, credential_id(), 3, 1);
+        assert_eq!(row.pin_slots(), vec![("db", Some(3)), ("cache", None)]);
+        bind(&row.cache, cache_credential_id(), 7, 1);
+        assert_eq!(row.pin_slots(), vec![("db", Some(3)), ("cache", Some(7))]);
+        assert_eq!(row.pins.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_rotating_pin_moves_the_generation_only_while_it_rotates() {
+        let row = RotatingPin::new();
+        bind(&row.db, credential_id(), 1, 1);
+        let before = row.db.generation();
+
+        row.pin_rotations.store(1, Ordering::SeqCst);
+        assert_eq!(row.pin_slots(), vec![("db", Some(1))]);
+        assert_eq!(row.db.generation(), before + 1, "the pin rotated once");
+        let _ = row.pin_slots();
+        assert_eq!(row.db.generation(), before + 1, "then pins are quiet");
+
+        row.pin_rotations.store(usize::MAX, Ordering::SeqCst);
+        let _ = row.pin_slots();
+        let _ = row.pin_slots();
+        assert_eq!(row.db.generation(), before + 3, "every pin rotates");
+        assert_eq!(row.db.material_epoch(), Some(1), "material never moves");
+    }
+
+    #[tokio::test]
+    async fn a_strict_acquire_reads_through_the_scripted_observer() {
+        let observer = ScriptedObserver::answering(seen(1, 1, CredentialAvailability::Available));
+        let manager = strict_manager(
+            Arc::clone(&observer) as Arc<dyn CredentialAvailabilityObserver>,
+            &Arc::default(),
+        );
+        let resource = resident(&manager);
+        bind(&resource.db, credential_id(), 1, 1);
+
+        let guard = manager
+            .acquire_for_identity::<StrictResident>(
+                &context(),
+                &AcquireOptions::default(),
+                &tenant(),
+            )
+            .await
+            .expect("admitted");
+        drop(guard);
+        assert_eq!(observer.calls(), 1);
+    }
 }

@@ -155,26 +155,24 @@ limits.
 
 Every row has a limiter. An acquire waits for it before it is counted as in
 flight (so a queued caller never delays revoke or shutdown drains): it books
-one permit, or, once the resource has wrapped a client, only honours pauses,
-because the wrapped client then books one permit per provider call. Calls
-inside a lease are paced by the client itself: in
-`Provider::create` the author wraps whatever client the resource holds — an
-HTTP client, `teloxide::Bot`, an SDK — once, with
-`ctx.limits().wrap(client, throttle)`, and actions call it through
-`Limited::run`. The `Throttle` (a closure over the outcome, or
-`rate_limit::on_error` over the error) recognises the provider's "slow down";
-every caller of the quota then pauses for its `retry_after`
-(`retry_after_from_header` reads seconds and HTTP dates), capped at the
-policy's `max_penalty`, or backs off exponentially when none is given. Only
-the wrapped client's own outcomes count, so a limit hit on another resource
-inside the call never pauses this one. `Limited` has no `Deref`: skipping the
-limit takes an explicit `unlimited()`. A resource that declares no rate pays
-nothing: its limiter paces nothing and only honours pauses, kept in-process.
+one permit, or, once a lease of the row became a managed call facade, only
+honours pauses, because each provider attempt then books its own cost. Calls
+inside a lease are paced through the facade (see "Managed call facade"
+below): each provider call is one `OpCx::attempt(cost)`, and
+`Attempt::report(verdict)` passes the provider's "slow down" on; every caller
+of the quota then pauses for its `retry_after` (`retry_after_from_header`
+reads seconds and HTTP dates), capped at the policy's `max_penalty`, or backs
+off exponentially when none is given. Only the attempt's own verdict counts,
+so a limit hit on another resource inside the call never pauses this one. A
+resource that declares no rate pays nothing: its limiter paces nothing and
+only honours pauses, kept in-process. The closure family that wrapped a
+client instead (`ctx.limits().wrap(client, throttle)`, `Limited::run*`) is
+deprecated; see "Rate-limit profiles" for the migration.
 
 Limits per key — Telegram's one message per second per chat — are declared
 with `ResiliencePolicy::keyed("chat_id", rate)` on top of the account rate, and
-apply only to calls that name the key: `client.run_for("chat_id", chat_id,
-…)` (or `ResourceLimiter::ready_for`) waits for both that chat's slot and the
+apply only to calls that name the key: an attempt at `Cost::keyed("chat_id",
+chat_id)` (or `ResourceLimiter::ready_for`) waits for both that chat's slot and the
 account's, and a `Verdict::KeyThrottled` pauses that chat alone. Key values
 are SHA-256-hashed under the row's limit key, so a chat id or an e-mail
 address never reaches a store and tenants never share a key. A row may
@@ -194,13 +192,28 @@ row reports it as a `RateLimitProfile` (`as_str()` in parentheses):
 |---|---|---|---|---|
 | `PausesOnly` (`pauses_only`) | no rate declared or set, no wrapped client | nothing | not paced; a provider pause holds acquires | supported |
 | `PerAcquire` (`per_acquire`) | a rate, no wrapped client | acquire | bounded interval: one permit per lease, however many calls it makes | supported |
-| `InterimPerClosure` (`interim_per_closure`) | `Provider::create` wrapped a client | `Limited::run*` closure | strict: each closure is one permit; acquires only honour pauses | **interim** — replaced by the managed call facade |
+| `InterimPerClosure` (`interim_per_closure`) | `Provider::create` wrapped a client | `Limited::run*` closure | strict: each closure is one permit; acquires only honour pauses | **interim, deprecated** since 0.21.0 — replaced by the managed call facade |
 | `PerAttempt` (`per_attempt`) | a lease became a managed call facade (`ResourceGuard::into_managed`) | granted attempt, at its declared cost (`FREE` books nothing) | strict: each provider attempt books its cost; acquires only honour pauses | supported |
 
-Only `InterimPerClosure` is interim (`RateLimitProfile::is_interim`): the
-closure family (`Limited::run`, `run_until`, `run_for`, `run_for_until`) and
-`Limited::unlimited` are the surface the managed call facade replaces. The
-profile is observed, not declared: it latches to `InterimPerClosure` at the
+Only `InterimPerClosure` is interim (`RateLimitProfile::is_interim`). Its
+closure family — `ResourceLimiter::wrap`, `Limited` (`run`, `run_until`,
+`run_for`, `run_for_until`, `unlimited`) and `LimitedError` — is deprecated
+since 0.21.0 and removed before the API freeze (MIGRATION P10). Migrate each
+call to the managed call facade: keep the client as the provider's instance,
+turn the lease into a facade with `ResourceGuard::into_managed`, and describe
+the call as an `Operation`:
+
+| Closure family | Managed call facade |
+|---|---|
+| `ctx.limits().wrap(client, throttle)` in `create` | return the client itself as the instance |
+| `client.run(call)` | `cx.attempt(Cost::ONE)`, then call `attempt.instance()` |
+| `client.run_for("chat_id", id, call)` | `cx.attempt(Cost::keyed("chat_id", id))` |
+| `client.run_until(deadline, call)` | `managed.submit(op).with_deadline(deadline)` |
+| `Throttle::check(&outcome)` | `attempt.report(verdict)` |
+| `client.unlimited()` | none, by design: every provider call is an attempt |
+| `LimitedError::{Limit, Call}` | `OpError` (kind, sent state, effect, `is_retryable`) |
+
+The profile is observed, not declared: it latches to `InterimPerClosure` at the
 first `ResourceLimiter::wrap`, and to `PerAttempt` at the first
 `into_managed` on one of the row's leases, and keeps it for the row's life
 (`InterimPerClosure` wins when both latched). A row whose instance is created
@@ -214,15 +227,23 @@ the SDK does not re-export it.
 #### Credential admission profiles
 
 How a row admits new work against its bound credentials is chosen at
-registration and reported as a `CredentialAdmissionProfile` (`as_str()` in
-parentheses), in `ResourceHealthSnapshot::credential_admission` and
-`ManagedResourceView::credential_admission_profile()`:
+registration, latched per attempt when a strict row's lease first becomes a
+managed call facade, and reported as a `CredentialAdmissionProfile`
+(`as_str()` in parentheses), in `ResourceHealthSnapshot::credential_admission`
+and `ManagedResourceView::credential_admission_profile()`:
 
-| Profile | When | New work (acquire, create) | Support |
+| Profile | When | New work (acquire, create, managed attempt) | Support |
 |---|---|---|---|
 | `Unbound` (`unbound`) | the resource declares no credential slots | nothing is read | supported |
 | `StrictPerAcquire` (`strict_per_acquire`) | the manager was built with `ManagerConfig::with_credential_observer` | reads every bound credential's availability first (join-next coalesced, ≤ 2 s); refused unless each is usable at the installed material | supported — the worker's profile |
+| `StrictPerAttempt` (`strict_per_attempt`) | as `StrictPerAcquire`, and a lease of the row became a managed call facade | as `StrictPerAcquire`, and every provider attempt also reads after its quota wait and is refused unless each credential is usable at the material its unit pinned | supported |
 | `InterimRowGate` (`interim_row_gate`) | no observer | admitted until activation, the fan-out or a caller suspends the row | **interim** — the default becomes strict before the API freeze |
+
+The strict default is not flipped yet: a manager without an observer stays
+`InterimRowGate` (with a one-time warning). The plan is to reject, at
+composition time, a manager that has credential-bound rows and no observer
+(MIGRATION P8, CONTRACT.md:142), before the API freeze (P10); until then
+every first-party composition root (the worker) passes an observer.
 
 **Availability coupling:** on a strict manager, credentialed egress is no more
 available than the credential store. While the store or source cannot answer,
@@ -513,12 +534,23 @@ let id = managed.submit(Send { chat, text }).await?;
   `Revoked` (taint), all `NotSent`; a quota wait ends early too. A granted
   attempt is not aborted: select on `OpCx::closing()` to stop at a safe point.
   Refresh and reload leave the generation open.
-- **Credentials.** `PinSlots::pin_slots` runs once per unit; every attempt
-  reads that snapshot through `Attempt::slots()`, the only way the facade
-  discloses material. A rotation reaches the next unit; slots are pinned one
-  by one, without cross-slot atomicity. Until the strict per-attempt
-  credential read lands, an attempt's final admission re-checks local
-  admission only, not a fresh credential read.
+- **Credentials.** On a strict manager every attempt on a credential-bound
+  row reads each bound credential's availability after its quota wait,
+  outside every lock (join-next shared with other attempts and acquires),
+  and is registered under the manager's admission lock: a blocked credential
+  suspends the row and closes its leases (`ReauthRequired` /
+  `OperationBlocked`), an outage refuses `CheckUnavailable` and changes
+  nothing, material the row has not installed refuses `Rebinding` — all
+  unsent. `PinSlots::pin_slots` runs once per unit, at its first grant,
+  after that attempt's read (so the first attempt runs on the binding its
+  read validated); every attempt reads that snapshot through
+  `Attempt::slots()`, the only way the facade discloses material. The pin is
+  bracketed by the slots' generations and retaken when a rotation raced it.
+  A rotation reaches the next unit: a later attempt whose pin it superseded
+  is refused `Rebinding` (retry after 1 s), unsent, and the unit's settled
+  outcome decides the retry — a `Read` / `Idempotent` unit is retryable, a
+  `Write` whose earlier attempt was sent is `OutcomeUnknown`. There is no
+  re-pin mid-unit. Interim managers and slot-less rows read nothing.
 - **Observability.** A `nebula.resource.unit` span per unit (key, operation,
   attempts, sent, outcome); `ResourceOpsSnapshot::call_attempts`
   (granted / refused by the facade, not a driver's own retries) and
@@ -550,10 +582,13 @@ while let Some(line) = stream.next().await {
 
 Interim defaults, revisited before the surface is frozen (it is not in any
 prelude): the 5-minute unit deadline cap; the per-lease unit caps above; no
-refund of a cost booked for an attempt cancelled before it reached the
-provider; a pooled lease stays checked out while its units wait for quota;
-`Sent` with `Exhausted` means the provider refused and applied nothing, so it
-stays retryable; the `Read` / `Idempotent` / `Write` effect vocabulary.
+refund of a cost booked for an attempt cancelled or refused before it
+reached the provider; a pooled lease stays checked out while its units wait
+for quota and while their credential reads run (per-unit checkout is a
+follow-up); `Sent` with `Exhausted` means the provider refused and applied
+nothing, so it stays retryable; the `Read` / `Idempotent` / `Write` effect
+vocabulary; `Rebinding` with a one-second hint for a superseded pin, with no
+runtime-owned re-preparation of the unit.
 
 ### Other public API
 
@@ -757,7 +792,7 @@ See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/M
 - Per-slot rotation fan-out: landed in this crate (`credential_fanout`, feature `rotation`) — see [`credential-rotation.md`](docs/credential-rotation.md).
 - Credential suspension: a credential that turns `ReauthRequired` or blocks new use without a material change suspends every bound row (acquires fail with `CredentialUnavailable`, admitted leases observe closing, owners are kept) and reopens it when the same material is usable again at a newer use revision; a use revision that advanced unobserved readmits the row under a fresh generation — see "Same-material blocks" and "Use revision" in [`credential-rotation.md`](docs/credential-rotation.md).
 - Strict per-acquire credential admission: a manager with a credential observer (the worker's) reads every bound credential's availability before each acquire and create — see "Strict per-acquire admission" in [`credential-rotation.md`](docs/credential-rotation.md).
-- Known gaps: on an interim manager (no observer) suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event); on a strict one only an interval with no acquire, create, activation or scan at all goes unobserved, and a denial missed that way only affects new work. An acquire that waits for capacity after its read is not read again (a per-call facade re-reads per attempt). Configurable read timeout/jitter, batched multi-slot reads, an interval profile (needs an ADR revising the per-acquire rule) and letting activation skip its own head read on a strict manager are follow-ups (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
+- Known gaps: on an interim manager (no observer) suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event); on a strict one only an interval with no acquire, create, activation or scan at all goes unobserved, and a denial missed that way only affects new work. An acquire that waits for capacity after its read is not read again; the managed call facade reads per attempt. Readmission at the installed material with an advanced use revision admits later attempts on leases admitted before it (nothing closes them). Configurable read timeout/jitter, batched multi-slot reads, an interval profile (needs an ADR revising the per-acquire rule), letting activation skip its own head read on a strict manager, per-unit checkout for pooled leases, a bound from admission to egress, refunds of refused bookings, an opt-in runtime-owned re-preparation of a unit whose pin was superseded, and the composition-time rejection of an observer-less manager (the strict default) are follow-ups (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
 
 ## Related
 

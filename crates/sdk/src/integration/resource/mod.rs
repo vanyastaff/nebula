@@ -9,27 +9,30 @@
 //! entrusted to the adapter, not global registry or tenant authority, and Rust
 //! cannot prevent a trusted adapter from hiding aliases of a retained lease.
 //!
+//! Provider calls go through the managed call facade: a lease becomes a
+//! [`Managed`] with [`ResourceGuard::into_managed`], and each provider call is
+//! an [`Operation`] submitted as a [`Unit`]. Inside it, [`OpCx::attempt`]
+//! admits one provider [`Attempt`] against the lease, books its [`Cost`] and
+//! hands out the instance and the unit's pinned credential slots
+//! ([`PinSlots`]). Each attempt is settled with a [`SentState`], and a failed
+//! unit's [`OpError`] says from that and the operation's [`Effect`] whether a
+//! retry is safe. On a strict manager every attempt also reads its bound
+//! credentials' availability first. A row used this way reports the
+//! `PerAttempt` (`per_attempt`) rate-limit profile. The facade is not frozen
+//! yet, so it is not in the prelude.
+//!
 //! Rate limits are declared by overriding [`Provider::resilience`] with a
-//! [`ResiliencePolicy`]; the client built in `create` is wrapped once with
-//! [`ResourceContext::limits`] and [`ResourceLimiter::wrap`], and a
-//! [`Throttle`] tells the provider's "slow down" apart from other outcomes.
+//! [`ResiliencePolicy`]. The facade books each attempt at its [`Cost`] —
+//! [`Cost::keyed`] for a per-key limit such as one chat's — and
+//! [`Attempt::report`] passes the provider's "slow down" on as a [`Verdict`].
+//! Without the facade a declared rate books one permit per acquire.
 //!
-//! The wrapped-client calls — [`Limited::run`] and its `run_*` variants, and
-//! [`Limited::unlimited`] — are interim surface: each closure books one permit
-//! and counts as one provider call. A row that wraps a client reports the
-//! `InterimPerClosure` (`interim_per_closure`) rate-limit profile in resource
-//! status; the managed call facade replaces the closure family. Without a
-//! wrap, a declared rate books one permit per acquire.
-//!
-//! The managed call facade turns a lease into [`Managed`] with
-//! [`ResourceGuard::into_managed`]. Each provider call is an [`Operation`]
-//! submitted as a [`Unit`]; inside it, [`OpCx::attempt`] admits one provider
-//! [`Attempt`] against the lease, books its [`Cost`] and hands out the
-//! instance and the unit's pinned credential slots ([`PinSlots`]). Each
-//! attempt is settled with a [`SentState`], and a failed unit's [`OpError`]
-//! says from that and the operation's [`Effect`] whether a retry is safe. A
-//! row used this way reports the `PerAttempt` (`per_attempt`) profile. The
-//! facade is not frozen yet, so it is not in the prelude.
+//! The closure family — [`ResourceLimiter::wrap`], [`Limited`] and
+//! [`LimitedError`] — is deprecated since 0.21.0 and removed before the API
+//! freeze: `run` becomes `cx.attempt(Cost::ONE)`, `run_for` becomes
+//! [`Cost::keyed`], `run_until` becomes [`Unit::with_deadline`], a
+//! [`Throttle`] becomes [`Attempt::report`], and `unlimited` has no
+//! replacement by design.
 //!
 //! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] runs as
 //! one unit that also sends items through a bounded [`StreamSink`]; the
@@ -53,10 +56,14 @@ pub use nebula_resource::call::{
     StreamOperation, StreamSink, Streaming, Unit,
 };
 pub use nebula_resource::rate_limit::{
-    DEFAULT_MAX_PENALTY, LimitScope, Limited, LimitedError, NoThrottle, OnError, Override, Rate,
-    RateLimitSettings, ResiliencePolicy, ResourceLimiter, Throttle, Verdict, on_error,
-    retry_after_from_header,
+    DEFAULT_MAX_PENALTY, LimitScope, NoThrottle, OnError, Override, Rate, RateLimitSettings,
+    ResiliencePolicy, ResourceLimiter, Throttle, Verdict, on_error, retry_after_from_header,
 };
+#[expect(
+    deprecated,
+    reason = "the deprecated closure family stays curated until its removal (MIGRATION P10)"
+)]
+pub use nebula_resource::rate_limit::{Limited, LimitedError};
 pub use nebula_resource::topology::{
     AdmissionPhase, BrokenCheck, CreatedEntry, HookFault, IdleRead, InstanceMetrics, Load,
     MaintenanceSchedule, NoTopology, PoolStrategy, RecycleDecision, ReplaceStatus, RetainStatus,

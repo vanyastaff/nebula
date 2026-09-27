@@ -47,8 +47,8 @@ use nebula_metrics::{
     },
 };
 use tokio::sync::Notify;
-use tokio_util::sync::CancellationToken;
 
+use super::AdmissionLink;
 use crate::error::CredentialUnavailableReason;
 
 /// Upper bound of one credential availability read. A read that does not
@@ -263,8 +263,9 @@ fn denied_reason_label(reason: CredentialUnavailableReason) -> &'static str {
 pub(crate) struct CredentialReads {
     observer: Arc<dyn CredentialAvailabilityObserver>,
     lanes: Mutex<HashMap<CredentialId, Vec<Arc<Lane>>>>,
-    /// The manager's cancellation: shutdown ends every read.
-    cancel: CancellationToken,
+    /// The manager's admission state: its cancellation ends every read, and
+    /// a managed attempt applies its reading under its lock.
+    link: AdmissionLink,
     metrics: Option<CredentialAdmissionMetrics>,
     /// Tests: refresh-join pauses at their upper bound, for exact timing.
     #[cfg(test)]
@@ -290,17 +291,23 @@ enum Step {
 impl CredentialReads {
     pub(crate) fn new(
         observer: Arc<dyn CredentialAvailabilityObserver>,
-        cancel: CancellationToken,
+        link: AdmissionLink,
         metrics: Option<CredentialAdmissionMetrics>,
     ) -> Self {
         Self {
             observer,
             lanes: Mutex::new(HashMap::new()),
-            cancel,
+            link,
             metrics,
             #[cfg(test)]
             fixed_join_pauses: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The manager's admission state these reads belong to: a managed
+    /// attempt applies its reading under its lock.
+    pub(crate) fn link(&self) -> &AdmissionLink {
+        &self.link
     }
 
     pub(crate) fn metrics(&self) -> Option<&CredentialAdmissionMetrics> {
@@ -389,7 +396,7 @@ impl CredentialReads {
                 Step::Wait => {
                     tokio::select! {
                         biased;
-                        () = self.cancel.cancelled() => return Err(ReadFailure::Cancelled),
+                        () = self.link.cancel().cancelled() => return Err(ReadFailure::Cancelled),
                         () = &mut ended => {},
                         () = tokio::time::sleep_until(deadline) => return Err(ReadFailure::TimedOut),
                     }
@@ -419,11 +426,11 @@ impl CredentialReads {
             lane.key.clone(),
             // The observer only listens; a clone avoids registering a child
             // token on the manager's token for every read.
-            self.cancel.clone(),
+            self.link.cancel().clone(),
         );
         let answered = tokio::select! {
             biased;
-            () = self.cancel.cancelled() => Some(Err(CredentialObserveError::Cancelled)),
+            () = self.link.cancel().cancelled() => Some(Err(CredentialObserveError::Cancelled)),
             answered = tokio::time::timeout_at(deadline, read) => answered.ok(),
         };
         if let Some(metrics) = &self.metrics {

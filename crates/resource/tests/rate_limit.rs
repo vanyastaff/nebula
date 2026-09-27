@@ -6,6 +6,10 @@
 //! wrapped client's wait ends when its row stops admitting work (revoke,
 //! shutdown) but not on a reload, and a detached limiter never ends one.
 //! Row status reports the observed rate-limit profile.
+#![expect(
+    deprecated,
+    reason = "regression coverage of the deprecated closure family"
+)]
 
 mod common;
 

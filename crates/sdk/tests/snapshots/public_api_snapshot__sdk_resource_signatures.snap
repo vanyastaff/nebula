@@ -92,6 +92,7 @@ pub enum LimitScope {
 ## enum nebula_resource::rate_limit::LimitedError
 exported as nebula_sdk::integration::resource::LimitedError
 #[derive(Debug)]
+#[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)")]
 pub enum LimitedError<E> {
     Limit(Error),
     Call(E),
@@ -622,6 +623,7 @@ impl<R: Provider> std::fmt::Debug for ResourceGuard<R>
 
 ## struct nebula_resource::rate_limit::Limited [interim]
 exported as nebula_sdk::integration::resource::Limited
+#[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)")]
 pub struct Limited<C, T = NoThrottle> {
     /* private fields */
 }
@@ -695,7 +697,7 @@ pub struct ResourceLimiter {
 impl ResourceLimiter {
     pub fn rate(&self) -> Option<Rate>;
     pub fn profile(&self) -> RateLimitProfile;
-    pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T>;
+    #[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)")] pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T>;
     pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error>;
     pub async fn ready_for(&self, dimension: &str, value: impl fmt::Display, deadline: Option<std::time::Instant>) -> Result<(), Error>;
     pub async fn penalize(&self, retry_after: Duration) -> Result<(), Error>;

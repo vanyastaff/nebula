@@ -35,8 +35,9 @@ use nebula_core::{CredentialKey, ResourceKey};
 /// [`OperationBlocked`](Self::OperationBlocked) — a denial at the current
 /// material — suspend a row and appear in a
 /// [`CredentialSuspension`](crate::state::CredentialSuspension). The other
-/// reasons come from a strict manager's per-acquire availability read and
-/// refuse the one acquire without changing the row: the credential is
+/// reasons come from a strict manager's availability read — per acquire, and
+/// per attempt of a managed call unit — and refuse that one acquire or
+/// attempt without changing the row: the credential is
 /// between two materials ([`Rebinding`](Self::Rebinding),
 /// [`RefreshInFlight`](Self::RefreshInFlight)), its availability could not be
 /// read ([`CheckUnavailable`](Self::CheckUnavailable)), or it is gone
@@ -55,6 +56,14 @@ pub enum CredentialUnavailableReason {
     RefreshInFlight,
     /// The credential moved to newer material the row has not installed
     /// yet; new work waits for the install instead of running on the old.
+    ///
+    /// Also the refusal of a managed call attempt whose unit pinned its
+    /// credential slots before a rotation superseded them: the unit's
+    /// attempts never switch material mid-unit, so the attempt is refused
+    /// unsent and the next unit pins the new material. Whether the unit is
+    /// retried follows its settled outcome (a `Write` with an earlier
+    /// attempt sent has an unknown outcome). Retry hint: one second, as for
+    /// every refusal between two materials.
     Rebinding,
     /// The credential's availability could not be read (store or source
     /// unavailable, inconsistent state, or the read timed out). Credentialed
