@@ -331,6 +331,7 @@ impl<R: Provider + PinSlots> Managed<R> {
     pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output> {
         submit_unit(
             UnitHost::Lease(Arc::clone(&self.lease)),
+            &UnitScope::default(),
             operation,
             O::EFFECT,
             type_name::<O>(),
@@ -338,10 +339,42 @@ impl<R: Provider + PinSlots> Managed<R> {
     }
 }
 
+/// What every unit of a row facade inherits from the caller that built the
+/// facade: its cancellation and its deadline.
+///
+/// A parent cancellation that fires before a unit's first grant cancels the
+/// unit as [`Unit::cancel`] does (`Cancelled`, `NotSent`); after the first
+/// grant it is ignored and the unit runs to its own deadline (Design
+/// DX-API.md:114). The parent deadline bounds every unit's deadline, below
+/// [`UNIT_DEADLINE_CAP`]; [`Unit::with_deadline`] can only shorten it
+/// further. A lease facade's units inherit nothing.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct UnitScope {
+    /// The parent cancellation: each unit's own cancel is a child of it.
+    pub(crate) cancel: Option<CancellationToken>,
+    /// The parent deadline.
+    pub(crate) deadline: Option<Instant>,
+}
+
+impl UnitScope {
+    /// The scope of a caller's `ctx` (its cancellation token) and `options`
+    /// (its deadline).
+    pub(crate) fn from_parts(
+        ctx: &crate::context::ResourceContext,
+        options: &crate::options::AcquireOptions,
+    ) -> Self {
+        Self {
+            cancel: Some(ctx.cancel_token().clone()),
+            deadline: options.deadline,
+        }
+    }
+}
+
 /// Builds the lazy [`Unit`] of `operation` on `host`, in a
-/// `nebula.resource.unit` span naming it `operation_name`.
+/// `nebula.resource.unit` span naming it `operation_name`, under `scope`.
 pub(super) fn submit_unit<R, O>(
     host: UnitHost<R>,
+    scope: &UnitScope,
     operation: O,
     effect: Effect,
     operation_name: &'static str,
@@ -350,7 +383,7 @@ where
     R: Provider + PinSlots,
     O: Operation<R>,
 {
-    let shared = Arc::new(UnitShared::new());
+    let shared = Arc::new(UnitShared::new(scope));
     let key = host.key().clone();
     let span = tracing::info_span!(
         "nebula.resource.unit",
@@ -374,7 +407,9 @@ where
 pub(super) struct UnitShared {
     /// `PENDING` until the first grant or a cancel, whichever comes first.
     state: AtomicU8,
-    /// Fired by [`Unit::cancel`] while no attempt was granted.
+    /// Fired by [`Unit::cancel`] while no attempt was granted, or by the
+    /// parent cancellation of the unit's [`UnitScope`] (a child token): the
+    /// latter is honoured only until the first grant.
     cancel: CancellationToken,
     deadline: Mutex<tokio::time::Instant>,
     /// Attempts granted so far.
@@ -384,16 +419,22 @@ pub(super) struct UnitShared {
 }
 
 impl UnitShared {
-    fn new() -> Self {
+    /// A pending unit under `scope`: its cancel a child of the parent's, its
+    /// deadline the cap from now or the parent's, whichever is earlier.
+    pub(super) fn new(scope: &UnitScope) -> Self {
         let now = tokio::time::Instant::now().into_std();
-        let deadline = crate::deadline::deadline_after(
+        let capped = crate::deadline::deadline_after(
             now,
             UNIT_DEADLINE_CAP,
             crate::deadline::UNBOUNDED_HORIZON,
         );
+        let deadline = scope.deadline.map_or(capped, |parent| capped.min(parent));
         Self {
             state: AtomicU8::new(PENDING),
-            cancel: CancellationToken::new(),
+            cancel: scope
+                .cancel
+                .as_ref()
+                .map_or_else(CancellationToken::new, CancellationToken::child_token),
             deadline: Mutex::new(tokio::time::Instant::from_std(deadline)),
             granted: AtomicU32::new(0),
             worst: AtomicU8::new(SentState::NotSent.rank()),
@@ -414,8 +455,28 @@ impl UnitShared {
         (!self.is_granted()).then_some(&self.cancel)
     }
 
-    /// Grants one attempt, unless the unit was cancelled before its first.
+    /// Refuses a unit whose cancel fired while no attempt was granted —
+    /// [`Unit::cancel`] or the parent cancellation — and latches it
+    /// cancelled. A fired cancel is ignored once an attempt was granted.
+    fn refuse_if_cancelled(&self) -> Result<(), OpError> {
+        if !self.cancel.is_cancelled() {
+            return Ok(());
+        }
+        match self
+            .state
+            .compare_exchange(PENDING, CANCELLED, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Err(GRANTED) => Ok(()),
+            _ => Err(cancelled_before_grant()),
+        }
+    }
+
+    /// Grants one attempt, unless the unit was cancelled before its first:
+    /// by [`Unit::cancel`], or by the parent cancellation having fired by
+    /// now. The grant and a parent cancel race here, never after: a parent
+    /// cancel that fires once the first attempt was granted is ignored.
     pub(super) fn grant(&self) -> Result<(), OpError> {
+        self.refuse_if_cancelled()?;
         match self
             .state
             .compare_exchange(PENDING, GRANTED, Ordering::AcqRel, Ordering::Acquire)
@@ -574,9 +635,14 @@ where
     O: Operation<R>,
 {
     let deadline = shared.deadline();
+    // A unit cancelled before its first poll — its parent cancellation
+    // already fired — settles here: nothing is spawned or checked out.
     // A row facade has no unit slots: each attempt queues on the row gate
     // with nothing checked out instead.
     let permit = match &host {
+        _ if shared.cancel.is_cancelled() => shared
+            .refuse_if_cancelled()
+            .and(Err(cancelled_before_grant())),
         UnitHost::Lease(lease) => lease_unit_slot(lease, &shared, deadline).await.map(Some),
         // Awaited inside a session of the same row, the unit would wait for
         // the row gate while that session holds a checkout.

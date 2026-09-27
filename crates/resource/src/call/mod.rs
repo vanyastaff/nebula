@@ -202,6 +202,7 @@ use std::{future::Future, num::NonZeroU32};
 
 pub use cost::{Cost, Effect, SentState};
 pub use error::OpError;
+pub(crate) use managed::UnitScope;
 pub use managed::{Attempt, Managed, OpCx, UNIT_DEADLINE_CAP, Unit};
 pub use pin::PinSlots;
 pub use row::ManagedRow;

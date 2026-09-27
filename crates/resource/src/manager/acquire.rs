@@ -317,7 +317,10 @@ impl Manager {
     /// Latches the row's rate-limit profile to
     /// [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt).
     /// The facade is bound to this registration: once it is removed or
-    /// replaced, its units fail `Cancelled`.
+    /// replaced, its units fail `Cancelled`. Its units inherit `ctx`'s
+    /// cancellation token: once it fires, a unit whose first attempt was
+    /// not granted yet settles `Cancelled` / `NotSent`; a granted one runs
+    /// on to its deadline.
     ///
     /// # Errors
     ///
@@ -331,11 +334,18 @@ impl Manager {
         ctx: &ResourceContext,
     ) -> Result<crate::call::ManagedRow<R>, Error> {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        Ok(crate::call::ManagedRow::new(
-            managed,
-            self.acquire.clone(),
-            ctx,
-        ))
+        Ok(Self::row_facade(managed, self.acquire.clone(), ctx))
+    }
+
+    /// A row facade whose units inherit `ctx`'s cancellation.
+    fn row_facade<R: Provider>(
+        managed: Arc<ManagedResource<R>>,
+        link: super::AcquireLink,
+        ctx: &ResourceContext,
+    ) -> crate::call::ManagedRow<R> {
+        crate::call::ManagedRow::new(managed, link, ctx).with_unit_scope(
+            crate::call::UnitScope::from_parts(ctx, &AcquireOptions::default()),
+        )
     }
 
     /// [`managed_row`](Self::managed_row) pinned to the **collision-free
@@ -352,11 +362,7 @@ impl Manager {
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::call::ManagedRow<R>, Error> {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
-        Ok(crate::call::ManagedRow::new(
-            managed,
-            self.acquire.clone(),
-            ctx,
-        ))
+        Ok(Self::row_facade(managed, self.acquire.clone(), ctx))
     }
 
     /// Acquires a handle to a pooled resource.

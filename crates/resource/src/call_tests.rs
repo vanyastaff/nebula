@@ -1205,3 +1205,41 @@ async fn each_unit_runs_in_a_span_with_its_outcome() {
     assert_eq!(field("sent").as_deref(), Some("sent"));
     assert_eq!(field("outcome").as_deref(), Some("ok"));
 }
+
+// ── the first grant races the parent cancellation, nothing after it ─────
+
+#[tokio::test]
+async fn a_parent_cancel_refuses_the_first_grant_and_is_ignored_after_it() {
+    use super::{UnitScope, managed::UnitShared};
+
+    let parent = CancellationToken::new();
+    let scope = UnitScope {
+        cancel: Some(parent.clone()),
+        deadline: None,
+    };
+    let unit = UnitShared::new(&scope);
+    parent.cancel();
+    let error = unit.grant().expect_err("cancelled before the first grant");
+    assert_eq!(*error.kind(), ErrorKind::Cancelled);
+    assert_eq!(unit.attempts(), 0);
+    assert!(unit.grant().is_err(), "latched cancelled");
+    assert!(
+        UnitShared::new(&scope).grant().is_err(),
+        "a unit under a fired parent is refused"
+    );
+
+    let parent = CancellationToken::new();
+    let unit = UnitShared::new(&UnitScope {
+        cancel: Some(parent.clone()),
+        deadline: None,
+    });
+    unit.grant().expect("granted");
+    parent.cancel();
+    assert!(
+        unit.cancel_before_grant().is_none(),
+        "no wait races a cancel after the grant"
+    );
+    unit.grant()
+        .expect("a later attempt ignores the parent cancel");
+    assert_eq!(unit.attempts(), 2);
+}
