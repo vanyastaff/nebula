@@ -821,6 +821,13 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// directly so the derive-generated factory can pass the
     /// slot binding without constructing an intermediate `ResourceRef<R>`.
     ///
+    /// The lease stays checked out until the guard drops, whatever the
+    /// action waits for meanwhile — the raw-escape profile. For provider
+    /// calls prefer a `ManagedRow<R>` field
+    /// ([`managed_row_by_id`](Self::managed_row_by_id)), which checks out
+    /// per attempt after the attempt's quota wait; this method's deprecation
+    /// is scheduled with the `Limited` family's removal (MIGRATION P10).
+    ///
     /// # Errors
     ///
     /// Returns [`ActionError::Fatal`] if the id is not a valid

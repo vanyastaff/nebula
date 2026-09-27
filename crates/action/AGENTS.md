@@ -43,7 +43,8 @@
 | Change | Relevant evidence |
 |--------|-------------------|
 | Traits and dispatch | [contracts](tests/contracts.rs), [instance_factory](tests/instance_factory.rs), [execution_integration](tests/execution_integration.rs). |
-| Macros and slot shapes | [derive_action](tests/derive_action.rs), [derive_action_compile_fail](tests/derive_action_compile_fail.rs); also SDK [derive_external_contract](../sdk/tests/derive_external_contract.rs) for generated paths. |
+| Macros and slot shapes | [derive_action](tests/derive_action.rs), [derive_action_compile_fail](tests/derive_action_compile_fail.rs); also SDK [derive_external_contract](../sdk/tests/derive_external_contract.rs) for generated paths. The macros crate sets `test = false`: its expansion unit tests run with `cargo nextest run -p nebula-action-macros --lib`. |
+| Managed row fields (`ManagedRow<R>` / `Option<ManagedRow<R>>`, `managed_row_by_id`) | `src/context.rs` tests (typed row, type mismatch fatal naming only the type, invalid id not echoed, revoked retryable, default accessor refuses), the macros' `field_slots` unit tests, [derive_action](tests/derive_action.rs) `managed_row_fields`, the `derive_lazy_managed_row` probe, engine [resource_integration](../engine/tests/resource_integration.rs) `managed_row`, SDK perimeter `action_managed_row`. A row field resolves synchronously and checks nothing out; never accept `Lazy<ManagedRow<R>>`. |
 | Webhook policy | [webhook_signature](tests/webhook_signature.rs), [webhook_request_limits](tests/webhook_request_limits.rs). |
 
 ## See also
