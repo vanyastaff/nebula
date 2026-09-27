@@ -50,6 +50,24 @@ pub trait ResourceAccessor: Send + Sync {
             None,
         ))
     }
+
+    /// Tries to resolve the managed row facade of resource `key`.
+    ///
+    /// `Ok(None)` means that no matching row exists. Lifecycle and other
+    /// accessor failures remain errors so optional action slots cannot hide a
+    /// temporarily unavailable or incorrectly typed row. The default serves
+    /// no managed rows.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the implementation's lookup refuses; the default never
+    /// errors.
+    fn try_managed_row_any(
+        &self,
+        _key: &crate::ResourceKey,
+    ) -> Result<Option<Box<dyn std::any::Any + Send + Sync>>, crate::CoreError> {
+        Ok(None)
+    }
 }
 
 /// Dyn-safe credential accessor. Impl in nebula-engine.
@@ -209,6 +227,12 @@ mod tests {
             CoreError::ResourceUnavailable { key, detail, .. }
                 if key == "postgres" && detail.contains("serves no managed rows")
         ));
+        assert!(
+            LeasesOnly
+                .try_managed_row_any(&key)
+                .expect("the default try lookup is infallible")
+                .is_none()
+        );
     }
 
     #[test]

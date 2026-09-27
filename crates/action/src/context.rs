@@ -907,6 +907,44 @@ pub trait ActionContextExt: HasResources + HasCredentials {
             })
     }
 
+    /// Tries to resolve the per-unit checkout facade of the resource bound
+    /// to `id`.
+    ///
+    /// This is the optional-slot counterpart of
+    /// [`managed_row_by_id`](Self::managed_row_by_id): only a genuinely
+    /// absent row becomes `Ok(None)`. Lifecycle refusal and type mismatch
+    /// remain classified errors.
+    ///
+    /// # Errors
+    ///
+    /// [`ActionError::Fatal`] for an invalid id or a facade of the wrong
+    /// provider type. Accessor refusals preserve their fatal or retryable
+    /// classification through `From<CoreError>`.
+    fn try_managed_row_by_id<R>(
+        &self,
+        id: &str,
+    ) -> Result<Option<nebula_resource::call::ManagedRow<R>>, ActionError>
+    where
+        R: nebula_resource::resource::Provider,
+    {
+        let key = ResourceKey::new(id).map_err(|_| ActionError::fatal("invalid resource id"))?;
+        self.resources()
+            .try_managed_row_any(&key)
+            .map_err(ActionError::from)?
+            .map(|boxed| {
+                boxed
+                    .downcast::<nebula_resource::call::ManagedRow<R>>()
+                    .map(|row| *row)
+                    .map_err(|_| {
+                        ActionError::fatal(format!(
+                            "resource type mismatch (expected ManagedRow<{ty}>)",
+                            ty = std::any::type_name::<R>(),
+                        ))
+                    })
+            })
+            .transpose()
+    }
+
     /// Resolve a [`CredentialGuard<C::Scheme>`] by string id.
     ///
     /// Mirrors [`nebula_credential::CredentialRef::resolve`] but takes the
@@ -1067,8 +1105,8 @@ mod tests {
     mod managed_row {
         use nebula_core::{ScopeLevel, resource_key};
         use nebula_resource::{
-            Manager, RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext,
-            SlotIdentity,
+            ErrorKind, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceConfig,
+            ResourceContext, SlotIdentity,
             call::ManagedRow,
             resource::{Provider, ResourceMetadataDraft},
             topology::ResidentProvider,
@@ -1182,6 +1220,32 @@ mod tests {
                     .to_core_error()),
                 }
             }
+
+            fn try_managed_row_any(
+                &self,
+                key: &ResourceKey,
+            ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
+                match &self.response {
+                    RowResponse::Manager(manager) => match manager.managed_row_any(
+                        key,
+                        &ResourceContext::minimal(Scope::default(), CancellationToken::new()),
+                        &nebula_resource::AcquireOptions::default(),
+                        &SlotIdentity::Unbound,
+                    ) {
+                        Ok(row) => Ok(Some(row)),
+                        Err(error) if matches!(error.kind(), ErrorKind::NotFound) => Ok(None),
+                        Err(error) => Err(error.to_core_error()),
+                    },
+                    RowResponse::UnexpectedType => {
+                        Ok(Some(Box::new(()) as Box<dyn Any + Send + Sync>))
+                    },
+                    RowResponse::Revoked => Err(nebula_resource::Error::revoked(
+                        "resource tainted by a credential revoke",
+                    )
+                    .with_resource_key(key.clone())
+                    .to_core_error()),
+                }
+            }
         }
 
         fn context_with(response: RowResponse) -> ActionRuntimeContext {
@@ -1243,6 +1307,20 @@ mod tests {
                 .managed_row_by_id::<Ledger>("action.context.ledger")
                 .expect_err("revoked");
             std::assert_matches!(error, ActionError::Retryable { .. });
+
+            let error = context
+                .try_managed_row_by_id::<Ledger>("action.context.ledger")
+                .expect_err("revoked optional row is not absent");
+            std::assert_matches!(error, ActionError::Retryable { .. });
+        }
+
+        #[test]
+        fn an_optional_type_mismatch_is_fatal() {
+            let context = context_with(RowResponse::UnexpectedType);
+            let error = context
+                .try_managed_row_by_id::<Ledger>(RESOURCE_ID_CANARY)
+                .expect_err("() is no optional ManagedRow");
+            std::assert_matches!(error, ActionError::Fatal { .. });
         }
 
         #[test]
@@ -1252,6 +1330,13 @@ mod tests {
                 .managed_row_by_id::<Ledger>("action.context.ledger")
                 .expect_err("no managed rows");
             std::assert_matches!(error, ActionError::Fatal { .. });
+            assert!(
+                TestContextBuilder::new()
+                    .build()
+                    .try_managed_row_by_id::<Ledger>("action.context.ledger")
+                    .expect("the default optional lookup is infallible")
+                    .is_none()
+            );
         }
     }
 }

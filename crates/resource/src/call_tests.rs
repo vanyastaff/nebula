@@ -193,6 +193,23 @@ async fn managed<R: Provider + PinSlots>(manager: &Manager) -> Managed<R> {
     acquire::<R>(manager).await.into_managed()
 }
 
+fn read_only_row<R: Provider + PinSlots>(
+    manager: &Manager,
+    ctx: &ResourceContext,
+) -> crate::call::ManagedRow<R> {
+    manager
+        .managed_row_any_read_only(
+            &R::key(),
+            ctx,
+            &AcquireOptions::default(),
+            &SlotIdentity::Unbound,
+        )
+        .expect("read-only row")
+        .downcast::<crate::call::ManagedRow<R>>()
+        .map(|row| *row)
+        .expect("typed read-only row")
+}
+
 fn row<R: Provider>(manager: &Manager) -> Arc<ManagedResource<R>> {
     manager
         .lookup_any_for_slot_identity_structural(
@@ -331,6 +348,19 @@ impl<R: Provider + PinSlots, const READ: bool> Operation<R> for Hang<READ> {
     async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
         let _attempt = cx.attempt(Cost::FREE).await?;
         std::future::pending::<()>().await;
+        Ok(())
+    }
+}
+
+/// A write whose body records an authority leak if it is ever polled.
+struct NeverWrite(Arc<AtomicUsize>);
+
+impl<R: Provider + PinSlots> Operation<R> for NeverWrite {
+    type Output = ();
+    const EFFECT: Effect = Effect::Write;
+
+    async fn run(self, _cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -691,6 +721,44 @@ async fn a_cancel_before_the_first_grant_settles_cancelled_not_sent() {
     assert_eq!(*error.kind(), ErrorKind::Cancelled);
     assert_eq!(error.sent(), SentState::NotSent);
     assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[tokio::test]
+async fn a_denied_unit_honours_pre_grant_cancellation_and_records_every_settlement() {
+    let manager = metered_manager();
+    resident(&manager, None);
+    let parent = CancellationToken::new();
+    let ctx = ResourceContext::minimal(Scope::default(), parent.clone());
+    let row = read_only_row::<Api>(&manager, &ctx);
+    let ran = Arc::new(AtomicUsize::new(0));
+
+    let unit = row.submit(NeverWrite(Arc::clone(&ran)));
+    unit.cancel();
+    let cancelled = unit
+        .await
+        .expect_err("unit cancellation wins before a grant");
+    assert_eq!(*cancelled.kind(), ErrorKind::Cancelled);
+    assert_eq!(cancelled.sent(), SentState::NotSent);
+
+    let denied = row
+        .submit(NeverWrite(Arc::clone(&ran)))
+        .await
+        .expect_err("a write needs execution-owner authority");
+    assert_eq!(*denied.kind(), ErrorKind::Permanent);
+    assert_eq!(denied.sent(), SentState::NotSent);
+
+    parent.cancel();
+    let parent_cancelled = row
+        .submit(NeverWrite(Arc::clone(&ran)))
+        .await
+        .expect_err("parent cancellation wins before a grant");
+    assert_eq!(*parent_cancelled.kind(), ErrorKind::Cancelled);
+    assert_eq!(parent_cancelled.sent(), SentState::NotSent);
+
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "provider code never ran");
+    let metrics = snapshot(&manager);
+    assert_eq!(metrics.call_units.not_sent, 3);
+    assert_eq!(metrics.call_attempts.granted, 0);
 }
 
 #[tokio::test(start_paused = true)]

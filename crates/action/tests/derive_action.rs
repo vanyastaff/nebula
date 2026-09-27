@@ -214,7 +214,7 @@ mod managed_row_fields {
         scope::Scope,
     };
     use nebula_resource::{
-        AcquireOptions, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig,
+        AcquireOptions, ErrorKind, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         call::{Cost, Effect, ManagedRow, OpCx, OpError, Operation, SentState},
         resource::{Provider, ResourceMetadataDraft},
@@ -358,6 +358,83 @@ mod managed_row_fields {
                 )
                 .map_err(|error| error.to_core_error())
         }
+
+        fn try_managed_row_any(
+            &self,
+            key: &ResourceKey,
+        ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
+            match self.0.managed_row_any(
+                key,
+                &ResourceContext::minimal(Scope::default(), CancellationToken::new()),
+                &AcquireOptions::default(),
+                &SlotIdentity::Unbound,
+            ) {
+                Ok(row) => Ok(Some(row)),
+                Err(error) if matches!(error.kind(), ErrorKind::NotFound) => Ok(None),
+                Err(error) => Err(error.to_core_error()),
+            }
+        }
+    }
+
+    /// Serves ordinary rows from `manager` but refuses one selected row as
+    /// temporarily unavailable.
+    struct RetryingRows {
+        manager: Arc<Manager>,
+        retry_key: ResourceKey,
+    }
+
+    impl ResourceAccessor for RetryingRows {
+        fn has(&self, _key: &ResourceKey) -> bool {
+            true
+        }
+
+        fn acquire_any(
+            &self,
+            _key: &ResourceKey,
+        ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+            Box::pin(async {
+                Err(CoreError::resource_unavailable(
+                    "lease", "unused", false, None,
+                ))
+            })
+        }
+
+        fn try_acquire_any(
+            &self,
+            _key: &ResourceKey,
+        ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn managed_row_any(
+            &self,
+            key: &ResourceKey,
+        ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
+            if key == &self.retry_key {
+                return Err(CoreError::resource_unavailable(
+                    key.to_string(),
+                    "row temporarily unavailable",
+                    true,
+                    None,
+                ));
+            }
+            RowsOf(Arc::clone(&self.manager)).managed_row_any(key)
+        }
+
+        fn try_managed_row_any(
+            &self,
+            key: &ResourceKey,
+        ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
+            if key == &self.retry_key {
+                return Err(CoreError::resource_unavailable(
+                    key.to_string(),
+                    "row temporarily unavailable",
+                    true,
+                    None,
+                ));
+            }
+            RowsOf(Arc::clone(&self.manager)).try_managed_row_any(key)
+        }
     }
 
     fn register<R>(manager: &Manager, resource: R)
@@ -438,5 +515,43 @@ mod managed_row_fields {
             panic!("an explicit binding to an unregistered row must fail");
         };
         assert!(matches!(error, ActionError::Fatal { .. }), "{error}");
+    }
+
+    #[tokio::test]
+    async fn required_and_optional_rows_preserve_retryable_resolution_failures() {
+        let manager = Arc::new(Manager::new());
+        register(&manager, Db);
+
+        let required_context =
+            TestContextBuilder::new()
+                .build()
+                .with_resources(Arc::new(RetryingRows {
+                    manager: Arc::clone(&manager),
+                    retry_key: Db::key(),
+                }));
+        let Err(required_error) = RowAction::from_workflow_node(&node(), &required_context).await
+        else {
+            panic!("required row is temporarily unavailable");
+        };
+        assert!(
+            matches!(required_error, ActionError::Retryable { .. }),
+            "{required_error}"
+        );
+
+        let optional_context =
+            TestContextBuilder::new()
+                .build()
+                .with_resources(Arc::new(RetryingRows {
+                    manager,
+                    retry_key: ResourceKey::new("cache").expect("valid default slot id"),
+                }));
+        let Err(optional_error) = RowAction::from_workflow_node(&node(), &optional_context).await
+        else {
+            panic!("optional row is temporarily unavailable, not absent");
+        };
+        assert!(
+            matches!(optional_error, ActionError::Retryable { .. }),
+            "{optional_error}"
+        );
     }
 }

@@ -166,6 +166,26 @@ impl ResourceAccessor for EngineResourceAccessor {
             )
             .map_err(|e| Self::map_err(key, e))
     }
+
+    fn try_managed_row_any(
+        &self,
+        key: &ResourceKey,
+    ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
+        let options = match self.deadline {
+            Some(deadline) => AcquireOptions::default().with_deadline(deadline),
+            None => AcquireOptions::default(),
+        };
+        match self.manager.managed_row_any_read_only(
+            key,
+            &self.resource_ctx(),
+            &options,
+            &self.slot_identity_for(key),
+        ) {
+            Ok(row) => Ok(Some(row)),
+            Err(error) if matches!(error.kind(), ErrorKind::NotFound) => Ok(None),
+            Err(error) => Err(Self::map_err(key, error)),
+        }
+    }
 }
 
 /// Build slot identities for activation from resolved `(slot, credential)`

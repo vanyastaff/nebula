@@ -416,30 +416,46 @@ where
         sent = tracing::field::Empty,
         outcome = tracing::field::Empty,
     );
-    let run: Pin<Box<dyn Future<Output = Result<O::Output, OpError>> + Send>> =
-        if scope.admits(effect) {
-            Box::pin(
-                start_unit::<R, O>(host, Arc::clone(&shared), operation, effect, span.clone())
-                    .instrument(span),
+    let run: Pin<Box<dyn Future<Output = Result<O::Output, OpError>> + Send>> = if scope
+        .admits(effect)
+    {
+        Box::pin(
+            start_unit::<R, O>(host, Arc::clone(&shared), operation, effect, span.clone())
+                .instrument(span),
+        )
+    } else {
+        let denied_shared = Arc::clone(&shared);
+        let denied_span = span.clone();
+        Box::pin(
+                async move {
+                    // Keep the operation lazy and let cancellation win while
+                    // the unit is still pending, exactly as it does before a
+                    // normal unit's first grant.
+                    let _operation = operation;
+                    let result = match denied_shared.refuse_if_cancelled() {
+                        Ok(()) => {
+                            tracing::warn!(
+                                target: "nebula.resource",
+                                parent: &denied_span,
+                                effect = effect.as_str(),
+                                "managed row refused an external effect without execution-owner authority"
+                            );
+                            Err(OpError::new(
+                                ErrorKind::Permanent,
+                                "managed row effect requires execution-owner authority",
+                            )
+                            .settled(SentState::NotSent, effect, host.key()))
+                        },
+                        Err(cancelled) => {
+                            Err(cancelled.settled(SentState::NotSent, effect, host.key()))
+                        },
+                    };
+                    host.record_settled(&denied_span, &result, SentState::NotSent, 0);
+                    result
+                }
+                .instrument(span),
             )
-        } else {
-            span.record("attempts", 0);
-            span.record("sent", SentState::NotSent.as_str());
-            span.record("outcome", "effect_not_admitted");
-            tracing::warn!(
-                target: "nebula.resource",
-                parent: &span,
-                effect = effect.as_str(),
-                "managed row refused an external effect without execution-owner authority"
-            );
-            let error = OpError::new(
-                ErrorKind::Permanent,
-                "managed row effect requires execution-owner authority",
-            )
-            .settled(SentState::NotSent, effect, &key);
-            debug_assert_eq!(error.sent(), SentState::NotSent);
-            Box::pin(async move { Err(error) }.instrument(span))
-        };
+    };
     Unit { shared, key, run }
 }
 

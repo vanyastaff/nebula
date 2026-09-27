@@ -355,6 +355,49 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
         let optional = slot.optional;
         let lazy = slot.lazy;
 
+        // Managed rows already return the action-layer error classification
+        // chosen by the accessor. Preserve it verbatim: wrapping a revoked or
+        // suspended row in `fatal` would disable the engine retry policy. An
+        // optional row uses the typed try seam so only genuine absence is
+        // `None`; lifecycle and type failures still propagate.
+        if slot.row {
+            debug_assert!(!lazy, "managed rows cannot be lazy");
+            let stmt = if optional {
+                quote! {
+                    let #field = {
+                        let explicit_binding = #binding_call;
+                        let slot_id = explicit_binding.unwrap_or(#slot_key_lit);
+                        if explicit_binding.is_some() {
+                            match #resolve_call {
+                                Ok(row) => Some(row),
+                                Err(error) => return Err(error),
+                            }
+                        } else {
+                            match <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
+                                ::try_managed_row_by_id::<#inner_ty>(ctx, slot_id)
+                            {
+                                Ok(row) => row,
+                                Err(error) => return Err(error),
+                            }
+                        }
+                    };
+                }
+            } else {
+                quote! {
+                    let #field = {
+                        let slot_id = #binding_call.unwrap_or(#slot_key_lit);
+                        match #resolve_call {
+                            Ok(row) => row,
+                            Err(error) => return Err(error),
+                        }
+                    };
+                }
+            };
+            stmts.push(stmt);
+            idents.push(field.clone());
+            continue;
+        }
+
         // Build the per-slot resolution block. Each shape produces a
         // value of the field's declared type.
         //
