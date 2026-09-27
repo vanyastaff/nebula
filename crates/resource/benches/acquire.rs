@@ -13,6 +13,9 @@
 //!   release (destroy). The cold path, for the hit/miss ratio.
 //! - `resident_hit` — acquire of the shared resident instance (clone) →
 //!   drop. The cheapest lease the framework hands out.
+//! - `lease_pooled_attempt` / `row_pooled_attempt` — one managed attempt on
+//!   a one-connection pool through a lease facade and through a row facade
+//!   that checks out per attempt (idle hit, release included).
 
 use std::hint::black_box;
 
@@ -501,10 +504,93 @@ fn bench_strict_attempt_admission(c: &mut Criterion) {
     group.finish();
 }
 
+/// One free attempt on the keep-pool, settled `Sent`.
+struct PooledAttempt;
+
+impl nebula_resource::call::Operation<KeepPool> for PooledAttempt {
+    type Output = u64;
+
+    async fn run(
+        self,
+        cx: &mut nebula_resource::call::OpCx<'_, KeepPool>,
+    ) -> Result<u64, nebula_resource::call::OpError> {
+        let attempt = cx.attempt(nebula_resource::call::Cost::FREE).await?;
+        let instance = *attempt.instance();
+        attempt.settle(nebula_resource::call::SentState::Sent);
+        Ok(instance)
+    }
+}
+
+/// `lease_pooled_attempt` vs `row_pooled_attempt`: one managed unit of one
+/// free attempt on a one-connection pool, through a lease facade (the
+/// connection stays checked out between units) and through a row facade
+/// (each attempt passes the row gate, runs the acquire pipeline's
+/// admission — `Manager.admission` held for lock #1 only — checks out the
+/// idle connection and releases it when the attempt ends). The difference
+/// is the price of holding no connection between attempts.
+fn bench_row_attempt(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("bench runtime");
+    let mut group = c.benchmark_group("resource/attempt");
+    let one_connection = || {
+        let manager = Manager::new();
+        manager
+            .register(RegistrationSpec {
+                resource: KeepPool,
+                config: BenchCfg,
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: Pooled::<KeepPool>::new(
+                    PoolConfig {
+                        min_size: 0,
+                        max_size: 1,
+                        ..PoolConfig::default()
+                    },
+                    0,
+                ),
+                recovery_gate: None,
+                rate_limit: None,
+            })
+            .expect("register keep pool");
+        manager
+    };
+    let (lease_manager, lease, row_manager, row) = rt.block_on(async {
+        let lease_manager = one_connection();
+        let lease = lease_manager
+            .acquire_pooled::<KeepPool>(&bench_ctx(), &AcquireOptions::default())
+            .await
+            .expect("pooled acquire")
+            .into_managed();
+        let row_manager = one_connection();
+        let row = row_manager
+            .managed_row::<KeepPool>(&bench_ctx())
+            .expect("row facade");
+        // Warm the row's one connection into the idle queue.
+        row.submit(PooledAttempt).await.expect("warm the row");
+        (lease_manager, lease, row_manager, row)
+    });
+
+    group.bench_function("lease_pooled_attempt", |b| {
+        b.to_async(&rt).iter(|| async {
+            black_box(lease.submit(PooledAttempt).await.expect("granted"));
+        });
+    });
+    group.bench_function("row_pooled_attempt", |b| {
+        b.to_async(&rt).iter(|| async {
+            black_box(row.submit(PooledAttempt).await.expect("granted"));
+        });
+    });
+    group.finish();
+    drop((lease, lease_manager, row, row_manager));
+}
+
 criterion_group!(
     benches,
     bench_acquire,
     bench_strict_credential_admission,
-    bench_strict_attempt_admission
+    bench_strict_attempt_admission,
+    bench_row_attempt
 );
 criterion_main!(benches);
