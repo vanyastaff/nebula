@@ -458,8 +458,9 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
         pub mod __private {
             pub mod action {
                 pub use nebula_action::{
-                    Action, ActionContext, ActionContextExt, ActionError, ActionMetadataDraft,
-                    ActionResult, FromWorkflowNode, MetadataVersion, StatelessAction, metadata_name,
+                    Action, ActionContext, ActionContextExt, ActionEffectContract, ActionError,
+                    ActionMetadataDraft, ActionResult, FromWorkflowNode, MetadataVersion,
+                    StatelessAction, metadata_name,
                 };
             }
             pub mod core {

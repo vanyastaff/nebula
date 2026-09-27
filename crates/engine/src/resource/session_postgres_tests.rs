@@ -1,5 +1,5 @@
 //! PostgreSQL acceptance of managed row sessions (PG1–PG8), and of the
-//! action path to them (PG9).
+//! read-only action path to a managed row (PG9).
 //!
 //! A pooled resource whose instance is a real `PgConnection`, authenticated
 //! with a `basic_auth` credential projected by the real runtime over the
@@ -929,6 +929,20 @@ impl Operation<PgRow> for Throttle {
     }
 }
 
+/// Checks out an authenticated backend without producing a business effect.
+struct CheckoutRead;
+
+impl Operation<PgRow> for CheckoutRead {
+    type Output = ();
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OpCx<'_, PgRow>) -> Result<(), OpError> {
+        let attempt = cx.attempt(Cost::ONE).await?;
+        attempt.settle(SentState::NotSent);
+        Ok(())
+    }
+}
+
 /// PG7: a session past its deadline mid-query is an unknown outcome; its
 /// backend goes away and the write does not apply.
 #[tokio::test]
@@ -970,62 +984,40 @@ async fn a_session_past_its_deadline_is_cut_off_and_applies_nothing() {
     pg.cleanup().await;
 }
 
-/// PG9: an action's session commits visibly; a session queued behind a
-/// connection held on an advisory lock is refused unsent when the
+/// PG9: an action can read through its row, but a write session is refused
+/// before the backend. A read waiting for quota is refused unsent when the
 /// execution's token is cancelled, and no new backend is started.
 #[tokio::test]
-async fn an_action_session_commits_and_a_cancelled_queued_session_starts_no_backend() {
+async fn an_action_row_is_read_only_and_cancellation_starts_no_backend() {
     let Some(pg) = setup().await else { return };
     let holder_token = CancellationToken::new();
     let holder_row = pg.action_row(&pg.activated, &holder_token);
-    let pid = pg
+    holder_row
+        .submit(CheckoutRead)
+        .await
+        .expect("an action read reaches PostgreSQL");
+    let backends = pg.backends().await;
+    assert_eq!(backends.len(), 1, "one authenticated backend: {backends:?}");
+    let pid = backends[0].0;
+
+    let error = pg
         .insert(&holder_row, 1)
         .await
-        .expect("an action session commits");
-    assert!(pg.has_row(1).await, "visible to the admin");
+        .expect_err("an action write session is refused");
+    assert_eq!(*error.kind(), nebula_resource::ErrorKind::Permanent);
+    assert_eq!(error.sent(), SentState::NotSent);
+    assert!(!pg.has_row(1).await, "the provider body did not run");
 
-    // The only connection waits on an advisory lock the admin holds.
-    let lock = i64::try_from(ulid::Ulid::new().random() & 0x7fff_ffff).expect("fits");
-    let mut admin_lock = pg.admin.acquire().await.expect("a lock holder");
-    sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(lock)
-        .execute(&mut *admin_lock)
+    holder_row
+        .submit(Throttle)
         .await
-        .expect("the admin holds the lock");
-    let holding = tokio::spawn(
-        holder_row.session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
-            Box::pin(async move {
-                sqlx::query("SELECT pg_advisory_lock($1)")
-                    .bind(lock)
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(query_failed)?;
-                sqlx::query("INSERT INTO ledger (id) VALUES (2)")
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(query_failed)?;
-                Ok(())
-            })
-        }),
-    );
-    pg.until("the held session waits on the lock", || async {
-        sqlx::query_scalar::<_, i64>(
-            "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
-             WHERE l.locktype = 'advisory' AND NOT l.granted AND a.usename = $1",
-        )
-        .bind(&pg.role)
-        .fetch_one(&pg.admin)
-        .await
-        .expect("the admin reads pg_locks")
-            == 1
-    })
-    .await;
+        .expect("the row reports a provider pause");
 
-    // A second action's session queues for the row gate, then its
-    // execution is cancelled.
+    // A second action's read waits for quota, then its execution is
+    // cancelled.
     let queued_token = CancellationToken::new();
     let queued_row = pg.action_row(&pg.activated, &queued_token);
-    let mut queued = pg.insert(&queued_row, 3);
+    let mut queued = queued_row.submit(CheckoutRead);
     assert!(futures::poll!(&mut queued).is_pending(), "queued");
     tokio::task::yield_now().await;
     assert!(futures::poll!(&mut queued).is_pending(), "still queued");
@@ -1036,22 +1028,6 @@ async fn an_action_session_commits_and_a_cancelled_queued_session_starts_no_back
     let backends = pg.backends().await;
     assert_eq!(backends.len(), 1, "no new backend: {backends:?}");
     assert_eq!(backends[0].0, pid);
-
-    sqlx::query("SELECT pg_advisory_unlock($1)")
-        .bind(lock)
-        .execute(&mut *admin_lock)
-        .await
-        .expect("the lock opens");
-    drop(admin_lock);
-    holding
-        .await
-        .expect("joined")
-        .expect("the held session commits");
-    assert!(pg.has_row(2).await);
-    assert!(
-        !pg.has_row(3).await,
-        "the cancelled session applied nothing"
-    );
     drop((holder_row, queued_row));
     pg.cleanup().await;
 }
