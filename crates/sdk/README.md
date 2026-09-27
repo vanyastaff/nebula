@@ -245,7 +245,8 @@ The SDK-only fixture compiles a logger authored against it
 (`managed_no_deref`); runtime behaviour is tested in the resource crate. See
 the resource README, "Managed call facade". Streaming units (`StreamOperation`,
 `StreamSink`, `Streaming`, `ConsumerGone`) run through the same facade with
-`Managed::submit_streaming`.
+`Managed::submit_streaming`, or per-attempt checkout with
+`ManagedRow::submit_streaming`.
 
 **Credentialed resources:** `integration::resource` re-exports `CredentialSlot`
 and `CredentialGuard`, and `integration::credential` (and the prelude)

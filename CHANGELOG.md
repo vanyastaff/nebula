@@ -717,6 +717,9 @@ let admitted = recorded.readmit_against(fresh)?;
   ordinary unit, through a bounded buffer; the unit's error follows the
   items once, and a dropped or cancelled consumer ends the operation. The
   SDK re-exports the family in `integration::resource`.
+  `ManagedRow::submit_streaming` runs one on a managed row: each attempt
+  waits for quota and the row gate with nothing checked out, and a consumer
+  gone mid-stream releases the attempt's checkout and gate permit.
 - **SDK-only credentialed resources.** `integration::resource` re-exports
   `CredentialSlot` and `CredentialGuard`, and `integration::credential` and
   the prelude `BearerTokenCredential`, so a derived credentialed resource

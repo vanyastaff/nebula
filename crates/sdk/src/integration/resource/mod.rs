@@ -46,8 +46,8 @@
 //! [`Throttle`] becomes [`Attempt::report`], and `unlimited` has no
 //! replacement by design.
 //!
-//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] runs as
-//! one unit that also sends items through a bounded [`StreamSink`]; the
+//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] or
+//! [`ManagedRow::submit_streaming`] runs as one unit that also sends items through a bounded [`StreamSink`]; the
 //! caller reads them from [`Streaming`], then the unit's error, if any, once.
 //!
 //! Credentials are declared on the resource struct with

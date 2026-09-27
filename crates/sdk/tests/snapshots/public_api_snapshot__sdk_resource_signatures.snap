@@ -543,6 +543,9 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
 impl<R> ManagedRow<R> where R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone {
     pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Unit<T> where T: Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
 }
+impl<R: Provider + PinSlots> ManagedRow<R> {
+    pub fn submit_streaming<O: StreamOperation<R>>(&self, operation: O, capacity: NonZeroUsize) -> Streaming<O::Item, O::Output>;
+}
 impl<R: Provider> Clone for ManagedRow<R>
 impl<R: Provider> fmt::Debug for ManagedRow<R>
 

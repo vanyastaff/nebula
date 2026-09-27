@@ -625,6 +625,14 @@ facade latches the row to `PerAttempt`; a strict row reports
 `StrictPerAttempt`. It is bound to one registration: removed or replaced,
 its units fail `Cancelled`.
 
+`ManagedRow::submit_streaming(op, capacity)` runs a `StreamOperation` as a
+row unit, with the same `Streaming` handle and delivery rules as
+`Managed::submit_streaming`: each attempt books its quota and passes the row
+gate with nothing held, then checks out. Items sent while an `Attempt` is
+alive keep its checkout (a slow consumer holds the connection through
+backpressure); a consumer that drops or cancels mid-stream ends the
+operation at its next send, releasing the checkout and its gate permit.
+
 A pooled provider that implements `call::SessionProvider` runs **sessions**
 — several native calls on one connection as one unit:
 

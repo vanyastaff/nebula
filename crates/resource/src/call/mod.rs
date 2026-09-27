@@ -165,13 +165,17 @@
 //!
 //! # Streaming
 //!
-//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] runs
-//! as one ordinary unit that also sends items through a bounded
-//! [`StreamSink`]; the caller pulls them from [`Streaming`], then the unit's
-//! error, if any, once. A mid-stream failure is never an item, a dropped or
-//! cancelled consumer ends the operation at its next send, and the lease
-//! closing is honoured by selecting on [`OpCx::closing`] (CONTRACT.md:57).
-//! [`StreamOperation`] documents the delivery rules.
+//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] or
+//! [`ManagedRow::submit_streaming`] runs as one ordinary unit that also
+//! sends items through a bounded [`StreamSink`]; the caller pulls them from
+//! [`Streaming`], then the unit's error, if any, once. A mid-stream failure
+//! is never an item, a dropped or cancelled consumer ends the operation at
+//! its next send, and the lease closing is honoured by selecting on
+//! [`OpCx::closing`] (CONTRACT.md:57). On a row, each attempt still checks
+//! out per attempt after its quota and gate waits; items sent while an
+//! attempt is alive keep its checkout, and a consumer gone mid-stream
+//! releases it with its gate permit. [`StreamOperation`] documents the
+//! delivery rules.
 //!
 //! # Observability
 //!

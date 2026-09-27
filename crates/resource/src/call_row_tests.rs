@@ -2,11 +2,14 @@
 //! their quota and row-gate waits, queue FIFO at the row gate, read their
 //! bound credentials once for an idle hit and twice for a create, never hold
 //! `Manager.admission` across a read or a create, and settle every refusal
-//! unsent.
+//! unsent. Streaming units on a row keep the same per-attempt checkout.
 
 use std::{
-    num::NonZeroU32,
-    sync::{Arc, atomic::Ordering},
+    num::{NonZeroU32, NonZeroUsize},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -18,7 +21,10 @@ use nebula_credential::{
 use rstest::rstest;
 use tokio::{sync::Notify, time::Instant};
 
-use super::super::{Cost, Effect, ManagedRow, OpCx, OpError, Operation, PinSlots, SentState};
+use super::super::{
+    Cost, Effect, ManagedRow, OpCx, OpError, Operation, PinSlots, SentState, StreamOperation,
+    StreamSink,
+};
 use crate::{
     AcquireOptions, CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind,
     Manager, PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec, ResourceContext,
@@ -863,4 +869,145 @@ async fn a_pool_saturated_by_a_plain_lease_refuses_backpressure_unsent() {
     assert_eq!(gate_free(&manager), 1, "the gate permit came back");
     assert_eq!(in_use::<StrictPooled>(&manager), 1, "only the plain lease");
     drop(lease);
+}
+
+// ── streaming units on a row ─────────────────────────────────────────────
+
+/// One attempt at `cost`; sends `items` values while its checkout is held,
+/// then settles `Sent`. Counts its end, however it ends.
+struct RowFeed {
+    cost: Cost,
+    items: u64,
+    ended: Arc<AtomicUsize>,
+}
+
+/// Counts the operation's end, including a drop.
+struct Ended(Arc<AtomicUsize>);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl<R: Provider + PinSlots> StreamOperation<R> for RowFeed {
+    type Item = u64;
+    type Output = u64;
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OpCx<'_, R>, mut sink: StreamSink<u64>) -> Result<u64, OpError> {
+        let _ended = Ended(Arc::clone(&self.ended));
+        let attempt = cx.attempt(self.cost).await?;
+        for value in 0..self.items {
+            sink.send(value).await?;
+        }
+        attempt.settle(SentState::Sent);
+        Ok(self.items)
+    }
+}
+
+fn row_feed(cost: Cost, items: u64) -> (RowFeed, Arc<AtomicUsize>) {
+    let ended = Arc::new(AtomicUsize::new(0));
+    (
+        RowFeed {
+            cost,
+            items,
+            ended: Arc::clone(&ended),
+        },
+        ended,
+    )
+}
+
+fn capacity(items: usize) -> NonZeroUsize {
+    NonZeroUsize::new(items).expect("non-zero")
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_row_stream_delivers_its_items_in_order_and_releases_its_checkout() {
+    let manager = Manager::new();
+    pooled(&manager, 1, None);
+    let row = facade::<StrictPooled>(&manager);
+
+    let (operation, ended) = row_feed(Cost::FREE, 5);
+    let mut stream = row.submit_streaming(operation, capacity(2));
+    let mut items = Vec::new();
+    while let Some(item) = stream.next().await {
+        items.push(item.expect("no error"));
+    }
+    assert_eq!(items, [0, 1, 2, 3, 4]);
+    assert_eq!(stream.finish().await.expect("output"), 5);
+    assert_eq!(ended.load(Ordering::SeqCst), 1);
+    until_in_use::<StrictPooled>(&manager, 0).await;
+    assert_eq!(gate_free(&manager), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_a_row_stream_mid_stream_releases_the_checkout_and_the_gate() {
+    let manager = Manager::new();
+    pooled(&manager, 1, None);
+    let row = facade::<StrictPooled>(&manager);
+
+    let (operation, ended) = row_feed(Cost::FREE, 100);
+    let mut stream = row.submit_streaming(operation, capacity(1));
+    assert_eq!(stream.next().await.expect("an item").expect("no error"), 0);
+    settle_tasks().await;
+    assert_eq!(
+        in_use::<StrictPooled>(&manager),
+        1,
+        "backpressure holds the attempt's checkout"
+    );
+    assert_eq!(gate_free(&manager), 0);
+    assert_eq!(ended.load(Ordering::SeqCst), 0);
+
+    drop(stream);
+    settle_tasks().await;
+    assert_eq!(ended.load(Ordering::SeqCst), 1, "the operation ended");
+    until_in_use::<StrictPooled>(&manager, 0).await;
+    assert_eq!(gate_free(&manager), 1, "the gate permit came back");
+
+    // The row serves the next unit.
+    row.submit(Once(Cost::FREE)).await.expect("next unit");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_row_stream_waits_for_quota_with_nothing_checked_out() {
+    let manager = Manager::new();
+    pooled(&manager, 1, Some(RowLimit::rate(per_second(1, 1))));
+    let row = facade::<StrictPooled>(&manager);
+
+    // A books the only permit and holds its checkout.
+    let (operation, a) = held(Cost::ONE);
+    let first = tokio::spawn(row.submit(operation));
+    a.entered.notified().await;
+
+    let started = Instant::now();
+    let (operation, _ended) = row_feed(Cost::ONE, 1);
+    let stream = row.submit_streaming(operation, capacity(1));
+    let reader = tokio::spawn(async move {
+        let mut stream = stream;
+        let first = stream.next().await;
+        (first, stream.finish().await)
+    });
+    settle_tasks().await;
+    assert_eq!(in_use::<StrictPooled>(&manager), 1, "only A's checkout");
+
+    a.release.notify_one();
+    first.await.expect("joined").expect("A settles");
+    until_in_use::<StrictPooled>(&manager, 0).await;
+    assert!(
+        !reader.is_finished(),
+        "the stream is still waiting for quota"
+    );
+    assert_eq!(
+        in_use::<StrictPooled>(&manager),
+        0,
+        "the stream holds no connection while it waits"
+    );
+
+    let (item, output) = reader.await.expect("joined");
+    assert_eq!(item.expect("an item").expect("no error"), 0);
+    assert_eq!(output.expect("output"), 1);
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+    until_in_use::<StrictPooled>(&manager, 0).await;
+    assert_eq!(gate_free(&manager), 1);
 }
