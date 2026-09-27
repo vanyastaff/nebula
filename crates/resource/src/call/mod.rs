@@ -108,6 +108,16 @@
 //! - The final admission re-checks local admission only; the strict
 //!   per-attempt credential read plugs in at that step later.
 //!
+//! # Streaming
+//!
+//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] runs
+//! as one ordinary unit that also sends items through a bounded
+//! [`StreamSink`]; the caller pulls them from [`Streaming`], then the unit's
+//! error, if any, once. A mid-stream failure is never an item, a dropped or
+//! cancelled consumer ends the operation at its next send, and the lease
+//! closing is honoured by selecting on [`OpCx::closing`] (CONTRACT.md:57).
+//! [`StreamOperation`] documents the delivery rules.
+//!
 //! # Observability
 //!
 //! Each unit runs in a `nebula.resource.unit` span recording its key,
@@ -122,6 +132,7 @@ mod cost;
 mod error;
 mod managed;
 mod pin;
+mod stream;
 
 use std::{future::Future, num::NonZeroU32};
 
@@ -129,6 +140,7 @@ pub use cost::{Cost, Effect, SentState};
 pub use error::OpError;
 pub use managed::{Attempt, Managed, OpCx, UNIT_DEADLINE_CAP, Unit};
 pub use pin::PinSlots;
+pub use stream::{ConsumerGone, StreamOperation, StreamSink, Streaming};
 
 use crate::resource::Provider;
 

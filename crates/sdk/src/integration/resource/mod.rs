@@ -31,11 +31,26 @@
 //! row used this way reports the `PerAttempt` (`per_attempt`) profile. The
 //! facade is not frozen yet, so it is not in the prelude.
 //!
+//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] runs as
+//! one unit that also sends items through a bounded [`StreamSink`]; the
+//! caller reads them from [`Streaming`], then the unit's error, if any, once.
+//!
+//! Credentials are declared on the resource struct with
+//! `#[derive(Resource)]` and `#[credential(key = "…")]` fields of type
+//! [`CredentialSlot<C>`](CredentialSlot) — a [`SlotCell`] holding the
+//! credential's projected [`CredentialGuard`]. A unit reads them only
+//! through its pinned snapshot ([`Attempt::slots`]).
+//!
 //! Runtime registration, dispatch, and cleanup queues remain engine-owned.
 
+#[cfg(feature = "resource-http")]
+pub mod http;
+
 pub use nebula_core::{ResourceKey, resource_key};
+pub use nebula_credential::CredentialGuard;
 pub use nebula_resource::call::{
-    Attempt, Cost, Effect, Managed, OpCx, OpError, Operation, PinSlots, SentState, Unit,
+    Attempt, ConsumerGone, Cost, Effect, Managed, OpCx, OpError, Operation, PinSlots, SentState,
+    StreamOperation, StreamSink, Streaming, Unit,
 };
 pub use nebula_resource::rate_limit::{
     DEFAULT_MAX_PENALTY, LimitScope, Limited, LimitedError, NoThrottle, OnError, Override, Rate,
@@ -49,9 +64,9 @@ pub use nebula_resource::topology::{
     Topology, Unavailable,
 };
 pub use nebula_resource::{
-    Bounded, BoundedMode, BoundedProvider, CheckCost, ClassifyError, CredentialUnavailableReason,
-    Error, ErrorKind, HasCredentialSlots, LeaseClosing, PoolConfig, PoolProvider, Pooled, Provider,
-    ReleaseOutcome, Resident, ResidentConfig, ResidentProvider, Resource, ResourceConfig,
-    ResourceContext, ResourceGuard, ResourceMetadataDraft, SlotCell, TeardownCx, TeardownReason,
-    TopologyTag, no_credential_slots,
+    Bounded, BoundedMode, BoundedProvider, CheckCost, ClassifyError, CredentialSlot,
+    CredentialUnavailableReason, Error, ErrorKind, HasCredentialSlots, LeaseClosing, PoolConfig,
+    PoolProvider, Pooled, Provider, ReleaseOutcome, Resident, ResidentConfig, ResidentProvider,
+    Resource, ResourceConfig, ResourceContext, ResourceGuard, ResourceMetadataDraft, SlotCell,
+    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };

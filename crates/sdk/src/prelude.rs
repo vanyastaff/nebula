@@ -109,6 +109,7 @@ pub use nebula_credential::{
     // Built-in credentials
     ApiKeyCredential,
     BasicAuthCredential,
+    BearerTokenCredential,
     Credential,
     CredentialError,
     // Author-owned integration-catalog metadata intent
