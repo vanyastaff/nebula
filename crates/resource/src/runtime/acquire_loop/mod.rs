@@ -191,7 +191,8 @@ where
         //      `accept` hook, `prepare` below) schedules an async
         //      `destroy(into_owned_instance(entry))` via the ReleaseQueue instead of
         //      leaking the instance through a plain `Drop`.
-        let (mut cancel_guard, checkout_epoch) = self.checkout_or_create(ctx, &config).await?;
+        let (mut cancel_guard, checkout_epoch, created) =
+            self.checkout_or_create(ctx, &config).await?;
 
         // 6. Per-acquire session init. `prepare` borrows the entry mutably from
         //    the cancel guard (a distinct object from `self`), so the topology
@@ -217,7 +218,9 @@ where
 
         // 7. Snapshot author metadata while the entry remains armed, then
         // synchronously transfer ownership into the completed lease guard.
-        Ok(self.build_guard(cancel_guard, checkout_epoch, permit, generation, metrics))
+        Ok(self
+            .build_guard(cancel_guard, checkout_epoch, permit, generation, metrics)
+            .with_created(created))
     }
 
     /// Framework checkout-then-create: pop the first fresh idle entry (destroying
@@ -227,8 +230,9 @@ where
     /// This is the inner half of the acquire loop; factored out so a future
     /// `checkout_keyed` (affinity) variant entries in beside it without reshaping
     /// the loop. Returns the chosen entry — already armed in its
-    /// [`EntryCreateGuard`] — and its checkout epoch (the create path stamps
-    /// the current epoch).
+    /// [`EntryCreateGuard`] — its checkout epoch (the create path stamps
+    /// the current epoch), and whether it was created for this checkout
+    /// rather than taken from the idle store.
     ///
     /// # Cancel safety
     ///
@@ -246,7 +250,7 @@ where
         self: &Arc<Self>,
         ctx: &ResourceContext,
         config: &R::Config,
-    ) -> Result<(EntryCreateGuard<R>, u64), Error> {
+    ) -> Result<(EntryCreateGuard<R>, u64, bool), Error> {
         loop {
             if self.store.is_closed() {
                 return Err(Error::cancelled().with_resource_key(R::key()));
@@ -318,14 +322,14 @@ where
                 // No await between `create_entry` returning and this wrap, so
                 // the created instance is guarded before the caller's next
                 // suspension point.
-                return Ok((cancel_guard, create_epoch));
+                return Ok((cancel_guard, create_epoch, true));
             };
             if self
                 .topology
                 .accept(cancel_guard.entry_mut(), &self.resource, ctx)
                 .await
             {
-                return Ok((cancel_guard, epoch));
+                return Ok((cancel_guard, epoch, false));
             }
             // Rejected (stale fingerprint / max-lifetime / broken) — destroy and
             // loop to the next idle entry, then create. Queue admission, not

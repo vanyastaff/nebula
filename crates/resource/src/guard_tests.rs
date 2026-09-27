@@ -287,3 +287,116 @@ async fn hold_watchdog_emits_when_lease_overruns_deadline() {
         other => panic!("expected HoldDeadlineExceeded, got {other:?}"),
     }
 }
+
+// ── per-checkout facts the managed row facade reads ──────────────────────
+
+mod checkout {
+    use std::sync::Arc;
+
+    use tokio::sync::Semaphore;
+
+    use crate::{
+        AcquireOptions, Manager, Pooled, ReleaseOutcome, ResourceGuard,
+        manager::strict_fixtures::{
+            StrictPooled, bind, config, context, credential_id, pool_config, register, tenant,
+        },
+        resource::ResourceConfig as _,
+    };
+
+    fn pooled(manager: &Manager) -> StrictPooled {
+        let resource = register(
+            manager,
+            StrictPooled::new(),
+            Pooled::new(pool_config(), config(1).fingerprint()),
+        )
+        .expect("register");
+        bind(&resource.db, credential_id(), 1, 1);
+        resource
+    }
+
+    async fn checkout(manager: &Manager) -> ResourceGuard<StrictPooled> {
+        manager
+            .acquire_for_identity::<StrictPooled>(&context(), &AcquireOptions::default(), &tenant())
+            .await
+            .expect("acquire")
+    }
+
+    #[tokio::test]
+    async fn a_created_checkout_is_marked_and_an_idle_hit_is_not() {
+        let manager = Manager::new();
+        let resource = pooled(&manager);
+
+        let first = checkout(&manager).await;
+        assert!(first.created(), "an empty pool creates");
+        assert_eq!(first.built_slot_epoch(), Some(resource.db.generation()));
+        assert_eq!(
+            first.release().await.expect("release"),
+            ReleaseOutcome::Completed
+        );
+
+        let second = checkout(&manager).await;
+        assert!(!second.created(), "the recycled entry is an idle hit");
+        assert_eq!(second.built_slot_epoch(), Some(resource.db.generation()));
+        assert_eq!(resource.probe.creates(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_built_slot_epoch_is_read_before_the_create() {
+        let manager = Arc::new(Manager::new());
+        let resource = pooled(&manager);
+        let before = resource.db.generation();
+        resource.probe.park_next_create();
+        let entered = resource.probe.create_entered.notified();
+
+        let acquire = tokio::spawn({
+            let manager = Arc::clone(&manager);
+            async move { checkout(&manager).await }
+        });
+        entered.await;
+        // A rotation lands while the instance is being built.
+        bind(&resource.db, credential_id(), 2, 1);
+        resource.probe.release_create.notify_one();
+        let guard = acquire.await.expect("acquire task");
+
+        assert!(resource.db.generation() > before);
+        assert_eq!(
+            guard.built_slot_epoch(),
+            Some(before),
+            "stamped with the epoch read before the create"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_pooled_instance_is_reachable_mutably_through_the_lease() {
+        let manager = Manager::new();
+        let _resource = pooled(&manager);
+        let mut guard = checkout(&manager).await;
+
+        *guard.pooled_instance_mut().expect("live lease") = 7;
+        assert_eq!(*guard, 7, "the same entry `Deref` borrows");
+    }
+
+    #[tokio::test]
+    async fn a_row_slot_is_freed_only_when_the_release_settles() {
+        let manager = Manager::new();
+        let _resource = pooled(&manager);
+        let gate = Arc::new(Semaphore::new(1));
+        let permit = Arc::clone(&gate).acquire_owned().await.expect("open gate");
+        let guard = checkout(&manager).await.with_row_slot(permit);
+        assert_eq!(gate.available_permits(), 0);
+
+        drop(guard);
+        assert_eq!(
+            gate.available_permits(),
+            0,
+            "held until the queued cleanup ran"
+        );
+        for _ in 0..1_000 {
+            if gate.available_permits() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(gate.available_permits(), 1, "freed with the settlement");
+    }
+}
