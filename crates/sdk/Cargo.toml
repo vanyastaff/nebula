@@ -42,6 +42,10 @@ reqwest = { workspace = true, optional = true, features = ["rustls"] }
 httpdate = { version = "1", optional = true }
 tracing = { workspace = true, optional = true }
 zeroize = { version = "1", optional = true }
+# `resource-http`: public status/header/body types and basic-auth encoding.
+http = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 
 [dev-dependencies]
 # doctests only: `impl Provider` in the prelude resource example.
@@ -62,6 +66,15 @@ default = ["derive", "testing"]
 derive = []
 testing = ["dep:uuid"]
 http = ["dep:reqwest", "dep:httpdate", "dep:tracing", "dep:zeroize"]
+# HTTP resource adapter: `integration::resource::http`.
+resource-http = [
+  "dep:reqwest",
+  "dep:http",
+  "dep:bytes",
+  "dep:base64",
+  "dep:zeroize",
+  "dep:tracing",
+]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -90,4 +103,8 @@ allowed_external_types = [
   "chrono::*",
   "semver::*",
   "thiserror_impl::*",
+  # `integration::resource::http` (`resource-http`): status codes, header
+  # maps and body bytes; no reqwest or url type is public.
+  "http::*",
+  "bytes::*",
 ]
