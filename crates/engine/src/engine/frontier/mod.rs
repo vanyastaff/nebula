@@ -70,6 +70,10 @@ struct FrontierCtx<'a> {
     /// Running output-byte total shared with in-flight tasks for the
     /// budget guard.
     total_output_bytes: Arc<AtomicU64>,
+    /// When the execution's wall-clock budget (`max_duration`) runs out,
+    /// counted from this turn's start; bounds every managed row unit a node
+    /// submits. `None` without a budget.
+    execution_deadline: Option<Instant>,
 }
 
 impl<'a> FrontierCtx<'a> {
@@ -99,6 +103,7 @@ impl<'a> FrontierCtx<'a> {
             task_nodes: HashMap::new(),
             shared_expression_outputs: Arc::new(DashMap::new()),
             total_output_bytes,
+            execution_deadline: None,
         }
     }
 }
@@ -147,6 +152,11 @@ impl WorkflowEngine {
         initial_resolved: HashMap<NodeKey, usize>,
     ) -> Result<Option<(NodeKey, String)>, EngineError> {
         let mut ctx = FrontierCtx::new(exec_state, outputs, repo_version, resume_rx);
+        // What is left of the wall-clock budget when this turn started; an
+        // unrepresentable instant means no bound.
+        ctx.execution_deadline = budget.max_duration.and_then(|max_duration| {
+            started.checked_add(max_duration.saturating_sub(elapsed_before_turn))
+        });
 
         // Precompute how many incoming edges each node has
         ctx.required_count = node_map
