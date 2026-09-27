@@ -701,7 +701,7 @@ impl<R: Provider + PinSlots> fmt::Debug for OpCx<'_, R> {
     }
 }
 
-impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
+impl<R: Provider + PinSlots> OpCx<'_, R> {
     /// Asks for one provider attempt costing `cost`.
     ///
     /// The single linearization point of a unit. In order:
@@ -808,7 +808,7 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
     async fn admit(
         &mut self,
         cost: &Cost,
-    ) -> Result<(AttemptTarget<'u, R>, &UnitPin<R::Pinned>), OpError> {
+    ) -> Result<(AttemptTarget<'_, R>, &UnitPin<R::Pinned>), OpError> {
         match self.host {
             UnitHost::Lease(lease) => {
                 self.admit_local(cost, None).await?;
