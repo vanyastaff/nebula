@@ -29,7 +29,8 @@ use super::{
     cost::{Cost, Effect, SentState},
     error::OpError,
     pin::PinSlots,
-    row::RowShared,
+    row::{CheckoutFit, RowShared},
+    session::{SessionBinding, SessionProvider},
     strict::{UnitPin, capture_pin},
 };
 use crate::{
@@ -43,6 +44,7 @@ use crate::{
         admission::{AdmissionGeneration, CloseCause},
         managed::ManagedResource,
     },
+    topology::{PoolProvider, Pooled},
     topology_tag::TopologyTag,
 };
 
@@ -575,6 +577,12 @@ where
     // with nothing checked out instead.
     let permit = match &host {
         UnitHost::Lease(lease) => lease_unit_slot(lease, &shared, deadline).await.map(Some),
+        // Awaited inside a session of the same row, the unit would wait for
+        // the row gate while that session holds a checkout.
+        UnitHost::Row(row) if super::session::in_session_of(row.marker()) => Err(OpError::new(
+            ErrorKind::Permanent,
+            "a unit of a row awaited inside a session of the same row; refused",
+        )),
         UnitHost::Row(_) => Ok(None),
     };
     let permit = match permit {
@@ -759,6 +767,39 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
         })
     }
 
+    /// A session's single attempt on a row host: admitted like a row
+    /// attempt, on a checkout that fits the provider's
+    /// [`SessionBinding`], and destroyed on release unless the session
+    /// closed cleanly ([`Attempt::keep_instance`]).
+    pub(super) async fn attempt_session(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OpError>
+    where
+        R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
+    {
+        let UnitHost::Row(row) = self.host else {
+            return Err(OpError::new(
+                ErrorKind::Permanent,
+                "sessions run on a managed row",
+            ));
+        };
+        let fit: Option<CheckoutFit<R>> = match R::BINDING {
+            SessionBinding::Connection => Some(built_at_pinned_epoch::<R>),
+            SessionBinding::Session => None,
+        };
+        let (host, shared) = (self.host, self.shared);
+        let admitted = self.admit_row(row, &cost, fit).await;
+        host.record_attempt(admitted.is_ok());
+        let (mut checkout, pin) = admitted?;
+        checkout.taint_on_abandon = true;
+        Ok(Attempt {
+            target: AttemptTarget::Checkout(Box::new(checkout)),
+            managed: host.managed(),
+            pinned: pin.pinned(),
+            shared,
+            cost,
+            settled: false,
+        })
+    }
+
     /// Steps 1–6 of [`attempt`](Self::attempt); on a grant, what the
     /// attempt runs on and the unit's pin.
     async fn admit(
@@ -789,7 +830,7 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
                 }
             },
             UnitHost::Row(row) => {
-                let (checkout, pin) = self.admit_row(row, cost).await?;
+                let (checkout, pin) = self.admit_row(row, cost, None).await?;
                 Ok((AttemptTarget::Checkout(Box::new(checkout)), pin))
             },
         }
@@ -1002,6 +1043,44 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
         let mut attempt = self;
         attempt.shared.record(sent);
         attempt.settled = true;
+    }
+}
+
+/// Whether a pooled checkout was built at the credential slot epoch its
+/// unit pinned ([`SessionBinding::Connection`]).
+fn built_at_pinned_epoch<R>(guard: &ResourceGuard<R>, pinned_epoch: u64) -> bool
+where
+    R: PoolProvider + Provider<Topology = Pooled<R>> + Clone,
+{
+    guard.built_slot_epoch() == Some(pinned_epoch)
+}
+
+impl<'a, R> Attempt<'a, R>
+where
+    R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
+{
+    /// What a session opens on: the provider, the checked-out instance
+    /// (mutably — the checkout holds it exclusively), the unit's pinned
+    /// slots and the checkout's closing notice. `None` for an attempt that
+    /// has no checkout of its own.
+    pub(super) fn session_parts(
+        &mut self,
+    ) -> Option<(&'a R, &mut R::Instance, &'a R::Pinned, LeaseClosing)> {
+        let (managed, pinned) = (self.managed, self.pinned);
+        let AttemptTarget::Checkout(checkout) = &mut self.target else {
+            return None;
+        };
+        let closing = checkout.guard.closing();
+        let instance = checkout.guard.pooled_instance_mut()?;
+        Some((&managed.resource, instance, pinned, closing))
+    }
+
+    /// The session closed cleanly: its instance goes back to the pool when
+    /// the checkout is released.
+    pub(super) fn keep_instance(&mut self) {
+        if let AttemptTarget::Checkout(checkout) = &mut self.target {
+            checkout.taint_on_abandon = false;
+        }
     }
 }
 

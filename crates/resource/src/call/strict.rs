@@ -69,12 +69,20 @@ pub(crate) struct UnitPin<P> {
     generations: Option<Vec<(&'static str, u64)>>,
     /// Whether the generations read before and after the pin matched.
     stable: bool,
+    /// The resource's credential slot epoch, read inside the same bracket:
+    /// a connection-bound session runs only on an instance built at it.
+    slot_epoch: u64,
 }
 
 impl<P> UnitPin<P> {
     /// The snapshot every attempt of the unit reads.
     pub(crate) fn pinned(&self) -> &P {
         &self.pinned
+    }
+
+    /// The credential slot epoch the unit was pinned at.
+    pub(crate) fn slot_epoch(&self) -> u64 {
+        self.slot_epoch
     }
 
     /// Whether the pin saw no rotation while it loaded the slots.
@@ -108,6 +116,7 @@ pub(crate) fn capture_pin<R: Provider + PinSlots>(
     loop {
         let before = slot_generations(resource);
         let pinned = resource.pin_slots();
+        let slot_epoch = resource.credential_slot_epoch();
         let after = slot_generations(resource);
         let stable = before == after;
         if stable || tries >= PIN_CAPTURE_TRIES {
@@ -122,6 +131,7 @@ pub(crate) fn capture_pin<R: Provider + PinSlots>(
                 pinned,
                 generations: after,
                 stable,
+                slot_epoch,
             };
         }
         tries += 1;
@@ -307,6 +317,11 @@ mod tests {
         assert_eq!(pin.pinned(), &vec![("db", Some(4))]);
         assert_eq!(resource.pins.load(Ordering::SeqCst), 1);
         assert!(pin_is_current(&managed, &pin));
+        assert_eq!(
+            pin.slot_epoch(),
+            resource.db.generation(),
+            "the slot epoch is read in the same bracket"
+        );
 
         bind(&resource.db, credential_id(), 5, 1);
         assert!(

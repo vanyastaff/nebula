@@ -61,17 +61,20 @@ use super::{
         Checkout, OpCx, Unit, UnitHost, cancelled_before_grant, generation_refusal, submit_unit,
     },
     pin::PinSlots,
+    session::{SessionCx, SessionFuture, SessionProvider, SessionSpec, Sessioned},
     strict::{UnitPin, capture_pin, read_credentials, register_grant},
 };
 use crate::{
     context::ResourceContext,
     error::{Error, ErrorKind},
+    guard::ResourceGuard,
     hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
     manager::AcquireLink,
     options::AcquireOptions,
     registry::ManagedHandle as _,
     resource::Provider,
     runtime::{admission::AdmissionGeneration, managed::ManagedResource},
+    topology::{PoolProvider, Pooled},
 };
 
 /// A registered row turned into a per-unit checkout facade.
@@ -172,7 +175,61 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
     }
 }
 
+impl<R> ManagedRow<R>
+where
+    R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
+{
+    /// Runs `body` as one session: one unit, one attempt, on one checked-out
+    /// connection.
+    ///
+    /// The attempt books `spec`'s cost once, before the checkout, and is
+    /// admitted like any row attempt (see the module docs); calls the body
+    /// makes on the session are native and not counted. For a
+    /// [`SessionBinding::Connection`](super::SessionBinding::Connection)
+    /// provider the checkout must be built at the credential slot epoch the
+    /// unit pinned: an older idle instance is destroyed and replaced. Then
+    /// [`SessionProvider::open`] opens the session, `body` runs with it
+    /// borrowed, and [`SessionProvider::close`] commits when the body
+    /// succeeded and rolls back otherwise. A session is never retried by
+    /// the runtime.
+    ///
+    /// | Body | Close | Unit | Sent | Instance |
+    /// |---|---|---|---|---|
+    /// | `Ok(t)` | `Committed` | `Ok(t)` | `Sent` | recycled |
+    /// | `Ok` | `RolledBack { refused: Some(e) }` | `Err(e)` | `NotSent` | recycled |
+    /// | `Err(e)` | `RolledBack` | `Err(e)` | `NotSent` | recycled |
+    /// | any | `Unknown(e)` | `Err(e)` | `MaybeSent` | destroyed |
+    ///
+    /// Open failing is `NotSent`, destroys the instance and never calls the
+    /// body. A deadline or a panic mid-session is `MaybeSent` and destroys
+    /// the instance; for a [`Write`](super::Effect::Write) that is an
+    /// unknown outcome. [`SessionCx::closing`] is cooperative: a granted
+    /// session is never aborted. A session (or any unit) of the same row
+    /// awaited inside a session body is refused `Permanent` — it would wait
+    /// for the row gate while this session holds a checkout.
+    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Unit<T>
+    where
+        T: Send + 'static,
+        F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T>
+            + Send
+            + 'static,
+    {
+        let effect = spec.effect();
+        submit_unit(
+            UnitHost::Row(Arc::clone(&self.shared)),
+            Sessioned::new(spec, body),
+            effect,
+            "session",
+        )
+    }
+}
+
 impl<R: Provider> RowShared<R> {
+    /// The row's identity in the nested-session marker.
+    pub(super) fn marker(&self) -> usize {
+        Arc::as_ptr(&self.managed).addr()
+    }
+
     /// The admission generation a new unit of the row runs under: the row's
     /// current one, or the refusal of a row that has none.
     pub(super) fn unit_generation(&self) -> Result<Arc<AdmissionGeneration>, OpError> {
@@ -242,10 +299,16 @@ async fn cancelled(cancel: Option<&tokio_util::sync::CancellationToken>) {
 impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
     /// Steps 1–9 of a row attempt (see the module docs); on a grant, the
     /// attempt's checkout and the unit's pin.
+    ///
+    /// `fit` (a connection-bound session's) rejects a checkout built at
+    /// another credential slot epoch than the unit pinned: an idle one is
+    /// destroyed and the checkout retried until the deadline, a created one
+    /// refuses the attempt `Rebinding`.
     pub(super) async fn admit_row(
         &mut self,
         row: &'u RowShared<R>,
         cost: &Cost,
+        fit: Option<CheckoutFit<R>>,
     ) -> Result<(Checkout<R>, &UnitPin<R::Pinned>), OpError> {
         // 1–3: budget, the row pre-check and the quota, nothing held.
         self.admit_local(cost, Some(row)).await?;
@@ -291,18 +354,33 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
         //    checkout from the moment it exists.
         let options = AcquireOptions::default().with_deadline(self.deadline.into_std());
         let deadline = self.deadline;
+        let pinned_epoch = self.pin.as_ref().map_or_else(
+            || managed.resource.credential_slot_epoch(),
+            UnitPin::slot_epoch,
+        );
         let mut slot = slot;
         let (options_ref, ctx) = (&options, &row.ctx);
         let dispatch = || {
             let slot = slot.take();
-            let hook_timeout = deadline
-                .saturating_duration_since(tokio::time::Instant::now())
-                .min(DEFAULT_AUTHOR_HOOK_CEILING);
             async move {
-                let guard = row
-                    .link
-                    .dispatch_checkout(managed, ctx, options_ref, hook_timeout)
-                    .await?;
+                let guard = loop {
+                    let hook_timeout = deadline
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .min(DEFAULT_AUTHOR_HOOK_CEILING);
+                    let mut guard = row
+                        .link
+                        .dispatch_checkout(managed, ctx, options_ref, hook_timeout)
+                        .await?;
+                    match fit {
+                        Some(fits) if !fits(&guard, pinned_epoch) => {
+                            evict_unfit(&mut guard, deadline)?;
+                            // Wait for the eviction, so its topology permit
+                            // is back before the next checkout.
+                            let _outcome = guard.release().await;
+                        },
+                        _ => break guard,
+                    }
+                };
                 Ok(match slot {
                     Some(slot) => guard.with_row_slot(slot),
                     None => guard,
@@ -345,6 +423,40 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
         )?;
         Ok((Checkout::new(guard), pin))
     }
+}
+
+/// Whether a checkout may host the attempt, given the credential slot epoch
+/// its unit pinned (a connection-bound session's check).
+pub(super) type CheckoutFit<R> = fn(&ResourceGuard<R>, u64) -> bool;
+
+/// Taints a checkout that does not fit the unit's pin so its release
+/// destroys it. A created instance that does not fit means the pin itself
+/// was superseded: `Rebinding`. Past the unit's deadline: `Backpressure`.
+fn evict_unfit<R: Provider>(
+    guard: &mut ResourceGuard<R>,
+    deadline: tokio::time::Instant,
+) -> Result<(), Error> {
+    guard.taint();
+    if guard.created() {
+        tracing::debug!(
+            resource.key = %R::key(),
+            "a fresh instance is newer than the unit's pinned credentials; attempt refused"
+        );
+        return Err(crate::Manager::credential_unavailable_error(
+            &R::key(),
+            crate::error::CredentialUnavailableReason::Rebinding,
+        ));
+    }
+    tracing::debug!(
+        resource.key = %R::key(),
+        "idle instance built on superseded credentials evicted"
+    );
+    if tokio::time::Instant::now() >= deadline {
+        return Err(Error::backpressure(
+            "no instance at the unit's pinned credentials before the deadline",
+        ));
+    }
+    Ok(())
 }
 
 /// The refusal of a row attempt whose checkout failed: the acquire

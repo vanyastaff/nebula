@@ -566,10 +566,6 @@ impl<R: Provider> ResourceGuard<R> {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the managed row facade's sessions")
-)]
 impl<R> ResourceGuard<R>
 where
     R: crate::topology::PoolProvider + Provider<Topology = crate::topology::Pooled<R>> + Clone,

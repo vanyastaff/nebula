@@ -22,8 +22,9 @@ pub(crate) use super::credential_reads::{
 };
 use super::{Manager, ManagerConfig, RegistrationSpec};
 use crate::{
-    Bounded, Error, PinSlots, PoolConfig, Pooled, Provider, Resident, ResidentConfig,
+    Bounded, Error, ErrorKind, PinSlots, PoolConfig, Pooled, Provider, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
+    call::{OpError, SessionBinding, SessionClosed, SessionEnd, SessionProvider},
     resource::{HasCredentialSlots, ResourceMetadataDraft},
     runtime::managed::ManagedResource,
     topology::{
@@ -48,16 +49,87 @@ impl ResourceConfig for Config {
     }
 }
 
-/// Counts provider creates and can park the next one.
+/// Counts provider creates and can park the next one; scripts and counts
+/// the pooled fixtures' sessions.
 #[derive(Default)]
 pub(crate) struct Probe {
     creates: AtomicUsize,
     park_create: AtomicBool,
     pub(crate) create_entered: Notify,
     pub(crate) release_create: Notify,
+    opens: AtomicUsize,
+    fail_next_open: AtomicBool,
+    next_close: std::sync::Mutex<Option<SessionClosed>>,
+    /// What each opened session saw: the instance and the pinned slots.
+    opened: std::sync::Mutex<Vec<(u64, PinnedEpochs)>>,
+}
+
+/// A transaction over a pooled fixture's `u64` instance: adds `pending` to
+/// it on commit.
+pub(crate) struct Tx<'c> {
+    pub(crate) instance: &'c mut u64,
+    pub(crate) pending: u64,
 }
 
 impl Probe {
+    /// Sessions opened so far (failed opens included).
+    pub(crate) fn opens(&self) -> usize {
+        self.opens.load(Ordering::SeqCst)
+    }
+
+    /// The instance and pinned slots each successful open saw, in order.
+    pub(crate) fn opened(&self) -> Vec<(u64, PinnedEpochs)> {
+        self.opened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The next open fails.
+    pub(crate) fn fail_next_open(&self) {
+        self.fail_next_open.store(true, Ordering::SeqCst);
+    }
+
+    /// The next close reports `closed` whatever it was asked.
+    pub(crate) fn close_next_with(&self, closed: SessionClosed) {
+        *self
+            .next_close
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(closed);
+    }
+
+    fn open<'c>(&self, instance: &'c mut u64, slots: &PinnedEpochs) -> Result<Tx<'c>, OpError> {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        if self.fail_next_open.swap(false, Ordering::SeqCst) {
+            return Err(OpError::new(ErrorKind::Transient, "open refused"));
+        }
+        self.opened
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((*instance, slots.clone()));
+        Ok(Tx {
+            instance,
+            pending: 0,
+        })
+    }
+
+    fn close(&self, session: Tx<'_>, end: SessionEnd) -> SessionClosed {
+        let scripted = self
+            .next_close
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(scripted) = scripted {
+            return scripted;
+        }
+        match end {
+            SessionEnd::Commit => {
+                *session.instance += session.pending;
+                SessionClosed::Committed
+            },
+            _ => SessionClosed::RolledBack { refused: None },
+        }
+    }
     pub(crate) fn creates(&self) -> usize {
         self.creates.load(Ordering::SeqCst)
     }
@@ -257,9 +329,57 @@ impl ResidentProvider for StrictTwoSlot {}
 impl ResidentProvider for RotatingPin {}
 impl BoundedProvider for StrictBounded {}
 
+strict_provider!(
+    StrictPooledSession,
+    "strict-pooled-session",
+    Pooled<Self>,
+    ["db"]
+);
+
 impl PoolProvider for StrictPooled {
     async fn recycle(&self, _: &u64, _: &crate::InstanceMetrics) -> Result<RecycleDecision, Error> {
         Ok(RecycleDecision::Keep)
+    }
+}
+
+impl PoolProvider for StrictPooledSession {
+    async fn recycle(&self, _: &u64, _: &crate::InstanceMetrics) -> Result<RecycleDecision, Error> {
+        Ok(RecycleDecision::Keep)
+    }
+}
+
+/// Connection-bound sessions (the default binding) over the probe's script.
+impl SessionProvider for StrictPooled {
+    type Session<'c> = Tx<'c>;
+
+    async fn open<'c>(
+        &'c self,
+        instance: &'c mut u64,
+        slots: &'c PinnedEpochs,
+    ) -> Result<Tx<'c>, OpError> {
+        self.probe.open(instance, slots)
+    }
+
+    async fn close<'c>(&'c self, session: Tx<'c>, end: SessionEnd) -> SessionClosed {
+        self.probe.close(session, end)
+    }
+}
+
+/// Session-bound sessions: any healthy instance may host one.
+impl SessionProvider for StrictPooledSession {
+    type Session<'c> = Tx<'c>;
+    const BINDING: SessionBinding = SessionBinding::Session;
+
+    async fn open<'c>(
+        &'c self,
+        instance: &'c mut u64,
+        slots: &'c PinnedEpochs,
+    ) -> Result<Tx<'c>, OpError> {
+        self.probe.open(instance, slots)
+    }
+
+    async fn close<'c>(&'c self, session: Tx<'c>, end: SessionEnd) -> SessionClosed {
+        self.probe.close(session, end)
     }
 }
 

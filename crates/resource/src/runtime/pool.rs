@@ -116,10 +116,6 @@ pub struct PoolEntry<R: Provider> {
     built_slot_epoch: u64,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used by the managed row facade's sessions")
-)]
 impl<R: Provider> PoolEntry<R> {
     /// The instance, mutably: the framework holds the entry exclusively for
     /// the whole lease.
