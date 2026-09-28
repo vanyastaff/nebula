@@ -1,4 +1,5 @@
-//! PostgreSQL acceptance of managed row sessions (PG1–PG8).
+//! PostgreSQL acceptance of managed row sessions (PG1–PG8), and of the
+//! read-only action path to a managed row (PG9).
 //!
 //! A pooled resource whose instance is a real `PgConnection`, authenticated
 //! with a `basic_auth` credential projected by the real runtime over the
@@ -511,6 +512,25 @@ impl Pg {
             .expect("the row facade")
     }
 
+    /// The facade of the activated row as an action resolves it: through
+    /// the engine's resource accessor, cancelled with `cancel`.
+    fn action_row(
+        &self,
+        activated: &ActivatedResource,
+        cancel: &CancellationToken,
+    ) -> ManagedRow<PgRow> {
+        use nebula_action::ActionContextExt as _;
+        action_context(
+            &self.fixture.manager,
+            &self.fixture.scope,
+            &self.key,
+            &activated.slot_identity,
+            cancel,
+        )
+        .managed_row_by_id::<PgRow>(self.key.as_str())
+        .expect("the action's row facade")
+    }
+
     /// Commits `insert into ledger values (id)`; yields the backend pid.
     fn insert(&self, row: &ManagedRow<PgRow>, id: i32) -> nebula_resource::call::Unit<i32> {
         row.session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
@@ -909,6 +929,20 @@ impl Operation<PgRow> for Throttle {
     }
 }
 
+/// Checks out an authenticated backend without producing a business effect.
+struct CheckoutRead;
+
+impl Operation<PgRow> for CheckoutRead {
+    type Output = ();
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OpCx<'_, PgRow>) -> Result<(), OpError> {
+        let attempt = cx.attempt(Cost::ONE).await?;
+        attempt.settle(SentState::NotSent);
+        Ok(())
+    }
+}
+
 /// PG7: a session past its deadline mid-query is an unknown outcome; its
 /// backend goes away and the write does not apply.
 #[tokio::test]
@@ -947,6 +981,54 @@ async fn a_session_past_its_deadline_is_cut_off_and_applies_nothing() {
         "the transaction died with its backend"
     );
     drop(row);
+    pg.cleanup().await;
+}
+
+/// PG9: an action can read through its row, but a write session is refused
+/// before the backend. A read waiting for quota is refused unsent when the
+/// execution's token is cancelled, and no new backend is started.
+#[tokio::test]
+async fn an_action_row_is_read_only_and_cancellation_starts_no_backend() {
+    let Some(pg) = setup().await else { return };
+    let holder_token = CancellationToken::new();
+    let holder_row = pg.action_row(&pg.activated, &holder_token);
+    holder_row
+        .submit(CheckoutRead)
+        .await
+        .expect("an action read reaches PostgreSQL");
+    let backends = pg.backends().await;
+    assert_eq!(backends.len(), 1, "one authenticated backend: {backends:?}");
+    let pid = backends[0].0;
+
+    let error = pg
+        .insert(&holder_row, 1)
+        .await
+        .expect_err("an action write session is refused");
+    assert_eq!(*error.kind(), nebula_resource::ErrorKind::Permanent);
+    assert_eq!(error.sent(), SentState::NotSent);
+    assert!(!pg.has_row(1).await, "the provider body did not run");
+
+    holder_row
+        .submit(Throttle)
+        .await
+        .expect("the row reports a provider pause");
+
+    // A second action's read waits for quota, then its execution is
+    // cancelled.
+    let queued_token = CancellationToken::new();
+    let queued_row = pg.action_row(&pg.activated, &queued_token);
+    let mut queued = queued_row.submit(CheckoutRead);
+    assert!(futures::poll!(&mut queued).is_pending(), "queued");
+    tokio::task::yield_now().await;
+    assert!(futures::poll!(&mut queued).is_pending(), "still queued");
+    queued_token.cancel();
+    let error = queued.await.expect_err("cancelled");
+    assert_eq!(*error.kind(), nebula_resource::ErrorKind::Cancelled);
+    assert_eq!(error.sent(), SentState::NotSent);
+    let backends = pg.backends().await;
+    assert_eq!(backends.len(), 1, "no new backend: {backends:?}");
+    assert_eq!(backends[0].0, pid);
+    drop((holder_row, queued_row));
     pg.cleanup().await;
 }
 

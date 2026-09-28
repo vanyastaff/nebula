@@ -20,12 +20,20 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// `try_acquire_any` through
 /// [`Manager::acquire_any`](nebula_resource::Manager::acquire_any)
 /// using the execution scope and optional per-key slot identities recorded
-/// at activation.
+/// at activation. `managed_row_any` hands out the row's per-unit checkout
+/// facade through
+/// [`Manager::managed_row_any`](nebula_resource::Manager::managed_row_any):
+/// its units are cancelled with the node's cancellation token until their
+/// first grant and bounded by the execution deadline
+/// ([`with_deadline`](Self::with_deadline)).
 pub struct EngineResourceAccessor {
     manager: Arc<Manager>,
     scope: Scope,
     cancel: CancellationToken,
     slot_identities: Arc<HashMap<ResourceKey, SlotIdentity>>,
+    /// The execution deadline bounding every managed row unit; `None` when
+    /// the execution has no wall-clock budget.
+    deadline: Option<std::time::Instant>,
 }
 
 impl EngineResourceAccessor {
@@ -37,7 +45,17 @@ impl EngineResourceAccessor {
             scope,
             cancel,
             slot_identities: Arc::new(HashMap::new()),
+            deadline: None,
         }
+    }
+
+    /// Bounds the units of every managed row this accessor hands out by
+    /// `deadline` — the execution's wall-clock budget. A lease acquire is
+    /// not bounded by it.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Option<std::time::Instant>) -> Self {
+        self.deadline = deadline;
+        self
     }
 
     /// Overrides the default slot-identity map (key → resolved
@@ -132,6 +150,41 @@ impl ResourceAccessor for EngineResourceAccessor {
                 Err(e) => Err(Self::map_err(&key, e)),
             }
         })
+    }
+
+    fn managed_row_any(&self, key: &ResourceKey) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
+        let options = match self.deadline {
+            Some(deadline) => AcquireOptions::default().with_deadline(deadline),
+            None => AcquireOptions::default(),
+        };
+        self.manager
+            .managed_row_any_read_only(
+                key,
+                &self.resource_ctx(),
+                &options,
+                &self.slot_identity_for(key),
+            )
+            .map_err(|e| Self::map_err(key, e))
+    }
+
+    fn try_managed_row_any(
+        &self,
+        key: &ResourceKey,
+    ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
+        let options = match self.deadline {
+            Some(deadline) => AcquireOptions::default().with_deadline(deadline),
+            None => AcquireOptions::default(),
+        };
+        match self.manager.managed_row_any_read_only(
+            key,
+            &self.resource_ctx(),
+            &options,
+            &self.slot_identity_for(key),
+        ) {
+            Ok(row) => Ok(Some(row)),
+            Err(error) if matches!(error.kind(), ErrorKind::NotFound) => Ok(None),
+            Err(error) => Err(Self::map_err(key, error)),
+        }
     }
 }
 
@@ -346,5 +399,139 @@ mod tests {
         );
         let missing = wrong.try_acquire_any(&key).await.expect("try_acquire");
         assert!(missing.is_none());
+    }
+
+    // ── managed rows ─────────────────────────────────────────────────────
+
+    use nebula_resource::{
+        call::{Cost, Effect, ManagedRow, OpCx, OpError, Operation, SentState},
+        rate_limit::{Rate, RowLimit},
+    };
+
+    /// Registers the fixture under `identity`, limited to `limit`.
+    fn register_acc(manager: &Manager, identity: SlotIdentity, limit: Option<RowLimit>) {
+        manager
+            .register(RegistrationSpec {
+                resource: AccResource,
+                config: AccConfig,
+                scope: ScopeLevel::Global,
+                slot_identity: identity,
+                topology: Resident::<AccResource>::new(ResidentConfig::default()),
+                recovery_gate: None,
+                rate_limit: limit,
+            })
+            .expect("register");
+    }
+
+    fn row_of(accessor: &EngineResourceAccessor) -> ManagedRow<AccResource> {
+        *accessor
+            .managed_row_any(&AccResource::key())
+            .expect("managed row")
+            .downcast::<ManagedRow<AccResource>>()
+            .expect("ManagedRow downcast")
+    }
+
+    /// Reads the instance's value in one attempt costing one permit.
+    struct Read;
+
+    impl Operation<AccResource> for Read {
+        type Output = u64;
+        const EFFECT: Effect = Effect::Read;
+
+        async fn run(self, cx: &mut OpCx<'_, AccResource>) -> Result<u64, OpError> {
+            let attempt = cx.attempt(Cost::ONE).await?;
+            let value = attempt.instance().load(Ordering::Relaxed);
+            attempt.settle(SentState::Sent);
+            Ok(value)
+        }
+    }
+
+    /// Yields the unit's deadline.
+    struct UnitDeadline;
+
+    impl Operation<AccResource> for UnitDeadline {
+        type Output = std::time::Instant;
+        const EFFECT: Effect = Effect::Read;
+
+        async fn run(self, cx: &mut OpCx<'_, AccResource>) -> Result<std::time::Instant, OpError> {
+            Ok(cx.deadline())
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_row_any_serves_the_row_of_the_recorded_slot_identity() {
+        let manager = Arc::new(Manager::new());
+        let key = AccResource::key();
+        let bound = SlotIdentity::from_bindings([("slot", "cred-a")]);
+        register_acc(&manager, bound.clone(), None);
+
+        let accessor = make_accessor(Arc::clone(&manager))
+            .with_slot_identities(HashMap::from([(key.clone(), bound)]));
+        let row = row_of(&accessor);
+        assert_eq!(row.submit(Read).await.expect("granted"), 42);
+
+        let wrong = make_accessor(manager).with_slot_identities(HashMap::from([(
+            key.clone(),
+            SlotIdentity::from_bindings([("slot", "other")]),
+        )]));
+        let error = wrong
+            .managed_row_any(&key)
+            .expect_err("another identity's row is not served");
+        assert!(
+            matches!(error, CoreError::CredentialNotFound { .. }),
+            "not found, got {error:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_accessor_token_cancels_a_unit_queued_for_quota() {
+        let manager = Arc::new(Manager::new());
+        // One permit a minute: the second unit's slot lands inside its
+        // deadline, so it waits rather than being refused `Exhausted`.
+        let per_minute = Rate::new(std::num::NonZeroU32::MIN, std::time::Duration::from_mins(1))
+            .expect("valid rate");
+        register_acc(
+            &manager,
+            SlotIdentity::Unbound,
+            Some(RowLimit::rate(per_minute)),
+        );
+        let token = CancellationToken::new();
+        let accessor = EngineResourceAccessor::new(manager, Scope::default(), token.clone());
+        let row = row_of(&accessor);
+
+        row.submit(Read).await.expect("books the hour's permit");
+        let queued = tokio::spawn(row.submit(Read));
+        tokio::task::yield_now().await;
+        assert!(!queued.is_finished(), "waiting for quota");
+        token.cancel();
+        let error = queued.await.expect("joined").expect_err("cancelled");
+        assert_eq!(*error.kind(), ErrorKind::Cancelled);
+        assert_eq!(error.sent(), SentState::NotSent);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_execution_deadline_bounds_every_unit() {
+        let manager = Arc::new(Manager::new());
+        register_acc(&manager, SlotIdentity::Unbound, None);
+        let deadline = tokio::time::Instant::now().into_std() + std::time::Duration::from_secs(40);
+
+        let bounded = make_accessor(Arc::clone(&manager)).with_deadline(Some(deadline));
+        assert_eq!(
+            row_of(&bounded)
+                .submit(UnitDeadline)
+                .await
+                .expect("deadline"),
+            deadline
+        );
+
+        let unbounded = make_accessor(manager);
+        let capped = row_of(&unbounded)
+            .submit(UnitDeadline)
+            .await
+            .expect("deadline");
+        assert_eq!(
+            capped,
+            tokio::time::Instant::now().into_std() + nebula_resource::call::UNIT_DEADLINE_CAP
+        );
     }
 }

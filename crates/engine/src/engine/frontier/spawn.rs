@@ -55,6 +55,7 @@ impl WorkflowEngine {
         shared_expression_outputs: &Arc<DashMap<NodeKey, Arc<nebula_expression::RuntimeValue>>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
+        execution_deadline: Option<std::time::Instant>,
         exec_state: &mut ExecutionState,
         execution_id: ExecutionId,
         workflow_id: WorkflowId,
@@ -369,9 +370,12 @@ impl WorkflowEngine {
                 merged.extend(node_rows.iter().map(|(key, id)| (key.clone(), id.clone())));
                 slot_identities = Arc::new(merged);
             }
+            // Managed row units are cancelled with the node until their
+            // first grant and bounded by the execution's wall-clock budget.
             let global: Arc<dyn ResourceAccessor> = Arc::new(
                 EngineResourceAccessor::new(Arc::clone(manager), scope, cancel_token.clone())
-                    .with_slot_identities_arc(slot_identities),
+                    .with_slot_identities_arc(slot_identities)
+                    .with_deadline(execution_deadline),
             );
             Arc::new(LayeredResourceAccessor::global_only(global))
         } else {

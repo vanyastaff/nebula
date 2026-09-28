@@ -686,9 +686,64 @@ subscriptions (`LISTEN` / `NOTIFY`, IMAP `IDLE`) are not supported (an
 interval profile needs an ADR); refunds, the visibility split by TTL,
 ordering across several budgets, nested same-row semantics beyond the typed
 refusal, the owner of commit-unknown recovery, sessions on shared
-instances, and bounded overlap under a strict cap during rotation. Reaching
-a `ManagedRow` from action code (an engine accessor or a `#[resource]`
-field) is a follow-up.
+instances, and bounded overlap under a strict cap during rotation.
+
+### Managed rows in actions
+
+An action reaches a row through a derived field — the supported route:
+
+```rust,ignore
+#[derive(Action)]
+#[action(
+    key = "example.audit",
+    input = u64,
+    output = u64,
+    no_external_effects
+)]
+struct Audit {
+    #[resource]
+    directory: ManagedRow<Directory>,
+    #[resource]
+    ledger: Option<ManagedRow<Ledger>>, // optional slot
+}
+```
+
+The factory resolves it synchronously through
+`ActionContextExt::managed_row_by_id`, over the type-erased
+`ResourceAccessor::managed_row_any` seam that the engine's accessor serves
+with `Manager::managed_row_any`: the row is looked up by key, scope and the
+node's recorded slot identity, nothing is checked out, and a missing row is
+fatal at resolution (`Lazy<ManagedRow<R>>` is rejected: there is nothing to
+defer). Because `no_external_effects` grants generic action dispatch without
+effect-owner authority, the engine serves this facade read-only: only
+`Effect::Read` units are admitted. `Effect::Idempotent`, `Effect::Write`, and
+the default write session are refused `NotSent` before checkout or provider
+code. A manager-created row outside action dispatch retains the full operation
+surface. The action facade is bound to the execution:
+
+- **Cancellation.** Its units inherit the node's cancellation token. A unit
+  whose first attempt was not granted yet — waiting for quota, the row
+  gate, a strict read or its checkout, or not polled yet — settles
+  `Cancelled` / `NotSent`; the grant re-checks the token, so a cancel never
+  lands after it as a refusal. Once an attempt was granted the cancel is
+  ignored: dispatched work runs on until the unit's deadline (Design
+  DX-API.md:114).
+- **Deadline.** The execution's wall-clock budget (`max_duration`, what is
+  left of it when the turn started) bounds every unit's deadline below the
+  5-minute cap; `Unit::with_deadline` can only shorten it. There is no
+  node-level deadline yet.
+
+The typed `Manager::managed_row(_for_identity)` links the context's
+cancellation token the same way. A `ResourceGuard<R>` field (or
+`acquire_resource_by_id`) still takes a lease for the whole action — the
+raw-escape profile; prefer a `ManagedRow<R>` field for provider calls (its
+deprecation is scheduled with the `Limited` family's removal, MIGRATION
+P10). A derived action must opt into `no_external_effects`; omitting it leaves
+the action's effect contract `Undeclared` and generic dispatch refuses it.
+Mutating row operations require the engine-owned remote-effect protocol; the
+current action-row surface does not turn a resource-local retry declaration
+into durable effect authority. A public ad-hoc accessor for actions and an SDK
+testing hook that builds rows are follow-ups too.
 
 ### Other public API
 
@@ -892,7 +947,7 @@ See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/M
 - Per-slot rotation fan-out: landed in this crate (`credential_fanout`, feature `rotation`) — see [`credential-rotation.md`](docs/credential-rotation.md).
 - Credential suspension: a credential that turns `ReauthRequired` or blocks new use without a material change suspends every bound row (acquires fail with `CredentialUnavailable`, admitted leases observe closing, owners are kept) and reopens it when the same material is usable again at a newer use revision; a use revision that advanced unobserved readmits the row under a fresh generation — see "Same-material blocks" and "Use revision" in [`credential-rotation.md`](docs/credential-rotation.md).
 - Strict per-acquire credential admission: a manager with a credential observer (the worker's) reads every bound credential's availability before each acquire and create — see "Strict per-acquire admission" in [`credential-rotation.md`](docs/credential-rotation.md).
-- Known gaps: on an interim manager (no observer) suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event); on a strict one only an interval with no acquire, create, activation or scan at all goes unobserved, and a denial missed that way only affects new work. An acquire that waits for capacity after its read is not read again; the managed call facade reads per attempt. Readmission at the installed material with an advanced use revision admits later attempts on leases admitted before it (nothing closes them). Configurable read timeout/jitter, batched multi-slot reads, an interval profile (needs an ADR revising the per-acquire rule), letting activation skip its own head read on a strict manager, reaching a `ManagedRow` from action code, a bound from admission to egress, refunds of refused bookings, an opt-in runtime-owned re-preparation of a unit whose pin was superseded, and the composition-time rejection of an observer-less manager (the strict default) are follow-ups (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
+- Known gaps: on an interim manager (no observer) suspension is cooperative and lands at the next stored-row activation or fan-out scan (30 s, sooner on a `ReauthRequired` event); on a strict one only an interval with no acquire, create, activation or scan at all goes unobserved, and a denial missed that way only affects new work. An acquire that waits for capacity after its read is not read again; the managed call facade reads per attempt. Readmission at the installed material with an advanced use revision admits later attempts on leases admitted before it (nothing closes them). Configurable read timeout/jitter, batched multi-slot reads, an interval profile (needs an ADR revising the per-acquire rule), letting activation skip its own head read on a strict manager, a bound from admission to egress, refunds of refused bookings, an opt-in runtime-owned re-preparation of a unit whose pin was superseded, and the composition-time rejection of an observer-less manager (the strict default) are follow-ups (see "What suspension does not cover" in [`credential-rotation.md`](docs/credential-rotation.md)).
 
 ## Related
 

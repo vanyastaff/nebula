@@ -121,6 +121,19 @@
 //! instance built at the credential slot epoch its unit pinned
 //! (CONTRACT.md:73, :80, :110-114; DX-API.md:136, :151-153).
 //!
+//! A row facade is bound to the caller that built it. Its units inherit the
+//! caller context's cancellation token: once it fires, a unit whose first
+//! attempt was not granted yet — waiting for quota, the row gate, a strict
+//! read or its checkout, or not started — settles `Cancelled` and `NotSent`,
+//! and the grant itself re-checks it, so the cancel and the first grant race
+//! there and nowhere later. After the first grant the cancel is ignored:
+//! dispatched work runs on to the unit's deadline (DX-API.md:114). The
+//! caller's deadline, when it has one (an action's: the execution budget),
+//! bounds every unit's deadline below [`UNIT_DEADLINE_CAP`]. Actions reach a
+//! row through a `#[resource]` field of type `ManagedRow<R>`, served by the
+//! engine's resource accessor through the type-erased
+//! [`Manager::managed_row_any`](crate::Manager::managed_row_any).
+//!
 //! # Interim defaults
 //!
 //! Where the design package leaves a value open, this module picks one and
@@ -202,6 +215,7 @@ use std::{future::Future, num::NonZeroU32};
 
 pub use cost::{Cost, Effect, SentState};
 pub use error::OpError;
+pub(crate) use managed::UnitScope;
 pub use managed::{Attempt, Managed, OpCx, UNIT_DEADLINE_CAP, Unit};
 pub use pin::PinSlots;
 pub use row::ManagedRow;

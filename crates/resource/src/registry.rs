@@ -341,6 +341,26 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
         ctx: ResourceContext,
         opts: AcquireOptions,
     ) -> Result<Box<dyn Any + Send + Sync>, Error>;
+
+    /// Type-erased row facade for this row: a boxed
+    /// [`ManagedRow<R>`](crate::call::ManagedRow) whose units inherit
+    /// `scope`.
+    ///
+    /// Called by `Manager::managed_row_any` after the single registry scope
+    /// walk resolved this row. Checks out nothing: a tainted row is refused
+    /// `Revoked`, anything else is the attempts' to refuse. A handle that
+    /// is no `ManagedResource<R>` serves no managed rows.
+    fn managed_row_any(
+        self: Arc<Self>,
+        _link: crate::manager::AcquireLink,
+        _ctx: &ResourceContext,
+        _scope: crate::call::UnitScope,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+        Err(Error::permanent(format!(
+            "{}: this row serves no managed rows",
+            self.resource_key()
+        )))
+    }
 }
 
 #[async_trait]
@@ -579,6 +599,17 @@ where
             .run_acquire_dispatch::<R>(self, &ctx, &opts)
             .await?;
         Ok(Box::new(guard) as Box<dyn Any + Send + Sync>)
+    }
+
+    fn managed_row_any(
+        self: Arc<Self>,
+        link: crate::manager::AcquireLink,
+        ctx: &ResourceContext,
+        scope: crate::call::UnitScope,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+        let managed = crate::manager::Manager::taint_gate::<R>(self)?;
+        let row = crate::call::ManagedRow::new(managed, link, ctx).with_unit_scope(scope);
+        Ok(Box::new(row) as Box<dyn Any + Send + Sync>)
     }
 }
 

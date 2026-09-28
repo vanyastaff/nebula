@@ -108,6 +108,14 @@ mod sealed {
 /// `?Sized` types. Hold the concrete context type (the action body already
 /// receives `&impl ActionContext`) when reaching for this surface.
 ///
+/// **Prefer a managed row for provider calls.** Both methods take a lease
+/// that stays checked out until the guard drops — the raw-escape profile. An
+/// action that makes provider calls declares a `#[resource]` field of type
+/// [`ManagedRow<R>`](crate::call::ManagedRow) instead: each unit checks out
+/// an instance per attempt, after its quota wait, bound to the execution's
+/// cancellation and deadline. There is no ad-hoc row accessor on this trait
+/// yet.
+///
 /// # Examples
 ///
 /// `no_run` (acquisition needs a live accessor + runtime), but type-checked

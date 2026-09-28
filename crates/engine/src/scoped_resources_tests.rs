@@ -104,6 +104,29 @@ impl ResourceAccessor for TestGlobalAccessor {
             }
         })
     }
+
+    fn managed_row_any(&self, key: &ResourceKey) -> Result<ScopedLookup, CoreError> {
+        if key == &self.registered {
+            self.hits.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(self.payload_marker) as ScopedLookup)
+        } else {
+            Err(CoreError::resource_unavailable(
+                key.as_str(),
+                "not registered",
+                false,
+                None,
+            ))
+        }
+    }
+
+    fn try_managed_row_any(&self, key: &ResourceKey) -> Result<Option<ScopedLookup>, CoreError> {
+        if key == &self.registered {
+            self.hits.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(Box::new(self.payload_marker) as ScopedLookup))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 fn rk(key: &str) -> ResourceKey {
@@ -402,6 +425,47 @@ fn has_walks_both_layers() {
     assert!(layered.has(&rk("postgres")), "scoped layer reports key");
     assert!(layered.has(&rk("redis")), "global layer reports key");
     assert!(!layered.has(&rk("kafka")), "neither layer has key");
+}
+
+#[test]
+fn a_scoped_key_refuses_a_managed_row_and_a_global_one_forwards() {
+    let scoped = Arc::new(OneKeyScopedMap::new(rk("postgres"), 0xaaaa));
+    let global = Arc::new(TestGlobalAccessor::new(rk("postgres"), 0xbbbb));
+    let layered = LayeredResourceAccessor::new(scoped.clone(), global.clone());
+
+    let refused = layered
+        .managed_row_any(&rk("postgres"))
+        .expect_err("a scoped payload serves no managed row");
+    assert!(
+        matches!(refused, CoreError::ScopeViolation { .. }),
+        "expected ScopeViolation, got {refused:?}"
+    );
+    assert_eq!(global.hits.load(Ordering::SeqCst), 0, "never bypassed");
+    assert_eq!(scoped.hits.load(Ordering::SeqCst), 0, "nothing acquired");
+
+    let global = Arc::new(TestGlobalAccessor::new(rk("redis"), 0xbbbb));
+    let layered = LayeredResourceAccessor::new(scoped, global.clone());
+    let row = layered
+        .managed_row_any(&rk("redis"))
+        .expect("forwarded to the global accessor");
+    assert_eq!(marker(row), 0xbbbb);
+    assert_eq!(global.hits.load(Ordering::SeqCst), 1);
+
+    let optional = layered
+        .try_managed_row_any(&rk("redis"))
+        .expect("optional lookup forwards to the global accessor")
+        .expect("the global row exists");
+    assert_eq!(marker(optional), 0xbbbb);
+    assert_eq!(global.hits.load(Ordering::SeqCst), 2);
+
+    let scoped = Arc::new(OneKeyScopedMap::new(rk("postgres"), 0xaaaa));
+    let global = Arc::new(TestGlobalAccessor::new(rk("postgres"), 0xbbbb));
+    let layered = LayeredResourceAccessor::new(scoped, global.clone());
+    let refused = layered
+        .try_managed_row_any(&rk("postgres"))
+        .expect_err("an optional row cannot bypass a scoped payload");
+    assert!(matches!(refused, CoreError::ScopeViolation { .. }));
+    assert_eq!(global.hits.load(Ordering::SeqCst), 0, "never bypassed");
 }
 
 #[test]

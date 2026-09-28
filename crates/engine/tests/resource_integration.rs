@@ -1299,3 +1299,749 @@ mod shared_resource {
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Managed rows: derived actions reach ManagedRow<R> fields through the engine
+// ---------------------------------------------------------------------------
+
+mod managed_row {
+    use std::{
+        num::NonZeroU32,
+        sync::{Mutex, atomic::AtomicU32},
+        time::{Duration, Instant},
+    };
+
+    use nebula_action::ActionContext;
+    use nebula_core::id::ExecutionId;
+    use nebula_execution::ExecutionStatus;
+    use nebula_resource::{
+        ErrorKind, PoolConfig, PoolProvider, Pooled,
+        call::{
+            Cost, Effect, ManagedRow, OpCx, OpError, Operation, SentState, SessionClosed,
+            SessionEnd, SessionProvider, SessionSpec, UNIT_DEADLINE_CAP,
+        },
+        rate_limit::{Rate, RowLimit},
+    };
+    use tokio::sync::Notify;
+
+    use super::*;
+
+    // ── a resident service counting its provider calls ───────────────────
+
+    /// Provider calls made on the service.
+    #[derive(Default)]
+    struct Calls(AtomicU64);
+
+    impl Calls {
+        fn count(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    #[derive(Clone)]
+    struct Svc(Arc<Calls>);
+
+    #[async_trait::async_trait]
+    impl Provider for Svc {
+        type Config = ();
+        type Instance = Arc<Calls>;
+        type Topology = Resident<Self>;
+
+        fn key() -> ResourceKey {
+            resource_key!("test.managed_row.svc")
+        }
+
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("ManagedRowSvc"),
+                "",
+            )
+        }
+
+        async fn create(&self, (): &(), _: &ResourceContext) -> Result<Arc<Calls>, ResourceError> {
+            Ok(Arc::clone(&self.0))
+        }
+    }
+
+    nebula_resource::no_credential_slots!(Svc);
+
+    impl ResidentProvider for Svc {}
+
+    /// Registers a service row, limited to `limit`; returns its call count.
+    fn register_svc(manager: &Manager, limit: Option<RowLimit>) -> Arc<Calls> {
+        let calls = Arc::new(Calls::default());
+        manager
+            .register(RegistrationSpec {
+                resource: Svc(Arc::clone(&calls)),
+                config: (),
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: Resident::<Svc>::new(ResidentConfig::default()),
+                recovery_gate: None,
+                rate_limit: limit,
+            })
+            .expect("register the service");
+        calls
+    }
+
+    /// One provider call costing `cost`: counts it and yields the count.
+    struct Call(Cost);
+
+    impl Operation<Svc> for Call {
+        type Output = u64;
+        const EFFECT: Effect = Effect::Read;
+
+        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<u64, OpError> {
+            let attempt = cx.attempt(self.0).await?;
+            let calls = attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1;
+            attempt.settle(SentState::Sent);
+            Ok(calls)
+        }
+    }
+
+    // ── a pooled ledger with transactions ────────────────────────────────
+
+    /// The ledger's committed entries, shared by every connection.
+    type Committed = Arc<Mutex<Vec<String>>>;
+
+    /// Session bodies entered by action-scoped rows. A write session must be
+    /// refused before this counter changes.
+    static SESSION_BODIES: AtomicU32 = AtomicU32::new(0);
+
+    #[derive(Clone)]
+    struct Ledger(Committed);
+
+    struct Conn(Committed);
+
+    struct Tx<'c> {
+        conn: &'c mut Conn,
+        pending: Vec<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Ledger {
+        type Config = ();
+        type Instance = Conn;
+        type Topology = Pooled<Self>;
+
+        fn key() -> ResourceKey {
+            resource_key!("test.managed_row.ledger")
+        }
+
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("ManagedRowLedger"),
+                "",
+            )
+        }
+
+        async fn create(&self, (): &(), _: &ResourceContext) -> Result<Conn, ResourceError> {
+            Ok(Conn(Arc::clone(&self.0)))
+        }
+    }
+
+    nebula_resource::no_credential_slots!(Ledger);
+
+    impl PoolProvider for Ledger {}
+
+    impl SessionProvider for Ledger {
+        type Session<'c> = Tx<'c>;
+
+        async fn open<'c>(&'c self, conn: &'c mut Conn, (): &'c ()) -> Result<Tx<'c>, OpError> {
+            Ok(Tx {
+                conn,
+                pending: Vec::new(),
+            })
+        }
+
+        async fn close<'c>(&'c self, tx: Tx<'c>, end: SessionEnd) -> SessionClosed {
+            match end {
+                SessionEnd::Commit => {
+                    tx.conn.0.lock().expect("ledger lock").extend(tx.pending);
+                    SessionClosed::Committed
+                },
+                _ => SessionClosed::RolledBack { refused: None },
+            }
+        }
+    }
+
+    // ── engine plumbing ──────────────────────────────────────────────────
+
+    /// A derived stateless action holding one required
+    /// `ManagedRow<$provider>` field and explicitly declaring that its body
+    /// performs no external business effects. The engine consequently serves
+    /// a row facade that admits `Effect::Read` only.
+    macro_rules! row_action {
+        ($ty:ident, $key:literal, $field:ident: $provider:ty) => {
+            #[derive(nebula_action::Action)]
+            #[action(
+                                                    key = $key,
+                                                    name = $key,
+                                                    description = "managed row integration action",
+                                                    input = serde_json::Value,
+                                                    output = serde_json::Value,
+                                                    no_external_effects
+                                                )]
+            struct $ty {
+                #[resource]
+                $field: ManagedRow<$provider>,
+            }
+        };
+    }
+
+    #[derive(nebula_action::Action)]
+    #[action(
+        key = "test.managed_row.undeclared",
+        name = "Undeclared managed row",
+        description = "safe-default integration action",
+        input = serde_json::Value,
+        output = serde_json::Value
+    )]
+    struct UndeclaredRow {
+        #[resource]
+        svc: ManagedRow<Svc>,
+    }
+
+    impl StatelessAction for UndeclaredRow {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let calls = self.svc.submit(Call(Cost::ONE)).await?;
+            Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
+        }
+    }
+
+    fn engine(manager: Arc<Manager>, register: impl FnOnce(&ActionRegistry)) -> WorkflowEngine {
+        let registry = Arc::new(ActionRegistry::new());
+        register(&registry);
+        let metrics = MetricsRegistry::new();
+        let runtime = Arc::new(
+            ActionRuntime::try_new(
+                registry,
+                Arc::new(InProcessRunner::new()),
+                DataPassingPolicy::default(),
+                metrics.clone(),
+            )
+            .expect("runtime"),
+        );
+        WorkflowEngine::new(runtime, metrics)
+            .expect("engine")
+            .with_resource_manager(manager)
+    }
+
+    /// One node of `action`, its `slot` bound to `resource`.
+    fn node_of(action: &str, slot: &str, resource: &ResourceKey) -> NodeDefinition {
+        NodeDefinition::new(node_key!("row"), "Row", "core", action)
+            .expect("valid node")
+            .with_resource_binding(slot, resource.as_str())
+    }
+
+    async fn run(
+        engine: &WorkflowEngine,
+        node: NodeDefinition,
+        input: serde_json::Value,
+        budget: ExecutionBudget,
+    ) -> nebula_engine::ExecutionResult {
+        engine
+            .execute_workflow(
+                &nebula_engine::store_seam::single_tenant_scope(),
+                &make_workflow(vec![node]),
+                input,
+                budget,
+            )
+            .await
+            .expect("workflow execution")
+    }
+
+    fn output(result: &nebula_engine::ExecutionResult) -> &serde_json::Value {
+        result.node_output(&node_key!("row")).expect("node output")
+    }
+
+    // ── (a) a unit runs on the row ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn a_derived_action_without_effect_attestation_is_rejected_before_instantiation() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<UndeclaredRow>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            node_of("test.managed_row.undeclared", "svc", &Svc::key()),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(!result.is_success());
+        assert_eq!(calls.count(), 0, "the action was never instantiated");
+    }
+
+    row_action!(ReadSvc, "test.managed_row.read", svc: Svc);
+
+    impl StatelessAction for ReadSvc {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let calls = self.svc.submit(Call(Cost::ONE)).await?;
+            Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_action_runs_a_unit_on_its_managed_row_field() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<ReadSvc>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            NodeDefinition::new(node_key!("row"), "Row", "core", "test.managed_row.read")
+                .expect("valid projected node"),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(result.is_success(), "{result:?}");
+        assert_eq!(output(&result)["calls"], 1, "the attempt's instance");
+        assert_eq!(calls.count(), 1);
+    }
+
+    // ── (b) a session commits or rolls back ──────────────────────────────
+
+    row_action!(Book, "test.managed_row.book", ledger: Ledger);
+
+    impl StatelessAction for Book {
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let entry = input["entry"].as_str().unwrap_or_default().to_owned();
+            let fail = input["fail"].as_bool().unwrap_or(false);
+            let booked = self
+                .ledger
+                .session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
+                    Box::pin(async move {
+                        SESSION_BODIES.fetch_add(1, Ordering::SeqCst);
+                        tx.pending.push(entry);
+                        if fail {
+                            return Err(OpError::new(ErrorKind::Transient, "body failed"));
+                        }
+                        Ok(())
+                    })
+                })
+                .await;
+            Ok(ActionResult::success(match booked {
+                Ok(()) => serde_json::json!({ "committed": true }),
+                Err(error) => serde_json::json!({
+                    "committed": false,
+                    "sent": error.sent().as_str(),
+                }),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_action_scoped_write_session_is_refused_before_its_body() {
+        let manager = Arc::new(Manager::new());
+        let committed = Committed::default();
+        manager
+            .register(RegistrationSpec {
+                resource: Ledger(Arc::clone(&committed)),
+                config: (),
+                scope: ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: Pooled::<Ledger>::new(PoolConfig::default(), 0),
+                recovery_gate: None,
+                rate_limit: None,
+            })
+            .expect("register the ledger");
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<Book>()
+                .expect("register");
+        });
+        SESSION_BODIES.store(0, Ordering::SeqCst);
+
+        let result = run(
+            &engine,
+            node_of("test.managed_row.book", "ledger", &Ledger::key()),
+            serde_json::json!({ "entry": "a", "fail": false }),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert_eq!(output(&result)["committed"], false);
+        assert_eq!(output(&result)["sent"], "not_sent");
+        assert_eq!(SESSION_BODIES.load(Ordering::SeqCst), 0);
+        assert!(committed.lock().expect("ledger lock").is_empty());
+    }
+
+    // ── (c) cancelling the execution refuses a queued unit ───────────────
+
+    /// The execution the cancellation test's action runs in.
+    static CANCEL_EXECUTION: Mutex<Option<ExecutionId>> = Mutex::new(None);
+    /// Fired once the second unit is about to ask for its attempt.
+    static CANCEL_WAITING: Notify = Notify::const_new();
+    /// The second unit's refusal and the attempts it was granted.
+    static CANCEL_REFUSED: Mutex<Option<(ErrorKind, u32)>> = Mutex::new(None);
+    /// Fired once the second unit's attempt was refused.
+    static CANCEL_SETTLED: Notify = Notify::const_new();
+
+    /// Asks for one attempt, recording the refusal it gets.
+    struct Queued;
+
+    impl Operation<Svc> for Queued {
+        type Output = u64;
+        const EFFECT: Effect = Effect::Read;
+
+        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<u64, OpError> {
+            CANCEL_WAITING.notify_one();
+            let refused = match cx.attempt(Cost::ONE).await {
+                Ok(attempt) => {
+                    let calls = attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1;
+                    attempt.settle(SentState::Sent);
+                    return Ok(calls);
+                },
+                Err(refused) => refused,
+            };
+            *CANCEL_REFUSED.lock().expect("refusal slot") =
+                Some((refused.kind().clone(), cx.attempts()));
+            CANCEL_SETTLED.notify_one();
+            Err(refused)
+        }
+    }
+
+    row_action!(Twice, "test.managed_row.twice", svc: Svc);
+
+    impl StatelessAction for Twice {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            self.svc.submit(Call(Cost::ONE)).await?;
+            *CANCEL_EXECUTION.lock().expect("execution slot") = ctx.scope().execution_id;
+            let calls = self.svc.submit(Queued).await?;
+            Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_execution_refuses_the_unit_waiting_for_quota_unsent() {
+        let manager = Arc::new(Manager::new());
+        // One call a minute: the second unit waits inside its deadline
+        // rather than being refused `Exhausted` at once.
+        let per_minute = Rate::new(NonZeroU32::MIN, Duration::from_mins(1)).expect("valid rate");
+        let calls = register_svc(&manager, Some(RowLimit::rate(per_minute)));
+        let engine = Arc::new(engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<Twice>()
+                .expect("register");
+        }));
+
+        let running = tokio::spawn({
+            let engine = Arc::clone(&engine);
+            async move {
+                run(
+                    &engine,
+                    node_of("test.managed_row.twice", "svc", &Svc::key()),
+                    serde_json::json!(null),
+                    ExecutionBudget::default(),
+                )
+                .await
+            }
+        });
+        // Bounded only so a regression fails instead of hanging the suite.
+        tokio::time::timeout(Duration::from_secs(30), CANCEL_WAITING.notified())
+            .await
+            .expect("the second unit asks for its attempt");
+        let execution = CANCEL_EXECUTION
+            .lock()
+            .expect("execution slot")
+            .expect("the action published its execution");
+        assert!(engine.cancel_execution(execution), "the execution is live");
+
+        tokio::time::timeout(Duration::from_secs(30), CANCEL_SETTLED.notified())
+            .await
+            .expect("the second unit's attempt is refused");
+        assert_eq!(
+            *CANCEL_REFUSED.lock().expect("refusal slot"),
+            Some((ErrorKind::Cancelled, 0)),
+            "refused before any grant: NotSent"
+        );
+        let result = running.await.expect("joined");
+        assert_eq!(result.status, ExecutionStatus::Cancelled);
+        assert_eq!(calls.count(), 1, "only the first unit reached the provider");
+    }
+
+    // ── (d) the execution budget bounds the unit deadline ────────────────
+
+    row_action!(UnitDeadline, "test.managed_row.deadline", svc: Svc);
+
+    /// Yields the seconds left until the unit's deadline.
+    struct Remaining;
+
+    impl Operation<Svc> for Remaining {
+        type Output = f64;
+        const EFFECT: Effect = Effect::Read;
+
+        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<f64, OpError> {
+            Ok(cx
+                .deadline()
+                .saturating_duration_since(Instant::now())
+                .as_secs_f64())
+        }
+    }
+
+    impl StatelessAction for UnitDeadline {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let remaining = self.svc.submit(Remaining).await?;
+            Ok(ActionResult::success(
+                serde_json::json!({ "remaining": remaining }),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_execution_budget_bounds_the_unit_deadline() {
+        let manager = Arc::new(Manager::new());
+        register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<UnitDeadline>()
+                .expect("register");
+        });
+        let node = || node_of("test.managed_row.deadline", "svc", &Svc::key());
+        let remaining = |result: &nebula_engine::ExecutionResult| {
+            output(result)["remaining"]
+                .as_f64()
+                .expect("seconds remaining")
+        };
+
+        let budgeted = run(
+            &engine,
+            node(),
+            serde_json::json!(null),
+            ExecutionBudget::default().with_max_duration(Duration::from_mins(1)),
+        )
+        .await;
+        let left = remaining(&budgeted);
+        assert!(left <= 60.0 && left > 50.0, "bounded by the budget: {left}");
+
+        let unbudgeted = run(
+            &engine,
+            node(),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        let left = remaining(&unbudgeted);
+        let cap = UNIT_DEADLINE_CAP.as_secs_f64();
+        assert!(left <= cap && left > cap - 10.0, "the unit cap: {left}");
+    }
+
+    // ── (e) a refused unit's retry hint delays the node retry ────────────
+
+    /// When each dispatch of the hinted action started.
+    static HINTED_STARTS: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
+
+    /// Refused by the provider's quota before anything was sent.
+    struct Throttled;
+
+    impl Operation<Svc> for Throttled {
+        type Output = ();
+        const EFFECT: Effect = Effect::Read;
+
+        async fn run(self, _cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
+            Err(OpError::new(
+                ErrorKind::Exhausted {
+                    retry_after: Some(Duration::from_millis(300)),
+                },
+                "quota exhausted",
+            ))
+        }
+    }
+
+    row_action!(Hinted, "test.managed_row.hinted", svc: Svc);
+
+    impl StatelessAction for Hinted {
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let first = {
+                let mut starts = HINTED_STARTS.lock().expect("starts");
+                starts.push(Instant::now());
+                starts.len() == 1
+            };
+            if first {
+                let refused = self.svc.submit(Throttled).await.expect_err("throttled");
+                assert_eq!(refused.sent(), SentState::NotSent);
+                return Err(refused.into());
+            }
+            Ok(ActionResult::success(input))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unsent_exhausted_unit_is_retried_after_its_hint() {
+        let manager = Arc::new(Manager::new());
+        register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<Hinted>()
+                .expect("register");
+        });
+        let mut node = node_of("test.managed_row.hinted", "svc", &Svc::key());
+        node.retry_policy = Some(nebula_workflow::RetryConfig::exponential(3, 1, 10_000));
+
+        let result = run(
+            &engine,
+            node,
+            serde_json::json!("payload"),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert_eq!(result.status, ExecutionStatus::Completed);
+        let starts = HINTED_STARTS.lock().expect("starts").clone();
+        assert_eq!(starts.len(), 2);
+        assert!(
+            starts[1] - starts[0] >= Duration::from_millis(300),
+            "retried after {:?}, before the unit's hint",
+            starts[1] - starts[0]
+        );
+    }
+
+    // ── (f) replay-safe mutation still requires effect-owner authority ───
+
+    /// A provider mutation that claims repeats are absorbed.
+    struct AbsorbedWrite;
+
+    impl Operation<Svc> for AbsorbedWrite {
+        type Output = ();
+        const EFFECT: Effect = Effect::Idempotent;
+
+        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
+            let attempt = cx.attempt(Cost::ONE).await?;
+            attempt.instance().0.fetch_add(1, Ordering::SeqCst);
+            attempt.settle(SentState::Sent);
+            Ok(())
+        }
+    }
+
+    row_action!(IdempotentWrite, "test.managed_row.idempotent", svc: Svc);
+
+    impl StatelessAction for IdempotentWrite {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let error = self
+                .svc
+                .submit(AbsorbedWrite)
+                .await
+                .expect_err("an idempotent mutation still needs effect authority");
+            Err(error.into())
+        }
+    }
+
+    #[tokio::test]
+    async fn an_action_scoped_idempotent_write_is_refused_before_the_provider() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<IdempotentWrite>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            node_of("test.managed_row.idempotent", "svc", &Svc::key()),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(!result.is_success());
+        assert_eq!(calls.count(), 0, "the mutation never reached the provider");
+    }
+
+    // ── (g) a write is refused before the provider boundary ──────────────
+
+    /// Dispatches of the unknown-outcome action.
+    static UNKNOWN_DISPATCHES: AtomicU32 = AtomicU32::new(0);
+
+    /// A write whose provider call may have been applied.
+    struct LostWrite;
+
+    impl Operation<Svc> for LostWrite {
+        type Output = ();
+        const EFFECT: Effect = Effect::Write;
+
+        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
+            let attempt = cx.attempt(Cost::ONE).await?;
+            attempt.instance().0.fetch_add(1, Ordering::SeqCst);
+            attempt.settle(SentState::MaybeSent);
+            Err(OpError::new(ErrorKind::Transient, "connection reset"))
+        }
+    }
+
+    row_action!(UnknownWrite, "test.managed_row.unknown", svc: Svc);
+
+    impl StatelessAction for UnknownWrite {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            UNKNOWN_DISPATCHES.fetch_add(1, Ordering::SeqCst);
+            let error = ActionError::from(self.svc.submit(LostWrite).await.expect_err("lost"));
+            assert!(matches!(error, ActionError::Fatal { .. }), "{error}");
+            Err(error)
+        }
+    }
+
+    #[tokio::test]
+    async fn an_action_scoped_write_is_fatal_before_the_provider_and_never_retried() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<UnknownWrite>()
+                .expect("register");
+        });
+        let mut node = node_of("test.managed_row.unknown", "svc", &Svc::key());
+        node.retry_policy = Some(nebula_workflow::RetryConfig::exponential(3, 1, 10));
+
+        let result = run(
+            &engine,
+            node,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(!result.is_success());
+        assert_eq!(UNKNOWN_DISPATCHES.load(Ordering::SeqCst), 1, "no retry");
+        assert_eq!(calls.count(), 0, "the write never reached the provider");
+    }
+}

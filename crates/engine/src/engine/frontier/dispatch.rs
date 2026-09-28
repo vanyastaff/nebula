@@ -163,6 +163,7 @@ impl WorkflowEngine {
                 &ctx.shared_expression_outputs,
                 semaphore,
                 cancel_token,
+                ctx.execution_deadline,
                 ctx.exec_state,
                 execution_id,
                 workflow_id,

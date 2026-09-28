@@ -580,3 +580,40 @@ async fn a_session_runs_in_a_unit_span_named_session() {
     assert_eq!(capture.field(span, "sent").as_deref(), Some("sent"));
     assert_eq!(capture.field(span, "outcome").as_deref(), Some("ok"));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_session_queued_behind_the_gate_is_cancelled_unsent_by_its_parent() {
+    let manager = Manager::new();
+    let resource = pooled(&manager);
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let holder = tokio::spawn(facade::<StrictPooled>(&manager).session(write(), {
+        let (entered, release) = (Arc::clone(&entered), Arc::clone(&release));
+        move |_tx, _cx| {
+            Box::pin(async move {
+                entered.notify_one();
+                release.notified().await;
+                Ok(())
+            })
+        }
+    }));
+    entered.notified().await;
+
+    let token = tokio_util::sync::CancellationToken::new();
+    let ctx = crate::ResourceContext::minimal(nebula_core::Scope::default(), token.clone());
+    let linked = manager
+        .managed_row_for_identity::<StrictPooled>(&ctx, &tenant())
+        .expect("row facade");
+    let queued = tokio::spawn(add(&linked, write(), 1));
+    tokio::task::yield_now().await;
+    assert!(!queued.is_finished(), "queued at the row gate");
+    token.cancel();
+
+    let error = queued.await.expect("joined").expect_err("cancelled");
+    assert_eq!(*error.kind(), ErrorKind::Cancelled);
+    assert_eq!(error.sent(), SentState::NotSent);
+    release.notify_one();
+    holder.await.expect("joined").expect("the holder commits");
+    assert_eq!(resource.probe.opens(), 1, "the queued session never opened");
+    assert_eq!(idle_after_release::<StrictPooled>(&manager).await, 1);
+}

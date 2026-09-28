@@ -8,27 +8,28 @@ use std::{
     num::{NonZeroU32, NonZeroUsize},
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use nebula_core::{ResourceKey, ScopeLevel, resource_key};
+use nebula_core::{ResourceKey, Scope, ScopeLevel, resource_key};
 use nebula_credential::{
     CredentialAvailability, CredentialAvailabilityObservation, CredentialAvailabilityObserver,
     CredentialBlock, CredentialObserveError,
 };
 use rstest::rstest;
 use tokio::{sync::Notify, time::Instant};
+use tokio_util::sync::CancellationToken;
 
 use super::super::{
-    Cost, Effect, ManagedRow, OpCx, OpError, Operation, PinSlots, SentState, StreamOperation,
-    StreamSink,
+    Cost, Effect, ManagedRow, OpCx, OpError, Operation, PinSlots, SentState, SessionSpec,
+    StreamOperation, StreamSink, UNIT_DEADLINE_CAP, UnitScope,
 };
 use crate::{
     AcquireOptions, CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind,
     Manager, PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec, ResourceContext,
-    ResourceGuard, ShutdownConfig,
+    ResourceGuard, ShutdownConfig, SlotIdentity,
     manager::{
         CredentialReads,
         strict_fixtures::{
@@ -1010,4 +1011,472 @@ async fn a_row_stream_waits_for_quota_with_nothing_checked_out() {
     assert_eq!(started.elapsed(), Duration::from_secs(1));
     until_in_use::<StrictPooled>(&manager, 0).await;
     assert_eq!(gate_free(&manager), 1);
+}
+
+// ── the unit scope: parent cancellation and deadline ─────────────────────
+
+/// A context whose cancellation token is `token`.
+fn context_of(token: &CancellationToken) -> ResourceContext {
+    ResourceContext::minimal(Scope::default(), token.clone())
+}
+
+/// A row facade whose units inherit `token`, built the typed way.
+fn linked(manager: &Manager, token: &CancellationToken) -> ManagedRow<StrictPooled> {
+    manager
+        .managed_row_for_identity::<StrictPooled>(&context_of(token), &tenant())
+        .expect("row facade")
+}
+
+/// A row facade whose units inherit only `deadline`.
+fn bounded(manager: &Manager, deadline: std::time::Instant) -> ManagedRow<StrictPooled> {
+    facade::<StrictPooled>(manager).with_unit_scope(UnitScope {
+        cancel: None,
+        deadline: Some(deadline),
+        ..UnitScope::default()
+    })
+}
+
+/// Yields the unit's deadline without asking for an attempt.
+struct Deadline;
+
+impl<R: Provider + PinSlots> Operation<R> for Deadline {
+    type Output = std::time::Instant;
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<std::time::Instant, OpError> {
+        Ok(cx.deadline())
+    }
+}
+
+/// Records that it ran, then asks for one free attempt.
+struct Tracked(Arc<AtomicBool>);
+
+impl<R: Provider + PinSlots> Operation<R> for Tracked {
+    type Output = ();
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+        self.0.store(true, Ordering::SeqCst);
+        let attempt = cx.attempt(Cost::FREE).await?;
+        attempt.settle(SentState::Sent);
+        Ok(())
+    }
+}
+
+fn assert_cancelled_unsent(error: &OpError) {
+    assert_eq!(*error.kind(), ErrorKind::Cancelled);
+    assert_eq!(error.sent(), SentState::NotSent);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_parent_cancel_during_the_quota_wait_refuses_unsent_without_a_checkout() {
+    let manager = Manager::new();
+    let resource = pooled(&manager, 1, Some(RowLimit::rate(per_second(1, 1))));
+    facade::<StrictPooled>(&manager)
+        .submit(Once(Cost::ONE))
+        .await
+        .expect("takes the permit");
+    until_in_use::<StrictPooled>(&manager, 0).await;
+    let creates = resource.probe.creates();
+
+    let token = CancellationToken::new();
+    let waiting = tokio::spawn(linked(&manager, &token).submit(Once(Cost::ONE)));
+    settle_tasks().await;
+    assert!(!waiting.is_finished(), "waiting for quota");
+    token.cancel();
+
+    let error = waiting.await.expect("joined").expect_err("cancelled");
+    assert_cancelled_unsent(&error);
+    assert_eq!(resource.probe.creates(), creates, "nothing created");
+    assert_eq!(in_use::<StrictPooled>(&manager), 0, "nothing checked out");
+    assert_eq!(gate_free(&manager), 1, "the gate was never taken");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_parent_cancel_during_the_gate_wait_refuses_unsent() {
+    let manager = Manager::new();
+    let resource = pooled(&manager, 1, None);
+    let (operation, a) = held(Cost::FREE);
+    let holder = tokio::spawn(facade::<StrictPooled>(&manager).submit(operation));
+    a.entered.notified().await;
+
+    let token = CancellationToken::new();
+    let waiting = tokio::spawn(linked(&manager, &token).submit(Once(Cost::FREE)));
+    settle_tasks().await;
+    assert!(!waiting.is_finished(), "queued at the gate");
+    token.cancel();
+    let error = waiting.await.expect("joined").expect_err("cancelled");
+    assert_cancelled_unsent(&error);
+
+    a.release.notify_one();
+    holder
+        .await
+        .expect("joined")
+        .expect("the holder is unaffected");
+    until_in_use::<StrictPooled>(&manager, 0).await;
+    assert_eq!(gate_free(&manager), 1, "the cancelled waiter took nothing");
+    assert_eq!(resource.probe.creates(), 1, "only the holder's instance");
+}
+
+#[tokio::test]
+async fn a_parent_cancel_during_the_strict_read_refuses_unsent() {
+    let observer = ScriptedObserver::gated(available(1, 1));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    let resource = pooled(&manager, 1, None);
+    let token = CancellationToken::new();
+    let unit = tokio::spawn(linked(&manager, &token).submit(Once(Cost::FREE)));
+    observer.until_calls(1).await;
+    token.cancel();
+
+    let error = unit.await.expect("joined").expect_err("cancelled");
+    assert_cancelled_unsent(&error);
+    assert_eq!(reads(&manager).lane_count(), 0, "the read was dropped");
+    assert_eq!(gate_free(&manager), 1);
+    assert_eq!(resource.probe.creates(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_parent_cancel_after_the_grant_is_ignored() {
+    let manager = Manager::new();
+    pooled(&manager, 1, None);
+    let token = CancellationToken::new();
+    let row = linked(&manager, &token);
+
+    // A granted attempt runs on and settles.
+    let (operation, a) = held(Cost::FREE);
+    let unit = tokio::spawn(row.submit(operation));
+    a.entered.notified().await;
+    token.cancel();
+    a.release.notify_one();
+    unit.await.expect("joined").expect("granted, not cancelled");
+
+    // A later attempt of a unit granted before the cancel is granted too.
+    let token = CancellationToken::new();
+    let row = linked(&manager, &token);
+    let between = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let unit = tokio::spawn(row.submit(Paused {
+        between: Arc::clone(&between),
+        resume: Arc::clone(&resume),
+    }));
+    between.notified().await;
+    token.cancel();
+    resume.notify_one();
+    let pinned = unit.await.expect("joined").expect("both attempts granted");
+    assert_eq!(pinned.len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_unit_whose_parent_was_cancelled_before_its_first_poll_never_runs() {
+    let manager = Manager::new();
+    let resource = pooled(&manager, 1, None);
+    let token = CancellationToken::new();
+    let row = linked(&manager, &token);
+    token.cancel();
+
+    let ran = Arc::new(AtomicBool::new(false));
+    let error = row
+        .submit(Tracked(Arc::clone(&ran)))
+        .await
+        .expect_err("cancelled");
+    assert_cancelled_unsent(&error);
+    assert!(!ran.load(Ordering::SeqCst), "the operation never started");
+    assert_eq!(resource.probe.creates(), 0);
+    assert_eq!(in_use::<StrictPooled>(&manager), 0);
+    assert_eq!(gate_free(&manager), 1);
+
+    // A session is refused the same way.
+    let error = row
+        .session(SessionSpec::new(Cost::FREE), |_tx, _cx| {
+            Box::pin(async { Ok(()) })
+        })
+        .await
+        .expect_err("cancelled");
+    assert_cancelled_unsent(&error);
+    assert_eq!(resource.probe.opens(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_scope_deadline_bounds_the_unit_and_with_deadline_cannot_extend_it() {
+    let manager = Manager::new();
+    pooled(&manager, 1, None);
+    let scope_deadline = in_one(Duration::from_secs(10));
+
+    // Without a scope: the cap.
+    let capped = facade::<StrictPooled>(&manager)
+        .submit(Deadline)
+        .await
+        .expect("deadline");
+    assert_eq!(capped, in_one(UNIT_DEADLINE_CAP));
+
+    // The scope's deadline is shorter than the cap; a later one cannot
+    // extend it, an earlier one shortens it.
+    let row = bounded(&manager, scope_deadline);
+    assert_eq!(
+        row.submit(Deadline).await.expect("deadline"),
+        scope_deadline
+    );
+    let later = row
+        .submit(Deadline)
+        .with_deadline(in_one(Duration::from_mins(1)))
+        .await
+        .expect("deadline");
+    assert_eq!(later, scope_deadline);
+    let earlier = in_one(Duration::from_secs(3));
+    let shorter = row
+        .submit(Deadline)
+        .with_deadline(earlier)
+        .await
+        .expect("deadline");
+    assert_eq!(shorter, earlier);
+
+    // A unit queued at a full gate is refused at the scope's deadline.
+    let (operation, a) = held(Cost::FREE);
+    let holder = tokio::spawn(facade::<StrictPooled>(&manager).submit(operation));
+    a.entered.notified().await;
+    let started = Instant::now();
+    let error = row
+        .submit(Once(Cost::FREE))
+        .with_deadline(in_one(Duration::from_mins(1)))
+        .await
+        .expect_err("the gate stayed full");
+    assert_eq!(*error.kind(), ErrorKind::Backpressure);
+    assert_eq!(error.sent(), SentState::NotSent);
+    assert_eq!(started.elapsed(), Duration::from_secs(10));
+    a.release.notify_one();
+    holder.await.expect("joined").expect("holder");
+}
+
+// ── the erased row facade ────────────────────────────────────────────────
+
+/// The erased facade of `key` for `(ctx, identity)`.
+fn erased_row(
+    manager: &Manager,
+    key: &ResourceKey,
+    ctx: &ResourceContext,
+    options: &AcquireOptions,
+    identity: &SlotIdentity,
+) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
+    manager.managed_row_any(key, ctx, options, identity)
+}
+
+/// The erased facade of the strict-fixture row, downcast.
+fn typed_row(
+    manager: &Manager,
+    ctx: &ResourceContext,
+    options: &AcquireOptions,
+) -> ManagedRow<StrictPooled> {
+    let erased = erased_row(manager, &StrictPooled::key(), ctx, options, &tenant())
+        .expect("erased row facade");
+    *erased
+        .downcast::<ManagedRow<StrictPooled>>()
+        .expect("a ManagedRow<StrictPooled>")
+}
+
+/// A pooled strict-fixture row of one instance for `identity`.
+fn pooled_for(manager: &Manager, identity: SlotIdentity) -> StrictPooled {
+    let resource = StrictPooled::new();
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: config(1),
+            scope: ScopeLevel::Global,
+            slot_identity: identity,
+            topology: Pooled::new(pool(1), config(1).fingerprint()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register");
+    bind(&resource.db, credential_id(), 1, 1);
+    resource
+}
+
+fn identity(tenant: &str) -> SlotIdentity {
+    SlotIdentity::from_bindings([("db", tenant)])
+}
+
+#[test]
+fn the_erased_facade_is_send_sync_and_static() {
+    fn erasable<T: Send + Sync + 'static>() {}
+    erasable::<ManagedRow<StrictPooled>>();
+}
+
+#[tokio::test]
+async fn the_erased_facade_downcasts_to_its_row_and_nothing_else() {
+    let manager = Manager::new();
+    let resource = pooled(&manager, 1, None);
+    let options = AcquireOptions::default();
+
+    let row = typed_row(&manager, &context(), &options);
+    assert_eq!(row.resource_key(), &StrictPooled::key());
+    row.submit(Once(Cost::FREE)).await.expect("granted");
+    assert_eq!(resource.probe.creates(), 1);
+
+    let erased = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect("erased row facade");
+    assert!(erased.downcast::<ManagedRow<PlainPool>>().is_err());
+    let erased = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect("erased row facade");
+    assert!(
+        erased.downcast::<ResourceGuard<StrictPooled>>().is_err(),
+        "a row facade is no lease"
+    );
+}
+
+#[tokio::test]
+async fn the_erased_facade_refuses_a_missing_or_ambiguous_row() {
+    let manager = Arc::new(Manager::new());
+    let options = AcquireOptions::default();
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect_err("nothing registered");
+    assert_eq!(*error.kind(), ErrorKind::NotFound);
+
+    pooled_for(&manager, identity("tenant-a"));
+    pooled_for(&manager, identity("tenant-b"));
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &SlotIdentity::Unbound,
+    )
+    .expect_err("two credential rows, no identity");
+    // Fails closed exactly as the erased acquire does: an unbound identity
+    // never aliases one tenant's row.
+    assert_eq!(*error.kind(), ErrorKind::NotFound);
+    let acquired = Manager::acquire_any(
+        Arc::clone(&manager),
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &SlotIdentity::Unbound,
+    )
+    .await
+    .err()
+    .map(|error| error.kind().clone());
+    assert_eq!(acquired, Some(ErrorKind::NotFound));
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &identity("tenant-c"),
+    )
+    .expect_err("no such tenant");
+    assert_eq!(*error.kind(), ErrorKind::NotFound);
+}
+
+#[tokio::test]
+async fn a_pinned_identity_reaches_its_own_row() {
+    let manager = Manager::new();
+    let a = pooled_for(&manager, identity("tenant-a"));
+    let b = pooled_for(&manager, identity("tenant-b"));
+    let row = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &AcquireOptions::default(),
+        &identity("tenant-b"),
+    )
+    .expect("tenant b's row")
+    .downcast::<ManagedRow<StrictPooled>>()
+    .expect("typed");
+    row.submit(Once(Cost::FREE)).await.expect("granted");
+    assert_eq!(b.probe.creates(), 1, "tenant b's instance");
+    assert_eq!(a.probe.creates(), 0, "never tenant a's");
+}
+
+#[tokio::test]
+async fn the_erased_facade_refuses_a_tainted_row_and_a_shutting_down_manager() {
+    let manager = Arc::new(Manager::new());
+    pooled(&manager, 1, None);
+    let options = AcquireOptions::default();
+    runtime::<StrictPooled>(&manager).taint();
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect_err("tainted");
+    assert_eq!(*error.kind(), ErrorKind::Revoked);
+
+    let manager = Arc::new(Manager::new());
+    pooled(&manager, 1, None);
+    let _report = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect("nothing to drain");
+    let error = erased_row(
+        &manager,
+        &StrictPooled::key(),
+        &context(),
+        &options,
+        &tenant(),
+    )
+    .expect_err("shut down");
+    assert_eq!(*error.kind(), ErrorKind::Cancelled);
+}
+
+#[tokio::test]
+async fn a_pool_saturated_by_leases_still_yields_a_facade_whose_attempt_is_backpressure() {
+    let observer = ScriptedObserver::answering(available(1, 1));
+    let manager = strict_manager(erased(&observer), &Arc::default());
+    pooled(&manager, 1, None);
+    let managed = runtime::<StrictPooled>(&manager);
+    let lease: ResourceGuard<StrictPooled> = manager
+        .acquire_for_identity::<StrictPooled>(&context(), &AcquireOptions::default(), &tenant())
+        .await
+        .expect("acquire");
+
+    let row = typed_row(&manager, &context(), &AcquireOptions::default());
+    assert_eq!(managed.rate_limiter.profile(), RateLimitProfile::PerAttempt);
+    assert_eq!(
+        managed.credential_admission_profile(),
+        CredentialAdmissionProfile::StrictPerAttempt
+    );
+    let error = row
+        .submit(Once(Cost::ONE))
+        .await
+        .expect_err("the pool is full");
+    assert_eq!(*error.kind(), ErrorKind::Backpressure);
+    assert_eq!(error.sent(), SentState::NotSent);
+    drop(lease);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_options_deadline_and_the_context_cancel_reach_the_units() {
+    let manager = Manager::new();
+    pooled(&manager, 1, None);
+    let deadline = in_one(Duration::from_secs(30));
+    let token = CancellationToken::new();
+    let row = typed_row(
+        &manager,
+        &context_of(&token),
+        &AcquireOptions::default().with_deadline(deadline),
+    );
+    assert_eq!(row.submit(Deadline).await.expect("deadline"), deadline);
+
+    token.cancel();
+    let error = row.submit(Once(Cost::FREE)).await.expect_err("cancelled");
+    assert_cancelled_unsent(&error);
 }

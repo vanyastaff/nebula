@@ -30,8 +30,11 @@
 //! borrowed ([`SessionFuture`], [`SessionCx`]) and closes it with a commit
 //! or a rollback ([`SessionEnd`], [`SessionClosed`]). A
 //! [`SessionBinding::Connection`] provider only runs on a connection built
-//! with the credentials the unit pinned. A `ManagedRow` is obtained from the
-//! engine-owned manager, not built here.
+//! with the credentials the unit pinned. An action obtains a `ManagedRow`
+//! through a derived field — `#[resource] db: ManagedRow<Db>` (or
+//! `Option<ManagedRow<Db>>`) on a `#[derive(Action)]` struct — never by
+//! building one here: its units are cancelled with the execution until their
+//! first grant and bounded by the execution's deadline.
 //!
 //! Rate limits are declared by overriding [`Provider::resilience`] with a
 //! [`ResiliencePolicy`]. The facade books each attempt at its [`Cost`] —

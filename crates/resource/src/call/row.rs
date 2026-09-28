@@ -58,7 +58,8 @@ use super::{
     cost::Cost,
     error::OpError,
     managed::{
-        Checkout, OpCx, Unit, UnitHost, cancelled_before_grant, generation_refusal, submit_unit,
+        Checkout, OpCx, Unit, UnitHost, UnitScope, cancelled_before_grant, generation_refusal,
+        submit_unit,
     },
     pin::PinSlots,
     session::{SessionCx, SessionFuture, SessionProvider, SessionSpec, Sessioned},
@@ -96,8 +97,14 @@ use crate::{
 ///
 /// Bound to one registration: once that row is removed or replaced, its
 /// units fail `Cancelled`. Clones share the row.
+///
+/// Bound to the caller that built it too: its units inherit the caller
+/// context's cancellation (a unit whose first attempt was not granted yet
+/// is cancelled `NotSent`; a granted one runs on to its deadline) and, when
+/// the caller has one, its deadline, which bounds every unit's deadline.
 pub struct ManagedRow<R: Provider> {
     shared: Arc<RowShared<R>>,
+    scope: UnitScope,
 }
 
 /// What every unit of a row facade shares.
@@ -115,6 +122,7 @@ impl<R: Provider> Clone for ManagedRow<R> {
     fn clone(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
+            scope: self.scope.clone(),
         }
     }
 }
@@ -130,7 +138,8 @@ impl<R: Provider> fmt::Debug for ManagedRow<R> {
 
 impl<R: Provider> ManagedRow<R> {
     /// A facade over `managed`, latching the row's rate-limit profile to
-    /// per attempt.
+    /// per attempt. Its units inherit nothing until
+    /// [`with_unit_scope`](Self::with_unit_scope).
     pub(crate) fn new(
         managed: Arc<ManagedResource<R>>,
         link: AcquireLink,
@@ -146,7 +155,15 @@ impl<R: Provider> ManagedRow<R> {
                 ctx: ctx.clone_for_acquire(),
                 gate,
             }),
+            scope: UnitScope::default(),
         }
+    }
+
+    /// The facade whose units inherit `scope`: the building caller's
+    /// cancellation and deadline.
+    pub(crate) fn with_unit_scope(mut self, scope: UnitScope) -> Self {
+        self.scope = scope;
+        self
     }
 
     /// The row's key.
@@ -168,6 +185,7 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
     pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output> {
         submit_unit(
             UnitHost::Row(Arc::clone(&self.shared)),
+            &self.scope,
             operation,
             O::EFFECT,
             std::any::type_name::<O>(),
@@ -217,6 +235,7 @@ where
         let effect = spec.effect();
         submit_unit(
             UnitHost::Row(Arc::clone(&self.shared)),
+            &self.scope,
             Sessioned::new(spec, body),
             effect,
             "session",

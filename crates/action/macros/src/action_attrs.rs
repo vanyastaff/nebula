@@ -20,6 +20,9 @@ pub(crate) struct ActionAttrs {
     pub input: Type,
     /// Required `Self::Output` type.
     pub output: Type,
+    /// The author explicitly attests that the action performs no external
+    /// business effects.
+    pub no_external_effects: bool,
 }
 
 impl ActionAttrs {
@@ -33,7 +36,15 @@ impl ActionAttrs {
         // diagnostics for misspelled attribute names so authors get a hint
         // pointing at the bad key instead of a confusing parse error far
         // downstream.
-        const ALLOWED: &[&str] = &["key", "name", "description", "version", "input", "output"];
+        const ALLOWED: &[&str] = &[
+            "key",
+            "name",
+            "description",
+            "version",
+            "input",
+            "output",
+            "no_external_effects",
+        ];
         for item in &attr_args.items {
             let key = match item {
                 attrs::AttrItem::KeyValue { key, .. }
@@ -48,6 +59,12 @@ impl ActionAttrs {
                          — allowed keys: {}",
                         ALLOWED.join(", "),
                     ),
+                ));
+            }
+            if key == "no_external_effects" && !matches!(item, attrs::AttrItem::Flag(_)) {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "`no_external_effects` is a flag; write it without `= ...`",
                 ));
             }
         }
@@ -82,6 +99,7 @@ impl ActionAttrs {
                  — Variant A requires Self::Output to be specified",
             )
         })?;
+        let no_external_effects = attr_args.has_flag("no_external_effects");
 
         Ok(Self {
             key,
@@ -90,6 +108,7 @@ impl ActionAttrs {
             version,
             input,
             output,
+            no_external_effects,
         })
     }
 
@@ -99,6 +118,13 @@ impl ActionAttrs {
         let name = &self.name;
         let description = &self.description;
         let version = self.version.to_string();
+        let effect_contract = self.no_external_effects.then(|| {
+            quote! {
+                .with_effect_contract(
+                    ::nebula_action::ActionEffectContract::NoExternalEffects
+                )
+            }
+        });
 
         quote! {
             ::nebula_action::ActionMetadataDraft::new(
@@ -107,6 +133,7 @@ impl ActionAttrs {
                 #description,
             )
                 .with_version_literal(#version)
+                #effect_contract
         }
     }
 }

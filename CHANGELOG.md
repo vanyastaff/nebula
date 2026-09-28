@@ -665,6 +665,27 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Actions reach managed rows.** A `#[derive(Action)]` `#[resource]` field
+  may hold `ManagedRow<R>` or `Option<ManagedRow<R>>` (`Lazy<ManagedRow<R>>`
+  is rejected: resolution checks nothing out); the factory resolves it
+  synchronously through the new `ActionContextExt::managed_row_by_id`, over
+  the provided `nebula_core::accessor::ResourceAccessor::managed_row_any`
+  seam (the default refuses: an accessor serves no rows unless it opts in).
+  The engine's `EngineResourceAccessor` serves it with the new read-only
+  `Manager::managed_row_any_read_only` under the node's recorded slot identity; the
+  layered accessor fails closed for a key a branch scope holds. The facade's
+  units inherit the node's cancellation token — a unit not granted yet
+  settles `Cancelled` / `NotSent`, a granted one runs on to its deadline —
+  and the execution's remaining `max_duration`
+  (`EngineResourceAccessor::with_deadline`) bounds every unit's deadline.
+  Accepted through the engine end to end, over encrypted SQLite (F7) and on
+  real PostgreSQL (PG9); the SDK perimeter proves the derived field
+  (`action_managed_row`). `#[action(no_external_effects)]` explicitly emits
+  the no-effect contract; omitting it remains fail-closed `Undeclared`.
+  Action-scoped rows admit `Effect::Read` only: idempotent/write operations
+  and write sessions are refused `NotSent` before provider code because their
+  business effects require execution-owner authority. No public ad-hoc
+  accessor or SDK testing hook builds a row.
 - **Managed row facade and sessions.** `Manager::managed_row` /
   `managed_row_for_identity` return `nebula_resource::call::ManagedRow<R>`:
   the managed call facade without a lease. Each attempt of a submitted
@@ -690,7 +711,8 @@ let admitted = recorded.readmit_against(fresh)?;
   `nebula_sdk::integration::resource` (not the prelude). The engine accepts
   sessions on real PostgreSQL connections (PG1–PG8, run by the PostgreSQL
   CI job). Interim: `Pooled`-only sessions, the 5-minute unit deadline (no
-  `LISTEN` / `NOTIFY` or IMAP `IDLE`), and no engine accessor yet.
+  `LISTEN` / `NOTIFY` or IMAP `IDLE`); actions reach a row through a
+  derived field (see "Actions reach managed rows").
 - **HTTP resource adapter in the SDK (feature `resource-http`).**
   `nebula_sdk::integration::resource::http` sends HTTP calls as managed
   units: `HttpConfig` (https, or http for a loopback host; timeouts, byte
@@ -1187,6 +1209,14 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Changed
 
+- **A managed row is bound to the caller that built it.**
+  `Manager::managed_row` / `managed_row_for_identity` link the context's
+  cancellation token: once it fires, a unit whose first attempt was not
+  granted yet (queued for quota, the row gate, a strict read or its
+  checkout, or not started) settles `Cancelled` / `NotSent`, and the grant
+  re-checks it; after the first grant it is ignored. `Unit::with_deadline`
+  still only shortens a unit's deadline. The derive's error for a
+  `#[resource]` field of another type now lists `ManagedRow<T>`.
 - **A managed unit pins its credential slots at its first grant**, not when
   it starts: the first attempt runs on the binding its final admission (and,
   on a strict manager, its credential read) validated. The pin is bracketed
