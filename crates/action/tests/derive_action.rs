@@ -498,6 +498,31 @@ mod managed_row_fields {
     }
 
     #[tokio::test]
+    async fn projected_nodes_resolve_rows_through_the_provider_contract_keys() {
+        let manager = Arc::new(Manager::new());
+        register(&manager, Db);
+        register(&manager, Cache);
+        let context = TestContextBuilder::new()
+            .build()
+            .with_resources(Arc::new(RowsOf(Arc::clone(&manager))));
+        let projected =
+            NodeDefinition::new(node_key!("rows"), "Rows", "test", "test.managed_row_fields")
+                .expect("valid projected node");
+
+        let action = RowAction::from_workflow_node(&projected, &context)
+            .await
+            .expect("provider keys resolve without concrete selectors");
+        assert_eq!(action.db.resource_key(), &Db::key());
+        assert_eq!(
+            action
+                .cache
+                .expect("the optional provider row exists")
+                .resource_key(),
+            &Cache::key()
+        );
+    }
+
+    #[tokio::test]
     async fn an_optional_row_is_absent_unbound_and_fatal_when_bound_to_nothing() {
         let manager = Arc::new(Manager::new());
         register(&manager, Db);
@@ -543,7 +568,7 @@ mod managed_row_fields {
                 .build()
                 .with_resources(Arc::new(RetryingRows {
                     manager,
-                    retry_key: ResourceKey::new("cache").expect("valid default slot id"),
+                    retry_key: Cache::key(),
                 }));
         let Err(optional_error) = RowAction::from_workflow_node(&node(), &optional_context).await
         else {

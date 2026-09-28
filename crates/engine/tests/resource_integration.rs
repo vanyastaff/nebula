@@ -1609,7 +1609,8 @@ mod managed_row {
 
         let result = run(
             &engine,
-            node_of("test.managed_row.read", "svc", &Svc::key()),
+            NodeDefinition::new(node_key!("row"), "Row", "core", "test.managed_row.read")
+                .expect("valid projected node"),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )

@@ -780,6 +780,16 @@ impl ResourceAccessor for LayeredResourceAccessor {
         }
         self.global.managed_row_any(key)
     }
+
+    fn try_managed_row_any(&self, key: &ResourceKey) -> Result<Option<ScopedLookup>, CoreError> {
+        if self.scoped.has_in_ancestors(key) {
+            return Err(CoreError::scope_violation(
+                format!("managed row of {key}"),
+                "a branch-scoped resource payload, which serves no managed rows",
+            ));
+        }
+        self.global.try_managed_row_any(key)
+    }
 }
 
 #[cfg(test)]

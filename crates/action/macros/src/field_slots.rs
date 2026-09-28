@@ -359,22 +359,26 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
         // chosen by the accessor. Preserve it verbatim: wrapping a revoked or
         // suspended row in `fatal` would disable the engine retry policy. An
         // optional row uses the typed try seam so only genuine absence is
-        // `None`; lifecycle and type failures still propagate.
+        // `None`; lifecycle and type failures still propagate. A durable
+        // execution graph carries no concrete selectors on its projected
+        // node, so the no-binding path addresses the activated row by the
+        // provider contract key rather than by the authored field name.
         if slot.row {
             debug_assert!(!lazy, "managed rows cannot be lazy");
             let stmt = if optional {
                 quote! {
                     let #field = {
-                        let explicit_binding = #binding_call;
-                        let slot_id = explicit_binding.unwrap_or(#slot_key_lit);
-                        if explicit_binding.is_some() {
-                            match #resolve_call {
+                        if let Some(slot_id) = #binding_call {
+                            match <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
+                                ::managed_row_by_id::<#inner_ty>(ctx, slot_id)
+                            {
                                 Ok(row) => Some(row),
                                 Err(error) => return Err(error),
                             }
                         } else {
+                            let resource_key = <#inner_ty as ::nebula_resource::resource::Provider>::key();
                             match <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
-                                ::try_managed_row_by_id::<#inner_ty>(ctx, slot_id)
+                                ::try_managed_row_by_id::<#inner_ty>(ctx, resource_key.as_str())
                             {
                                 Ok(row) => row,
                                 Err(error) => return Err(error),
@@ -385,8 +389,15 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
             } else {
                 quote! {
                     let #field = {
-                        let slot_id = #binding_call.unwrap_or(#slot_key_lit);
-                        match #resolve_call {
+                        let resolved = if let Some(slot_id) = #binding_call {
+                            <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
+                                ::managed_row_by_id::<#inner_ty>(ctx, slot_id)
+                        } else {
+                            let resource_key = <#inner_ty as ::nebula_resource::resource::Provider>::key();
+                            <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
+                                ::managed_row_by_id::<#inner_ty>(ctx, resource_key.as_str())
+                        };
+                        match resolved {
                             Ok(row) => row,
                             Err(error) => return Err(error),
                         }
@@ -573,9 +584,19 @@ mod tests {
                 expanded.contains("managed_row_by_id :: < Db > (ctx , slot_id)"),
                 "{expanded}"
             );
+            assert!(
+                expanded.contains("< Db as :: nebula_resource :: resource :: Provider > :: key ()"),
+                "{expanded}"
+            );
+            assert!(expanded.contains("resource_key . as_str ()"), "{expanded}");
             assert!(!expanded.contains("acquire_resource_by_id"), "{expanded}");
             assert!(!expanded.contains(". await"), "{expanded}");
-            assert_eq!(expanded.contains("Some (guard)"), optional, "{expanded}");
+            assert_eq!(
+                expanded.contains("try_managed_row_by_id :: < Db >"),
+                optional,
+                "{expanded}"
+            );
+            assert_eq!(expanded.contains("Some (row)"), optional, "{expanded}");
             assert_eq!(idents, [format_ident!("db")]);
         }
     }
