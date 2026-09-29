@@ -200,6 +200,7 @@ async fn legacy_upgrade_never_grants_and_terminal_evidence_survives_reopen() {
         fingerprint: RequestFingerprint::new(1, [0x11; 32]),
         destination: DestinationCapability::StableKey,
         contract: oracle::contract(DestinationCapability::StableKey),
+        provider_key: None,
     };
     assert_eq!(
         ledger

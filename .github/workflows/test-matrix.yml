@@ -305,7 +305,7 @@ jobs:
           cargo nextest run "${common[@]}" \
             -E 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests|control_queue::tests)::/)'
 
-          # `conformance` and `identity_conformance` are the shared semantic
+          # `conformance` and `identity_conformance_postgres` are the shared semantic
           # oracles: the same assertions run against InMemory, SQLite, and
           # PostgreSQL. Their PostgreSQL arm skip-cleans without DATABASE_URL,
           # so leaving them out of this job meant the "shared" oracle had never
@@ -314,10 +314,11 @@ jobs:
           # run here and against each other.
           for suite in \
             conformance \
-            identity_conformance \
+            identity_conformance_postgres \
             credential_lifecycle_postgres \
             credential_migration_postgres \
             credential_schema_admission_postgres \
+            control_start_handoff_postgres \
             exact_dispatch_flavor_migration_postgres \
             execution_state_bounds_postgres \
             operation_ledger_conformance_postgres \
@@ -347,7 +348,8 @@ jobs:
           NEBULA_START_AUTHORITY_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/start-authority/sqlite.json \
           NEBULA_START_AUTHORITY_POSTGRES_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/start-authority/postgresql.json \
             cargo nextest run -p nebula-storage --features sqlite,postgres \
-            --test start_materialization --profile ci
+            --test start_materialization \
+            --test start_materialization_postgres --profile ci
 
           NEBULA_CLAIM_FENCING_IN_MEMORY_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-fencing/in-memory.json \
           NEBULA_CLAIM_FENCING_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-fencing/sqlite.json \

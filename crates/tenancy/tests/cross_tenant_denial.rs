@@ -32,8 +32,8 @@ use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind
 use nebula_storage_port::dto::{
     AcceptResourceEventRequest, AcquireResourceSourceLeaseRequest, CachedRecord,
     ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, CompleteResourceDeliveryRequest,
-    ControlCommand, ControlMsg, EffectOccurrenceKey, EffectSlotBinding, EffectSlotId,
-    EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace, ExecutionRecord,
+    ControlCommand, ControlMsg, EffectOccurrenceKey, EffectOccurrenceRecord, EffectSlotBinding,
+    EffectSlotId, EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace, ExecutionRecord,
     FrozenOutcomeEvidence, HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
     HeartbeatResourceSourceLeaseRequest, KnownOutcome, MaterializedStart, OperationAdvance,
     OperationCommand, OperationLedgerError, OperationRecord, OutcomeEvidenceSource, PrepareOutcome,
@@ -1258,6 +1258,19 @@ impl OperationLedger for ScopeRecordingLedger {
         Ok(None)
     }
 
+    async fn read_occurrences(
+        &self,
+        scope: &Scope,
+        _execution_id: &str,
+        _node_key: &str,
+    ) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(scope.clone());
+        Ok(Vec::new())
+    }
+
     async fn prepare(
         &self,
         binding: &EffectSlotBinding<'_>,
@@ -1322,9 +1335,16 @@ async fn operation_ledger_substitutes_the_bound_scope() {
     let foreign = EffectOccurrenceKey::new(&foreign_scope, "execution", "node", "effect");
 
     assert!(scoped.read_occurrence(&foreign).await.unwrap().is_none());
+    assert!(
+        scoped
+            .read_occurrences(&foreign_scope, "execution", "node")
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         inner.observed.lock().expect("recording lock").as_slice(),
-        &[scope_a()]
+        &[scope_a(), scope_a()]
     );
 }
 

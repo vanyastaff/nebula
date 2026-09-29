@@ -7,9 +7,9 @@ use nebula_core::OperationId;
 use nebula_storage_port::{
     FencingToken, Scope,
     dto::{
-        AttemptGeneration, DestinationCapability, EffectOccurrenceKey, EffectSlotBinding,
-        EffectSlotId, OperationAdvance, OperationCommand, OperationLedgerError, OperationRecord,
-        PrepareOutcome, PreparedOperation,
+        AttemptGeneration, DestinationCapability, EffectOccurrenceKey, EffectOccurrenceRecord,
+        EffectSlotBinding, EffectSlotId, OperationAdvance, OperationCommand, OperationLedgerError,
+        OperationRecord, PrepareOutcome, PreparedOperation,
     },
     store::OperationLedger,
 };
@@ -75,6 +75,16 @@ impl OperationLedger for FaultLedger {
             return Err(OperationLedgerError::Unavailable);
         }
         self.inner.read_occurrence(key).await
+    }
+    async fn read_occurrences(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+        node_key: &str,
+    ) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+        self.inner
+            .read_occurrences(scope, execution_id, node_key)
+            .await
     }
     async fn read_exact(
         &self,

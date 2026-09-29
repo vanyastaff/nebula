@@ -114,6 +114,9 @@ impl EffectTurn<'_> {
             fingerprint,
             destination: contract.policy().capability(),
             contract: &contract,
+            // Remote effects identify themselves to the provider by the
+            // ledger-minted operation id; they record no separate key.
+            provider_key: None,
         };
         let record = match self.ledger.prepare(&binding, self.fencing).await {
             Ok(outcome) => {
