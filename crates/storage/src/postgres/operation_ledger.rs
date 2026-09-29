@@ -20,15 +20,15 @@
 use nebula_core::{OperationCallId, OperationId};
 use nebula_storage_port::store::{OperationLedger, OperationLedgerAdjudicator};
 use nebula_storage_port::{
-    AttemptGeneration, DestinationCapability, EffectOccurrenceKey, EffectSlotBinding, EffectSlotId,
-    FencingToken, OperationLedgerError, OperationRecord, OperationState, PrepareOutcome,
-    RequestFingerprint, Scope,
+    AttemptGeneration, DestinationCapability, EffectOccurrenceKey, EffectOccurrenceRecord,
+    EffectSlotBinding, EffectSlotId, FencingToken, OperationLedgerError, OperationRecord,
+    OperationState, PrepareOutcome, RequestFingerprint, Scope,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::operation_ledger::{
-    compose_record, decide_prepare, prepare_label, read_label, state_from_text, state_text,
-    write_label,
+    attach_protocol_payload, compose_record, decide_prepare, prepare_label, read_label,
+    state_from_text, state_text, write_label,
 };
 
 /// PostgreSQL-backed durable operation ledger.
@@ -143,7 +143,7 @@ async fn load_by_natural_key(
     let payload = row
         .try_get::<Option<String>, _>("protocol_payload")
         .map_err(driver_did_not_commit)?;
-    attach_decoded_protocol(decode_row(&row)?, payload.as_deref()).map(Some)
+    attach_protocol_payload(decode_row(&row)?, payload.as_deref()).map(Some)
 }
 
 /// Read one slot a tenant is allowed to see.
@@ -195,7 +195,7 @@ async fn load_visible(
     let payload = row
         .try_get::<Option<String>, _>("protocol_payload")
         .map_err(driver_did_not_commit)?;
-    attach_decoded_protocol(decode_row(&row)?, payload.as_deref())
+    attach_protocol_payload(decode_row(&row)?, payload.as_deref())
 }
 
 async fn backend_now(tx: &mut Transaction<'_, Postgres>) -> Result<i64, OperationLedgerError> {
@@ -205,18 +205,52 @@ async fn backend_now(tx: &mut Transaction<'_, Postgres>) -> Result<i64, Operatio
         .map_err(driver_did_not_commit)
 }
 
-fn attach_decoded_protocol(
-    record: OperationRecord,
-    payload: Option<&str>,
-) -> Result<OperationRecord, OperationLedgerError> {
-    match crate::operation_ledger::decode_protocol(payload)? {
-        Some(protocol) => {
-            let record = record.with_protocol(protocol);
-            crate::operation_ledger::validate_record(&record)?;
-            Ok(record)
-        },
-        None => Ok(record),
-    }
+/// List every slot of one node in one snapshot, in the port's order.
+///
+/// `COLLATE "C"` makes the same-millisecond tiebreak byte order regardless of
+/// the database's locale, so every backend lists identically.
+async fn load_node_occurrences(
+    tx: &mut Transaction<'_, Postgres>,
+    scope: &Scope,
+    execution_id: &str,
+    node_key: &str,
+) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+    let rows = sqlx::query(
+        "SELECT l.slot_id, l.operation_id, l.attempt_generation, l.destination, \
+                l.fingerprint_version, l.fingerprint, l.state, l.occurrence, \
+                p.payload AS protocol_payload \
+         FROM port_operation_ledger l \
+         LEFT JOIN port_operation_protocol p \
+           ON p.slot_id = l.slot_id AND p.workspace_id = l.workspace_id \
+          AND p.org_id = l.org_id \
+         WHERE l.workspace_id = $1 AND l.org_id = $2 AND l.execution_id = $3 \
+           AND l.node_key = $4 \
+         ORDER BY l.prepared_at_ms, l.occurrence COLLATE \"C\"",
+    )
+    .bind(&scope.workspace_id)
+    .bind(&scope.org_id)
+    .bind(execution_id)
+    .bind(node_key)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(driver_did_not_commit)?;
+
+    rows.iter()
+        .map(|row| {
+            let record = decode_row(row)?;
+            let slot_id = record.operation().slot_id();
+            let occurrence: String = row
+                .try_get("occurrence")
+                .map_err(|_| OperationLedgerError::CorruptRecord { slot_id })?;
+            let payload = row
+                .try_get::<Option<String>, _>("protocol_payload")
+                .map_err(driver_did_not_commit)?;
+            Ok(EffectOccurrenceRecord::new(
+                occurrence,
+                attach_protocol_payload(record, payload.as_deref())?,
+            ))
+        })
+        .collect()
 }
 
 async fn insert_protocol(
@@ -309,11 +343,34 @@ impl OperationLedger for PgOperationLedger {
         key: &EffectOccurrenceKey<'_>,
     ) -> Result<Option<OperationRecord>, OperationLedgerError> {
         let result = async {
+            key.validate()?;
             let mut tx = self.pool.begin().await.map_err(driver_did_not_commit)?;
             load_by_natural_key(&mut tx, key).await
         }
         .await;
         let outcome = crate::operation_ledger::occurrence_read_label(&result);
+        tracing::Span::current().record("outcome", outcome);
+        result
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, name = "operation_ledger.read_occurrences", fields(backend = "postgres", slots = tracing::field::Empty, outcome = tracing::field::Empty))]
+    async fn read_occurrences(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+        node_key: &str,
+    ) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+        let result = async {
+            let mut tx = self.begin().await?;
+            let listed = load_node_occurrences(&mut tx, scope, execution_id, node_key).await;
+            drop(tx.commit().await);
+            listed
+        }
+        .await;
+        if let Ok(listed) = &result {
+            tracing::Span::current().record("slots", listed.len());
+        }
+        let outcome = crate::operation_ledger::occurrences_read_label(&result);
         tracing::Span::current().record("outcome", outcome);
         result
     }
@@ -335,8 +392,7 @@ impl OperationLedger for PgOperationLedger {
         fencing: FencingToken,
     ) -> Result<PrepareOutcome, OperationLedgerError> {
         let result = async {
-            let generation =
-                crate::operation_ledger::stored_attempt_generation(binding.attempt_generation)?;
+            let generation = crate::operation_ledger::admit_binding(binding)?;
             let mut tx = self.begin().await?;
             lock_execution(&mut tx, binding.scope, binding.execution_id, Some(fencing)).await?;
             let now_ms = backend_now(&mut tx).await?;
@@ -403,6 +459,7 @@ impl OperationLedger for PgOperationLedger {
                     binding.fingerprint,
                     OperationState::Prepared,
                 )
+                .with_protocol(protocol)
                 .operation(),
             ))
         }

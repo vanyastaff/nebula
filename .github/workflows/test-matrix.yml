@@ -348,7 +348,8 @@ jobs:
           NEBULA_START_AUTHORITY_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/start-authority/sqlite.json \
           NEBULA_START_AUTHORITY_POSTGRES_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/start-authority/postgresql.json \
             cargo nextest run -p nebula-storage --features sqlite,postgres \
-            --test start_materialization --profile ci
+            --test start_materialization \
+            --test start_materialization_postgres --profile ci
 
           NEBULA_CLAIM_FENCING_IN_MEMORY_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-fencing/in-memory.json \
           NEBULA_CLAIM_FENCING_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-fencing/sqlite.json \

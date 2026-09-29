@@ -665,6 +665,20 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **The operation ledger is ready for many effects per node.**
+  `OperationLedger::read_occurrences(scope, execution_id, node_key)` lists
+  every slot one node prepared as `EffectOccurrenceRecord` (occurrence label
+  and record), ordered by backend preparation time then label bytes, in all
+  three adapters and behind the tenancy decorator. Occurrence labels are
+  validated at the port (`EffectOccurrenceKey::validate_label`: 1..=512 bytes
+  of visible ASCII) and rejected with `OperationLedgerError::InvalidOccurrence`
+  before any durable access. A prepared slot may durably record an opaque,
+  secret-free `ProviderIdempotencyKey` (1..=64 base64url bytes) in the same
+  transaction, inside the existing protocol record (no migration); it is part
+  of the prepare identity, never of the natural key, and is returned on
+  `PreparedOperation::provider_key` so a resumed owner reads it back. A retry
+  must reuse the key.
+
 - **Actions reach managed rows.** A `#[derive(Action)]` `#[resource]` field
   may hold `ManagedRow<R>` or `Option<ManagedRow<R>>` (`Lazy<ManagedRow<R>>`
   is rejected: resolution checks nothing out); the factory resolves it
@@ -1208,6 +1222,14 @@ let admitted = recorded.readmit_against(fresh)?;
   classifications map to wire code `other`.
 
 ### Changed
+
+- **Breaking (workspace-internal): `EffectSlotBinding` gains `provider_key`.**
+  The public-field struct now carries `provider_key:
+  Option<ProviderIdempotencyKey>`; every struct literal must set it (the
+  remote-effect driver passes `None`). `OperationLedger` gains the required
+  method `read_occurrences`, so external implementations must add it, and
+  `OperationLedgerError` gains `InvalidOccurrence`. `OperationMismatch` now
+  also covers a differing provider key.
 
 - **A managed row is bound to the caller that built it.**
   `Manager::managed_row` / `managed_row_for_identity` link the context's
