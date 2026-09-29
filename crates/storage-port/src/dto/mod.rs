@@ -63,8 +63,9 @@ pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
 pub use operation_ledger::{
     AttemptGeneration, DestinationCapability, DestinationCapabilityParseError, EffectOccurrenceKey,
     EffectOccurrenceRecord, EffectSlotBinding, EffectSlotId, KnownOutcome,
-    MAX_OCCURRENCE_LABEL_BYTES, OccurrenceLabelViolation, OperationLedgerError,
-    OperationProtocolViolation, OperationRecord, OperationState, PrepareOutcome, PreparedOperation,
+    MAX_OCCURRENCE_LABEL_BYTES, MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES, OccurrenceLabelViolation,
+    OperationLedgerError, OperationProtocolViolation, OperationRecord, OperationState,
+    PrepareOutcome, PreparedOperation, ProviderIdempotencyKey, ProviderIdempotencyKeyError,
     RequestFingerprint,
 };
 pub use operation_protocol::{

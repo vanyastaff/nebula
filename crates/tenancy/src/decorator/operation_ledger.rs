@@ -77,6 +77,7 @@ impl OperationLedger for ScopedOperationLedger {
             fingerprint: binding.fingerprint,
             destination: binding.destination,
             contract: binding.contract,
+            provider_key: binding.provider_key,
         };
         self.inner.prepare(&scoped_binding, fencing).await
     }

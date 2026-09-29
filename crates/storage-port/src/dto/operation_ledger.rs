@@ -339,6 +339,17 @@ pub struct EffectSlotBinding<'a> {
     pub destination: DestinationCapability,
     /// Complete concrete destination/descriptor binding and finite pinned policy.
     pub contract: &'a super::PreparedEffectContract,
+    /// Idempotency key the provider receives for this slot, when the caller
+    /// derives one.
+    ///
+    /// Persisted in the same transaction as the preparation and part of the
+    /// prepare identity: re-preparing the occurrence with a different key, or
+    /// with a key where none was recorded (or the reverse), is
+    /// [`OperationLedgerError::OperationMismatch`] with no durable change. It
+    /// is never part of the natural key. A resumed owner reads the recorded
+    /// key back from [`PreparedOperation::provider_key`] instead of
+    /// recomputing it.
+    pub provider_key: Option<ProviderIdempotencyKey>,
 }
 
 impl EffectSlotBinding<'_> {
@@ -354,6 +365,128 @@ impl EffectSlotBinding<'_> {
     }
 }
 
+/// Longest provider idempotency key the ledger admits, in bytes.
+pub const MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES: usize = 64;
+
+/// Durable, opaque idempotency key a provider receives for one effect slot.
+///
+/// The key is what lets a *provider* deduplicate a repeated call, so it must be
+/// the same on every attempt of one slot: **a retry must reuse the key**. It
+/// therefore never contains an attempt or retry number, and it is recorded in
+/// the ledger at preparation — before any provider call — so a resumed owner
+/// reads it back instead of recomputing it.
+///
+/// It is secret-free by construction: 1..=[`MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES`]
+/// bytes of the base64url alphabet (`A-Z a-z 0-9 - _`, no padding). Callers
+/// derive it as a digest (for example base64url of a SHA-256, 43 characters),
+/// never from raw credentials or request payloads, which is why it may appear
+/// in `Debug` output and diagnostics.
+///
+/// The value is stored inline, so the type stays `Copy`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProviderIdempotencyKey {
+    len: u8,
+    bytes: [u8; MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES],
+}
+
+/// Bounded reason a provider idempotency key was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+#[non_exhaustive]
+pub enum ProviderIdempotencyKeyError {
+    /// The key is empty.
+    #[error("provider idempotency key is empty")]
+    Empty,
+    /// The key exceeds [`MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES`].
+    #[error("provider idempotency key exceeds 64 bytes")]
+    TooLong,
+    /// The key contains a character outside the base64url alphabet.
+    #[error("provider idempotency key contains a character outside base64url")]
+    InvalidCharacter,
+}
+
+impl ProviderIdempotencyKey {
+    /// Validate and copy a key.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first violated rule: empty, longer than
+    /// [`MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES`], or a character outside
+    /// `A-Z a-z 0-9 - _`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_storage_port::{ProviderIdempotencyKey, ProviderIdempotencyKeyError};
+    ///
+    /// let key = ProviderIdempotencyKey::new("47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU")?;
+    /// assert_eq!(key.as_str().len(), 43);
+    /// assert_eq!(
+    ///     ProviderIdempotencyKey::new("with=padding"),
+    ///     Err(ProviderIdempotencyKeyError::InvalidCharacter)
+    /// );
+    /// # Ok::<(), ProviderIdempotencyKeyError>(())
+    /// ```
+    pub fn new(key: &str) -> Result<Self, ProviderIdempotencyKeyError> {
+        let source = key.as_bytes();
+        if source.is_empty() {
+            return Err(ProviderIdempotencyKeyError::Empty);
+        }
+        let len = u8::try_from(source.len())
+            .ok()
+            .filter(|len| usize::from(*len) <= MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES)
+            .ok_or(ProviderIdempotencyKeyError::TooLong)?;
+        if !source
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(ProviderIdempotencyKeyError::InvalidCharacter);
+        }
+        let mut bytes = [0; MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES];
+        bytes
+            .get_mut(..source.len())
+            .ok_or(ProviderIdempotencyKeyError::TooLong)?
+            .copy_from_slice(source);
+        Ok(Self { len, bytes })
+    }
+
+    /// The key exactly as the provider receives it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.bytes
+            .get(..usize::from(self.len))
+            .and_then(|bytes| core::str::from_utf8(bytes).ok())
+            .unwrap_or_default()
+    }
+}
+
+impl fmt::Debug for ProviderIdempotencyKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ProviderIdempotencyKey")
+            .field(&self.as_str())
+            .finish()
+    }
+}
+
+impl fmt::Display for ProviderIdempotencyKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl serde::Serialize for ProviderIdempotencyKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ProviderIdempotencyKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        Self::new(&key).map_err(serde::de::Error::custom)
+    }
+}
+
 /// One durably prepared operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreparedOperation {
@@ -361,10 +494,12 @@ pub struct PreparedOperation {
     operation_id: OperationId,
     attempt_generation: AttemptGeneration,
     destination: DestinationCapability,
+    provider_key: Option<ProviderIdempotencyKey>,
 }
 
 impl PreparedOperation {
-    /// Build a prepared-operation projection from durable state.
+    /// Build a prepared-operation projection from durable state, without a
+    /// provider idempotency key; see [`Self::with_provider_key`].
     #[must_use]
     pub const fn new(
         slot_id: EffectSlotId,
@@ -377,7 +512,24 @@ impl PreparedOperation {
             operation_id,
             attempt_generation,
             destination,
+            provider_key: None,
         }
+    }
+
+    /// Attach the provider idempotency key recorded at preparation.
+    #[must_use]
+    pub const fn with_provider_key(mut self, provider_key: Option<ProviderIdempotencyKey>) -> Self {
+        self.provider_key = provider_key;
+        self
+    }
+
+    /// Provider idempotency key recorded at preparation, if any.
+    ///
+    /// Always the durable value: a replayed preparation returns the key the
+    /// slot was first prepared with.
+    #[must_use]
+    pub const fn provider_key(self) -> Option<ProviderIdempotencyKey> {
+        self.provider_key
     }
 
     /// Storage-minted slot identity.
@@ -486,8 +638,13 @@ impl OperationRecord {
         self.state
     }
     /// Attach a decoded backend protocol projection; this grants no authority.
+    ///
+    /// The protocol is the durable home of the provider idempotency key, so
+    /// the attached protocol's key also becomes [`PreparedOperation::provider_key`]
+    /// of [`Self::operation`].
     #[must_use]
     pub fn with_protocol(mut self, protocol: super::OperationProtocolRecord) -> Self {
+        self.operation = self.operation.with_provider_key(protocol.provider_key());
         self.protocol = Some(protocol);
         self
     }
@@ -583,11 +740,14 @@ pub enum OperationLedgerError {
     /// The execution is absent, outside this scope, or lacks this live lease.
     #[error("execution lease does not authorize this operation")]
     ExecutionLeaseRejected,
-    /// The slot is bound to a different canonical request.
+    /// The slot is bound to a different canonical request, contract, or
+    /// provider idempotency key.
     ///
     /// Nothing was written. Reusing a slot for a different request would give
-    /// two distinct effects one operation identity, so this fails closed.
-    #[error("effect slot is bound to a different request")]
+    /// two distinct effects one operation identity, and silently switching the
+    /// provider key would let the provider apply one effect twice, so this
+    /// fails closed.
+    #[error("effect slot is bound to a different request or provider key")]
     OperationMismatch {
         /// Slot whose binding differs.
         slot_id: EffectSlotId,
@@ -717,5 +877,88 @@ mod tests {
                 violation: OccurrenceLabelViolation::InvalidByte
             })
         );
+    }
+
+    #[test]
+    fn provider_keys_admit_only_bounded_base64url_and_round_trip() {
+        let digest = "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU";
+        let key = ProviderIdempotencyKey::new(digest).unwrap();
+        assert_eq!(key.as_str(), digest);
+        assert_eq!(key.to_string(), digest);
+        assert!(format!("{key:?}").contains(digest));
+        let longest = "A".repeat(MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES);
+        assert_eq!(
+            ProviderIdempotencyKey::new(&longest).unwrap().as_str(),
+            longest
+        );
+        assert_eq!(
+            ProviderIdempotencyKey::new(""),
+            Err(ProviderIdempotencyKeyError::Empty)
+        );
+        assert_eq!(
+            ProviderIdempotencyKey::new(&"A".repeat(MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES + 1)),
+            Err(ProviderIdempotencyKeyError::TooLong)
+        );
+        for rejected in ["pad=", "plus+", "slash/", "space ", "ключ"] {
+            assert_eq!(
+                ProviderIdempotencyKey::new(rejected),
+                Err(ProviderIdempotencyKeyError::InvalidCharacter),
+                "{rejected:?} must be rejected"
+            );
+        }
+
+        let encoded = serde_json::to_string(&key).unwrap();
+        assert_eq!(encoded, format!("\"{digest}\""));
+        assert_eq!(
+            serde_json::from_str::<ProviderIdempotencyKey>(&encoded).unwrap(),
+            key
+        );
+        assert!(serde_json::from_str::<ProviderIdempotencyKey>("\"no=pad\"").is_err());
+    }
+
+    #[test]
+    fn a_keyless_protocol_record_serializes_as_before_and_a_key_round_trips() {
+        let policy = super::super::PreparedEffectPolicy::builder(DestinationCapability::Opaque)
+            .maximum_invocations(1)
+            .maximum_queries(0)
+            .recovery_window(std::time::Duration::from_secs(1))
+            .build()
+            .unwrap();
+        let contract =
+            super::super::PreparedEffectContract::new(RequestFingerprint::new(1, [7; 32]), policy)
+                .unwrap();
+        let keyless = super::super::OperationProtocolRecord::prepared(contract.clone(), 0)
+            .build()
+            .unwrap();
+        let encoded = serde_json::to_value(&keyless).unwrap();
+        assert!(
+            encoded.get("provider_key").is_none(),
+            "a keyless record must keep its pre-key bytes"
+        );
+        assert_eq!(
+            serde_json::from_value::<super::super::OperationProtocolRecord>(encoded).unwrap(),
+            keyless
+        );
+
+        let key = ProviderIdempotencyKey::new("order-123").unwrap();
+        let keyed = super::super::OperationProtocolRecord::prepared(contract, 0)
+            .provider_key(Some(key))
+            .build()
+            .unwrap();
+        let decoded: super::super::OperationProtocolRecord =
+            serde_json::from_value(serde_json::to_value(&keyed).unwrap()).unwrap();
+        assert_eq!(decoded.provider_key(), Some(key));
+        let record = OperationRecord::new(
+            PreparedOperation::new(
+                EffectSlotId::from_storage_bytes([1; 16]),
+                OperationId::from_bytes([2; 16]),
+                AttemptGeneration::new(0),
+                DestinationCapability::Opaque,
+            ),
+            RequestFingerprint::new(1, [3; 32]),
+            OperationState::Prepared,
+        )
+        .with_protocol(decoded);
+        assert_eq!(record.operation().provider_key(), Some(key));
     }
 }

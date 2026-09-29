@@ -421,6 +421,7 @@ impl OperationLedger for SqliteOperationLedger {
                     binding.fingerprint,
                     OperationState::Prepared,
                 )
+                .with_protocol(protocol)
                 .operation(),
             ))
         }

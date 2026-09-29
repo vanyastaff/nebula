@@ -94,6 +94,13 @@ pub(crate) fn decide_prepare(
     {
         return Err(OperationLedgerError::OperationMismatch { slot_id });
     }
+    // The provider key is part of the prepare identity. A different key, or a
+    // key present on one side only, would let the provider see one intended
+    // effect under two keys and apply it twice. A legacy row without a
+    // protocol has no recorded key and so matches only a keyless binding.
+    if stored.operation().provider_key() != binding.provider_key {
+        return Err(OperationLedgerError::OperationMismatch { slot_id });
+    }
     // The original binding is returned wholesale — including the attempt
     // generation and destination recorded at prepare time. A later attempt
     // re-preparing the same slot inherits the first attempt's operation
@@ -117,7 +124,9 @@ pub(crate) fn initial_protocol(
                 .map_err(|_| OperationLedgerError::InvalidProtocol)?,
         )
         .ok_or(OperationLedgerError::InvalidProtocol)?;
-    OperationProtocolRecord::prepared(binding.contract.clone(), now_ms).build()
+    OperationProtocolRecord::prepared(binding.contract.clone(), now_ms)
+        .provider_key(binding.provider_key)
+        .build()
 }
 
 /// One fully decided transition, ready for infallible in-memory writes or SQL.
@@ -820,6 +829,7 @@ mod tests {
             fingerprint: RequestFingerprint::new(1, [0x33; 32]),
             destination: DestinationCapability::Opaque,
             contract: &contract(),
+            provider_key: None,
         };
 
         let outcome = decide_prepare(slot(), &stored, &binding)
@@ -849,10 +859,47 @@ mod tests {
             fingerprint: RequestFingerprint::new(1, [0x99; 32]),
             destination: DestinationCapability::StableKey,
             contract: &contract(),
+            provider_key: None,
         };
 
         assert_eq!(
             decide_prepare(slot(), &stored, &binding),
+            Err(OperationLedgerError::OperationMismatch { slot_id: slot() })
+        );
+    }
+
+    #[test]
+    fn the_provider_key_is_part_of_the_prepare_identity() {
+        let key = |text| Some(nebula_storage_port::ProviderIdempotencyKey::new(text).unwrap());
+        let stable = contract();
+        let scope = nebula_storage_port::Scope::new("ws", "org");
+        let binding = |provider_key| EffectSlotBinding {
+            scope: &scope,
+            execution_id: "exe",
+            node_key: "node",
+            occurrence: "once",
+            attempt_generation: AttemptGeneration::new(0),
+            fingerprint: RequestFingerprint::new(1, [0x33; 32]),
+            destination: DestinationCapability::StableKey,
+            contract: &stable,
+            provider_key,
+        };
+        let protocol = initial_protocol(&binding(key("original")), 0).unwrap();
+        let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
+        assert_eq!(stored.operation().provider_key(), key("original"));
+
+        let replayed = decide_prepare(slot(), &stored, &binding(key("original"))).unwrap();
+        assert_eq!(replayed.operation().provider_key(), key("original"));
+        for changed in [key("changed"), None] {
+            assert_eq!(
+                decide_prepare(slot(), &stored, &binding(changed)),
+                Err(OperationLedgerError::OperationMismatch { slot_id: slot() })
+            );
+        }
+        let keyless = record(OperationState::Prepared, 0)
+            .with_protocol(initial_protocol(&binding(None), 0).unwrap());
+        assert_eq!(
+            decide_prepare(slot(), &keyless, &binding(key("original"))),
             Err(OperationLedgerError::OperationMismatch { slot_id: slot() })
         );
     }

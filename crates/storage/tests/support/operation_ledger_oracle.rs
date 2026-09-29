@@ -202,6 +202,7 @@ fn binding<'a>(
         fingerprint: fingerprint(digest),
         destination,
         contract: contract(destination),
+        provider_key: None,
     }
 }
 

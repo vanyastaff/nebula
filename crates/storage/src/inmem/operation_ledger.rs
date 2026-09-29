@@ -502,6 +502,7 @@ mod tests {
             fingerprint: RequestFingerprint::new(1, [1; 32]),
             destination: DestinationCapability::Opaque,
             contract: &contract,
+            provider_key: None,
         };
         let slot = ledger
             .prepare(&binding, fencing)

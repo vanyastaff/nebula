@@ -459,6 +459,7 @@ impl OperationLedger for PgOperationLedger {
                     binding.fingerprint,
                     OperationState::Prepared,
                 )
+                .with_protocol(protocol)
                 .operation(),
             ))
         }
