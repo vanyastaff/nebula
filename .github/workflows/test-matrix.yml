@@ -373,6 +373,11 @@ jobs:
           cargo nextest run -p nebula-engine --profile ci --lib --no-tests=fail \
             -E 'test(/session_postgres::/)'
           cargo nextest run -p nebula-worker --profile ci --test accepted_turn_recovery
+          # Plane-A auth lifecycle through the production `PgAuthBackend`: needs a
+          # live PostgreSQL and fails loudly without one, so it lives here and not
+          # in the default API test run.
+          cargo nextest run -p nebula-api --features postgres --profile ci \
+            --test auth_pg_e2e
 
           NEBULA_ACTIVATION_DIAGNOSTICS_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/activation-diagnostics/report.json \
             cargo nextest run -p nebula-api --profile ci \
