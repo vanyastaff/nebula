@@ -39,6 +39,7 @@ async fn missing_execution_cannot_authorize_prepare() {
         fingerprint: RequestFingerprint::new(1, [0; 32]),
         destination: DestinationCapability::Opaque,
         contract: oracle::contract(DestinationCapability::Opaque),
+        provider_key: None,
     };
     assert!(
         ledger

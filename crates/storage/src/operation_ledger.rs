@@ -13,9 +13,9 @@ use nebula_storage_port::dto::{
     OperationProtocolRecord, OutcomeEvidenceSource,
 };
 use nebula_storage_port::{
-    AttemptGeneration, DestinationCapability, EffectSlotBinding, EffectSlotId, KnownOutcome,
-    OperationLedgerError, OperationRecord, OperationState, PrepareOutcome, PreparedOperation,
-    RequestFingerprint,
+    AttemptGeneration, DestinationCapability, EffectOccurrenceRecord, EffectSlotBinding,
+    EffectSlotId, KnownOutcome, OperationLedgerError, OperationRecord, OperationState,
+    PrepareOutcome, PreparedOperation, RequestFingerprint,
 };
 
 /// Durable text of each operation state.
@@ -94,6 +94,13 @@ pub(crate) fn decide_prepare(
     {
         return Err(OperationLedgerError::OperationMismatch { slot_id });
     }
+    // The provider key is part of the prepare identity. A different key, or a
+    // key present on one side only, would let the provider see one intended
+    // effect under two keys and apply it twice. A legacy row without a
+    // protocol has no recorded key and so matches only a keyless binding.
+    if stored.operation().provider_key() != binding.provider_key {
+        return Err(OperationLedgerError::OperationMismatch { slot_id });
+    }
     // The original binding is returned wholesale — including the attempt
     // generation and destination recorded at prepare time. A later attempt
     // re-preparing the same slot inherits the first attempt's operation
@@ -117,7 +124,9 @@ pub(crate) fn initial_protocol(
                 .map_err(|_| OperationLedgerError::InvalidProtocol)?,
         )
         .ok_or(OperationLedgerError::InvalidProtocol)?;
-    OperationProtocolRecord::prepared(binding.contract.clone(), now_ms).build()
+    OperationProtocolRecord::prepared(binding.contract.clone(), now_ms)
+        .provider_key(binding.provider_key)
+        .build()
 }
 
 /// One fully decided transition, ready for infallible in-memory writes or SQL.
@@ -575,6 +584,24 @@ pub(crate) fn decode_protocol(
         .transpose()
 }
 
+/// Attach a protocol payload read in the same snapshot as its ledger row.
+///
+/// A row without a payload is a legacy row and keeps its absence.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn attach_protocol_payload(
+    record: OperationRecord,
+    payload: Option<&str>,
+) -> Result<OperationRecord, OperationLedgerError> {
+    match decode_protocol(payload)? {
+        Some(protocol) => {
+            let record = record.with_protocol(protocol);
+            validate_record(&record)?;
+            Ok(record)
+        },
+        None => Ok(record),
+    }
+}
+
 /// Called under the execution owner's lock using its authoritative clock.
 pub(crate) fn require_live_lease(
     fencing: nebula_storage_port::FencingToken,
@@ -611,6 +638,7 @@ pub(crate) const fn error_label(error: &OperationLedgerError) -> &'static str {
         OperationLedgerError::ProtocolConflict => "protocol_conflict",
         OperationLedgerError::RecoveryExhausted => "recovery_exhausted",
         OperationLedgerError::InvalidAttemptGeneration => "invalid_attempt_generation",
+        OperationLedgerError::InvalidOccurrence { .. } => "invalid_occurrence",
         OperationLedgerError::ExecutionLeaseRejected => "execution_lease_rejected",
         OperationLedgerError::OperationMismatch { .. } => "operation_mismatch",
         OperationLedgerError::SlotUnprepared { .. } => "slot_unprepared",
@@ -652,6 +680,15 @@ pub(crate) const fn prepare_label(
     }
 }
 
+/// Input admission every adapter applies before it touches durable state.
+///
+/// Returns the checked durable attempt generation. An inadmissible occurrence
+/// label is rejected here, once, so no backend can store or probe one.
+pub(crate) fn admit_binding(binding: &EffectSlotBinding<'_>) -> Result<i64, OperationLedgerError> {
+    binding.occurrence_key().validate()?;
+    stored_attempt_generation(binding.attempt_generation)
+}
+
 /// Checked portable representation; attempt provenance never grants authority.
 pub(crate) fn stored_attempt_generation(
     generation: AttemptGeneration,
@@ -666,6 +703,16 @@ pub(crate) const fn occurrence_read_label(
     match result {
         Ok(Some(_)) => "read",
         Ok(None) => "absent",
+        Err(error) => error_label(error),
+    }
+}
+
+/// Stable outcome label for one node listing.
+pub(crate) const fn occurrences_read_label(
+    result: &Result<Vec<EffectOccurrenceRecord>, OperationLedgerError>,
+) -> &'static str {
+    match result {
+        Ok(_) => "read",
         Err(error) => error_label(error),
     }
 }
@@ -782,6 +829,7 @@ mod tests {
             fingerprint: RequestFingerprint::new(1, [0x33; 32]),
             destination: DestinationCapability::Opaque,
             contract: &contract(),
+            provider_key: None,
         };
 
         let outcome = decide_prepare(slot(), &stored, &binding)
@@ -811,10 +859,47 @@ mod tests {
             fingerprint: RequestFingerprint::new(1, [0x99; 32]),
             destination: DestinationCapability::StableKey,
             contract: &contract(),
+            provider_key: None,
         };
 
         assert_eq!(
             decide_prepare(slot(), &stored, &binding),
+            Err(OperationLedgerError::OperationMismatch { slot_id: slot() })
+        );
+    }
+
+    #[test]
+    fn the_provider_key_is_part_of_the_prepare_identity() {
+        let key = |text| Some(nebula_storage_port::ProviderIdempotencyKey::new(text).unwrap());
+        let stable = contract();
+        let scope = nebula_storage_port::Scope::new("ws", "org");
+        let binding = |provider_key| EffectSlotBinding {
+            scope: &scope,
+            execution_id: "exe",
+            node_key: "node",
+            occurrence: "once",
+            attempt_generation: AttemptGeneration::new(0),
+            fingerprint: RequestFingerprint::new(1, [0x33; 32]),
+            destination: DestinationCapability::StableKey,
+            contract: &stable,
+            provider_key,
+        };
+        let protocol = initial_protocol(&binding(key("original")), 0).unwrap();
+        let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
+        assert_eq!(stored.operation().provider_key(), key("original"));
+
+        let replayed = decide_prepare(slot(), &stored, &binding(key("original"))).unwrap();
+        assert_eq!(replayed.operation().provider_key(), key("original"));
+        for changed in [key("changed"), None] {
+            assert_eq!(
+                decide_prepare(slot(), &stored, &binding(changed)),
+                Err(OperationLedgerError::OperationMismatch { slot_id: slot() })
+            );
+        }
+        let keyless = record(OperationState::Prepared, 0)
+            .with_protocol(initial_protocol(&binding(None), 0).unwrap());
+        assert_eq!(
+            decide_prepare(slot(), &keyless, &binding(key("original"))),
             Err(OperationLedgerError::OperationMismatch { slot_id: slot() })
         );
     }

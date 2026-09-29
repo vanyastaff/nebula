@@ -8,7 +8,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     DestinationCapability, KnownOutcome, OperationLedgerError, OperationProtocolViolation,
-    RequestFingerprint,
+    ProviderIdempotencyKey, RequestFingerprint,
 };
 
 const fn violation(violation: OperationProtocolViolation) -> OperationLedgerError {
@@ -462,6 +462,10 @@ pub struct OperationProtocolRecord {
     query: Option<OperationCallId>,
     evidence: Option<FrozenOutcomeEvidence>,
     adjudication_audit_digest: Option<[u8; 32]>,
+    /// Absent (not `null`) when no key was recorded, so a keyless record
+    /// serializes byte-identically to one written before keys existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_key: Option<ProviderIdempotencyKey>,
 }
 
 #[derive(Deserialize)]
@@ -479,6 +483,8 @@ struct OperationProtocolRecordWire {
     query: Option<OperationCallId>,
     evidence: Option<FrozenOutcomeEvidence>,
     adjudication_audit_digest: Option<[u8; 32]>,
+    #[serde(default)]
+    provider_key: Option<ProviderIdempotencyKey>,
 }
 
 impl OperationProtocolRecord {
@@ -501,6 +507,7 @@ impl OperationProtocolRecord {
                 query: None,
                 evidence: None,
                 adjudication_audit_digest: None,
+                provider_key: None,
             },
         }
     }
@@ -632,6 +639,10 @@ impl OperationProtocolRecord {
     pub const fn adjudication_audit_digest(&self) -> Option<&[u8; 32]> {
         self.adjudication_audit_digest.as_ref()
     }
+    /// Provider idempotency key recorded at preparation; immutable afterwards.
+    pub const fn provider_key(&self) -> Option<ProviderIdempotencyKey> {
+        self.provider_key
+    }
 }
 
 impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
@@ -651,6 +662,7 @@ impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
             query: wire.query,
             evidence: wire.evidence,
             adjudication_audit_digest: wire.adjudication_audit_digest,
+            provider_key: wire.provider_key,
         };
         record.validate()?;
         Ok(record)
@@ -710,6 +722,14 @@ impl OperationProtocolRecordBuilder {
     ) -> Self {
         self.record.evidence = evidence;
         self.record.adjudication_audit_digest = adjudication_audit_digest;
+        self
+    }
+    /// Set the provider idempotency key recorded at preparation.
+    ///
+    /// Adapters set it only when the record is first prepared; every later
+    /// transition rebuilds from the stored record and so retains it.
+    pub const fn provider_key(mut self, provider_key: Option<ProviderIdempotencyKey>) -> Self {
+        self.record.provider_key = provider_key;
         self
     }
     /// Finish construction only when the complete record is coherent.
