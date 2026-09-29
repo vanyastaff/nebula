@@ -318,7 +318,7 @@ jobs:
             credential_lifecycle_postgres \
             credential_migration_postgres \
             credential_schema_admission_postgres \
-            execution_state_bounds \
+            execution_state_bounds_postgres \
             operation_ledger_conformance_postgres \
             postgres_control_queue_atomicity \
             rate_limit_conformance_postgres \
