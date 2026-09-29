@@ -361,7 +361,8 @@ jobs:
             --profile ci
 
           cargo nextest run -p nebula-storage --features sqlite,postgres \
-            --test ordered_migration_observations --profile ci
+            --test ordered_migration_observations \
+            --test ordered_migration_observations_postgres --profile ci
 
           cargo nextest run -p nebula-engine --profile ci \
             --test durable_checkpoint_reconnect --test effect_protocol
