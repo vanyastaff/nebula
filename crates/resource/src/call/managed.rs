@@ -27,13 +27,17 @@ use tracing::Instrument as _;
 use super::{
     Operation,
     cost::{Cost, Effect, SentState},
+    effect::OperationKey,
     error::OpError,
+    owned::{self, EffectDeclaration, EffectPlan, OutputCodec, OwnedEffect, Prepared},
+    owner::{UnitEffectOwner, UnitSlot},
     pin::PinSlots,
     row::{CheckoutFit, RowShared},
     session::{SessionBinding, SessionProvider},
     strict::{UnitPin, capture_pin},
 };
 use crate::{
+    dedup::SlotIdentity,
     error::{Error, ErrorKind},
     events::ResourceEvent,
     guard::{LeaseClosing, ResourceGuard},
@@ -171,6 +175,19 @@ impl<R: Provider> UnitHost<R> {
         if let Some(metrics) = self.metrics() {
             metrics.record_call_attempt(granted);
         }
+    }
+
+    /// Records an owned unit that replayed its recorded output: no attempt,
+    /// nothing sent by this unit.
+    fn record_replayed(&self, span: &tracing::Span) {
+        span.record("attempts", 0);
+        span.record("sent", SentState::NotSent.as_str());
+        span.record("outcome", "replayed");
+        tracing::debug!(
+            parent: span,
+            resource.key = %self.key(),
+            "managed unit replayed its recorded effect output"
+        );
     }
 
     /// Records a settled unit: span fields, counters, and the
@@ -335,12 +352,32 @@ impl<R: Provider + PinSlots> Managed<R> {
             operation,
             O::EFFECT,
             type_name::<O>(),
+            None,
         )
     }
 }
 
+/// Which effects the caller that built a row facade may submit.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum UnitEffectPolicy {
+    /// Library callers may submit every declared operation effect.
+    #[default]
+    Any,
+    /// Action execution without effect-owner authority may perform reads only.
+    ReadOnly,
+    /// Action execution with effect-owner authority: reads as usual,
+    /// effects only through `submit_effect` / `session_effect`, driven
+    /// through `owner`.
+    Owned {
+        /// The execution owner that records the row's effects.
+        owner: Arc<dyn UnitEffectOwner>,
+        /// The row's credential slot identity, as the owner binds effects.
+        binding: SlotIdentity,
+    },
+}
+
 /// What every unit of a row facade inherits from the caller that built the
-/// facade: its cancellation and its deadline.
+/// facade: its cancellation, its deadline and its effect authority.
 ///
 /// A parent cancellation that fires before a unit's first grant cancels the
 /// unit as [`Unit::cancel`] does (`Cancelled`, `NotSent`); after the first
@@ -348,15 +385,6 @@ impl<R: Provider + PinSlots> Managed<R> {
 /// DX-API.md:114). The parent deadline bounds every unit's deadline, below
 /// [`UNIT_DEADLINE_CAP`]; [`Unit::with_deadline`] can only shorten it
 /// further. A lease facade's units inherit nothing.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) enum UnitEffectPolicy {
-    /// Library callers may submit every declared operation effect.
-    #[default]
-    Any,
-    /// Action execution without effect-owner authority may perform reads only.
-    ReadOnly,
-}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UnitScope {
     /// The parent cancellation: each unit's own cancel is a child of it.
@@ -387,46 +415,114 @@ impl UnitScope {
         self
     }
 
-    /// Whether the caller's authority admits `effect`.
-    fn admits(&self, effect: Effect) -> bool {
-        matches!(self.effect_policy, UnitEffectPolicy::Any) || effect == Effect::Read
+    /// Lets the facade submit effects through `submit_effect` and
+    /// `session_effect` only, driven through `owner`; `binding` is the
+    /// row's credential slot identity.
+    pub(crate) fn owned(mut self, owner: Arc<dyn UnitEffectOwner>, binding: SlotIdentity) -> Self {
+        self.effect_policy = UnitEffectPolicy::Owned { owner, binding };
+        self
+    }
+
+    /// Why the caller's authority refuses `effect` submitted with
+    /// (`declared`) or without an effect declaration; `None` when it
+    /// admits it. Reads are always admitted.
+    fn refusal(&self, effect: Effect, declared: bool) -> Option<&'static str> {
+        if effect == Effect::Read {
+            return None;
+        }
+        match self.effect_policy {
+            UnitEffectPolicy::Any => None,
+            UnitEffectPolicy::ReadOnly => {
+                Some("managed row effect requires execution-owner authority")
+            },
+            UnitEffectPolicy::Owned { .. } if declared => None,
+            UnitEffectPolicy::Owned { .. } => {
+                Some("execution-owned effects go through submit_effect")
+            },
+        }
+    }
+
+    /// Admits a unit at submit: the caller's authority, the effect
+    /// declaration (when there is one) and, on an owned facade, the
+    /// owner's side of the submit. `Some` for an owned unit.
+    fn admit<O, T>(
+        &self,
+        key: &ResourceKey,
+        effect: Effect,
+        declaration: Option<EffectDeclaration<O, T>>,
+    ) -> Result<Option<(OwnedEffect, EffectPlan<O, T>)>, OpError> {
+        if let Some(detail) = self.refusal(effect, declaration.is_some()) {
+            return Err(OpError::new(ErrorKind::Permanent, detail));
+        }
+        let Some(declaration) = declaration else {
+            return Ok(None);
+        };
+        declaration.check(effect)?;
+        let UnitEffectPolicy::Owned { owner, binding } = &self.effect_policy else {
+            // A library row runs a declared effect as a plain unit.
+            return Ok(None);
+        };
+        let owned = OwnedEffect::submit(owner, binding, key, effect, &declaration)?;
+        let plan = EffectPlan {
+            request: declaration.request,
+            codec: declaration.codec,
+        };
+        Ok(Some((owned, plan)))
     }
 }
 
 /// Builds the lazy [`Unit`] of `operation` on `host`, in a
 /// `nebula.resource.unit` span naming it `operation_name`, under `scope`.
+/// A unit submitted with an effect `declaration` on an owned facade is
+/// driven through the facade's owner (see the `owned` module).
 pub(super) fn submit_unit<R, O>(
     host: UnitHost<R>,
     scope: &UnitScope,
     operation: O,
     effect: Effect,
     operation_name: &'static str,
+    declaration: Option<EffectDeclaration<O, O::Output>>,
 ) -> Unit<O::Output>
 where
     R: Provider + PinSlots,
     O: Operation<R>,
 {
-    let shared = Arc::new(UnitShared::new(scope));
     let key = host.key().clone();
     let span = tracing::info_span!(
         "nebula.resource.unit",
         key = %key,
         operation = operation_name,
+        occurrence = tracing::field::Empty,
         attempts = tracing::field::Empty,
         sent = tracing::field::Empty,
         outcome = tracing::field::Empty,
     );
-    let run: Pin<Box<dyn Future<Output = Result<O::Output, OpError>> + Send>> = if scope
-        .admits(effect)
-    {
-        Box::pin(
-            start_unit::<R, O>(host, Arc::clone(&shared), operation, effect, span.clone())
-                .instrument(span),
-        )
-    } else {
-        let denied_shared = Arc::clone(&shared);
-        let denied_span = span.clone();
-        Box::pin(
+    let admitted = scope.admit(&key, effect, declaration);
+    let (shared, plan, refused) = match admitted {
+        Ok(Some((owned, plan))) => {
+            span.record("occurrence", owned.occurrence());
+            (UnitShared::new(scope).with_effect(owned), Some(plan), None)
+        },
+        Ok(None) => (UnitShared::new(scope), None, None),
+        Err(refusal) => (UnitShared::new(scope), None, Some(refusal)),
+    };
+    let shared = Arc::new(shared);
+    let run: Pin<Box<dyn Future<Output = Result<O::Output, OpError>> + Send>> = match refused {
+        None => Box::pin(
+            start_unit::<R, O>(
+                host,
+                Arc::clone(&shared),
+                operation,
+                effect,
+                span.clone(),
+                plan,
+            )
+            .instrument(span),
+        ),
+        Some(refusal) => {
+            let denied_shared = Arc::clone(&shared);
+            let denied_span = span.clone();
+            Box::pin(
                 async move {
                     // Keep the operation lazy and let cancellation win while
                     // the unit is still pending, exactly as it does before a
@@ -438,13 +534,10 @@ where
                                 target: "nebula.resource",
                                 parent: &denied_span,
                                 effect = effect.as_str(),
-                                "managed row refused an external effect without execution-owner authority"
+                                detail = refusal.detail(),
+                                "managed row refused a unit at submit"
                             );
-                            Err(OpError::new(
-                                ErrorKind::Permanent,
-                                "managed row effect requires execution-owner authority",
-                            )
-                            .settled(SentState::NotSent, effect, host.key()))
+                            Err(refusal.settled(SentState::NotSent, effect, host.key()))
                         },
                         Err(cancelled) => {
                             Err(cancelled.settled(SentState::NotSent, effect, host.key()))
@@ -455,6 +548,7 @@ where
                 }
                 .instrument(span),
             )
+        },
     };
     Unit { shared, key, run }
 }
@@ -473,6 +567,9 @@ pub(super) struct UnitShared {
     granted: AtomicU32,
     /// Worst settled [`SentState`] rank across granted attempts.
     worst: AtomicU8,
+    /// The unit's owned effect, for a unit submitted with an effect
+    /// declaration on an owned row facade.
+    effect: Option<OwnedEffect>,
 }
 
 impl UnitShared {
@@ -495,7 +592,24 @@ impl UnitShared {
             deadline: Mutex::new(tokio::time::Instant::from_std(deadline)),
             granted: AtomicU32::new(0),
             worst: AtomicU8::new(SentState::NotSent.rank()),
+            effect: None,
         }
+    }
+
+    /// The unit driven through its row's owner as `effect`.
+    fn with_effect(mut self, effect: OwnedEffect) -> Self {
+        self.effect = Some(effect);
+        self
+    }
+
+    /// The unit's owned effect, if it has one.
+    pub(super) fn effect(&self) -> Option<&OwnedEffect> {
+        self.effect.as_ref()
+    }
+
+    /// The unit's cancel: [`Unit::cancel`] or its parent's.
+    pub(super) fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
     }
 
     fn deadline(&self) -> tokio::time::Instant {
@@ -515,7 +629,7 @@ impl UnitShared {
     /// Refuses a unit whose cancel fired while no attempt was granted —
     /// [`Unit::cancel`] or the parent cancellation — and latches it
     /// cancelled. A fired cancel is ignored once an attempt was granted.
-    fn refuse_if_cancelled(&self) -> Result<(), OpError> {
+    pub(super) fn refuse_if_cancelled(&self) -> Result<(), OpError> {
         if !self.cancel.is_cancelled() {
             return Ok(());
         }
@@ -557,8 +671,13 @@ impl UnitShared {
         }
     }
 
+    /// A granted attempt settled `sent`; an owned effect's pending call
+    /// settles with it.
     fn record(&self, sent: SentState) {
         self.worst.fetch_max(sent.rank(), Ordering::AcqRel);
+        if let Some(effect) = &self.effect {
+            effect.record(sent);
+        }
     }
 
     pub(super) fn attempts(&self) -> u32 {
@@ -677,15 +796,17 @@ async fn lease_unit_slot<R: Provider>(
     }
 }
 
-/// The caller's side of a unit: waits for a unit slot on a lease host, then
-/// spawns the runtime task and waits for its outcome. `effect` is what the
-/// unit's settled error reports.
+/// The caller's side of a unit: waits for a unit slot on a lease host,
+/// prepares an owned unit's effect (`plan`), then spawns the runtime task
+/// and waits for its outcome. `effect` is what the unit's settled error
+/// reports.
 async fn start_unit<R, O>(
     host: UnitHost<R>,
     shared: Arc<UnitShared>,
     operation: O,
     effect: Effect,
     span: tracing::Span,
+    plan: Option<EffectPlan<O, O::Output>>,
 ) -> Result<O::Output, OpError>
 where
     R: Provider + PinSlots,
@@ -717,13 +838,43 @@ where
             return result;
         },
     };
+    // An owned unit's first poll: the owner prepares its effect before
+    // anything is spawned, booked, read or checked out.
+    let codec = match (plan, shared.effect()) {
+        (Some(plan), Some(owned)) => {
+            let request = (plan.request)(&operation);
+            let max_invocations = operation.max_attempts();
+            let prepared = owned::prepare(
+                &shared,
+                owned,
+                max_invocations,
+                request,
+                plan.codec,
+                deadline,
+            )
+            .await;
+            match prepared {
+                Prepared::Run => Some(plan.codec),
+                Prepared::Replayed(output) => {
+                    host.record_replayed(&span);
+                    return Ok(output);
+                },
+                Prepared::Refused(refusal, sent) => {
+                    let result = Err(refusal.settled(sent, effect, host.key()));
+                    host.record_settled(&span, &result, sent, 0);
+                    return result;
+                },
+            }
+        },
+        _ => None,
+    };
     let key = host.key().clone();
     let runtime = tokio::spawn(
         run_unit::<R, O>(
             host,
             Arc::clone(&shared),
             operation,
-            effect,
+            (effect, codec),
             permit,
             deadline,
             span.clone(),
@@ -742,13 +893,14 @@ where
 }
 
 /// The runtime's side of a unit: runs the operation under the deadline and
-/// settles the outcome whether or not anyone waits. The slots are pinned at
-/// the unit's first grant, not here.
+/// settles the outcome whether or not anyone waits; an owned unit's last
+/// call is recorded with its owner (through `codec`) before the unit
+/// settles. The slots are pinned at the unit's first grant, not here.
 async fn run_unit<R, O>(
     host: UnitHost<R>,
     shared: Arc<UnitShared>,
     operation: O,
-    effect: Effect,
+    (effect, codec): (Effect, Option<OutputCodec<O::Output>>),
     _permit: Option<OwnedSemaphorePermit>,
     deadline: tokio::time::Instant,
     span: tracing::Span,
@@ -794,6 +946,10 @@ where
         },
     };
     let sent = shared.fold(abnormal);
+    let result = match (shared.effect(), codec) {
+        (Some(owned), Some(codec)) => owned.finish(result, abnormal, codec).await,
+        _ => result,
+    };
     let result = result.map_err(|error| error.settled(sent, effect, host.key()));
     host.record_settled(&span, &result, sent, shared.attempts());
     result
@@ -1044,6 +1200,18 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     pub fn attempts(&self) -> u32 {
         self.shared.attempts()
     }
+
+    /// The provider idempotency key of an execution-owned effect: the key
+    /// its owner derived and recorded before the first attempt, the same
+    /// for every attempt, retry and resume of the effect. Send it as the
+    /// provider's idempotency key. `None` for any other unit.
+    #[must_use]
+    pub fn operation_key(&self) -> Option<&OperationKey> {
+        self.shared
+            .effect()
+            .and_then(OwnedEffect::slot)
+            .map(UnitSlot::operation_key)
+    }
 }
 
 /// The refusal of an attempt whose quota booking failed.
@@ -1164,6 +1332,11 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
     /// cost's [`Verdict::KeyThrottled`] pauses only its key), a
     /// [`Verdict::Pass`] resets the backoff. Bounded; never fails the unit.
     pub async fn report(&self, verdict: Verdict) {
+        if let (Verdict::Throttled { .. } | Verdict::KeyThrottled { .. }, Some(effect)) =
+            (&verdict, self.shared.effect())
+        {
+            effect.note_throttled();
+        }
         self.managed
             .rate_limiter
             .report(verdict, self.cost.key())

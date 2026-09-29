@@ -213,7 +213,7 @@ impl ErrorKind {
     /// `Transient`, `Exhausted`, `Backpressure`, `Revoked`, and
     /// `CredentialUnavailable` represent conditions that resolve with time or
     /// backoff.
-    fn is_default_retryable(&self) -> bool {
+    pub(crate) fn is_default_retryable(&self) -> bool {
         matches!(
             self,
             Self::Transient

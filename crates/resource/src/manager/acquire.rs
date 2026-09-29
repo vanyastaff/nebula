@@ -426,6 +426,37 @@ impl Manager {
         )
     }
 
+    /// The type-erased managed row of an action with effect-owner
+    /// authority: reads run as on any row, effects only through
+    /// [`ManagedRow::submit_effect`](crate::call::ManagedRow::submit_effect)
+    /// and [`ManagedRow::session_effect`](crate::call::ManagedRow::session_effect),
+    /// prepared, granted and recorded by `owner` (see the
+    /// [`owner`](crate::call::owner) module). A plain
+    /// [`submit`](crate::call::ManagedRow::submit) or
+    /// [`session`](crate::call::ManagedRow::session) of an effect is refused
+    /// before its first provider attempt. The owner binds effects to
+    /// `slot_identity`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same lookup and lifecycle errors as
+    /// [`managed_row_any`](Self::managed_row_any).
+    pub fn managed_row_any_owned(
+        &self,
+        key: &ResourceKey,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+        owner: Arc<dyn crate::call::owner::UnitEffectOwner>,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+        self.managed_row_any_with_scope(
+            key,
+            ctx,
+            slot_identity,
+            crate::call::UnitScope::from_parts(ctx, options).owned(owner, slot_identity.clone()),
+        )
+    }
+
     /// Resolves one erased row under the supplied unit authority.
     fn managed_row_any_with_scope(
         &self,

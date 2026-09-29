@@ -56,11 +56,13 @@ use tokio::sync::Semaphore;
 use super::{
     Operation,
     cost::Cost,
+    effect::EffectOperation,
     error::OpError,
     managed::{
         Checkout, OpCx, Unit, UnitHost, UnitScope, cancelled_before_grant, generation_refusal,
         submit_unit,
     },
+    owned::{EffectDeclaration, OutputCodec},
     pin::PinSlots,
     session::{SessionCx, SessionFuture, SessionProvider, SessionSpec, Sessioned},
     strict::{UnitPin, capture_pin, read_credentials, register_grant},
@@ -182,6 +184,11 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
     /// unit's deadline and settles it. Dropping the [`Unit`] before its first
     /// poll means the operation never ran; dropping it later only stops
     /// waiting.
+    ///
+    /// On a row an action got with effect-owner authority, an operation
+    /// declaring [`Idempotent`](super::Effect::Idempotent) or
+    /// [`Write`](super::Effect::Write) is refused `Permanent` / `NotSent`:
+    /// such effects go through [`submit_effect`](Self::submit_effect).
     pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output> {
         submit_unit(
             UnitHost::Row(Arc::clone(&self.shared)),
@@ -189,6 +196,65 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
             operation,
             O::EFFECT,
             std::any::type_name::<O>(),
+            None,
+        )
+    }
+
+    /// Submits `operation` as one unit whose effect the row's execution
+    /// owner records.
+    ///
+    /// On a row an action got with effect-owner authority, the unit's first
+    /// poll asks the owner to prepare the effect under its occurrence label
+    /// (`unit/v1/{resource_key}/{contract_id}/{label}`, the label being
+    /// [`EffectOperation::occurrence`] or the unit's submit ordinal per
+    /// resource and contract), before anything is booked, read or checked
+    /// out:
+    ///
+    /// | Owner says | Unit |
+    /// |---|---|
+    /// | recorded success | `Ok` with the recorded output; no provider call |
+    /// | recorded without output ([`Recorded::DigestOnly`](super::Recorded::DigestOnly)) | `Permanent`, `Sent`; no provider call |
+    /// | recorded rejection | the recorded kind, `Sent`, not retryable; no provider call |
+    /// | outcome unknown | `OutcomeUnknown`, `MaybeSent`; no provider call |
+    /// | a different effect under the label | `Permanent`, `NotSent` |
+    /// | unavailable, acknowledgement unknown, lease lost | `Backpressure`, `NotSent` |
+    /// | closed | `Cancelled`, `NotSent` |
+    /// | runnable | runs; every attempt is granted by the owner |
+    ///
+    /// Each attempt asks the owner for its call after its checkout and
+    /// credential reads, right before its registration; an owner that says
+    /// the outcome became unknown refuses it `OutcomeUnknown`. The unit's
+    /// result is recorded before it settles: a success with its output, a
+    /// definitive rejection with its kind, anything else as how its last
+    /// call crossed. When the owner cannot record a call that may have
+    /// crossed, the unit fails `OutcomeUnknown`. [`OpCx::operation_key`] is
+    /// the provider idempotency key the owner derived.
+    ///
+    /// A declaration whose contract is malformed, whose
+    /// [`RECOVERY`](EffectOperation::RECOVERY) disagrees with its
+    /// [`EFFECT`](Operation::EFFECT), or that declares
+    /// [`Read`](super::Effect::Read), is refused `Permanent` / `NotSent`;
+    /// so is any effect on a read-only row. On a library row (no owner) the
+    /// unit runs as [`submit`](Self::submit) runs it and has no operation
+    /// key.
+    pub fn submit_effect<O: EffectOperation<R>>(&self, operation: O) -> Unit<O::Output> {
+        let declaration = EffectDeclaration {
+            contract: O::CONTRACT,
+            recovery: O::RECOVERY,
+            recorded: O::RECORDED,
+            occurrence: operation.occurrence(),
+            request: Box::new(|operation: &O| {
+                Ok((operation.canonical_request()?, operation.idempotency_key()))
+            }),
+            codec: OutputCodec::json(),
+        };
+        submit_unit(
+            UnitHost::Row(Arc::clone(&self.shared)),
+            &self.scope,
+            operation,
+            O::EFFECT,
+            std::any::type_name::<O>(),
+            Some(declaration),
         )
     }
 }
@@ -239,6 +305,7 @@ where
             Sessioned::new(spec, body),
             effect,
             "session",
+            None,
         )
     }
 }
@@ -329,6 +396,12 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
         cost: &Cost,
         fit: Option<CheckoutFit<R>>,
     ) -> Result<(Checkout<R>, &UnitPin<R::Pinned>), OpError> {
+        // An owned effect's previous attempt is over: its call is explained
+        // before this attempt waits for anything.
+        if let Some(effect) = self.shared.effect() {
+            effect.flush_previous().await?;
+        }
+
         // 1–3: budget, the row pre-check and the quota, nothing held.
         self.admit_local(cost, Some(row)).await?;
         let generation = self.generation;
@@ -427,19 +500,40 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
             None
         };
 
-        // 9. Lock #2 (strict rows) and the grant. A refusal drops the
-        //    checkout untainted: the instance goes back to the pool.
-        let pin = self.pin.as_ref().ok_or_else(|| {
-            OpError::new(ErrorKind::Permanent, "unit pin missing at registration")
-        })?;
-        register_grant(
-            managed,
-            strict,
-            second.as_ref(),
-            guard.admission(),
-            pin,
-            self.shared,
-        )?;
+        // 9. An owned effect's call is granted by its owner — the only
+        //    provider-call authority — before the attempt registers.
+        let owned = self.shared.effect();
+        if let Some(effect) = owned {
+            effect.grant().await?;
+        }
+
+        // 10. Lock #2 (strict rows) and the grant. A refusal drops the
+        //     checkout untainted: the instance goes back to the pool, and an
+        //     owned call that was granted did not cross.
+        let pin = self
+            .pin
+            .as_ref()
+            .ok_or_else(|| OpError::new(ErrorKind::Permanent, "unit pin missing at registration"));
+        let registered = pin.and_then(|pin| {
+            register_grant(
+                managed,
+                strict,
+                second.as_ref(),
+                guard.admission(),
+                pin,
+                self.shared,
+            )
+            .map(|()| pin)
+        });
+        let pin = match registered {
+            Ok(pin) => pin,
+            Err(refusal) => {
+                if let Some(effect) = owned {
+                    effect.release_refused().await;
+                }
+                return Err(refusal);
+            },
+        };
         if let Some(metrics) = row.link.metrics() {
             metrics.record_row_checkout(guard.created());
         }

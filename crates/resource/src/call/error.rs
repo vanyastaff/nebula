@@ -124,10 +124,12 @@ impl OpError {
         self
     }
 
-    /// Whether this error hides an effect that may have been applied: the
-    /// kind invites a retry, but the unit is not safe to retry.
+    /// Whether this error hides an effect that may have been applied: its
+    /// kind is [`ErrorKind::OutcomeUnknown`] (an execution owner said so),
+    /// or the kind invites a retry but the unit is not safe to retry.
     pub(crate) fn is_outcome_unknown(&self) -> bool {
-        self.kind_error().is_retryable() && !self.is_retryable()
+        self.kind == ErrorKind::OutcomeUnknown
+            || (self.kind_error().is_retryable() && !self.is_retryable())
     }
 
     /// A bare resource error of this kind, for the kind's classification.
