@@ -62,6 +62,7 @@
 //! edge-gate narrowness).
 
 pub mod binding_resolver;
+pub mod command_service;
 pub mod control_consumer;
 pub mod control_dispatch;
 mod control_trace;
@@ -95,6 +96,7 @@ pub mod workflow_activation;
 pub use binding_resolver::{
     BindingResolutionError, BindingResolutionFuture, ExecutionBindingResolver,
 };
+pub use command_service::{CommandReceipt, ExecutionCommandError, ExecutionCommandService};
 pub use control_consumer::{
     ClaimedControlDispatchOutcome, ControlConsumer, ControlDispatch, ControlDispatchError,
     DEFAULT_BATCH_SIZE, DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,

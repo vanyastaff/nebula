@@ -6,8 +6,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use nebula_core::{ExecutionId, TenantContext, WorkflowId};
-use nebula_execution::ExecutionStatus;
-use nebula_storage_port::dto::ControlCommand;
 
 use crate::{
     domain::{
@@ -411,85 +409,39 @@ pub async fn cancel_execution(
     use nebula_core::ExecutionId;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    // Parse execution ID
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
-    // Fetch current execution state scoped to the caller's tenant
-    let state_result = state
-        .execution_state_scoped(&scope, execution_id, "get")
-        .await?;
+    // The §12.2 contract (terminal check, idempotent duplicate, durable enqueue)
+    // lives in `ExecutionCommandService`; this handler only maps it to HTTP.
+    let receipt = state
+        .execution_commands()
+        .cancel(&scope, execution_id, w3c_trace_context_for_control_queue())
+        .await
+        .map_err(command_error)?;
 
-    // Check if execution exists
-    let (_version, execution_state) =
-        state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
-
-    // Check if execution is already in a terminal state
-    let current_status = execution_state
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    if matches!(
-        current_status,
-        "completed" | "failed" | "cancelled" | "timed_out"
-    ) {
-        return Err(ApiError::validation_message(format!(
-            "Cannot cancel execution in '{current_status}' state"
-        )));
-    }
-
-    // Duplicate Cancel is idempotent: the command is already in flight and
-    // runtime control owns the outcome, so re-requesting it must not enqueue a
-    // second command row. Report the state as it stands.
-    if current_status == ExecutionStatus::Cancelling.to_string() {
-        tracing::debug!(
-            execution_id = %execution_id,
-            "execution: cancellation already requested; returning the in-flight state"
-        );
-        return Ok((
-            StatusCode::ACCEPTED,
-            Json(execution_receipt(id, &execution_state)),
-        ));
-    }
-
-    // Submit the intent; write nothing.
-    //
-    // The execution aggregate has exactly one writer — the runtime, holding
-    // the lease and the fencing token that proves it. This handler holds
-    // neither. It used to commit the status transition itself, reconstructing
-    // a fencing token out of the generation it had just *read*; a token
-    // rebuilt from a read is not proof of anything, and it let an API request
-    // land a write that a live runner's fence was supposed to exclude.
-    //
-    // So the boundary is the control queue, exactly as it is for Resume: the
-    // API authorizes the cancel and records durable intent, and the runtime
-    // performs the `Running → Cancelling → Cancelled` transition under its own
-    // lease once it has actually honored the command.
-    let w3c_trace_context = w3c_trace_context_for_control_queue();
-    tracing::debug!(
-        execution_id = %execution_id,
-        command = ControlCommand::Cancel.as_str(),
-        has_trace_context = w3c_trace_context.is_some(),
-        "execution: enqueue Cancel control command"
-    );
-    state
-        .enqueue_control_scoped(
-            &scope,
-            ControlCommand::Cancel,
-            execution_id,
-            w3c_trace_context,
-        )
-        .await?;
-
-    // 202 with the state as it stands: the cancel is accepted, not done. The
-    // reported `status` is whatever is durably true right now, so a client that
-    // polls it observes the runtime's own transition rather than a status this
-    // handler asserted on the runtime's behalf.
+    // 202 with the state as it stands: the command is accepted, not done. The
+    // runtime performs the transition under its own lease.
     Ok((
         StatusCode::ACCEPTED,
-        Json(execution_receipt(id, &execution_state)),
+        Json(execution_receipt(id, &receipt.execution_state)),
     ))
+}
+
+/// Map the command service's typed refusal onto the HTTP error surface.
+fn command_error(error: nebula_engine::ExecutionCommandError) -> ApiError {
+    use nebula_engine::ExecutionCommandError as E;
+    match error {
+        E::NotFound(id) => ApiError::NotFound(format!("Execution {id} not found")),
+        E::Terminal { .. } => ApiError::validation_message(error.to_string()),
+        E::QueueUnavailable(detail) => ApiError::ServiceUnavailable(format!(
+            "control-queue backend is unavailable — orchestration absent (integration seam              step 6, durable control queue orphan): {detail}"
+        )),
+        E::Store(detail) => ApiError::Internal(format!("Failed to get execution: {detail}")),
+        other => ApiError::Internal(format!(
+            "failed to enqueue control signal (durable control queue orphan — caller should              retry): {other}"
+        )),
+    }
 }
 
 /// Build a response describing an execution exactly as it is persisted.
@@ -613,68 +565,22 @@ pub async fn terminate_execution(
     use nebula_core::ExecutionId;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    // Parse execution ID
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
 
-    // Fetch current execution state through the scoped storage port
-    // (same accessor the port-rewired `get_execution` / `cancel_execution`
-    // use), confined to the caller's tenant.
-    let state_result = state
-        .execution_state_scoped(&scope, execution_id, "get")
-        .await?;
+    // The §12.2 contract (terminal check, idempotent duplicate, durable enqueue)
+    // lives in `ExecutionCommandService`; this handler only maps it to HTTP.
+    let receipt = state
+        .execution_commands()
+        .terminate(&scope, execution_id, w3c_trace_context_for_control_queue())
+        .await
+        .map_err(command_error)?;
 
-    // Check if execution exists
-    let (_version, execution_state) =
-        state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
-
-    // Check if execution is already in a terminal state
-    let current_status = execution_state
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    if matches!(
-        current_status,
-        "completed" | "failed" | "cancelled" | "timed_out"
-    ) {
-        return Err(ApiError::validation_message(format!(
-            "Cannot terminate execution in '{current_status}' state"
-        )));
-    }
-
-    // Submit the intent; write nothing — same boundary as cooperative cancel.
-    //
-    // This handler used to write `Cancelled` **and** a `completed_at` of its
-    // own making, then commit both under a fencing token rebuilt from the
-    // generation it had just read. Every part of that was a claim it was not
-    // entitled to make: the engine has no forced-shutdown path (`Terminate` is
-    // a cooperative-cancel synonym), so at this instant the run has not
-    // stopped, nothing has completed, and the runtime — not this request —
-    // holds the lease that authorizes the write.
-    //
-    // The runtime performs the transition to the terminal `Cancelled` under
-    // its own lease once it has honored the command, and stamps the completion
-    // time then.
-    let w3c_trace_context = w3c_trace_context_for_control_queue();
-    tracing::debug!(
-        execution_id = %execution_id,
-        command = ControlCommand::Terminate.as_str(),
-        has_trace_context = w3c_trace_context.is_some(),
-        "execution: enqueue Terminate control command"
-    );
-    state
-        .enqueue_control_scoped(
-            &scope,
-            ControlCommand::Terminate,
-            execution_id,
-            w3c_trace_context,
-        )
-        .await?;
-
+    // 202 with the state as it stands: the command is accepted, not done. The
+    // runtime performs the transition under its own lease.
     Ok((
         StatusCode::ACCEPTED,
-        Json(execution_receipt(id, &execution_state)),
+        Json(execution_receipt(id, &receipt.execution_state)),
     ))
 }
 
