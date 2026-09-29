@@ -14,33 +14,19 @@
 //! 2. reconcile a credential that was never poisoned, and read the *other* 409
 //!    (`credential-reconciliation-not-required`).
 //!
-//! # Why this fixture composes the service itself
+//! # Why this fixture supplies its own claim store
 //!
-//! Every test-util factory in `crates/api/src/ports/` (`with_store`,
-//! `with_memory_store`, `with_memory_store_parts`) funnels into the private
-//! `compose_credential_service`, which hardcodes `NoNetworkRefreshTransport`
-//! and a `CredentialServiceBuilder` whose `build()` constructs an
-//! `InMemoryRefreshClaimRepo` internally
-//! (`crates/api/src/ports/credential_builder.rs`) — reachable by
-//! nobody. A service built that way can refresh, but its claim store is not the
-//! one any test can observe or poison, so it cannot show a 409 clearing.
+//! The service is composed by the factory
+//! (`with_memory_store_and_claims`), the same secure stack every other API test
+//! and `apps/server` build, with one supplied seam: the claim store. This suite
+//! holds it, so it can both observe the poison and hand the same object to the
+//! controller as the `RefreshClaimAdjudicator` that clears it.
 //!
-//! The default registry is the second half of the problem: it registers
+//! The default registry is the other half of the problem: it registers
 //! `api_key` / `basic_auth` / `signing_key`, none of them refreshable, and
 //! `service/capabilities.rs:154` refuses a non-refreshable type with
 //! `CapabilityUnsupported` (400) *before* any claim work. So a refreshable type
-//! is composed here too.
-//!
-//! The composition below is the one `CredentialServiceBuilder::build` performs,
-//! written out against the same public seams — `EncryptionLayer`, `AuditLayer`,
-//! `CredentialResolver::with_dependencies`, `LeaseLifecycle::spawn`,
-//! `CredentialService::from_secure_parts` (whose rustdoc names trusted
-//! in-workspace test composition as exactly why it is `pub`) — with one
-//! substitution: the coordinator is built by
-//! `RefreshCoordinator::new_with(Arc<dyn RefreshClaimRepo>, …)` over a claim
-//! store this suite holds, so the test can both observe the poison and hand the
-//! same object to the controller as the `RefreshClaimAdjudicator` that clears
-//! it.
+//! is registered here too.
 //!
 //! # How the poison is produced
 //!
@@ -55,7 +41,7 @@
 
 mod common;
 
-use std::{assert_matches, future::Future, pin::Pin, sync::Arc};
+use std::{assert_matches, sync::Arc};
 
 use axum::{
     body::Body,
@@ -77,6 +63,7 @@ use nebula_api::{
         CredentialCommandGateway, CredentialGatewayCommand, CredentialGatewayResult,
         test_gateway_from_service_with_reconciliation,
     },
+    ports::credential_service_factory::with_memory_store_and_claims,
 };
 use nebula_core::accessor::Clock;
 use nebula_core::auth::{
@@ -85,31 +72,20 @@ use nebula_core::auth::{
 use nebula_core::{CredentialId, UserId};
 use nebula_credential::error::CredentialError;
 use nebula_credential::resolve::StaticResolveResult;
-use nebula_credential::runtime::{
-    AcquisitionTransport, AcquisitionTransportError, CredentialResolver, LeaseLifecycle,
-    LeaseLifecycleConfig, RefreshCoordConfig, RefreshCoordinator, RefreshTransport,
-    RefreshTransportError, TokenPostRequest, TokenPostResponse,
-};
 use nebula_credential::{
-    CredentialContext, CredentialMetadataDraft, CredentialRegistry, CredentialService, DispatchOps,
-    ErasedPendingStore, NoopObserver, RefreshAttempt, RefreshReport, SecretString, StateSource,
-    StateWireFingerprint, identity_state, register_refreshable_ops, register_runtime_ops,
+    CredentialContext, CredentialMetadataDraft, CredentialRegistry, DispatchOps,
+    ErasedPendingStore, RefreshAttempt, RefreshReport, SecretString, StateWireFingerprint,
+    identity_state, register_refreshable_ops, register_runtime_ops,
 };
 use nebula_schema::Schema;
-use nebula_storage::credential::{
-    AuditEvent, AuditLayer, AuditSink, EncryptionLayer, EnvKeyProvider, InMemoryPendingStore,
-    InMemoryRefreshClaimRepo,
-};
+use nebula_storage::credential::{EnvKeyProvider, InMemoryRefreshClaimRepo};
 use nebula_storage_port::store::{
     ClaimAttempt, CredentialOperationIntent, RefreshClaimAdjudicator, RefreshClaimStore, ReplicaId,
 };
-use nebula_storage_port::{
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
-};
+use nebula_storage_port::{CredentialOwner, CredentialSelector};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -290,46 +266,6 @@ impl Clock for ManualClock {
     }
 }
 
-/// Audit sink that keeps nothing.
-///
-/// The suite asserts the claim lifecycle; the credential audit observation is
-/// not what routes the request, and a second recorder would only add a fixture
-/// to keep in step with `AuditEvent`.
-#[derive(Debug)]
-struct SilentAuditSink;
-
-impl AuditSink for SilentAuditSink {
-    fn record(&self, _event: &AuditEvent) -> Result<(), CredentialPersistenceError> {
-        Ok(())
-    }
-}
-
-/// Refuses every request. Both transport traits it must satisfy are only ever
-/// consulted by an OAuth-shaped credential reaching for a token endpoint.
-#[derive(Debug)]
-struct NoNetworkTransport;
-
-impl RefreshTransport for NoNetworkTransport {
-    fn post_token<'a>(
-        &'a self,
-        _request: TokenPostRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>>
-    {
-        Box::pin(async { Err(RefreshTransportError::Send) })
-    }
-}
-
-impl AcquisitionTransport for NoNetworkTransport {
-    fn post_token<'a>(
-        &'a self,
-        _request: TokenPostRequest,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<TokenPostResponse, AcquisitionTransportError>> + Send + 'a>,
-    > {
-        Box::pin(async { Err(AcquisitionTransportError::Send) })
-    }
-}
-
 /// The composed service plus the claim store it reads, so the suite can poison
 /// exactly the rows the route consults.
 struct ProbeFixture {
@@ -348,54 +284,18 @@ impl ProbeFixture {
             Arc::clone(&clock) as Arc<dyn Clock>
         ));
 
-        let config = RefreshCoordConfig {
-            claim_ttl: CLAIM_TTL,
-            ..RefreshCoordConfig::default()
-        };
-        let coordinator = Arc::new(
-            RefreshCoordinator::new_with(
-                Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
-                ReplicaId::new("u3c-transport-fixture"),
-                config,
-            )
-            .expect("the default coordinator config satisfies its own invariants"),
-        );
-
         let (registry, ops) = probe_registry_and_ops();
         let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte key"));
-        let store = nebula_storage::credential::SqliteCredentialPersistence::connect_memory()
-            .await
-            .expect("the in-memory credential store opens and migrates");
-
-        // The `Audit(Encryption(raw))` stack, in the order
-        // `CredentialServiceBuilder::build` composes it.
-        let encrypted = EncryptionLayer::new(store, key);
-        let persistence: Arc<dyn CredentialPersistence> = Arc::new(encrypted);
-        let layered = AuditLayer::new(Arc::clone(&persistence), Arc::new(SilentAuditSink));
-        let store: Arc<dyn CredentialPersistence> = Arc::new(layered);
-
-        let transport = Arc::new(NoNetworkTransport);
-        let resolver = CredentialResolver::with_dependencies(
-            Arc::clone(&store),
-            Arc::clone(&coordinator),
-            transport.clone(),
-        );
-        let service = Arc::new(CredentialService::from_secure_parts(
-            store,
-            resolver,
-            LeaseLifecycle::spawn(
-                LeaseLifecycleConfig::default(),
-                None,
-                None,
-                CancellationToken::new(),
-            ),
-            ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new())),
-            Arc::new(registry),
-            Arc::new(ops),
-            Arc::new(NoopObserver::new()),
-            transport,
-            StateSource::LocalEncrypted,
-        ));
+        // The factory path composes the secure stack; this suite only supplies the
+        // claim store it wants to observe and poison.
+        let service = with_memory_store_and_claims(
+            key,
+            registry,
+            ops,
+            Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
+        )
+        .await
+        .expect("the factory composes the probe service over the suite's claim store");
 
         // The controller takes the adjudicator as its own trait object; the same
         // adapter answers `try_claim` and `adjudicate`, so the fixture can watch
