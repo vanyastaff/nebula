@@ -514,6 +514,7 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     pub fn deadline(&self) -> Instant;
     pub fn closing(&self) -> LeaseClosing;
     pub fn attempts(&self) -> u32;
+    pub fn operation_key(&self) -> Option<&OperationKey>;
 }
 impl<R: Provider + PinSlots> fmt::Debug for OpCx<'_, R>
 
@@ -539,9 +540,11 @@ impl<R: Provider> ManagedRow<R> {
 }
 impl<R: Provider + PinSlots> ManagedRow<R> {
     pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output>;
+    pub fn submit_effect<O: EffectOperation<R>>(&self, operation: O) -> Unit<O::Output>;
 }
 impl<R> ManagedRow<R> where R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone {
     pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Unit<T> where T: Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
+    pub fn session_effect<T, F>(&self, spec: SessionSpec, contract: EffectContract, recovery: EffectRecovery, canonical_request: Vec<u8>, key_part: Option<IdempotencyKeyPart>, body: F) -> Unit<T> where T: Serialize + DeserializeOwned + Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
 }
 impl<R: Provider + PinSlots> ManagedRow<R> {
     pub fn submit_streaming<O: StreamOperation<R>>(&self, operation: O, capacity: NonZeroUsize) -> Streaming<O::Item, O::Output>;
@@ -555,6 +558,7 @@ pub struct SessionCx {
     /* private fields */
 }
 impl SessionCx {
+    pub fn operation_key(&self) -> Option<&OperationKey>;
     pub fn deadline(&self) -> Instant;
     pub fn closing(&self) -> &LeaseClosing;
     pub fn resource_key(&self) -> &ResourceKey;
