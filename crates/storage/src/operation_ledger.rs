@@ -611,6 +611,7 @@ pub(crate) const fn error_label(error: &OperationLedgerError) -> &'static str {
         OperationLedgerError::ProtocolConflict => "protocol_conflict",
         OperationLedgerError::RecoveryExhausted => "recovery_exhausted",
         OperationLedgerError::InvalidAttemptGeneration => "invalid_attempt_generation",
+        OperationLedgerError::InvalidOccurrence { .. } => "invalid_occurrence",
         OperationLedgerError::ExecutionLeaseRejected => "execution_lease_rejected",
         OperationLedgerError::OperationMismatch { .. } => "operation_mismatch",
         OperationLedgerError::SlotUnprepared { .. } => "slot_unprepared",
@@ -650,6 +651,15 @@ pub(crate) const fn prepare_label(
         Ok(PrepareOutcome::Replayed(_)) => "replayed",
         Err(ref error) => error_label(error),
     }
+}
+
+/// Input admission every adapter applies before it touches durable state.
+///
+/// Returns the checked durable attempt generation. An inadmissible occurrence
+/// label is rejected here, once, so no backend can store or probe one.
+pub(crate) fn admit_binding(binding: &EffectSlotBinding<'_>) -> Result<i64, OperationLedgerError> {
+    binding.occurrence_key().validate()?;
+    stored_attempt_generation(binding.attempt_generation)
 }
 
 /// Checked portable representation; attempt provenance never grants authority.

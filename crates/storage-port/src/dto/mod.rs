@@ -62,9 +62,9 @@ pub use membership::{
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
 pub use operation_ledger::{
     AttemptGeneration, DestinationCapability, DestinationCapabilityParseError, EffectOccurrenceKey,
-    EffectSlotBinding, EffectSlotId, KnownOutcome, OperationLedgerError,
-    OperationProtocolViolation, OperationRecord, OperationState, PrepareOutcome, PreparedOperation,
-    RequestFingerprint,
+    EffectSlotBinding, EffectSlotId, KnownOutcome, MAX_OCCURRENCE_LABEL_BYTES,
+    OccurrenceLabelViolation, OperationLedgerError, OperationProtocolViolation, OperationRecord,
+    OperationState, PrepareOutcome, PreparedOperation, RequestFingerprint,
 };
 pub use operation_protocol::{
     EffectPhase, FrozenOutcomeEvidence, InvocationDisposition, OperationAdvance, OperationCommand,

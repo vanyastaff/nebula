@@ -123,7 +123,7 @@ impl OperationLedger for InMemoryOperationLedger {
         &self,
         key: &EffectOccurrenceKey<'_>,
     ) -> Result<Option<OperationRecord>, OperationLedgerError> {
-        let result = {
+        let result = key.validate().and_then(|()| {
             let state = self.execution.inner.lock();
             let key = SlotKey {
                 workspace_id: key.scope().workspace_id.clone(),
@@ -145,7 +145,7 @@ impl OperationLedger for InMemoryOperationLedger {
                         .ok_or(OperationLedgerError::CorruptRecord { slot_id: *slot })
                 })
                 .transpose()
-        };
+        });
         let outcome = crate::operation_ledger::occurrence_read_label(&result);
         tracing::Span::current().record("outcome", outcome);
         result
@@ -168,7 +168,7 @@ impl OperationLedger for InMemoryOperationLedger {
         fencing: FencingToken,
     ) -> Result<PrepareOutcome, OperationLedgerError> {
         let result = (|| {
-            crate::operation_ledger::stored_attempt_generation(binding.attempt_generation)?;
+            crate::operation_ledger::admit_binding(binding)?;
             let protocol = crate::operation_ledger::initial_protocol(
                 binding,
                 self.execution.clock.now().timestamp_millis(),

@@ -309,6 +309,7 @@ impl OperationLedger for PgOperationLedger {
         key: &EffectOccurrenceKey<'_>,
     ) -> Result<Option<OperationRecord>, OperationLedgerError> {
         let result = async {
+            key.validate()?;
             let mut tx = self.pool.begin().await.map_err(driver_did_not_commit)?;
             load_by_natural_key(&mut tx, key).await
         }
@@ -335,8 +336,7 @@ impl OperationLedger for PgOperationLedger {
         fencing: FencingToken,
     ) -> Result<PrepareOutcome, OperationLedgerError> {
         let result = async {
-            let generation =
-                crate::operation_ledger::stored_attempt_generation(binding.attempt_generation)?;
+            let generation = crate::operation_ledger::admit_binding(binding)?;
             let mut tx = self.begin().await?;
             lock_execution(&mut tx, binding.scope, binding.execution_id, Some(fencing)).await?;
             let now_ms = backend_now(&mut tx).await?;

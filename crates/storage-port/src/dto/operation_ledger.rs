@@ -168,7 +168,39 @@ impl AttemptGeneration {
     }
 }
 
+/// Longest occurrence label the ledger admits, in bytes.
+pub const MAX_OCCURRENCE_LABEL_BYTES: usize = 512;
+
+/// Bounded reason an occurrence label was rejected before persistence.
+///
+/// An occurrence label is part of a slot's natural key, so it must be
+/// reproducible byte-for-byte by a restarted owner and safe to render in
+/// diagnostics. The admitted alphabet is therefore *visible ASCII*: every byte
+/// in `0x21..=0x7E` (`u8::is_ascii_graphic`). Space, control characters, and
+/// non-ASCII bytes are rejected, so two labels that render identically are
+/// always the same label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
+#[non_exhaustive]
+pub enum OccurrenceLabelViolation {
+    /// The label is empty.
+    #[error("occurrence label is empty")]
+    Empty,
+    /// The label exceeds [`MAX_OCCURRENCE_LABEL_BYTES`].
+    #[error("occurrence label exceeds 512 bytes")]
+    TooLong,
+    /// The label contains a byte outside visible ASCII (`0x21..=0x7E`).
+    #[error("occurrence label contains a byte outside visible ASCII")]
+    InvalidByte,
+}
+
 /// Scoped natural address reconstructible before a prepare acknowledgement.
+///
+/// One node may own many slots: each intended effect gets its own occurrence
+/// label (for example `node-effect/v1`, or `unit/v1/<resource>/<contract>/#3`
+/// for the third unit a node submits against one contract). The label is the
+/// only thing that separates two effects with identical request bytes, so it
+/// must be derived deterministically — a resumed owner has to rebuild the same
+/// label to find the slot it already prepared.
 #[derive(Clone, Copy)]
 pub struct EffectOccurrenceKey<'a> {
     scope: &'a Scope,
@@ -213,6 +245,64 @@ impl<'a> EffectOccurrenceKey<'a> {
     pub const fn occurrence(self) -> &'a str {
         self.occurrence
     }
+
+    /// Check that `label` is an admissible occurrence label.
+    ///
+    /// Admissible means 1..=[`MAX_OCCURRENCE_LABEL_BYTES`] bytes, every byte
+    /// visible ASCII (`0x21..=0x7E`); see [`OccurrenceLabelViolation`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the first violated rule.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nebula_storage_port::{EffectOccurrenceKey, OccurrenceLabelViolation};
+    ///
+    /// assert_eq!(EffectOccurrenceKey::validate_label("node-effect/v1"), Ok(()));
+    /// assert_eq!(
+    ///     EffectOccurrenceKey::validate_label("unit/v1/db.main/orders.insert/#3"),
+    ///     Ok(())
+    /// );
+    /// assert_eq!(
+    ///     EffectOccurrenceKey::validate_label("two words"),
+    ///     Err(OccurrenceLabelViolation::InvalidByte)
+    /// );
+    /// ```
+    pub const fn validate_label(label: &str) -> Result<(), OccurrenceLabelViolation> {
+        let bytes = label.as_bytes();
+        if bytes.is_empty() {
+            return Err(OccurrenceLabelViolation::Empty);
+        }
+        if bytes.len() > MAX_OCCURRENCE_LABEL_BYTES {
+            return Err(OccurrenceLabelViolation::TooLong);
+        }
+        let mut index = 0;
+        while index < bytes.len() {
+            if !bytes[index].is_ascii_graphic() {
+                return Err(OccurrenceLabelViolation::InvalidByte);
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+
+    /// Check this address's occurrence label before any durable access.
+    ///
+    /// Every adapter applies this to reads and preparations alike, so an
+    /// inadmissible label can neither be stored nor probed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OperationLedgerError::InvalidOccurrence`] naming the violated
+    /// rule.
+    pub const fn validate(self) -> Result<(), OperationLedgerError> {
+        match Self::validate_label(self.occurrence) {
+            Ok(()) => Ok(()),
+            Err(violation) => Err(OperationLedgerError::InvalidOccurrence { violation }),
+        }
+    }
 }
 
 impl fmt::Debug for EffectOccurrenceKey<'_> {
@@ -236,7 +326,10 @@ pub struct EffectSlotBinding<'a> {
     /// Caller-chosen label distinguishing multiple effects from one node.
     ///
     /// Two intended occurrences from the same node are different slots even
-    /// with identical payloads, and this is what tells them apart.
+    /// with identical payloads, and this is what tells them apart. Must pass
+    /// [`EffectOccurrenceKey::validate_label`]; every adapter rejects an
+    /// inadmissible label with [`OperationLedgerError::InvalidOccurrence`]
+    /// before any durable access.
     pub occurrence: &'a str,
     /// Attempt generation that originated this slot.
     pub attempt_generation: AttemptGeneration,
@@ -443,6 +536,12 @@ pub enum OperationLedgerError {
     /// Attempt provenance exceeds the portable durable integer range.
     #[error("attempt generation is outside the supported durable range")]
     InvalidAttemptGeneration,
+    /// The occurrence label is not admissible; nothing was read or written.
+    #[error("invalid effect occurrence label: {violation}")]
+    InvalidOccurrence {
+        /// Bounded reason the label was rejected.
+        violation: OccurrenceLabelViolation,
+    },
     /// The execution is absent, outside this scope, or lacks this live lease.
     #[error("execution lease does not authorize this operation")]
     ExecutionLeaseRejected,
@@ -538,4 +637,47 @@ pub enum OperationProtocolViolation {
     /// The backend timestamp cannot represent the complete recovery window.
     #[error("protocol recovery deadline is outside the supported time range")]
     RecoveryDeadline,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn occurrence_labels_admit_exactly_visible_ascii_within_the_cap() {
+        for admitted in [
+            "node-effect/v1",
+            "unit/v1/db.main/orders.insert/#3",
+            "!",
+            "~",
+        ] {
+            assert_eq!(EffectOccurrenceKey::validate_label(admitted), Ok(()));
+        }
+        assert_eq!(
+            EffectOccurrenceKey::validate_label(&"a".repeat(MAX_OCCURRENCE_LABEL_BYTES)),
+            Ok(())
+        );
+        assert_eq!(
+            EffectOccurrenceKey::validate_label(""),
+            Err(OccurrenceLabelViolation::Empty)
+        );
+        assert_eq!(
+            EffectOccurrenceKey::validate_label(&"a".repeat(MAX_OCCURRENCE_LABEL_BYTES + 1)),
+            Err(OccurrenceLabelViolation::TooLong)
+        );
+        for rejected in ["two words", "tab\there", "nul\0", "del\u{7f}", "ünit"] {
+            assert_eq!(
+                EffectOccurrenceKey::validate_label(rejected),
+                Err(OccurrenceLabelViolation::InvalidByte),
+                "{rejected:?} must be rejected"
+            );
+        }
+        let scope = Scope::new("ws", "org");
+        assert_eq!(
+            EffectOccurrenceKey::new(&scope, "exe", "node", "line\nbreak").validate(),
+            Err(OperationLedgerError::InvalidOccurrence {
+                violation: OccurrenceLabelViolation::InvalidByte
+            })
+        );
+    }
 }
