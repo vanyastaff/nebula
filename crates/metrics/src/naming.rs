@@ -73,6 +73,30 @@ pub mod control_reclaim_outcome {
     pub const EXHAUSTED: &str = "exhausted";
 }
 
+/// Counter: execution control commands (cancel / terminate) submitted through
+/// `ExecutionCommandService`.
+///
+/// Labeled by `command` (`cancel` / `terminate`) and `outcome` (see
+/// [`execution_command_outcome`]). Cardinality is bounded by those two static
+/// sets — no execution or tenant id is ever a label.
+pub const NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL: &str = "nebula_engine_execution_command_total";
+
+/// Outcome labels for [`NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL`].
+pub mod execution_command_outcome {
+    /// The command was durably enqueued.
+    pub const ENQUEUED: &str = "enqueued";
+    /// A duplicate cancel was already in flight; nothing was enqueued.
+    pub const DUPLICATE: &str = "duplicate";
+    /// The execution was already terminal; the command was refused.
+    pub const TERMINAL: &str = "terminal";
+    /// No such execution in the caller's tenant.
+    pub const NOT_FOUND: &str = "not_found";
+    /// The control-queue backend was unavailable; nothing was recorded.
+    pub const UNAVAILABLE: &str = "unavailable";
+    /// A store read or enqueue write failed; nothing was recorded.
+    pub const FAILED: &str = "failed";
+}
+
 // ---------------------------------------------------------------------------
 // Action (runtime)
 // ---------------------------------------------------------------------------
