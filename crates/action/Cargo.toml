@@ -30,7 +30,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 chrono = { workspace = true }
-zeroize = { version = "1.8.2" }
+zeroize = { workspace = true }
 
 parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["time", "sync"] }
@@ -63,7 +63,7 @@ pretty_assertions = { workspace = true }
 rstest = { workspace = true }
 static_assertions = { workspace = true }
 # The phantom-rewrite fixture needs derive support for secret-bearing stand-in types.
-zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
+zeroize = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 trybuild = "1"
 
