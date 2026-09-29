@@ -23,12 +23,16 @@ use nebula_storage_port::{EffectOccurrenceKey, FencingToken};
 /// Production wiring hands them out separately — an effect caller never
 /// receives the adjudicator — but a conformance run needs both to drive an
 /// operation through its whole lifecycle.
+///
+/// `Clone + 'static` lets a case wrap the adapter in the tenancy decorator,
+/// which owns its inner ledger as `Arc<dyn OperationLedger>`.
 pub(crate) trait LedgerUnderTest:
-    OperationLedger + OperationLedgerAdjudicator + LedgerAssertions
+    OperationLedger + OperationLedgerAdjudicator + LedgerAssertions + Clone + 'static
 {
 }
 
-impl<T> LedgerUnderTest for T where T: OperationLedger + OperationLedgerAdjudicator {}
+impl<T> LedgerUnderTest for T where T: OperationLedger + OperationLedgerAdjudicator + Clone + 'static
+{}
 
 use nebula_core::OperationCallId;
 use nebula_storage_port::dto::{
@@ -689,6 +693,32 @@ macro_rules! operation_ledger_conformance_suite {
             0x31,
             $ledger
         );
+        $crate::operation_ledger_case!(
+            many_occurrences_in_one_node_are_independent_listed_slots,
+            0x40,
+            $ledger
+        );
+        $crate::operation_ledger_case!(
+            the_provider_key_is_durable_and_part_of_the_prepare_identity,
+            0x41,
+            $ledger
+        );
+        $crate::operation_ledger_case!(
+            outstanding_residue_explained_ambiguous_by_a_later_attempt,
+            0x42,
+            $ledger
+        );
+        $crate::operation_ledger_case!(
+            opaque_regrant_budget_is_cumulative_across_attempt_generations,
+            0x43,
+            $ledger
+        );
+        $crate::operation_ledger_case!(
+            occurrence_labels_are_validated_before_durable_access,
+            0x44,
+            $ledger
+        );
+        $crate::operation_ledger_case!(a_scoped_ledger_lists_no_foreign_occurrences, 0x45, $ledger);
     };
 }
 
@@ -1397,5 +1427,718 @@ pub(crate) async fn adjudication_and_outcome_serialize_one_answer(
         } else {
             OperationState::Failed
         }
+    );
+}
+
+/// Release `fencing` and hand the execution to a later attempt, as crash
+/// recovery does.
+async fn take_over(
+    executions: &dyn ExecutionStore,
+    scope: &Scope,
+    execution: &str,
+    fencing: FencingToken,
+) -> FencingToken {
+    executions
+        .release_lease(scope, execution, fencing)
+        .await
+        .unwrap();
+    let next = executions
+        .acquire_lease(
+            scope,
+            execution,
+            "takeover",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(next.generation() > fencing.generation());
+    next
+}
+
+fn granted_call(advance: OperationAdvance) -> OperationCallId {
+    match advance {
+        OperationAdvance::Granted { call, .. } => call,
+        other => panic!("expected a fresh invocation grant, got {other:?}"),
+    }
+}
+
+/// Many effects of one node are many independent slots, and a listing of the
+/// node returns exactly them, in preparation order.
+pub(crate) async fn many_occurrences_in_one_node_are_independent_listed_slots(
+    ledger: &impl LedgerUnderTest,
+    executions: &dyn ExecutionStore,
+    seed: u8,
+) {
+    use nebula_storage_port::dto::{EffectPhase, InvocationDisposition};
+    let scope = scope();
+    let execution = execution_id(seed);
+    let fence = create_leased_execution(executions, &scope, &execution).await;
+    let labels = [
+        "unit/v1/db.main/orders.insert/#1",
+        "unit/v1/db.main/orders.insert/#2",
+        "unit/v1/db.main/orders.insert/#3",
+    ];
+    let mut prepared = Vec::new();
+    for label in labels {
+        let outcome = ledger
+            .prepare(
+                &binding(
+                    &scope,
+                    &execution,
+                    label,
+                    1,
+                    0x11,
+                    DestinationCapability::StableKey,
+                ),
+                fence,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, PrepareOutcome::Prepared(_)),
+            "identical request bytes under a new label are a new slot, got {outcome:?}"
+        );
+        prepared.push(outcome.operation());
+    }
+    for (index, left) in prepared.iter().enumerate() {
+        for right in &prepared[index + 1..] {
+            assert_ne!(left.slot_id(), right.slot_id());
+            assert_ne!(left.operation_id(), right.operation_id());
+        }
+    }
+
+    // Slots that must not be listed: another node of the same execution, and
+    // the same node label in another execution.
+    let sibling = EffectSlotBinding {
+        node_key: "refund",
+        ..binding(
+            &scope,
+            &execution,
+            labels[0],
+            1,
+            0x11,
+            DestinationCapability::StableKey,
+        )
+    };
+    ledger.prepare(&sibling, fence).await.unwrap();
+    let other_execution = format!("{execution}-other");
+    let other_fence = create_leased_execution(executions, &scope, &other_execution).await;
+    ledger
+        .prepare(
+            &binding(
+                &scope,
+                &other_execution,
+                labels[0],
+                1,
+                0x11,
+                DestinationCapability::StableKey,
+            ),
+            other_fence,
+        )
+        .await
+        .unwrap();
+
+    // Phases and budgets are per slot: spend a permit on the middle one only.
+    let middle = prepared[1].slot_id();
+    let call = granted_call(
+        ledger
+            .advance(
+                &scope,
+                middle,
+                fence,
+                &OperationCommand::GrantInvocation {
+                    expected_revision: 0,
+                },
+            )
+            .await
+            .unwrap(),
+    );
+    ledger
+        .advance(
+            &scope,
+            middle,
+            fence,
+            &OperationCommand::RecordDisposition {
+                invocation: call,
+                disposition: InvocationDisposition::Ambiguous,
+            },
+        )
+        .await
+        .unwrap();
+
+    let listed = ledger
+        .read_occurrences(&scope, &execution, "charge")
+        .await
+        .unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(nebula_storage_port::EffectOccurrenceRecord::occurrence)
+            .collect::<Vec<_>>(),
+        labels,
+        "every slot of the node, in preparation order, and nothing else"
+    );
+    for (listed, operation) in listed.iter().zip(&prepared) {
+        assert_eq!(listed.record().operation(), *operation);
+        assert_eq!(
+            listed.record(),
+            &ledger
+                .read_exact(&scope, operation.slot_id())
+                .await
+                .unwrap()
+        );
+    }
+    assert_eq!(
+        listed
+            .iter()
+            .map(|occurrence| {
+                let protocol = occurrence.record().protocol().unwrap();
+                (protocol.phase(), protocol.invocations())
+            })
+            .collect::<Vec<_>>(),
+        [
+            (EffectPhase::Prepared, 0),
+            (EffectPhase::Ambiguous, 1),
+            (EffectPhase::Prepared, 0),
+        ],
+        "one slot's grant must not move or spend another slot's budget"
+    );
+    assert!(
+        ledger
+            .read_occurrences(&other_scope(), &execution, "charge")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a foreign tenant must see no slot at all"
+    );
+    assert_eq!(
+        ledger
+            .read_occurrences(&scope, &execution, "refund")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        ledger
+            .read_occurrences(&scope, &other_execution, "charge")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        ledger
+            .read_occurrences(&scope, &execution, "absent")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// The provider idempotency key is recorded at preparation, read back on
+/// replay, and part of the prepare identity — but never of the natural key.
+pub(crate) async fn the_provider_key_is_durable_and_part_of_the_prepare_identity(
+    ledger: &impl LedgerUnderTest,
+    executions: &dyn ExecutionStore,
+    seed: u8,
+) {
+    use nebula_storage_port::ProviderIdempotencyKey;
+    let scope = scope();
+    let execution = execution_id(seed);
+    let fence = create_leased_execution(executions, &scope, &execution).await;
+    let key = ProviderIdempotencyKey::new("47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU").unwrap();
+    let other_key = ProviderIdempotencyKey::new("order-123").unwrap();
+    let keyed = |occurrence: &'static str,
+                 generation: u64,
+                 digest: u8,
+                 provider_key: Option<ProviderIdempotencyKey>| EffectSlotBinding {
+        provider_key,
+        ..binding(
+            &scope,
+            &execution,
+            occurrence,
+            generation,
+            digest,
+            DestinationCapability::StableKey,
+        )
+    };
+
+    let prepared = ledger
+        .prepare(&keyed("keyed", 1, 0x11, Some(key)), fence)
+        .await
+        .unwrap();
+    assert!(matches!(prepared, PrepareOutcome::Prepared(_)));
+    assert_eq!(prepared.operation().provider_key(), Some(key));
+    let slot = prepared.operation().slot_id();
+    let before = ledger.read_exact(&scope, slot).await.unwrap();
+    assert_eq!(before.operation().provider_key(), Some(key));
+    assert_eq!(before.protocol().unwrap().provider_key(), Some(key));
+    assert_eq!(
+        ledger
+            .read_occurrence(&EffectOccurrenceKey::new(
+                &scope, &execution, "charge", "keyed"
+            ))
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(&before)
+    );
+
+    // A retry reuses the key; the ledger hands back the recorded one.
+    let replayed = ledger
+        .prepare(&keyed("keyed", 2, 0x11, Some(key)), fence)
+        .await
+        .unwrap();
+    assert_eq!(replayed, PrepareOutcome::Replayed(prepared.operation()));
+
+    for (rejected, reason) in [
+        (keyed("keyed", 1, 0x99, Some(key)), "a different request"),
+        (keyed("keyed", 1, 0x11, Some(other_key)), "a different key"),
+        (keyed("keyed", 1, 0x11, None), "a dropped key"),
+    ] {
+        assert_eq!(
+            ledger.prepare(&rejected, fence).await,
+            Err(OperationLedgerError::OperationMismatch { slot_id: slot }),
+            "{reason} must fail closed"
+        );
+        assert_eq!(
+            ledger.read_exact(&scope, slot).await.unwrap(),
+            before,
+            "{reason} must leave no durable delta"
+        );
+    }
+
+    let keyless = ledger
+        .prepare(&keyed("keyless", 1, 0x11, None), fence)
+        .await
+        .unwrap()
+        .operation();
+    assert_eq!(keyless.provider_key(), None);
+    let keyless_before = ledger.read_exact(&scope, keyless.slot_id()).await.unwrap();
+    assert_eq!(
+        ledger
+            .prepare(&keyed("keyless", 1, 0x11, Some(key)), fence)
+            .await,
+        Err(OperationLedgerError::OperationMismatch {
+            slot_id: keyless.slot_id()
+        }),
+        "a slot prepared without a key cannot acquire one later"
+    );
+    assert_eq!(
+        ledger.read_exact(&scope, keyless.slot_id()).await.unwrap(),
+        keyless_before
+    );
+
+    // The key is not an address: another occurrence may carry the same key.
+    let shared = ledger
+        .prepare(&keyed("shared", 1, 0x11, Some(key)), fence)
+        .await
+        .unwrap();
+    assert!(matches!(shared, PrepareOutcome::Prepared(_)));
+    assert_ne!(shared.operation().slot_id(), slot);
+
+    // Protocol transitions never rewrite the recorded key.
+    let granted = ledger
+        .advance(
+            &scope,
+            slot,
+            fence,
+            &OperationCommand::GrantInvocation {
+                expected_revision: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let OperationAdvance::Granted { record, .. } = granted else {
+        panic!("a fresh slot grants its first permit");
+    };
+    assert_eq!(record.operation().provider_key(), Some(key));
+    let listed = ledger
+        .read_occurrences(&scope, &execution, "charge")
+        .await
+        .unwrap();
+    let keyed_listing = listed
+        .iter()
+        .find(|occurrence| occurrence.occurrence() == "keyed")
+        .unwrap();
+    assert_eq!(keyed_listing.record().operation().provider_key(), Some(key));
+}
+
+/// A later attempt that finds its predecessor's call outstanding may explain
+/// it as ambiguous: a stable-key slot stays re-grantable in its window, an
+/// opaque one becomes `OutcomeUnknown`.
+pub(crate) async fn outstanding_residue_explained_ambiguous_by_a_later_attempt(
+    ledger: &impl LedgerUnderTest,
+    executions: &dyn ExecutionStore,
+    seed: u8,
+) {
+    use nebula_storage_port::dto::{EffectPhase, InvocationDisposition};
+    let scope = scope();
+    let execution = execution_id(seed);
+    let first = create_leased_execution(executions, &scope, &execution).await;
+    let mut residues = Vec::new();
+    for (occurrence, capability) in [
+        ("stable", DestinationCapability::StableKey),
+        ("opaque", DestinationCapability::Opaque),
+    ] {
+        let prepared = ledger
+            .prepare(
+                &binding(&scope, &execution, occurrence, 1, 0x11, capability),
+                first,
+            )
+            .await
+            .unwrap()
+            .operation();
+        let call = granted_call(
+            ledger
+                .advance(
+                    &scope,
+                    prepared.slot_id(),
+                    first,
+                    &OperationCommand::GrantInvocation {
+                        expected_revision: 0,
+                    },
+                )
+                .await
+                .unwrap(),
+        );
+        residues.push((occurrence, capability, prepared, call));
+    }
+
+    // The first attempt dies with both calls outstanding.
+    let second = take_over(executions, &scope, &execution, first).await;
+    for (occurrence, capability, prepared, call) in residues {
+        let slot = prepared.slot_id();
+        let resumed = ledger
+            .prepare(
+                &binding(&scope, &execution, occurrence, 2, 0x11, capability),
+                second,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resumed,
+            PrepareOutcome::Replayed(prepared),
+            "a later attempt inherits the identity and original generation"
+        );
+        assert_eq!(
+            ledger
+                .read_exact(&scope, slot)
+                .await
+                .unwrap()
+                .protocol()
+                .unwrap()
+                .phase(),
+            EffectPhase::InvocationOutstanding
+        );
+        let explain = OperationCommand::RecordDisposition {
+            invocation: call,
+            disposition: InvocationDisposition::Ambiguous,
+        };
+        assert!(
+            matches!(
+                ledger.advance(&scope, slot, first, &explain).await,
+                Err(OperationLedgerError::ExecutionLeaseRejected)
+            ),
+            "the dead attempt can no longer explain its own call"
+        );
+        ledger
+            .advance(&scope, slot, second, &explain)
+            .await
+            .unwrap();
+        let explained = ledger.read_exact(&scope, slot).await.unwrap();
+        let protocol = explained.protocol().unwrap();
+        let regrant = ledger
+            .advance(
+                &scope,
+                slot,
+                second,
+                &OperationCommand::GrantInvocation {
+                    expected_revision: protocol.revision(),
+                },
+            )
+            .await;
+        if capability == DestinationCapability::StableKey {
+            assert_eq!(explained.state(), OperationState::Prepared);
+            assert_eq!(protocol.phase(), EffectPhase::Ambiguous);
+            match regrant {
+                Ok(OperationAdvance::Granted {
+                    call: retry,
+                    record,
+                    ..
+                }) => {
+                    assert_ne!(retry, call);
+                    assert_eq!(
+                        record.operation().operation_id(),
+                        prepared.operation_id(),
+                        "stable-key recovery re-invokes under the same identity"
+                    );
+                    assert_eq!(record.protocol().unwrap().invocations(), 2);
+                },
+                other => panic!("stable-key ambiguity must be re-grantable, got {other:?}"),
+            }
+        } else {
+            assert_eq!(explained.state(), OperationState::OutcomeUnknown);
+            assert_eq!(protocol.phase(), EffectPhase::OutcomeUnknown);
+            assert!(
+                matches!(regrant, Err(OperationLedgerError::ProtocolConflict)),
+                "opaque ambiguity forbids a second effect"
+            );
+            assert_eq!(
+                ledger.read_exact(&scope, slot).await.unwrap().state(),
+                OperationState::OutcomeUnknown
+            );
+        }
+    }
+}
+
+/// An opaque slot's invocation budget spans attempt generations: a later
+/// attempt re-grants only what earlier attempts left unspent.
+pub(crate) async fn opaque_regrant_budget_is_cumulative_across_attempt_generations(
+    ledger: &impl LedgerUnderTest,
+    executions: &dyn ExecutionStore,
+    seed: u8,
+) {
+    use nebula_storage_port::dto::{EffectPhase, InvocationDisposition};
+    let scope = scope();
+    let execution = execution_id(seed);
+    let mut fence = create_leased_execution(executions, &scope, &execution).await;
+    let request = |generation| {
+        binding(
+            &scope,
+            &execution,
+            "budget",
+            generation,
+            0x11,
+            DestinationCapability::Opaque,
+        )
+    };
+    let prepared = ledger
+        .prepare(&request(1), fence)
+        .await
+        .unwrap()
+        .operation();
+    let slot = prepared.slot_id();
+    // The oracle's opaque contract permits three invocations in total.
+    for generation in 1..=3_u64 {
+        if generation > 1 {
+            fence = take_over(executions, &scope, &execution, fence).await;
+            assert_eq!(
+                ledger.prepare(&request(generation), fence).await,
+                Ok(PrepareOutcome::Replayed(prepared))
+            );
+        }
+        let revision = ledger
+            .read_exact(&scope, slot)
+            .await
+            .unwrap()
+            .protocol()
+            .unwrap()
+            .revision();
+        let call = granted_call(
+            ledger
+                .advance(
+                    &scope,
+                    slot,
+                    fence,
+                    &OperationCommand::GrantInvocation {
+                        expected_revision: revision,
+                    },
+                )
+                .await
+                .unwrap(),
+        );
+        ledger
+            .advance(
+                &scope,
+                slot,
+                fence,
+                &OperationCommand::RecordDisposition {
+                    invocation: call,
+                    disposition: InvocationDisposition::BeforeBoundary,
+                },
+            )
+            .await
+            .unwrap();
+        let protocol = ledger
+            .read_exact(&scope, slot)
+            .await
+            .unwrap()
+            .protocol()
+            .unwrap()
+            .clone();
+        assert_eq!(protocol.phase(), EffectPhase::BeforeBoundary);
+        assert_eq!(
+            u64::from(protocol.invocations()),
+            generation,
+            "each attempt spends from the one slot budget"
+        );
+    }
+
+    fence = take_over(executions, &scope, &execution, fence).await;
+    assert_eq!(
+        ledger.prepare(&request(4), fence).await,
+        Ok(PrepareOutcome::Replayed(prepared))
+    );
+    let revision = ledger
+        .read_exact(&scope, slot)
+        .await
+        .unwrap()
+        .protocol()
+        .unwrap()
+        .revision();
+    let exhausted = ledger
+        .advance(
+            &scope,
+            slot,
+            fence,
+            &OperationCommand::GrantInvocation {
+                expected_revision: revision,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(exhausted, OperationAdvance::Recorded(_)),
+        "a later attempt generation does not get a fresh budget"
+    );
+    let record = ledger.read_exact(&scope, slot).await.unwrap();
+    assert_eq!(record.state(), OperationState::OutcomeUnknown);
+    assert_eq!(record.protocol().unwrap().invocations(), 3);
+    assert_eq!(record.operation(), prepared);
+}
+
+/// Inadmissible occurrence labels are refused before any durable access, on
+/// prepare and read alike; admissible ones prepare normally.
+pub(crate) async fn occurrence_labels_are_validated_before_durable_access(
+    ledger: &impl LedgerUnderTest,
+    executions: &dyn ExecutionStore,
+    seed: u8,
+) {
+    use nebula_storage_port::{MAX_OCCURRENCE_LABEL_BYTES, OccurrenceLabelViolation};
+    let scope = scope();
+    let execution = execution_id(seed);
+    let fence = create_leased_execution(executions, &scope, &execution).await;
+    let too_long = "a".repeat(MAX_OCCURRENCE_LABEL_BYTES + 1);
+    let longest = "a".repeat(MAX_OCCURRENCE_LABEL_BYTES);
+    for (label, violation) in [
+        ("", OccurrenceLabelViolation::Empty),
+        (too_long.as_str(), OccurrenceLabelViolation::TooLong),
+        ("tab\there", OccurrenceLabelViolation::InvalidByte),
+        ("line\nbreak", OccurrenceLabelViolation::InvalidByte),
+        ("two words", OccurrenceLabelViolation::InvalidByte),
+        ("ünit", OccurrenceLabelViolation::InvalidByte),
+    ] {
+        assert_eq!(
+            ledger
+                .prepare(
+                    &binding(
+                        &scope,
+                        &execution,
+                        label,
+                        1,
+                        0x11,
+                        DestinationCapability::Opaque
+                    ),
+                    fence
+                )
+                .await,
+            Err(OperationLedgerError::InvalidOccurrence { violation }),
+            "{label:?}"
+        );
+        assert!(matches!(
+            ledger
+                .read_occurrence(&EffectOccurrenceKey::new(
+                    &scope, &execution, "charge", label
+                ))
+                .await,
+            Err(OperationLedgerError::InvalidOccurrence { violation: rejected }) if rejected == violation
+        ));
+    }
+    let admitted = [
+        longest.as_str(),
+        "node-effect/v1",
+        "unit/v1/db.main/orders.insert/#3",
+    ];
+    for label in admitted {
+        assert!(matches!(
+            ledger
+                .prepare(
+                    &binding(
+                        &scope,
+                        &execution,
+                        label,
+                        1,
+                        0x11,
+                        DestinationCapability::Opaque
+                    ),
+                    fence
+                )
+                .await,
+            Ok(PrepareOutcome::Prepared(_))
+        ));
+    }
+    let listed = ledger
+        .read_occurrences(&scope, &execution, "charge")
+        .await
+        .unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(nebula_storage_port::EffectOccurrenceRecord::occurrence)
+            .collect::<Vec<_>>(),
+        admitted,
+        "only admissible labels were ever stored"
+    );
+}
+
+/// Behind the tenancy decorator a caller-supplied scope cannot widen the bound
+/// tenant: a foreign-bound ledger lists nothing of this tenant's node.
+pub(crate) async fn a_scoped_ledger_lists_no_foreign_occurrences(
+    ledger: &impl LedgerUnderTest,
+    executions: &dyn ExecutionStore,
+    seed: u8,
+) {
+    use nebula_tenancy::ScopedOperationLedger;
+    let scope = scope();
+    let execution = execution_id(seed);
+    let fence = create_leased_execution(executions, &scope, &execution).await;
+    for label in ["first", "second"] {
+        ledger
+            .prepare(
+                &binding(
+                    &scope,
+                    &execution,
+                    label,
+                    1,
+                    0x11,
+                    DestinationCapability::Opaque,
+                ),
+                fence,
+            )
+            .await
+            .unwrap();
+    }
+    let inner: std::sync::Arc<dyn OperationLedger> = std::sync::Arc::new(ledger.clone());
+    let foreign = ScopedOperationLedger::new(inner.clone(), other_scope());
+    assert!(
+        foreign
+            .read_occurrences(&scope, &execution, "charge")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a caller-supplied scope must not reach another tenant's slots"
+    );
+    let owner = ScopedOperationLedger::new(inner, scope.clone());
+    assert_eq!(
+        owner
+            .read_occurrences(&other_scope(), &execution, "charge")
+            .await
+            .unwrap()
+            .len(),
+        2,
+        "the bound tenant is substituted for the caller's scope"
     );
 }
