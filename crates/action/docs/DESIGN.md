@@ -124,22 +124,23 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 
 ## 6. Известные напряжения / долг
 
-1. **Stale doc в derive.** `macros/src/lib.rs:47` утверждает «Action structs must be unit structs with no
-   fields» — противоречит реализации (`macros/src/action.rs:37-72` + `field_slots.rs` принимают named-поля
-   со слотами) и `AGENTS.md:34` («structs hold only slot fields»). Док врёт про текущую модель.
-2. **`nebula-action-types.md` (431 строка, рус.)** — стихийный дизайн-док в корне крейта с устаревшей
-   иерархией: рисует `TriggerAction` как потомка `StatefulAction`, тогда как `lib.rs:15` и код держат его
-   отдельным трейтом «outside the execution graph». Кандидат на удаление/перенос (этот DESIGN.md — замена).
+1. **Stale doc в derive — закрыто.** Утверждения «Action structs must be unit structs with no fields» в
+   `macros/src/lib.rs` больше нет (сверено 2026-09-29).
+2. **Спурьёзные дизайн-доки — закрыто (удалены).** `nebula-action-types.md` рисовал `TriggerAction`
+   потомком `StatefulAction`, а `docs/Action Types.md` (1691 строка) описывал иерархию, которой нет в коде
+   (`ProcessAction`, `SupplyAction`, `StreamingAction`, `InteractiveAction`, `TransactionalAction`,
+   `PollingAction`, `SimpleAction` — ни одного такого трейта в `src/`). Единственный документ иерархии —
+   этот DESIGN.md; `TriggerAction` — отдельный трейт «outside the execution graph» (`lib.rs`, `trigger/mod.rs`).
 3. **Legacy path-space.** `lib.rs:60` / `handler.rs` — handler-трейты живут в доменных файлах, но
    ре-экспортируются через `handler::*` «for backwards compatibility». Четыре прод-пути сознательно остаются
    на legacy handler-поверхности (webhook routing, plugin discovery, SDK runtime, EventSource adapter).
 4. **Stateful checkpoint recovery.** Публичный `CheckpointPolicy` удалён вместе с setter/getter:
    неподдерживаемые режимы нельзя объявить через API. Внутренние итерации stateful action пока
    не имеют production checkpoint sink; сохранение результата узла не даёт им SQL durability.
-5. **План-идентификаторы в Cargo.toml.** Строки 56 («Phase 9 / Task 9.1») и 63 («Closes Stage-4 review I3»)
-   нарушают правило «no plan IDs in committed code».
-6. **`zeroize` не через workspace.** `Cargo.toml:33,65` — локальный пин `1.8.2`, тогда как остальные deps
-   `workspace = true`. Расходится с workspace-дисциплиной версий.
+5. **План-идентификаторы в Cargo.toml — закрыто.** «Phase 9 / Task 9.1» и «Stage-4 review I3» в
+   `Cargo.toml` отсутствуют.
+6. **`zeroize` не через workspace — закрыто.** Обе записи (`[dependencies]` и `[dev-dependencies]`) теперь
+   `zeroize = { workspace = true }`.
 
 ## 7. Роль в пост-0092 credential/resource модели
 
@@ -173,15 +174,14 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 
 ## 8. Forward design / открытые вопросы
 
-- **Заменить `nebula-action-types.md` этим DESIGN.md.** Удалить/перенести стихийный док с неверной иерархией
-  (Напряжение №2); зафиксировать `TriggerAction` как отдельный трейт «outside the execution graph».
-- **Починить stale derive-doc** (`macros/src/lib.rs:47`): привести текст в соответствие с named-slot-полями
-  (Напряжение №1) — иначе plugin-авторы читают противоречие между доком и компилятором.
-- **Снять долг Cargo.toml:** убрать план-идентификаторы (строки 56/63) и поднять `zeroize` до `workspace = true`
-  (Напряжения №5/№6) — в идеале согласовать с workspace-bump.
+- ~~Заменить `nebula-action-types.md` этим DESIGN.md~~ — сделано (Напряжение №2).
+- ~~Починить stale derive-doc~~ — сделано (Напряжение №1).
+- ~~Снять долг Cargo.toml~~ — сделано (Напряжения №5/№6).
 - **Согласовать re-export-блок credential** (`lib.rs:132`) с пост-0092 топологией: после коллапса credential-крейтов
   проверить, что `CredentialGuard`/`CredentialRef` приходят из единого `nebula-credential`, и нет ли осиротевших путей
   к удалённым `credential-runtime`/`builtin`.
+  *Сверено 2026-09-29:* `CredentialGuard`/`CredentialRef` реэкспортируются из единого `nebula-credential`
+  (`src/lib.rs`), осиротевших путей к удалённым крейтам нет.
 - **Checkpoint contract:** публичный выбор cadence удалён. Поле `checkpoint_policy` остаётся
   приватным wire evidence: новые metadata и планы записывают `inherit`, исторические значения
   сохраняются при чтении, но non-default не проходят readmission, registry compatibility и
