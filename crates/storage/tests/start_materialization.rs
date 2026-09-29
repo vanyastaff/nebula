@@ -1,3 +1,8 @@
+//! Start-authority materialization contract on the in-memory and SQLite adapters.
+//!
+//! The PostgreSQL arm lives in `start_materialization_postgres` (an evidence
+//! binary that needs a live database).
+
 use nebula_core::{
     ExecutablePlanRevisionId, ExecutionContractBundleId, ExecutionId, WorkerFlavorRevisionId,
     WorkflowId,
@@ -9,34 +14,12 @@ use nebula_storage_port::dto::{
 use nebula_storage_port::store::{
     StartAcceptanceStore, StartContractIdentity, StartMaterializationError,
 };
-use std::{fs::OpenOptions, io::BufWriter, path::Path};
-
+#[path = "support/start_materialization_common.rs"]
+mod common;
 #[path = "support/start_materialization_oracle.rs"]
 mod oracle;
 
-fn write_observations(backend: &str, env: &str, observations: serde_json::Value) {
-    let Ok(path) = std::env::var(env) else {
-        return;
-    };
-    let path = Path::new(&path);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).unwrap();
-    }
-    let report = serde_json::json!({
-        "producer_version": 1,
-        "contract": "start-authority",
-        "scenario_inventory_version": 1,
-        "backend": backend,
-        "observations": observations
-    });
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-        .unwrap();
-    serde_json::to_writer_pretty(BufWriter::new(file), &report).unwrap();
-}
+use common::write_observations;
 
 #[tokio::test]
 async fn in_memory_materialization_contract() {
@@ -98,69 +81,6 @@ async fn sqlite_materialization_contract() {
         .await
         .unwrap();
     let starts = nebula_storage::sqlite::SqliteStartAcceptanceStore::new(reopened);
-    assert_eq!(
-        starts
-            .read_contract_bundle(stored.scope(), stored.execution_id())
-            .await
-            .unwrap(),
-        Some(stored)
-    );
-}
-
-#[cfg(feature = "postgres")]
-#[path = "support/postgres_schema.rs"]
-mod postgres_schema;
-
-#[cfg(feature = "postgres")]
-#[tokio::test]
-async fn postgres_materialization_contract() {
-    let url = match std::env::var("DATABASE_URL") {
-        Ok(url) => url,
-        Err(std::env::VarError::NotPresent) => {
-            assert!(
-                std::env::var_os("NEBULA_REQUIRE_POSTGRES").is_none(),
-                "required PostgreSQL evidence needs DATABASE_URL"
-            );
-            return;
-        },
-        Err(std::env::VarError::NotUnicode(_)) => {
-            panic!("configured PostgreSQL URL must be Unicode")
-        },
-    };
-    let pool = postgres_schema::connect_with_private_schema(&url, "start_materialization")
-        .await
-        .unwrap();
-    nebula_storage::postgres::init_schema(&pool).await.unwrap();
-    let starts = nebula_storage::postgres::PgStartAcceptanceStore::new(pool.clone());
-    let executions = nebula_storage::postgres::PgExecutionStore::new(pool.clone());
-    let queue = nebula_storage::postgres::PgControlQueue::new(pool.clone());
-    let catalog = nebula_storage::postgres::PgPlanFlavorCatalog::new(
-        pool.clone(),
-        &nebula_metrics::MetricsRegistry::new(),
-    );
-    let evidence = oracle::run(&starts, &executions, &queue, &catalog, &catalog).await;
-    write_observations(
-        "postgresql",
-        "NEBULA_START_AUTHORITY_POSTGRES_OBSERVATIONS_PATH",
-        evidence.observations,
-    );
-    let stored = evidence.stored;
-    let schema: String = sqlx::query_scalar("SELECT current_schema()")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    oracle::trigger_replay(&starts, &executions, &queue, &catalog, &catalog).await;
-    pool.close().await;
-    let options = url
-        .parse::<sqlx::postgres::PgConnectOptions>()
-        .unwrap()
-        .options([("search_path", schema)]);
-    let reopened = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .unwrap();
-    let starts = nebula_storage::postgres::PgStartAcceptanceStore::new(reopened);
     assert_eq!(
         starts
             .read_contract_bundle(stored.scope(), stored.execution_id())
