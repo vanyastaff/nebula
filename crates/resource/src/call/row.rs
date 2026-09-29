@@ -51,12 +51,13 @@
 use std::{fmt, sync::Arc};
 
 use nebula_core::ResourceKey;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::Semaphore;
 
 use super::{
     Operation,
     cost::Cost,
-    effect::EffectOperation,
+    effect::{EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, Recorded},
     error::OpError,
     managed::{
         Checkout, OpCx, Unit, UnitHost, UnitScope, cancelled_before_grant, generation_refusal,
@@ -306,6 +307,61 @@ where
             effect,
             "session",
             None,
+        )
+    }
+
+    /// Runs `body` as one session whose effect the row's execution owner
+    /// records: [`session`](Self::session) under
+    /// [`submit_effect`](Self::submit_effect)'s owner protocol.
+    ///
+    /// `spec`'s effect must agree with `recovery` (see
+    /// [`EffectOperation::RECOVERY`]); `canonical_request` and `key_part`
+    /// are what [`EffectOperation::canonical_request`] and
+    /// [`EffectOperation::idempotency_key`] return for an operation, and the
+    /// occurrence label is the unit's submit ordinal. The body's output is
+    /// recorded, and replayed without opening a session. How the session
+    /// closed is recorded as:
+    ///
+    /// | Session | Recorded |
+    /// |---|---|
+    /// | `Committed` with `Ok` | applied, with the output |
+    /// | `RolledBack` (or open failed) | not crossed |
+    /// | `Unknown`, deadline, panic | ambiguous crossing |
+    ///
+    /// [`SessionCx::operation_key`] is the provider idempotency key the
+    /// owner derived. On a library row the session runs as
+    /// [`session`](Self::session) runs it.
+    pub fn session_effect<T, F>(
+        &self,
+        spec: SessionSpec,
+        contract: EffectContract,
+        recovery: EffectRecovery,
+        canonical_request: Vec<u8>,
+        key_part: Option<IdempotencyKeyPart>,
+        body: F,
+    ) -> Unit<T>
+    where
+        T: Serialize + DeserializeOwned + Send + 'static,
+        F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T>
+            + Send
+            + 'static,
+    {
+        let effect = spec.effect();
+        let declaration = EffectDeclaration {
+            contract,
+            recovery,
+            recorded: Recorded::Output,
+            occurrence: None,
+            request: Box::new(move |_: &Sessioned<R, F, T>| Ok((canonical_request, key_part))),
+            codec: OutputCodec::json(),
+        };
+        submit_unit(
+            UnitHost::Row(Arc::clone(&self.shared)),
+            &self.scope,
+            Sessioned::new(spec, body),
+            effect,
+            "session",
+            Some(declaration),
         )
     }
 }

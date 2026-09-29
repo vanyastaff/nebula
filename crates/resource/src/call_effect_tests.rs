@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use super::super::{
     Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, ManagedRow,
     OccurrenceLabel, OpCx, OpError, Operation, OperationKey, PinSlots, Recorded, SentState,
-    SessionSpec,
+    SessionClosed, SessionSpec,
     owner::{
         Crossing, ErrorKindCode, OwnerRefusal, OwnerTicket, RecordedOutcome, SlotPhase, UnitCall,
         UnitEffectOwner, UnitIntent, UnitOutcome, UnitSlot,
@@ -138,6 +138,12 @@ impl FakeOwner {
 
     fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+    }
+
+    /// Restarts the ordinals, as the owner of a resumed execution does: its
+    /// effects meet the slots the earlier run recorded.
+    fn resume(&self) {
+        self.state().ordinals.clear();
     }
 
     fn fail_next_prepare(&self, refusal: OwnerRefusal) {
@@ -1266,4 +1272,121 @@ async fn a_library_row_runs_submit_effect_as_submit_and_a_read_only_row_refuses_
         "managed row effect requires execution-owner authority"
     );
     assert_eq!(calls.made(), 1);
+}
+
+// ── sessions ─────────────────────────────────────────────────────────────
+
+/// What a session body does.
+#[derive(Clone, Copy)]
+enum Body {
+    Ok(u64),
+    Fail,
+    Hang,
+    Panic,
+}
+
+const SESSION: EffectContract = EffectContract::new("billing.session", 1);
+
+/// A `Write` session effect of `request` whose body does `body`; `calls`
+/// counts the bodies run and the operation key each saw.
+fn session(
+    row: &ManagedRow<StrictPooled>,
+    request: &'static str,
+    body: Body,
+    calls: &Arc<Calls>,
+) -> super::super::Unit<u64> {
+    let calls = Arc::clone(calls);
+    row.session_effect(
+        SessionSpec::new(Cost::FREE),
+        SESSION,
+        EffectRecovery::Opaque,
+        request.as_bytes().to_vec(),
+        None,
+        move |tx, cx| {
+            calls.made.fetch_add(1, Ordering::SeqCst);
+            calls
+                .keys
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(cx.operation_key().map(ToString::to_string));
+            Box::pin(async move {
+                tx.pending += 1;
+                match body {
+                    Body::Ok(value) => Ok(value),
+                    Body::Fail => Err(OpError::new(ErrorKind::Permanent, "constraint")),
+                    Body::Hang => {
+                        tokio::time::sleep(Duration::from_hours(1)).await;
+                        Ok(0)
+                    },
+                    Body::Panic => panic!("the body panicked"),
+                }
+            })
+        },
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn session_outcomes_are_recorded_by_how_the_session_closed() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    let last = |fixture: &Fixture| fixture.owner.log().last().cloned();
+
+    // Committed: applied, with the output, which a resumed run replays
+    // without opening a session.
+    let committed = session(&row, "committed", Body::Ok(11), &calls).await;
+    assert_eq!(committed.expect("committed"), 11);
+    assert_eq!(last(&fixture), Some(Step::Settle("applied")));
+    fixture.owner.resume();
+    let replayed = session(&row, "committed", Body::Ok(12), &calls).await;
+    assert_eq!(replayed.expect("replayed"), 11);
+    assert_eq!(fixture.resource.probe.opens(), 1);
+    assert_eq!(calls.made(), 1);
+    assert!(calls.keys()[0].is_some(), "an owned session has a key");
+
+    // Rolled back: not crossed.
+    let failed = session(&row, "failed", Body::Fail, &calls)
+        .await
+        .expect_err("the body failed");
+    assert_eq!(failed.sent(), SentState::NotSent);
+    assert_eq!(last(&fixture), Some(Step::Explain(Crossing::NotCrossed)));
+
+    // Unknown, deadline, panic: ambiguous.
+    fixture
+        .resource
+        .probe
+        .close_next_with(SessionClosed::Unknown(OpError::new(
+            ErrorKind::Transient,
+            "connection dropped",
+        )));
+    let unknown = session(&row, "unknown", Body::Ok(1), &calls)
+        .await
+        .expect_err("unknown commit");
+    assert_eq!(unknown.sent(), SentState::MaybeSent);
+    assert_eq!(last(&fixture), Some(Step::Explain(Crossing::Ambiguous)));
+
+    let deadline = session(&row, "deadline", Body::Hang, &calls)
+        .with_deadline(Instant::now().into_std() + Duration::from_secs(2))
+        .await
+        .expect_err("the deadline cut the session off");
+    assert_eq!(deadline.sent(), SentState::MaybeSent);
+    assert_eq!(last(&fixture), Some(Step::Explain(Crossing::Ambiguous)));
+
+    let panicked = session(&row, "panic", Body::Panic, &calls)
+        .await
+        .expect_err("the body panicked");
+    assert_eq!(panicked.sent(), SentState::MaybeSent);
+    assert_eq!(last(&fixture), Some(Step::Explain(Crossing::Ambiguous)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_library_session_effect_runs_as_a_session_without_a_key() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let value = session(&fixture.library(), "library", Body::Ok(3), &calls)
+        .await
+        .expect("committed");
+    assert_eq!(value, 3);
+    assert_eq!(calls.keys(), vec![None]);
+    assert!(fixture.owner.log().is_empty());
 }

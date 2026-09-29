@@ -39,6 +39,7 @@ use nebula_core::ResourceKey;
 use super::{
     Operation,
     cost::{Cost, Effect, SentState},
+    effect::OperationKey,
     error::OpError,
     managed::{OpCx, UnitHost},
     pin::PinSlots,
@@ -277,6 +278,7 @@ pub struct SessionCx {
     deadline: tokio::time::Instant,
     closing: LeaseClosing,
     key: ResourceKey,
+    operation_key: Option<OperationKey>,
 }
 
 impl SessionCx {
@@ -289,7 +291,25 @@ impl SessionCx {
             deadline,
             closing,
             key,
+            operation_key: None,
         }
+    }
+
+    /// The context of an execution-owned session whose owner derived
+    /// `operation_key`.
+    fn with_operation_key(mut self, operation_key: Option<OperationKey>) -> Self {
+        self.operation_key = operation_key;
+        self
+    }
+
+    /// The provider idempotency key of a session submitted with
+    /// [`ManagedRow::session_effect`](super::ManagedRow::session_effect) on a
+    /// row with an execution owner (see
+    /// [`OpCx::operation_key`](super::OpCx::operation_key)); `None`
+    /// otherwise.
+    #[must_use]
+    pub fn operation_key(&self) -> Option<&OperationKey> {
+        self.operation_key.as_ref()
     }
 
     /// The unit's deadline: the body is stopped at it and the session's
@@ -374,10 +394,12 @@ where
             UnitHost::Row(row) => Some(row.marker()),
             UnitHost::Lease(_) => None,
         };
+        let operation_key = cx.operation_key().copied();
         let mut attempt = cx.attempt_session(spec.cost().clone()).await?;
         let ended = match attempt.session_parts() {
             Some((provider, instance, slots, closing)) => {
-                let session_cx = SessionCx::new(deadline, closing, R::key());
+                let session_cx =
+                    SessionCx::new(deadline, closing, R::key()).with_operation_key(operation_key);
                 drive_session(provider, instance, slots, &session_cx, marker, body).await
             },
             None => SessionEnded {
