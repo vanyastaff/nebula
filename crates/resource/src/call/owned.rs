@@ -104,6 +104,10 @@ pub(super) struct EffectPlan<O, T> {
     pub(super) codec: OutputCodec<T>,
 }
 
+/// An owned unit admitted at submit: its shared owned state and its
+/// first-poll plan.
+pub(super) type OwnedSubmit<O, T> = (OwnedEffect, EffectPlan<O, T>);
+
 /// The owned-effect state of one unit, shared by its handle, its runtime
 /// task and its attempts.
 pub(super) struct OwnedEffect {
@@ -304,16 +308,16 @@ impl OwnedEffect {
         match result {
             Ok(output) => {
                 let encoded = match self.recorded {
-                    Recorded::Output => match (codec.encode)(&output) {
-                        Ok(bytes) => Some(bytes),
-                        Err(_) => {
+                    Recorded::Output => {
+                        let encoded = (codec.encode)(&output).ok();
+                        if encoded.is_none() {
                             tracing::warn!(
                                 target: "nebula.resource",
                                 occurrence = %self.occurrence,
                                 "effect output could not be serialized; recorded without output"
                             );
-                            None
-                        },
+                        }
+                        encoded
                     },
                     Recorded::DigestOnly => None,
                 };

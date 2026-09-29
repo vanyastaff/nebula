@@ -134,6 +134,52 @@
 //! engine's resource accessor through the type-erased
 //! [`Manager::managed_row_any`](crate::Manager::managed_row_any).
 //!
+//! # Execution-owned effects
+//!
+//! An action row built without effect-owner authority
+//! ([`Manager::managed_row_any_read_only`](crate::Manager::managed_row_any_read_only))
+//! runs reads only. A row built with it
+//! ([`Manager::managed_row_any_owned`](crate::Manager::managed_row_any_owned))
+//! carries the execution's [`UnitEffectOwner`](owner::UnitEffectOwner), and
+//! its effects go through [`ManagedRow::submit_effect`] (an
+//! [`EffectOperation`]) or [`ManagedRow::session_effect`]; a plain
+//! [`submit`](ManagedRow::submit) or [`session`](ManagedRow::session) of an
+//! `Idempotent` or `Write` unit is refused `Permanent` / `NotSent`. The
+//! resource runtime never writes durable effect state; it drives the owner
+//! seam ([`owner`]) at fixed points of the unit:
+//!
+//! 1. **Submit** — the declaration is checked ([`EffectContract`], an
+//!    [`EffectRecovery`] that agrees with the [`Effect`]; a read is
+//!    refused), the occurrence label
+//!    `unit/v1/{resource_key}/{contract_id}/{label}` is fixed — the author's
+//!    [`OccurrenceLabel`], or `#` and the unit's six-digit submit ordinal
+//!    per resource and contract, so labels sort in program order — and an
+//!    in-flight ticket is taken. A closed owner refuses `Cancelled`.
+//! 2. **First poll** — the owner prepares the effect from the canonical
+//!    request and the optional [`IdempotencyKeyPart`] before anything is
+//!    booked, read or checked out: a recorded success replays its output
+//!    without a provider call; a recorded rejection, a digest-only success
+//!    ([`Recorded::DigestOnly`]) and an unknown outcome fail without one.
+//! 3. **Each attempt** — the previous attempt's call is explained when the
+//!    attempt starts; after the checkout and the credential reads, right
+//!    before the registration, the owner grants the attempt's call (the
+//!    only provider-call authority); a registration that refuses after the
+//!    grant is explained as not crossed.
+//! 4. **Settle** — the unit's last call is recorded from its result: a
+//!    success with its output, a definitive rejection with its kind
+//!    ([`ErrorKindCode`](owner::ErrorKindCode)), otherwise how the call
+//!    crossed (`NotSent` or a throttle: not crossed; `MaybeSent` or a
+//!    retryable failure after `Sent`: ambiguous). A record that fails after
+//!    a possible crossing fails the unit `OutcomeUnknown`.
+//!
+//! [`OpCx::operation_key`] and [`SessionCx::operation_key`] are the provider
+//! idempotency key ([`OperationKey`]) the owner recorded before the first
+//! attempt: the same for every attempt, retry and resume. A unit cancelled
+//! before its first grant leaves only its prepare behind, which a resumed
+//! unit runs again. The lease facade [`Managed`] has no owner. Interim: the
+//! engine does not hand out owned rows yet; its owner over the operation
+//! ledger comes with the engine wiring.
+//!
 //! # Interim defaults
 //!
 //! Where the design package leaves a value open, this module picks one and

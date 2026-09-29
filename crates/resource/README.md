@@ -745,6 +745,41 @@ current action-row surface does not turn a resource-local retry declaration
 into durable effect authority. A public ad-hoc accessor for actions and an SDK
 testing hook that builds rows are follow-ups too.
 
+#### Execution-owned effects (interim: engine wiring pending)
+
+The resource side of that protocol is in place; the engine does not hand
+out owned rows yet. `Manager::managed_row_any_owned` builds a row that
+carries the execution's `call::owner::UnitEffectOwner` — the port the engine
+implements over its operation ledger; this crate never writes effect state.
+On such a row reads run as usual, a plain `submit`/`session` of an
+`Idempotent` or `Write` unit is refused `Permanent` / `NotSent`, and effects
+go through:
+
+- `ManagedRow::submit_effect(op)` for an `EffectOperation` — an `Operation`
+  that also declares its `EffectContract` (id + canonicalization version),
+  an `EffectRecovery` that must agree with its effect (`Idempotent` ⇔
+  `StableKey { window }`, `Write` ⇔ `Opaque`), what is `Recorded` of a
+  success (the output by default, or a digest only), its canonical request,
+  and optionally the developer part of the provider idempotency key
+  (`IdempotencyKeyPart`, built deterministically from input or state — never
+  random, never a retry number) and a stable `OccurrenceLabel`;
+- `ManagedRow::session_effect(spec, contract, recovery, canonical_request,
+  key_part, body)` for a session.
+
+The unit's occurrence is `unit/v1/{resource_key}/{contract_id}/{label}`, the
+label being the author's or the unit's zero-padded submit ordinal per
+resource and contract (`#000003`). Its first poll asks the owner to prepare
+the effect before any quota, checkout or credential read: a recorded success
+replays its output with no provider call, a recorded rejection or digest and
+an unknown outcome fail without one. Every attempt's call is granted by the
+owner after the checkout and credential reads, and the unit's last call is
+settled (applied / rejected) or explained (not crossed / ambiguous) before
+the unit settles; a record that fails after a possible crossing makes the
+unit `OutcomeUnknown`. `OpCx::operation_key()` / `SessionCx::operation_key()`
+give the owner's provider idempotency key — identical for every attempt,
+retry and resume. On a library row `submit_effect` runs as `submit`, with no
+key. Nothing here is SDK-exported yet.
+
 ### Other public API
 
 - `ResourceGuard` — manager-owned topology entry; borrows `R::Instance` through `Deref`, queues release on Drop, or awaits that same queued job through `release()`. `closing()` / `is_closing()` expose its lease closing notice (above). No fabricated guards or detachable entries.

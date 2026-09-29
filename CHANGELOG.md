@@ -665,6 +665,28 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **Execution-owned managed-row effects (resource side; engine wiring
+  pending).** `nebula_resource::call` gains the author surface
+  `EffectOperation` (an `Operation` declaring an `EffectContract`, an
+  `EffectRecovery` that must agree with its effect — `Idempotent` with
+  `StableKey { window }`, `Write` with `Opaque` — what is `Recorded` of a
+  success, its canonical request, and optionally an `IdempotencyKeyPart` and
+  an `OccurrenceLabel`) and the owner-derived `OperationKey`, exposed by
+  `OpCx::operation_key` and `SessionCx::operation_key`. The public seam
+  `call::owner::UnitEffectOwner` (with `UnitIntent`, `UnitSlot`, `SlotPhase`,
+  `RecordedOutcome`, `UnitCall`, `Crossing`, `UnitOutcome`, `OwnerRefusal`,
+  `OwnerTicket`, `ErrorKindCode`) is what the engine will implement over the
+  operation ledger. `Manager::managed_row_any_owned` builds a row carrying an
+  owner: `ManagedRow::submit_effect` and `ManagedRow::session_effect` prepare
+  the effect under `unit/v1/{resource_key}/{contract_id}/{label}` before any
+  quota, checkout or credential read (a recorded success replays with no
+  provider call; a recorded rejection, a digest-only success or an unknown
+  outcome fail without one), have every attempt's call granted by the owner
+  after the checkout and reads, and record the unit's last call before it
+  settles; a plain `submit`/`session` of an effect on such a row is refused
+  `Permanent` / `NotSent`. On a library row `submit_effect` runs as `submit`.
+  An `OpError` of kind `OutcomeUnknown` now counts as an unknown outcome (span
+  field, `UnitOutcomeUnknown` event). Not SDK-exported yet.
 - **Actions reach managed rows.** A `#[derive(Action)]` `#[resource]` field
   may hold `ManagedRow<R>` or `Option<ManagedRow<R>>` (`Lazy<ManagedRow<R>>`
   is rejected: resolution checks nothing out); the factory resolves it

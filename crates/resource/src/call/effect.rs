@@ -291,6 +291,9 @@ impl OccurrenceLabel {
 ///     const EFFECT: Effect = Effect::Idempotent;
 ///
 ///     async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+///         // The provider's idempotency key: the same for every attempt,
+///         // retry and resume. Read it before an attempt borrows `cx`.
+///         let _key = cx.operation_key().copied();
 ///         let attempt = cx.attempt(Cost::ONE).await?;
 ///         attempt.settle(SentState::Sent);
 ///         Ok(self.cents)
@@ -446,7 +449,7 @@ mod tests {
     #[test]
     fn recovery_must_agree_with_the_effect() {
         let stable = EffectRecovery::StableKey {
-            window: Duration::from_secs(60),
+            window: Duration::from_mins(1),
         };
         assert!(stable.check(Effect::Idempotent).is_ok());
         assert!(EffectRecovery::Opaque.check(Effect::Write).is_ok());

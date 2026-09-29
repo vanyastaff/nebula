@@ -29,7 +29,7 @@ use super::{
     cost::{Cost, Effect, SentState},
     effect::OperationKey,
     error::OpError,
-    owned::{self, EffectDeclaration, EffectPlan, OutputCodec, OwnedEffect, Prepared},
+    owned::{self, EffectDeclaration, EffectPlan, OutputCodec, OwnedEffect, OwnedSubmit, Prepared},
     owner::{UnitEffectOwner, UnitSlot},
     pin::PinSlots,
     row::{CheckoutFit, RowShared},
@@ -450,7 +450,7 @@ impl UnitScope {
         key: &ResourceKey,
         effect: Effect,
         declaration: Option<EffectDeclaration<O, T>>,
-    ) -> Result<Option<(OwnedEffect, EffectPlan<O, T>)>, OpError> {
+    ) -> Result<Option<OwnedSubmit<O, T>>, OpError> {
         if let Some(detail) = self.refusal(effect, declaration.is_some()) {
             return Err(OpError::new(ErrorKind::Permanent, detail));
         }

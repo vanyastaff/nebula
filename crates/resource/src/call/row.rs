@@ -37,11 +37,16 @@
 //! 8. **Credential read R2** — only for a checkout that *created* its
 //!    instance on a strict row: the instance was built after R1, so a
 //!    join-next re-read decides; an idle hit is served by R1.
-//! 9. **Lock #2 and grant** — on a strict row, under `Manager.admission`:
-//!    taint, shutdown, R2 applied, suspension, the checkout's generation
-//!    and the unit's pin (`Rebinding` when a rotation superseded it). A row
-//!    that read nothing grants lock-free once the checkout's generation is
-//!    open.
+//! 9. **Owner grant** — only for a unit of an execution-owned effect
+//!    ([`ManagedRow::submit_effect`], [`ManagedRow::session_effect`]): the
+//!    row's owner grants the attempt's provider call, outside every lock.
+//!    Before step 1 such an attempt also explains its predecessor's call.
+//! 10. **Lock #2 and grant** — on a strict row, under `Manager.admission`:
+//!     taint, shutdown, R2 applied, suspension, the checkout's generation
+//!     and the unit's pin (`Rebinding` when a rotation superseded it). A row
+//!     that read nothing grants lock-free once the checkout's generation is
+//!     open. A refusal here after an owner grant is explained to the owner
+//!     as not crossed.
 //!
 //! Every refusal is `NotSent` and forfeits a booked cost; a refused
 //! checkout goes back to the pool untainted. A later attempt of the unit
@@ -214,7 +219,7 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
     /// | Owner says | Unit |
     /// |---|---|
     /// | recorded success | `Ok` with the recorded output; no provider call |
-    /// | recorded without output ([`Recorded::DigestOnly`](super::Recorded::DigestOnly)) | `Permanent`, `Sent`; no provider call |
+    /// | recorded without output ([`Recorded::DigestOnly`]) | `Permanent`, `Sent`; no provider call |
     /// | recorded rejection | the recorded kind, `Sent`, not retryable; no provider call |
     /// | outcome unknown | `OutcomeUnknown`, `MaybeSent`; no provider call |
     /// | a different effect under the label | `Permanent`, `NotSent` |
