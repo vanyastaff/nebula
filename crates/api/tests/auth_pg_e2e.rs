@@ -1,8 +1,9 @@
 //! `PgAuthBackend` end-to-end lifecycle.
 //!
-//! Gated on `DATABASE_URL`: when the env var is absent the test no-ops
-//! cleanly (same posture as every `crates/storage/src/pg/*::tests`
-//! suite). When set, the test drives a complete identity lifecycle
+//! PostgreSQL evidence binary: every test needs a live database and fails loudly
+//! without `DATABASE_URL`, so a green run always means the lifecycle ran. It is
+//! excluded from the default nextest profile and collected by the CI
+//! `postgres-conformance` job. Each test drives a complete identity lifecycle
 //! through the production [`PgAuthBackend`] against a real Postgres:
 //!
 //! 1. `register_user` → durable user + verification email queued on a
@@ -79,15 +80,12 @@ fn identity_secret_codec() -> Arc<IdentitySecretCodec> {
 static SPEC16_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../storage/migrations/postgres");
 static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
-/// Connect to `DATABASE_URL`, apply the spec-16 migrations once per
-/// test process, or return `None` to skip. Mirrors the
-/// `crates/storage/src/pg/*::tests::pool` convention exactly.
-async fn pool() -> Option<Pool<Postgres>> {
-    let url = match std::env::var("DATABASE_URL") {
-        Ok(url) => url,
-        Err(std::env::VarError::NotPresent) => return None,
-        Err(err) => panic!("DATABASE_URL is set but invalid: {err}"),
-    };
+/// Connect to `DATABASE_URL` and apply the spec-16 migrations once per test
+/// process. A missing or invalid URL is a loud failure, never a silent skip.
+async fn pool() -> Pool<Postgres> {
+    let url = std::env::var("DATABASE_URL").unwrap_or_else(|err| {
+        panic!("auth_pg_e2e needs a live PostgreSQL: DATABASE_URL is unset or invalid: {err}")
+    });
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&url)
@@ -101,7 +99,7 @@ async fn pool() -> Option<Pool<Postgres>> {
                 .expect("spec-16 postgres migrations");
         })
         .await;
-    Some(pool)
+    pool
 }
 
 /// Generate a unique-per-run email so re-runs against a persistent
@@ -169,7 +167,7 @@ fn different_totp_code(code: &str) -> String {
 
 #[tokio::test]
 async fn pg_auth_backend_full_lifecycle() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, sink) = build_backend(pool);
     let email = unique_email("lifecycle");
 
@@ -471,7 +469,7 @@ async fn pg_auth_backend_full_lifecycle() {
 
 #[tokio::test]
 async fn pg_mfa_reenrollment_preserves_active_factor_and_is_single_use() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, _) = build_backend(pool);
     let email = unique_email("mfa-reenrollment");
     let profile = backend
@@ -548,7 +546,7 @@ async fn pg_mfa_reenrollment_preserves_active_factor_and_is_single_use() {
 
 #[tokio::test]
 async fn pg_concurrent_mfa_confirmation_has_exactly_one_winner() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, _) = build_backend(pool);
     let email = unique_email("mfa-confirm-concurrent");
     let profile = backend
@@ -589,7 +587,7 @@ async fn pg_concurrent_mfa_confirmation_has_exactly_one_winner() {
 
 #[tokio::test]
 async fn pg_auth_backend_session_round_trip() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, _sink) = build_backend(pool);
     let email = unique_email("session");
 
@@ -639,7 +637,7 @@ async fn pg_auth_backend_session_round_trip() {
 
 #[tokio::test]
 async fn pg_auth_backend_duplicate_signup_is_email_already_registered() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, _sink) = build_backend(pool);
     let email = unique_email("dup");
 
@@ -660,7 +658,7 @@ async fn pg_auth_backend_duplicate_signup_is_email_already_registered() {
 /// for the legitimate `complete_password_reset` follow-up.
 #[tokio::test]
 async fn pg_auth_backend_verify_mfa_does_not_burn_password_reset_token() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, sink) = build_backend(pool);
     let email = unique_email("kind-guard");
 
@@ -710,7 +708,7 @@ async fn pg_auth_backend_verify_mfa_does_not_burn_password_reset_token() {
 /// for the legitimate callback at the right provider.
 #[tokio::test]
 async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, _sink) = build_backend(pool);
 
     let start = backend
@@ -870,7 +868,7 @@ async fn expire_lockout(pool: &Pool<Postgres>, user_id: &str) {
 /// observes the armed lock and short-circuits to `AccountLocked`.
 #[tokio::test]
 async fn pg_auth_backend_locks_after_threshold_failures() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, sink) = build_backend(pool.clone());
     let email = unique_email("lockout");
     let profile = verified_user(&backend, &sink, &email).await;
@@ -941,7 +939,7 @@ async fn pg_auth_backend_locks_after_threshold_failures() {
 /// counter and `locked_until`.
 #[tokio::test]
 async fn pg_auth_backend_lockout_window_expiry_allows_login() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, sink) = build_backend(pool.clone());
     let email = unique_email("lockout-expire");
     let profile = verified_user(&backend, &sink, &email).await;
@@ -995,7 +993,7 @@ async fn pg_auth_backend_lockout_window_expiry_allows_login() {
 /// and proves the threshold check is `>=` not `>`.
 #[tokio::test]
 async fn pg_auth_backend_success_clears_subthreshold_failures() {
-    let Some(pool) = pool().await else { return };
+    let pool = pool().await;
     let (backend, sink) = build_backend(pool.clone());
     let email = unique_email("lockout-clears");
     let profile = verified_user(&backend, &sink, &email).await;
