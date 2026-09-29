@@ -1,30 +1,59 @@
 //! `ExecutionCommandService`: the §12.2 control contract, once, for every surface.
 //!
-//! Runs over the in-memory port adapters. The SQLite/PostgreSQL adapters share the
-//! same `ExecutionStore` / `ControlQueue` contracts (asserted by the storage
-//! conformance matrix), so the service holds no backend-specific logic.
+//! Every case runs against the in-memory and the SQLite port adapters. The
+//! PostgreSQL adapter shares the same `ExecutionStore` / `ControlQueue` contracts
+//! (asserted by the storage conformance matrix); it is not exercised here because
+//! this binary must run without a database.
 
 use std::sync::Arc;
 
 use nebula_core::ExecutionId;
 use nebula_engine::{ExecutionCommandError, ExecutionCommandService};
-use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore};
-use nebula_storage_port::{Scope, dto::ControlCommand, store::ExecutionStore};
+use nebula_metrics::{
+    MetricsRegistry,
+    naming::{NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL, execution_command_outcome as outcome},
+};
+use nebula_storage_port::{
+    Scope,
+    dto::ControlCommand,
+    store::{ControlQueue, ExecutionStore},
+};
 use serde_json::json;
 
 struct Fixture {
     service: ExecutionCommandService,
-    store: Arc<InMemoryExecutionStore>,
-    queue: Arc<InMemoryControlQueue>,
+    store: Arc<dyn ExecutionStore>,
+    queue: Arc<dyn ControlQueue>,
     scope: Scope,
 }
 
 impl Fixture {
-    fn new() -> Self {
-        let store = Arc::new(InMemoryExecutionStore::new());
-        let queue = Arc::new(InMemoryControlQueue::new(&store));
+    fn in_memory() -> Self {
+        let store = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+        let queue = Arc::new(nebula_storage::InMemoryControlQueue::new(&store));
+        Self::compose(store, queue)
+    }
+
+    async fn sqlite() -> Self {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory SQLite opens");
+        nebula_storage::sqlite::init_schema(&pool)
+            .await
+            .expect("port schema installs");
+        Self::compose(
+            Arc::new(nebula_storage::sqlite::SqliteExecutionStore::new(
+                pool.clone(),
+            )),
+            Arc::new(nebula_storage::sqlite::SqliteControlQueue::new(pool)),
+        )
+    }
+
+    fn compose(store: Arc<dyn ExecutionStore>, queue: Arc<dyn ControlQueue>) -> Self {
         Self {
-            service: ExecutionCommandService::new(store.clone(), queue.clone()),
+            service: ExecutionCommandService::new(Arc::clone(&store), Arc::clone(&queue)),
             store,
             queue,
             scope: Scope::new("ws_a", "org_a"),
@@ -45,18 +74,38 @@ impl Fixture {
         id
     }
 
-    fn commands(&self) -> Vec<ControlCommand> {
+    /// Every command durably enqueued so far, read back through the port.
+    async fn commands(&self) -> Vec<ControlCommand> {
         self.queue
-            .snapshot()
+            .claim_pending(&[7; 16], 100)
+            .await
+            .expect("queue is readable")
             .into_iter()
-            .map(|(msg, _)| msg.command)
+            .map(|claim| claim.msg.command)
             .collect()
     }
 }
 
-#[tokio::test]
-async fn cancel_running_enqueues_exactly_one_cancel_and_writes_nothing() {
-    let f = Fixture::new();
+/// Run one case body against both adapters as two named tests.
+macro_rules! both_backends {
+    ($name:ident, $body:ident) => {
+        mod $name {
+            use super::*;
+
+            #[tokio::test]
+            async fn in_memory() {
+                $body(Fixture::in_memory()).await;
+            }
+
+            #[tokio::test]
+            async fn sqlite() {
+                $body(Fixture::sqlite().await).await;
+            }
+        }
+    };
+}
+
+async fn cancel_running_enqueues_one_cancel_and_writes_nothing(f: Fixture) {
     let id = f.execution("running").await;
     let receipt = f
         .service
@@ -65,7 +114,7 @@ async fn cancel_running_enqueues_exactly_one_cancel_and_writes_nothing() {
         .expect("accepted");
     assert!(receipt.enqueued);
     assert_eq!(receipt.execution_state["status"], "running");
-    assert_eq!(f.commands(), vec![ControlCommand::Cancel]);
+    assert_eq!(f.commands().await, vec![ControlCommand::Cancel]);
     let stored = f
         .store
         .get(&f.scope, &id.to_string())
@@ -77,10 +126,12 @@ async fn cancel_running_enqueues_exactly_one_cancel_and_writes_nothing() {
         "the service never writes"
     );
 }
+both_backends!(
+    cancel_running_enqueues_exactly_one_cancel_and_writes_nothing,
+    cancel_running_enqueues_one_cancel_and_writes_nothing
+);
 
-#[tokio::test]
-async fn duplicate_cancel_on_cancelling_enqueues_nothing() {
-    let f = Fixture::new();
+async fn duplicate_cancel_on_cancelling_enqueues_nothing(f: Fixture) {
     let id = f.execution("cancelling").await;
     let receipt = f
         .service
@@ -89,12 +140,14 @@ async fn duplicate_cancel_on_cancelling_enqueues_nothing() {
         .expect("accepted");
     assert!(!receipt.enqueued);
     assert_eq!(receipt.execution_state["status"], "cancelling");
-    assert!(f.commands().is_empty());
+    assert!(f.commands().await.is_empty());
 }
+both_backends!(
+    duplicate_cancel_on_cancelling_enqueues_nothing_case,
+    duplicate_cancel_on_cancelling_enqueues_nothing
+);
 
-#[tokio::test]
-async fn terminal_state_is_refused_for_both_commands() {
-    let f = Fixture::new();
+async fn terminal_state_is_refused_for_both_commands(f: Fixture) {
     for status in ["completed", "failed", "cancelled", "timed_out"] {
         let id = f.execution(status).await;
         let cancel = f.service.cancel(&f.scope, id, None).await;
@@ -114,12 +167,14 @@ async fn terminal_state_is_refused_for_both_commands() {
             "{status}: {terminate:?}"
         );
     }
-    assert!(f.commands().is_empty());
+    assert!(f.commands().await.is_empty());
 }
+both_backends!(
+    terminal_state_is_refused_for_both_commands_case,
+    terminal_state_is_refused_for_both_commands
+);
 
-#[tokio::test]
-async fn unknown_and_foreign_tenant_executions_are_not_found() {
-    let f = Fixture::new();
+async fn unknown_and_foreign_tenant_executions_are_not_found(f: Fixture) {
     let missing = f.service.cancel(&f.scope, ExecutionId::new(), None).await;
     assert!(matches!(missing, Err(ExecutionCommandError::NotFound(_))));
 
@@ -127,12 +182,14 @@ async fn unknown_and_foreign_tenant_executions_are_not_found() {
     let other = Scope::new("ws_b", "org_b");
     let foreign = f.service.cancel(&other, id, None).await;
     assert!(matches!(foreign, Err(ExecutionCommandError::NotFound(_))));
-    assert!(f.commands().is_empty());
+    assert!(f.commands().await.is_empty());
 }
+both_backends!(
+    unknown_and_foreign_tenant_executions_are_not_found_case,
+    unknown_and_foreign_tenant_executions_are_not_found
+);
 
-#[tokio::test]
-async fn terminate_enqueues_terminate_even_when_cancelling() {
-    let f = Fixture::new();
+async fn terminate_enqueues_terminate_even_when_cancelling(f: Fixture) {
     let id = f.execution("cancelling").await;
     let receipt = f
         .service
@@ -140,16 +197,14 @@ async fn terminate_enqueues_terminate_even_when_cancelling() {
         .await
         .expect("accepted");
     assert!(receipt.enqueued);
-    assert_eq!(f.commands(), vec![ControlCommand::Terminate]);
+    assert_eq!(f.commands().await, vec![ControlCommand::Terminate]);
 }
+both_backends!(
+    terminate_enqueues_terminate_even_when_cancelling_case,
+    terminate_enqueues_terminate_even_when_cancelling
+);
 
-#[tokio::test]
-async fn every_outcome_is_counted_by_command_and_outcome() {
-    use nebula_metrics::{
-        MetricsRegistry,
-        naming::{NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL, execution_command_outcome as outcome},
-    };
-    let f = Fixture::new();
+async fn every_outcome_is_counted_by_command_and_outcome(f: Fixture) {
     let metrics = MetricsRegistry::new();
     let service = f.service.clone().with_metrics(metrics.clone());
     let running = f.execution("running").await;
@@ -179,3 +234,7 @@ async fn every_outcome_is_counted_by_command_and_outcome() {
     assert_eq!(count("terminate", outcome::NOT_FOUND), 1);
     assert_eq!(count("terminate", outcome::ENQUEUED), 0);
 }
+both_backends!(
+    every_outcome_is_counted_by_command_and_outcome_case,
+    every_outcome_is_counted_by_command_and_outcome
+);
