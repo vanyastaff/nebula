@@ -22,7 +22,6 @@ nebula-storage-port = { path = "../storage-port" }
 # multi-tenancy security boundary). Allowlisted in `deny.toml` `[wrappers]`.
 nebula-tenancy = { path = "../tenancy" }
 nebula-core = { path = "../core" }
-nebula-execution = { path = "../execution" }
 nebula-validator = { path = "../validator" }
 nebula-metrics = { path = "../metrics" }
 nebula-workflow = { path = "../workflow" }
@@ -126,6 +125,7 @@ utoipa-axum = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 
 [dev-dependencies]
+nebula-execution = { path = "../execution" }
 nebula-api = { path = ".", features = ["test-util"] }
 nebula-plugin = { path = "../plugin", features = ["test-util"] }
 semver = { workspace = true }

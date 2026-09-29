@@ -18,9 +18,9 @@ use nebula_storage_port::store::{
     WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_tenancy::{
-    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-    ScopedExecutionTurnHandoff, ScopedNodeResultStore, ScopedStartAcceptanceStore,
-    ScopedWorkflowStore, ScopedWorkflowVersionStore,
+    ScopedExecutionJournalReader, ScopedExecutionStore, ScopedExecutionTurnHandoff,
+    ScopedNodeResultStore, ScopedStartAcceptanceStore, ScopedWorkflowStore,
+    ScopedWorkflowVersionStore,
 };
 use tokio::sync::RwLock;
 
@@ -981,54 +981,16 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to {context} execution: {e}")))
     }
 
-    /// Enqueue a control command onto the durable outbox for the
-    /// caller's tenant. The control message is enqueued through a freshly
-    /// bound `ScopedControlQueue`, so the row is stamped with that tenant
-    /// scope (a forged `scope` field on the message is rebound to the
-    /// bound tenant). The integration seam-step-6 503-vs-500 error policy is
-    /// centralized here.
-    pub(crate) async fn enqueue_control_scoped(
-        &self,
-        scope: &Scope,
-        command: nebula_storage_port::dto::ControlCommand,
-        execution_id: ExecutionId,
-        w3c: Option<nebula_core::W3cTraceContext>,
-    ) -> Result<(), ApiError> {
-        // integration seam step 6: a backend that is intentionally absent or
-        // unreachable (`Internal`/`Connection`) is a 503 (infra down,
-        // not a logic bug); any other write failure is a 500.
-        let to_api_err = |is_unavailable: bool, detail: String| {
-            if is_unavailable {
-                ApiError::ServiceUnavailable(format!(
-                    "Execution {execution_id} persisted but control-queue backend is \
-                     unavailable — orchestration absent (integration seam step 6, \
-                     durable control queue orphan): {detail}"
-                ))
-            } else {
-                ApiError::Internal(format!(
-                    "Execution {execution_id} persisted but failed to enqueue control \
-                     signal (durable control queue orphan — caller should retry): {detail}"
-                ))
-            }
-        };
-
-        let queue = ScopedControlQueue::new(Arc::clone(&self.control_queue), scope.clone());
-        let msg = nebula_storage_port::dto::ControlMsg {
-            id: *uuid::Uuid::new_v4().as_bytes(),
-            execution_id: execution_id.to_string(),
-            command,
-            scope: scope.clone(),
-            w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
-            reclaim_count: 0,
-            // The targeted `/resume` producer builds its own `ControlMsg` via
-            // `ResumeProducer::consume_and_enqueue_resume` instead.
-            resume_target: None,
-        };
-        queue.enqueue(&msg).await.map_err(|e| {
-            use nebula_storage_port::StorageError;
-            let unavailable = matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
-            to_api_err(unavailable, e.to_string())
-        })
+    /// The shared execution control-command service over this state's stores.
+    pub(crate) fn execution_commands(&self) -> nebula_engine::ExecutionCommandService {
+        let service = nebula_engine::ExecutionCommandService::new(
+            Arc::clone(&self.execution_store),
+            Arc::clone(&self.control_queue),
+        );
+        match &self.metrics_registry {
+            Some(registry) => service.with_metrics((**registry).clone()),
+            None => service,
+        }
     }
 
     /// Load all persisted per-node *outputs* for an execution within the
