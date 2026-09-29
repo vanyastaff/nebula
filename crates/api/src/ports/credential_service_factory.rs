@@ -264,6 +264,32 @@ pub async fn with_memory_store_parts(
     compose_credential_service(store, claims, key_provider, registry, ops, None)
 }
 
+/// Like [`with_memory_store_parts`], but the refresh-claim store is
+/// **caller-supplied** instead of derived from the SQLite store, so a test can
+/// hold the same claim handle the service's coordinator reads — to observe or
+/// poison claims, or to hand the object to the reconciliation controller as its
+/// adjudicator — without hand-composing the secure stack.
+///
+/// Gated by `cfg(test)` / the `test-util` feature and not enabled by the
+/// first-party release composition; unsupported for production (ADR-0023).
+///
+/// # Errors
+///
+/// Returns [`CredentialServiceFactoryError`] if the in-memory store cannot be
+/// opened/migrated or the final service build fails (capability/ops mismatch).
+#[cfg(any(test, feature = "test-util"))]
+pub async fn with_memory_store_and_claims(
+    key_provider: Arc<dyn KeyProvider>,
+    registry: CredentialRegistry,
+    ops: DispatchOps<ErasedPendingStore>,
+    claims: Arc<dyn RefreshClaimStore>,
+) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
+    let store = SqliteCredentialPersistence::connect_memory()
+        .await
+        .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
+    compose_credential_service(store, claims, key_provider, registry, ops, None)
+}
+
 /// Build a [`CredentialService`] over an in-memory store but with an **external
 /// `StateSource`** backed by `provider`, whose resolution bridge (ADR-0051) is
 /// not yet wired — every resolution path then fails closed with
