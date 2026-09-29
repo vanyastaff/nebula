@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use nebula_storage_port::dto::{
-    EffectOccurrenceKey, EffectSlotBinding, EffectSlotId, FrozenOutcomeEvidence, OperationAdvance,
-    OperationCommand, OperationLedgerError, OperationRecord, PrepareOutcome,
+    EffectOccurrenceKey, EffectOccurrenceRecord, EffectSlotBinding, EffectSlotId,
+    FrozenOutcomeEvidence, OperationAdvance, OperationCommand, OperationLedgerError,
+    OperationRecord, PrepareOutcome,
 };
 use nebula_storage_port::store::{OperationLedger, OperationLedgerAdjudicator};
 use nebula_storage_port::{FencingToken, Scope};
@@ -49,6 +50,17 @@ impl OperationLedger for ScopedOperationLedger {
             key.occurrence(),
         );
         self.inner.read_occurrence(&scoped_key).await
+    }
+
+    async fn read_occurrences(
+        &self,
+        _scope: &Scope,
+        execution_id: &str,
+        node_key: &str,
+    ) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+        self.inner
+            .read_occurrences(&self.bound, execution_id, node_key)
+            .await
     }
 
     async fn prepare(

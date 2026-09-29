@@ -497,6 +497,44 @@ impl OperationRecord {
     }
 }
 
+/// One slot of a node, as listed by
+/// [`OperationLedger::read_occurrences`](crate::store::OperationLedger::read_occurrences).
+///
+/// Carries the occurrence label beside the record because the record alone
+/// does not say which intended effect of the node it belongs to — and an owner
+/// draining a node must match every durable slot to the effect it describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectOccurrenceRecord {
+    occurrence: String,
+    record: OperationRecord,
+}
+
+impl EffectOccurrenceRecord {
+    /// Pair a durable record with the occurrence label of its natural key.
+    #[must_use]
+    pub const fn new(occurrence: String, record: OperationRecord) -> Self {
+        Self { occurrence, record }
+    }
+
+    /// Occurrence label of the slot's natural key.
+    #[must_use]
+    pub fn occurrence(&self) -> &str {
+        &self.occurrence
+    }
+
+    /// Durable record of the slot.
+    #[must_use]
+    pub const fn record(&self) -> &OperationRecord {
+        &self.record
+    }
+
+    /// Take the durable record, dropping the label.
+    #[must_use]
+    pub fn into_record(self) -> OperationRecord {
+        self.record
+    }
+}
+
 /// A known provider answer being committed against a prepared operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]

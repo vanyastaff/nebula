@@ -16,15 +16,15 @@
 use nebula_core::{OperationCallId, OperationId};
 use nebula_storage_port::store::{OperationLedger, OperationLedgerAdjudicator};
 use nebula_storage_port::{
-    AttemptGeneration, DestinationCapability, EffectOccurrenceKey, EffectSlotBinding, EffectSlotId,
-    FencingToken, OperationLedgerError, OperationRecord, OperationState, PrepareOutcome,
-    RequestFingerprint, Scope,
+    AttemptGeneration, DestinationCapability, EffectOccurrenceKey, EffectOccurrenceRecord,
+    EffectSlotBinding, EffectSlotId, FencingToken, OperationLedgerError, OperationRecord,
+    OperationState, PrepareOutcome, RequestFingerprint, Scope,
 };
 use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 
 use crate::operation_ledger::{
-    compose_record, decide_prepare, prepare_label, read_label, state_from_text, state_text,
-    write_label,
+    attach_protocol_payload, compose_record, decide_prepare, prepare_label, read_label,
+    state_from_text, state_text, write_label,
 };
 
 /// SQLite-backed durable operation ledger.
@@ -177,14 +177,55 @@ async fn attach_protocol(
     let payload: Option<String> = sqlx::query_scalar("SELECT payload FROM port_operation_protocol WHERE slot_id = ? AND workspace_id = ? AND org_id = ?")
         .bind(record.operation().slot_id().as_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id)
         .fetch_optional(&mut **tx).await.map_err(driver_did_not_commit)?;
-    match crate::operation_ledger::decode_protocol(payload.as_deref())? {
-        Some(protocol) => {
-            let record = record.with_protocol(protocol);
-            crate::operation_ledger::validate_record(&record)?;
-            Ok(record)
-        },
-        None => Ok(record),
-    }
+    attach_protocol_payload(record, payload.as_deref())
+}
+
+/// List every slot of one node in one statement, in the port's order.
+///
+/// SQLite's default `BINARY` collation makes the same-millisecond tiebreak
+/// byte order, matching every other backend.
+async fn load_node_occurrences(
+    tx: &mut Transaction<'_, Sqlite>,
+    scope: &Scope,
+    execution_id: &str,
+    node_key: &str,
+) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+    let rows = sqlx::query(
+        "SELECT l.slot_id, l.operation_id, l.attempt_generation, l.destination, \
+                l.fingerprint_version, l.fingerprint, l.state, l.occurrence, \
+                p.payload AS protocol_payload \
+         FROM port_operation_ledger l \
+         LEFT JOIN port_operation_protocol p \
+           ON p.slot_id = l.slot_id AND p.workspace_id = l.workspace_id \
+          AND p.org_id = l.org_id \
+         WHERE l.workspace_id = ? AND l.org_id = ? AND l.execution_id = ? \
+           AND l.node_key = ? \
+         ORDER BY l.prepared_at_ms, l.occurrence",
+    )
+    .bind(&scope.workspace_id)
+    .bind(&scope.org_id)
+    .bind(execution_id)
+    .bind(node_key)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(driver_did_not_commit)?;
+
+    rows.iter()
+        .map(|row| {
+            let record = decode_row(row)?;
+            let slot_id = record.operation().slot_id();
+            let occurrence: String = row
+                .try_get("occurrence")
+                .map_err(|_| OperationLedgerError::CorruptRecord { slot_id })?;
+            let payload = row
+                .try_get::<Option<String>, _>("protocol_payload")
+                .map_err(driver_did_not_commit)?;
+            Ok(EffectOccurrenceRecord::new(
+                occurrence,
+                attach_protocol_payload(record, payload.as_deref())?,
+            ))
+        })
+        .collect()
 }
 
 async fn insert_protocol(
@@ -284,6 +325,30 @@ impl OperationLedger for SqliteOperationLedger {
         }
         .await;
         let outcome = crate::operation_ledger::occurrence_read_label(&result);
+        tracing::Span::current().record("outcome", outcome);
+        result
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, name = "operation_ledger.read_occurrences", fields(backend = "sqlite", slots = tracing::field::Empty, outcome = tracing::field::Empty))]
+    async fn read_occurrences(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+        node_key: &str,
+    ) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+        let result = async {
+            // A read decides nothing it then writes, so it does not take the
+            // write lock.
+            let mut tx = self.pool.begin().await.map_err(driver_did_not_commit)?;
+            let listed = load_node_occurrences(&mut tx, scope, execution_id, node_key).await;
+            drop(tx.commit().await);
+            listed
+        }
+        .await;
+        if let Ok(listed) = &result {
+            tracing::Span::current().record("slots", listed.len());
+        }
+        let outcome = crate::operation_ledger::occurrences_read_label(&result);
         tracing::Span::current().record("outcome", outcome);
         result
     }

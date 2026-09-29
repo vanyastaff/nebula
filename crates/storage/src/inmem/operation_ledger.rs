@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use nebula_core::{OperationCallId, OperationId};
 use nebula_storage_port::store::{OperationLedger, OperationLedgerAdjudicator};
 use nebula_storage_port::{
-    EffectOccurrenceKey, EffectSlotBinding, EffectSlotId, FencingToken, OperationLedgerError,
-    OperationRecord, OperationState, PrepareOutcome, Scope,
+    EffectOccurrenceKey, EffectOccurrenceRecord, EffectSlotBinding, EffectSlotId, FencingToken,
+    OperationLedgerError, OperationRecord, OperationState, PrepareOutcome, Scope,
 };
 
 use crate::operation_ledger::{
@@ -147,6 +147,58 @@ impl OperationLedger for InMemoryOperationLedger {
                 .transpose()
         });
         let outcome = crate::operation_ledger::occurrence_read_label(&result);
+        tracing::Span::current().record("outcome", outcome);
+        result
+    }
+
+    #[tracing::instrument(level = "debug", skip_all, name = "operation_ledger.read_occurrences", fields(backend = "in_memory", slots = tracing::field::Empty, outcome = tracing::field::Empty))]
+    async fn read_occurrences(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+        node_key: &str,
+    ) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+        let result = (|| -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+            let state = self.execution.inner.lock();
+            let mut listed = state
+                .operation_ledger
+                .by_key
+                .iter()
+                .filter(|(key, _)| {
+                    key.workspace_id == scope.workspace_id
+                        && key.org_id == scope.org_id
+                        && key.execution_id == execution_id
+                        && key.node_key == node_key
+                })
+                .map(|(key, slot)| {
+                    let row = state
+                        .operation_ledger
+                        .rows
+                        .get(slot)
+                        .ok_or(OperationLedgerError::CorruptRecord { slot_id: *slot })?;
+                    let prepared_at_ms = row
+                        .record
+                        .protocol()
+                        .ok_or(OperationLedgerError::CorruptRecord { slot_id: *slot })?
+                        .prepared_at_ms();
+                    Ok((
+                        prepared_at_ms,
+                        EffectOccurrenceRecord::new(key.occurrence.clone(), row.record.clone()),
+                    ))
+                })
+                .collect::<Result<Vec<_>, OperationLedgerError>>()?;
+            // The SQL backends' order: preparation time, then label bytes.
+            listed.sort_by(|(left_at, left), (right_at, right)| {
+                left_at
+                    .cmp(right_at)
+                    .then_with(|| left.occurrence().cmp(right.occurrence()))
+            });
+            Ok(listed.into_iter().map(|(_, listed)| listed).collect())
+        })();
+        if let Ok(listed) = &result {
+            tracing::Span::current().record("slots", listed.len());
+        }
+        let outcome = crate::operation_ledger::occurrences_read_label(&result);
         tracing::Span::current().record("outcome", outcome);
         result
     }

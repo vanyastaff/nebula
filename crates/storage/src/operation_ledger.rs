@@ -13,9 +13,9 @@ use nebula_storage_port::dto::{
     OperationProtocolRecord, OutcomeEvidenceSource,
 };
 use nebula_storage_port::{
-    AttemptGeneration, DestinationCapability, EffectSlotBinding, EffectSlotId, KnownOutcome,
-    OperationLedgerError, OperationRecord, OperationState, PrepareOutcome, PreparedOperation,
-    RequestFingerprint,
+    AttemptGeneration, DestinationCapability, EffectOccurrenceRecord, EffectSlotBinding,
+    EffectSlotId, KnownOutcome, OperationLedgerError, OperationRecord, OperationState,
+    PrepareOutcome, PreparedOperation, RequestFingerprint,
 };
 
 /// Durable text of each operation state.
@@ -575,6 +575,24 @@ pub(crate) fn decode_protocol(
         .transpose()
 }
 
+/// Attach a protocol payload read in the same snapshot as its ledger row.
+///
+/// A row without a payload is a legacy row and keeps its absence.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn attach_protocol_payload(
+    record: OperationRecord,
+    payload: Option<&str>,
+) -> Result<OperationRecord, OperationLedgerError> {
+    match decode_protocol(payload)? {
+        Some(protocol) => {
+            let record = record.with_protocol(protocol);
+            validate_record(&record)?;
+            Ok(record)
+        },
+        None => Ok(record),
+    }
+}
+
 /// Called under the execution owner's lock using its authoritative clock.
 pub(crate) fn require_live_lease(
     fencing: nebula_storage_port::FencingToken,
@@ -676,6 +694,16 @@ pub(crate) const fn occurrence_read_label(
     match result {
         Ok(Some(_)) => "read",
         Ok(None) => "absent",
+        Err(error) => error_label(error),
+    }
+}
+
+/// Stable outcome label for one node listing.
+pub(crate) const fn occurrences_read_label(
+    result: &Result<Vec<EffectOccurrenceRecord>, OperationLedgerError>,
+) -> &'static str {
+    match result {
+        Ok(_) => "read",
         Err(error) => error_label(error),
     }
 }

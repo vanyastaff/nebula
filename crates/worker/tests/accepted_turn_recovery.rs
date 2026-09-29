@@ -6,8 +6,9 @@ mod support;
 use nebula_storage_port::{
     FencingToken, Scope, StorageError,
     dto::{
-        EffectOccurrenceKey, EffectPhase, EffectSlotBinding, EffectSlotId, InvocationDisposition,
-        OperationAdvance, OperationCommand, OperationLedgerError, OperationRecord, PrepareOutcome,
+        EffectOccurrenceKey, EffectOccurrenceRecord, EffectPhase, EffectSlotBinding, EffectSlotId,
+        InvocationDisposition, OperationAdvance, OperationCommand, OperationLedgerError,
+        OperationRecord, PrepareOutcome,
     },
     store::{
         ControlStartAcceptance, ControlStartHandoff, ExecutionTurnHandoff, OperationLedger,
@@ -46,6 +47,17 @@ impl OperationLedger for PauseAfterBeforeBoundary {
         key: &EffectOccurrenceKey<'_>,
     ) -> Result<Option<OperationRecord>, OperationLedgerError> {
         self.owner.read_occurrence(key).await
+    }
+
+    async fn read_occurrences(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+        node_key: &str,
+    ) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
+        self.owner
+            .read_occurrences(scope, execution_id, node_key)
+            .await
     }
 
     async fn prepare(
