@@ -1,13 +1,17 @@
-//! `plugin.toml` parsing per
+//! `plugin.toml` marker parsing.
 //!
-//! The `plugin.toml` file sits next to a plugin binary and declares two things:
+//! Plugins are registered **in-process** (ADR-0091): there is no plugin binary to
+//! spawn and no wire protocol to speak. The `plugin.toml` file that sits next to a
+//! plugin crate is a small trust-and-compatibility marker read **without compiling
+//! the plugin**, so pre-compile tooling can reject an incompatible or mis-identified
+//! plugin cheaply. It declares two things:
 //! 1. `[nebula].sdk` — semver `VersionReq` the plugin was built against.
-//! 2. `[plugin].id` — optional canonical plugin-id **guard**: when present, discovery rejects the
-//!    plugin if the wire manifest's key does not match this id. Both sources must agree.
+//! 2. `[plugin].id` — optional canonical plugin-id **guard**: when present, tooling
+//!    rejects the plugin if its [`PluginManifest`](crate::PluginManifest) key does not
+//!    match this id. Both sources must agree.
 //!
-//! The host reads this file **before** spawning the plugin binary so that
-//! SDK-incompatible plugins are skipped cheaply — without spending a process
-//! spawn + IPC round-trip on a plugin that can't speak the host's wire protocol.
+//! Parsing is not signing, authentication, or capability enforcement (canon §12.6).
+//! The runtime source of truth for what a plugin registers remains `impl Plugin`.
 
 use std::path::{Path, PathBuf};
 
@@ -19,11 +23,11 @@ use serde::Deserialize;
 pub struct PluginTomlManifest {
     /// The `[nebula].sdk` semver version requirement.
     pub sdk: VersionReq,
-    /// Optional canonical plugin id **guard**. When present, discovery rejects
-    /// the plugin if the wire manifest's key does not match this id — both
+    /// Optional canonical plugin id **guard**. When present, tooling rejects
+    /// the plugin if its `PluginManifest` key does not match this id — both
     /// sources must agree. This is a pre-compile-time pin for the plugin's
     /// identity; use it to prevent drift between the crate's Cargo package
-    /// name and the runtime-announced manifest key.
+    /// name and the manifest key the plugin registers.
     pub plugin_id: Option<String>,
 }
 
