@@ -203,6 +203,7 @@
 //! [`ResourceEvent::UnitOutcomeUnknown`](crate::ResourceEvent::UnitOutcomeUnknown).
 
 mod cost;
+mod effect;
 mod error;
 mod managed;
 mod pin;
@@ -214,6 +215,10 @@ mod strict;
 use std::{future::Future, num::NonZeroU32};
 
 pub use cost::{Cost, Effect, SentState};
+pub use effect::{
+    EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, OccurrenceLabel,
+    OperationKey, Recorded,
+};
 pub use error::OpError;
 pub(crate) use managed::UnitScope;
 pub use managed::{Attempt, Managed, OpCx, UNIT_DEADLINE_CAP, Unit};
