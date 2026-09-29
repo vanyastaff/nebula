@@ -32,6 +32,7 @@ nebula-eventbus = { path = "../eventbus" }
 nebula-resource = { path = "../resource" }
 nebula-resilience = { path = "../resilience" }
 nebula-storage-port = { path = "../storage-port" }
+nebula-tenancy = { path = "../tenancy" }
 nebula-metrics = { path = "../metrics" }
 nebula-orchestrator = { path = "../orchestrator" }
 

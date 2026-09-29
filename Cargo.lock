@@ -3243,6 +3243,7 @@ dependencies = [
  "nebula-schema",
  "nebula-storage",
  "nebula-storage-port",
+ "nebula-tenancy",
  "nebula-workflow",
  "opentelemetry",
  "opentelemetry_sdk",
