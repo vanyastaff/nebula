@@ -238,6 +238,14 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   establish provider-side atomicity; runtime capability enforcement and adapter guarantees
   remain required. Seams: `crates/storage-port/src/store/idempotency.rs` and
   `crates/storage-port/src/store/operation_ledger.rs`.
+  One node may prepare many slots under distinct occurrence labels (visible ASCII,
+  at most 512 bytes, rejected before durable access otherwise); `read_occurrences`
+  lists a node's slots in one snapshot, ordered by backend preparation time then
+  label bytes (PostgreSQL pins `COLLATE "C"`). An optional `ProviderIdempotencyKey` is
+  stored inside the existing `port_operation_protocol` JSON of the prepare
+  transaction — omitted when absent, so keyless records keep their bytes and no
+  migration is needed — and participates in the prepare identity check. The shared
+  oracle `tests/support/operation_ledger_oracle.rs` proves both for all three adapters.
 
 - **[L2-§11.5]** `TransitionBatch::journal` backs the durable `port_execution_journal`
   (append-only, replayable) and is committed with the state transition. No production caller

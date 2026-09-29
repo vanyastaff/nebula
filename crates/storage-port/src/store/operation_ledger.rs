@@ -9,8 +9,8 @@
 use core::fmt;
 
 use crate::dto::{
-    EffectOccurrenceKey, EffectSlotBinding, EffectSlotId, OperationLedgerError, OperationRecord,
-    PrepareOutcome,
+    EffectOccurrenceKey, EffectOccurrenceRecord, EffectSlotBinding, EffectSlotId,
+    OperationLedgerError, OperationRecord, PrepareOutcome,
 };
 use crate::scope::Scope;
 
@@ -30,6 +30,30 @@ pub trait OperationLedger: Send + Sync + fmt::Debug {
         &self,
         key: &EffectOccurrenceKey<'_>,
     ) -> Result<Option<OperationRecord>, OperationLedgerError>;
+
+    /// List every slot one node has prepared, without mutating anything.
+    ///
+    /// A node may own many slots, one per occurrence label. This is how the
+    /// node's owner drains them: it learns every slot durably bound to
+    /// `(scope, execution_id, node_key)`, including slots whose preparation
+    /// acknowledgement it never saw. Other nodes, executions, and tenants are
+    /// never listed; a foreign tenant's slots read as absent, exactly like
+    /// [`Self::read_occurrence`]. Like every read, this grants no invocation
+    /// authority.
+    ///
+    /// Slots are ordered by backend preparation time; slots prepared in the
+    /// same backend millisecond are ordered by occurrence label bytes. Every
+    /// adapter applies the same order.
+    ///
+    /// # Errors
+    /// Returns a bounded storage failure when a durable record cannot be read
+    /// or interpreted; a partial listing is never returned.
+    async fn read_occurrences(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+        node_key: &str,
+    ) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError>;
     /// Durably prepare one effect slot before the provider is invoked.
     ///
     /// The ledger mints the slot and operation identities; the caller supplies

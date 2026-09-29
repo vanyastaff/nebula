@@ -78,6 +78,21 @@ does **not** implement any backend.
   deadlines. Lost grant acknowledgements never reconstruct egress authority from
   reads. Exact outcome bytes, integrity digest, terminal state and owner journal
   commit atomically. Legacy ledger rows remain readable without invocation authority.
+- **Many effects per node.** A node may own many slots, one per occurrence label
+  (`node-effect/v1`, `unit/v1/<resource>/<contract>/#3`, ...). Labels are 1..=512
+  bytes of visible ASCII; adapters reject any other label with
+  `OperationLedgerError::InvalidOccurrence` before durable access.
+  `OperationLedger::read_occurrences` lists every slot of one node — label and
+  record, ordered by backend preparation time then label bytes — so the node's
+  owner can drain slots whose acknowledgement it never saw.
+- **Durable provider idempotency key.** `EffectSlotBinding::provider_key` carries an
+  optional opaque, secret-free `ProviderIdempotencyKey` (1..=64 base64url bytes,
+  typically a SHA-256 digest). It is recorded in the prepare transaction, returned
+  on `PreparedOperation`/`OperationRecord` so a resumed owner reads it back instead
+  of recomputing it, and is part of the prepare identity: a different key, or a key
+  present on one side only, is `OperationMismatch` with no durable change. It is
+  never part of the natural key and never contains an attempt number — a retry must
+  reuse the key.
 - **Plain-data `Scope`.** `Scope { workspace_id, org_id }` is a value type
   with no policy. Resolving a `Scope` from a principal and enforcing
   cross-tenant denial for general Scope-taking stores is the job of
