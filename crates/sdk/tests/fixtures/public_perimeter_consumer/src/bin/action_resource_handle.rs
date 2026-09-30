@@ -9,7 +9,8 @@ use nebula_sdk::integration::resource::{
     ResourceMetadataDraft, SentState, no_credential_slots, resource_key,
 };
 use nebula_sdk::prelude::{
-    Action, ActionContext, ActionError, ActionResult, StatelessAction, metadata_name,
+    Action, ActionContext, ActionError, ActionResult, Deserialize, Serialize, StatelessAction,
+    metadata_name,
 };
 
 /// A shared directory client counting its lookups.
@@ -39,10 +40,13 @@ impl Provider for Directory {
 impl ResidentProvider for Directory {}
 
 /// Looks a user up: one read attempt.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct Lookup;
 
 impl Operation<Directory> for Lookup {
     type Output = u64;
+    const KEY: &'static str = "directory.lookup";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, Directory>) -> Result<u64, OperationError> {

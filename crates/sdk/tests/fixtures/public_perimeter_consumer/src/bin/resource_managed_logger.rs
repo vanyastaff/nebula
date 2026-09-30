@@ -13,6 +13,7 @@ use nebula_sdk::integration::resource::{
     Resident, ResidentProvider, ResourceContext, ResourceKey, ResourceMetadataDraft, SentState,
     TeardownCx, no_credential_slots, resource_key,
 };
+use nebula_sdk::prelude::{Deserialize, Serialize};
 
 /// The logger's instance: an in-memory sink with a bounded buffer.
 struct LogSink {
@@ -74,15 +75,20 @@ impl Provider for Logger {
 impl ResidentProvider for Logger {}
 
 /// A line accepted by the sink.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct Enqueued(usize);
 
 /// Appends one line; appending twice writes it twice.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct Write {
     line: String,
 }
 
 impl Operation<Logger> for Write {
     type Output = Enqueued;
+    const KEY: &'static str = "logger.write";
 
     async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Enqueued, OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
@@ -100,10 +106,13 @@ impl Operation<Logger> for Write {
 }
 
 /// Reports how many lines are written; safe to repeat.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct Flush;
 
 impl Operation<Logger> for Flush {
     type Output = usize;
+    const KEY: &'static str = "logger.flush";
     const EFFECT: Effect = Effect::Idempotent;
 
     fn max_attempts(&self) -> NonZeroU32 {

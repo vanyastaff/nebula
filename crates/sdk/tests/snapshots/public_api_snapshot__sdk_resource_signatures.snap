@@ -339,31 +339,31 @@ macro-generated: key_type!(pub ResourceKey, ResourceDomain);
 
 ## macro-generated nebula_sdk::integration::resource::http::request::Delete
 exported as nebula_sdk::integration::resource::http::Delete
-macro-generated: method_marker!(#[doc = " `DELETE`: idempotent by HTTP semantics; [`Request::as_write`]"] #[doc = " declares a provider that breaks them."] Delete, DELETE, Idempotent);
+macro-generated: method_marker!(#[doc = " `DELETE`: idempotent by HTTP semantics; [`Request::as_write`]"] #[doc = " declares a provider that breaks them."] Delete, DELETE, Idempotent, "http.delete");
 
 ## macro-generated nebula_sdk::integration::resource::http::request::Get
 exported as nebula_sdk::integration::resource::http::Get
-macro-generated: method_marker!(#[doc = " `GET`: reads."] Get, GET, Read);
+macro-generated: method_marker!(#[doc = " `GET`: reads."] Get, GET, Read, "http.get");
 
 ## macro-generated nebula_sdk::integration::resource::http::request::Head
 exported as nebula_sdk::integration::resource::http::Head
-macro-generated: method_marker!(#[doc = " `HEAD`: reads."] Head, HEAD, Read);
+macro-generated: method_marker!(#[doc = " `HEAD`: reads."] Head, HEAD, Read, "http.head");
 
 ## macro-generated nebula_sdk::integration::resource::http::request::Options
 exported as nebula_sdk::integration::resource::http::Options
-macro-generated: method_marker!(#[doc = " `OPTIONS`: reads."] Options, OPTIONS, Read);
+macro-generated: method_marker!(#[doc = " `OPTIONS`: reads."] Options, OPTIONS, Read, "http.options");
 
 ## macro-generated nebula_sdk::integration::resource::http::request::Patch
 exported as nebula_sdk::integration::resource::http::Patch
-macro-generated: method_marker!(#[doc = " `PATCH`: a write; [`Request::idempotency_key`] makes it idempotent."] Patch, PATCH, Write);
+macro-generated: method_marker!(#[doc = " `PATCH`: a write; [`Request::idempotency_key`] makes it idempotent."] Patch, PATCH, Write, "http.patch");
 
 ## macro-generated nebula_sdk::integration::resource::http::request::Post
 exported as nebula_sdk::integration::resource::http::Post
-macro-generated: method_marker!(#[doc = " `POST`: a write; [`Request::idempotency_key`] makes it idempotent."] Post, POST, Write);
+macro-generated: method_marker!(#[doc = " `POST`: a write; [`Request::idempotency_key`] makes it idempotent."] Post, POST, Write, "http.post");
 
 ## macro-generated nebula_sdk::integration::resource::http::request::Put
 exported as nebula_sdk::integration::resource::http::Put
-macro-generated: method_marker!(#[doc = " `PUT`: idempotent by HTTP semantics; [`Request::as_write`] declares a"] #[doc = " provider that breaks them."] Put, PUT, Idempotent);
+macro-generated: method_marker!(#[doc = " `PUT`: idempotent by HTTP semantics; [`Request::as_write`] declares a"] #[doc = " provider that breaks them."] Put, PUT, Idempotent, "http.put");
 
 ## macro_rules nebula_core::keys::resource_key
 exported as nebula_sdk::integration::resource::resource_key
@@ -477,6 +477,7 @@ pub struct Attempt<'a, R: Provider + PinSlots> {
 impl<R: Provider + PinSlots> Attempt<'_, R> {
     pub fn instance(&self) -> &R::Instance;
     pub fn credentials(&self) -> &R::Pinned;
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey>;
     pub async fn report(&self, verdict: Verdict);
     pub fn taint(&self);
     pub fn settle(self, sent: SentState);
@@ -540,11 +541,9 @@ impl<R: Provider> ResourceHandle<R> {
 }
 impl<R: Provider + PinSlots> ResourceHandle<R> {
     pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output>;
-    pub fn submit_effect<O: EffectOperation<R>>(&self, operation: O) -> Submission<O::Output>;
 }
 impl<R> ResourceHandle<R> where R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone {
-    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Submission<T> where T: Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
-    pub fn session_effect<T, F>(&self, spec: SessionSpec, contract: EffectContract, recovery: EffectRecovery, canonical_request: Vec<u8>, key_part: Option<IdempotencyKeyPart>, body: F) -> Submission<T> where T: Serialize + DeserializeOwned + Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
+    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Submission<T> where T: Serialize + DeserializeOwned + Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
 }
 impl<R: Provider + PinSlots> ResourceHandle<R> {
     pub fn submit_streaming<O: StreamOperation<R>>(&self, operation: O, capacity: NonZeroUsize) -> Streaming<O::Item, O::Output>;
@@ -567,16 +566,21 @@ impl fmt::Debug for SessionCx
 
 ## struct nebula_resource::call::session::SessionSpec
 exported as nebula_sdk::integration::resource::SessionSpec
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SessionSpec {
     /* private fields */
 }
 impl SessionSpec {
-    pub fn new(cost: Cost) -> Self;
-    pub fn with_effect(mut self, effect: Effect) -> Self;
-    pub fn cost(&self) -> &Cost;
+    pub fn read(name: &'static str) -> Self;
+    pub fn idempotent(name: &'static str, request: &(impl Serialize + ?Sized)) -> Self;
+    pub fn write(name: &'static str, request: &(impl Serialize + ?Sized)) -> Self;
+    pub fn cost(mut self, cost: Cost) -> Self;
+    pub fn idempotency_key(mut self, part: impl Into<String>) -> Self;
+    pub fn key_window(mut self, window: Duration) -> Self;
+    pub fn version(mut self, version: u32) -> Self;
     pub fn effect(&self) -> Effect;
 }
+impl fmt::Debug for SessionSpec
 
 ## struct nebula_resource::call::stream::ConsumerGone
 exported as nebula_sdk::integration::resource::ConsumerGone
@@ -1146,6 +1150,8 @@ impl Request<Delete> {
     pub fn delete(path: &str) -> Result<Self, OperationError>;
     pub fn as_write(self) -> Request<AsWrite<Delete>>;
 }
+impl<'de, M: Method> Deserialize<'de> for Request<M>
+impl<M: Method> Serialize for Request<M>
 impl<M: Method> fmt::Debug for Request<M>
 impl<R, M> Operation<R> for Request<M> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method
 
@@ -1161,7 +1167,9 @@ impl Response {
     pub fn into_body(self) -> Bytes;
     pub fn json<T: DeserializeOwned>(&self) -> Result<T, OperationError>;
 }
+impl Serialize for Response
 impl fmt::Debug for Response
+impl<'de> Deserialize<'de> for Response
 
 ## struct nebula_sdk::integration::resource::http::stream::ResponseStream [cfg(feature = "resource-http")]
 exported as nebula_sdk::integration::resource::http::ResponseStream
@@ -1178,9 +1186,14 @@ impl fmt::Debug for ResponseStream
 
 ## trait nebula_resource::call::Operation
 exported as nebula_sdk::integration::resource::Operation
-pub trait Operation<R: Provider + PinSlots>: Send + 'static {
-    type Output: Send + 'static;
+pub trait Operation<R: Provider + PinSlots>: Serialize + DeserializeOwned + Send + 'static {
+    type Output: Serialize + DeserializeOwned + Send + 'static;
+    const KEY: &'static str;
+    const VERSION: u32 = 1;
     const EFFECT: Effect = Effect::Write;
+    const KEY_WINDOW: Duration = Duration::from_hours(24);
+    const RECORD_OUTPUT: bool = true;
+    fn idempotency_key(&self) -> Option<String> { .. }
     fn max_attempts(&self) -> NonZeroU32 { .. }
     fn run(self, cx: &mut OperationCx<'_, R>) -> impl Future<Output = Result<Self::Output, OperationError>> + Send;
 }
@@ -1206,7 +1219,10 @@ exported as nebula_sdk::integration::resource::StreamOperation
 pub trait StreamOperation<R: Provider + PinSlots>: Send + 'static {
     type Item: Send + 'static;
     type Output: Send + 'static;
+    const KEY: &'static str;
+    const VERSION: u32 = 1;
     const EFFECT: Effect = Effect::Write;
+    fn idempotency_key(&self) -> Option<String> { .. }
     fn max_attempts(&self) -> NonZeroU32 { .. }
     fn run(self, cx: &mut OperationCx<'_, R>, sink: StreamSink<Self::Item>) -> impl Future<Output = Result<Self::Output, OperationError>> + Send;
 }
@@ -1324,6 +1340,7 @@ exported as nebula_sdk::integration::resource::http::Method
 pub trait Method: sealed::Sealed + Send + 'static {
     const METHOD: &'static str;
     const EFFECT: Effect;
+    const OPERATION_KEY: &'static str;
 }
 
 ## type nebula_resource::call::session::SessionFuture

@@ -79,7 +79,7 @@ impl SessionProvider for Ledger {
 /// What action code does with a managed row: one transaction, booked once.
 async fn transfer(ledger: &ResourceHandle<Ledger>) -> Result<u64, Error> {
     let rows = ledger
-        .session(SessionSpec::new(Cost::ONE), |tx, cx| {
+        .session(SessionSpec::write("ledger.transfer", &1_u64), |tx, cx| {
             let key = cx.resource_key().clone();
             Box::pin(async move {
                 let debit = tx.execute("update accounts set balance = balance - 1");
@@ -95,9 +95,11 @@ async fn transfer(ledger: &ResourceHandle<Ledger>) -> Result<u64, Error> {
 fn main() {
     let _action_code = transfer;
     assert_eq!(Ledger::BINDING, SessionBinding::Connection);
-    let spec = SessionSpec::new(Cost::ONE);
-    assert_eq!(spec.effect(), Effect::Write, "a session is a write by default");
-    assert_eq!(spec.cost().permits(), 1);
-    let read = SessionSpec::new(Cost::FREE).with_effect(Effect::Read);
+    let spec = SessionSpec::write("ledger.transfer", &1_u64).cost(Cost::ONE);
+    assert_eq!(spec.effect(), Effect::Write);
+    let idempotent = SessionSpec::idempotent("ledger.settle", &("alice", 1_u64))
+        .idempotency_key("settle-alice-1");
+    assert_eq!(idempotent.effect(), Effect::Idempotent);
+    let read = SessionSpec::read("ledger.balance").cost(Cost::FREE);
     assert!(read.effect().is_replay_safe());
 }
