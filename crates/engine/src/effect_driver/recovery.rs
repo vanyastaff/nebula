@@ -1,64 +1,11 @@
-//! Database-only outcome acknowledgement recovery and separate read-only queries.
+//! Separate read-only queries of an unknown remote outcome.
+//!
+//! Outcome acknowledgement recovery is the shared
+//! [`LedgerSlot::commit_evidence`].
 
 use super::*;
 
 impl Driver<'_, '_> {
-    pub(super) async fn commit_evidence(
-        &mut self,
-        evidence: FrozenOutcomeEvidence,
-    ) -> Result<ActionResult<Value>, EffectExecutionError> {
-        let command = OperationCommand::RecordOutcome(evidence.clone());
-        let mut last_error = OperationLedgerError::Unavailable;
-        let mut acknowledgement_unknown = false;
-        for _ in 0..2 {
-            match self.advance(&command).await {
-                Ok(None) => {
-                    if self.protocol()?.evidence() != Some(&evidence) {
-                        return Err(EffectExecutionError::InvalidEvidence);
-                    }
-                    return evidence::replay(self.operation_id(), &evidence);
-                },
-                Ok(Some(_)) => return Err(EffectExecutionError::InvalidEvidence),
-                Err(EffectExecutionError::Ledger(
-                    error @ (OperationLedgerError::Unavailable
-                    | OperationLedgerError::AcknowledgementUnknown),
-                )) => {
-                    acknowledgement_unknown |=
-                        error == OperationLedgerError::AcknowledgementUnknown;
-                    last_error = error;
-                    let record = self
-                        .turn
-                        .ledger
-                        .read_exact(self.turn.scope, self.record.operation().slot_id())
-                        .await
-                        .map_err(|error| {
-                            if acknowledgement_unknown {
-                                OperationLedgerError::AcknowledgementUnknown
-                            } else {
-                                error
-                            }
-                        })?;
-                    self.accept(record)?;
-                    if let Some(recorded) = self.protocol()?.evidence() {
-                        if recorded != &evidence {
-                            return Err(EffectExecutionError::InvalidEvidence);
-                        }
-                        return evidence::replay(self.operation_id(), recorded);
-                    }
-                    // Only this exact immutable command can be retried. No path
-                    // from outcome acknowledgement recovery invokes a provider.
-                },
-                Err(error) => return Err(error),
-            }
-        }
-        Err(if acknowledgement_unknown {
-            OperationLedgerError::AcknowledgementUnknown
-        } else {
-            last_error
-        }
-        .into())
-    }
-
     pub(super) async fn reconcile(&mut self) -> Result<ActionResult<Value>, EffectExecutionError> {
         if self.turn.cancellation.is_cancelled() {
             return Err(EffectExecutionError::Cancelled);
