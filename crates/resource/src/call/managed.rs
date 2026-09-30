@@ -1216,10 +1216,11 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
     /// that, the last attempt's error — a retry the runtime refused (the
     /// budget, the deadline, the lease closing) returns the error of the
     /// attempt it would have retried.
-    pub async fn call<T, F>(&mut self, cost: Cost, mut f: F) -> Result<T, OperationError>
+    pub async fn call<T, F>(&mut self, cost: Cost, f: F) -> Result<T, OperationError>
     where
         F: AsyncFnMut(&R::Instance, &R::Pinned) -> Result<T, OperationError> + Send + 'static,
     {
+        let mut f = f;
         let effect = self.effect;
         let mut previous: Option<OperationError> = None;
         loop {
