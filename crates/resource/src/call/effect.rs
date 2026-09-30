@@ -8,7 +8,7 @@
 //! provider idempotency key ([`IdempotencyKeyPart`]) and a stable
 //! occurrence label ([`OccurrenceLabel`]). It is submitted with
 //! [`ResourceHandle::submit_effect`](super::ResourceHandle::submit_effect); the
-//! owner seam that records it lives in [`owner`](super::owner).
+//! journal seam that records it lives in [`journal`](super::journal).
 
 use std::{fmt, time::Duration};
 
