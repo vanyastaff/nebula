@@ -140,13 +140,13 @@
 //! ([`Manager::handle_any_read_only`](crate::Manager::handle_any_read_only))
 //! runs reads only. A row built with it
 //! ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled))
-//! carries the execution's [`UnitEffectOwner`](owner::UnitEffectOwner), and
+//! carries the execution's [`EffectJournal`](journal::EffectJournal), and
 //! its effects go through [`ResourceHandle::submit_effect`] (an
 //! [`EffectOperation`]) or [`ResourceHandle::session_effect`]; a plain
 //! [`submit`](ResourceHandle::submit) or [`session`](ResourceHandle::session) of an
 //! `Idempotent` or `Write` unit is refused `Permanent` / `NotSent`. The
-//! resource runtime never writes durable effect state; it drives the owner
-//! seam ([`owner`]) at fixed points of the unit:
+//! resource runtime never writes durable effect state; it drives the
+//! journal seam ([`journal`]) at fixed points of the unit:
 //!
 //! 1. **Submit** — the declaration is checked ([`EffectContract`], an
 //!    [`EffectRecovery`] that agrees with the [`Effect`]; a read is
@@ -167,7 +167,7 @@
 //!    grant is explained as not crossed.
 //! 4. **Settle** — the unit's last call is recorded from its result: a
 //!    success with its output, a definitive rejection with its kind
-//!    ([`ErrorKindCode`](owner::ErrorKindCode)), otherwise how the call
+//!    ([`ErrorKindCode`](journal::ErrorKindCode)), otherwise how the call
 //!    crossed (`NotSent` or a throttle: not crossed; `MaybeSent` or a
 //!    retryable failure after `Sent`: ambiguous). A record that fails after
 //!    a possible crossing fails the unit `OutcomeUnknown`.
@@ -195,7 +195,7 @@
 //!   deadline, then fail with `Backpressure`.
 //! - A cost booked for an attempt that is cancelled before it reaches the
 //!   provider is not refunded (QUOTA-DX.md:32 baseline).
-//! - A pooled [`Lease`] lease stays checked out while its units wait for
+//! - A pooled [`Lease`] stays checked out while its units wait for
 //!   quota and while their strict credential reads run; a [`ResourceHandle`]
 //!   checks out per attempt instead, after those waits (QUOTA-DX.md:41,
 //!   :43).
@@ -251,9 +251,9 @@
 mod cost;
 mod effect;
 mod error;
+pub mod journal;
 mod managed;
 mod owned;
-pub mod owner;
 mod pin;
 mod row;
 mod session;

@@ -1,26 +1,26 @@
-//! The execution-owner seam: the port through which a managed row's
-//! effectful units reach the owner that records them.
+//! The effect journal seam: the port through which a resource handle's
+//! effectful units reach the execution owner that records them.
 //!
 //! The resource runtime never writes durable effect state. A row an action
 //! gets with effect-owner authority
 //! ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled))
-//! carries a [`UnitEffectOwner`]; every unit submitted with
+//! carries a [`EffectJournal`]; every unit submitted with
 //! [`ResourceHandle::submit_effect`](super::ResourceHandle::submit_effect) or
 //! [`ResourceHandle::session_effect`](super::ResourceHandle::session_effect) is
 //! driven through it:
 //!
-//! 1. **Submit** — the unit takes an in-flight [`OwnerTicket`]
-//!    ([`track`](UnitEffectOwner::track)) and, without an author label, an
-//!    ordinal ([`next_ordinal`](UnitEffectOwner::next_ordinal)); a
-//!    [closed](UnitEffectOwner::is_closed) owner refuses it.
-//! 2. **Prepare** — the first poll hands the owner a [`UnitIntent`]; the
-//!    returned [`UnitSlot`]'s [`SlotPhase`] replays a recorded outcome,
+//! 1. **Submit** — the unit takes an in-flight [`InFlight`]
+//!    ([`track`](EffectJournal::track)) and, without an author label, an
+//!    ordinal ([`next_ordinal`](EffectJournal::next_ordinal)); a
+//!    [closed](EffectJournal::is_closed) owner refuses it.
+//! 2. **Prepare** — the first poll hands the owner a [`JournalIntent`]; the
+//!    returned [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome,
 //!    refuses an unknown one, or lets the unit run.
 //! 3. **Grant** — each attempt, after its checkout and credential reads and
-//!    before its registration, asks for a [`UnitCall`]: the only authority
+//!    before its registration, asks for a [`CallGrant`]: the only authority
 //!    for one provider call.
 //! 4. **Explain / settle** — every granted call is either explained
-//!    ([`Crossing`]) or settled ([`UnitOutcome`]) exactly once.
+//!    ([`Crossing`]) or settled ([`CallOutcome`]) exactly once.
 //!
 //! The engine implements the owner over its operation ledger; this crate
 //! only drives the seam.
@@ -37,13 +37,13 @@ use crate::{dedup::SlotIdentity, error::ErrorKind};
 
 /// The owner of a row's execution-owned effects: prepares, grants and
 /// records them. Implemented by the engine; object safe
-/// (`Arc<dyn UnitEffectOwner>`).
+/// (`Arc<dyn EffectJournal>`).
 ///
 /// Every method but [`next_ordinal`](Self::next_ordinal),
 /// [`track`](Self::track) and [`is_closed`](Self::is_closed) is a durable
-/// step. A refusal ([`OwnerRefusal`]) never means a provider call happened.
+/// step. A refusal ([`JournalRefusal`]) never means a provider call happened.
 #[async_trait::async_trait]
-pub trait UnitEffectOwner: Send + Sync + fmt::Debug {
+pub trait EffectJournal: Send + Sync + fmt::Debug {
     /// The next ordinal of an unlabeled unit of `contract` on `key`, in
     /// program (submit) order. Synchronous: it is taken when the unit is
     /// submitted.
@@ -55,17 +55,17 @@ pub trait UnitEffectOwner: Send + Sync + fmt::Debug {
     /// # Errors
     ///
     /// Why the owner could not prepare it.
-    async fn prepare(&self, intent: &UnitIntent<'_>) -> Result<UnitSlot, OwnerRefusal>;
+    async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal>;
 
     /// Grants one provider call on `slot`. `Ok` is the only authority for a
     /// provider call.
     ///
     /// # Errors
     ///
-    /// [`OwnerRefusal::Unknown`] when the slot's outcome became unknown (an
+    /// [`JournalRefusal::Unknown`] when the slot's outcome became unknown (an
     /// opaque effect that may have been sent, an exhausted budget, a
     /// stable-key window that passed); otherwise why the owner refused.
-    async fn grant(&self, slot: &UnitSlot) -> Result<UnitCall, OwnerRefusal>;
+    async fn grant(&self, slot: &JournalSlot) -> Result<CallGrant, JournalRefusal>;
 
     /// Records how a granted `call` crossed the provider boundary, when it
     /// did not settle.
@@ -75,10 +75,10 @@ pub trait UnitEffectOwner: Send + Sync + fmt::Debug {
     /// Why the owner could not record it.
     async fn explain(
         &self,
-        slot: &UnitSlot,
-        call: UnitCall,
+        slot: &JournalSlot,
+        call: CallGrant,
         crossing: Crossing,
-    ) -> Result<(), OwnerRefusal>;
+    ) -> Result<(), JournalRefusal>;
 
     /// Records the outcome of a granted `call` (recommitting the exact
     /// evidence when an acknowledgement was lost).
@@ -89,14 +89,14 @@ pub trait UnitEffectOwner: Send + Sync + fmt::Debug {
     /// unknown outcome.
     async fn settle(
         &self,
-        slot: &UnitSlot,
-        call: UnitCall,
-        outcome: UnitOutcome<'_>,
-    ) -> Result<(), OwnerRefusal>;
+        slot: &JournalSlot,
+        call: CallGrant,
+        outcome: CallOutcome<'_>,
+    ) -> Result<(), JournalRefusal>;
 
     /// An in-flight ticket held by every submitted unit until it is gone;
     /// the owner drains them before finalizing its node.
-    fn track(&self) -> OwnerTicket;
+    fn track(&self) -> InFlight;
 
     /// Whether the owner closed (its node finished): a closed owner refuses
     /// every new unit.
@@ -106,7 +106,7 @@ pub trait UnitEffectOwner: Send + Sync + fmt::Debug {
 /// What an owner prepares: one effect of one unit.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
-pub struct UnitIntent<'a> {
+pub struct JournalIntent<'a> {
     /// The row the effect runs against.
     pub resource_key: &'a ResourceKey,
     /// The row's credential slot identity.
@@ -131,10 +131,10 @@ pub struct UnitIntent<'a> {
     pub key_part: Option<&'a IdempotencyKeyPart>,
 }
 
-impl fmt::Debug for UnitIntent<'_> {
+impl fmt::Debug for JournalIntent<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("UnitIntent")
+            .debug_struct("JournalIntent")
             .field("resource_key", self.resource_key)
             .field("contract", &self.contract)
             .field("effect", &self.effect)
@@ -179,14 +179,14 @@ pub enum RecordedOutcome {
 /// Opaque to the runtime: built by the owner with [`new`](Self::new) and
 /// handed back to it on every later step.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnitSlot {
+pub struct JournalSlot {
     id: [u8; 16],
     idempotency_key: IdempotencyKey,
     revision: u64,
     phase: SlotPhase,
 }
 
-impl UnitSlot {
+impl JournalSlot {
     /// The slot `id` at `revision`, whose provider idempotency key is
     /// `idempotency_key`, in `phase`.
     #[must_use]
@@ -231,9 +231,9 @@ impl UnitSlot {
 
 /// One granted provider call, as its owner identifies it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct UnitCall([u8; 16]);
+pub struct CallGrant([u8; 16]);
 
-impl UnitCall {
+impl CallGrant {
     /// The call `id`.
     #[must_use]
     pub const fn from_bytes(id: [u8; 16]) -> Self {
@@ -262,7 +262,7 @@ pub enum Crossing {
 /// How a granted call settled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum UnitOutcome<'a> {
+pub enum CallOutcome<'a> {
     /// The effect applied; its output serialized as JSON.
     Applied(&'a [u8]),
     /// The effect applied; only a digest is recorded.
@@ -274,7 +274,7 @@ pub enum UnitOutcome<'a> {
 /// Why an owner refused a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum OwnerRefusal {
+pub enum JournalRefusal {
     /// The owner's store is unavailable.
     Unavailable,
     /// The owner could not learn whether its write was acknowledged.
@@ -290,7 +290,7 @@ pub enum OwnerRefusal {
     Unknown,
 }
 
-impl OwnerRefusal {
+impl JournalRefusal {
     /// Stable lowercase name.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -305,18 +305,18 @@ impl OwnerRefusal {
     }
 }
 
-impl fmt::Display for OwnerRefusal {
+impl fmt::Display for JournalRefusal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
 
 /// An in-flight unit, as its owner counts them: dropping it releases it.
-pub struct OwnerTicket {
+pub struct InFlight {
     release: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
-impl OwnerTicket {
+impl InFlight {
     /// A ticket that runs `release` once, when it is dropped.
     #[must_use]
     pub fn new(release: impl FnOnce() + Send + 'static) -> Self {
@@ -326,7 +326,7 @@ impl OwnerTicket {
     }
 }
 
-impl Drop for OwnerTicket {
+impl Drop for InFlight {
     fn drop(&mut self) {
         let release = self
             .release
@@ -339,11 +339,9 @@ impl Drop for OwnerTicket {
     }
 }
 
-impl fmt::Debug for OwnerTicket {
+impl fmt::Debug for InFlight {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("OwnerTicket")
-            .finish_non_exhaustive()
+        formatter.debug_struct("InFlight").finish_non_exhaustive()
     }
 }
 

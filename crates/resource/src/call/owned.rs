@@ -1,6 +1,6 @@
 //! The unit runtime's side of execution-owned effects: it drives a unit
 //! submitted with `submit_effect` / `session_effect` through the row's
-//! [`UnitEffectOwner`] (see the [`owner`](super::owner) module for the
+//! [`EffectJournal`] (see the [`journal`](super::journal) module for the
 //! seam).
 //!
 //! Per unit, in order:
@@ -37,11 +37,11 @@ use super::{
     cost::{Effect, SentState},
     effect::{EffectContract, EffectRecovery, IdempotencyKeyPart, OccurrenceLabel, Recorded},
     error::OperationError,
-    managed::{UnitShared, cancelled_before_grant},
-    owner::{
-        Crossing, ErrorKindCode, OwnerRefusal, OwnerTicket, RecordedOutcome, SlotPhase, UnitCall,
-        UnitEffectOwner, UnitIntent, UnitOutcome, UnitSlot,
+    journal::{
+        CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight, JournalIntent,
+        JournalRefusal, JournalSlot, RecordedOutcome, SlotPhase,
     },
+    managed::{UnitShared, cancelled_before_grant},
 };
 use crate::{dedup::SlotIdentity, error::ErrorKind};
 
@@ -111,7 +111,7 @@ pub(super) type OwnedSubmit<O, T> = (OwnedEffect, EffectPlan<O, T>);
 /// The owned-effect state of one unit, shared by its handle, its runtime
 /// task and its attempts.
 pub(super) struct OwnedEffect {
-    owner: Arc<dyn UnitEffectOwner>,
+    owner: Arc<dyn EffectJournal>,
     resource_key: ResourceKey,
     binding: SlotIdentity,
     effect: Effect,
@@ -120,16 +120,16 @@ pub(super) struct OwnedEffect {
     recorded: Recorded,
     occurrence: String,
     /// Set by a `Runnable` prepare.
-    slot: OnceLock<UnitSlot>,
+    slot: OnceLock<JournalSlot>,
     /// The unit's latest granted call not yet explained or settled.
     pending: Mutex<Option<PendingCall>>,
-    _ticket: OwnerTicket,
+    _ticket: InFlight,
 }
 
 /// A granted call and how its attempt settled so far.
 #[derive(Debug, Clone, Copy)]
 struct PendingCall {
-    call: UnitCall,
+    call: CallGrant,
     /// `MaybeSent` until the attempt settles.
     sent: SentState,
     /// The attempt reported a provider throttle.
@@ -153,7 +153,7 @@ impl OwnedEffect {
     /// `key`: refused `Cancelled` when `owner` closed; otherwise with its
     /// occurrence label and an in-flight ticket.
     pub(super) fn submit<O, T>(
-        owner: &Arc<dyn UnitEffectOwner>,
+        owner: &Arc<dyn EffectJournal>,
         binding: &SlotIdentity,
         key: &ResourceKey,
         effect: Effect,
@@ -199,7 +199,7 @@ impl OwnedEffect {
     }
 
     /// The prepared slot, once the first poll prepared a runnable one.
-    pub(super) fn slot(&self) -> Option<&UnitSlot> {
+    pub(super) fn slot(&self) -> Option<&JournalSlot> {
         self.slot.get()
     }
 
@@ -322,8 +322,8 @@ impl OwnedEffect {
                     Recorded::DigestOnly => None,
                 };
                 let outcome = match &encoded {
-                    Some(bytes) => UnitOutcome::Applied(bytes),
-                    None => UnitOutcome::AppliedWithoutOutput,
+                    Some(bytes) => CallOutcome::Applied(bytes),
+                    None => CallOutcome::AppliedWithoutOutput,
                 };
                 match self.owner.settle(slot, pending.call, outcome).await {
                     Ok(()) => Ok(output),
@@ -344,7 +344,7 @@ impl OwnedEffect {
                     Ok(code) => (
                         "settle",
                         self.owner
-                            .settle(slot, pending.call, UnitOutcome::Rejected(code))
+                            .settle(slot, pending.call, CallOutcome::Rejected(code))
                             .await,
                     ),
                     Err(crossing) => (
@@ -365,7 +365,7 @@ impl OwnedEffect {
     }
 
     /// The unit error of an owner `refusal` of `step`, logged.
-    fn refused(&self, step: &'static str, refusal: OwnerRefusal) -> OperationError {
+    fn refused(&self, step: &'static str, refusal: JournalRefusal) -> OperationError {
         tracing::warn!(
             target: "nebula.resource",
             occurrence = %self.occurrence,
@@ -378,7 +378,7 @@ impl OwnedEffect {
 
     /// The unit error when the owner could not record a call that may have
     /// crossed: the outcome is unknown.
-    fn unrecorded(&self, step: &'static str, refusal: OwnerRefusal) -> OperationError {
+    fn unrecorded(&self, step: &'static str, refusal: JournalRefusal) -> OperationError {
         tracing::warn!(
             target: "nebula.resource",
             occurrence = %self.occurrence,
@@ -394,21 +394,21 @@ impl OwnedEffect {
 }
 
 /// The unit error of an owner refusal.
-fn refusal_error(refusal: OwnerRefusal) -> OperationError {
+fn refusal_error(refusal: JournalRefusal) -> OperationError {
     match refusal {
-        OwnerRefusal::Unknown => OperationError::new(
+        JournalRefusal::Unknown => OperationError::new(
             ErrorKind::OutcomeUnknown,
             "effect outcome unknown; no provider call granted",
         ),
-        OwnerRefusal::Mismatch => {
+        JournalRefusal::Mismatch => {
             OperationError::new(ErrorKind::Permanent, "effect occurrence mismatch")
         },
-        OwnerRefusal::Closed => {
+        JournalRefusal::Closed => {
             OperationError::new(ErrorKind::Cancelled, "effect owner closed; unit refused")
         },
-        OwnerRefusal::Unavailable
-        | OwnerRefusal::AcknowledgementUnknown
-        | OwnerRefusal::LeaseLost => OperationError::new(
+        JournalRefusal::Unavailable
+        | JournalRefusal::AcknowledgementUnknown
+        | JournalRefusal::LeaseLost => OperationError::new(
             ErrorKind::Backpressure,
             "effect owner unavailable; unit refused",
         ),
@@ -448,7 +448,7 @@ pub(super) async fn prepare<T>(
             SentState::NotSent,
         );
     }
-    let intent = UnitIntent {
+    let intent = JournalIntent {
         resource_key: &effect.resource_key,
         binding: &effect.binding,
         contract: effect.contract,
@@ -480,7 +480,7 @@ pub(super) async fn prepare<T>(
     let slot = match prepared {
         Ok(slot) => slot,
         Err(refusal) => {
-            let sent = if refusal == OwnerRefusal::Unknown {
+            let sent = if refusal == JournalRefusal::Unknown {
                 SentState::MaybeSent
             } else {
                 SentState::NotSent
@@ -512,7 +512,7 @@ pub(super) async fn prepare<T>(
             SentState::Sent,
         ),
         SlotPhase::Unknown => {
-            Prepared::Refused(refusal_error(OwnerRefusal::Unknown), SentState::MaybeSent)
+            Prepared::Refused(refusal_error(JournalRefusal::Unknown), SentState::MaybeSent)
         },
     }
 }

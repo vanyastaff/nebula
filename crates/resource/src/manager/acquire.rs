@@ -431,7 +431,7 @@ impl Manager {
     /// [`ResourceHandle::submit_effect`](crate::call::ResourceHandle::submit_effect)
     /// and [`ResourceHandle::session_effect`](crate::call::ResourceHandle::session_effect),
     /// prepared, granted and recorded by `owner` (see the
-    /// [`owner`](crate::call::owner) module). A plain
+    /// [`journal`](crate::call::journal) module). A plain
     /// [`submit`](crate::call::ResourceHandle::submit) or
     /// [`session`](crate::call::ResourceHandle::session) of an effect is refused
     /// before its first provider attempt. The owner binds effects to
@@ -447,13 +447,14 @@ impl Manager {
         ctx: &ResourceContext,
         options: &AcquireOptions,
         slot_identity: &crate::dedup::SlotIdentity,
-        owner: Arc<dyn crate::call::owner::UnitEffectOwner>,
+        owner: Arc<dyn crate::call::journal::EffectJournal>,
     ) -> Result<Box<dyn Any + Send + Sync>, Error> {
         self.handle_any_with_scope(
             key,
             ctx,
             slot_identity,
-            crate::call::UnitScope::from_parts(ctx, options).owned(owner, slot_identity.clone()),
+            crate::call::UnitScope::from_parts(ctx, options)
+                .journaled(owner, slot_identity.clone()),
         )
     }
 

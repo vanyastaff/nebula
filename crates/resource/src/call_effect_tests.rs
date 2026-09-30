@@ -24,9 +24,9 @@ use super::super::{
     Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKey,
     IdempotencyKeyPart, OccurrenceLabel, Operation, OperationCx, OperationError, PinSlots,
     Recorded, ResourceHandle, SentState, SessionClosed, SessionSpec,
-    owner::{
-        Crossing, ErrorKindCode, OwnerRefusal, OwnerTicket, RecordedOutcome, SlotPhase, UnitCall,
-        UnitEffectOwner, UnitIntent, UnitOutcome, UnitSlot,
+    journal::{
+        CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight, JournalIntent,
+        JournalRefusal, JournalSlot, RecordedOutcome, SlotPhase,
     },
 };
 use crate::{
@@ -55,7 +55,7 @@ enum Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
     Prepared,
-    Outstanding(UnitCall),
+    Outstanding(CallGrant),
     BeforeBoundary,
     Ambiguous,
     Resolved(RecordedOutcome),
@@ -93,8 +93,8 @@ struct FakeState {
     next_id: u8,
     log: Vec<Step>,
     intents: Vec<SeenIntent>,
-    fail_prepare: Option<OwnerRefusal>,
-    fail_settle: Option<OwnerRefusal>,
+    fail_prepare: Option<JournalRefusal>,
+    fail_settle: Option<JournalRefusal>,
     on_grant: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -146,11 +146,11 @@ impl FakeOwner {
         self.state().ordinals.clear();
     }
 
-    fn fail_next_prepare(&self, refusal: OwnerRefusal) {
+    fn fail_next_prepare(&self, refusal: JournalRefusal) {
         self.state().fail_prepare = Some(refusal);
     }
 
-    fn fail_next_settle(&self, refusal: OwnerRefusal) {
+    fn fail_next_settle(&self, refusal: JournalRefusal) {
         self.state().fail_settle = Some(refusal);
     }
 
@@ -178,8 +178,8 @@ impl FakeOwner {
         );
     }
 
-    fn slot_view(slot: &FakeSlot, phase: SlotPhase) -> UnitSlot {
-        UnitSlot::new(slot.id, slot.key, 1, phase)
+    fn slot_view(slot: &FakeSlot, phase: SlotPhase) -> JournalSlot {
+        JournalSlot::new(slot.id, slot.key, 1, phase)
     }
 
     fn by_id<'s>(state: &'s mut FakeState, id: &[u8; 16]) -> Option<&'s mut FakeSlot> {
@@ -188,7 +188,7 @@ impl FakeOwner {
 }
 
 #[async_trait::async_trait]
-impl UnitEffectOwner for FakeOwner {
+impl EffectJournal for FakeOwner {
     fn next_ordinal(&self, key: &ResourceKey, contract: EffectContract) -> u32 {
         let mut state = self.state();
         let ordinal = state
@@ -200,9 +200,9 @@ impl UnitEffectOwner for FakeOwner {
         next
     }
 
-    async fn prepare(&self, intent: &UnitIntent<'_>) -> Result<UnitSlot, OwnerRefusal> {
+    async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
         if self.is_closed() {
-            return Err(OwnerRefusal::Closed);
+            return Err(JournalRefusal::Closed);
         }
         let mut state = self.state();
         if let Some(refusal) = state.fail_prepare.take() {
@@ -224,7 +224,7 @@ impl UnitEffectOwner for FakeOwner {
         let now = Instant::now();
         if let Some(slot) = state.slots.get_mut(intent.occurrence) {
             if slot.fingerprint != fingerprint {
-                return Err(OwnerRefusal::Mismatch);
+                return Err(JournalRefusal::Mismatch);
             }
             let phase = match (&slot.phase, slot.recovery) {
                 (Phase::Resolved(outcome), _) => SlotPhase::Replay(outcome.clone()),
@@ -260,16 +260,16 @@ impl UnitEffectOwner for FakeOwner {
         Ok(view)
     }
 
-    async fn grant(&self, slot: &UnitSlot) -> Result<UnitCall, OwnerRefusal> {
+    async fn grant(&self, slot: &JournalSlot) -> Result<CallGrant, JournalRefusal> {
         if self.is_closed() {
-            return Err(OwnerRefusal::Closed);
+            return Err(JournalRefusal::Closed);
         }
         let hook = {
             let mut state = self.state();
             let now = Instant::now();
             let call_id = state.next_id.wrapping_add(100);
             state.next_id += 1;
-            let fake = Self::by_id(&mut state, slot.id()).ok_or(OwnerRefusal::Mismatch)?;
+            let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
             let grantable = match (&fake.phase, fake.recovery) {
                 (Phase::Prepared | Phase::BeforeBoundary, _) => true,
                 (Phase::Ambiguous, EffectRecovery::StableKey { window }) => {
@@ -279,10 +279,10 @@ impl UnitEffectOwner for FakeOwner {
             };
             if !grantable || fake.invocations >= fake.max_invocations {
                 fake.phase = Phase::Unknown;
-                return Err(OwnerRefusal::Unknown);
+                return Err(JournalRefusal::Unknown);
             }
             fake.invocations += 1;
-            let call = UnitCall::from_bytes([call_id; 16]);
+            let call = CallGrant::from_bytes([call_id; 16]);
             fake.phase = Phase::Outstanding(call);
             state.log.push(Step::Grant);
             (state.on_grant.take(), call)
@@ -296,14 +296,14 @@ impl UnitEffectOwner for FakeOwner {
 
     async fn explain(
         &self,
-        slot: &UnitSlot,
-        call: UnitCall,
+        slot: &JournalSlot,
+        call: CallGrant,
         crossing: Crossing,
-    ) -> Result<(), OwnerRefusal> {
+    ) -> Result<(), JournalRefusal> {
         let mut state = self.state();
-        let fake = Self::by_id(&mut state, slot.id()).ok_or(OwnerRefusal::Mismatch)?;
+        let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
         if fake.phase != Phase::Outstanding(call) {
-            return Err(OwnerRefusal::Mismatch);
+            return Err(JournalRefusal::Mismatch);
         }
         fake.phase = match (crossing, fake.recovery) {
             (Crossing::NotCrossed, _) => Phase::BeforeBoundary,
@@ -316,34 +316,34 @@ impl UnitEffectOwner for FakeOwner {
 
     async fn settle(
         &self,
-        slot: &UnitSlot,
-        call: UnitCall,
-        outcome: UnitOutcome<'_>,
-    ) -> Result<(), OwnerRefusal> {
+        slot: &JournalSlot,
+        call: CallGrant,
+        outcome: CallOutcome<'_>,
+    ) -> Result<(), JournalRefusal> {
         let mut state = self.state();
         if let Some(refusal) = state.fail_settle.take() {
             return Err(refusal);
         }
-        let fake = Self::by_id(&mut state, slot.id()).ok_or(OwnerRefusal::Mismatch)?;
+        let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
         if fake.phase != Phase::Outstanding(call) {
-            return Err(OwnerRefusal::Mismatch);
+            return Err(JournalRefusal::Mismatch);
         }
         let (recorded, step) = match outcome {
-            UnitOutcome::Applied(bytes) => (RecordedOutcome::Succeeded(bytes.to_vec()), "applied"),
-            UnitOutcome::AppliedWithoutOutput => {
+            CallOutcome::Applied(bytes) => (RecordedOutcome::Succeeded(bytes.to_vec()), "applied"),
+            CallOutcome::AppliedWithoutOutput => {
                 (RecordedOutcome::OutputUnavailable, "applied_without_output")
             },
-            UnitOutcome::Rejected(code) => (RecordedOutcome::Failed(code), code.as_str()),
+            CallOutcome::Rejected(code) => (RecordedOutcome::Failed(code), code.as_str()),
         };
         fake.phase = Phase::Resolved(recorded);
         state.log.push(Step::Settle(step));
         Ok(())
     }
 
-    fn track(&self) -> OwnerTicket {
+    fn track(&self) -> InFlight {
         self.in_flight.fetch_add(1, Ordering::SeqCst);
         let in_flight = Arc::clone(&self.in_flight);
-        OwnerTicket::new(move || {
+        InFlight::new(move || {
             in_flight.fetch_sub(1, Ordering::SeqCst);
         })
     }
@@ -632,7 +632,7 @@ impl Fixture {
     }
 
     fn owned(&self) -> ResourceHandle<StrictPooled> {
-        let owner = Arc::clone(&self.owner) as Arc<dyn UnitEffectOwner>;
+        let owner = Arc::clone(&self.owner) as Arc<dyn EffectJournal>;
         *self
             .manager
             .handle_any_journaled(
@@ -700,8 +700,8 @@ fn assert_unsent(error: &OperationError, kind: &ErrorKind) {
 #[test]
 fn the_owner_is_object_safe_and_an_owned_row_crosses_threads() {
     fn send_sync_clone<T: Send + Sync + Clone>() {}
-    let _: Option<Arc<dyn UnitEffectOwner>> = None;
-    send_sync_clone::<Arc<dyn UnitEffectOwner>>();
+    let _: Option<Arc<dyn EffectJournal>> = None;
+    send_sync_clone::<Arc<dyn EffectJournal>>();
     send_sync_clone::<ResourceHandle<StrictPooled>>();
 }
 
@@ -953,7 +953,7 @@ async fn settle_without_acknowledgement_after_the_apply_is_outcome_unknown() {
     let row = fixture.owned();
     fixture
         .owner
-        .fail_next_settle(OwnerRefusal::AcknowledgementUnknown);
+        .fail_next_settle(JournalRefusal::AcknowledgementUnknown);
 
     let error = row
         .submit_effect(Pay::<true>::new(&calls, vec![Reply::Ok(1)]))
@@ -1079,9 +1079,9 @@ async fn prepare_refusals_map_to_unsent_errors_without_a_call() {
     let row = fixture.owned();
 
     for refusal in [
-        OwnerRefusal::AcknowledgementUnknown,
-        OwnerRefusal::Unavailable,
-        OwnerRefusal::LeaseLost,
+        JournalRefusal::AcknowledgementUnknown,
+        JournalRefusal::Unavailable,
+        JournalRefusal::LeaseLost,
     ] {
         fixture.owner.fail_next_prepare(refusal);
         let error = row
@@ -1091,7 +1091,7 @@ async fn prepare_refusals_map_to_unsent_errors_without_a_call() {
         assert_unsent(&error, &ErrorKind::Backpressure);
         assert!(error.is_retryable());
     }
-    fixture.owner.fail_next_prepare(OwnerRefusal::Closed);
+    fixture.owner.fail_next_prepare(JournalRefusal::Closed);
     let closed = row
         .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await

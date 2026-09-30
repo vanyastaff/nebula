@@ -29,8 +29,8 @@ use super::{
     cost::{Cost, Effect, SentState},
     effect::IdempotencyKey,
     error::OperationError,
+    journal::{EffectJournal, JournalSlot},
     owned::{self, EffectDeclaration, EffectPlan, OutputCodec, OwnedEffect, OwnedSubmit, Prepared},
-    owner::{UnitEffectOwner, UnitSlot},
     pin::PinSlots,
     row::{CheckoutFit, RowShared},
     session::{SessionBinding, SessionProvider},
@@ -359,18 +359,18 @@ impl<R: Provider + PinSlots> Lease<R> {
 
 /// Which effects the caller that built a row facade may submit.
 #[derive(Debug, Clone, Default)]
-pub(crate) enum UnitEffectPolicy {
+pub(crate) enum EffectAuthority {
     /// Library callers may submit every declared operation effect.
     #[default]
-    Any,
+    Unjournaled,
     /// Action execution without effect-owner authority may perform reads only.
     ReadOnly,
     /// Action execution with effect-owner authority: reads as usual,
     /// effects only through `submit_effect` / `session_effect`, driven
     /// through `owner`.
-    Owned {
-        /// The execution owner that records the row's effects.
-        owner: Arc<dyn UnitEffectOwner>,
+    Journaled {
+        /// The execution journal that records the row's effects.
+        owner: Arc<dyn EffectJournal>,
         /// The row's credential slot identity, as the owner binds effects.
         binding: SlotIdentity,
     },
@@ -392,7 +392,7 @@ pub(crate) struct UnitScope {
     /// The parent deadline.
     pub(crate) deadline: Option<Instant>,
     /// Effects this caller is authorized to submit.
-    pub(crate) effect_policy: UnitEffectPolicy,
+    pub(crate) effect_authority: EffectAuthority,
 }
 
 impl UnitScope {
@@ -405,21 +405,25 @@ impl UnitScope {
         Self {
             cancel: Some(ctx.cancel_token().clone()),
             deadline: options.deadline,
-            effect_policy: UnitEffectPolicy::Any,
+            effect_authority: EffectAuthority::Unjournaled,
         }
     }
 
     /// Restricts the facade to operations that declare [`Effect::Read`].
     pub(crate) fn read_only(mut self) -> Self {
-        self.effect_policy = UnitEffectPolicy::ReadOnly;
+        self.effect_authority = EffectAuthority::ReadOnly;
         self
     }
 
     /// Lets the facade submit effects through `submit_effect` and
     /// `session_effect` only, driven through `owner`; `binding` is the
     /// row's credential slot identity.
-    pub(crate) fn owned(mut self, owner: Arc<dyn UnitEffectOwner>, binding: SlotIdentity) -> Self {
-        self.effect_policy = UnitEffectPolicy::Owned { owner, binding };
+    pub(crate) fn journaled(
+        mut self,
+        owner: Arc<dyn EffectJournal>,
+        binding: SlotIdentity,
+    ) -> Self {
+        self.effect_authority = EffectAuthority::Journaled { owner, binding };
         self
     }
 
@@ -430,13 +434,13 @@ impl UnitScope {
         if effect == Effect::Read {
             return None;
         }
-        match self.effect_policy {
-            UnitEffectPolicy::Any => None,
-            UnitEffectPolicy::ReadOnly => {
+        match self.effect_authority {
+            EffectAuthority::Unjournaled => None,
+            EffectAuthority::ReadOnly => {
                 Some("managed row effect requires execution-owner authority")
             },
-            UnitEffectPolicy::Owned { .. } if declared => None,
-            UnitEffectPolicy::Owned { .. } => {
+            EffectAuthority::Journaled { .. } if declared => None,
+            EffectAuthority::Journaled { .. } => {
                 Some("execution-owned effects go through submit_effect")
             },
         }
@@ -458,7 +462,7 @@ impl UnitScope {
             return Ok(None);
         };
         declaration.check(effect)?;
-        let UnitEffectPolicy::Owned { owner, binding } = &self.effect_policy else {
+        let EffectAuthority::Journaled { owner, binding } = &self.effect_authority else {
             // A library row runs a declared effect as a plain unit.
             return Ok(None);
         };
@@ -1219,7 +1223,7 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
         self.shared
             .effect()
             .and_then(OwnedEffect::slot)
-            .map(UnitSlot::idempotency_key)
+            .map(JournalSlot::idempotency_key)
     }
 }
 
