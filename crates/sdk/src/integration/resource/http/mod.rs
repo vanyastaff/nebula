@@ -19,10 +19,14 @@
 //!   outcome may be retried. Submit it with
 //!   [`Lease::submit`](nebula_resource::call::Lease::submit) — or call
 //!   [`send`] on an attempt of a custom operation.
-//! - **Answers.** [`send`] documents the classification: throttles are
-//!   reported to the rate limit and fail `Exhausted`; a `Write` that may
-//!   have been sent is never re-attempted; a failed unit's error never
-//!   carries the provider's text.
+//! - **Answers.** Each exchange classifies its answer once with an
+//!   [`OperationError`](nebula_resource::call::OperationError) constructor
+//!   ([`send`] has the table) — a connect failure `unreachable`, a lost
+//!   connection or a `5xx` `interrupted`, a `429` `throttled`, another
+//!   `4xx` `rejected` — and the runtime derives the sent state, the rate
+//!   limit's verdict and any re-attempt from it: a throttle pauses the
+//!   quota, a `Write` that may have been sent is never re-attempted, and a
+//!   failed unit's error never carries the provider's text.
 //! - **Streams.** [`open_stream`] runs one exchange as one streaming unit
 //!   and returns a [`ResponseStream`] once the head arrived; the body is
 //!   read in chunks through a small buffer, so a slow reader pushes back on
