@@ -536,7 +536,8 @@ let admitted = recorded.readmit_against(fresh)?;
   calls that may have crossed spend the budget, and the windows bind only once
   a call may have crossed; a never-crossed slot stays grantable at any age,
   bounded by a total of `OperationProtocolRecord::GRANT_CEILING` (10 000)
-  grants whose refusal is `RecoveryExhausted` with no state change. Applies to
+  grants whose refusal is `RecoveryExhausted` with no state change (a slot that
+  may have crossed records `OutcomeUnknown` at the ceiling instead). Applies to
   every ledger backend and to the remote-effect driver, whose first possibly
   crossing call now takes its deadline from its own grant. Remaining
   limitation: after a late first crossing the windows are still measured from

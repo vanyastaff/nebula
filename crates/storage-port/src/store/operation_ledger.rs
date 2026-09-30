@@ -116,8 +116,9 @@ pub trait OperationLedger: Send + Sync + fmt::Debug {
     /// calls that may have crossed spend the invocation budget, and the
     /// recovery and stable-key windows bind only after the first such call, so
     /// a slot that never crossed is granted at any age.
-    /// A grant beyond [`OperationProtocolRecord::GRANT_CEILING`] total permits
-    /// and exhausted read-only queries return
+    /// At [`OperationProtocolRecord::GRANT_CEILING`] total permits a slot that
+    /// may have crossed records `OutcomeUnknown`; a never-crossed slot and
+    /// exhausted read-only queries return
     /// [`OperationLedgerError::RecoveryExhausted`] with no state change.
     ///
     /// [`OperationProtocolRecord::GRANT_CEILING`]: crate::dto::OperationProtocolRecord::GRANT_CEILING

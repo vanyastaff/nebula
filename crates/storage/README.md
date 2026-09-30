@@ -231,7 +231,8 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   provider boundary spend `max_invocations`, and the recovery and stable-key windows bind only
   after the first such call: a call recorded `BeforeBoundary` is counted in `not_crossed`, so a
   slot that never crossed stays grantable at any age, up to `GRANT_CEILING` (10 000) total
-  grants, whose refusal is `RecoveryExhausted` with no state change. Exhaustion or expiry
+  grants, whose refusal is `RecoveryExhausted` with no state change (a slot that may have
+  crossed records `OutcomeUnknown` at the ceiling instead). Exhaustion or expiry
   records `OutcomeUnknown`, after which no effecting call may repeat. `AcknowledgementUnknown` applies to
   prepare and outcome database commits: prepare uncertainty forbids provider invocation until
   database-only reconciliation confirms the exact durable prepared record and ID; outcome

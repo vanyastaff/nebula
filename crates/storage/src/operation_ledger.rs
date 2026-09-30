@@ -235,12 +235,16 @@ fn grant_invocation(
         },
         _ => transition.phase != EffectPhase::Ambiguous,
     };
-    // The total ceiling bounds a slot that is refused locally forever. Its
+    // The total ceiling bounds a slot that is refused locally forever. A slot
+    // that may have sent something must still reach OutcomeUnknown so
+    // reconciliation can start; only a never-crossed slot is refused, and that
     // refusal changes nothing and authorizes nothing, so it is known not sent.
-    if transition.invocations >= OperationProtocolRecord::GRANT_CEILING {
+    let at_ceiling = transition.invocations >= OperationProtocolRecord::GRANT_CEILING;
+    if at_ceiling && !ever_crossed {
         return Err(OperationLedgerError::RecoveryExhausted);
     }
-    if crossed >= policy.max_invocations()
+    if at_ceiling
+        || crossed >= policy.max_invocations()
         || (ever_crossed && !transition.is_within_window(policy.recovery_window_ms(), now_ms))
         || !stable_key_is_valid
     {
@@ -996,8 +1000,10 @@ mod tests {
 
     /// A slot refused locally on every call spends no budget, so the total
     /// ceiling is what stops it; that refusal authorizes and changes nothing.
+    /// A slot that may have sent something instead ends in OutcomeUnknown at
+    /// the ceiling, so it never stays stuck where reconciliation cannot start.
     #[test]
-    fn the_grant_ceiling_refuses_as_known_not_sent_without_a_state_change() {
+    fn the_grant_ceiling_refuses_never_crossed_slots_and_ends_crossed_ones_unknown() {
         let ceiling = OperationProtocolRecord::GRANT_CEILING;
         let at_ceiling = |not_crossed| {
             let protocol = OperationProtocolRecord::prepared(contract(), 0)
@@ -1026,18 +1032,18 @@ mod tests {
             .map(|decision| decision.changed),
             Err(OperationLedgerError::RecoveryExhausted)
         );
-        // One call may have crossed and budget remains: still the ceiling.
+        // One call may have crossed: the slot must not stay stuck refusing, so
+        // it moves to OutcomeUnknown where reconciliation can start.
         let stored = at_ceiling(ceiling - 1);
-        assert_eq!(
-            decide_advance(
-                &stored,
-                &grant,
-                30_000,
-                OperationCallId::from_bytes([8; 16])
-            )
-            .map(|decision| decision.changed),
-            Err(OperationLedgerError::RecoveryExhausted)
-        );
+        let decision = decide_advance(
+            &stored,
+            &grant,
+            30_000,
+            OperationCallId::from_bytes([8; 16]),
+        )
+        .unwrap();
+        assert!(decision.changed);
+        assert_eq!(decision.record.state(), OperationState::OutcomeUnknown);
 
         // One below the ceiling a never-crossed slot is still granted, even
         // long after its recovery and stable-key windows.
