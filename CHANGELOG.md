@@ -11,6 +11,47 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **The Journaled action effect default advances development packages to
+  0.25.0 in lockstep.** An action that declares no effect contract is no
+  longer refused; it may perform effects, but only through resource handles:
+  - `ActionEffectContract::Undeclared` is removed. The default is now
+    `ActionEffectContract::Journaled(JournalProtocol::V1)`, serialized as
+    `{"Journaled":"V1"}`; the old `"Undeclared"` tag no longer decodes.
+    `JournalProtocol` (non-exhaustive, `V1`) is re-exported from
+    `nebula_action` and its prelude. `ReadOnly` keeps its frozen
+    `"NoExternalEffects"` wire tag and `#[action(read_only)]` remains the
+    only effect flag; `Remote(..)` is unchanged and stays stateless-only.
+  - The Graph-v1 compiler no longer raises
+    `PLUGIN_PLAN_GRAPH_V1:UNDECLARED_EFFECTS` (and its activation diagnostic
+    and remediation are gone). New plans record the default as
+    `{"Journaled":{"protocol_version":1}}`; an unknown protocol version fails
+    the plan's integrity check. Because the closed effect grammar grew a
+    variant, new plans use compiler epoch 6 (canonical hash version 3), so
+    their plan revision ids differ from epoch-5 ids for the same workflow.
+    Epoch-5 records stay readable exactly as before and reject a `Journaled`
+    effect as non-canonical. `nebula_plugin::RecordedPlanEpochV1` decodes a
+    record's version header so a reader refuses an unknown epoch
+    (`UnsupportedFormat`) before decoding its body; the engine's plan loader
+    does. A reader from before this release decodes the body first, so it
+    refuses an epoch-6 record either as an unsupported format or, when an
+    action records `Journaled`, as a record decode error — never as a
+    readable plan. A plan recorded without an effect field stays
+    `PlanActionEffectContract::LegacyUndeclared` and is still refused — it is
+    never reinterpreted as `Journaled`.
+  - Only handle-routed effects are journaled; a side channel an action opens
+    itself is invisible to the engine. Until the engine effect journal lands,
+    a `Journaled` action of any kind runs with read-only handle authority:
+    reads run, and a write through a handle is refused as `NotSent` before
+    any provider call. A `Journaled` action cannot take a raw lease: a
+    `ResourceGuard<R>` slot, `acquire_resource_by_id` or a raw
+    `acquire_any` / `try_acquire_any` fails with a non-retryable
+    `CoreError::ResourceUnavailable` pointing at `ResourceHandle<R>`.
+  - The public `ActionRuntime` entry points (`execute_action*`,
+    `execute_action_with_node`) still run only explicitly `ReadOnly`
+    actions and refuse a `Journaled` one with `EffectRequiresOwner`, as they
+    refused `Undeclared`: a caller-supplied context may carry any resource
+    accessor. `Journaled` actions run through the engine's node dispatch.
+
 - **One outcome classification for managed calls advances development
   packages to 0.24.0 in lockstep.** A provider call's result is classified
   once and the runtime derives the attempt's sent state, the rate limit's

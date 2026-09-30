@@ -30,6 +30,17 @@ use super::{
     runner::{ActionRunContext, ActionRunner},
 };
 
+/// Who built the resource accessor of a dispatch's context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceAuthority {
+    /// A public entry point: the caller's context may carry any accessor,
+    /// including one that hands out write-enabled row facades or raw leases.
+    CallerSupplied,
+    /// The engine's node dispatch: a journaled action's accessor serves
+    /// read-only row facades and refuses raw leases.
+    EngineJournaled,
+}
+
 /// Compute a deterministic digest of the serialized stateful state for
 /// stuck-state detection.
 ///
@@ -284,7 +295,10 @@ impl ActionRuntime {
     /// Returns [`RuntimeError::ActionNotFound`] if the key does not resolve to a
     /// registered action, [`RuntimeError::TriggerNotExecutable`] /
     /// [`RuntimeError::ResourceNotExecutable`] if the key resolves to a
-    /// handler kind that is not executable through this runtime, or
+    /// handler kind that is not executable through this runtime,
+    /// [`RuntimeError::EffectRequiresOwner`] unless the action is declared
+    /// read-only (a journaled action — the default contract — runs only on
+    /// the engine's node dispatch, which controls its resource authority), or
     /// [`RuntimeError::ActionError`] / [`RuntimeError::DataLimitExceeded`]
     /// if execution fails.
     pub async fn execute_action(
@@ -351,6 +365,11 @@ impl ActionRuntime {
 
     /// Execute a factory retained by the engine's exact revision witness.
     /// This path never consults the mutable action registry.
+    ///
+    /// The engine built `context`: its resource accessor is the engine's,
+    /// restricted for a journaled action to read-only row facades with raw
+    /// leases refused, so a journaled action is admitted here — and only
+    /// here.
     pub(crate) async fn execute_resolved_action(
         &self,
         factory: Arc<dyn ActionFactory>,
@@ -365,6 +384,7 @@ impl ActionRuntime {
             nebula_action::ActionInput::Resolved(input),
             context,
             None,
+            ResourceAuthority::EngineJournaled,
         )
         .await
     }
@@ -400,6 +420,7 @@ impl ActionRuntime {
             nebula_action::ActionInput::Raw(input),
             context,
             checkpoint,
+            ResourceAuthority::CallerSupplied,
         )
         .await
     }
@@ -407,9 +428,10 @@ impl ActionRuntime {
     /// Dispatch through the factory path — instantiate a fresh
     /// [`ActionHandle`] for the supplied workflow node and dispatch it.
     /// The factory's admitted metadata must explicitly declare no external
-    /// effects, and the factory must expose no remote capability. This check
-    /// precedes construction; generic dispatch cannot issue an execution-owner
-    /// grant.
+    /// effects — or, on the engine's own node dispatch only, a journaled
+    /// contract served read-only resource authority — and the factory must
+    /// expose no remote capability. This check precedes construction;
+    /// generic dispatch cannot issue an execution-owner grant.
     ///
     /// Metric contract:
     ///
@@ -458,6 +480,10 @@ impl ActionRuntime {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the shared dispatch core takes every entry point's inputs plus its authority"
+    )]
     async fn run_factory(
         &self,
         action_key: &str,
@@ -466,6 +492,7 @@ impl ActionRuntime {
         input: nebula_action::ActionInput,
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+        authority: ResourceAuthority,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = &self.action_failures_total;
         let metadata = factory.metadata();
@@ -481,11 +508,18 @@ impl ActionRuntime {
                 key: action_key.to_owned(),
             });
         }
-        if !matches!(
-            metadata.effect_contract(),
-            nebula_action::effect::ActionEffectContract::ReadOnly
-        ) || factory.remote_effect_factory().is_some()
-        {
+        // A journaled action runs only under engine-built resource authority:
+        // read-only row facades and no raw leases, until the engine effect
+        // journal lands. A caller-supplied context may carry any accessor, so
+        // generic dispatch refuses it. Remote effects need their owner.
+        let admitted = match metadata.effect_contract() {
+            nebula_action::effect::ActionEffectContract::ReadOnly => true,
+            nebula_action::effect::ActionEffectContract::Journaled(_) => {
+                authority == ResourceAuthority::EngineJournaled
+            },
+            _ => false,
+        };
+        if !admitted || factory.remote_effect_factory().is_some() {
             self.observe_rejected("effect_requires_owner");
             return Err(RuntimeError::EffectRequiresOwner);
         }

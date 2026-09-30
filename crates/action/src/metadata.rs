@@ -155,7 +155,7 @@ impl ActionMetadataDraft {
             inputs: port::default_input_ports(),
             outputs: port::default_output_ports(),
             isolation_level: IsolationLevel::None,
-            effect_contract: ActionEffectContract::Undeclared,
+            effect_contract: ActionEffectContract::default(),
             max_concurrent: None,
         }
     }

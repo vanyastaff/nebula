@@ -1505,27 +1505,36 @@ mod resource_handle {
         };
     }
 
+    /// No `read_only` attestation: the default `Journaled(V1)` contract.
     #[derive(nebula_action::Action)]
     #[action(
-        key = "test.resource_handle.undeclared",
-        name = "Undeclared managed row",
-        description = "safe-default integration action",
+        key = "test.resource_handle.journaled",
+        name = "Journaled managed row",
+        description = "default-contract integration action",
         input = serde_json::Value,
         output = serde_json::Value
     )]
-    struct UndeclaredRow {
+    struct JournaledRow {
         #[resource]
         svc: ResourceHandle<Svc>,
     }
 
-    impl StatelessAction for UndeclaredRow {
+    impl StatelessAction for JournaledRow {
         async fn execute(
             &self,
             _input: serde_json::Value,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             let calls = self.svc.submit(Call { cost: Cost::ONE }).await?;
-            Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
+            let refused = self
+                .svc
+                .submit(LostWrite)
+                .await
+                .expect_err("a journaled write needs the engine journal");
+            Ok(ActionResult::success(serde_json::json!({
+                "calls": calls,
+                "write_sent": refused.sent().as_str(),
+            })))
         }
     }
 
@@ -1578,24 +1587,272 @@ mod resource_handle {
     // ── (a) a unit runs on the row ───────────────────────────────────────
 
     #[tokio::test]
-    async fn a_derived_action_without_effect_attestation_is_rejected_before_instantiation() {
+    async fn a_journaled_action_reads_but_its_writes_are_refused_before_the_provider() {
         let manager = Arc::new(Manager::new());
         let calls = register_svc(&manager, None);
         let engine = engine(manager, |registry| {
             registry
-                .register_stateless_factory::<UndeclaredRow>()
+                .register_stateless_factory::<JournaledRow>()
                 .expect("register");
         });
 
         let result = run(
             &engine,
-            node_of("test.resource_handle.undeclared", "svc", &Svc::key()),
+            node_of("test.resource_handle.journaled", "svc", &Svc::key()),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
         .await;
-        assert!(!result.is_success());
-        assert_eq!(calls.count(), 0, "the action was never instantiated");
+        assert!(result.is_success(), "{result:?}");
+        assert_eq!(output(&result)["calls"], 1, "the read ran");
+        assert_eq!(output(&result)["write_sent"], "not_sent");
+        assert_eq!(
+            calls.count(),
+            1,
+            "only the read reached the provider; the write made zero provider calls"
+        );
+    }
+
+    /// Default contract holding a raw lease slot: a `ResourceGuard<R>`
+    /// derefs to the provider client, so it would bypass the journal.
+    #[derive(nebula_action::Action)]
+    #[action(
+        key = "test.resource_handle.journaled_guard",
+        name = "Journaled raw lease slot",
+        description = "default-contract action holding a raw lease",
+        input = serde_json::Value,
+        output = serde_json::Value
+    )]
+    struct JournaledGuard {
+        #[resource]
+        svc: nebula_resource::ResourceGuard<Svc>,
+    }
+
+    impl StatelessAction for JournaledGuard {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            // Unreachable when the slot is refused: a write through the lease.
+            self.svc.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ActionResult::success(serde_json::json!(null)))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_journaled_action_with_a_raw_lease_slot_is_refused_before_its_body() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<JournaledGuard>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            node_of("test.resource_handle.journaled_guard", "svc", &Svc::key()),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(!result.is_success(), "{result:?}");
+        let error = result
+            .node_errors
+            .get(&node_key!("row"))
+            .expect("the node failed");
+        assert!(
+            error.starts_with("ACTION:FATAL"),
+            "slot resolution fails non-retryably: {error}"
+        );
+        assert_eq!(calls.count(), 0, "no lease reached the action body");
+    }
+
+    /// Default contract acquiring a raw lease by id in its body.
+    #[derive(nebula_action::Action)]
+    #[action(
+        key = "test.resource_handle.journaled_by_id",
+        name = "Journaled raw lease by id",
+        description = "default-contract action acquiring a raw lease by id",
+        input = serde_json::Value,
+        output = serde_json::Value
+    )]
+    struct JournaledById;
+
+    impl StatelessAction for JournaledById {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            use nebula_action::context::ActionContextExt as _;
+
+            let key = Svc::key();
+            let by_id = match ctx.acquire_resource_by_id::<Svc>(key.as_str()).await {
+                Ok(guard) => {
+                    guard.0.fetch_add(1, Ordering::SeqCst);
+                    None
+                },
+                Err(error) => Some(
+                    std::error::Error::source(&error)
+                        .map_or_else(|| error.to_string(), ToString::to_string),
+                ),
+            };
+            let optional_refused = ctx.resources().try_acquire_any(&key).await.is_err();
+            Ok(ActionResult::success(serde_json::json!({
+                "by_id": by_id,
+                "optional_refused": optional_refused,
+            })))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_journaled_action_cannot_acquire_a_raw_lease_by_id() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<JournaledById>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            NodeDefinition::new(
+                node_key!("row"),
+                "Row",
+                "core",
+                "test.resource_handle.journaled_by_id",
+            )
+            .expect("valid node"),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(result.is_success(), "{result:?}");
+        let refusal = output(&result)["by_id"]
+            .as_str()
+            .expect("the raw lease is refused");
+        assert!(
+            refusal.contains("ResourceHandle<R>"),
+            "the refusal points at the handle: {refusal}"
+        );
+        assert_eq!(
+            output(&result)["optional_refused"],
+            true,
+            "an optional lease is refused, not reported absent"
+        );
+        assert_eq!(calls.count(), 0);
+    }
+
+    type Erased = Box<dyn std::any::Any + Send + Sync>;
+    type BoxFut<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+    /// A caller-built accessor whose row facades carry full write authority.
+    struct WriteEnabled(Arc<Manager>);
+
+    impl WriteEnabled {
+        fn ctx() -> ResourceContext {
+            ResourceContext::minimal(
+                nebula_core::scope::Scope::default(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+        }
+    }
+
+    impl nebula_core::accessor::ResourceAccessor for WriteEnabled {
+        fn has(&self, _key: &ResourceKey) -> bool {
+            true
+        }
+
+        fn acquire_any(
+            &self,
+            key: &ResourceKey,
+        ) -> BoxFut<'_, Result<Erased, nebula_core::CoreError>> {
+            let key = key.clone();
+            Box::pin(async move {
+                Manager::acquire_any(
+                    Arc::clone(&self.0),
+                    &key,
+                    &Self::ctx(),
+                    &nebula_resource::AcquireOptions::default(),
+                    &SlotIdentity::Unbound,
+                )
+                .await
+                .map_err(|error| error.to_core_error())
+            })
+        }
+
+        fn try_acquire_any(
+            &self,
+            key: &ResourceKey,
+        ) -> BoxFut<'_, Result<Option<Erased>, nebula_core::CoreError>> {
+            let lease = self.acquire_any(key);
+            Box::pin(async move { lease.await.map(Some) })
+        }
+
+        fn resource_handle_any(&self, key: &ResourceKey) -> Result<Erased, nebula_core::CoreError> {
+            self.0
+                .handle_any(
+                    key,
+                    &Self::ctx(),
+                    &nebula_resource::AcquireOptions::default(),
+                    &SlotIdentity::Unbound,
+                )
+                .map_err(|error| error.to_core_error())
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_dispatch_of_a_journaled_action_cannot_write_through_a_caller_accessor() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let registry = Arc::new(ActionRegistry::new());
+        registry
+            .register_stateless_factory::<JournaledRow>()
+            .expect("register");
+        let runtime = ActionRuntime::try_new(
+            registry,
+            Arc::new(InProcessRunner::new()),
+            DataPassingPolicy::default(),
+            MetricsRegistry::new(),
+        )
+        .expect("runtime");
+        let accessor = Arc::new(WriteEnabled(Arc::clone(&manager)));
+        let ctx = nebula_action::testing::TestContextBuilder::new()
+            .build()
+            .with_resources(Arc::clone(&accessor) as _);
+
+        let result = runtime
+            .execute_action_with_node(
+                &node_of("test.resource_handle.journaled", "svc", &Svc::key()),
+                None,
+                serde_json::json!(null),
+                &ctx,
+                None,
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(nebula_engine::RuntimeError::EffectRequiresOwner)
+            ),
+            "{result:?}"
+        );
+        assert_eq!(calls.count(), 0, "the action body never ran");
+
+        // The accessor really is write-enabled: its facade reaches the
+        // provider with a write.
+        let row = nebula_core::accessor::ResourceAccessor::resource_handle_any(
+            accessor.as_ref(),
+            &Svc::key(),
+        )
+        .expect("facade")
+        .downcast::<ResourceHandle<Svc>>()
+        .expect("a ResourceHandle<Svc>");
+        let _ = row.submit(LostWrite).await;
+        assert_eq!(calls.count(), 1, "the write reached the provider");
     }
 
     row_action!(ReadSvc, "test.resource_handle.read", svc: Svc);

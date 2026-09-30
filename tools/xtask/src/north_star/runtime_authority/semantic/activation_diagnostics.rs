@@ -108,11 +108,6 @@ const SCENARIOS: &[ScenarioRule] = &[
     ),
     rule("graph_cycle", Boundary::Compiler, &["GRAPH_CYCLE"]),
     rule(
-        "undeclared_effects",
-        Boundary::Compiler,
-        &["UNDECLARED_EFFECTS"],
-    ),
-    rule(
         "unsupported_node_kind",
         Boundary::Compiler,
         &["UNSUPPORTED_NODE_KIND"],

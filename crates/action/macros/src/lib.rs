@@ -39,8 +39,10 @@ mod field_slots;
 /// - `input = Type` - Action input type (required)
 /// - `output = Type` - Action output type (required)
 /// - `read_only` - Explicit author attestation that the action performs no external business
-///   effects (`ActionEffectContract::ReadOnly`). Without it the effect contract remains
-///   `Undeclared` and durable admission rejects the action.
+///   effects (`ActionEffectContract::ReadOnly`). Without it the effect contract is the
+///   default `Journaled(JournalProtocol::V1)`: effects routed through resource handles are
+///   journaled by the engine (until the engine journal lands, writes through handles are
+///   refused before any provider call).
 ///
 /// # Example
 ///

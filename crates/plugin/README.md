@@ -36,12 +36,18 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
   `WorkflowVersionId` and `WorkflowDefinition` into an opaque
   `ExecutablePlanRevision`. The compiler selects the registry's own exact plugin set/flavor,
   validates the closed Graph-v1 contract, and leaves resource/credential selectors abstract.
-  New plans use compiler version 5 and canonical hash version 3 inside the unchanged v1
+  New plans use compiler version 6 and canonical hash version 3 inside the unchanged v1
   record framing. They pin effect declarations, binding-selector provenance, and schema
-  property policy v2. Historical compiler 1/hash 1, compiler 3/hash 2, and compiler 4/hash 2
+  property policy v2. Compiler 6 is the first epoch whose effect grammar includes
+  `Journaled`; compiler 5/hash 3 records remain checked plans and reject a `Journaled`
+  effect as non-canonical. Readers decode `RecordedPlanEpochV1` and `check` it before the
+  record body, so an unknown epoch is refused before its grammar is decoded. Historical compiler 1/hash 1, compiler 3/hash 2, and compiler 4/hash 2
   or 3 records retain their original bytes and hashes as untrusted evidence. They cannot
   mint a current checked plan; recompile against freshly admitted component definitions.
-  An undeclared factory cannot produce a new durable plan.
+  Every new plan records the action's effect contract; the default `Journaled` contract
+  (handle-routed effects only) compiles like `ReadOnly`. A historical record without an
+  effect field stays legacy-undeclared and is refused at execution, never reinterpreted
+  as `Journaled`.
 - `ExecutablePlanRevision` / `RecordedExecutablePlanRevisionV1` — immutable checked plan and its
   persistable v1 projection. A recorded value becomes trusted only through the fallible integrity
   check; `validate_against` separately proves exact compatibility with a frozen registry.

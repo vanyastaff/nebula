@@ -168,9 +168,14 @@ fn make_runtime_with_metrics(registry: Arc<ActionRegistry>) -> (ActionRuntime, M
     (rt, metrics)
 }
 
-#[tokio::test]
-async fn generic_dispatch_rejects_undeclared_effect_before_action_code() {
-    use nebula_action::effect::ActionEffectContract;
+async fn dispatch_counted_contract(
+    contract: nebula_action::effect::ActionEffectContract,
+    authority: ResourceAuthority,
+) -> (
+    Result<ActionResult<serde_json::Value>, RuntimeError>,
+    usize,
+    MetricsRegistry,
+) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountedAction(Arc<AtomicUsize>);
@@ -212,7 +217,7 @@ async fn generic_dispatch_rejects_undeclared_effect_before_action_code() {
                 nebula_action::metadata_name!("Guard"),
                 "effect gate",
             )
-            .with_effect_contract(ActionEffectContract::Undeclared),
+            .with_effect_contract(contract),
             CountedAction(Arc::clone(&executions)),
         )
         .expect("typed fixture metadata admits"),
@@ -227,11 +232,78 @@ async fn generic_dispatch_rejects_undeclared_effect_before_action_code() {
             nebula_action::ActionInput::Raw(serde_json::Value::Null),
             &test_context(),
             None,
+            authority,
         )
         .await;
+    (result, executions.load(Ordering::Relaxed), metrics)
+}
+
+#[tokio::test]
+async fn generic_dispatch_rejects_a_journaled_effect_before_action_code() {
+    let (result, executions, metrics) = dispatch_counted_contract(
+        nebula_action::effect::ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1),
+        ResourceAuthority::CallerSupplied,
+    )
+    .await;
 
     std::assert_matches!(result, Err(RuntimeError::EffectRequiresOwner));
-    assert_eq!(executions.load(Ordering::Relaxed), 0);
+    assert_eq!(executions, 0, "a caller-supplied accessor is never trusted");
+    let labels = metrics
+        .interner()
+        .label_set(&[("reason", "effect_requires_owner")]);
+    assert_eq!(
+        metrics
+            .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+            .unwrap()
+            .get(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn engine_dispatch_admits_a_journaled_effect_with_read_only_authority() {
+    let (result, executions, metrics) = dispatch_counted_contract(
+        nebula_action::effect::ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1),
+        ResourceAuthority::EngineJournaled,
+    )
+    .await;
+
+    assert!(result.is_ok(), "journaled dispatch must run: {result:?}");
+    assert_eq!(executions, 1);
+    let labels = metrics
+        .interner()
+        .label_set(&[("reason", "effect_requires_owner")]);
+    assert_eq!(
+        metrics
+            .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+            .unwrap()
+            .get(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn generic_dispatch_rejects_a_remote_effect_without_capability_before_action_code() {
+    use nebula_action::effect::{
+        ActionEffectContract, RemoteDestinationGuarantee, RemoteEffectDescriptor,
+        RemoteEffectPolicy,
+    };
+
+    let policy = RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
+        .maximum_invocations(1)
+        .maximum_queries(0)
+        .recovery_window(std::time::Duration::from_mins(1))
+        .build()
+        .unwrap();
+    let descriptor = RemoteEffectDescriptor::new("test.provider/v1", 1, policy).unwrap();
+    let (result, executions, metrics) = dispatch_counted_contract(
+        ActionEffectContract::Remote(Box::new(descriptor)),
+        ResourceAuthority::EngineJournaled,
+    )
+    .await;
+
+    std::assert_matches!(result, Err(RuntimeError::EffectRequiresOwner));
+    assert_eq!(executions, 0);
     let labels = metrics
         .interner()
         .label_set(&[("reason", "effect_requires_owner")]);
