@@ -662,8 +662,9 @@ impl<R: Provider + PinSlots> Operation<R> for Look {
     }
 }
 
-/// A stream of three items: a `Write` when `WRITE`, a read otherwise.
-struct Ticks<const WRITE: bool>(Arc<Calls>);
+/// A stream of three items: a `Write` when `WRITE`, a read otherwise; its
+/// attempt records the idempotency key it sees.
+struct Ticks<const WRITE: bool>(Arc<Calls>, Option<&'static str>);
 
 impl<R: Provider + PinSlots, const WRITE: bool> StreamOperation<R> for Ticks<WRITE> {
     type Item = u8;
@@ -671,13 +672,17 @@ impl<R: Provider + PinSlots, const WRITE: bool> StreamOperation<R> for Ticks<WRI
     const KEY: &'static str = "billing.ticks";
     const EFFECT: Effect = if WRITE { Effect::Write } else { Effect::Read };
 
+    fn idempotency_key(&self) -> Option<String> {
+        self.1.map(str::to_owned)
+    }
+
     async fn run(
         self,
         cx: &mut OperationCx<'_, R>,
         mut sink: StreamSink<u8>,
     ) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
-        self.0.call(None);
+        self.0.call(attempt.idempotency_key());
         attempt.settle(SentState::Sent);
         for tick in 0..3 {
             sink.send(tick).await?;
@@ -1521,7 +1526,7 @@ async fn streamed_effects_are_refused_on_a_journaled_row() {
 
     let refused = fixture
         .owned()
-        .submit_streaming(Ticks::<true>(Arc::clone(&calls)), capacity)
+        .submit_streaming(Ticks::<true>(Arc::clone(&calls), None), capacity)
         .finish()
         .await
         .expect_err("not journaled in v1");
@@ -1532,7 +1537,7 @@ async fn streamed_effects_are_refused_on_a_journaled_row() {
     );
     let read_only = fixture
         .read_only()
-        .submit_streaming(Ticks::<true>(Arc::clone(&calls)), capacity)
+        .submit_streaming(Ticks::<true>(Arc::clone(&calls), None), capacity)
         .finish()
         .await
         .expect_err("no effect authority");
@@ -1541,18 +1546,36 @@ async fn streamed_effects_are_refused_on_a_journaled_row() {
 
     fixture
         .owned()
-        .submit_streaming(Ticks::<false>(Arc::clone(&calls)), capacity)
+        .submit_streaming(Ticks::<false>(Arc::clone(&calls), None), capacity)
         .finish()
         .await
         .expect("a streamed read runs");
     fixture
         .library()
-        .submit_streaming(Ticks::<true>(Arc::clone(&calls)), capacity)
+        .submit_streaming(Ticks::<true>(Arc::clone(&calls), None), capacity)
         .finish()
         .await
         .expect("a library stream runs");
     assert_eq!(calls.made(), 2);
     assert!(fixture.owner.log().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_keyed_stream_presents_a_local_key_to_its_attempt() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    fixture
+        .library()
+        .submit_streaming(
+            Ticks::<true>(Arc::clone(&calls), Some("tick-1")),
+            NonZeroUsize::MIN,
+        )
+        .finish()
+        .await
+        .expect("a keyed library stream");
+    let local = local_idempotency_key(&StrictPooled::key(), "billing.ticks", 1, "tick-1")
+        .expect("local key");
+    assert_eq!(calls.keys(), vec![Some(local.to_string())]);
 }
 
 // ── sessions ─────────────────────────────────────────────────────────────

@@ -1396,6 +1396,14 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
         self.pinned
     }
 
+    /// The unit's provider idempotency key, as
+    /// [`OperationCx::idempotency_key`]: the same for every attempt. For a
+    /// helper that sends a request on a granted attempt.
+    #[must_use]
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.shared.idempotency_key()
+    }
+
     /// Reports what the provider said about its limit on this attempt: a
     /// [`Verdict::Throttled`] pauses every caller of the quota (a keyed
     /// cost's [`Verdict::KeyThrottled`] pauses only its key), a

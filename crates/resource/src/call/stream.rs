@@ -128,6 +128,14 @@ pub trait StreamOperation<R: Provider + PinSlots>: Send + 'static {
     /// operation declares otherwise.
     const EFFECT: Effect = Effect::Write;
 
+    /// The developer part of the provider idempotency key, as
+    /// [`Operation::idempotency_key`](super::Operation::idempotency_key): a
+    /// stream that declares one presents a local key
+    /// ([`OperationCx::idempotency_key`]). `None` by default.
+    fn idempotency_key(&self) -> Option<String> {
+        None
+    }
+
     /// How many attempts one unit may be granted; one by default.
     fn max_attempts(&self) -> NonZeroU32 {
         NonZeroU32::MIN
@@ -240,7 +248,7 @@ where
     }
 
     fn key_part(&self) -> Option<String> {
-        None
+        self.operation.idempotency_key()
     }
 
     fn canonical_request(&self) -> Result<Vec<u8>, OperationError> {
