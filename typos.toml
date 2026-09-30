@@ -16,6 +16,9 @@ extend-exclude = [
   "CHANGELOG.md",
   "migrations/",
   "deny.toml",
+  # trybuild compiler-output snapshots — rustc text with third-party paths
+  # (e.g. `serde_core::ser::Serialize`), not prose we author.
+  "*.stderr",
   # Spike iterations — reference-only artefacts, not production code.
   "spike-iter-1-2",
   "spike-iter-3",
