@@ -108,6 +108,17 @@ Use `task --list` for the full catalog.
 - Compile-fail / proc-macro tests via `trybuild` (see
   `crates/resource/tests/trybuild/`).
 - New public API → at least one happy-path test + one error-path test.
+- A fail-closed regression test (tenant scope, authorization, ownership)
+  must fail when the fix is reverted. Seed the fixture under the value the
+  *old* code read — e.g. a fixed placeholder scope — and exercise it under
+  a different, real one. Seeding under a real tenant and asserting
+  rejection also passes against a buggy implementation that reads under
+  the placeholder, so it proves nothing. Confirm it yourself: revert only
+  the fixed read site, run that single test, check it fails with the
+  predicted error, then restore.
+- Every code path that threads a tenant scope needs its own fail-closed
+  test. A shared mock that discards the scope argument makes propagation
+  unverifiable — capture the scope and assert on it.
 
 ## Commit / PR Guidelines
 
