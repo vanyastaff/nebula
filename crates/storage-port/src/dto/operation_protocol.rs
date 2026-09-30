@@ -446,7 +446,25 @@ impl std::fmt::Debug for FrozenOutcomeEvidence {
     }
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+const fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
 /// Read-only durable protocol projection. Deserializing never grants invocation authority.
+///
+/// # Budget accounting
+///
+/// `invocations` counts every issued permit; `not_crossed` counts the permits
+/// whose call was durably proven not to cross the provider boundary
+/// ([`InvocationDisposition::BeforeBoundary`]). Only the difference — the calls
+/// that *may* have reached the provider — spends the pinned
+/// [`PreparedEffectPolicy::max_invocations`] budget, and the recovery and
+/// stable-key windows constrain a slot only once at least one call may have
+/// crossed. Total permits stay bounded by [`Self::GRANT_CEILING`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationProtocolRecord {
@@ -456,6 +474,11 @@ pub struct OperationProtocolRecord {
     phase: EffectPhase,
     prepared_at_ms: i64,
     invocations: u32,
+    /// Absent (not `0`) when no permit was proven not crossed, so such a
+    /// record serializes byte-identically to one written before the counter
+    /// existed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    not_crossed: u32,
     queries: u32,
     invocation: Option<OperationCallId>,
     disposition: Option<InvocationDisposition>,
@@ -477,6 +500,10 @@ struct OperationProtocolRecordWire {
     phase: EffectPhase,
     prepared_at_ms: i64,
     invocations: u32,
+    /// Absent both for a zero counter and for a record written before the
+    /// counter existed; see [`legacy_not_crossed`].
+    #[serde(default)]
+    not_crossed: Option<u32>,
     queries: u32,
     invocation: Option<OperationCallId>,
     disposition: Option<InvocationDisposition>,
@@ -487,7 +514,26 @@ struct OperationProtocolRecordWire {
     provider_key: Option<ProviderIdempotencyKey>,
 }
 
+/// The not-crossed count of a record that does not carry the counter.
+///
+/// A current record omits the counter only when it is zero, and a current
+/// record whose latest call is `BeforeBoundary` always counts at least that
+/// call — so an absent counter beside a `BeforeBoundary` disposition can only
+/// be a record written before the counter existed. Its latest call was proven
+/// not to cross, so counting exactly that one is truthful; earlier calls stay
+/// counted as possibly crossed, which is the conservative reading.
+fn legacy_not_crossed(disposition: Option<InvocationDisposition>) -> u32 {
+    u32::from(disposition == Some(InvocationDisposition::BeforeBoundary))
+}
+
 impl OperationProtocolRecord {
+    /// Total invocation permits one slot may ever be issued, crossed or not.
+    ///
+    /// Calls proven not to cross the provider boundary do not spend the
+    /// policy budget, so this ceiling is what keeps a slot whose every call is
+    /// refused locally from being granted forever.
+    pub const GRANT_CEILING: u32 = 10_000;
+
     /// Begin a validated record with no issued permits.
     pub fn prepared(
         contract: PreparedEffectContract,
@@ -501,6 +547,7 @@ impl OperationProtocolRecord {
                 phase: EffectPhase::Prepared,
                 prepared_at_ms,
                 invocations: 0,
+                not_crossed: 0,
                 queries: 0,
                 invocation: None,
                 disposition: None,
@@ -523,13 +570,22 @@ impl OperationProtocolRecord {
     ///
     /// # Errors
     /// Returns a specific [`OperationProtocolViolation`] when any field is
-    /// inconsistent with the pinned policy or durable phase.
+    /// inconsistent with the pinned policy or durable phase:
+    /// [`OperationProtocolViolation::CounterLimit`] when `not_crossed` exceeds
+    /// `invocations`, `invocations` exceeds [`Self::GRANT_CEILING`], the
+    /// possibly-crossed calls exceed the policy's invocation budget, or
+    /// queries exceed theirs; [`OperationProtocolViolation::InconsistentState`]
+    /// when the phase, disposition and counters disagree (for example a
+    /// `Prepared` record with a not-crossed call, or a `BeforeBoundary`
+    /// disposition without one).
     pub fn validate(&self) -> Result<(), OperationLedgerError> {
         self.contract.validate()?;
         if self.version != 1 {
             return Err(violation(OperationProtocolViolation::UnsupportedVersion));
         }
-        if self.invocations > self.contract.policy().max_invocations()
+        if self.not_crossed > self.invocations
+            || self.invocations > Self::GRANT_CEILING
+            || self.crossed_invocations() > self.contract.policy().max_invocations()
             || self.queries > self.contract.policy().max_queries()
         {
             return Err(violation(OperationProtocolViolation::CounterLimit));
@@ -556,17 +612,27 @@ impl OperationProtocolRecord {
                         EffectPhase::OutcomeUnknown | EffectPhase::Resolved
                     )
             })
+            // Recording a `BeforeBoundary` disposition always counts its call.
+            && (self.disposition != Some(InvocationDisposition::BeforeBoundary)
+                || self.not_crossed >= 1)
             && match self.phase {
-                EffectPhase::Prepared => self.invocations == 0 && self.disposition.is_none(),
+                EffectPhase::Prepared => {
+                    self.invocations == 0 && self.not_crossed == 0 && self.disposition.is_none()
+                },
+                // The outstanding call is unexplained, so it counts as crossed.
                 EffectPhase::InvocationOutstanding => {
-                    self.invocations > 0 && self.disposition.is_none()
+                    self.invocations > 0
+                        && self.not_crossed < self.invocations
+                        && self.disposition.is_none()
                 },
                 EffectPhase::BeforeBoundary => {
                     self.invocations > 0
+                        && self.not_crossed >= 1
                         && self.disposition == Some(InvocationDisposition::BeforeBoundary)
                 },
                 EffectPhase::Ambiguous => {
                     self.invocations > 0
+                        && self.not_crossed < self.invocations
                         && self.disposition == Some(InvocationDisposition::Ambiguous)
                         && self.contract.policy().capability() == DestinationCapability::StableKey
                 },
@@ -611,9 +677,19 @@ impl OperationProtocolRecord {
     pub const fn prepared_at_ms(&self) -> i64 {
         self.prepared_at_ms
     }
-    /// Consumed invocation permits.
+    /// Issued invocation permits, whether or not their call crossed.
     pub const fn invocations(&self) -> u32 {
         self.invocations
+    }
+    /// Issued permits whose call was durably proven not to cross the provider
+    /// boundary; they spend no policy budget.
+    pub const fn not_crossed(&self) -> u32 {
+        self.not_crossed
+    }
+    /// Issued permits whose call may have reached the provider, including an
+    /// outstanding one; these spend the policy's invocation budget.
+    pub const fn crossed_invocations(&self) -> u32 {
+        self.invocations.saturating_sub(self.not_crossed)
     }
     /// Consumed reconciliation permits.
     pub const fn queries(&self) -> u32 {
@@ -656,6 +732,9 @@ impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
             phase: wire.phase,
             prepared_at_ms: wire.prepared_at_ms,
             invocations: wire.invocations,
+            not_crossed: wire
+                .not_crossed
+                .unwrap_or_else(|| legacy_not_crossed(wire.disposition)),
             queries: wire.queries,
             invocation: wire.invocation,
             disposition: wire.disposition,
@@ -701,6 +780,11 @@ impl OperationProtocolRecordBuilder {
     pub const fn invocations(mut self, count: u32, call: Option<OperationCallId>) -> Self {
         self.record.invocations = count;
         self.record.invocation = call;
+        self
+    }
+    /// Set how many issued permits were durably proven not to cross.
+    pub const fn not_crossed(mut self, count: u32) -> Self {
+        self.record.not_crossed = count;
         self
     }
     /// Set reconciliation consumption and its most recent identity.
