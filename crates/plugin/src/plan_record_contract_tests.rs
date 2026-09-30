@@ -31,6 +31,31 @@ fn a_frozen_read_only_effect_record_keeps_its_wire_tag() {
 }
 
 #[test]
+fn a_journaled_effect_record_round_trips_and_rejects_unknown_protocols() {
+    use crate::plan_effect::RecordedActionEffectV1;
+    use nebula_action::{JournalProtocol, effect::ActionEffectContract};
+
+    let contract = ActionEffectContract::Journaled(JournalProtocol::V1);
+    let recorded = RecordedActionEffectV1::project(&contract).unwrap();
+    let wire = serde_json::to_value(&recorded).unwrap();
+    assert_eq!(wire, json!({ "Journaled": { "protocol_version": 1 } }));
+    let decoded: RecordedActionEffectV1 = serde_json::from_value(wire).unwrap();
+    assert!(decoded == recorded);
+    assert_eq!(decoded.checked_contract().unwrap(), contract);
+
+    let future: RecordedActionEffectV1 =
+        serde_json::from_value(json!({ "Journaled": { "protocol_version": 2 } })).unwrap();
+    assert!(future.checked_contract().is_err());
+    assert!(
+        serde_json::from_value::<RecordedActionEffectV1>(
+            json!({ "Journaled": { "protocol_version": 1, "extra": true } })
+        )
+        .is_err()
+    );
+    assert!(serde_json::from_value::<RecordedActionEffectV1>(json!("Undeclared")).is_err());
+}
+
+#[test]
 fn current_compiler_epoch_identifies_property_semantics() {
     assert_eq!(PlanEpoch::CURRENT.compiler_version(), 5);
 }

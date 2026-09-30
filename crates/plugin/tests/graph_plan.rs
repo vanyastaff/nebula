@@ -564,13 +564,13 @@ fn null_and_empty_record_contracts_have_distinct_plan_identities_and_exact_admis
 }
 
 #[test]
-fn undeclared_effects_cannot_be_compiled_for_durable_execution() {
+fn the_default_effect_contract_compiles_and_records_journaled_v1() {
     let mut plugin = ContractPlugin::new(ValidSchema::empty());
     let action = ContractAction::with_contract(
         "demo.echo",
         ValidSchema::empty(),
         ValidSchema::empty(),
-        nebula_action::effect::ActionEffectContract::Undeclared,
+        nebula_action::effect::ActionEffectContract::default(),
         None,
     );
     plugin.action = action;
@@ -584,10 +584,24 @@ fn undeclared_effects_cannot_be_compiled_for_durable_execution() {
             "1.0.0".parse().unwrap(),
         )
         .unwrap();
-    let error = registry
+    let plan = registry
         .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
-        .expect_err("undeclared effects must fail before durable activation");
-    assert!(!error.diagnostics().is_empty());
+        .expect("the default journaled contract compiles");
+    plan.validate_against(&registry).unwrap();
+    let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+    assert_eq!(
+        record["content"]["actions"][0]["effect_contract"],
+        serde_json::json!({ "Journaled": { "protocol_version": 1 } })
+    );
+    assert_eq!(
+        plan.action_effect_contract(&ActionKey::new("demo.echo").unwrap())
+            .unwrap(),
+        nebula_plugin::PlanActionEffectContract::Declared(
+            nebula_action::effect::ActionEffectContract::Journaled(
+                nebula_action::JournalProtocol::V1
+            )
+        )
+    );
 }
 
 #[test]

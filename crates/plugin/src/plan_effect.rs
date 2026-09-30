@@ -5,7 +5,7 @@ use std::sync::Arc;
 use nebula_action::{
     ActionFactory,
     effect::{
-        ActionEffectContract, RemoteDestinationGuarantee, RemoteEffectDescriptor,
+        ActionEffectContract, JournalProtocol, RemoteDestinationGuarantee, RemoteEffectDescriptor,
         RemoteEffectPolicy,
     },
 };
@@ -17,6 +17,8 @@ pub(crate) enum RecordedActionEffectV1 {
     /// Wire tag frozen as `"NoExternalEffects"`.
     #[serde(rename = "NoExternalEffects")]
     ReadOnly,
+    /// Handle-routed effects journaled by the engine at the recorded protocol.
+    Journaled { protocol_version: u16 },
     Remote {
         contract_id: String,
         canonicalization_version: u16,
@@ -48,6 +50,12 @@ impl RecordedActionEffectV1 {
     pub(crate) fn project(contract: &ActionEffectContract) -> Result<Self, InvalidEffectContract> {
         match contract {
             ActionEffectContract::ReadOnly => Ok(Self::ReadOnly),
+            ActionEffectContract::Journaled(protocol) => match protocol {
+                JournalProtocol::V1 => Ok(Self::Journaled {
+                    protocol_version: 1,
+                }),
+                _ => Err(InvalidEffectContract),
+            },
             ActionEffectContract::Remote(descriptor) => {
                 descriptor.validate().map_err(|_| InvalidEffectContract)?;
                 let policy = descriptor.policy();
@@ -80,6 +88,10 @@ impl RecordedActionEffectV1 {
     pub(crate) fn checked_contract(&self) -> Result<ActionEffectContract, InvalidEffectContract> {
         match self {
             Self::ReadOnly => Ok(ActionEffectContract::ReadOnly),
+            Self::Journaled {
+                protocol_version: 1,
+            } => Ok(ActionEffectContract::Journaled(JournalProtocol::V1)),
+            Self::Journaled { .. } => Err(InvalidEffectContract),
             Self::Remote {
                 contract_id,
                 canonicalization_version,
@@ -134,7 +146,7 @@ pub(crate) fn validate_factory_effect(
             }
             Ok(())
         },
-        (ActionEffectContract::ReadOnly | ActionEffectContract::Undeclared, None) => Ok(()),
+        (ActionEffectContract::ReadOnly | ActionEffectContract::Journaled(_), None) => Ok(()),
         _ => Err(InvalidEffectContract),
     }
 }
