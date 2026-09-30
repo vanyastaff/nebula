@@ -444,10 +444,10 @@ mod tests {
         const EFFECT: Effect = Effect::Read;
 
         async fn run(self, cx: &mut OperationCx<'_, AccResource>) -> Result<u64, OperationError> {
-            let attempt = cx.attempt(Cost::ONE).await?;
-            let value = attempt.instance().load(Ordering::Relaxed);
-            attempt.settle(SentState::Sent);
-            Ok(value)
+            cx.call(Cost::ONE, async |value, ()| {
+                Ok(value.load(Ordering::Relaxed))
+            })
+            .await
         }
     }
 

@@ -24,7 +24,6 @@ use nebula_resource::{
         Cost, OperationError, ResourceHandle, SentState, SessionClosed, SessionEnd,
         SessionProvider, SessionSpec,
     },
-    rate_limit::Verdict,
     topology::pooled::{PoolProvider, RecycleDecision},
 };
 use sqlx::{
@@ -887,7 +886,9 @@ async fn a_session_waiting_for_quota_holds_no_connection() {
     let Some(pg) = setup().await else { return };
     let row = pg.row(&pg.activated);
     pg.insert(&row, 1).await.expect("warms one connection");
-    row.submit(Throttle).await.expect("the pause is reported");
+    row.submit(Throttle)
+        .await
+        .expect_err("the provider throttled the read; the pause is reported");
 
     let mut unit = pg.insert(&row, 2);
     assert!(futures::poll!(&mut unit).is_pending());
@@ -928,14 +929,10 @@ impl Operation<PgRow> for Throttle {
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, PgRow>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        attempt
-            .report(Verdict::Throttled {
-                retry_after: Some(Duration::from_hours(1)),
-            })
-            .await;
-        attempt.settle(SentState::NotSent);
-        Ok(())
+        cx.call(Cost::FREE, async |_, _| {
+            Err(OperationError::throttled(Some(Duration::from_hours(1))))
+        })
+        .await
     }
 }
 
@@ -949,9 +946,7 @@ impl Operation<PgRow> for CheckoutRead {
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, PgRow>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(Cost::ONE).await?;
-        attempt.settle(SentState::NotSent);
-        Ok(())
+        cx.call(Cost::ONE, async |_, _| Ok(())).await
     }
 }
 
@@ -1026,7 +1021,7 @@ async fn an_action_row_is_read_only_and_cancellation_starts_no_backend() {
     holder_row
         .submit(Throttle)
         .await
-        .expect("the row reports a provider pause");
+        .expect_err("the provider throttled the read; the row reports the pause");
 
     // A second action's read waits for quota, then its execution is
     // cancelled.
