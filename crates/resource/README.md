@@ -800,8 +800,11 @@ cancellation token the same way. A `ResourceGuard<R>` field (or
 `acquire_resource_by_id`) still takes a lease for the whole action — the
 raw-escape profile; prefer a `ResourceHandle<R>` field for provider calls (its
 deprecation is scheduled with the `Limited` family's removal, MIGRATION
-P10). A derived action must opt into `read_only`; omitting it leaves
-the action's effect contract `Undeclared` and generic dispatch refuses it.
+P10). A derived action without `read_only` gets the default
+`Journaled(JournalProtocol::V1)` effect contract: only effects routed through
+resource handles are journaled. Until the engine effect journal lands, a
+journaled action runs with read-only handle authority — reads run, and a
+`Write` through a handle is refused as `NotSent` before any provider call.
 Mutating row operations require the engine-owned remote-effect protocol; the
 current action-row surface does not turn a resource-local retry declaration
 into durable effect authority. A public ad-hoc accessor for actions and an SDK
