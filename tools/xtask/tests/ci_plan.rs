@@ -826,6 +826,7 @@ fn pre_push_resolves_a_local_tracking_branch_to_its_commit() {
                 "-p".to_owned(),
                 "fixture-package".to_owned(),
                 "--no-deps".to_owned(),
+                "--document-private-items".to_owned(),
                 "--quiet".to_owned(),
             ],
         ]
