@@ -1,4 +1,4 @@
-//! Compile-fail probe: the pre-0.21.0 spelling of `#[action(read_only)]`
+//! Compile-fail probe: the pre-0.22.0 spelling of `#[action(read_only)]`
 //! is refused with a hint naming the new flag.
 
 use nebula_action::Action;

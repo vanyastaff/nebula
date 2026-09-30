@@ -1,5 +1,5 @@
 //! Compile-fail probe: a `#[resource]` field spelled with the facade's
-//! pre-0.21.0 name is refused with a hint naming `ResourceHandle`.
+//! pre-0.22.0 name is refused with a hint naming `ResourceHandle`.
 
 use nebula_action::Action;
 

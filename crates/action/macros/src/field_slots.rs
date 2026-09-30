@@ -194,7 +194,7 @@ fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<FieldShape> {
         (false, after_option)
     };
 
-    // The facade's pre-0.21.0 name gets a hint instead of the generic
+    // The facade's pre-0.22.0 name gets a hint instead of the generic
     // wrong-type error.
     if kind == SlotKind::Resource && strip_path_tail(&after_lazy, "ManagedRow").is_some() {
         return Err(syn::Error::new_spanned(

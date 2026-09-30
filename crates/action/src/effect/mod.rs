@@ -21,7 +21,7 @@ pub enum ActionEffectContract {
     Undeclared,
     /// The adapter performs no external business effect, including during construction.
     ///
-    /// Serialized as `"NoExternalEffects"`, its name before 0.21.0, so plan
+    /// Serialized as `"NoExternalEffects"`, its name before 0.22.0, so plan
     /// records frozen with the old spelling stay readable.
     #[serde(rename = "NoExternalEffects")]
     ReadOnly,

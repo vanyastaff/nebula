@@ -11,6 +11,25 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **The managed call facade renames advance development packages to 0.22.0 in
+  lockstep.** The resource facade is renamed to its approved names:
+  - `ManagedRow` → `ResourceHandle<R>` (`Manager::handle*`) and
+    `Managed`/`into_managed` → `Lease`/`into_lease`;
+  - `OpCx` → `OperationCx`, `Unit` → `Submission`, `OpError` →
+    `OperationError`, `UNIT_DEADLINE_CAP` → `OPERATION_DEADLINE_CAP`,
+    `OperationKey` → `IdempotencyKey`, `Attempt::slots` → `credentials`;
+  - the effect owner seam → `call::journal` (`EffectJournal`).
+
+  On the action side:
+  - the sealed dispatch trait `nebula_action::ResourceHandle` →
+    `ResourceActionHandle`;
+  - `managed_row_by_id` → `resource_handle_by_id`;
+  - `#[action(no_external_effects)]` → `#[action(read_only)]` and
+    `ActionEffectContract::NoExternalEffects` → `ReadOnly`, keeping the
+    `"NoExternalEffects"` serde tag so stored plan records still decode.
+
+  Behaviour is unchanged. The derive refuses the old field type and flag
+  with a hint naming the new spelling.
 - **The credential admission epoch advances development packages to 0.21.0 in
   lockstep.** `CredentialOperationStatus::Open` carries `admission_epoch`, the
   contract's use revision: a use admitted at one epoch must not continue at

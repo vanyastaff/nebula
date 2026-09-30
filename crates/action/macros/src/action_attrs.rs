@@ -25,7 +25,7 @@ pub(crate) struct ActionAttrs {
     pub read_only: bool,
 }
 
-/// The pre-0.21.0 spelling of the `read_only` flag, refused with a hint.
+/// The pre-0.22.0 spelling of the `read_only` flag, refused with a hint.
 const RENAMED_READ_ONLY: &str = "no_external_effects";
 
 impl ActionAttrs {

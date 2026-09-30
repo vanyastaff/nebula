@@ -10,9 +10,9 @@
 //! - both `#[resource]` and `#[credential]` on the same field,
 //! - unknown keys inside `#[action(...)]`,
 //! - a value assigned to the `read_only` flag,
-//! - the flag's pre-0.21.0 spelling, refused with a hint,
+//! - the flag's pre-0.22.0 spelling, refused with a hint,
 //! - `Lazy<ResourceHandle<R>>` (a resource handle acquires nothing to defer),
-//! - a field spelled with the handle's pre-0.21.0 name, refused with a hint.
+//! - a field spelled with the handle's pre-0.22.0 name, refused with a hint.
 //!
 //! The positive probe (`tests/probes/derive_positive_guard_shapes.rs`)
 //! checks all four allowed guard shapes compile in a single struct:
