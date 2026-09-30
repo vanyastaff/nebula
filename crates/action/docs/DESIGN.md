@@ -49,7 +49,7 @@
 | `ControlAction` / `ControlOutcome<T>` (If/Switch/Router/Stop/Fail) | `src/control.rs` |
 | `WebhookAction` + HMAC (`verify_hmac_sha256*`, `SignaturePolicy` fail-closed `Required`) | `src/webhook/mod.rs` (2431 строк) |
 | `PollAction`, `PollTriggerAdapter`, `POLL_INTERVAL_FLOOR`, `DeduplicatingCursor` | `src/poll/mod.rs` |
-| `ActionHandle` enum + `StatelessHandle/StatefulHandle/TriggerHandle/ResourceHandle/ControlHandle` | `src/handle.rs:184,40-176` |
+| `ActionHandle` enum + `StatelessHandle/StatefulHandle/TriggerHandle/ResourceActionHandle/ControlHandle` | `src/handle.rs:184,40-176` |
 | `ActionFactory` + `Generic{Stateless,Stateful,Trigger,Resource,Control}Factory` | `src/factory.rs:53,69-497` |
 | `FromWorkflowNode` (async slot-binding фабрика; тело генерит derive) | `src/from_workflow_node.rs:61` |
 | `ActionError` + `RetryHintCode` (retryable vs fatal), `ValidationReason` | `src/error.rs:154,31,58` |

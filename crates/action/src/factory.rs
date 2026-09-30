@@ -36,7 +36,8 @@ use crate::{
     error::ActionError,
     from_workflow_node::FromWorkflowNode,
     handle::{
-        ActionHandle, ControlHandle, ResourceHandle, StatelessHandle, StreamHandle, TriggerHandle,
+        ActionHandle, ControlHandle, ResourceActionHandle, StatelessHandle, StreamHandle,
+        TriggerHandle,
     },
     input::{ActionInput, ActionInputContract, PreparedActionInput},
     metadata::{ActionKind, ActionMetadata, ActionMetadataAdmissionError, ActionMetadataDraft},
@@ -647,27 +648,27 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
         Box::pin(async move {
             let action = A::from_workflow_node(node, ctx).await?;
-            let inner = ResourceHandleImpl::<A>::new(action, Arc::clone(&self.meta));
+            let inner = ResourceActionHandleImpl::<A>::new(action, Arc::clone(&self.meta));
             Ok(ActionHandle::Resource(Box::new(inner)))
         })
     }
 }
 
-struct ResourceHandleImpl<A> {
+struct ResourceActionHandleImpl<A> {
     action: A,
     meta: Arc<ActionMetadata>,
 }
 
-impl<A> crate::handle::sealed::Resource for ResourceHandleImpl<A> {}
+impl<A> crate::handle::sealed::Resource for ResourceActionHandleImpl<A> {}
 
-impl<A> ResourceHandleImpl<A> {
+impl<A> ResourceActionHandleImpl<A> {
     fn new(action: A, meta: Arc<ActionMetadata>) -> Self {
         Self { action, meta }
     }
 }
 
 #[async_trait]
-impl<A> ResourceHandle for ResourceHandleImpl<A>
+impl<A> ResourceActionHandle for ResourceActionHandleImpl<A>
 where
     A: ResourceAction + Send + Sync + 'static,
 {
@@ -692,7 +693,7 @@ where
     ) -> Result<(), ActionError> {
         let typed = instance.downcast::<A::Resource>().map_err(|_| {
             ActionError::fatal(format!(
-                "ResourceHandleImpl: downcast invariant violated for {}",
+                "ResourceActionHandleImpl: downcast invariant violated for {}",
                 std::any::type_name::<A::Resource>()
             ))
         })?;

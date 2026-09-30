@@ -9,7 +9,7 @@
 //! - [`StatelessHandle`] — one-shot JSON in / JSON out.
 //! - [`StatefulHandle`] — iterative with mutable JSON state.
 //! - [`TriggerHandle`] — start/stop trigger lifecycle.
-//! - [`ResourceHandle`] — graph-scoped resource configure/cleanup.
+//! - [`ResourceActionHandle`] — graph-scoped resource configure/cleanup.
 //! - [`ControlHandle`] — flow-control nodes desugared to a stateless surface.
 //! - [`AgentHandle`] — multi-turn reasoning loop with budget and per-turn timeout.
 //!
@@ -161,7 +161,7 @@ pub trait TriggerHandle: sealed::Trigger + Send + Sync + 'static {
 
 /// Object-safe resource dispatch surface (configure/cleanup lifecycle).
 #[async_trait]
-pub trait ResourceHandle: sealed::Resource + Send + Sync + 'static {
+pub trait ResourceActionHandle: sealed::Resource + Send + Sync + 'static {
     /// Action metadata.
     fn metadata(&self) -> &Arc<ActionMetadata>;
 
@@ -261,7 +261,7 @@ pub enum ActionHandle {
     /// Workflow trigger (start/stop lifecycle).
     Trigger(Box<dyn TriggerHandle>),
     /// Graph-scoped resource (configure/cleanup).
-    Resource(Box<dyn ResourceHandle>),
+    Resource(Box<dyn ResourceActionHandle>),
     /// Flow-control node (If / Switch / Router / Filter / NoOp / Stop / Fail).
     Control(Box<dyn ControlHandle>),
     /// Multi-turn reasoning loop with a per-budget and per-turn wall-clock timeout.

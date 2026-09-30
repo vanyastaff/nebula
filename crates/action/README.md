@@ -191,7 +191,7 @@ Because `Action: Sized` is not object-safe, the engine's registry holds `Arc<dyn
 | `StatelessHandle` | `StatelessHandler` (legacy) |
 | `StatefulHandle`  | `StatefulActionAdapter<A>` |
 | `TriggerHandle`   | `TriggerHandler` |
-| `ResourceHandle`  | `ResourceHandler` |
+| `ResourceActionHandle` | `ResourceHandler` |
 | `ControlHandle`   | dyn control flow |
 
 Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, …) wrap any `A: Action + FromWorkflowNode + StatelessAction` (etc.) into an `ActionFactory` automatically — see `crates/action/src/factory.rs`.
