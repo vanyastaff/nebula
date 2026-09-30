@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
-use http::{HeaderMap, StatusCode, header::RETRY_AFTER};
+use http::{HeaderMap, HeaderValue, StatusCode, header::RETRY_AFTER};
 use nebula_resource::{
     ErrorKind,
     call::{Attempt, Effect, Operation, OperationCx, OperationError, SentState},
@@ -15,7 +15,7 @@ use tracing::Instrument as _;
 use super::{
     auth::{Authorize, HttpApi},
     config::HttpTransport,
-    request::{Method, Request},
+    request::{IDEMPOTENCY_KEY, Method, Request, sealed::Sealed},
     response::Response,
 };
 
@@ -102,9 +102,10 @@ pub(super) fn exchange_span(method: &'static str, index: Option<u32>) -> tracing
     )
 }
 
-/// The request a granted attempt sends: built without credentials, then
-/// the pinned credentials applied last, bounded by the transport's request
-/// timeout and the unit's deadline.
+/// The request a granted attempt sends: built without credentials, a
+/// [`Keyed`](super::Keyed) request's `Idempotency-Key` set to the unit's
+/// derived key, then the pinned credentials applied last, bounded by the
+/// transport's request timeout and the unit's deadline.
 pub(super) fn prepare<R, M>(
     attempt: &Attempt<'_, R>,
     transport: &HttpTransport,
@@ -117,6 +118,21 @@ where
     M: Method,
 {
     let mut outgoing = request.outgoing(transport)?;
+    if <M as Sealed>::KEYED {
+        // A unit that declared no key part (a hand-written operation that
+        // `send`s a keyed request) has no key to send: refuse rather than
+        // send the repeat-absorbing request without one.
+        let Some(key) = attempt.idempotency_key() else {
+            return Err(OperationError::new(
+                ErrorKind::Permanent,
+                "a keyed request needs the unit's idempotency key; declare Operation::idempotency_key",
+            ));
+        };
+        let value = HeaderValue::from_str(key.as_str()).map_err(|_| {
+            OperationError::new(ErrorKind::Permanent, "invalid idempotency key header")
+        })?;
+        outgoing.headers_mut().insert(IDEMPOTENCY_KEY, value);
+    }
     let mut credentials = HeaderMap::new();
     R::authorize(attempt.credentials(), &mut Authorize::new(&mut credentials))?;
     outgoing.headers_mut().extend(credentials);
@@ -285,7 +301,7 @@ where
 ///
 /// | Situation | Settled | Error kind |
 /// |---|---|---|
-/// | invalid request, `authorize` refused (`None` slot: `CredentialUnavailable`) | `NotSent` | its kind |
+/// | invalid request, `authorize` refused (`None` slot: `CredentialUnavailable`), a [`Keyed`](super::Keyed) request in a unit without an idempotency key | `NotSent` | its kind |
 /// | could not connect (DNS, TCP, TLS, connect timeout) | `NotSent` | `Transient` |
 /// | failed after connecting, before the head | `MaybeSent` | `Transient` |
 /// | `2xx`, `3xx`, an accepted status | `Sent` | — (a [`Response`]) |
@@ -355,6 +371,11 @@ pub(super) async fn wait_for_retry(wait: Duration, deadline: Instant) -> bool {
 /// if that ends before the unit's deadline), or when the method is replay
 /// safe and the failure transient — never a `Write` that may have been
 /// sent.
+///
+/// Its key is the marker's [`Method::OPERATION_KEY`]; a
+/// [`Keyed`](super::Keyed) request declares its key as the developer part
+/// of the unit's idempotency key, and the `Idempotency-Key` header carries
+/// the key the unit derives from it.
 impl<R, M> Operation<R> for Request<M>
 where
     R: HttpApi,
@@ -362,14 +383,18 @@ where
     M: Method,
 {
     type Output = Response;
+    const KEY: &'static str = M::OPERATION_KEY;
     const EFFECT: Effect = M::EFFECT;
+
+    fn idempotency_key(&self) -> Option<String> {
+        self.key_part().map(str::to_owned)
+    }
 
     fn max_attempts(&self) -> std::num::NonZeroU32 {
         self.attempts()
     }
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Response, OperationError> {
-        self.check()?;
         let deadline = cx.deadline();
         loop {
             let index = cx.attempts().saturating_add(1);
@@ -512,6 +537,42 @@ mod tests {
         #[case] expected: Option<Duration>,
     ) {
         assert_eq!(retry_wait(&failure(kind, sent), effect), expected);
+    }
+
+    #[test]
+    fn a_response_round_trips_as_its_recorded_form() {
+        let mut headers = HeaderMap::new();
+        headers.append("x-page", HeaderValue::from_static("1"));
+        headers.append("x-page", HeaderValue::from_static("2"));
+        let response = Response::new(
+            StatusCode::CREATED,
+            headers,
+            bytes::Bytes::from_static(b"\x00ok"),
+        );
+        let json = serde_json::to_value(&response).expect("serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "status": 201,
+                "headers": [["x-page", "1"], ["x-page", "2"]],
+                "body": "AG9r",
+            })
+        );
+        let back: Response = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back.status(), StatusCode::CREATED);
+        assert_eq!(back.headers().get_all("x-page").iter().count(), 2);
+        assert_eq!(back.body().as_ref(), b"\x00ok");
+
+        let mut opaque = HeaderMap::new();
+        opaque.insert(
+            "x-bytes",
+            HeaderValue::from_bytes(b"\xff").expect("obs-text"),
+        );
+        let unrecordable = Response::new(StatusCode::OK, opaque, bytes::Bytes::new());
+        assert!(
+            serde_json::to_value(&unrecordable).is_err(),
+            "a non-UTF-8 header value is recorded digest-only"
+        );
     }
 
     #[test]

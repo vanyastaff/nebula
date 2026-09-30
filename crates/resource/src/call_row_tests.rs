@@ -33,8 +33,8 @@ use crate::{
     manager::{
         CredentialReads,
         strict_fixtures::{
-            PinnedEpochs, ScriptedObserver, StrictPooled, bind, config, context, credential_id,
-            seen, strict_manager, tenant,
+            OwnedEpochs, PinnedEpochs, ScriptedObserver, StrictPooled, bind, config, context,
+            credential_id, owned_epochs, seen, strict_manager, tenant,
         },
     },
     rate_limit::{Rate, RowLimit},
@@ -171,24 +171,48 @@ async fn settle_tasks() {
 
 // ── operations ───────────────────────────────────────────────────────────
 
+/// A deserialized test operation books nothing.
+fn free() -> Cost {
+    Cost::FREE
+}
+
+fn sent() -> SentState {
+    SentState::Sent
+}
+
 /// One attempt at `cost`, settled `Sent`.
-struct Once(Cost);
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Once {
+    #[serde(skip, default = "free")]
+    cost: Cost,
+}
+
+impl Once {
+    fn at(cost: Cost) -> Self {
+        Self { cost }
+    }
+}
 
 impl<R: Provider + PinSlots> Operation<R> for Once {
     type Output = ();
+    const KEY: &'static str = "test.once";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(self.0).await?;
+        let attempt = cx.attempt(self.cost).await?;
         attempt.settle(SentState::Sent);
         Ok(())
     }
 }
 
 /// A granted attempt parked until `release` fires.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Held {
+    #[serde(skip, default = "free")]
     cost: Cost,
+    #[serde(skip)]
     entered: Arc<Notify>,
+    #[serde(skip)]
     release: Arc<Notify>,
 }
 
@@ -214,6 +238,7 @@ fn held(cost: Cost) -> (Held, Hold) {
 
 impl<R: Provider + PinSlots> Operation<R> for Held {
     type Output = ();
+    const KEY: &'static str = "test.held";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
@@ -227,13 +252,17 @@ impl<R: Provider + PinSlots> Operation<R> for Held {
 
 /// Two free attempts; after the first is granted and settled `Sent` it
 /// signals `between` and waits for `resume`. Yields each attempt's pin.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Paused {
+    #[serde(skip)]
     between: Arc<Notify>,
+    #[serde(skip)]
     resume: Arc<Notify>,
 }
 
 impl<R: Provider + PinSlots<Pinned = PinnedEpochs>> Operation<R> for Paused {
-    type Output = Vec<PinnedEpochs>;
+    type Output = Vec<OwnedEpochs>;
+    const KEY: &'static str = "test.paused";
     const EFFECT: Effect = Effect::Read;
 
     fn max_attempts(&self) -> NonZeroU32 {
@@ -242,25 +271,29 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>> Operation<R> for Paused {
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::FREE).await?;
-        let mut pinned = vec![first.credentials().clone()];
+        let mut pinned = vec![owned_epochs(first.credentials())];
         first.settle(SentState::Sent);
         self.between.notify_one();
         self.resume.notified().await;
         let second = cx.attempt(Cost::FREE).await?;
-        pinned.push(second.credentials().clone());
+        pinned.push(owned_epochs(second.credentials()));
         second.settle(SentState::Sent);
         Ok(pinned)
     }
 }
 
 /// One attempt settled `sent`, then the provider's `kind` (if any).
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Reply<const WRITE: bool> {
+    #[serde(skip, default = "sent")]
     sent: SentState,
+    #[serde(skip)]
     kind: Option<ErrorKind>,
 }
 
 impl<R: Provider + PinSlots, const WRITE: bool> Operation<R> for Reply<WRITE> {
     type Output = ();
+    const KEY: &'static str = "test.reply";
     const EFFECT: Effect = if WRITE { Effect::Write } else { Effect::Read };
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
@@ -335,7 +368,7 @@ async fn a_unit_waiting_for_quota_holds_no_connection() {
 
     // B waits a second for its permit — with nothing checked out.
     let started = Instant::now();
-    let second = tokio::spawn(row.submit(Once(Cost::ONE)));
+    let second = tokio::spawn(row.submit(Once::at(Cost::ONE)));
     settle_tasks().await;
     assert_eq!(in_use::<StrictPooled>(&manager), 1, "only A's checkout");
 
@@ -360,7 +393,7 @@ async fn a_lease_facade_holds_its_connection_while_its_unit_waits_for_quota() {
         .expect("acquire")
         .into_lease();
 
-    let unit = tokio::spawn(lease.submit(Once(Cost::ONE)));
+    let unit = tokio::spawn(lease.submit(Once::at(Cost::ONE)));
     settle_tasks().await;
     assert!(!unit.is_finished(), "waiting for quota");
     assert_eq!(
@@ -422,12 +455,12 @@ async fn reads_once_for_an_idle_hit_twice_for_a_create_and_never_for_a_slot_less
     let resource = pooled(&manager, 2, None);
     let row = facade::<StrictPooled>(&manager);
 
-    row.submit(Once(Cost::FREE)).await.expect("create");
+    row.submit(Once::at(Cost::FREE)).await.expect("create");
     assert_eq!(resource.probe.creates(), 1);
     assert_eq!(observer.calls(), 2, "R1, then R2 after the create");
     until_in_use::<StrictPooled>(&manager, 0).await;
 
-    row.submit(Once(Cost::ONE)).await.expect("idle hit");
+    row.submit(Once::at(Cost::ONE)).await.expect("idle hit");
     assert_eq!(resource.probe.creates(), 1);
     assert_eq!(observer.calls(), 3, "R1 serves an idle hit");
 
@@ -446,8 +479,8 @@ async fn reads_once_for_an_idle_hit_twice_for_a_create_and_never_for_a_slot_less
         })
         .expect("register");
     let plain = facade::<PlainPool>(&manager);
-    plain.submit(Once(Cost::FREE)).await.expect("create");
-    plain.submit(Once(Cost::ONE)).await.expect("idle hit");
+    plain.submit(Once::at(Cost::FREE)).await.expect("create");
+    plain.submit(Once::at(Cost::ONE)).await.expect("idle hit");
     assert_eq!(failing.calls(), 0);
 }
 
@@ -463,7 +496,7 @@ async fn a_block_committed_during_the_gate_wait_refuses_without_a_create() {
     let (operation, a) = held(Cost::FREE);
     let first = tokio::spawn(row.submit(operation));
     a.entered.notified().await;
-    let second = tokio::spawn(row.submit(Once(Cost::FREE)));
+    let second = tokio::spawn(row.submit(Once::at(Cost::FREE)));
     settle_tasks().await;
     let calls = observer.calls();
 
@@ -495,7 +528,7 @@ async fn a_block_committed_during_the_create_is_refused_at_r2_and_the_instance_p
 
     resource.probe.park_next_create();
     let entered = resource.probe.create_entered.notified();
-    let unit = tokio::spawn(row.submit(Once(Cost::FREE)));
+    let unit = tokio::spawn(row.submit(Once::at(Cost::FREE)));
     entered.await;
     assert_eq!(observer.calls(), 1, "R1 before the create");
     observer.answer(reauth(1, 2));
@@ -526,7 +559,7 @@ async fn the_admission_lock_is_not_held_across_the_reads_or_the_create() {
 
     resource.probe.park_next_create();
     let entered = resource.probe.create_entered.notified();
-    let unit = tokio::spawn(row.submit(Once(Cost::FREE)));
+    let unit = tokio::spawn(row.submit(Once::at(Cost::FREE)));
 
     observer.until_calls(1).await;
     drop(link.lock()); // R1 in flight: the lock is free.
@@ -551,7 +584,7 @@ async fn a_suspension_during_the_create_is_refused_at_hand_out() {
 
     resource.probe.park_next_create();
     let entered = resource.probe.create_entered.notified();
-    let unit = tokio::spawn(row.submit(Once(Cost::FREE)));
+    let unit = tokio::spawn(row.submit(Once::at(Cost::FREE)));
     entered.await;
     manager
         .suspend_credential_row(
@@ -591,8 +624,10 @@ async fn a_cancel_during_the_quota_or_gate_wait_is_cancelled_and_releases_everyt
     let manager = Manager::new();
     pooled(&manager, 1, Some(RowLimit::rate(per_second(1, 1))));
     let row = facade::<StrictPooled>(&manager);
-    row.submit(Once(Cost::ONE)).await.expect("takes the permit");
-    let mut unit = row.submit(Once(Cost::ONE));
+    row.submit(Once::at(Cost::ONE))
+        .await
+        .expect("takes the permit");
+    let mut unit = row.submit(Once::at(Cost::ONE));
     assert!(futures::poll!(&mut unit).is_pending());
     settle_tasks().await;
     assert_cancelled(unit).await;
@@ -606,7 +641,7 @@ async fn a_cancel_during_the_quota_or_gate_wait_is_cancelled_and_releases_everyt
     let (operation, a) = held(Cost::FREE);
     let holder = tokio::spawn(row.submit(operation));
     a.entered.notified().await;
-    let mut unit = row.submit(Once(Cost::FREE));
+    let mut unit = row.submit(Once::at(Cost::FREE));
     assert!(futures::poll!(&mut unit).is_pending());
     settle_tasks().await;
     assert_cancelled(unit).await;
@@ -623,7 +658,7 @@ async fn a_cancel_during_the_read_or_the_create_is_cancelled_and_releases_everyt
     let manager = strict_manager(erased(&observer), &Arc::default());
     let resource = pooled(&manager, 1, None);
     let row = facade::<StrictPooled>(&manager);
-    let mut unit = row.submit(Once(Cost::FREE));
+    let mut unit = row.submit(Once::at(Cost::FREE));
     assert!(futures::poll!(&mut unit).is_pending());
     observer.until_calls(1).await;
     assert_cancelled(unit).await;
@@ -637,7 +672,7 @@ async fn a_cancel_during_the_read_or_the_create_is_cancelled_and_releases_everyt
     let row = facade::<StrictPooled>(&manager);
     resource.probe.park_next_create();
     let entered = resource.probe.create_entered.notified();
-    let mut unit = row.submit(Once(Cost::FREE));
+    let mut unit = row.submit(Once::at(Cost::FREE));
     assert!(futures::poll!(&mut unit).is_pending());
     entered.await;
     assert_cancelled(unit).await;
@@ -653,8 +688,10 @@ async fn graceful_shutdown_ignores_an_idle_facade_and_ends_quota_waits() {
     let manager = Arc::new(Manager::new());
     pooled(&manager, 1, Some(RowLimit::rate(per_second(1, 1))));
     let row = facade::<StrictPooled>(&manager);
-    row.submit(Once(Cost::ONE)).await.expect("takes the permit");
-    let waiting = tokio::spawn(row.submit(Once(Cost::ONE)));
+    row.submit(Once::at(Cost::ONE))
+        .await
+        .expect("takes the permit");
+    let waiting = tokio::spawn(row.submit(Once::at(Cost::ONE)));
     settle_tasks().await;
 
     let _report = manager
@@ -665,7 +702,7 @@ async fn graceful_shutdown_ignores_an_idle_facade_and_ends_quota_waits() {
     assert_eq!(*error.kind(), ErrorKind::Cancelled);
     assert_eq!(error.sent(), SentState::NotSent);
     let error = row
-        .submit(Once(Cost::FREE))
+        .submit(Once::at(Cost::FREE))
         .await
         .expect_err("a shut-down row admits nothing");
     assert_eq!(*error.kind(), ErrorKind::Cancelled);
@@ -684,7 +721,7 @@ async fn a_deadline_during_the_gate_wait_is_backpressure() {
 
     let started = Instant::now();
     let error = row
-        .submit(Once(Cost::FREE))
+        .submit(Once::at(Cost::FREE))
         .with_deadline(in_one(Duration::from_secs(1)))
         .await
         .expect_err("the gate stayed full");
@@ -812,7 +849,7 @@ async fn a_multi_attempt_row_unit_checks_out_per_attempt_and_pins_once() {
     assert_eq!(gate_free(&manager), 1, "nothing held between attempts");
     resume.notify_one();
     let pinned = unit.await.expect("joined").expect("granted twice");
-    assert_eq!(pinned, vec![vec![("db", Some(1))]; 2]);
+    assert_eq!(pinned, vec![owned_epochs(&[("db", Some(1))]); 2]);
     assert_eq!(resource.pins.load(Ordering::SeqCst), 1, "pinned once");
     assert_eq!(resource.probe.creates(), 1, "the second attempt hit idle");
 
@@ -866,7 +903,7 @@ async fn a_pool_saturated_by_a_plain_lease_refuses_backpressure_unsent() {
         .expect("acquire");
 
     let error = row
-        .submit(Once(Cost::ONE))
+        .submit(Once::at(Cost::ONE))
         .await
         .expect_err("the pool is full");
     assert_eq!(*error.kind(), ErrorKind::Backpressure);
@@ -898,6 +935,7 @@ impl Drop for Ended {
 impl<R: Provider + PinSlots> StreamOperation<R> for RowFeed {
     type Item = u64;
     type Output = u64;
+    const KEY: &'static str = "test.row_feed";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(
@@ -975,7 +1013,7 @@ async fn dropping_a_row_stream_mid_stream_releases_the_checkout_and_the_gate() {
     assert_eq!(gate_free(&manager), 1, "the gate permit came back");
 
     // The row serves the next unit.
-    row.submit(Once(Cost::FREE)).await.expect("next unit");
+    row.submit(Once::at(Cost::FREE)).await.expect("next unit");
 }
 
 #[tokio::test(start_paused = true)]
@@ -1044,27 +1082,54 @@ fn bounded(manager: &Manager, deadline: std::time::Instant) -> ResourceHandle<St
     })
 }
 
-/// Yields the unit's deadline without asking for an attempt.
-struct Deadline;
-
-impl<R: Provider + PinSlots> Operation<R> for Deadline {
-    type Output = std::time::Instant;
-    const EFFECT: Effect = Effect::Read;
-
-    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<std::time::Instant, OperationError> {
-        Ok(cx.deadline())
-    }
+/// Records the unit's deadline without asking for an attempt.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Deadline {
+    #[serde(skip)]
+    seen: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 }
 
-/// Records that it ran, then asks for one free attempt.
-struct Tracked(Arc<AtomicBool>);
-
-impl<R: Provider + PinSlots> Operation<R> for Tracked {
+impl<R: Provider + PinSlots> Operation<R> for Deadline {
     type Output = ();
+    const KEY: &'static str = "test.deadline";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        self.0.store(true, Ordering::SeqCst);
+        *self.seen.lock().expect("deadline cell") = Some(cx.deadline());
+        Ok(())
+    }
+}
+
+/// The deadline a unit of `row` runs under, shortened to `shorten` if any.
+async fn deadline_of(
+    row: &ResourceHandle<StrictPooled>,
+    shorten: Option<std::time::Instant>,
+) -> std::time::Instant {
+    let seen = Deadline::default();
+    let cell = Arc::clone(&seen.seen);
+    let unit = row.submit(seen);
+    let unit = match shorten {
+        Some(deadline) => unit.with_deadline(deadline),
+        None => unit,
+    };
+    unit.await.expect("deadline");
+    cell.lock().expect("deadline cell").expect("the unit ran")
+}
+
+/// Records that it ran, then asks for one free attempt.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Tracked {
+    #[serde(skip)]
+    ran: Arc<AtomicBool>,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for Tracked {
+    type Output = ();
+    const KEY: &'static str = "test.tracked";
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
+        self.ran.store(true, Ordering::SeqCst);
         let attempt = cx.attempt(Cost::FREE).await?;
         attempt.settle(SentState::Sent);
         Ok(())
@@ -1081,14 +1146,14 @@ async fn a_parent_cancel_during_the_quota_wait_refuses_unsent_without_a_checkout
     let manager = Manager::new();
     let resource = pooled(&manager, 1, Some(RowLimit::rate(per_second(1, 1))));
     facade::<StrictPooled>(&manager)
-        .submit(Once(Cost::ONE))
+        .submit(Once::at(Cost::ONE))
         .await
         .expect("takes the permit");
     until_in_use::<StrictPooled>(&manager, 0).await;
     let creates = resource.probe.creates();
 
     let token = CancellationToken::new();
-    let waiting = tokio::spawn(linked(&manager, &token).submit(Once(Cost::ONE)));
+    let waiting = tokio::spawn(linked(&manager, &token).submit(Once::at(Cost::ONE)));
     settle_tasks().await;
     assert!(!waiting.is_finished(), "waiting for quota");
     token.cancel();
@@ -1109,7 +1174,7 @@ async fn a_parent_cancel_during_the_gate_wait_refuses_unsent() {
     a.entered.notified().await;
 
     let token = CancellationToken::new();
-    let waiting = tokio::spawn(linked(&manager, &token).submit(Once(Cost::FREE)));
+    let waiting = tokio::spawn(linked(&manager, &token).submit(Once::at(Cost::FREE)));
     settle_tasks().await;
     assert!(!waiting.is_finished(), "queued at the gate");
     token.cancel();
@@ -1132,7 +1197,7 @@ async fn a_parent_cancel_during_the_strict_read_refuses_unsent() {
     let manager = strict_manager(erased(&observer), &Arc::default());
     let resource = pooled(&manager, 1, None);
     let token = CancellationToken::new();
-    let unit = tokio::spawn(linked(&manager, &token).submit(Once(Cost::FREE)));
+    let unit = tokio::spawn(linked(&manager, &token).submit(Once::at(Cost::FREE)));
     observer.until_calls(1).await;
     token.cancel();
 
@@ -1184,7 +1249,9 @@ async fn a_unit_whose_parent_was_cancelled_before_its_first_poll_never_runs() {
 
     let ran = Arc::new(AtomicBool::new(false));
     let error = row
-        .submit(Tracked(Arc::clone(&ran)))
+        .submit(Tracked {
+            ran: Arc::clone(&ran),
+        })
         .await
         .expect_err("cancelled");
     assert_cancelled_unsent(&error);
@@ -1195,9 +1262,10 @@ async fn a_unit_whose_parent_was_cancelled_before_its_first_poll_never_runs() {
 
     // A session is refused the same way.
     let error = row
-        .session(SessionSpec::new(Cost::FREE), |_tx, _cx| {
-            Box::pin(async { Ok(()) })
-        })
+        .session(
+            SessionSpec::write("test.session", &()).cost(Cost::FREE),
+            |_tx, _cx| Box::pin(async { Ok(()) }),
+        )
         .await
         .expect_err("cancelled");
     assert_cancelled_unsent(&error);
@@ -1211,31 +1279,17 @@ async fn the_scope_deadline_bounds_the_unit_and_with_deadline_cannot_extend_it()
     let scope_deadline = in_one(Duration::from_secs(10));
 
     // Without a scope: the cap.
-    let capped = facade::<StrictPooled>(&manager)
-        .submit(Deadline)
-        .await
-        .expect("deadline");
+    let capped = deadline_of(&facade::<StrictPooled>(&manager), None).await;
     assert_eq!(capped, in_one(OPERATION_DEADLINE_CAP));
 
     // The scope's deadline is shorter than the cap; a later one cannot
     // extend it, an earlier one shortens it.
     let row = bounded(&manager, scope_deadline);
-    assert_eq!(
-        row.submit(Deadline).await.expect("deadline"),
-        scope_deadline
-    );
-    let later = row
-        .submit(Deadline)
-        .with_deadline(in_one(Duration::from_mins(1)))
-        .await
-        .expect("deadline");
+    assert_eq!(deadline_of(&row, None).await, scope_deadline);
+    let later = deadline_of(&row, Some(in_one(Duration::from_mins(1)))).await;
     assert_eq!(later, scope_deadline);
     let earlier = in_one(Duration::from_secs(3));
-    let shorter = row
-        .submit(Deadline)
-        .with_deadline(earlier)
-        .await
-        .expect("deadline");
+    let shorter = deadline_of(&row, Some(earlier)).await;
     assert_eq!(shorter, earlier);
 
     // A unit queued at a full gate is refused at the scope's deadline.
@@ -1244,7 +1298,7 @@ async fn the_scope_deadline_bounds_the_unit_and_with_deadline_cannot_extend_it()
     a.entered.notified().await;
     let started = Instant::now();
     let error = row
-        .submit(Once(Cost::FREE))
+        .submit(Once::at(Cost::FREE))
         .with_deadline(in_one(Duration::from_mins(1)))
         .await
         .expect_err("the gate stayed full");
@@ -1317,7 +1371,7 @@ async fn the_erased_facade_downcasts_to_its_row_and_nothing_else() {
 
     let row = typed_row(&manager, &context(), &options);
     assert_eq!(row.resource_key(), &StrictPooled::key());
-    row.submit(Once(Cost::FREE)).await.expect("granted");
+    row.submit(Once::at(Cost::FREE)).await.expect("granted");
     assert_eq!(resource.probe.creates(), 1);
 
     let erased = erased_row(
@@ -1407,7 +1461,7 @@ async fn a_pinned_identity_reaches_its_own_row() {
     .expect("tenant b's row")
     .downcast::<ResourceHandle<StrictPooled>>()
     .expect("typed");
-    row.submit(Once(Cost::FREE)).await.expect("granted");
+    row.submit(Once::at(Cost::FREE)).await.expect("granted");
     assert_eq!(b.probe.creates(), 1, "tenant b's instance");
     assert_eq!(a.probe.creates(), 0, "never tenant a's");
 }
@@ -1463,7 +1517,7 @@ async fn a_pool_saturated_by_leases_still_yields_a_facade_whose_attempt_is_backp
         CredentialAdmissionProfile::StrictPerAttempt
     );
     let error = row
-        .submit(Once(Cost::ONE))
+        .submit(Once::at(Cost::ONE))
         .await
         .expect_err("the pool is full");
     assert_eq!(*error.kind(), ErrorKind::Backpressure);
@@ -1482,9 +1536,12 @@ async fn the_options_deadline_and_the_context_cancel_reach_the_units() {
         &context_of(&token),
         &AcquireOptions::default().with_deadline(deadline),
     );
-    assert_eq!(row.submit(Deadline).await.expect("deadline"), deadline);
+    assert_eq!(deadline_of(&row, None).await, deadline);
 
     token.cancel();
-    let error = row.submit(Once(Cost::FREE)).await.expect_err("cancelled");
+    let error = row
+        .submit(Once::at(Cost::FREE))
+        .await
+        .expect_err("cancelled");
     assert_cancelled_unsent(&error);
 }

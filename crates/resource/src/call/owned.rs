@@ -1,13 +1,13 @@
-//! The unit runtime's side of execution-owned effects: it drives a unit
-//! submitted with `submit_effect` / `session_effect` through the row's
-//! [`EffectJournal`] (see the [`journal`](super::journal) module for the
-//! seam).
+//! The unit runtime's side of execution-owned effects: it drives an
+//! `Idempotent` or `Write` unit submitted on a journaled row through the
+//! row's [`EffectJournal`] (see the [`journal`](super::journal) module for
+//! the seam).
 //!
 //! Per unit, in order:
 //!
 //! - **submit** ([`OwnedEffect::submit`]) — refused when the owner closed;
-//!   otherwise the occurrence label is fixed (the author's, or the next
-//!   ordinal) and an in-flight ticket taken;
+//!   otherwise the occurrence label is fixed from the next ordinal of the
+//!   unit's kind and name, and an in-flight ticket taken;
 //! - **first poll** ([`prepare`]) — before anything is spawned, checked out,
 //!   booked or read: replay, refusal, or run;
 //! - **each attempt** — the previous attempt's call is explained when the
@@ -35,11 +35,11 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use super::{
     cost::{Effect, SentState},
-    effect::{EffectContract, EffectRecovery, IdempotencyKeyPart, OccurrenceLabel, Recorded},
+    declaration::MAX_RECORDED_OUTPUT_LEN,
     error::OperationError,
     journal::{
         CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight, JournalIntent,
-        JournalRefusal, JournalSlot, RecordedOutcome, SlotPhase,
+        JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase, UnitKind,
     },
     managed::{UnitShared, cancelled_before_grant},
 };
@@ -47,14 +47,6 @@ use crate::{dedup::SlotIdentity, error::ErrorKind};
 
 /// Longest occurrence label the owner's ledger accepts, in bytes.
 const MAX_OCCURRENCE_LABEL_LEN: usize = 512;
-
-/// Largest canonical request, in bytes.
-const MAX_CANONICAL_REQUEST_LEN: usize = 1024 * 1024;
-
-/// Computes an owned unit's canonical request and developer key part from
-/// its operation, at the first poll.
-pub(super) type RequestFn<O> =
-    Box<dyn FnOnce(&O) -> Result<(Vec<u8>, Option<IdempotencyKeyPart>), OperationError> + Send>;
 
 /// How a unit's output is recorded and replayed: JSON.
 pub(super) struct OutputCodec<T> {
@@ -79,34 +71,18 @@ impl<T: Serialize + DeserializeOwned> OutputCodec<T> {
     }
 }
 
-/// What `submit_effect` / `session_effect` declare about a unit's effect.
-pub(super) struct EffectDeclaration<O, T> {
-    pub(super) contract: EffectContract,
-    pub(super) recovery: EffectRecovery,
-    pub(super) recorded: Recorded,
-    pub(super) occurrence: Option<OccurrenceLabel>,
-    pub(super) request: RequestFn<O>,
-    pub(super) codec: OutputCodec<T>,
+/// The journal declaration the runtime derived for one unit at submit.
+pub(super) struct JournalDeclaration {
+    pub(super) kind: UnitKind,
+    /// The operation key or the session name.
+    pub(super) name: &'static str,
+    pub(super) version: u32,
+    pub(super) effect: Effect,
+    pub(super) recovery: Recovery,
+    pub(super) record_output: bool,
+    pub(super) canonical_request: Vec<u8>,
+    pub(super) key_part: Option<String>,
 }
-
-impl<O, T> EffectDeclaration<O, T> {
-    /// Refuses a declaration whose contract is malformed or whose recovery
-    /// disagrees with `effect` (a `Read` included).
-    pub(super) fn check(&self, effect: Effect) -> Result<(), OperationError> {
-        self.contract.validate()?;
-        self.recovery.check(effect)
-    }
-}
-
-/// The parts of an owned unit's declaration its first poll uses.
-pub(super) struct EffectPlan<O, T> {
-    pub(super) request: RequestFn<O>,
-    pub(super) codec: OutputCodec<T>,
-}
-
-/// An owned unit admitted at submit: its shared owned state and its
-/// first-poll plan.
-pub(super) type OwnedSubmit<O, T> = (OwnedEffect, EffectPlan<O, T>);
 
 /// The owned-effect state of one unit, shared by its handle, its runtime
 /// task and its attempts.
@@ -114,10 +90,7 @@ pub(super) struct OwnedEffect {
     owner: Arc<dyn EffectJournal>,
     resource_key: ResourceKey,
     binding: SlotIdentity,
-    effect: Effect,
-    contract: EffectContract,
-    recovery: EffectRecovery,
-    recorded: Recorded,
+    declaration: JournalDeclaration,
     occurrence: String,
     /// Set by a `Runnable` prepare.
     slot: OnceLock<JournalSlot>,
@@ -141,23 +114,22 @@ impl fmt::Debug for OwnedEffect {
         formatter
             .debug_struct("OwnedEffect")
             .field("occurrence", &self.occurrence)
-            .field("contract", &self.contract)
-            .field("recovery", &self.recovery)
+            .field("recovery", &self.declaration.recovery)
             .field("prepared", &self.slot.get().is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl OwnedEffect {
-    /// The owned state of a unit of `declaration`, declaring `effect`, on
-    /// `key`: refused `Cancelled` when `owner` closed; otherwise with its
-    /// occurrence label and an in-flight ticket.
-    pub(super) fn submit<O, T>(
+    /// The owned state of a unit of `declaration` on `key`: refused
+    /// `Cancelled` when `owner` closed; otherwise with its occurrence label
+    /// `unit/v1/{key}/{kind}/{name}/v{version}/#{ordinal:06}` and an
+    /// in-flight ticket.
+    pub(super) fn submit(
         owner: &Arc<dyn EffectJournal>,
         binding: &SlotIdentity,
         key: &ResourceKey,
-        effect: Effect,
-        declaration: &EffectDeclaration<O, T>,
+        declaration: JournalDeclaration,
     ) -> Result<Self, OperationError> {
         if owner.is_closed() {
             return Err(OperationError::new(
@@ -165,11 +137,11 @@ impl OwnedEffect {
                 "effect owner closed; unit refused",
             ));
         }
-        let tail = match &declaration.occurrence {
-            Some(label) => label.as_str().to_owned(),
-            None => format!("#{:06}", owner.next_ordinal(key, declaration.contract)),
-        };
-        let occurrence = format!("unit/v1/{key}/{}/{tail}", declaration.contract.id());
+        let ordinal = owner.next_ordinal(key, declaration.kind, declaration.name);
+        let occurrence = format!(
+            "unit/v1/{key}/{}/{}/v{}/#{ordinal:06}",
+            declaration.kind, declaration.name, declaration.version
+        );
         let fits = occurrence.len() <= MAX_OCCURRENCE_LABEL_LEN
             && occurrence.bytes().all(|byte| (0x21..=0x7E).contains(&byte));
         if !fits {
@@ -182,10 +154,7 @@ impl OwnedEffect {
             owner: Arc::clone(owner),
             resource_key: key.clone(),
             binding: binding.clone(),
-            effect,
-            contract: declaration.contract,
-            recovery: declaration.recovery,
-            recorded: declaration.recorded,
+            declaration,
             occurrence,
             slot: OnceLock::new(),
             pending: Mutex::new(None),
@@ -287,7 +256,7 @@ impl OwnedEffect {
     ///
     /// | Result | Last call | Recorded |
     /// |---|---|---|
-    /// | `Ok` | any | settle `Applied` (`AppliedWithoutOutput` for `DigestOnly`) |
+    /// | `Ok` | any | settle `Applied` (`AppliedWithoutOutput` without `record_output`, or for an output over the 1 MiB cap) |
     /// | `Err` | `NotSent`, or `Sent` and `Exhausted` | explain `NotCrossed` |
     /// | `Err` | `MaybeSent`, or `Sent` and a retryable kind | explain `Ambiguous` |
     /// | `Err` | `Sent` and a non-retryable kind | settle `Rejected` |
@@ -307,19 +276,10 @@ impl OwnedEffect {
         };
         match result {
             Ok(output) => {
-                let encoded = match self.recorded {
-                    Recorded::Output => {
-                        let encoded = (codec.encode)(&output).ok();
-                        if encoded.is_none() {
-                            tracing::warn!(
-                                target: "nebula.resource",
-                                occurrence = %self.occurrence,
-                                "effect output could not be serialized; recorded without output"
-                            );
-                        }
-                        encoded
-                    },
-                    Recorded::DigestOnly => None,
+                let encoded = if self.declaration.record_output {
+                    self.encode(&output, codec)
+                } else {
+                    None
                 };
                 let outcome = match &encoded {
                     Some(bytes) => CallOutcome::Applied(bytes),
@@ -362,6 +322,30 @@ impl OwnedEffect {
                 }
             },
         }
+    }
+
+    /// The output as the owner records it; `None` — recorded digest-only,
+    /// so a resume fails `Permanent` instead of replaying — when it does
+    /// not serialize or is over the ledger's 1 MiB evidence cap.
+    fn encode<T>(&self, output: &T, codec: OutputCodec<T>) -> Option<Vec<u8>> {
+        let Ok(encoded) = (codec.encode)(output) else {
+            tracing::warn!(
+                target: "nebula.resource",
+                occurrence = %self.occurrence,
+                "effect output could not be serialized; recorded without output"
+            );
+            return None;
+        };
+        if encoded.len() > MAX_RECORDED_OUTPUT_LEN {
+            tracing::warn!(
+                target: "nebula.resource",
+                occurrence = %self.occurrence,
+                output_len = encoded.len(),
+                "effect output is over the recording cap; recorded without output"
+            );
+            return None;
+        }
+        Some(encoded)
     }
 
     /// The unit error of an owner `refusal` of `step`, logged.
@@ -425,40 +409,29 @@ pub(super) enum Prepared<T> {
     Refused(OperationError, SentState),
 }
 
-/// The first poll of an owned unit: the canonical `request`, then the
-/// owner's prepare, raced against the unit's cancel and `deadline`.
+/// The first poll of an owned unit: the owner's prepare, raced against the
+/// unit's cancel and `deadline`.
 pub(super) async fn prepare<T>(
     shared: &UnitShared,
     effect: &OwnedEffect,
     max_invocations: NonZeroU32,
-    request: Result<(Vec<u8>, Option<IdempotencyKeyPart>), OperationError>,
     codec: OutputCodec<T>,
     deadline: tokio::time::Instant,
 ) -> Prepared<T> {
-    let (canonical_request, key_part) = match request {
-        Ok(request) => request,
-        Err(error) => return Prepared::Refused(error, SentState::NotSent),
-    };
-    if canonical_request.is_empty() || canonical_request.len() > MAX_CANONICAL_REQUEST_LEN {
-        return Prepared::Refused(
-            OperationError::new(
-                ErrorKind::Permanent,
-                "canonical request must be 1 byte to 1 MiB",
-            ),
-            SentState::NotSent,
-        );
-    }
+    let declaration = &effect.declaration;
     let intent = JournalIntent {
         resource_key: &effect.resource_key,
         binding: &effect.binding,
-        contract: effect.contract,
-        effect: effect.effect,
-        recovery: effect.recovery,
-        recorded: effect.recorded,
+        kind: declaration.kind,
+        operation: declaration.name,
+        version: declaration.version,
+        effect: declaration.effect,
+        recovery: declaration.recovery,
+        record_output: declaration.record_output,
         max_invocations,
         occurrence: &effect.occurrence,
-        canonical_request: &canonical_request,
-        key_part: key_part.as_ref(),
+        canonical_request: &declaration.canonical_request,
+        key_part: declaration.key_part.as_deref(),
     };
     let prepared = tokio::select! {
         biased;

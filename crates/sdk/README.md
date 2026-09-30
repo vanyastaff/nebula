@@ -241,7 +241,11 @@ the facade is not frozen) re-exports `Lease`, `Operation`, `OperationCx`,
 `ResourceGuard::into_lease()` turns a lease into a `Lease` facade without
 `Deref`; provider calls are `Operation`s whose attempts are admitted and
 booked per `Cost`, and a failed unit's `OperationError` says whether a retry
-is safe. The SDK-only fixture compiles a logger authored against it
+is safe. An `Operation` declares a `KEY` (unique within the resource) and is
+`Serialize + DeserializeOwned` with a serializable `Output` — with the SDK
+alone, `#[derive(Serialize, Deserialize)]` from the prelude plus
+`#[serde(crate = "nebula_sdk::serde")]` — so an execution journal can record
+and replay it. The SDK-only fixture compiles a logger authored against it
 (`resource_managed_logger`) and proves `Lease` does not deref
 (`lease_no_deref`); runtime behaviour is tested in the resource crate. See
 the resource README, "Managed call facade". Streaming units (`StreamOperation`,
@@ -265,8 +269,14 @@ client retries, no proxy, referer or cookies, platform TLS verification.
 A resource implements `HttpApi::authorize`, applying its pinned slots through
 `Authorize` (`bearer`, `basic`, `api_key_header`) after the attempt is granted.
 `Request::get` / `post` / … are `Operation`s whose method marker fixes the
-`Effect` (`Keyed<Post>` with an idempotency key, `AsWrite<Put>` for a
-non-idempotent provider); `send` classifies one attempt's answer, and
+`Effect` and the operation key (`http.get`, …; `Keyed<Post>` —
+`http.post.keyed` — with an idempotency key, `AsWrite<Put>` for a
+non-idempotent provider). A `Request` and its `Response` serialize (paths,
+query, headers, base64 bodies; cost and attempt budget are policy and are
+not serialized). A keyed request's `idempotency_key(part)` is the developer
+part: the `Idempotency-Key` header carries the key the unit derives from it
+(the journal's, or a local base64url SHA-256 of resource, operation, version
+and part), not the part itself. `send` classifies one attempt's answer, and
 `open_stream` returns a `ResponseStream` for a chunked body. No URL, header
 value or transport error reaches `Debug`, errors or logs. The SDK-only fixture
 compiles a GitHub-style resource against it (`resource_http`) and proves the
@@ -281,7 +291,9 @@ attempt after its quota and row-gate waits — and the session vocabulary
 `SessionProvider`, `SessionSpec`, `SessionCx`, `SessionEnd`, `SessionClosed`,
 `SessionBinding` and `SessionFuture`. `ResourceHandle::session` runs several
 native calls on one pooled connection as one unit, committed or rolled back
-by the provider. A `ResourceHandle` is obtained from the engine-owned manager
+by the provider; its `SessionSpec` names the session and carries its request
+(`SessionSpec::read(name)`, `::idempotent(name, &request)`,
+`::write(name, &request)`). A `ResourceHandle` is obtained from the engine-owned manager
 or, in an action, through a derived `#[resource]` field
 (`action_resource_handle`), so the SDK-only fixture compiles a session
 provider and the action-side call (`resource_session`), proves a

@@ -10,7 +10,7 @@ use nebula_sdk::integration::resource::{
     Lease, Operation, OperationCx, OperationError, PinSlots, Provider, Resident, ResidentProvider,
     Resource, ResourceContext, ResourceKey, ResourceMetadataDraft, SentState, resource_key,
 };
-use nebula_sdk::prelude::{SecretString, SecretToken};
+use nebula_sdk::prelude::{Deserialize, SecretString, SecretToken, Serialize};
 
 const TOKEN: &str = "ghp_fixture_secret";
 
@@ -46,10 +46,13 @@ impl Provider for GitHub {
 impl ResidentProvider for GitHub {}
 
 /// Reads the pinned token's length; never the live slot.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct TokenLength;
 
 impl Operation<GitHub> for TokenLength {
     type Output = usize;
+    const KEY: &'static str = "github.token_length";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, GitHub>) -> Result<usize, OperationError> {

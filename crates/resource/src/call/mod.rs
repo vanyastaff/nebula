@@ -136,30 +136,37 @@
 //!
 //! # Execution-owned effects
 //!
-//! An action row built without effect-owner authority
-//! ([`Manager::handle_any_read_only`](crate::Manager::handle_any_read_only))
-//! runs reads only. A row built with it
-//! ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled))
-//! carries the execution's [`EffectJournal`](journal::EffectJournal), and
-//! its effects go through [`ResourceHandle::submit_effect`] (an
-//! [`EffectOperation`]) or [`ResourceHandle::session_effect`]; a plain
-//! [`submit`](ResourceHandle::submit) or [`session`](ResourceHandle::session) of an
-//! `Idempotent` or `Write` unit is refused `Permanent` / `NotSent`. The
-//! resource runtime never writes durable effect state; it drives the
-//! journal seam ([`journal`]) at fixed points of the unit:
+//! One [`submit`](ResourceHandle::submit) (and one
+//! [`session`](ResourceHandle::session)) serves every caller; the runtime
+//! routes each unit by its [`Effect`] and the authority of the caller that
+//! built the row:
 //!
-//! 1. **Submit** — the declaration is checked ([`EffectContract`], an
-//!    [`EffectRecovery`] that agrees with the [`Effect`]; a read is
-//!    refused), the occurrence label
-//!    `unit/v1/{resource_key}/{contract_id}/{label}` is fixed — the author's
-//!    [`OccurrenceLabel`], or `#` and the unit's six-digit submit ordinal
-//!    per resource and contract, so labels sort in program order — and an
-//!    in-flight ticket is taken. A closed owner refuses `Cancelled`.
+//! | Authority | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
+//! |---|---|---|---|
+//! | unjournaled (library row, [`Lease`]) | runs | runs | runs |
+//! | read-only ([`Manager::handle_any_read_only`](crate::Manager::handle_any_read_only)) | runs | refused `Permanent` / `NotSent` | refused |
+//! | journaled ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled)) | runs, never prepared | through the [`EffectJournal`](journal::EffectJournal) | refused ("streaming effects are not journaled in v1") |
+//!
+//! The resource runtime never writes durable effect state; for a journaled
+//! effect it derives the journal declaration from the [`Operation`] (or the
+//! [`SessionSpec`]) and drives the journal seam ([`journal`]) at fixed
+//! points of the unit:
+//!
+//! 1. **Submit** — the declaration is checked (key, version, key window,
+//!    developer key part), the canonical request computed (the operation's
+//!    JSON with sorted keys, 1 byte to 1 MiB), the recovery derived
+//!    (`Idempotent`: a stable key within [`Operation::KEY_WINDOW`]; `Write`:
+//!    opaque), the occurrence label
+//!    `unit/v1/{resource_key}/{op|session}/{name}/v{version}/#{ordinal:06}`
+//!    fixed from the unit's submit ordinal per resource, kind and name, so
+//!    labels sort in program order, and an in-flight ticket is taken. A
+//!    closed owner refuses `Cancelled`.
 //! 2. **First poll** — the owner prepares the effect from the canonical
-//!    request and the optional [`IdempotencyKeyPart`] before anything is
+//!    request and the optional developer key part before anything is
 //!    booked, read or checked out: a recorded success replays its output
 //!    without a provider call; a recorded rejection, a digest-only success
-//!    ([`Recorded::DigestOnly`]) and an unknown outcome fail without one.
+//!    ([`Operation::RECORD_OUTPUT`] off, or an output over 1 MiB) and an
+//!    unknown outcome fail without one.
 //! 3. **Each attempt** — the previous attempt's call is explained when the
 //!    attempt starts; after the checkout and the credential reads, right
 //!    before the registration, the owner grants the attempt's call (the
@@ -173,12 +180,15 @@
 //!    a possible crossing fails the unit `OutcomeUnknown`.
 //!
 //! [`OperationCx::idempotency_key`] and [`SessionCx::idempotency_key`] are the provider
-//! idempotency key ([`IdempotencyKey`]) the owner recorded before the first
-//! attempt: the same for every attempt, retry and resume. A unit cancelled
-//! before its first grant leaves only its prepare behind, which a resumed
-//! unit runs again. The lease facade [`Lease`] has no owner. Interim: the
-//! engine does not hand out owned rows yet; its owner over the operation
-//! ledger comes with the engine wiring.
+//! idempotency key ([`IdempotencyKey`]) to send: for a journaled effect the
+//! key the owner recorded before the first attempt, otherwise — for a unit
+//! that declared a developer key part — a key derived locally from the
+//! resource, the operation key and version, and the part (base64url
+//! SHA-256). Either is the same for every attempt, retry and resume. A unit
+//! cancelled before its first grant leaves only its prepare behind, which a
+//! resumed unit runs again. The lease facade [`Lease`] has no owner.
+//! Interim: the engine does not hand out owned rows yet; its owner over the
+//! operation ledger comes with the engine wiring.
 //!
 //! # Interim defaults
 //!
@@ -238,18 +248,20 @@
 //!
 //! # Observability
 //!
-//! Each unit runs in a `nebula.resource.unit` span recording its key,
-//! operation type, attempts granted, sent state and outcome.
+//! Each unit runs in a `nebula.resource.unit` span recording its resource
+//! key, its operation key ([`Operation::KEY`], a session's name — bounded
+//! cardinality), a journaled effect's occurrence, attempts granted, sent
+//! state and outcome.
 //! [`ResourceOpsMetrics`](crate::ResourceOpsMetrics) counts attempts granted
 //! and refused by the facade — separate from a driver's own retries inside
 //! an attempt (CONTRACT.md:134) — units settled by sent state, row
 //! checkouts by whether they created their instance, and sessions by how
-//! they ended; a session unit's span names its operation `session`. A unit
+//! they ended. A unit
 //! that ends with an unknown outcome publishes
 //! [`ResourceEvent::OperationOutcomeUnknown`](crate::ResourceEvent::OperationOutcomeUnknown).
 
 mod cost;
-mod effect;
+mod declaration;
 mod error;
 pub mod journal;
 mod managed;
@@ -259,14 +271,14 @@ mod row;
 mod session;
 mod stream;
 mod strict;
+mod work;
 
-use std::{future::Future, num::NonZeroU32};
+use std::{future::Future, num::NonZeroU32, time::Duration};
+
+use serde::{Serialize, de::DeserializeOwned};
 
 pub use cost::{Cost, Effect, SentState};
-pub use effect::{
-    EffectContract, EffectOperation, EffectRecovery, IdempotencyKey, IdempotencyKeyPart,
-    OccurrenceLabel, Recorded,
-};
+pub use declaration::IdempotencyKey;
 pub use error::OperationError;
 pub(crate) use managed::UnitScope;
 pub use managed::{Attempt, Lease, OPERATION_DEADLINE_CAP, OperationCx, Submission};
@@ -287,13 +299,43 @@ use crate::resource::Provider;
 /// repeating the call with [`EFFECT`](Self::EFFECT) and how many attempts
 /// one unit may take with [`max_attempts`](Self::max_attempts).
 ///
+/// # What an execution journal records
+///
+/// An operation carries only what a journal needs, and the runtime derives
+/// the rest. On a row an action got with effect-owner authority, an
+/// `Idempotent` or `Write` unit is recorded under the contract
+/// `(KEY, VERSION)`, from the key-sorted JSON of the operation value (its
+/// canonical request: logical intent only — no credentials, signatures or
+/// timestamps), with the developer key part of
+/// [`idempotency_key`](Self::idempotency_key), and replayed from its
+/// serialized output on resume. Hence the serde bounds on the operation
+/// and its [`Output`](Self::Output); fields that are not intent (a probe, a
+/// channel) are `#[serde(skip)]`.
+///
+/// - [`KEY`](Self::KEY): unique within the resource; 1 to 64 bytes of
+///   `[A-Za-z0-9_.-]`, starting and ending alphanumeric.
+/// - [`VERSION`](Self::VERSION): the interface major; bump it when the
+///   request or output shape changes meaning. At least 1.
+/// - [`KEY_WINDOW`](Self::KEY_WINDOW): for an `Idempotent` operation, how
+///   long the provider deduplicates a key; non-zero.
+/// - [`RECORD_OUTPUT`](Self::RECORD_OUTPUT): `false` records a success
+///   digest-only, so a resume fails `Permanent` instead of replaying. An
+///   output over 1 MiB is recorded digest-only too.
+///
+/// A declaration that breaks these rules fails the build when the
+/// operation is submitted (a post-monomorphization error, reported by
+/// `cargo build` but not `cargo check`), and is refused `Permanent` /
+/// `NotSent` at submit as well.
+///
 /// ```
 /// use nebula_resource::{
 ///     PinSlots, Provider,
 ///     call::{Cost, Effect, OperationCx, OperationError, Operation, SentState},
 /// };
+/// use serde::{Deserialize, Serialize};
 ///
 /// /// Reads a counter the instance exposes.
+/// #[derive(Serialize, Deserialize)]
 /// struct ReadCounter;
 ///
 /// impl<R> Operation<R> for ReadCounter
@@ -301,6 +343,7 @@ use crate::resource::Provider;
 ///     R: Provider<Instance = u64> + PinSlots,
 /// {
 ///     type Output = u64;
+///     const KEY: &'static str = "counter.read";
 ///     const EFFECT: Effect = Effect::Read;
 ///
 ///     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
@@ -310,14 +353,68 @@ use crate::resource::Provider;
 ///         Ok(value)
 ///     }
 /// }
+///
+/// /// Charges an order once: a repeat with the same key is absorbed.
+/// #[derive(Serialize, Deserialize)]
+/// struct Charge {
+///     order: u64,
+///     cents: u64,
+/// }
+///
+/// impl<R: Provider + PinSlots> Operation<R> for Charge {
+///     type Output = u64;
+///     const KEY: &'static str = "billing.charge";
+///     const EFFECT: Effect = Effect::Idempotent;
+///
+///     fn idempotency_key(&self) -> Option<String> {
+///         Some(format!("order-{}", self.order))
+///     }
+///
+///     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+///         // The key to send: the same for every attempt, retry and resume.
+///         // Read it before an attempt borrows `cx`.
+///         let _key = cx.idempotency_key().copied();
+///         let attempt = cx.attempt(Cost::ONE).await?;
+///         attempt.settle(SentState::Sent);
+///         Ok(self.cents)
+///     }
+/// }
 /// ```
-pub trait Operation<R: Provider + PinSlots>: Send + 'static {
-    /// What a successful unit yields.
-    type Output: Send + 'static;
+pub trait Operation<R: Provider + PinSlots>: Serialize + DeserializeOwned + Send + 'static {
+    /// What a successful unit yields; recorded and replayed as JSON.
+    type Output: Serialize + DeserializeOwned + Send + 'static;
+
+    /// The operation's key, unique within the resource: 1 to 64 bytes of
+    /// `[A-Za-z0-9_.-]`, starting and ending alphanumeric.
+    const KEY: &'static str;
+
+    /// The operation's interface version, the journal contract with
+    /// [`KEY`](Self::KEY): a resumed effect of another version is a
+    /// different effect. At least 1.
+    const VERSION: u32 = 1;
 
     /// What repeating the call does to the provider. `Write` unless the
     /// operation declares otherwise.
     const EFFECT: Effect = Effect::Write;
+
+    /// How long the provider deduplicates an idempotency key: within it, an
+    /// ambiguous attempt of an `Idempotent` unit may be sent again with the
+    /// same key. Only read for `Idempotent`; non-zero. 24 hours by default.
+    const KEY_WINDOW: Duration = Duration::from_hours(24);
+
+    /// Whether a journal records a success with its output (replayed on
+    /// resume) or digest-only. `true` by default.
+    const RECORD_OUTPUT: bool = true;
+
+    /// The developer part of the provider idempotency key — `order-123` —
+    /// built deterministically from the operation's input, never random
+    /// and never a retry number: 1 to 256 bytes of visible ASCII. With a
+    /// part the key is shared across executions (make it specific enough);
+    /// without one a journal scopes it to the execution, node and
+    /// occurrence. `None` by default.
+    fn idempotency_key(&self) -> Option<String> {
+        None
+    }
 
     /// How many attempts one unit may be granted; one by default.
     fn max_attempts(&self) -> NonZeroU32 {

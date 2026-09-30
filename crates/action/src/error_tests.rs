@@ -347,10 +347,12 @@ mod managed_unit {
 
     /// A write whose attempt never answers: it ends at the unit deadline
     /// with an unknown outcome.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct PostEntry;
 
     impl Operation<Ledger> for PostEntry {
         type Output = ();
+        const KEY: &'static str = "ledger.post_entry";
 
         async fn run(self, cx: &mut OperationCx<'_, Ledger>) -> Result<(), OperationError> {
             let _attempt = cx.attempt(Cost::ONE).await?;

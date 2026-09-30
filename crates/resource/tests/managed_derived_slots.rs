@@ -103,10 +103,12 @@ impl Credential for ApiToken {
 }
 
 /// Reports which slots the unit pinned.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct ReadSlots;
 
 impl Operation<Mailer> for ReadSlots {
     type Output = (bool, bool);
+    const KEY: &'static str = "mailer.read_slots";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, Mailer>) -> Result<Self::Output, OperationError> {

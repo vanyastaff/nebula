@@ -490,10 +490,12 @@ It has no `Deref`: every provider call is an `Operation` submitted as a
 `Submission`, and the instance is reached only inside a granted `Attempt`.
 
 ```rust,ignore
+#[derive(Serialize, Deserialize)]
 struct Send { chat: i64, text: String }
 
 impl Operation<Bot> for Send {
-    type Output = MessageId;
+    type Output = MessageId; // Serialize + DeserializeOwned
+    const KEY: &'static str = "bot.send"; // unique within the resource
     const EFFECT: Effect = Effect::Write; // the default; declare Read / Idempotent
 
     async fn run(self, cx: &mut OperationCx<'_, Bot>) -> Result<MessageId, OperationError> {
@@ -507,6 +509,20 @@ impl Operation<Bot> for Send {
 let lease = guard.into_lease();
 let id = lease.submit(Send { chat, text }).await?;
 ```
+
+An operation declares only what an execution journal needs: `KEY` (1–64
+bytes of `[A-Za-z0-9_.-]`, alphanumeric at both ends), `VERSION` (the
+interface major, default 1), `EFFECT`, `KEY_WINDOW` (how long an
+`Idempotent` provider deduplicates a key, default 24 h), `RECORD_OUTPUT`
+(default `true`) and `idempotency_key()` (the developer part, default
+`None`). The operation value is its request — hence `Serialize +
+DeserializeOwned`, with non-intent fields `#[serde(skip)]` — and its output
+is recorded as JSON. A malformed declaration fails the build at `submit`
+(post-monomorphization, so `cargo build`, not `cargo check`) and is refused
+`Permanent` / `NotSent` at runtime as well. `OperationCx::idempotency_key()`
+is the provider idempotency key to send: the journal's on an owned row (see
+below), otherwise a local base64url SHA-256 of the resource, key, version and
+developer part when there is one.
 
 - **Unit vs attempt.** A unit owns the intent, a deadline (at most 5
   minutes; `Submission::with_deadline` only shortens it), an attempt budget
@@ -579,6 +595,9 @@ while let Some(line) = stream.next().await {
 - The facade never aborts a granted attempt: a stream that should stop on
   removal or shutdown selects on `OperationCx::closing()`. The 5-minute unit cap
   applies to streams too.
+- A `StreamOperation` declares `KEY` and `VERSION` like an `Operation` but has
+  no serde bounds: a stream is never journaled, so a journaled row refuses an
+  `Idempotent` or `Write` stream.
 
 Interim defaults, revisited before the surface is frozen (it is not in any
 prelude): the 5-minute unit deadline cap; the per-lease unit caps above; no
@@ -638,7 +657,7 @@ A pooled provider that implements `call::SessionProvider` runs **sessions**
 
 ```rust,ignore
 let rows = row
-    .session(SessionSpec::new(Cost::ONE), |tx, _cx| {
+    .session(SessionSpec::write("ledger.insert", &id), |tx, _cx| {
         Box::pin(async move {
             sqlx::query("INSERT INTO ledger (id) VALUES ($1)")
                 .bind(id)
@@ -650,6 +669,13 @@ let rows = row
     })
     .await?;
 ```
+
+A `SessionSpec` is declared like an operation: `SessionSpec::read(name)`,
+`::idempotent(name, &request)` or `::write(name, &request)`, then `.cost(..)`
+(default `Cost::ONE`), `.idempotency_key(..)`, `.key_window(..)`,
+`.version(..)`. The request is canonicalized when the spec is built; a bad
+name or a request that does not canonicalize refuses the session at submit.
+The body's output is `Serialize + DeserializeOwned`.
 
 One unit, one attempt, never retried by the runtime: the cost is booked once
 before the checkout, the calls inside are not counted. `open` starts the
@@ -751,24 +777,29 @@ The resource side of that protocol is in place; the engine does not hand
 out owned rows yet. `Manager::handle_any_journaled` builds a row that
 carries the execution's `call::journal::EffectJournal` — the port the engine
 implements over its operation ledger; this crate never writes effect state.
-On such a row reads run as usual, a plain `submit`/`session` of an
-`Idempotent` or `Write` unit is refused `Permanent` / `NotSent`, and effects
-go through:
+There is one `submit` and one `session`; the runtime routes each unit by its
+effect and the row's authority:
 
-- `ResourceHandle::submit_effect(op)` for an `EffectOperation` — an `Operation`
-  that also declares its `EffectContract` (id + canonicalization version),
-  an `EffectRecovery` that must agree with its effect (`Idempotent` ⇔
-  `StableKey { window }`, `Write` ⇔ `Opaque`), what is `Recorded` of a
-  success (the output by default, or a digest only), its canonical request,
-  and optionally the developer part of the provider idempotency key
-  (`IdempotencyKeyPart`, built deterministically from input or state — never
-  random, never a retry number) and a stable `OccurrenceLabel`;
-- `ResourceHandle::session_effect(spec, contract, recovery, canonical_request,
-  key_part, body)` for a session.
+| Row | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
+|---|---|---|---|
+| library (`handle`, `handle_any`), `Lease` | runs | runs | runs |
+| read-only (`handle_any_read_only`) | runs | refused `Permanent` / `NotSent` | refused |
+| journaled (`handle_any_journaled`) | runs, never prepared | through the owner | refused ("streaming effects are not journaled in v1") |
 
-The unit's occurrence is `unit/v1/{resource_key}/{contract_id}/{label}`, the
-label being the author's or the unit's zero-padded submit ordinal per
-resource and contract (`#000003`). Its first poll asks the owner to prepare
+For a journaled effect the runtime derives the whole journal declaration
+from the operation (or the `SessionSpec`): the contract `(KEY, VERSION)`,
+the canonical request (the operation's JSON with sorted keys, 1 B–1 MiB),
+the recovery (`Idempotent` → a stable key within `KEY_WINDOW`, `Write` →
+opaque), whether the output is recorded (`RECORD_OUTPUT`; an output over the
+ledger's 1 MiB evidence cap is recorded digest-only, so a resume fails
+`Permanent` "recorded without output") and the developer key part
+(`idempotency_key()`, 1–256 bytes of visible ASCII, built deterministically
+from input or state — never random, never a retry number).
+
+The unit's occurrence is
+`unit/v1/{resource_key}/{op|session}/{name}/v{version}/#{ordinal:06}`, the
+ordinal counting units of that kind and name on the resource in submit order
+(`#000003`). Its first poll asks the owner to prepare
 the effect before any quota, checkout or credential read: a recorded success
 replays its output with no provider call, a recorded rejection or digest and
 an unknown outcome fail without one. Every attempt's call is granted by the
@@ -777,8 +808,9 @@ settled (applied / rejected) or explained (not crossed / ambiguous) before
 the unit settles; a record that fails after a possible crossing makes the
 unit `OutcomeUnknown`. `OperationCx::idempotency_key()` / `SessionCx::idempotency_key()`
 give the owner's provider idempotency key — identical for every attempt,
-retry and resume. On a library row `submit_effect` runs as `submit`, with no
-key. Nothing here is SDK-exported yet.
+retry and resume. On a library row the same unit runs without an owner and
+presents the local key when it declared a developer part. The journal seam
+is not SDK-exported.
 
 ### Other public API
 

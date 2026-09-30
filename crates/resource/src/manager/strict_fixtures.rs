@@ -156,6 +156,17 @@ impl Probe {
 /// order; `None` for an unbound or revoked slot.
 pub(crate) type PinnedEpochs = Vec<(&'static str, Option<u64>)>;
 
+/// [`PinnedEpochs`] as a unit's output, which must deserialize: owned.
+pub(crate) type OwnedEpochs = Vec<(String, Option<u64>)>;
+
+/// `pinned` as a unit's output.
+pub(crate) fn owned_epochs(pinned: &[(&'static str, Option<u64>)]) -> OwnedEpochs {
+    pinned
+        .iter()
+        .map(|(slot, epoch)| ((*slot).to_owned(), *epoch))
+        .collect()
+}
+
 /// A provider per topology with declared credential slots (`db`, and
 /// optionally `cache`) that implement the projection port. `PinSlots` pins
 /// each slot's material epoch ([`PinnedEpochs`]); `pin_rotations` makes a

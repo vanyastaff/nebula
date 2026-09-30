@@ -51,7 +51,12 @@ where
 {
     type Item = Frame;
     type Output = ();
+    const KEY: &'static str = M::OPERATION_KEY;
     const EFFECT: Effect = M::EFFECT;
+
+    fn idempotency_key(&self) -> Option<String> {
+        self.request.key_part().map(str::to_owned)
+    }
 
     async fn run(
         self,
@@ -59,7 +64,6 @@ where
         mut sink: StreamSink<Frame>,
     ) -> Result<(), OperationError> {
         let request = self.request;
-        request.check()?;
         let closing = cx.closing();
         let attempt = cx.attempt(request.cost_value().clone()).await?;
         let span = exchange_span(M::METHOD, Some(1));

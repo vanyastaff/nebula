@@ -302,10 +302,12 @@ mod resource_handle_fields {
     }
 
     /// Reads the instance in one free attempt.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Read;
 
     impl<R: Provider<Instance = u64> + PinSlots> Operation<R> for Read {
         type Output = u64;
+        const KEY: &'static str = "counter.read";
         const EFFECT: Effect = Effect::Read;
 
         async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {

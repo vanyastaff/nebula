@@ -3,7 +3,6 @@
 //! settled outcome.
 
 use std::{
-    any::type_name,
     fmt,
     future::Future,
     num::NonZeroU32,
@@ -27,14 +26,18 @@ use tracing::Instrument as _;
 use super::{
     Operation,
     cost::{Cost, Effect, SentState},
-    effect::IdempotencyKey,
+    declaration::{
+        IdempotencyKey, check_declaration, check_key_part, is_valid_declaration,
+        local_idempotency_key,
+    },
     error::OperationError,
-    journal::{EffectJournal, JournalSlot},
-    owned::{self, EffectDeclaration, EffectPlan, OutputCodec, OwnedEffect, OwnedSubmit, Prepared},
+    journal::{EffectJournal, JournalSlot, Recovery},
+    owned::{self, JournalDeclaration, OutputCodec, OwnedEffect, Prepared},
     pin::PinSlots,
     row::{CheckoutFit, RowShared},
     session::{SessionBinding, SessionProvider},
     strict::{UnitPin, capture_pin},
+    work::{Plain, UnitWork},
 };
 use crate::{
     dedup::SlotIdentity,
@@ -344,30 +347,45 @@ impl<R: Provider + PinSlots> Lease<R> {
     /// settles it. Dropping the [`Submission`] before its first poll means the
     /// operation never ran; dropping it later only stops waiting — the
     /// runtime still settles the unit and the lease stays held until it
-    /// ends.
+    /// ends. A lease has no execution owner: every effect runs unjournaled.
+    ///
+    /// A malformed declaration ([`Operation::KEY`], [`Operation::VERSION`],
+    /// an `Idempotent` [`Operation::KEY_WINDOW`] of zero) fails the build;
+    /// see [`Operation`].
     pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output> {
-        submit_unit(
-            UnitHost::Lease(Arc::clone(&self.lease)),
-            &UnitScope::default(),
-            operation,
-            O::EFFECT,
-            type_name::<O>(),
-            None,
-        )
+        assert_declaration::<R, O>();
+        submit_unit(self.unit_host(), &UnitScope::default(), Plain(operation))
+    }
+
+    /// The host every unit of this facade runs against: its lease.
+    pub(super) fn unit_host(&self) -> UnitHost<R> {
+        UnitHost::Lease(Arc::clone(&self.lease))
+    }
+}
+
+/// Fails the build for an operation whose constants break the declaration
+/// rules. A post-monomorphization error: `cargo check` does not see it, so
+/// the runtime refuses the same declaration at submit too.
+pub(super) fn assert_declaration<R: Provider + PinSlots, O: Operation<R>>() {
+    const {
+        assert!(
+            is_valid_declaration(O::KEY, O::VERSION, O::EFFECT, O::KEY_WINDOW),
+            "Operation::KEY must be 1..=64 bytes of [A-Za-z0-9_.-] starting and ending \
+             alphanumeric, VERSION at least 1, and an Idempotent KEY_WINDOW non-zero"
+        );
     }
 }
 
 /// Which effects the caller that built a row facade may submit.
 #[derive(Debug, Clone, Default)]
 pub(crate) enum EffectAuthority {
-    /// Library callers may submit every declared operation effect.
+    /// Library callers run every effect unjournaled.
     #[default]
     Unjournaled,
     /// Action execution without effect-owner authority may perform reads only.
     ReadOnly,
     /// Action execution with effect-owner authority: reads as usual,
-    /// effects only through `submit_effect` / `session_effect`, driven
-    /// through `owner`.
+    /// `Idempotent` and `Write` units driven through `owner`.
     Journaled {
         /// The execution journal that records the row's effects.
         owner: Arc<dyn EffectJournal>,
@@ -415,9 +433,8 @@ impl UnitScope {
         self
     }
 
-    /// Lets the facade submit effects through `submit_effect` and
-    /// `session_effect` only, driven through `owner`; `binding` is the
-    /// row's credential slot identity.
+    /// Drives the facade's `Idempotent` and `Write` units through `owner`;
+    /// `binding` is the row's credential slot identity.
     pub(crate) fn journaled(
         mut self,
         owner: Arc<dyn EffectJournal>,
@@ -427,102 +444,130 @@ impl UnitScope {
         self
     }
 
-    /// Why the caller's authority refuses `effect` submitted with
-    /// (`declared`) or without an effect declaration; `None` when it
-    /// admits it. Reads are always admitted.
-    fn refusal(&self, effect: Effect, declared: bool) -> Option<&'static str> {
-        if effect == Effect::Read {
-            return None;
-        }
-        match self.effect_authority {
-            EffectAuthority::Unjournaled => None,
-            EffectAuthority::ReadOnly => {
-                Some("managed row effect requires execution-owner authority")
-            },
-            EffectAuthority::Journaled { .. } if declared => None,
-            EffectAuthority::Journaled { .. } => {
-                Some("execution-owned effects go through submit_effect")
-            },
-        }
-    }
-
-    /// Admits a unit at submit: the caller's authority, the effect
-    /// declaration (when there is one) and, on an owned facade, the
-    /// owner's side of the submit. `Some` for an owned unit.
-    fn admit<O, T>(
-        &self,
-        key: &ResourceKey,
-        effect: Effect,
-        declaration: Option<EffectDeclaration<O, T>>,
-    ) -> Result<Option<OwnedSubmit<O, T>>, OperationError> {
-        if let Some(detail) = self.refusal(effect, declaration.is_some()) {
+    /// Routes a unit at submit (the declaration, the developer key part,
+    /// then the caller's authority) and, on an owned facade, takes the
+    /// owner's side of the submit. `Idempotent` and `Write` units route:
+    ///
+    /// | Authority | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
+    /// |---|---|---|---|
+    /// | unjournaled (library, lease) | plain | plain | plain |
+    /// | read-only | plain | refused `Permanent` | refused `Permanent` |
+    /// | journaled | plain, never prepared | through the owner | refused `Permanent` |
+    ///
+    /// A plain unit that declared a developer key part presents a local
+    /// idempotency key; every refusal is unsent.
+    fn admit<R, W>(&self, key: &ResourceKey, work: &W) -> Result<Route, OperationError>
+    where
+        R: Provider + PinSlots,
+        W: UnitWork<R>,
+    {
+        if let Some(detail) = work.defect() {
             return Err(OperationError::new(ErrorKind::Permanent, detail));
         }
-        let Some(declaration) = declaration else {
-            return Ok(None);
+        let declared = work.declared();
+        check_declaration(
+            declared.name,
+            declared.version,
+            declared.effect,
+            declared.key_window,
+        )?;
+        let key_part = work.key_part();
+        if let Some(part) = &key_part {
+            check_key_part(part)?;
+        }
+        let plain = |key_part: Option<String>| -> Result<Route, OperationError> {
+            let local_key = key_part
+                .map(|part| local_idempotency_key(key, declared.name, declared.version, &part))
+                .transpose()?;
+            Ok(Route::Plain { local_key })
         };
-        declaration.check(effect)?;
-        let EffectAuthority::Journaled { owner, binding } = &self.effect_authority else {
-            // A library row runs a declared effect as a plain unit.
-            return Ok(None);
+        if declared.effect == Effect::Read {
+            return plain(key_part);
+        }
+        let (owner, binding) = match &self.effect_authority {
+            EffectAuthority::Unjournaled => return plain(key_part),
+            EffectAuthority::ReadOnly => {
+                return Err(OperationError::new(
+                    ErrorKind::Permanent,
+                    "managed row effect requires execution-owner authority",
+                ));
+            },
+            EffectAuthority::Journaled { owner, binding } => (owner, binding),
         };
-        let owned = OwnedEffect::submit(owner, binding, key, effect, &declaration)?;
-        let plan = EffectPlan {
-            request: declaration.request,
-            codec: declaration.codec,
+        if W::codec().is_none() {
+            return Err(OperationError::new(
+                ErrorKind::Permanent,
+                "streaming effects are not journaled in v1",
+            ));
+        }
+        let recovery = match declared.effect {
+            Effect::Idempotent => Recovery::StableKey {
+                window: declared.key_window,
+            },
+            _ => Recovery::Opaque,
         };
-        Ok(Some((owned, plan)))
+        let declaration = JournalDeclaration {
+            kind: declared.kind,
+            name: declared.name,
+            version: declared.version,
+            effect: declared.effect,
+            recovery,
+            record_output: declared.record_output,
+            canonical_request: work.canonical_request()?,
+            key_part,
+        };
+        OwnedEffect::submit(owner, binding, key, declaration)
+            .map(|owned| Route::Owned(Box::new(owned)))
     }
 }
 
-/// Builds the lazy [`Submission`] of `operation` on `host`, in a
-/// `nebula.resource.unit` span naming it `operation_name`, under `scope`.
-/// A unit submitted with an effect `declaration` on an owned facade is
-/// driven through the facade's owner (see the `owned` module).
-pub(super) fn submit_unit<R, O>(
+/// How a unit runs, as [`UnitScope::admit`] routed it.
+enum Route {
+    /// Without an owner, presenting `local_key` when it declared a key part.
+    Plain { local_key: Option<IdempotencyKey> },
+    /// Driven through the row's owner.
+    Owned(Box<OwnedEffect>),
+}
+
+/// Builds the lazy [`Submission`] of `work` on `host`, in a
+/// `nebula.resource.unit` span naming its operation key (or session name),
+/// under `scope`. A unit routed to the facade's owner is driven through it
+/// (see the `owned` module).
+pub(super) fn submit_unit<R, W>(
     host: UnitHost<R>,
     scope: &UnitScope,
-    operation: O,
-    effect: Effect,
-    operation_name: &'static str,
-    declaration: Option<EffectDeclaration<O, O::Output>>,
-) -> Submission<O::Output>
+    work: W,
+) -> Submission<W::Output>
 where
     R: Provider + PinSlots,
-    O: Operation<R>,
+    W: UnitWork<R>,
 {
     let key = host.key().clone();
+    let declared = work.declared();
+    let effect = declared.effect;
     let span = tracing::info_span!(
         "nebula.resource.unit",
         key = %key,
-        operation = operation_name,
+        operation = declared.name,
         occurrence = tracing::field::Empty,
         attempts = tracing::field::Empty,
         sent = tracing::field::Empty,
         outcome = tracing::field::Empty,
     );
-    let admitted = scope.admit(&key, effect, declaration);
-    let (shared, plan, refused) = match admitted {
-        Ok(Some((owned, plan))) => {
+    let (shared, refused) = match scope.admit(&key, &work) {
+        Ok(Route::Owned(owned)) => {
             span.record("occurrence", owned.occurrence());
-            (UnitShared::new(scope).with_effect(owned), Some(plan), None)
+            (UnitShared::new(scope).with_effect(*owned), None)
         },
-        Ok(None) => (UnitShared::new(scope), None, None),
-        Err(refusal) => (UnitShared::new(scope), None, Some(refusal)),
+        Ok(Route::Plain { local_key }) => (UnitShared::new(scope).with_local_key(local_key), None),
+        Err(refusal) => (UnitShared::new(scope), Some(refusal)),
     };
     let shared = Arc::new(shared);
-    let run: Pin<Box<dyn Future<Output = Result<O::Output, OperationError>> + Send>> = match refused
+    let run: Pin<Box<dyn Future<Output = Result<W::Output, OperationError>> + Send>> = match refused
     {
         None => Box::pin(
-            start_unit::<R, O>(
-                host,
-                Arc::clone(&shared),
-                operation,
-                effect,
-                span.clone(),
-                plan,
-            )
-            .instrument(span),
+            start_unit::<R, W>(host, Arc::clone(&shared), work, effect, span.clone())
+                .instrument(span),
         ),
         Some(refusal) => {
             let denied_shared = Arc::clone(&shared);
@@ -532,7 +577,7 @@ where
                     // Keep the operation lazy and let cancellation win while
                     // the unit is still pending, exactly as it does before a
                     // normal unit's first grant.
-                    let _operation = operation;
+                    let _work = work;
                     let result = match denied_shared.refuse_if_cancelled() {
                         Ok(()) => {
                             tracing::warn!(
@@ -572,9 +617,12 @@ pub(super) struct UnitShared {
     granted: AtomicU32,
     /// Worst settled [`SentState`] rank across granted attempts.
     worst: AtomicU8,
-    /// The unit's owned effect, for a unit submitted with an effect
-    /// declaration on an owned row facade.
+    /// The unit's owned effect, for an `Idempotent` or `Write` unit on a
+    /// journaled row facade.
     effect: Option<OwnedEffect>,
+    /// The local idempotency key of a plain unit that declared a
+    /// developer key part.
+    local_key: Option<IdempotencyKey>,
 }
 
 impl UnitShared {
@@ -598,6 +646,7 @@ impl UnitShared {
             granted: AtomicU32::new(0),
             worst: AtomicU8::new(SentState::NotSent.rank()),
             effect: None,
+            local_key: None,
         }
     }
 
@@ -605,6 +654,22 @@ impl UnitShared {
     fn with_effect(mut self, effect: OwnedEffect) -> Self {
         self.effect = Some(effect);
         self
+    }
+
+    /// The plain unit presenting `local_key`.
+    fn with_local_key(mut self, local_key: Option<IdempotencyKey>) -> Self {
+        self.local_key = local_key;
+        self
+    }
+
+    /// The provider idempotency key the unit presents: its owner's, or its
+    /// local one.
+    pub(super) fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.effect
+            .as_ref()
+            .and_then(OwnedEffect::slot)
+            .map(JournalSlot::idempotency_key)
+            .or(self.local_key.as_ref())
     }
 
     /// The unit's owned effect, if it has one.
@@ -802,20 +867,18 @@ async fn lease_unit_slot<R: Provider>(
 }
 
 /// The caller's side of a unit: waits for a unit slot on a lease host,
-/// prepares an owned unit's effect (`plan`), then spawns the runtime task
-/// and waits for its outcome. `effect` is what the unit's settled error
-/// reports.
-async fn start_unit<R, O>(
+/// prepares an owned unit's effect, then spawns the runtime task and waits
+/// for its outcome. `effect` is what the unit's settled error reports.
+async fn start_unit<R, W>(
     host: UnitHost<R>,
     shared: Arc<UnitShared>,
-    operation: O,
+    work: W,
     effect: Effect,
     span: tracing::Span,
-    plan: Option<EffectPlan<O, O::Output>>,
-) -> Result<O::Output, OperationError>
+) -> Result<W::Output, OperationError>
 where
     R: Provider + PinSlots,
-    O: Operation<R>,
+    W: UnitWork<R>,
 {
     let deadline = shared.deadline();
     // A unit cancelled before its first poll — its parent cancellation
@@ -847,21 +910,12 @@ where
     };
     // An owned unit's first poll: the owner prepares its effect before
     // anything is spawned, booked, read or checked out.
-    let codec = match (plan, shared.effect()) {
-        (Some(plan), Some(owned)) => {
-            let request = (plan.request)(&operation);
-            let max_invocations = operation.max_attempts();
-            let prepared = owned::prepare(
-                &shared,
-                owned,
-                max_invocations,
-                request,
-                plan.codec,
-                deadline,
-            )
-            .await;
+    let codec = match (W::codec(), shared.effect()) {
+        (Some(codec), Some(owned)) => {
+            let max_invocations = work.max_attempts();
+            let prepared = owned::prepare(&shared, owned, max_invocations, codec, deadline).await;
             match prepared {
-                Prepared::Run => Some(plan.codec),
+                Prepared::Run => Some(codec),
                 Prepared::Replayed(output) => {
                     host.record_replayed(&span);
                     return Ok(output);
@@ -877,10 +931,10 @@ where
     };
     let key = host.key().clone();
     let runtime = tokio::spawn(
-        run_unit::<R, O>(
+        run_unit::<R, W>(
             host,
             Arc::clone(&shared),
-            operation,
+            work,
             (effect, codec),
             permit,
             deadline,
@@ -903,18 +957,18 @@ where
 /// settles the outcome whether or not anyone waits; an owned unit's last
 /// call is recorded with its owner (through `codec`) before the unit
 /// settles. The slots are pinned at the unit's first grant, not here.
-async fn run_unit<R, O>(
+async fn run_unit<R, W>(
     host: UnitHost<R>,
     shared: Arc<UnitShared>,
-    operation: O,
-    (effect, codec): (Effect, Option<OutputCodec<O::Output>>),
+    work: W,
+    (effect, codec): (Effect, Option<OutputCodec<W::Output>>),
     _permit: Option<OwnedSemaphorePermit>,
     deadline: tokio::time::Instant,
     span: tracing::Span,
-) -> Result<O::Output, OperationError>
+) -> Result<W::Output, OperationError>
 where
     R: Provider + PinSlots,
-    O: Operation<R>,
+    W: UnitWork<R>,
 {
     let generation = match host.unit_generation() {
         Ok(generation) => generation,
@@ -924,7 +978,7 @@ where
             return result;
         },
     };
-    let max_attempts = operation.max_attempts();
+    let max_attempts = work.max_attempts();
     let outcome = {
         let mut cx = OperationCx {
             host: &host,
@@ -934,7 +988,7 @@ where
             deadline,
             max_attempts,
         };
-        let run = tokio::time::timeout_at(deadline, operation.run(&mut cx));
+        let run = tokio::time::timeout_at(deadline, work.run(&mut cx));
         AssertUnwindSafe(run).catch_unwind().await
     };
     let (result, abnormal) = match outcome {
@@ -1214,16 +1268,18 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
         self.shared.attempts()
     }
 
-    /// The provider idempotency key of an execution-owned effect: the key
-    /// its owner derived and recorded before the first attempt, the same
-    /// for every attempt, retry and resume of the effect. Send it as the
-    /// provider's idempotency key. `None` for any other unit.
+    /// The provider idempotency key to send, the same for every attempt,
+    /// retry and resume of the unit:
+    ///
+    /// - on a journaled row, for an `Idempotent` or `Write` unit, the key
+    ///   its owner derived and recorded before the first attempt;
+    /// - otherwise, for an operation that declared a developer key part
+    ///   ([`Operation::idempotency_key`]), a key derived locally from the
+    ///   resource, the operation key and version, and the part;
+    /// - `None` for any other unit.
     #[must_use]
     pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
-        self.shared
-            .effect()
-            .and_then(OwnedEffect::slot)
-            .map(JournalSlot::idempotency_key)
+        self.shared.idempotency_key()
     }
 }
 
@@ -1338,6 +1394,14 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
     #[must_use]
     pub fn credentials(&self) -> &R::Pinned {
         self.pinned
+    }
+
+    /// The unit's provider idempotency key, as
+    /// [`OperationCx::idempotency_key`]: the same for every attempt. For a
+    /// helper that sends a request on a granted attempt.
+    #[must_use]
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.shared.idempotency_key()
     }
 
     /// Reports what the provider said about its limit on this attempt: a

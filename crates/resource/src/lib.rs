@@ -263,9 +263,8 @@ pub mod topology;
 pub mod topology_tag;
 
 pub use call::{
-    Attempt, Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKey,
-    IdempotencyKeyPart, Lease, OccurrenceLabel, Operation, OperationCx, OperationError, PinSlots,
-    Recorded, SentState, Submission,
+    Attempt, Cost, Effect, IdempotencyKey, Lease, Operation, OperationCx, OperationError, PinSlots,
+    SentState, Submission,
 };
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,

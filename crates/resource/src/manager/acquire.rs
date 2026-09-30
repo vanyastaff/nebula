@@ -427,15 +427,15 @@ impl Manager {
     }
 
     /// The type-erased managed row of an action with effect-owner
-    /// authority: reads run as on any row, effects only through
-    /// [`ResourceHandle::submit_effect`](crate::call::ResourceHandle::submit_effect)
-    /// and [`ResourceHandle::session_effect`](crate::call::ResourceHandle::session_effect),
+    /// authority: reads run as on any row, and every `Idempotent` or
+    /// `Write` unit — an operation through
+    /// [`ResourceHandle::submit`](crate::call::ResourceHandle::submit) or a
+    /// session through
+    /// [`ResourceHandle::session`](crate::call::ResourceHandle::session) — is
     /// prepared, granted and recorded by `owner` (see the
-    /// [`journal`](crate::call::journal) module). A plain
-    /// [`submit`](crate::call::ResourceHandle::submit) or
-    /// [`session`](crate::call::ResourceHandle::session) of an effect is refused
-    /// before its first provider attempt. The owner binds effects to
-    /// `slot_identity`.
+    /// [`journal`](crate::call::journal) module). A streamed effect is
+    /// refused before its first provider attempt. The owner binds effects
+    /// to `slot_identity`.
     ///
     /// # Errors
     ///

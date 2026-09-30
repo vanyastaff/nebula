@@ -435,10 +435,12 @@ mod tests {
     }
 
     /// Reads the instance's value in one attempt costing one permit.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Read;
 
     impl Operation<AccResource> for Read {
         type Output = u64;
+        const KEY: &'static str = "acc.read";
         const EFFECT: Effect = Effect::Read;
 
         async fn run(self, cx: &mut OperationCx<'_, AccResource>) -> Result<u64, OperationError> {
@@ -449,19 +451,30 @@ mod tests {
         }
     }
 
-    /// Yields the unit's deadline.
-    struct UnitDeadline;
+    /// Records the unit's deadline.
+    #[derive(Default, serde::Serialize, serde::Deserialize)]
+    struct UnitDeadline {
+        #[serde(skip)]
+        seen: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
+    }
 
     impl Operation<AccResource> for UnitDeadline {
-        type Output = std::time::Instant;
+        type Output = ();
+        const KEY: &'static str = "acc.unit_deadline";
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(
-            self,
-            cx: &mut OperationCx<'_, AccResource>,
-        ) -> Result<std::time::Instant, OperationError> {
-            Ok(cx.deadline())
+        async fn run(self, cx: &mut OperationCx<'_, AccResource>) -> Result<(), OperationError> {
+            *self.seen.lock().expect("deadline cell") = Some(cx.deadline());
+            Ok(())
         }
+    }
+
+    /// The deadline a unit of `row` runs under.
+    async fn unit_deadline(row: &ResourceHandle<AccResource>) -> std::time::Instant {
+        let probe = UnitDeadline::default();
+        let seen = Arc::clone(&probe.seen);
+        row.submit(probe).await.expect("deadline");
+        seen.lock().expect("deadline cell").expect("the unit ran")
     }
 
     #[tokio::test]
@@ -522,19 +535,10 @@ mod tests {
         let deadline = tokio::time::Instant::now().into_std() + std::time::Duration::from_secs(40);
 
         let bounded = make_accessor(Arc::clone(&manager)).with_deadline(Some(deadline));
-        assert_eq!(
-            row_of(&bounded)
-                .submit(UnitDeadline)
-                .await
-                .expect("deadline"),
-            deadline
-        );
+        assert_eq!(unit_deadline(&row_of(&bounded)).await, deadline);
 
         let unbounded = make_accessor(manager);
-        let capped = row_of(&unbounded)
-            .submit(UnitDeadline)
-            .await
-            .expect("deadline");
+        let capped = unit_deadline(&row_of(&unbounded)).await;
         assert_eq!(
             capped,
             tokio::time::Instant::now().into_std() + nebula_resource::call::OPERATION_DEADLINE_CAP

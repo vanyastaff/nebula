@@ -9,6 +9,7 @@ use nebula_sdk::integration::resource::{
     ResidentProvider, ResiliencePolicy, ResourceContext, ResourceKey, SentState, TeardownCx,
     Verdict, no_credential_slots, resource_key, retry_after_from_header,
 };
+use nebula_sdk::prelude::{Deserialize, Serialize};
 
 /// The provider's client: the instance itself, no wrapper.
 struct ChatClient;
@@ -79,6 +80,8 @@ impl ResidentProvider for ChatProvider {}
 
 /// Sends one message: one attempt per provider call, booked on the chat's
 /// own limit as well as the account's.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct SendMessage {
     chat_id: i64,
     text: String,
@@ -86,6 +89,7 @@ struct SendMessage {
 
 impl Operation<ChatProvider> for SendMessage {
     type Output = u64;
+    const KEY: &'static str = "chat.send_message";
 
     async fn run(self, cx: &mut OperationCx<'_, ChatProvider>) -> Result<u64, OperationError> {
         let attempt = cx.attempt(Cost::keyed("chat_id", self.chat_id)).await?;

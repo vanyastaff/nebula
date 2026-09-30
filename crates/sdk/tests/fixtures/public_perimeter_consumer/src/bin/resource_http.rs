@@ -81,6 +81,15 @@ fn main() -> Result<(), OperationError> {
     assert_eq!(effect(&Request::post("/issues")?), Effect::Write);
     let keyed: Request<Keyed<Post>> = Request::post("/issues")?.idempotency_key("issue-1");
     assert_eq!(effect(&keyed), Effect::Idempotent);
+    assert_eq!(
+        <Request<Keyed<Post>> as Operation<GitHub>>::KEY,
+        "http.post.keyed"
+    );
+    assert_eq!(
+        Operation::<GitHub>::idempotency_key(&keyed).as_deref(),
+        Some("issue-1"),
+        "the developer part; the header carries the key derived from it"
+    );
     let keyed: Request<Keyed<Patch>> = Request::patch("/issues/1")?.idempotency_key("edit-1");
     assert_eq!(effect(&keyed), Effect::Idempotent);
     let write: Request<AsWrite<Delete>> = Request::delete("/counter")?.as_write();

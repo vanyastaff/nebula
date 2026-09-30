@@ -1385,15 +1385,25 @@ mod resource_handle {
         calls
     }
 
+    /// A deserialized test operation costs one permit.
+    fn one() -> Cost {
+        Cost::ONE
+    }
+
     /// One provider call costing `cost`: counts it and yields the count.
-    struct Call(Cost);
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Call {
+        #[serde(skip, default = "one")]
+        cost: Cost,
+    }
 
     impl Operation<Svc> for Call {
         type Output = u64;
+        const KEY: &'static str = "svc.call";
         const EFFECT: Effect = Effect::Read;
 
         async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<u64, OperationError> {
-            let attempt = cx.attempt(self.0).await?;
+            let attempt = cx.attempt(self.cost).await?;
             let calls = attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1;
             attempt.settle(SentState::Sent);
             Ok(calls)
@@ -1514,7 +1524,7 @@ mod resource_handle {
             _input: serde_json::Value,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-            let calls = self.svc.submit(Call(Cost::ONE)).await?;
+            let calls = self.svc.submit(Call { cost: Cost::ONE }).await?;
             Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
         }
     }
@@ -1596,7 +1606,7 @@ mod resource_handle {
             _input: serde_json::Value,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-            let calls = self.svc.submit(Call(Cost::ONE)).await?;
+            let calls = self.svc.submit(Call { cost: Cost::ONE }).await?;
             Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
         }
     }
@@ -1636,9 +1646,10 @@ mod resource_handle {
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             let entry = input["entry"].as_str().unwrap_or_default().to_owned();
             let fail = input["fail"].as_bool().unwrap_or(false);
+            let spec = SessionSpec::write("ledger.book", &entry).cost(Cost::ONE);
             let booked = self
                 .ledger
-                .session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
+                .session(spec, move |tx, _cx| {
                     Box::pin(async move {
                         SESSION_BODIES.fetch_add(1, Ordering::SeqCst);
                         tx.pending.push(entry);
@@ -1706,10 +1717,12 @@ mod resource_handle {
     static CANCEL_SETTLED: Notify = Notify::const_new();
 
     /// Asks for one attempt, recording the refusal it gets.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Queued;
 
     impl Operation<Svc> for Queued {
         type Output = u64;
+        const KEY: &'static str = "svc.queued";
         const EFFECT: Effect = Effect::Read;
 
         async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<u64, OperationError> {
@@ -1737,7 +1750,7 @@ mod resource_handle {
             _input: serde_json::Value,
             ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-            self.svc.submit(Call(Cost::ONE)).await?;
+            self.svc.submit(Call { cost: Cost::ONE }).await?;
             *CANCEL_EXECUTION.lock().expect("execution slot") = ctx.scope().execution_id;
             let calls = self.svc.submit(Queued).await?;
             Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
@@ -1797,10 +1810,12 @@ mod resource_handle {
     row_action!(UnitDeadline, "test.resource_handle.deadline", svc: Svc);
 
     /// Yields the seconds left until the unit's deadline.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Remaining;
 
     impl Operation<Svc> for Remaining {
         type Output = f64;
+        const KEY: &'static str = "svc.remaining";
         const EFFECT: Effect = Effect::Read;
 
         async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<f64, OperationError> {
@@ -1868,10 +1883,12 @@ mod resource_handle {
     static HINTED_STARTS: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
 
     /// Refused by the provider's quota before anything was sent.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Throttled;
 
     impl Operation<Svc> for Throttled {
         type Output = ();
+        const KEY: &'static str = "svc.throttled";
         const EFFECT: Effect = Effect::Read;
 
         async fn run(self, _cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
@@ -1938,10 +1955,12 @@ mod resource_handle {
     // ── (f) replay-safe mutation still requires effect-owner authority ───
 
     /// A provider mutation that claims repeats are absorbed.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct AbsorbedWrite;
 
     impl Operation<Svc> for AbsorbedWrite {
         type Output = ();
+        const KEY: &'static str = "svc.absorbed_write";
         const EFFECT: Effect = Effect::Idempotent;
 
         async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
@@ -1996,10 +2015,12 @@ mod resource_handle {
     static UNKNOWN_DISPATCHES: AtomicU32 = AtomicU32::new(0);
 
     /// A write whose provider call may have been applied.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct LostWrite;
 
     impl Operation<Svc> for LostWrite {
         type Output = ();
+        const KEY: &'static str = "svc.lost_write";
         const EFFECT: Effect = Effect::Write;
 
         async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
