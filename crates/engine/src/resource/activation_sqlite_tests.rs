@@ -1233,10 +1233,12 @@ async fn a_slot_less_resource_on_a_strict_manager_reads_nothing() {
 // ── Strict per-attempt admission through the managed call facade ───────────
 
 /// `n` free read attempts, each settled `Sent`, on any row.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Attempts(u32);
 
 impl<R: Provider + PinSlots> Operation<R> for Attempts {
     type Output = ();
+    const KEY: &'static str = "test.attempts";
     const EFFECT: Effect = Effect::Read;
 
     fn max_attempts(&self) -> NonZeroU32 {
@@ -1255,8 +1257,11 @@ impl<R: Provider + PinSlots> Operation<R> for Attempts {
 /// Two read attempts on the bearer row; after the first is sent it signals
 /// `between` and waits for `resume`. Yields the material each attempt was
 /// pinned on.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PausedRead {
+    #[serde(skip)]
     between: Arc<Notify>,
+    #[serde(skip)]
     resume: Arc<Notify>,
 }
 
@@ -1274,6 +1279,7 @@ fn paused_read() -> (PausedRead, Arc<Notify>, Arc<Notify>) {
 
 impl Operation<BearerRow> for PausedRead {
     type Output = Vec<Option<u64>>;
+    const KEY: &'static str = "bearer.paused_read";
     const EFFECT: Effect = Effect::Read;
 
     fn max_attempts(&self) -> NonZeroU32 {

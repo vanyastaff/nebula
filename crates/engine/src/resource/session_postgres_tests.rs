@@ -537,7 +537,8 @@ impl Pg {
         row: &ResourceHandle<PgRow>,
         id: i32,
     ) -> nebula_resource::call::Submission<i32> {
-        row.session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
+        let spec = SessionSpec::write("ledger.insert", &id).cost(Cost::ONE);
+        row.session(spec, move |tx, _cx| {
             Box::pin(async move {
                 sqlx::query("INSERT INTO ledger (id) VALUES ($1)")
                     .bind(id)
@@ -694,18 +695,21 @@ async fn a_failed_body_leaves_nothing_behind() {
     let row = pg.row(&pg.activated);
 
     let error = row
-        .session(SessionSpec::new(Cost::ONE), |tx, _cx| {
-            Box::pin(async move {
-                sqlx::query("INSERT INTO ledger (id) VALUES (2)")
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(query_failed)?;
-                Err::<(), _>(OperationError::new(
-                    nebula_resource::ErrorKind::Permanent,
-                    "the body gave up",
-                ))
-            })
-        })
+        .session(
+            SessionSpec::write("ledger.insert", &2).cost(Cost::ONE),
+            |tx, _cx| {
+                Box::pin(async move {
+                    sqlx::query("INSERT INTO ledger (id) VALUES (2)")
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(query_failed)?;
+                    Err::<(), _>(OperationError::new(
+                        nebula_resource::ErrorKind::Permanent,
+                        "the body gave up",
+                    ))
+                })
+            },
+        )
         .await
         .expect_err("rolled back");
     assert_eq!(error.sent(), SentState::NotSent);
@@ -915,10 +919,12 @@ async fn a_session_waiting_for_quota_holds_no_connection() {
 }
 
 /// Reports an hour-long provider pause on the row's quota.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Throttle;
 
 impl Operation<PgRow> for Throttle {
     type Output = ();
+    const KEY: &'static str = "pg.throttle";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, PgRow>) -> Result<(), OperationError> {
@@ -934,10 +940,12 @@ impl Operation<PgRow> for Throttle {
 }
 
 /// Checks out an authenticated backend without producing a business effect.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct CheckoutRead;
 
 impl Operation<PgRow> for CheckoutRead {
     type Output = ();
+    const KEY: &'static str = "pg.checkout_read";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, PgRow>) -> Result<(), OperationError> {
@@ -957,19 +965,22 @@ async fn a_session_past_its_deadline_is_cut_off_and_applies_nothing() {
 
     let started = std::time::Instant::now();
     let error = row
-        .session(SessionSpec::new(Cost::ONE), |tx, _cx| {
-            Box::pin(async move {
-                sqlx::query("INSERT INTO ledger (id) VALUES (7)")
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(query_failed)?;
-                sqlx::query("SELECT pg_sleep(10)")
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(query_failed)?;
-                Ok(())
-            })
-        })
+        .session(
+            SessionSpec::write("ledger.insert", &7).cost(Cost::ONE),
+            |tx, _cx| {
+                Box::pin(async move {
+                    sqlx::query("INSERT INTO ledger (id) VALUES (7)")
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(query_failed)?;
+                    sqlx::query("SELECT pg_sleep(10)")
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(query_failed)?;
+                    Ok(())
+                })
+            },
+        )
         .with_deadline(std::time::Instant::now() + Duration::from_millis(200))
         .await
         .expect_err("cut off at the deadline");
