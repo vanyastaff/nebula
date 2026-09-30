@@ -1403,10 +1403,10 @@ mod resource_handle {
         const EFFECT: Effect = Effect::Read;
 
         async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<u64, OperationError> {
-            let attempt = cx.attempt(self.cost).await?;
-            let calls = attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1;
-            attempt.settle(SentState::Sent);
-            Ok(calls)
+            cx.call(self.cost, async |svc, ()| {
+                Ok(svc.0.fetch_add(1, Ordering::SeqCst) + 1)
+            })
+            .await
         }
     }
 
@@ -1729,9 +1729,9 @@ mod resource_handle {
             CANCEL_WAITING.notify_one();
             let refused = match cx.attempt(Cost::ONE).await {
                 Ok(attempt) => {
-                    let calls = attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1;
-                    attempt.settle(SentState::Sent);
-                    return Ok(calls);
+                    let calls = Ok(attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1);
+                    attempt.finish(&calls).await;
+                    return calls;
                 },
                 Err(refused) => refused,
             };
@@ -1964,10 +1964,11 @@ mod resource_handle {
         const EFFECT: Effect = Effect::Idempotent;
 
         async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
-            let attempt = cx.attempt(Cost::ONE).await?;
-            attempt.instance().0.fetch_add(1, Ordering::SeqCst);
-            attempt.settle(SentState::Sent);
-            Ok(())
+            cx.call(Cost::ONE, async |svc, ()| {
+                svc.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
         }
     }
 
@@ -2024,13 +2025,11 @@ mod resource_handle {
         const EFFECT: Effect = Effect::Write;
 
         async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
-            let attempt = cx.attempt(Cost::ONE).await?;
-            attempt.instance().0.fetch_add(1, Ordering::SeqCst);
-            attempt.settle(SentState::MaybeSent);
-            Err(OperationError::new(
-                ErrorKind::Transient,
-                "connection reset",
-            ))
+            cx.call(Cost::ONE, async |svc, ()| {
+                svc.0.fetch_add(1, Ordering::SeqCst);
+                Err(OperationError::interrupted("connection reset"))
+            })
+            .await
         }
     }
 

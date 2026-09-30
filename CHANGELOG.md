@@ -11,6 +11,42 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **One outcome classification for managed calls advances development
+  packages to 0.24.0 in lockstep.** A provider call's result is classified
+  once and the runtime derives the attempt's sent state, the rate limit's
+  verdict, the journal crossing and any re-attempt from it:
+  - `OperationError` gains `throttled(retry_after)` (`Exhausted`, `Sent`;
+    pauses the quota), `throttled_key(retry_after)` (pauses only the
+    attempt's `Cost::keyed` key), `unreachable(detail)` /
+    `unreachable_as(kind, detail)` (`NotSent`), `interrupted(detail)`
+    (`Transient`, `MaybeSent`), `rejected(detail)` and
+    `rejected_as(kind, detail)` (`Sent`, definitive; a retryable kind is
+    recorded `Permanent`). `OperationError::new` and a converted `Error`
+    are unclassified: `MaybeSent`, and nothing reaches the rate limit.
+  - `OperationCx::call(cost, async move |instance, credentials| ..)` makes a
+    provider call per attempt and re-attempts only what the classification
+    allows — a throttle or an unreachable provider always, an interrupted
+    call only for a replay-safe `EFFECT`, a rejection never — within
+    `max_attempts` (one by default: no hidden retry) and the unit deadline;
+    a throttle's pause is waited out by the next quota booking, never a
+    sleep. The closure owns its captures (`'static`).
+  - `Attempt::finish(&result)` is the low-level path (a stream finished at
+    its head, several steps on one attempt). Removed from the public API:
+    `Attempt::settle(SentState)` and `Attempt::report(Verdict)`; `Verdict`,
+    `Throttle` and the deprecated `Limited` family stay in `rate_limit`, their
+    migration notes now pointing at `OperationError::throttled`.
+  - `unreachable` and `interrupted` never reset a backoff in progress; a
+    unit's folded sent state ignores a throttled attempt that was not its
+    last (the provider applied nothing).
+  - The SDK HTTP adapter's hand-written retry loop is gone: each exchange
+    classifies its answer (connect failure `unreachable`; a lost connection,
+    `408` / `425` / `5xx` or a failed body read `interrupted`; `429`, or
+    `503` with `Retry-After`, `throttled`; other `4xx` or a body over budget
+    `rejected`) and `Request::run` uses `cx.call`. A `5xx` and a body read
+    that failed after the head now settle `MaybeSent` instead of `Sent`; a
+    `Write` is still `OutcomeUnknown` and a `Read` / `Idempotent` request
+    still retryable. `http::send` finishes its attempt itself.
+
 - **The unified resource `Operation` advances development packages to 0.23.0
   in lockstep.** An operation declares only what an execution journal needs,
   and the runtime derives the rest:

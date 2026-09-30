@@ -6,7 +6,7 @@
 use nebula_sdk::integration::resource::{
     Cost, Effect, Error, Operation, OperationCx, OperationError, PoolProvider, Pooled, Provider,
     Resident, ResidentProvider, ResourceContext, ResourceHandle, ResourceKey,
-    ResourceMetadataDraft, SentState, no_credential_slots, resource_key,
+    ResourceMetadataDraft, no_credential_slots, resource_key,
 };
 use nebula_sdk::prelude::{
     Action, ActionContext, ActionError, ActionResult, Deserialize, Serialize, StatelessAction,
@@ -50,10 +50,7 @@ impl Operation<Directory> for Lookup {
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, Directory>) -> Result<u64, OperationError> {
-        let attempt = cx.attempt(Cost::ONE).await?;
-        let found = *attempt.instance();
-        attempt.settle(SentState::Sent);
-        Ok(found)
+        cx.call(Cost::ONE, async |found, ()| Ok(*found)).await
     }
 }
 

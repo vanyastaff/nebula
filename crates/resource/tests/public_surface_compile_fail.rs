@@ -16,4 +16,5 @@ fn lifecycle_authority_is_not_publicly_callable() {
     tests.compile_fail("tests/probes/store_view_cannot_take_entries.rs");
     tests.compile_fail("tests/probes/lease_closing_cannot_close.rs");
     tests.compile_fail("tests/probes/operation_requires_serde.rs");
+    tests.compile_fail("tests/probes/attempt_settle_is_private.rs");
 }

@@ -42,16 +42,17 @@
 //!
 //! Rate limits are declared by overriding [`Provider::resilience`] with a
 //! [`ResiliencePolicy`]. The facade books each attempt at its [`Cost`] —
-//! [`Cost::keyed`] for a per-key limit such as one chat's — and
-//! [`Attempt::report`] passes the provider's "slow down" on as a [`Verdict`].
-//! Without the facade a declared rate books one permit per acquire.
+//! [`Cost::keyed`] for a per-key limit such as one chat's — and a call made
+//! through [`OperationCx::call`] that returns [`OperationError::throttled`]
+//! (or [`OperationError::throttled_key`]) passes the provider's "slow down"
+//! on. Without the facade a declared rate books one permit per acquire.
 //!
 //! The closure family — [`ResourceLimiter::wrap`], [`Limited`] and
 //! [`LimitedError`] — is deprecated since 0.21.0 and removed before the API
-//! freeze: `run` becomes `cx.attempt(Cost::ONE)`, `run_for` becomes
+//! freeze: `run` becomes `cx.call(Cost::ONE, ..)`, `run_for` becomes
 //! [`Cost::keyed`], `run_until` becomes [`Submission::with_deadline`], a
-//! [`Throttle`] becomes [`Attempt::report`], and `unlimited` has no
-//! replacement by design.
+//! [`Throttle`] becomes a call returning [`OperationError::throttled`], and
+//! `unlimited` has no replacement by design.
 //!
 //! A [`StreamOperation`] submitted with [`Lease::submit_streaming`] or
 //! [`ResourceHandle::submit_streaming`] runs as one unit that also sends items through a bounded [`StreamSink`]; the

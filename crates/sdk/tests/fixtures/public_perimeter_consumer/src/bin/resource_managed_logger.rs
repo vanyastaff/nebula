@@ -91,17 +91,13 @@ impl Operation<Logger> for Write {
     const KEY: &'static str = "logger.write";
 
     async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Enqueued, OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        match attempt.instance().enqueue(self.line) {
-            Some(seq) => {
-                attempt.settle(SentState::Sent);
-                Ok(Enqueued(seq))
-            },
-            None => {
-                attempt.settle(SentState::NotSent);
-                Err(OperationError::new(ErrorKind::Backpressure, "log buffer full"))
-            },
-        }
+        let line = self.line;
+        cx.call(Cost::FREE, async move |sink, ()| {
+            sink.enqueue(line.clone()).map(Enqueued).ok_or_else(|| {
+                OperationError::unreachable_as(ErrorKind::Backpressure, "log buffer full")
+            })
+        })
+        .await
     }
 }
 
@@ -120,10 +116,7 @@ impl Operation<Logger> for Flush {
     }
 
     async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<usize, OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        let written = attempt.instance().written();
-        attempt.settle(SentState::Sent);
-        Ok(written)
+        cx.call(Cost::FREE, async |sink, ()| Ok(sink.written())).await
     }
 }
 
@@ -143,7 +136,7 @@ fn main() {
     assert_eq!(<Write as Operation<Logger>>::EFFECT, Effect::Write);
     assert!(<Flush as Operation<Logger>>::EFFECT.is_replay_safe());
     assert_eq!(Cost::FREE.permits(), 0);
-    let refused = OperationError::new(ErrorKind::Backpressure, "log buffer full");
+    let refused = OperationError::unreachable_as(ErrorKind::Backpressure, "log buffer full");
     assert!(refused.is_retryable(), "nothing was sent");
     assert_eq!(refused.sent(), SentState::NotSent);
 }

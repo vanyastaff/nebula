@@ -1,13 +1,14 @@
 //! An SDK-only integration declaring a rate limit and pacing its provider
-//! calls through the managed call facade: one attempt per provider call, a
-//! keyed cost per chat, and the provider's "slow down" reported as a verdict.
+//! calls through the managed call facade: one call per provider request, a
+//! keyed cost per chat, and the provider's "slow down" classified as a
+//! per-key throttle.
 
 use std::{num::NonZeroU32, time::Duration};
 
 use nebula_sdk::integration::resource::{
     Cost, Error, ErrorKind, Lease, Operation, OperationCx, OperationError, Provider, Rate, Resident,
-    ResidentProvider, ResiliencePolicy, ResourceContext, ResourceKey, SentState, TeardownCx,
-    Verdict, no_credential_slots, resource_key, retry_after_from_header,
+    ResidentProvider, ResiliencePolicy, ResourceContext, ResourceKey, TeardownCx,
+    no_credential_slots, resource_key, retry_after_from_header,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize};
 
@@ -19,15 +20,10 @@ enum ChatError {
     RetryAfter(Duration),
 }
 
-impl ChatError {
-    /// What the provider said about its limit: a per-chat slow-down.
-    fn verdict(&self) -> Verdict {
-        match self {
-            Self::RetryAfter(after) => Verdict::KeyThrottled {
-                retry_after: Some(*after),
-            },
-        }
-    }
+/// Classifies the client's answer once: a per-chat slow-down pauses only
+/// that chat's key, and the provider applied nothing.
+fn classify(outcome: Result<u64, ChatError>) -> Result<u64, OperationError> {
+    outcome.map_err(|ChatError::RetryAfter(after)| OperationError::throttled_key(Some(after)))
 }
 
 impl ChatClient {
@@ -78,8 +74,8 @@ impl Provider for ChatProvider {
 
 impl ResidentProvider for ChatProvider {}
 
-/// Sends one message: one attempt per provider call, booked on the chat's
-/// own limit as well as the account's.
+/// Sends one message: one call, booked on the chat's own limit as well as
+/// the account's.
 #[derive(Serialize, Deserialize)]
 #[serde(crate = "nebula_sdk::serde")]
 struct SendMessage {
@@ -92,28 +88,11 @@ impl Operation<ChatProvider> for SendMessage {
     const KEY: &'static str = "chat.send_message";
 
     async fn run(self, cx: &mut OperationCx<'_, ChatProvider>) -> Result<u64, OperationError> {
-        let attempt = cx.attempt(Cost::keyed("chat_id", self.chat_id)).await?;
-        let outcome = attempt.instance().send(self.chat_id, &self.text).await;
-        match outcome {
-            Ok(message_id) => {
-                attempt.report(Verdict::Pass).await;
-                attempt.settle(SentState::Sent);
-                Ok(message_id)
-            },
-            Err(refusal) => {
-                // The provider refused and applied nothing: pause the chat,
-                // settle the attempt as sent, fail retryably.
-                attempt.report(refusal.verdict()).await;
-                attempt.settle(SentState::Sent);
-                let ChatError::RetryAfter(after) = refusal;
-                Err(OperationError::new(
-                    ErrorKind::Exhausted {
-                        retry_after: Some(after),
-                    },
-                    "chat provider throttled the message",
-                ))
-            },
-        }
+        let Self { chat_id, text } = self;
+        cx.call(Cost::keyed("chat_id", chat_id), async move |client, ()| {
+            classify(client.send(chat_id, &text).await)
+        })
+        .await
     }
 }
 
@@ -132,20 +111,17 @@ fn main() {
     let policy = <ChatProvider as Provider>::resilience();
     assert_eq!(policy.keyed_rates().len(), 1, "per-chat limit declared");
 
-    assert_eq!(
-        ChatError::RetryAfter(Duration::from_secs(3)).verdict(),
-        Verdict::KeyThrottled {
-            retry_after: Some(Duration::from_secs(3))
-        }
-    );
     assert_eq!(retry_after_from_header("30"), Some(Duration::from_secs(30)));
     assert_eq!(Cost::keyed("chat_id", 42).permits(), 1);
 
-    let throttled = OperationError::new(
+    assert_eq!(classify(Ok(7)).ok(), Some(7));
+    let throttled = classify(Err(ChatError::RetryAfter(Duration::from_secs(3))))
+        .expect_err("a slow-down is an error");
+    assert_eq!(
+        *throttled.kind(),
         ErrorKind::Exhausted {
-            retry_after: Some(Duration::from_secs(3)),
-        },
-        "chat provider throttled the message",
+            retry_after: Some(Duration::from_secs(3))
+        }
     );
     assert!(throttled.is_retryable(), "a throttled call applied nothing");
     assert_eq!(throttled.retry_after(), Some(Duration::from_secs(3)));

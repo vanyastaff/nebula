@@ -23,8 +23,8 @@ use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::super::{
-    Cost, Effect, OPERATION_DEADLINE_CAP, Operation, OperationCx, OperationError, PinSlots,
-    ResourceHandle, SentState, SessionSpec, StreamOperation, StreamSink, UnitScope,
+    Attempt, Cost, Effect, OPERATION_DEADLINE_CAP, Operation, OperationCx, OperationError,
+    PinSlots, ResourceHandle, SentState, SessionSpec, StreamOperation, StreamSink, UnitScope,
 };
 use crate::{
     AcquireOptions, CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind,
@@ -176,11 +176,16 @@ fn free() -> Cost {
     Cost::FREE
 }
 
-fn sent() -> SentState {
-    SentState::Sent
+fn rejected() -> OperationError {
+    OperationError::rejected("provider answered")
 }
 
-/// One attempt at `cost`, settled `Sent`.
+/// Finishes `attempt` as answered: `Sent`.
+async fn answered<R: Provider + PinSlots>(attempt: Attempt<'_, R>) {
+    attempt.finish(&Ok::<(), OperationError>(())).await;
+}
+
+/// One answered call at `cost`.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Once {
     #[serde(skip, default = "free")]
@@ -199,9 +204,7 @@ impl<R: Provider + PinSlots> Operation<R> for Once {
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(self.cost).await?;
-        attempt.settle(SentState::Sent);
-        Ok(())
+        cx.call(self.cost, async |_, _| Ok(())).await
     }
 }
 
@@ -245,7 +248,7 @@ impl<R: Provider + PinSlots> Operation<R> for Held {
         let attempt = cx.attempt(self.cost).await?;
         self.entered.notify_one();
         self.release.notified().await;
-        attempt.settle(SentState::Sent);
+        answered(attempt).await;
         Ok(())
     }
 }
@@ -272,23 +275,21 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>> Operation<R> for Paused {
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::FREE).await?;
         let mut pinned = vec![owned_epochs(first.credentials())];
-        first.settle(SentState::Sent);
+        answered(first).await;
         self.between.notify_one();
         self.resume.notified().await;
         let second = cx.attempt(Cost::FREE).await?;
         pinned.push(owned_epochs(second.credentials()));
-        second.settle(SentState::Sent);
+        answered(second).await;
         Ok(pinned)
     }
 }
 
-/// One attempt settled `sent`, then the provider's `kind` (if any).
+/// One call the provider answers with `error`.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Reply<const WRITE: bool> {
-    #[serde(skip, default = "sent")]
-    sent: SentState,
-    #[serde(skip)]
-    kind: Option<ErrorKind>,
+    #[serde(skip, default = "rejected")]
+    error: OperationError,
 }
 
 impl<R: Provider + PinSlots, const WRITE: bool> Operation<R> for Reply<WRITE> {
@@ -297,12 +298,9 @@ impl<R: Provider + PinSlots, const WRITE: bool> Operation<R> for Reply<WRITE> {
     const EFFECT: Effect = if WRITE { Effect::Write } else { Effect::Read };
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        attempt.settle(self.sent);
-        match self.kind {
-            Some(kind) => Err(OperationError::new(kind, "provider answered")),
-            None => Ok(()),
-        }
+        let error = self.error;
+        cx.call(Cost::FREE, async move |_, _| Err(error.clone()))
+            .await
     }
 }
 
@@ -740,14 +738,10 @@ enum Host {
     Row,
 }
 
-async fn reply<const WRITE: bool>(
-    host: Host,
-    sent: SentState,
-    kind: Option<ErrorKind>,
-) -> OperationError {
+async fn reply<const WRITE: bool>(host: Host, error: OperationError) -> OperationError {
     let manager = Manager::new();
     pooled(&manager, 1, None);
-    let operation = Reply::<WRITE> { sent, kind };
+    let operation = Reply::<WRITE> { error };
     let unit = match host {
         Host::Lease => manager
             .acquire_for_identity::<StrictPooled>(&context(), &AcquireOptions::default(), &tenant())
@@ -761,52 +755,52 @@ async fn reply<const WRITE: bool>(
 }
 
 #[rstest]
-#[case::write_sent_transient(
+#[case::write_interrupted(
     true,
-    SentState::Sent,
-    ErrorKind::Transient,
+    OperationError::interrupted("connection reset"),
+    SentState::MaybeSent,
     false,
     ErrorKind::OutcomeUnknown
 )]
-#[case::read_sent_transient(
+#[case::read_interrupted(
     false,
-    SentState::Sent,
-    ErrorKind::Transient,
+    OperationError::interrupted("connection reset"),
+    SentState::MaybeSent,
     true,
     ErrorKind::Transient
 )]
-#[case::write_not_sent(
+#[case::write_unreachable(
     true,
+    OperationError::unreachable("no connection"),
     SentState::NotSent,
-    ErrorKind::Transient,
     true,
     ErrorKind::Transient
 )]
-#[case::write_sent_throttled(
+#[case::write_throttled(
     true,
+    OperationError::throttled(None),
     SentState::Sent,
-    ErrorKind::Exhausted { retry_after: None },
     true,
     ErrorKind::Exhausted { retry_after: None }
 )]
-#[case::read_maybe_sent(
+#[case::read_unclassified(
     false,
+    OperationError::new(ErrorKind::Transient, "provider answered"),
     SentState::MaybeSent,
-    ErrorKind::Transient,
     true,
     ErrorKind::Transient
 )]
-#[case::write_maybe_sent(
+#[case::write_unclassified(
     true,
+    OperationError::new(ErrorKind::Transient, "provider answered"),
     SentState::MaybeSent,
-    ErrorKind::Transient,
     false,
     ErrorKind::OutcomeUnknown
 )]
-#[case::permanent(
+#[case::write_rejected(
     true,
+    OperationError::rejected("provider answered"),
     SentState::Sent,
-    ErrorKind::Permanent,
     false,
     ErrorKind::Permanent
 )]
@@ -814,15 +808,15 @@ async fn reply<const WRITE: bool>(
 async fn the_retry_safety_table_holds_for_lease_and_row_units(
     #[values(Host::Lease, Host::Row)] host: Host,
     #[case] write: bool,
+    #[case] reply_with: OperationError,
     #[case] sent: SentState,
-    #[case] kind: ErrorKind,
     #[case] retryable: bool,
     #[case] as_error: ErrorKind,
 ) {
     let error = if write {
-        reply::<true>(host, sent, Some(kind)).await
+        reply::<true>(host, reply_with).await
     } else {
-        reply::<false>(host, sent, Some(kind)).await
+        reply::<false>(host, reply_with).await
     };
     assert_eq!(error.sent(), sent, "{host:?}");
     assert_eq!(error.is_retryable(), retryable, "{host:?}");
@@ -948,7 +942,7 @@ impl<R: Provider + PinSlots> StreamOperation<R> for RowFeed {
         for value in 0..self.items {
             sink.send(value).await?;
         }
-        attempt.settle(SentState::Sent);
+        answered(attempt).await;
         Ok(self.items)
     }
 }
@@ -1130,9 +1124,7 @@ impl<R: Provider + PinSlots> Operation<R> for Tracked {
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         self.ran.store(true, Ordering::SeqCst);
-        let attempt = cx.attempt(Cost::FREE).await?;
-        attempt.settle(SentState::Sent);
-        Ok(())
+        cx.call(Cost::FREE, async |_, _| Ok(())).await
     }
 }
 

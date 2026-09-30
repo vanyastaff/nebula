@@ -7,7 +7,9 @@
 //! general-purpose `async-trait` dependency. This is a compile check, not runtime
 //! teardown coverage. A second positive binary checks custom resource topology
 //! authoring, a third the rate-limit declaration paced through the managed
-//! call facade, and a fourth a logger authored against the facade, whose
+//! call facade (with `resource_call_classify`: a call classified with the
+//! `OperationError` constructors, whose attempt cannot be settled by hand,
+//! `attempt_settle_private`), and a fourth a logger authored against the facade, whose
 //! `Lease` must not deref (`lease_no_deref`), a fifth a derived
 //! credentialed resource (`resource_credentialed`:
 //! `CredentialSlot<BearerTokenCredential>` read through pinned slots), a
@@ -38,6 +40,8 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/positive.rs",
     "src/bin/resource_topology.rs",
     "src/bin/resource_rate_limit.rs",
+    "src/bin/resource_call_classify.rs",
+    "src/bin/attempt_settle_private.rs",
     "src/bin/resource_limited_deprecated.rs",
     "src/bin/resource_managed_logger.rs",
     "src/bin/resource_credentialed.rs",
@@ -369,6 +373,20 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         render_output(&deprecated)
     );
 
+    let hand_settled = cargo_probe(temp.path(), "check", "attempt_settle_private");
+    assert!(
+        !hand_settled.status.success(),
+        "an author unexpectedly settled an attempt by hand"
+    );
+    let diagnostics = compiler_errors(&hand_settled);
+    std::assert_matches!(
+        diagnostics.as_slice(),
+        [error] if error.code.as_deref() == Some("E0624")
+            && error.highlighted == "settle",
+        "`Attempt::settle` must fail only as private: {}",
+        render_output(&hand_settled)
+    );
+
     let raw_client = cargo_probe(temp.path(), "check", "http_no_raw_client");
     assert!(
         !raw_client.status.success(),
@@ -390,6 +408,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         "positive",
         "resource_topology",
         "resource_rate_limit",
+        "resource_call_classify",
         "resource_managed_logger",
         "resource_session",
         "resource_credentialed",
@@ -420,6 +439,12 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         rate_limit.status.success(),
         "rate-limit authoring through the SDK alone must compile and execute:\n{}",
         render_output(&rate_limit)
+    );
+    let classified = cargo_probe(temp.path(), "run", "resource_call_classify");
+    assert!(
+        classified.status.success(),
+        "a classified call through the SDK alone must compile and execute:\n{}",
+        render_output(&classified)
     );
     let managed = cargo_probe(temp.path(), "run", "resource_managed_logger");
     assert!(

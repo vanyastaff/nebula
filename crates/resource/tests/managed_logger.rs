@@ -259,24 +259,21 @@ impl Operation<Logger> for Write {
     const EFFECT: Effect = Effect::Write;
 
     async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Enqueued, OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        match attempt.instance().enqueue(self.line) {
-            Ok(seq) => {
-                attempt.settle(SentState::Sent);
-                Ok(Enqueued { seq })
-            },
-            Err(Rejected::Full) => {
-                attempt.settle(SentState::NotSent);
-                Err(OperationError::new(
+        let line = self.line;
+        cx.call(Cost::FREE, async move |logger, ()| {
+            match logger.enqueue(line.clone()) {
+                Ok(seq) => Ok(Enqueued { seq }),
+                Err(Rejected::Full) => Err(OperationError::unreachable_as(
                     ErrorKind::Backpressure,
                     "log buffer full",
-                ))
-            },
-            Err(Rejected::Closed) => {
-                attempt.settle(SentState::NotSent);
-                Err(OperationError::new(ErrorKind::Cancelled, "log sink closed"))
-            },
-        }
+                )),
+                Err(Rejected::Closed) => Err(OperationError::unreachable_as(
+                    ErrorKind::Cancelled,
+                    "log sink closed",
+                )),
+            }
+        })
+        .await
     }
 }
 
@@ -289,13 +286,17 @@ impl Operation<Logger> for Flush {
     const EFFECT: Effect = Effect::Idempotent;
 
     async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Flushed, OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        let through = attempt.instance().enqueued();
-        let flushed = attempt.instance().flushed_through(through).await;
-        attempt.settle(SentState::Sent);
-        flushed
-            .map(|through| Flushed { through })
-            .map_err(|()| OperationError::new(ErrorKind::Cancelled, "log worker stopped"))
+        cx.call(Cost::FREE, async |logger, ()| {
+            let through = logger.enqueued();
+            logger
+                .flushed_through(through)
+                .await
+                .map(|through| Flushed { through })
+                .map_err(|()| {
+                    OperationError::rejected_as(ErrorKind::Cancelled, "log worker stopped")
+                })
+        })
+        .await
     }
 }
 

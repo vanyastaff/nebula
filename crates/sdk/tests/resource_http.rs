@@ -481,13 +481,13 @@ async fn no_head_before_the_timeout_is_maybe_sent_unknown_for_a_write_retryable_
 }
 
 #[tokio::test]
-async fn a_head_without_its_body_is_sent_and_unknown_for_a_write() {
+async fn a_head_without_its_body_is_interrupted_and_unknown_for_a_write() {
     sent_case(SentCase {
         reply: Some(Reply::HeadersThenHang(
             "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n".to_owned(),
         )),
         post: true,
-        sent: SentState::Sent,
+        sent: SentState::MaybeSent,
         retryable: false,
         requests: 1,
     })
@@ -538,7 +538,7 @@ async fn a_throttle_is_exhausted_retryable_and_pauses_the_next_unit() {
 }
 
 #[tokio::test]
-async fn a_503_without_retry_after_is_transient() {
+async fn a_503_without_retry_after_is_interrupted() {
     let server = Server::start(vec![status(503, "")]).await;
     let harness = Harness::bearer(&server);
     let error = harness
@@ -547,8 +547,54 @@ async fn a_503_without_retry_after_is_transient() {
         .submit(Request::get("/status").expect("path"))
         .await
         .expect_err("unavailable");
-    assert_unit_error(&error, &ErrorKind::Transient, SentState::Sent);
+    assert_unit_error(&error, &ErrorKind::Transient, SentState::MaybeSent);
     assert!(error.is_retryable(), "a read");
+}
+
+#[tokio::test]
+async fn a_throttled_write_is_re_attempted_after_the_pause_and_a_rejection_is_not() {
+    let two = NonZeroU32::new(2).expect("two");
+    let rate = Rate::per_second(NonZeroU32::new(100).expect("non-zero"))
+        .with_burst(NonZeroU32::new(100).expect("non-zero"))
+        .expect("rate");
+
+    let server = Server::start(vec![status(429, "Retry-After: 1\r\n"), ok("{}")]).await;
+    let harness = Harness::new(
+        Auth::Bearer,
+        HttpConfig::new(&server.base),
+        Some(RowLimit::rate(rate)),
+    );
+    harness.api.token.store(token(TOKEN));
+    let started = Instant::now();
+    let response = harness
+        .managed()
+        .await
+        .submit(
+            Request::post("/messages")
+                .expect("path")
+                .body("hi")
+                .max_attempts(two),
+        )
+        .await
+        .expect("the provider applied nothing: the write is sent again");
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(server.seen().len(), 2);
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "the second attempt's booking waited out the pause: {:?}",
+        started.elapsed()
+    );
+
+    let server = Server::start(vec![status(422, ""), ok("{}")]).await;
+    let harness = Harness::bearer(&server);
+    let error = harness
+        .managed()
+        .await
+        .submit(Request::get("/items").expect("path").max_attempts(two))
+        .await
+        .expect_err("rejected");
+    assert_unit_error(&error, &ErrorKind::Permanent, SentState::Sent);
+    assert_eq!(server.seen().len(), 1, "a rejection is never re-attempted");
 }
 
 // ── attempts within a unit ───────────────────────────────────────────────

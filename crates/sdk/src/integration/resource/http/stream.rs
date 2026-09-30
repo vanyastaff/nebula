@@ -16,7 +16,7 @@ use tracing::Instrument as _;
 use super::{
     auth::HttpApi,
     config::HttpTransport,
-    exchange::{admit_head, exchange_span, execute, prepare, settle},
+    exchange::{admit_head, exchange_span, execute, failed, prepare},
     request::{Method, Request},
 };
 
@@ -65,47 +65,62 @@ where
     ) -> Result<(), OperationError> {
         let request = self.request;
         let closing = cx.closing();
+        let key = cx.idempotency_key().copied();
         let attempt = cx.attempt(request.cost_value().clone()).await?;
         let span = exchange_span(M::METHOD, Some(1));
         async {
             let transport = attempt.instance().as_ref().clone();
+            let budget = request.body_budget(transport.limits().max_stream_bytes);
             // No total timeout: the unit's deadline bounds the exchange and
             // the transport's read idle timeout bounds a stall.
-            let outgoing = match prepare(&attempt, &transport, &request, None) {
+            let outgoing = prepare::<R, M>(
+                &transport,
+                attempt.credentials(),
+                key.as_ref(),
+                &request,
+                None,
+                &span,
+            );
+            let outgoing = match outgoing {
                 Ok(outgoing) => outgoing,
                 Err(error) => {
-                    settle(attempt, SentState::NotSent, &span);
-                    return Err(error);
+                    let head: Result<(), OperationError> = Err(error);
+                    attempt.finish(&head).await;
+                    return head;
                 },
             };
-            let head = tokio::select! {
+            let response = tokio::select! {
                 biased;
                 () = closing.closed() => None,
                 () = sink.closed() => None,
-                head = execute(attempt, &transport, outgoing, &span) => Some(head),
+                response = execute(&transport, outgoing, &span) => Some(response),
             };
-            // Dropping `execute` above drops its attempt unsettled:
-            // `MaybeSent`, as the request may be on the wire.
-            let Some(head) = head else {
+            let Some(response) = response else {
+                // Dropped unfinished: `MaybeSent`, as the request may be on
+                // the wire.
+                drop(attempt);
                 return Err(stopped("stream stopped before its response head"));
             };
-            let (attempt, mut response) = head.map_err(|failure| failure.error)?;
+            // The attempt is finished at the head: what follows is the
+            // unit's, not the call's.
+            let head = response.and_then(|response| {
+                admit_head(&response, request.accepts(response.status()), &span)?;
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > budget)
+                {
+                    return Err(failed(
+                        &span,
+                        SentState::Sent,
+                        OperationError::rejected("streamed body exceeds its byte budget"),
+                    ));
+                }
+                span.record("sent", SentState::Sent.as_str());
+                Ok(response)
+            });
+            attempt.finish(&head).await;
+            let mut response = head?;
             let status = response.status();
-            let attempt = admit_head(attempt, &response, request.accepts(status), &span)
-                .await
-                .map_err(|failure| failure.error)?;
-            let budget = request.body_budget(transport.limits().max_stream_bytes);
-            if response
-                .content_length()
-                .is_some_and(|length| length > budget)
-            {
-                settle(attempt, SentState::Sent, &span);
-                return Err(OperationError::new(
-                    ErrorKind::Permanent,
-                    "streamed body exceeds its byte budget",
-                ));
-            }
-            settle(attempt, SentState::Sent, &span);
             let headers = std::mem::take(response.headers_mut());
             sink.send(Frame::Head { status, headers }).await?;
 

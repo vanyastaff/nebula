@@ -216,7 +216,7 @@ mod resource_handle_fields {
     use nebula_resource::{
         AcquireOptions, ErrorKind, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
-        call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle, SentState},
+        call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle},
         resource::{Provider, ResourceMetadataDraft},
         topology::ResidentProvider,
     };
@@ -311,10 +311,7 @@ mod resource_handle_fields {
         const EFFECT: Effect = Effect::Read;
 
         async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
-            let attempt = cx.attempt(Cost::FREE).await?;
-            let value = *attempt.instance();
-            attempt.settle(SentState::Sent);
-            Ok(value)
+            cx.call(Cost::FREE, async |value, _| Ok(*value)).await
         }
     }
 

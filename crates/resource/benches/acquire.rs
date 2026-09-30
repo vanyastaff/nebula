@@ -430,7 +430,7 @@ fn bench_strict_credential_admission(c: &mut Criterion) {
     group.finish();
 }
 
-/// One free attempt on the bound resident, settled `Sent`.
+/// One free answered call on the bound resident.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct OneAttempt;
 
@@ -442,10 +442,10 @@ impl nebula_resource::call::Operation<BoundResident> for OneAttempt {
         self,
         cx: &mut nebula_resource::call::OperationCx<'_, BoundResident>,
     ) -> Result<u64, nebula_resource::call::OperationError> {
-        let attempt = cx.attempt(nebula_resource::call::Cost::FREE).await?;
-        let instance = *attempt.instance();
-        attempt.settle(nebula_resource::call::SentState::Sent);
-        Ok(instance)
+        cx.call(nebula_resource::call::Cost::FREE, async |instance, _| {
+            Ok(*instance)
+        })
+        .await
     }
 }
 
@@ -506,7 +506,7 @@ fn bench_strict_attempt_admission(c: &mut Criterion) {
     group.finish();
 }
 
-/// One free attempt on the keep-pool, settled `Sent`.
+/// One free answered call on the keep-pool.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PooledAttempt;
 
@@ -518,10 +518,10 @@ impl nebula_resource::call::Operation<KeepPool> for PooledAttempt {
         self,
         cx: &mut nebula_resource::call::OperationCx<'_, KeepPool>,
     ) -> Result<u64, nebula_resource::call::OperationError> {
-        let attempt = cx.attempt(nebula_resource::call::Cost::FREE).await?;
-        let instance = *attempt.instance();
-        attempt.settle(nebula_resource::call::SentState::Sent);
-        Ok(instance)
+        cx.call(nebula_resource::call::Cost::FREE, async |instance, ()| {
+            Ok(*instance)
+        })
+        .await
     }
 }
 

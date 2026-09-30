@@ -1248,7 +1248,7 @@ impl<R: Provider + PinSlots> Operation<R> for Attempts {
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         for _ in 0..self.0 {
             let attempt = cx.attempt(Cost::ONE).await?;
-            attempt.settle(SentState::Sent);
+            attempt.finish(&Ok::<(), OperationError>(())).await;
         }
         Ok(())
     }
@@ -1292,12 +1292,12 @@ impl Operation<BearerRow> for PausedRead {
     ) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::ONE).await?;
         let mut pinned = vec![first.credentials().as_ref().map(|(material, _)| *material)];
-        first.settle(SentState::Sent);
+        first.finish(&Ok::<(), OperationError>(())).await;
         self.between.notify_one();
         self.resume.notified().await;
         let second = cx.attempt(Cost::ONE).await?;
         pinned.push(second.credentials().as_ref().map(|(material, _)| *material));
-        second.settle(SentState::Sent);
+        second.finish(&Ok::<(), OperationError>(())).await;
         Ok(pinned)
     }
 }

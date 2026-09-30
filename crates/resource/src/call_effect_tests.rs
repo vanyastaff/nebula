@@ -381,10 +381,11 @@ impl EffectJournal for FakeOwner {
 /// What one attempt of [`Pay`] does.
 #[derive(Debug, Clone)]
 enum Reply {
-    /// Settled `Sent`; the unit yields the value.
+    /// Finished as answered; the unit yields the value.
     Ok(u64),
-    /// Settled `sent`; the unit fails with `kind` when no attempt is left.
-    Fail(SentState, ErrorKind),
+    /// Finished with the classified error; the unit fails with it when no
+    /// attempt is left.
+    Fail(OperationError),
     /// Dropped unsettled; the unit fails `Transient` when no attempt is
     /// left.
     Unsettled,
@@ -488,13 +489,15 @@ impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Pay<IDEM> {
             self.calls.call(key.as_ref());
             match reply {
                 Reply::Ok(value) => {
-                    attempt.settle(SentState::Sent);
-                    return Ok(value);
+                    let result = Ok(value);
+                    attempt.finish(&result).await;
+                    return result;
                 },
-                Reply::Fail(sent, kind) => {
-                    attempt.settle(sent);
+                Reply::Fail(error) => {
+                    let result: Result<u64, OperationError> = Err(error);
+                    attempt.finish(&result).await;
                     if index == last {
-                        return Err(OperationError::new(kind, "provider answered"));
+                        return result;
                     }
                 },
                 Reply::Unsettled => {
@@ -541,10 +544,12 @@ impl<R: Provider + PinSlots> Operation<R> for Refund {
     const RECORD_OUTPUT: bool = false;
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        self.calls.call(None);
-        attempt.settle(SentState::Sent);
-        Ok(7)
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(7)
+        })
+        .await
     }
 }
 
@@ -559,9 +564,9 @@ impl<R: Provider + PinSlots> Operation<R> for Export {
     const KEY: &'static str = "billing.export";
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<String, OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        attempt.settle(SentState::Sent);
-        Ok("x".repeat(self.len))
+        let len = self.len;
+        cx.call(Cost::FREE, async move |_, _| Ok("x".repeat(len)))
+            .await
     }
 }
 
@@ -577,9 +582,7 @@ impl<R: Provider + PinSlots> Operation<R> for PayV2 {
     const VERSION: u32 = 2;
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        attempt.settle(SentState::Sent);
-        Ok(2)
+        cx.call(Cost::FREE, async |_, _| Ok(2)).await
     }
 }
 
@@ -596,10 +599,12 @@ impl<R: Provider + PinSlots> Operation<R> for BadKey {
     const KEY: &'static str = "bad key";
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        self.calls.call(None);
-        attempt.settle(SentState::Sent);
-        Ok(())
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -616,10 +621,57 @@ impl<R: Provider + PinSlots> Operation<R> for Opaque {
     const KEY: &'static str = "billing.opaque";
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        self.calls.call(None);
-        attempt.settle(SentState::Sent);
-        Ok(())
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(())
+        })
+        .await
+    }
+}
+
+/// An effect made through [`OperationCx::call`]: each attempt answers the
+/// next scripted result, within as many attempts as the script has.
+#[derive(Serialize, Deserialize)]
+struct Called<const IDEM: bool> {
+    request: String,
+    #[serde(skip)]
+    script: Vec<Result<u64, OperationError>>,
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<const IDEM: bool> Called<IDEM> {
+    fn new(calls: &Arc<Calls>, script: Vec<Result<u64, OperationError>>) -> Self {
+        Self {
+            request: "called:1".to_owned(),
+            script,
+            calls: Arc::clone(calls),
+        }
+    }
+}
+
+impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Called<IDEM> {
+    type Output = u64;
+    const KEY: &'static str = "billing.called";
+    const EFFECT: Effect = if IDEM {
+        Effect::Idempotent
+    } else {
+        Effect::Write
+    };
+
+    fn max_attempts(&self) -> NonZeroU32 {
+        NonZeroU32::new(u32::try_from(self.script.len()).expect("few")).expect("a reply")
+    }
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let mut script = std::collections::VecDeque::from(self.script);
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            script.pop_front().unwrap_or(Ok(0))
+        })
+        .await
     }
 }
 
@@ -655,10 +707,12 @@ impl<R: Provider + PinSlots> Operation<R> for Look {
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let key = cx.idempotency_key().copied();
-        let attempt = cx.attempt(self.cost).await?;
-        self.calls.call(key.as_ref());
-        attempt.settle(SentState::Sent);
-        Ok(())
+        let calls = self.calls;
+        cx.call(self.cost, async move |_, _| {
+            calls.call(key.as_ref());
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -683,7 +737,7 @@ impl<R: Provider + PinSlots, const WRITE: bool> StreamOperation<R> for Ticks<WRI
     ) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         self.0.call(attempt.idempotency_key());
-        attempt.settle(SentState::Sent);
+        attempt.finish(&Ok::<(), OperationError>(())).await;
         for tick in 0..3 {
             sink.send(tick).await?;
         }
@@ -1096,7 +1150,7 @@ async fn a_success_and_a_rejection_are_recorded_and_replayed() {
     let rejected = row
         .submit(Pay::<false>::new(
             &calls,
-            vec![Reply::Fail(SentState::Sent, ErrorKind::Permanent)],
+            vec![Reply::Fail(OperationError::rejected("declined"))],
         ))
         .await
         .expect_err("declined");
@@ -1212,7 +1266,7 @@ async fn an_unsettled_write_makes_the_outcome_unknown_for_every_later_unit() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_write_retried_after_a_sent_attempt_is_refused_outcome_unknown() {
+async fn a_write_retried_after_an_interrupted_attempt_is_refused_outcome_unknown() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
     let row = fixture.owned();
@@ -1221,14 +1275,14 @@ async fn a_write_retried_after_a_sent_attempt_is_refused_outcome_unknown() {
         .submit(Pay::<false>::new(
             &calls,
             vec![
-                Reply::Fail(SentState::Sent, ErrorKind::Transient),
+                Reply::Fail(OperationError::interrupted("connection reset")),
                 Reply::Ok(1),
             ],
         ))
         .await
         .expect_err("the owner refuses the retry");
     assert_eq!(*error.kind(), ErrorKind::OutcomeUnknown);
-    assert_eq!(error.sent(), SentState::Sent);
+    assert_eq!(error.sent(), SentState::MaybeSent);
     assert_eq!(calls.made(), 1);
     assert_eq!(
         fixture.owner.log()[1..],
@@ -1246,7 +1300,7 @@ async fn an_unsent_write_attempt_is_not_crossed_and_granted_again() {
         .submit(Pay::<false>::new(
             &calls,
             vec![
-                Reply::Fail(SentState::NotSent, ErrorKind::Transient),
+                Reply::Fail(OperationError::unreachable("no connection")),
                 Reply::Ok(3),
             ],
         ))
@@ -1261,6 +1315,116 @@ async fn an_unsent_write_attempt_is_not_crossed_and_granted_again() {
             Step::Grant,
             Step::Settle("applied"),
         ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_call_explains_each_attempt_from_its_classification() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    let paid = row
+        .submit(Called::<true>::new(
+            &calls,
+            vec![
+                Err(OperationError::throttled(None)),
+                Err(OperationError::unreachable("no connection")),
+                Err(OperationError::interrupted("connection reset")),
+                Ok(9),
+            ],
+        ))
+        .await
+        .expect("the fourth attempt applied");
+    assert_eq!(paid, 9);
+    assert_eq!(calls.made(), 4);
+    assert_eq!(
+        fixture.owner.log()[1..],
+        [
+            Step::Grant,
+            Step::Explain(Crossing::NotCrossed),
+            Step::Grant,
+            Step::Explain(Crossing::NotCrossed),
+            Step::Grant,
+            Step::Explain(Crossing::Ambiguous),
+            Step::Grant,
+            Step::Settle("applied"),
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_last_call_is_recorded_from_its_classification() {
+    // (reply, recorded, sent)
+    let cases = [
+        (
+            OperationError::rejected_as(ErrorKind::NotFound, "no such order"),
+            Step::Settle("not_found"),
+            SentState::Sent,
+        ),
+        (
+            OperationError::rejected("declined"),
+            Step::Settle("permanent"),
+            SentState::Sent,
+        ),
+        (
+            OperationError::throttled(None),
+            Step::Explain(Crossing::NotCrossed),
+            SentState::Sent,
+        ),
+        (
+            OperationError::unreachable("no connection"),
+            Step::Explain(Crossing::NotCrossed),
+            SentState::NotSent,
+        ),
+        (
+            OperationError::interrupted("connection reset"),
+            Step::Explain(Crossing::Ambiguous),
+            SentState::MaybeSent,
+        ),
+        (
+            // Unclassified: the call may have crossed, whatever its kind.
+            OperationError::new(ErrorKind::Permanent, "client error"),
+            Step::Explain(Crossing::Ambiguous),
+            SentState::MaybeSent,
+        ),
+    ];
+    for (reply, recorded, sent) in cases {
+        let fixture = Fixture::new(None);
+        let calls = Arc::new(Calls::default());
+        let error = fixture
+            .owned()
+            .submit(Called::<false>::new(&calls, vec![Err(reply.clone())]))
+            .await
+            .expect_err("the call failed");
+        assert_eq!(
+            fixture.owner.log()[1..],
+            [Step::Grant, recorded],
+            "{reply:?}"
+        );
+        assert_eq!(error.sent(), sent, "{reply:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_interrupted_write_call_is_ambiguous_and_never_sent_again() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    let error = row
+        .submit(Called::<false>::new(
+            &calls,
+            vec![Err(OperationError::interrupted("connection reset")), Ok(1)],
+        ))
+        .await
+        .expect_err("not retried");
+    assert_eq!(calls.made(), 1);
+    assert_eq!(error.sent(), SentState::MaybeSent);
+    assert_eq!(*crate::Error::from(error).kind(), ErrorKind::OutcomeUnknown);
+    assert_eq!(
+        fixture.owner.log()[1..],
+        [Step::Grant, Step::Explain(Crossing::Ambiguous)]
     );
 }
 

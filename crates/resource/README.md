@@ -158,12 +158,14 @@ flight (so a queued caller never delays revoke or shutdown drains): it books
 one permit, or, once a lease of the row became a managed call facade, only
 honours pauses, because each provider attempt then books its own cost. Calls
 inside a lease are paced through the facade (see "Managed call facade"
-below): each provider call is one `OperationCx::attempt(cost)`, and
-`Attempt::report(verdict)` passes the provider's "slow down" on; every caller
-of the quota then pauses for its `retry_after` (`retry_after_from_header`
-reads seconds and HTTP dates), capped at the policy's `max_penalty`, or backs
-off exponentially when none is given. Only the attempt's own verdict counts,
-so a limit hit on another resource inside the call never pauses this one. A
+below): each provider call is one `OperationCx::call(cost, ..)`, and a call
+that returns `OperationError::throttled(retry_after)` passes the provider's
+"slow down" on; every caller of the quota then pauses for its `retry_after`
+(`retry_after_from_header` reads seconds and HTTP dates), capped at the
+policy's `max_penalty`, or backs off exponentially when none is given. Only
+the call's own classification counts, so a limit hit on another resource
+inside the call never pauses this one, and a call that failed without an
+answer (`unreachable`, `interrupted`) never resets a backoff in progress. A
 resource that declares no rate pays nothing: its limiter paces nothing and
 only honours pauses, kept in-process. The closure family that wrapped a
 client instead (`ctx.limits().wrap(client, throttle)`, `Limited::run*`) is
@@ -173,7 +175,8 @@ Limits per key — Telegram's one message per second per chat — are declared
 with `ResiliencePolicy::keyed("chat_id", rate)` on top of the account rate, and
 apply only to calls that name the key: an attempt at `Cost::keyed("chat_id",
 chat_id)` (or `ResourceLimiter::ready_for`) waits for both that chat's slot and the
-account's, and a `Verdict::KeyThrottled` pauses that chat alone. Key values
+account's, and a call that returns `OperationError::throttled_key` pauses
+that chat alone. Key values
 are SHA-256-hashed under the row's limit key, so a chat id or an e-mail
 address never reaches a store and tenants never share a key. A row may
 override a declared dimension (`resilience_override.keyed`, `[{dimension,
@@ -206,10 +209,10 @@ the call as an `Operation`:
 | Closure family | Managed call facade |
 |---|---|
 | `ctx.limits().wrap(client, throttle)` in `create` | return the client itself as the instance |
-| `client.run(call)` | `cx.attempt(Cost::ONE)`, then call `attempt.instance()` |
-| `client.run_for("chat_id", id, call)` | `cx.attempt(Cost::keyed("chat_id", id))` |
+| `client.run(call)` | `cx.call(Cost::ONE, async move \|client, creds\| ..)` |
+| `client.run_for("chat_id", id, call)` | `cx.call(Cost::keyed("chat_id", id), ..)` |
 | `client.run_until(deadline, call)` | `lease.submit(op).with_deadline(deadline)` |
-| `Throttle::check(&outcome)` | `attempt.report(verdict)` |
+| `Throttle::check(&outcome)` | the call returns `OperationError::throttled` / `throttled_key` |
 | `client.unlimited()` | none, by design: every provider call is an attempt |
 | `LimitedError::{Limit, Call}` | `OperationError` (kind, sent state, effect, `is_retryable`) |
 
@@ -499,16 +502,46 @@ impl Operation<Bot> for Send {
     const EFFECT: Effect = Effect::Write; // the default; declare Read / Idempotent
 
     async fn run(self, cx: &mut OperationCx<'_, Bot>) -> Result<MessageId, OperationError> {
-        let attempt = cx.attempt(Cost::keyed("chat_id", self.chat)).await?;
-        let sent = attempt.instance().send(self.chat, &self.text).await;
-        attempt.settle(SentState::Sent);
-        Ok(sent?) // `ClassifyError` → `Error` → `OperationError` (kind only)
+        let Self { chat, text } = self;
+        // The closure owns its captures; each attempt borrows them.
+        cx.call(Cost::keyed("chat_id", chat), async move |bot, _creds| {
+            match bot.send(chat, &text).await {
+                Ok(id) => Ok(id),
+                Err(BotError::TooManyRequests(after)) => Err(OperationError::throttled_key(after)),
+                Err(BotError::Connect) => Err(OperationError::unreachable("bot api unreachable")),
+                Err(BotError::Timeout) => Err(OperationError::interrupted("bot api timed out")),
+                Err(BotError::BadRequest) => Err(OperationError::rejected("bot api refused")),
+            }
+        })
+        .await
     }
 }
 
 let lease = guard.into_lease();
 let id = lease.submit(Send { chat, text }).await?;
 ```
+
+The call's result is classified once, and the runtime derives everything else
+from it — the attempt's sent state, what the rate limit is told, how an
+execution journal records the call, and whether `call` takes another attempt:
+
+| Result | Sent | Rate limit | Journal | Retried inside `call` |
+|---|---|---|---|---|
+| `Ok` | `Sent` | pass | applied (output) | — |
+| `throttled` / `throttled_key` | `Sent` (`Exhausted`) | throttled: the quota / the cost's key | not crossed | yes |
+| `unreachable` / `unreachable_as` | `NotSent` | nothing | not crossed | yes (`unreachable_as`: a retryable kind only) |
+| `interrupted` | `MaybeSent` | nothing | ambiguous | only a replay-safe `EFFECT` |
+| `rejected` / `rejected_as` | `Sent` | pass | rejected (kind) | no |
+| unclassified (`OperationError::new`, `?` from an `Error`) | `MaybeSent` | nothing | ambiguous | only replay-safe with a retryable kind |
+
+Re-attempts are bounded by `Operation::max_attempts` (one by default: no
+hidden retry) and the unit's deadline; nothing sleeps — a throttle's pause is
+waited out by the next attempt's quota booking, and a pause past the
+deadline ends the call with the throttle. An interrupted `Write` is never
+sent twice. An operation that needs the attempt itself (a stream finished at
+its head, several steps on one checkout) takes `cx.attempt(cost)` and
+finishes it with `Attempt::finish(&result)`; an attempt cannot be settled by
+hand.
 
 An operation declares only what an execution journal needs: `KEY` (1–64
 bytes of `[A-Za-z0-9_.-]`, alphanumeric at both ends), `VERSION` (the
@@ -529,17 +562,20 @@ developer part when there is one.
   (`Operation::max_attempts`, one by default) and one settled outcome.
   `OperationCx::attempt(cost)` is the single linearization point: budget, lease
   admission, quota booking at the attempt's `Cost` (`ONE`, `FREE`,
-  `units(n)`, `keyed(dimension, value)`), final admission, grant. There is no
-  retry loop in the facade.
+  `units(n)`, `keyed(dimension, value)`), final admission, grant.
+  `OperationCx::call` asks for attempts through it and re-attempts only what
+  the classification allows (table above).
 - **Lazy and runtime-owned.** The first poll waits for a unit slot on the
   lease (1 for `Pooled` / `Bounded`, 64 for `Resident` / custom), then the
   runtime runs the unit on its own task. Dropped before the first poll it
   never ran; dropped later, the runtime still settles it and the lease is
   released only after it ends. `Submission::cancel` stops a unit until its first
   grant (it then settles `Cancelled`, `NotSent`); after a grant it is ignored.
-- **Settled outcome.** Each attempt is settled `NotSent` / `Sent` /
-  `MaybeSent`; one dropped unsettled is `MaybeSent`. A unit with no grant is
-  `NotSent` whatever the author reported; the deadline or a panic after a
+- **Settled outcome.** Each attempt is finished `NotSent` / `Sent` /
+  `MaybeSent` from its classified result; one dropped unfinished is
+  `MaybeSent`. The unit folds the worst attempt, a throttled attempt only
+  when it was the last (the provider applied nothing). A unit with no grant
+  is `NotSent` whatever its attempts reported; the deadline or a panic after a
   grant is `MaybeSent`. `OperationError::is_retryable` combines that with the
   operation's `Effect`: a unit that may have been applied is retried only for
   `Read` / `Idempotent`, and as a resource `Error` a retry-unsafe unit becomes
@@ -803,9 +839,10 @@ ordinal counting units of that kind and name on the resource in submit order
 the effect before any quota, checkout or credential read: a recorded success
 replays its output with no provider call, a recorded rejection or digest and
 an unknown outcome fail without one. Every attempt's call is granted by the
-owner after the checkout and credential reads, and the unit's last call is
-settled (applied / rejected) or explained (not crossed / ambiguous) before
-the unit settles; a record that fails after a possible crossing makes the
+owner after the checkout and credential reads, and each call is settled
+(applied / rejected) or explained (not crossed / ambiguous) from its
+attempt's classification (the table under "Managed call facade") before the
+next attempt or the unit settles; a record that fails after a possible crossing makes the
 unit `OutcomeUnknown`. `OperationCx::idempotency_key()` / `SessionCx::idempotency_key()`
 give the owner's provider idempotency key — identical for every attempt,
 retry and resume. On a library row the same unit runs without an owner and

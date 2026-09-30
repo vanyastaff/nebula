@@ -8,7 +8,7 @@ use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
     Cost, CredentialGuard, CredentialSlot, CredentialUnavailableReason, Effect, Error, ErrorKind,
     Lease, Operation, OperationCx, OperationError, PinSlots, Provider, Resident, ResidentProvider,
-    Resource, ResourceContext, ResourceKey, ResourceMetadataDraft, SentState, resource_key,
+    Resource, ResourceContext, ResourceKey, ResourceMetadataDraft, resource_key,
 };
 use nebula_sdk::prelude::{Deserialize, SecretString, SecretToken, Serialize};
 
@@ -56,20 +56,20 @@ impl Operation<GitHub> for TokenLength {
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, GitHub>) -> Result<usize, OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        let token: Option<&CredentialGuard<SecretToken>> = attempt.credentials().token();
-        let Some(token) = token else {
-            attempt.settle(SentState::NotSent);
-            return Err(OperationError::new(
-                ErrorKind::CredentialUnavailable {
-                    reason: CredentialUnavailableReason::Absent,
-                },
-                "no bearer token bound",
-            ));
-        };
-        let length = token.token().expose_secret().len();
-        attempt.settle(SentState::Sent);
-        Ok(length)
+        cx.call(Cost::FREE, async |(), credentials| {
+            let token: Option<&CredentialGuard<SecretToken>> = credentials.token();
+            let Some(token) = token else {
+                // Nothing was sent: the refusal keeps its kind.
+                return Err(OperationError::unreachable_as(
+                    ErrorKind::CredentialUnavailable {
+                        reason: CredentialUnavailableReason::Absent,
+                    },
+                    "no bearer token bound",
+                ));
+            };
+            Ok(token.token().expose_secret().len())
+        })
+        .await
     }
 }
 
