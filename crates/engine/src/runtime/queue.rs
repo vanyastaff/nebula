@@ -73,6 +73,14 @@ pub trait TaskQueue: Send + Sync {
     fn ack(&self, task_id: &str) -> impl Future<Output = Result<(), QueueError>> + Send;
 
     /// Negative-acknowledge — requeue for retry.
+    ///
+    /// **Backpressure asymmetry:** unlike `enqueue`, which fails fast when the queue
+    /// is full, `nack` waits for capacity — dropping a task that already failed
+    /// once would break at-least-once delivery. A caller that nacks in a tight loop
+    /// on transient failures while producers keep the queue full can therefore be
+    /// starved (the deadlock anti-pattern of a consumer blocking on the channel it
+    /// drains). Bound the wait at the call site, or route the task elsewhere, if
+    /// the executor may nack under sustained load.
     fn nack(&self, task_id: &str) -> impl Future<Output = Result<(), QueueError>> + Send;
 
     /// Total number of tasks tracked by the queue: queued + in-flight.
@@ -230,6 +238,12 @@ impl TaskQueue for MemoryQueue {
         Ok(())
     }
 
+    /// Requeue a leased task, waiting for capacity if the queue is full.
+    ///
+    /// The task stays in flight until the requeue succeeds, so a saturated queue
+    /// never loses it (at-least-once). The wait is unbounded by design; a warning
+    /// is logged once when it exceeds half the visibility timeout, so starvation is
+    /// visible before the lease itself would expire.
     async fn nack(&self, task_id: &str) -> Result<(), QueueError> {
         // Keep the item in-flight until requeue succeeds to preserve
         // at-least-once guarantees when the queue is saturated.
@@ -241,10 +255,20 @@ impl TaskQueue for MemoryQueue {
             return Err(QueueError::not_found("Task", task_id));
         };
 
-        self.sender
-            .send(item)
-            .await
-            .map_err(|e| QueueError::Internal(format!("requeue failed: {e}")))?;
+        let send = self.sender.send(item);
+        tokio::pin!(send);
+        let warn_after = self.visibility_timeout / 2;
+        let sent = if let Ok(result) = tokio::time::timeout(warn_after, &mut send).await {
+            result
+        } else {
+            tracing::warn!(
+                task_id,
+                waited_ms = u64::try_from(warn_after.as_millis()).unwrap_or(u64::MAX),
+                "queue: nack is still waiting for capacity; the queue is saturated"
+            );
+            send.await
+        };
+        sent.map_err(|e| QueueError::Internal(format!("requeue failed: {e}")))?;
         self.queued_count.fetch_add(1, Ordering::Relaxed);
         let _ = self.in_flight.lock().await.remove(task_id);
         Ok(())
@@ -349,6 +373,75 @@ mod tests {
             other => panic!("expected requeued task, got {other:?}"),
         };
         assert_eq!(requeued_id, dequeued_id);
+    }
+
+    /// Counts WARN events so the saturation warning can be asserted.
+    struct WarnCounter(Arc<AtomicUsize>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCounter {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn nack_warns_once_when_capacity_wait_exceeds_half_the_visibility_timeout() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let warnings = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(WarnCounter(Arc::clone(&warnings)));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let queue = Arc::new(MemoryQueue::new_with_visibility_timeout(
+            1,
+            Duration::from_millis(400),
+        ));
+        queue
+            .enqueue(serde_json::json!({"task":"a"}))
+            .await
+            .unwrap();
+        let DequeueResult::Item { task_id, .. } =
+            queue.dequeue(Duration::from_millis(50)).await.unwrap()
+        else {
+            panic!("expected a dequeued task");
+        };
+        queue
+            .enqueue(serde_json::json!({"task":"filler"}))
+            .await
+            .unwrap();
+
+        let queue_for_nack = Arc::clone(&queue);
+        let id_for_nack = task_id.clone();
+        let nack_task = tokio::spawn(async move { queue_for_nack.nack(&id_for_nack).await });
+
+        // Past half the visibility timeout (200ms) but inside the lease (400ms): the
+        // warning has fired, the nack is still waiting, and nothing was dropped.
+        // Staying inside the lease matters: an expired lease would be reclaimed into
+        // the full queue by `dequeue`, which is a different scenario.
+        tokio::time::sleep(Duration::from_millis(260)).await;
+        assert!(!nack_task.is_finished(), "nack keeps waiting after warning");
+        assert_eq!(warnings.load(Ordering::SeqCst), 1);
+
+        // Free a slot: the same pending send completes and requeues the task.
+        let DequeueResult::Item { .. } = queue.dequeue(Duration::from_millis(50)).await.unwrap()
+        else {
+            panic!("expected the filler");
+        };
+        nack_task.await.unwrap().unwrap();
+        assert_eq!(warnings.load(Ordering::SeqCst), 1, "warned exactly once");
+        let DequeueResult::Item {
+            task_id: requeued, ..
+        } = queue.dequeue(Duration::from_millis(50)).await.unwrap()
+        else {
+            panic!("expected the requeued task");
+        };
+        assert_eq!(requeued, task_id);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
