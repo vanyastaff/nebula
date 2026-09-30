@@ -52,6 +52,12 @@ mod faults;
 use faults::{Boundary, Fault, FaultLedger};
 #[path = "effect_protocol/input_proof.rs"]
 mod input_proof;
+#[path = "effect_protocol/journal_fixture.rs"]
+mod journal_fixture;
+#[path = "effect_protocol/journal_recovery.rs"]
+mod journal_recovery;
+#[path = "effect_protocol/journal_verdict.rs"]
+mod journal_verdict;
 #[path = "effect_protocol/matrix.rs"]
 mod matrix;
 #[path = "effect_protocol/observations.rs"]
