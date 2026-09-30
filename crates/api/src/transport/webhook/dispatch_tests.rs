@@ -87,7 +87,7 @@ impl Action for FixtureStatelessAction {
             nebula_action::metadata_name!("Echo fixture"),
             "Admission fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -118,7 +118,7 @@ impl Action for FixtureTriggerAction {
             nebula_action::metadata_name!("Webhook fixture"),
             "Admission fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {

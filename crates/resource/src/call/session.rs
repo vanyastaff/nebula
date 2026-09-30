@@ -10,10 +10,10 @@
 //! ```compile_fail
 //! use nebula_resource::{
 //!     PoolProvider, Pooled, Provider,
-//!     call::{Cost, ManagedRow, SessionProvider, SessionSpec},
+//!     call::{Cost, ResourceHandle, SessionProvider, SessionSpec},
 //! };
 //!
-//! fn smuggle<R>(row: &ManagedRow<R>)
+//! fn smuggle<R>(row: &ResourceHandle<R>)
 //! where
 //!     R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
 //! {
@@ -25,12 +25,12 @@
 //! }
 //! ```
 //!
-//! Sessions run on a [`ManagedRow`](super::ManagedRow): each checks out its
+//! Sessions run on a [`ResourceHandle`](super::ResourceHandle): each checks out its
 //! own connection after its quota wait (see
-//! [`ManagedRow::session`](super::ManagedRow::session) for the settled
+//! [`ResourceHandle::session`](super::ResourceHandle::session) for the settled
 //! outcomes). Long-lived subscriptions (`LISTEN`/`NOTIFY`, IMAP `IDLE`) do
 //! not fit a session: a unit's deadline is capped at
-//! [`UNIT_DEADLINE_CAP`](super::UNIT_DEADLINE_CAP).
+//! [`OPERATION_DEADLINE_CAP`](super::OPERATION_DEADLINE_CAP).
 
 use std::{fmt, future::Future, marker::PhantomData, pin::Pin, time::Instant};
 
@@ -39,9 +39,9 @@ use nebula_core::ResourceKey;
 use super::{
     Operation,
     cost::{Cost, Effect, SentState},
-    effect::OperationKey,
-    error::OpError,
-    managed::{OpCx, UnitHost},
+    effect::IdempotencyKey,
+    error::OperationError,
+    managed::{OperationCx, UnitHost},
     pin::PinSlots,
 };
 use crate::{
@@ -54,7 +54,8 @@ use crate::{
 
 /// The future a session body returns: boxed, `Send`, and borrowing only the
 /// session and its [`SessionCx`] for `'s`.
-pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> + Send + 's>>;
+pub type SessionFuture<'s, T> =
+    Pin<Box<dyn Future<Output = Result<T, OperationError>> + Send + 's>>;
 
 /// A provider whose instance can host a session: several native calls run as
 /// one admitted, settled unit on one checked-out instance.
@@ -71,7 +72,7 @@ pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> 
 /// use nebula_resource::{
 ///     Error, Manager, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec, Resource,
 ///     ResourceContext, ResourceMetadataDraft, SlotIdentity, metadata_name,
-///     call::{Cost, OpError, SessionClosed, SessionEnd, SessionProvider, SessionSpec},
+///     call::{Cost, OperationError, SessionClosed, SessionEnd, SessionProvider, SessionSpec},
 /// };
 ///
 /// /// A connection that applies statements only when a transaction commits.
@@ -87,7 +88,7 @@ pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> 
 /// }
 ///
 /// impl Tx<'_> {
-///     async fn execute(&mut self, statement: &str) -> Result<u64, OpError> {
+///     async fn execute(&mut self, statement: &str) -> Result<u64, OperationError> {
 ///         self.pending.push(statement.to_owned());
 ///         Ok(1)
 ///     }
@@ -120,7 +121,7 @@ pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> 
 /// impl SessionProvider for Ledger {
 ///     type Session<'c> = Tx<'c>;
 ///
-///     async fn open<'c>(&'c self, conn: &'c mut Conn, _slots: &'c ()) -> Result<Tx<'c>, OpError> {
+///     async fn open<'c>(&'c self, conn: &'c mut Conn, _slots: &'c ()) -> Result<Tx<'c>, OperationError> {
 ///         Ok(Tx { conn, pending: Vec::new() })
 ///     }
 ///
@@ -151,7 +152,7 @@ pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> 
 ///     nebula_core::scope::Scope::default(),
 ///     tokio_util::sync::CancellationToken::new(),
 /// );
-/// let row = manager.managed_row::<Ledger>(&ctx)?;
+/// let row = manager.handle::<Ledger>(&ctx)?;
 ///
 /// // The body needs no annotations: it borrows the session and returns a
 /// // boxed future. A failed body rolls back; a committed one is `Sent`.
@@ -182,7 +183,7 @@ pub trait SessionProvider: Provider + PinSlots {
         &'c self,
         instance: &'c mut Self::Instance,
         slots: &'c Self::Pinned,
-    ) -> impl Future<Output = Result<Self::Session<'c>, OpError>> + Send + 'c;
+    ) -> impl Future<Output = Result<Self::Session<'c>, OperationError>> + Send + 'c;
 
     /// Ends `session` as `end` asks and reports what the provider said.
     fn close<'c>(
@@ -227,12 +228,12 @@ pub enum SessionClosed {
     /// for a rollback the body asked for.
     RolledBack {
         /// The provider's refusal of a commit, if it refused one.
-        refused: Option<OpError>,
+        refused: Option<OperationError>,
     },
     /// The provider did not say whether the session's effects were applied
     /// (the connection dropped during the commit): the unit's outcome is
     /// unknown and the instance is not reused.
-    Unknown(OpError),
+    Unknown(OperationError),
 }
 
 /// What one session unit costs and what repeating it does.
@@ -278,7 +279,7 @@ pub struct SessionCx {
     deadline: tokio::time::Instant,
     closing: LeaseClosing,
     key: ResourceKey,
-    operation_key: Option<OperationKey>,
+    idempotency_key: Option<IdempotencyKey>,
 }
 
 impl SessionCx {
@@ -291,25 +292,25 @@ impl SessionCx {
             deadline,
             closing,
             key,
-            operation_key: None,
+            idempotency_key: None,
         }
     }
 
     /// The context of an execution-owned session whose owner derived
-    /// `operation_key`.
-    fn with_operation_key(mut self, operation_key: Option<OperationKey>) -> Self {
-        self.operation_key = operation_key;
+    /// `idempotency_key`.
+    fn with_idempotency_key(mut self, idempotency_key: Option<IdempotencyKey>) -> Self {
+        self.idempotency_key = idempotency_key;
         self
     }
 
     /// The provider idempotency key of a session submitted with
-    /// [`ManagedRow::session_effect`](super::ManagedRow::session_effect) on a
+    /// [`ResourceHandle::session_effect`](super::ResourceHandle::session_effect) on a
     /// row with an execution owner (see
-    /// [`OpCx::operation_key`](super::OpCx::operation_key)); `None`
+    /// [`OperationCx::idempotency_key`](super::OperationCx::idempotency_key)); `None`
     /// otherwise.
     #[must_use]
-    pub fn operation_key(&self) -> Option<&OperationKey> {
-        self.operation_key.as_ref()
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.idempotency_key.as_ref()
     }
 
     /// The unit's deadline: the body is stopped at it and the session's
@@ -360,7 +361,7 @@ pub(super) fn in_session_of(marker: usize) -> bool {
 
 /// A session as the unit runtime runs it: one attempt, never retried
 /// (`max_attempts` is one), open → body → close, settled from what the
-/// provider said (see [`ManagedRow::session`](super::ManagedRow::session)).
+/// provider said (see [`ResourceHandle::session`](super::ResourceHandle::session)).
 pub(super) struct Sessioned<R, F, T> {
     spec: SessionSpec,
     body: F,
@@ -387,26 +388,26 @@ where
 {
     type Output = T;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<T, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<T, OperationError> {
         let Self { spec, body, .. } = self;
         let deadline = cx.deadline;
         let marker = match cx.host {
             UnitHost::Row(row) => Some(row.marker()),
             UnitHost::Lease(_) => None,
         };
-        let operation_key = cx.operation_key().copied();
+        let idempotency_key = cx.idempotency_key().copied();
         let mut attempt = cx.attempt_session(spec.cost().clone()).await?;
         let ended = match attempt.session_parts() {
             Some((provider, instance, slots, closing)) => {
-                let session_cx =
-                    SessionCx::new(deadline, closing, R::key()).with_operation_key(operation_key);
+                let session_cx = SessionCx::new(deadline, closing, R::key())
+                    .with_idempotency_key(idempotency_key);
                 drive_session(provider, instance, slots, &session_cx, marker, body).await
             },
             None => SessionEnded {
                 sent: SentState::NotSent,
                 keep: false,
                 outcome: SessionOutcome::OpenFailed,
-                result: Err(OpError::new(
+                result: Err(OperationError::new(
                     ErrorKind::Permanent,
                     "session attempt without a checkout",
                 )),
@@ -424,7 +425,7 @@ struct SessionEnded<T> {
     sent: SentState,
     keep: bool,
     outcome: SessionOutcome,
-    result: Result<T, OpError>,
+    result: Result<T, OperationError>,
 }
 
 /// Open, body (inside the nested-session marker), close; settled by
@@ -472,8 +473,8 @@ where
 
 /// The session's settled state, whether its instance is reused, and the
 /// unit's outcome, from the body's result and what the provider said at
-/// close (the table on [`ManagedRow::session`](super::ManagedRow::session)).
-fn settle_session<T>(result: Result<T, OpError>, closed: SessionClosed) -> SessionEnded<T> {
+/// close (the table on [`ResourceHandle::session`](super::ResourceHandle::session)).
+fn settle_session<T>(result: Result<T, OperationError>, closed: SessionClosed) -> SessionEnded<T> {
     let (sent, keep, outcome, result) = match (result, closed) {
         (Ok(value), SessionClosed::Committed) => {
             (SentState::Sent, true, SessionOutcome::Committed, Ok(value))
@@ -483,7 +484,7 @@ fn settle_session<T>(result: Result<T, OpError>, closed: SessionClosed) -> Sessi
             true,
             SessionOutcome::RolledBack,
             Err(refused.unwrap_or_else(|| {
-                OpError::new(
+                OperationError::new(
                     ErrorKind::Transient,
                     "the provider rolled the commit back without a reason",
                 )
@@ -519,7 +520,9 @@ fn settle_session<T>(result: Result<T, OpError>, closed: SessionClosed) -> Sessi
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use super::{OpError, SessionClosed, SessionCx, SessionEnd, SessionFuture, SessionProvider};
+    use super::{
+        OperationError, SessionClosed, SessionCx, SessionEnd, SessionFuture, SessionProvider,
+    };
     use crate::{
         Provider, call::PinSlots, guard::LeaseClosing, manager::strict_fixtures::StrictPooled,
     };
@@ -532,7 +535,7 @@ mod tests {
         slots: &R::Pinned,
         cx: &SessionCx,
         body: F,
-    ) -> (Result<T, OpError>, SessionClosed)
+    ) -> (Result<T, OperationError>, SessionClosed)
     where
         R: SessionProvider,
         T: Send + 'static,
@@ -618,7 +621,10 @@ mod tests {
         let (result, closed) = drive(&provider, &mut instance, &slots, &cx(), |tx, _cx| {
             Box::pin(async move {
                 tx.pending = 5;
-                Err::<(), _>(OpError::new(crate::ErrorKind::Permanent, "constraint"))
+                Err::<(), _>(OperationError::new(
+                    crate::ErrorKind::Permanent,
+                    "constraint",
+                ))
             })
         })
         .await;

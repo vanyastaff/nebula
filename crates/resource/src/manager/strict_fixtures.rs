@@ -24,7 +24,7 @@ use super::{Manager, ManagerConfig, RegistrationSpec};
 use crate::{
     Bounded, Error, ErrorKind, PinSlots, PoolConfig, Pooled, Provider, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
-    call::{OpError, SessionBinding, SessionClosed, SessionEnd, SessionProvider},
+    call::{OperationError, SessionBinding, SessionClosed, SessionEnd, SessionProvider},
     resource::{HasCredentialSlots, ResourceMetadataDraft},
     runtime::managed::ManagedResource,
     topology::{
@@ -98,10 +98,14 @@ impl Probe {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(closed);
     }
 
-    fn open<'c>(&self, instance: &'c mut u64, slots: &PinnedEpochs) -> Result<Tx<'c>, OpError> {
+    fn open<'c>(
+        &self,
+        instance: &'c mut u64,
+        slots: &PinnedEpochs,
+    ) -> Result<Tx<'c>, OperationError> {
         self.opens.fetch_add(1, Ordering::SeqCst);
         if self.fail_next_open.swap(false, Ordering::SeqCst) {
-            return Err(OpError::new(ErrorKind::Transient, "open refused"));
+            return Err(OperationError::new(ErrorKind::Transient, "open refused"));
         }
         self.opened
             .lock()
@@ -356,7 +360,7 @@ impl SessionProvider for StrictPooled {
         &'c self,
         instance: &'c mut u64,
         slots: &'c PinnedEpochs,
-    ) -> Result<Tx<'c>, OpError> {
+    ) -> Result<Tx<'c>, OperationError> {
         self.probe.open(instance, slots)
     }
 
@@ -374,7 +378,7 @@ impl SessionProvider for StrictPooledSession {
         &'c self,
         instance: &'c mut u64,
         slots: &'c PinnedEpochs,
-    ) -> Result<Tx<'c>, OpError> {
+    ) -> Result<Tx<'c>, OperationError> {
         self.probe.open(instance, slots)
     }
 

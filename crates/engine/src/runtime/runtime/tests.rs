@@ -27,7 +27,7 @@ fn pure_metadata(
         nebula_action::MetadataName::try_from(name).expect("fixture display name"),
         description,
     )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 struct CountingRunner {

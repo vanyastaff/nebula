@@ -8,16 +8,16 @@
 //! teardown coverage. A second positive binary checks custom resource topology
 //! authoring, a third the rate-limit declaration paced through the managed
 //! call facade, and a fourth a logger authored against the facade, whose
-//! `Managed` must not deref (`managed_no_deref`), a fifth a derived
+//! `Lease` must not deref (`lease_no_deref`), a fifth a derived
 //! credentialed resource (`resource_credentialed`:
 //! `CredentialSlot<BearerTokenCredential>` read through pinned slots), a
 //! sixth an HTTP API resource over the `resource-http` adapter
 //! (`resource_http`), whose transport keeps its raw client private
 //! (`http_no_raw_client`), and a seventh authors a session provider and runs
-//! a session through a `ManagedRow` (`resource_session`), which must not
-//! deref either (`managed_row_no_deref`) and whose body cannot keep the
+//! a session through a `ResourceHandle` (`resource_session`), which must not
+//! deref either (`resource_handle_no_deref`) and whose body cannot keep the
 //! borrowed session (`session_escape`), and an eighth derives an action whose
-//! `#[resource]` fields are managed rows (`action_managed_row`); the
+//! `#[resource]` fields are resource handles (`action_resource_handle`); the
 //! deprecated closure family fails under `deny(deprecated)`
 //! (`resource_limited_deprecated`).
 //! Each negative binary targets one distinct authority or persistence
@@ -43,11 +43,11 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/resource_credentialed.rs",
     "src/bin/resource_http.rs",
     "src/bin/http_no_raw_client.rs",
-    "src/bin/managed_no_deref.rs",
+    "src/bin/lease_no_deref.rs",
     "src/bin/resource_session.rs",
-    "src/bin/managed_row_no_deref.rs",
+    "src/bin/resource_handle_no_deref.rs",
     "src/bin/session_escape.rs",
-    "src/bin/action_managed_row.rs",
+    "src/bin/action_resource_handle.rs",
     "src/bin/removed_resource_from_key.rs",
     "src/bin/removed_checkpoint_policy_action.rs",
     "src/bin/removed_checkpoint_policy_prelude.rs",
@@ -311,29 +311,30 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         render_output(&arity)
     );
 
-    let no_deref = cargo_probe(temp.path(), "check", "managed_no_deref");
+    let no_deref = cargo_probe(temp.path(), "check", "lease_no_deref");
     assert!(
         !no_deref.status.success(),
-        "a managed call facade unexpectedly dereferenced to its instance"
+        "a lease facade unexpectedly dereferenced to its instance"
     );
     let diagnostics = compiler_errors(&no_deref);
     std::assert_matches!(
         diagnostics.as_slice(),
-        [error] if error.code.as_deref() == Some("E0614") && error.message.contains("Managed"),
-        "the managed facade must fail only for its missing `Deref`: {}",
+        [error] if error.code.as_deref() == Some("E0614") && error.message.contains("Lease"),
+        "the lease facade must fail only for its missing `Deref`: {}",
         render_output(&no_deref)
     );
 
-    let row_no_deref = cargo_probe(temp.path(), "check", "managed_row_no_deref");
+    let row_no_deref = cargo_probe(temp.path(), "check", "resource_handle_no_deref");
     assert!(
         !row_no_deref.status.success(),
-        "a managed row unexpectedly dereferenced to an instance"
+        "a resource handle unexpectedly dereferenced to an instance"
     );
     let diagnostics = compiler_errors(&row_no_deref);
     std::assert_matches!(
         diagnostics.as_slice(),
-        [error] if error.code.as_deref() == Some("E0614") && error.message.contains("ManagedRow"),
-        "the managed row must fail only for its missing `Deref`: {}",
+        [error] if error.code.as_deref() == Some("E0614")
+            && error.message.contains("ResourceHandle"),
+        "the resource handle must fail only for its missing `Deref`: {}",
         render_output(&row_no_deref)
     );
 
@@ -363,7 +364,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         [error] if error.highlighted == "wrap"
             && error.message.contains("deprecated")
             && error.message.contains("wrap")
-            && error.message.contains("into_managed"),
+            && error.message.contains("into_lease"),
         "`ResourceLimiter::wrap` must fail only as deprecated, pointing at the facade: {}",
         render_output(&deprecated)
     );
@@ -393,7 +394,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         "resource_session",
         "resource_credentialed",
         "resource_http",
-        "action_managed_row",
+        "action_resource_handle",
     ];
     let output = cargo_clippy_bins(temp.path(), &positives);
     assert!(
@@ -444,10 +445,10 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         "an HTTP API resource through the SDK alone must compile and execute:\n{}",
         render_output(&http)
     );
-    let action_row = cargo_probe(temp.path(), "run", "action_managed_row");
+    let action_row = cargo_probe(temp.path(), "run", "action_resource_handle");
     assert!(
         action_row.status.success(),
-        "an action with managed row fields through the SDK alone must compile and execute:\n{}",
+        "an action with resource handle fields through the SDK alone must compile and execute:\n{}",
         render_output(&action_row)
     );
 }

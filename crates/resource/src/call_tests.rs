@@ -17,8 +17,8 @@ use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Attempt, Cost, Effect, Managed, OpCx, OpError, Operation, PinSlots, SentState,
-    UNIT_DEADLINE_CAP, Unit,
+    Attempt, Cost, Effect, Lease, OPERATION_DEADLINE_CAP, Operation, OperationCx, OperationError,
+    PinSlots, SentState, Submission,
 };
 use crate::{
     AcquireOptions, CredentialUnavailableReason, Error, ErrorKind, Manager, ManagerConfig,
@@ -189,23 +189,23 @@ async fn acquire<R: Provider>(manager: &Manager) -> ResourceGuard<R> {
         .expect("acquire")
 }
 
-async fn managed<R: Provider + PinSlots>(manager: &Manager) -> Managed<R> {
-    acquire::<R>(manager).await.into_managed()
+async fn managed<R: Provider + PinSlots>(manager: &Manager) -> Lease<R> {
+    acquire::<R>(manager).await.into_lease()
 }
 
 fn read_only_row<R: Provider + PinSlots>(
     manager: &Manager,
     ctx: &ResourceContext,
-) -> crate::call::ManagedRow<R> {
+) -> crate::call::ResourceHandle<R> {
     manager
-        .managed_row_any_read_only(
+        .handle_any_read_only(
             &R::key(),
             ctx,
             &AcquireOptions::default(),
             &SlotIdentity::Unbound,
         )
         .expect("read-only row")
-        .downcast::<crate::call::ManagedRow<R>>()
+        .downcast::<crate::call::ResourceHandle<R>>()
         .map(|row| *row)
         .expect("typed read-only row")
 }
@@ -269,7 +269,7 @@ impl Once {
 impl<R: Provider + PinSlots> Operation<R> for Once {
     type Output = u32;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u32, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u32, OperationError> {
         let attempt = cx.attempt(self.cost).await?;
         attempt.settle(self.sent);
         Ok(cx.attempts())
@@ -284,11 +284,11 @@ struct Refused {
 impl<R: Provider + PinSlots> Operation<R> for Refused {
     type Output = ();
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::ONE).await?;
         attempt.report(Verdict::Pass).await;
         attempt.settle(SentState::Sent);
-        Err(OpError::new(self.kind, "provider refused"))
+        Err(OperationError::new(self.kind, "provider refused"))
     }
 }
 
@@ -325,7 +325,7 @@ fn gated() -> (Gated, Gate) {
 impl<R: Provider + PinSlots> Operation<R> for Gated {
     type Output = ();
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let closing = cx.closing();
         let attempt = cx.attempt(Cost::FREE).await?;
         self.entered.notify_one();
@@ -345,7 +345,7 @@ impl<R: Provider + PinSlots, const READ: bool> Operation<R> for Hang<READ> {
     type Output = ();
     const EFFECT: Effect = if READ { Effect::Read } else { Effect::Write };
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let _attempt = cx.attempt(Cost::FREE).await?;
         std::future::pending::<()>().await;
         Ok(())
@@ -359,7 +359,7 @@ impl<R: Provider + PinSlots> Operation<R> for NeverWrite {
     type Output = ();
     const EFFECT: Effect = Effect::Write;
 
-    async fn run(self, _cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, _cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -371,7 +371,7 @@ struct PanicAfterGrant;
 impl<R: Provider + PinSlots> Operation<R> for PanicAfterGrant {
     type Output = ();
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         attempt.settle(SentState::Sent);
         panic!("operation bug after the grant");
@@ -389,7 +389,7 @@ impl<R: Provider + PinSlots> Operation<R> for OverBudget {
         NonZeroU32::new(2).expect("two")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         for _ in 0..3 {
             let attempt = cx.attempt(Cost::FREE).await?;
             attempt.settle(SentState::Sent);
@@ -412,7 +412,7 @@ impl Operation<Api> for PinnedTwice {
         NonZeroU32::new(2).expect("two")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, Api>) -> Result<Self::Output, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, Api>) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::FREE).await?;
         let seen_first = pinned_token(&first);
         first.settle(SentState::Sent);
@@ -427,7 +427,7 @@ impl Operation<Api> for PinnedTwice {
 }
 
 fn pinned_token(attempt: &Attempt<'_, Api>) -> Option<String> {
-    attempt.slots().as_deref().cloned()
+    attempt.credentials().as_deref().cloned()
 }
 
 /// Parks after the unit started and before its first attempt, then yields
@@ -441,7 +441,7 @@ impl Operation<Api> for PinAfterRelease {
     type Output = Option<String>;
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, Api>) -> Result<Self::Output, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, Api>) -> Result<Self::Output, OperationError> {
         self.entered.notify_one();
         self.release.notified().await;
         let attempt = cx.attempt(Cost::FREE).await?;
@@ -458,9 +458,9 @@ fn the_facade_and_its_units_cross_threads() {
     fn send_sync_clone<T: Send + Sync + Clone>() {}
     fn send<T: Send + Unpin>() {}
     fn gates<R: Provider + PinSlots, O: Operation<R>>() {
-        send_sync_clone::<Managed<R>>();
-        send::<Unit<O::Output>>();
-        send::<OpError>();
+        send_sync_clone::<Lease<R>>();
+        send::<Submission<O::Output>>();
+        send::<OperationError>();
     }
     gates::<Api, Once>();
     gates::<PooledApi, Gated>();
@@ -468,8 +468,8 @@ fn the_facade_and_its_units_cross_threads() {
     // An operation's future is `Send` for any borrowed context.
     fn run_is_send<'a, R: Provider + PinSlots, O: Operation<R>>(
         operation: O,
-        cx: &'a mut OpCx<'a, R>,
-    ) -> impl Future<Output = Result<O::Output, OpError>> + Send + 'a {
+        cx: &'a mut OperationCx<'a, R>,
+    ) -> impl Future<Output = Result<O::Output, OperationError>> + Send + 'a {
         operation.run(cx)
     }
     let _ = run_is_send::<Api, Once>;
@@ -478,7 +478,7 @@ fn the_facade_and_its_units_cross_threads() {
 // ── profile and booking ──────────────────────────────────────────────────
 
 #[tokio::test(start_paused = true)]
-async fn into_managed_latches_per_attempt_and_acquires_stop_booking() {
+async fn into_lease_latches_per_attempt_and_acquires_stop_booking() {
     let manager = Manager::new();
     resident(&manager, Some(RowLimit::rate(per_second(1, 2))));
     let health = manager
@@ -580,7 +580,9 @@ async fn a_keyed_cost_books_its_key() {
 
 // ── admission ────────────────────────────────────────────────────────────
 
-async fn refused_after(close: impl FnOnce(&Manager)) -> (OpError, crate::ResourceOpsSnapshot) {
+async fn refused_after(
+    close: impl FnOnce(&Manager),
+) -> (OperationError, crate::ResourceOpsSnapshot) {
     let manager = metered_manager();
     resident(&manager, None);
     let facade = managed::<Api>(&manager).await;
@@ -802,7 +804,7 @@ async fn a_deadline_after_a_grant_is_maybe_sent_and_unknown_for_a_write() {
 
     let mut unknown = 0;
     while let Some(event) = events.try_recv() {
-        if matches!(&event, ResourceEvent::UnitOutcomeUnknown { key } if *key == Api::key()) {
+        if matches!(&event, ResourceEvent::OperationOutcomeUnknown { key } if *key == Api::key()) {
             unknown += 1;
         }
     }
@@ -821,7 +823,7 @@ async fn a_deadline_after_a_grant_is_maybe_sent_and_unknown_for_a_write() {
     assert_eq!(*Error::from(error).kind(), ErrorKind::Transient);
     while let Some(event) = events.try_recv() {
         assert!(
-            !matches!(event, ResourceEvent::UnitOutcomeUnknown { .. }),
+            !matches!(event, ResourceEvent::OperationOutcomeUnknown { .. }),
             "a replay-safe unit publishes no unknown outcome"
         );
     }
@@ -835,10 +837,10 @@ async fn a_deadline_can_only_shorten_the_host_cap() {
     let started = Instant::now();
     let error = facade
         .submit(Hang::<true>)
-        .with_deadline(in_one(UNIT_DEADLINE_CAP * 2))
+        .with_deadline(in_one(OPERATION_DEADLINE_CAP * 2))
         .await
         .expect_err("capped");
-    assert_eq!(started.elapsed(), UNIT_DEADLINE_CAP);
+    assert_eq!(started.elapsed(), OPERATION_DEADLINE_CAP);
     assert_eq!(error.sent(), SentState::MaybeSent);
 }
 
@@ -977,7 +979,7 @@ fn the_retry_safety_table_holds() {
         ),
     ];
     for (kind, sent, effect, retryable, as_error) in cases {
-        let error = OpError::new(kind.clone(), "case").settled(sent, effect, &key);
+        let error = OperationError::new(kind.clone(), "case").settled(sent, effect, &key);
         assert_eq!(
             error.is_retryable(),
             retryable,
@@ -994,7 +996,7 @@ fn a_resource_error_converts_by_kind_only() {
     let error = Error::transient("upstream said: token=hunter2")
         .with_resource_key(resource_key!("secretive"))
         .with_source(std::io::Error::other("hunter2"));
-    let op = OpError::from(error);
+    let op = OperationError::from(error);
     assert_eq!(*op.kind(), ErrorKind::Transient);
     assert_eq!(op.resource_key(), Some(&resource_key!("secretive")));
     assert!(!op.to_string().contains("hunter2"));

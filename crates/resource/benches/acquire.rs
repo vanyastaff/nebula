@@ -438,8 +438,8 @@ impl nebula_resource::call::Operation<BoundResident> for OneAttempt {
 
     async fn run(
         self,
-        cx: &mut nebula_resource::call::OpCx<'_, BoundResident>,
-    ) -> Result<u64, nebula_resource::call::OpError> {
+        cx: &mut nebula_resource::call::OperationCx<'_, BoundResident>,
+    ) -> Result<u64, nebula_resource::call::OperationError> {
         let attempt = cx.attempt(nebula_resource::call::Cost::FREE).await?;
         let instance = *attempt.instance();
         attempt.settle(nebula_resource::call::SentState::Sent);
@@ -476,7 +476,7 @@ fn bench_strict_attempt_admission(c: &mut Criterion) {
             .acquire_resident::<BoundResident>(&bench_ctx(), &AcquireOptions::default())
             .await
             .expect("bound resident acquire")
-            .into_managed();
+            .into_lease();
         (manager, managed)
     };
     let (interim, strict) = rt.block_on(async {
@@ -512,8 +512,8 @@ impl nebula_resource::call::Operation<KeepPool> for PooledAttempt {
 
     async fn run(
         self,
-        cx: &mut nebula_resource::call::OpCx<'_, KeepPool>,
-    ) -> Result<u64, nebula_resource::call::OpError> {
+        cx: &mut nebula_resource::call::OperationCx<'_, KeepPool>,
+    ) -> Result<u64, nebula_resource::call::OperationError> {
         let attempt = cx.attempt(nebula_resource::call::Cost::FREE).await?;
         let instance = *attempt.instance();
         attempt.settle(nebula_resource::call::SentState::Sent);
@@ -562,10 +562,10 @@ fn bench_row_attempt(c: &mut Criterion) {
             .acquire_pooled::<KeepPool>(&bench_ctx(), &AcquireOptions::default())
             .await
             .expect("pooled acquire")
-            .into_managed();
+            .into_lease();
         let row_manager = one_connection();
         let row = row_manager
-            .managed_row::<KeepPool>(&bench_ctx())
+            .handle::<KeepPool>(&bench_ctx())
             .expect("row facade");
         // Warm the row's one connection into the idle queue.
         row.submit(PooledAttempt).await.expect("warm the row");

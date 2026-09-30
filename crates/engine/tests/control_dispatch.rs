@@ -189,7 +189,7 @@ impl StatelessAction for SlowCancellableHandler {
 fn meta(key: ActionKey) -> ActionMetadataDraft {
     let name = key.clone().into();
     ActionMetadataDraft::new(key, name, "control_dispatch test handler")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 // ── Harness ───────────────────────────────────────────────────────────────

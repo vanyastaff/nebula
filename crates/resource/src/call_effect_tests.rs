@@ -21,12 +21,12 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::super::{
-    Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, ManagedRow,
-    OccurrenceLabel, OpCx, OpError, Operation, OperationKey, PinSlots, Recorded, SentState,
-    SessionClosed, SessionSpec,
-    owner::{
-        Crossing, ErrorKindCode, OwnerRefusal, OwnerTicket, RecordedOutcome, SlotPhase, UnitCall,
-        UnitEffectOwner, UnitIntent, UnitOutcome, UnitSlot,
+    Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKey,
+    IdempotencyKeyPart, OccurrenceLabel, Operation, OperationCx, OperationError, PinSlots,
+    Recorded, ResourceHandle, SentState, SessionClosed, SessionSpec,
+    journal::{
+        CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight, JournalIntent,
+        JournalRefusal, JournalSlot, RecordedOutcome, SlotPhase,
     },
 };
 use crate::{
@@ -55,7 +55,7 @@ enum Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
     Prepared,
-    Outstanding(UnitCall),
+    Outstanding(CallGrant),
     BeforeBoundary,
     Ambiguous,
     Resolved(RecordedOutcome),
@@ -65,7 +65,7 @@ enum Phase {
 #[derive(Debug)]
 struct FakeSlot {
     id: [u8; 16],
-    key: OperationKey,
+    key: IdempotencyKey,
     /// Contract id, canonical request and key part: what a resumed effect
     /// must present again.
     fingerprint: (&'static str, Vec<u8>, Option<String>),
@@ -93,8 +93,8 @@ struct FakeState {
     next_id: u8,
     log: Vec<Step>,
     intents: Vec<SeenIntent>,
-    fail_prepare: Option<OwnerRefusal>,
-    fail_settle: Option<OwnerRefusal>,
+    fail_prepare: Option<JournalRefusal>,
+    fail_settle: Option<JournalRefusal>,
     on_grant: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -146,11 +146,11 @@ impl FakeOwner {
         self.state().ordinals.clear();
     }
 
-    fn fail_next_prepare(&self, refusal: OwnerRefusal) {
+    fn fail_next_prepare(&self, refusal: JournalRefusal) {
         self.state().fail_prepare = Some(refusal);
     }
 
-    fn fail_next_settle(&self, refusal: OwnerRefusal) {
+    fn fail_next_settle(&self, refusal: JournalRefusal) {
         self.state().fail_settle = Some(refusal);
     }
 
@@ -167,7 +167,7 @@ impl FakeOwner {
             occurrence.to_owned(),
             FakeSlot {
                 id: [id; 16],
-                key: OperationKey::new(&format!("key-{id}")).expect("key"),
+                key: IdempotencyKey::new(&format!("key-{id}")).expect("key"),
                 fingerprint: (fingerprint.0, fingerprint.1.to_vec(), None),
                 recovery: EffectRecovery::Opaque,
                 max_invocations: 1,
@@ -178,8 +178,8 @@ impl FakeOwner {
         );
     }
 
-    fn slot_view(slot: &FakeSlot, phase: SlotPhase) -> UnitSlot {
-        UnitSlot::new(slot.id, slot.key, 1, phase)
+    fn slot_view(slot: &FakeSlot, phase: SlotPhase) -> JournalSlot {
+        JournalSlot::new(slot.id, slot.key, 1, phase)
     }
 
     fn by_id<'s>(state: &'s mut FakeState, id: &[u8; 16]) -> Option<&'s mut FakeSlot> {
@@ -188,7 +188,7 @@ impl FakeOwner {
 }
 
 #[async_trait::async_trait]
-impl UnitEffectOwner for FakeOwner {
+impl EffectJournal for FakeOwner {
     fn next_ordinal(&self, key: &ResourceKey, contract: EffectContract) -> u32 {
         let mut state = self.state();
         let ordinal = state
@@ -200,9 +200,9 @@ impl UnitEffectOwner for FakeOwner {
         next
     }
 
-    async fn prepare(&self, intent: &UnitIntent<'_>) -> Result<UnitSlot, OwnerRefusal> {
+    async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
         if self.is_closed() {
-            return Err(OwnerRefusal::Closed);
+            return Err(JournalRefusal::Closed);
         }
         let mut state = self.state();
         if let Some(refusal) = state.fail_prepare.take() {
@@ -224,7 +224,7 @@ impl UnitEffectOwner for FakeOwner {
         let now = Instant::now();
         if let Some(slot) = state.slots.get_mut(intent.occurrence) {
             if slot.fingerprint != fingerprint {
-                return Err(OwnerRefusal::Mismatch);
+                return Err(JournalRefusal::Mismatch);
             }
             let phase = match (&slot.phase, slot.recovery) {
                 (Phase::Resolved(outcome), _) => SlotPhase::Replay(outcome.clone()),
@@ -247,7 +247,7 @@ impl UnitEffectOwner for FakeOwner {
         let id = state.next_id;
         let slot = FakeSlot {
             id: [id; 16],
-            key: OperationKey::new(&format!("key-{id}")).expect("key"),
+            key: IdempotencyKey::new(&format!("key-{id}")).expect("key"),
             fingerprint,
             recovery: intent.recovery,
             max_invocations: intent.max_invocations.get(),
@@ -260,16 +260,16 @@ impl UnitEffectOwner for FakeOwner {
         Ok(view)
     }
 
-    async fn grant(&self, slot: &UnitSlot) -> Result<UnitCall, OwnerRefusal> {
+    async fn grant(&self, slot: &JournalSlot) -> Result<CallGrant, JournalRefusal> {
         if self.is_closed() {
-            return Err(OwnerRefusal::Closed);
+            return Err(JournalRefusal::Closed);
         }
         let hook = {
             let mut state = self.state();
             let now = Instant::now();
             let call_id = state.next_id.wrapping_add(100);
             state.next_id += 1;
-            let fake = Self::by_id(&mut state, slot.id()).ok_or(OwnerRefusal::Mismatch)?;
+            let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
             let grantable = match (&fake.phase, fake.recovery) {
                 (Phase::Prepared | Phase::BeforeBoundary, _) => true,
                 (Phase::Ambiguous, EffectRecovery::StableKey { window }) => {
@@ -279,10 +279,10 @@ impl UnitEffectOwner for FakeOwner {
             };
             if !grantable || fake.invocations >= fake.max_invocations {
                 fake.phase = Phase::Unknown;
-                return Err(OwnerRefusal::Unknown);
+                return Err(JournalRefusal::Unknown);
             }
             fake.invocations += 1;
-            let call = UnitCall::from_bytes([call_id; 16]);
+            let call = CallGrant::from_bytes([call_id; 16]);
             fake.phase = Phase::Outstanding(call);
             state.log.push(Step::Grant);
             (state.on_grant.take(), call)
@@ -296,14 +296,14 @@ impl UnitEffectOwner for FakeOwner {
 
     async fn explain(
         &self,
-        slot: &UnitSlot,
-        call: UnitCall,
+        slot: &JournalSlot,
+        call: CallGrant,
         crossing: Crossing,
-    ) -> Result<(), OwnerRefusal> {
+    ) -> Result<(), JournalRefusal> {
         let mut state = self.state();
-        let fake = Self::by_id(&mut state, slot.id()).ok_or(OwnerRefusal::Mismatch)?;
+        let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
         if fake.phase != Phase::Outstanding(call) {
-            return Err(OwnerRefusal::Mismatch);
+            return Err(JournalRefusal::Mismatch);
         }
         fake.phase = match (crossing, fake.recovery) {
             (Crossing::NotCrossed, _) => Phase::BeforeBoundary,
@@ -316,34 +316,34 @@ impl UnitEffectOwner for FakeOwner {
 
     async fn settle(
         &self,
-        slot: &UnitSlot,
-        call: UnitCall,
-        outcome: UnitOutcome<'_>,
-    ) -> Result<(), OwnerRefusal> {
+        slot: &JournalSlot,
+        call: CallGrant,
+        outcome: CallOutcome<'_>,
+    ) -> Result<(), JournalRefusal> {
         let mut state = self.state();
         if let Some(refusal) = state.fail_settle.take() {
             return Err(refusal);
         }
-        let fake = Self::by_id(&mut state, slot.id()).ok_or(OwnerRefusal::Mismatch)?;
+        let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
         if fake.phase != Phase::Outstanding(call) {
-            return Err(OwnerRefusal::Mismatch);
+            return Err(JournalRefusal::Mismatch);
         }
         let (recorded, step) = match outcome {
-            UnitOutcome::Applied(bytes) => (RecordedOutcome::Succeeded(bytes.to_vec()), "applied"),
-            UnitOutcome::AppliedWithoutOutput => {
+            CallOutcome::Applied(bytes) => (RecordedOutcome::Succeeded(bytes.to_vec()), "applied"),
+            CallOutcome::AppliedWithoutOutput => {
                 (RecordedOutcome::OutputUnavailable, "applied_without_output")
             },
-            UnitOutcome::Rejected(code) => (RecordedOutcome::Failed(code), code.as_str()),
+            CallOutcome::Rejected(code) => (RecordedOutcome::Failed(code), code.as_str()),
         };
         fake.phase = Phase::Resolved(recorded);
         state.log.push(Step::Settle(step));
         Ok(())
     }
 
-    fn track(&self) -> OwnerTicket {
+    fn track(&self) -> InFlight {
         self.in_flight.fetch_add(1, Ordering::SeqCst);
         let in_flight = Arc::clone(&self.in_flight);
-        OwnerTicket::new(move || {
+        InFlight::new(move || {
             in_flight.fetch_sub(1, Ordering::SeqCst);
         })
     }
@@ -433,12 +433,12 @@ impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Pay<IDEM> {
         NonZeroU32::new(u32::try_from(self.replies.len()).expect("few")).expect("a reply")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
         let last = self.replies.len() - 1;
         for (index, reply) in self.replies.into_iter().enumerate() {
             // The key is the same for every attempt; it is read while no
             // attempt borrows the context.
-            let key = cx.operation_key().copied();
+            let key = cx.idempotency_key().copied();
             let attempt = cx.attempt(self.cost.clone()).await?;
             self.calls.made.fetch_add(1, Ordering::SeqCst);
             self.calls
@@ -454,18 +454,24 @@ impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Pay<IDEM> {
                 Reply::Fail(sent, kind) => {
                     attempt.settle(sent);
                     if index == last {
-                        return Err(OpError::new(kind, "provider answered"));
+                        return Err(OperationError::new(kind, "provider answered"));
                     }
                 },
                 Reply::Unsettled => {
                     drop(attempt);
                     if index == last {
-                        return Err(OpError::new(ErrorKind::Transient, "connection reset"));
+                        return Err(OperationError::new(
+                            ErrorKind::Transient,
+                            "connection reset",
+                        ));
                     }
                 },
             }
         }
-        Err(OpError::new(ErrorKind::Permanent, "no reply scripted"))
+        Err(OperationError::new(
+            ErrorKind::Permanent,
+            "no reply scripted",
+        ))
     }
 }
 
@@ -477,7 +483,7 @@ impl<R: Provider + PinSlots, const IDEM: bool> EffectOperation<R> for Pay<IDEM> 
         EffectRecovery::Opaque
     };
 
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
+    fn canonical_request(&self) -> Result<Vec<u8>, OperationError> {
         Ok(self.request.as_bytes().to_vec())
     }
 
@@ -498,7 +504,7 @@ struct Refund(Arc<Calls>);
 impl<R: Provider + PinSlots> Operation<R> for Refund {
     type Output = u64;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         self.0.made.fetch_add(1, Ordering::SeqCst);
         attempt.settle(SentState::Sent);
@@ -511,7 +517,7 @@ impl<R: Provider + PinSlots> EffectOperation<R> for Refund {
     const RECOVERY: EffectRecovery = EffectRecovery::Opaque;
     const RECORDED: Recorded = Recorded::DigestOnly;
 
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
+    fn canonical_request(&self) -> Result<Vec<u8>, OperationError> {
         Ok(b"refund".to_vec())
     }
 }
@@ -532,7 +538,7 @@ impl<R: Provider + PinSlots, const READ: bool, const BAD_CONTRACT: bool> Operati
         Effect::Idempotent
     };
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         self.0.made.fetch_add(1, Ordering::SeqCst);
         attempt.settle(SentState::Sent);
@@ -550,7 +556,7 @@ impl<R: Provider + PinSlots, const READ: bool, const BAD_CONTRACT: bool> EffectO
     };
     const RECOVERY: EffectRecovery = EffectRecovery::Opaque;
 
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
+    fn canonical_request(&self) -> Result<Vec<u8>, OperationError> {
         Ok(b"x".to_vec())
     }
 }
@@ -562,7 +568,7 @@ impl<R: Provider + PinSlots> Operation<R> for Look {
     type Output = ();
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(self.1).await?;
         self.0.made.fetch_add(1, Ordering::SeqCst);
         attempt.settle(SentState::Sent);
@@ -625,11 +631,11 @@ impl Fixture {
         ResourceContext::minimal(Scope::default(), self.parent.clone())
     }
 
-    fn owned(&self) -> ManagedRow<StrictPooled> {
-        let owner = Arc::clone(&self.owner) as Arc<dyn UnitEffectOwner>;
+    fn owned(&self) -> ResourceHandle<StrictPooled> {
+        let owner = Arc::clone(&self.owner) as Arc<dyn EffectJournal>;
         *self
             .manager
-            .managed_row_any_owned(
+            .handle_any_journaled(
                 &StrictPooled::key(),
                 &self.ctx(),
                 &AcquireOptions::default(),
@@ -637,35 +643,35 @@ impl Fixture {
                 owner,
             )
             .expect("owned row")
-            .downcast::<ManagedRow<StrictPooled>>()
+            .downcast::<ResourceHandle<StrictPooled>>()
             .expect("typed row")
     }
 
-    fn library(&self) -> ManagedRow<StrictPooled> {
+    fn library(&self) -> ResourceHandle<StrictPooled> {
         *self
             .manager
-            .managed_row_any(
+            .handle_any(
                 &StrictPooled::key(),
                 &self.ctx(),
                 &AcquireOptions::default(),
                 &tenant(),
             )
             .expect("library row")
-            .downcast::<ManagedRow<StrictPooled>>()
+            .downcast::<ResourceHandle<StrictPooled>>()
             .expect("typed row")
     }
 
-    fn read_only(&self) -> ManagedRow<StrictPooled> {
+    fn read_only(&self) -> ResourceHandle<StrictPooled> {
         *self
             .manager
-            .managed_row_any_read_only(
+            .handle_any_read_only(
                 &StrictPooled::key(),
                 &self.ctx(),
                 &AcquireOptions::default(),
                 &tenant(),
             )
             .expect("read-only row")
-            .downcast::<ManagedRow<StrictPooled>>()
+            .downcast::<ResourceHandle<StrictPooled>>()
             .expect("typed row")
     }
 
@@ -684,7 +690,7 @@ fn occurrence(contract: EffectContract, label: &str) -> String {
     format!("unit/v1/{}/{}/{label}", StrictPooled::key(), contract.id())
 }
 
-fn assert_unsent(error: &OpError, kind: &ErrorKind) {
+fn assert_unsent(error: &OperationError, kind: &ErrorKind) {
     assert_eq!(error.kind(), kind, "{error}");
     assert_eq!(error.sent(), SentState::NotSent, "{error}");
 }
@@ -694,9 +700,9 @@ fn assert_unsent(error: &OpError, kind: &ErrorKind) {
 #[test]
 fn the_owner_is_object_safe_and_an_owned_row_crosses_threads() {
     fn send_sync_clone<T: Send + Sync + Clone>() {}
-    let _: Option<Arc<dyn UnitEffectOwner>> = None;
-    send_sync_clone::<Arc<dyn UnitEffectOwner>>();
-    send_sync_clone::<ManagedRow<StrictPooled>>();
+    let _: Option<Arc<dyn EffectJournal>> = None;
+    send_sync_clone::<Arc<dyn EffectJournal>>();
+    send_sync_clone::<ResourceHandle<StrictPooled>>();
 }
 
 // ── replay ───────────────────────────────────────────────────────────────
@@ -947,7 +953,7 @@ async fn settle_without_acknowledgement_after_the_apply_is_outcome_unknown() {
     let row = fixture.owned();
     fixture
         .owner
-        .fail_next_settle(OwnerRefusal::AcknowledgementUnknown);
+        .fail_next_settle(JournalRefusal::AcknowledgementUnknown);
 
     let error = row
         .submit_effect(Pay::<true>::new(&calls, vec![Reply::Ok(1)]))
@@ -1073,9 +1079,9 @@ async fn prepare_refusals_map_to_unsent_errors_without_a_call() {
     let row = fixture.owned();
 
     for refusal in [
-        OwnerRefusal::AcknowledgementUnknown,
-        OwnerRefusal::Unavailable,
-        OwnerRefusal::LeaseLost,
+        JournalRefusal::AcknowledgementUnknown,
+        JournalRefusal::Unavailable,
+        JournalRefusal::LeaseLost,
     ] {
         fixture.owner.fail_next_prepare(refusal);
         let error = row
@@ -1085,7 +1091,7 @@ async fn prepare_refusals_map_to_unsent_errors_without_a_call() {
         assert_unsent(&error, &ErrorKind::Backpressure);
         assert!(error.is_retryable());
     }
-    fixture.owner.fail_next_prepare(OwnerRefusal::Closed);
+    fixture.owner.fail_next_prepare(JournalRefusal::Closed);
     let closed = row
         .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await
@@ -1290,11 +1296,11 @@ const SESSION: EffectContract = EffectContract::new("billing.session", 1);
 /// A `Write` session effect of `request` whose body does `body`; `calls`
 /// counts the bodies run and the operation key each saw.
 fn session(
-    row: &ManagedRow<StrictPooled>,
+    row: &ResourceHandle<StrictPooled>,
     request: &'static str,
     body: Body,
     calls: &Arc<Calls>,
-) -> super::super::Unit<u64> {
+) -> super::super::Submission<u64> {
     let calls = Arc::clone(calls);
     row.session_effect(
         SessionSpec::new(Cost::FREE),
@@ -1308,12 +1314,12 @@ fn session(
                 .keys
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .push(cx.operation_key().map(ToString::to_string));
+                .push(cx.idempotency_key().map(ToString::to_string));
             Box::pin(async move {
                 tx.pending += 1;
                 match body {
                     Body::Ok(value) => Ok(value),
-                    Body::Fail => Err(OpError::new(ErrorKind::Permanent, "constraint")),
+                    Body::Fail => Err(OperationError::new(ErrorKind::Permanent, "constraint")),
                     Body::Hang => {
                         tokio::time::sleep(Duration::from_hours(1)).await;
                         Ok(0)
@@ -1355,7 +1361,7 @@ async fn session_outcomes_are_recorded_by_how_the_session_closed() {
     fixture
         .resource
         .probe
-        .close_next_with(SessionClosed::Unknown(OpError::new(
+        .close_next_with(SessionClosed::Unknown(OperationError::new(
             ErrorKind::Transient,
             "connection dropped",
         )));

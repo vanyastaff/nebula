@@ -4,7 +4,7 @@ use std::fmt;
 
 use bytes::Bytes;
 use http::{HeaderMap, HeaderName, StatusCode};
-use nebula_resource::{ErrorKind, call::OpError};
+use nebula_resource::{ErrorKind, call::OperationError};
 use serde::de::DeserializeOwned;
 
 /// The provider's answer to a buffered [`Request`](super::Request): a
@@ -57,9 +57,9 @@ impl Response {
     ///
     /// A permanent error when the body is not the expected JSON; the
     /// decoder's message, which may quote the body, is not kept.
-    pub fn json<T: DeserializeOwned>(&self) -> Result<T, OpError> {
+    pub fn json<T: DeserializeOwned>(&self) -> Result<T, OperationError> {
         serde_json::from_slice(&self.body).map_err(|_| {
-            OpError::new(
+            OperationError::new(
                 ErrorKind::Permanent,
                 "response body is not the expected JSON",
             )

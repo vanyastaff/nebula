@@ -7,7 +7,7 @@ use bytes::BytesMut;
 use http::{HeaderMap, StatusCode, header::RETRY_AFTER};
 use nebula_resource::{
     ErrorKind,
-    call::{Attempt, Effect, OpCx, OpError, Operation, SentState},
+    call::{Attempt, Effect, Operation, OperationCx, OperationError, SentState},
     rate_limit::{Verdict, retry_after_from_header},
 };
 use tracing::Instrument as _;
@@ -62,7 +62,7 @@ pub(super) fn classify(status: StatusCode, headers: &HeaderMap, accepted: bool) 
 
 /// A failed attempt: its error and what it settled.
 pub(super) struct Failure {
-    pub(super) error: OpError,
+    pub(super) error: OperationError,
     pub(super) sent: SentState,
 }
 
@@ -79,7 +79,7 @@ where
 fn fail<R>(
     attempt: Attempt<'_, R>,
     sent: SentState,
-    error: OpError,
+    error: OperationError,
     span: &tracing::Span,
 ) -> Failure
 where
@@ -110,7 +110,7 @@ pub(super) fn prepare<R, M>(
     transport: &HttpTransport,
     request: &Request<M>,
     timeout: Option<Duration>,
-) -> Result<reqwest::Request, OpError>
+) -> Result<reqwest::Request, OperationError>
 where
     R: HttpApi,
     R::Instance: AsRef<HttpTransport>,
@@ -118,7 +118,7 @@ where
 {
     let mut outgoing = request.outgoing(transport)?;
     let mut credentials = HeaderMap::new();
-    R::authorize(attempt.slots(), &mut Authorize::new(&mut credentials))?;
+    R::authorize(attempt.credentials(), &mut Authorize::new(&mut credentials))?;
     outgoing.headers_mut().extend(credentials);
     *outgoing.timeout_mut() = timeout;
     Ok(outgoing)
@@ -145,7 +145,7 @@ where
         Err(error) if error.is_connect() => Err(fail(
             attempt,
             SentState::NotSent,
-            OpError::new(
+            OperationError::new(
                 ErrorKind::Transient,
                 "could not connect; the request was not sent",
             ),
@@ -154,7 +154,7 @@ where
         Err(_) => Err(fail(
             attempt,
             SentState::MaybeSent,
-            OpError::new(
+            OperationError::new(
                 ErrorKind::Transient,
                 "the request failed before a response arrived",
             ),
@@ -179,18 +179,18 @@ where
         Head::Answer => (Verdict::Pass, None),
         Head::Throttled(retry_after) => (
             Verdict::Throttled { retry_after },
-            Some(OpError::new(
+            Some(OperationError::new(
                 ErrorKind::Exhausted { retry_after },
                 "provider throttled the request",
             )),
         ),
         Head::Transient(detail) => (
             Verdict::Pass,
-            Some(OpError::new(ErrorKind::Transient, detail)),
+            Some(OperationError::new(ErrorKind::Transient, detail)),
         ),
         Head::Permanent(detail) => (
             Verdict::Pass,
-            Some(OpError::new(ErrorKind::Permanent, detail)),
+            Some(OperationError::new(ErrorKind::Permanent, detail)),
         ),
     };
     attempt.report(verdict).await;
@@ -235,7 +235,7 @@ where
         return Err(fail(
             attempt,
             SentState::Sent,
-            OpError::new(
+            OperationError::new(
                 ErrorKind::Permanent,
                 "response body exceeds its byte budget",
             ),
@@ -251,7 +251,7 @@ where
                     return Err(fail(
                         attempt,
                         SentState::Sent,
-                        OpError::new(
+                        OperationError::new(
                             ErrorKind::Permanent,
                             "response body exceeds its byte budget",
                         ),
@@ -265,7 +265,7 @@ where
                 return Err(fail(
                     attempt,
                     SentState::Sent,
-                    OpError::new(ErrorKind::Transient, "reading the response body failed"),
+                    OperationError::new(ErrorKind::Transient, "reading the response body failed"),
                     span,
                 ));
             },
@@ -304,7 +304,10 @@ where
 /// # Errors
 ///
 /// As the table says.
-pub async fn send<R, M>(attempt: Attempt<'_, R>, request: &Request<M>) -> Result<Response, OpError>
+pub async fn send<R, M>(
+    attempt: Attempt<'_, R>,
+    request: &Request<M>,
+) -> Result<Response, OperationError>
 where
     R: HttpApi,
     R::Instance: AsRef<HttpTransport>,
@@ -365,7 +368,7 @@ where
         self.attempts()
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<Response, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Response, OperationError> {
         self.check()?;
         let deadline = cx.deadline();
         loop {
@@ -468,7 +471,7 @@ mod tests {
 
     fn failure(kind: ErrorKind, sent: SentState) -> Failure {
         Failure {
-            error: OpError::new(kind, "test"),
+            error: OperationError::new(kind, "test"),
             sent,
         }
     }

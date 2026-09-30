@@ -38,9 +38,9 @@ mod field_slots;
 /// - `version = "..."` - Interface version, e.g., "1.0" (default: "1.0")
 /// - `input = Type` - Action input type (required)
 /// - `output = Type` - Action output type (required)
-/// - `no_external_effects` - Explicit author attestation that the action performs no external
-///   business effects. Without it the effect contract remains `Undeclared` and durable admission
-///   rejects the action.
+/// - `read_only` - Explicit author attestation that the action performs no external business
+///   effects (`ActionEffectContract::ReadOnly`). Without it the effect contract remains
+///   `Undeclared` and durable admission rejects the action.
 ///
 /// # Example
 ///
@@ -56,7 +56,7 @@ mod field_slots;
 ///     version = "2.1",
 ///     input = LookupRequest,
 ///     output = LookupResult,
-///     no_external_effects
+///     read_only
 /// )]
 /// pub struct DirectoryLookupAction;
 /// ```

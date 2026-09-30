@@ -20,7 +20,8 @@ use nebula_credential::{
 use tokio::{sync::Notify, time::Instant};
 
 use super::super::{
-    Cost, Effect, ManagedRow, OpError, PinSlots, SentState, SessionClosed, SessionSpec, Unit,
+    Cost, Effect, OperationError, PinSlots, ResourceHandle, SentState, SessionClosed, SessionSpec,
+    Submission,
 };
 use crate::{
     CredentialUnavailableReason, Error, ErrorKind, Manager, PoolConfig, Pooled, Provider,
@@ -91,9 +92,9 @@ fn pooled(manager: &Manager) -> StrictPooled {
     resource
 }
 
-fn facade<R: Provider + PinSlots>(manager: &Manager) -> ManagedRow<R> {
+fn facade<R: Provider + PinSlots>(manager: &Manager) -> ResourceHandle<R> {
     manager
-        .managed_row_for_identity::<R>(&context(), &tenant())
+        .handle_for_identity::<R>(&context(), &tenant())
         .expect("row facade")
 }
 
@@ -121,7 +122,7 @@ async fn idle_after_release<R: Provider>(manager: &Manager) -> usize {
 fn outcome_unknown_events(events: &mut crate::Subscriber<ResourceEvent>) -> usize {
     let mut unknown = 0;
     while let Some(event) = events.try_recv() {
-        if matches!(event, ResourceEvent::UnitOutcomeUnknown { .. }) {
+        if matches!(event, ResourceEvent::OperationOutcomeUnknown { .. }) {
             unknown += 1;
         }
     }
@@ -129,7 +130,7 @@ fn outcome_unknown_events(events: &mut crate::Subscriber<ResourceEvent>) -> usiz
 }
 
 /// A session that adds `n` and commits.
-fn add(row: &ManagedRow<StrictPooled>, spec: SessionSpec, n: u64) -> Unit<u64> {
+fn add(row: &ResourceHandle<StrictPooled>, spec: SessionSpec, n: u64) -> Submission<u64> {
     row.session(spec, move |tx, _cx| {
         Box::pin(async move {
             tx.pending += n;
@@ -143,7 +144,7 @@ fn add(row: &ManagedRow<StrictPooled>, spec: SessionSpec, n: u64) -> Unit<u64> {
 #[test]
 fn a_session_unit_crosses_threads() {
     fn send<T: Send>(_: &T) {}
-    fn gates(row: &ManagedRow<StrictPooled>) {
+    fn gates(row: &ResourceHandle<StrictPooled>) {
         send(&add(row, write(), 1));
     }
     let _ = gates;
@@ -176,7 +177,7 @@ async fn a_failed_body_rolls_back_unsent_and_recycles() {
         .session(write(), |tx, _cx| {
             Box::pin(async move {
                 tx.pending = 9;
-                Err::<(), _>(OpError::new(ErrorKind::Transient, "body failed"))
+                Err::<(), _>(OperationError::new(ErrorKind::Transient, "body failed"))
             })
         })
         .await
@@ -196,7 +197,10 @@ async fn a_refused_commit_is_unsent_and_recycles() {
     let resource = pooled(&manager);
     let row = facade::<StrictPooled>(&manager);
     resource.probe.close_next_with(SessionClosed::RolledBack {
-        refused: Some(OpError::new(ErrorKind::Permanent, "constraint violated")),
+        refused: Some(OperationError::new(
+            ErrorKind::Permanent,
+            "constraint violated",
+        )),
     });
 
     let error = add(&row, write(), 1).await.expect_err("refused");
@@ -215,7 +219,7 @@ async fn an_unknown_close_is_maybe_sent_and_destroys_the_instance() {
     let mut events = manager.subscribe_events();
     resource
         .probe
-        .close_next_with(SessionClosed::Unknown(OpError::new(
+        .close_next_with(SessionClosed::Unknown(OperationError::new(
             ErrorKind::Transient,
             "connection lost during commit",
         )));
@@ -362,7 +366,7 @@ async fn a_session_bound_session_reuses_an_instance_built_on_older_credentials()
     let resource = register(&manager, StrictPooledSession::new(), None);
     bind(&resource.db, credential_id(), 1, 1);
     let row = facade::<StrictPooledSession>(&manager);
-    let noop = |row: &ManagedRow<StrictPooledSession>| {
+    let noop = |row: &ResourceHandle<StrictPooledSession>| {
         row.session(write(), |_tx, _cx| Box::pin(async { Ok(()) }))
     };
     noop(&row).await.expect("builds at material 1");
@@ -406,7 +410,10 @@ async fn closing_is_cooperative_mid_session() {
                 tx.pending = 3;
                 entered.notify_one();
                 cx.closing().closed().await;
-                Err::<(), _>(OpError::new(ErrorKind::Cancelled, "row closing; stopped"))
+                Err::<(), _>(OperationError::new(
+                    ErrorKind::Cancelled,
+                    "row closing; stopped",
+                ))
             })
         }
     }));
@@ -538,7 +545,7 @@ async fn sessions_are_counted_by_outcome_and_checkouts_by_creation() {
     add(&row, write(), 0).await.expect_err("rolled back"); // idle
     resource
         .probe
-        .close_next_with(SessionClosed::Unknown(OpError::new(
+        .close_next_with(SessionClosed::Unknown(OperationError::new(
             ErrorKind::Transient,
             "lost",
         )));
@@ -602,7 +609,7 @@ async fn a_session_queued_behind_the_gate_is_cancelled_unsent_by_its_parent() {
     let token = tokio_util::sync::CancellationToken::new();
     let ctx = crate::ResourceContext::minimal(nebula_core::Scope::default(), token.clone());
     let linked = manager
-        .managed_row_for_identity::<StrictPooled>(&ctx, &tenant())
+        .handle_for_identity::<StrictPooled>(&ctx, &tenant())
         .expect("row facade");
     let queued = tokio::spawn(add(&linked, write(), 1));
     tokio::task::yield_now().await;

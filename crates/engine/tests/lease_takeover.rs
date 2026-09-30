@@ -187,9 +187,7 @@ macro_rules! placeholder_action_impl {
 
             fn metadata() -> ActionMetadataDraft {
                 ActionMetadataDraft::new($key, nebula_action::metadata_name!($name), $desc)
-                    .with_effect_contract(
-                        nebula_action::effect::ActionEffectContract::NoExternalEffects,
-                    )
+                    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -261,7 +259,7 @@ impl StatelessAction for ParkHandler {
 fn meta(key: ActionKey) -> ActionMetadataDraft {
     let name = key.clone().into();
     ActionMetadataDraft::new(key, name, "lease-takeover test handler")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> WorkflowDefinition {

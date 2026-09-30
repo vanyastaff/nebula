@@ -60,7 +60,7 @@ impl Action for ResourceConsumerHandler {
             nebula_action::metadata_name!("ResourceConsumer"),
             "static",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -101,7 +101,7 @@ impl Action for ResourceProbeHandler {
             nebula_action::metadata_name!("ResourceProbe"),
             "static",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -160,7 +160,7 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
 fn meta(key: ActionKey) -> ActionMetadataDraft {
     let name = key.clone().into();
     ActionMetadataDraft::new(key, name, "resource integration test")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +371,7 @@ impl Action for IntegrationAcquireHandler {
             nebula_action::metadata_name!("IntegrationAcquire"),
             "static",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -1301,10 +1301,10 @@ mod shared_resource {
 }
 
 // ---------------------------------------------------------------------------
-// Managed rows: derived actions reach ManagedRow<R> fields through the engine
+// Resource handles: derived actions reach ResourceHandle<R> fields through the engine
 // ---------------------------------------------------------------------------
 
-mod managed_row {
+mod resource_handle {
     use std::{
         num::NonZeroU32,
         sync::{Mutex, atomic::AtomicU32},
@@ -1317,8 +1317,8 @@ mod managed_row {
     use nebula_resource::{
         ErrorKind, PoolConfig, PoolProvider, Pooled,
         call::{
-            Cost, Effect, ManagedRow, OpCx, OpError, Operation, SentState, SessionClosed,
-            SessionEnd, SessionProvider, SessionSpec, UNIT_DEADLINE_CAP,
+            Cost, Effect, OPERATION_DEADLINE_CAP, Operation, OperationCx, OperationError,
+            ResourceHandle, SentState, SessionClosed, SessionEnd, SessionProvider, SessionSpec,
         },
         rate_limit::{Rate, RowLimit},
     };
@@ -1348,13 +1348,13 @@ mod managed_row {
         type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
-            resource_key!("test.managed_row.svc")
+            resource_key!("test.resource_handle.svc")
         }
 
         fn metadata() -> ResourceMetadataDraft {
             ResourceMetadataDraft::new(
                 Self::key(),
-                nebula_resource::metadata_name!("ManagedRowSvc"),
+                nebula_resource::metadata_name!("ResourceHandleSvc"),
                 "",
             )
         }
@@ -1392,7 +1392,7 @@ mod managed_row {
         type Output = u64;
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<u64, OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<u64, OperationError> {
             let attempt = cx.attempt(self.0).await?;
             let calls = attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1;
             attempt.settle(SentState::Sent);
@@ -1426,13 +1426,13 @@ mod managed_row {
         type Topology = Pooled<Self>;
 
         fn key() -> ResourceKey {
-            resource_key!("test.managed_row.ledger")
+            resource_key!("test.resource_handle.ledger")
         }
 
         fn metadata() -> ResourceMetadataDraft {
             ResourceMetadataDraft::new(
                 Self::key(),
-                nebula_resource::metadata_name!("ManagedRowLedger"),
+                nebula_resource::metadata_name!("ResourceHandleLedger"),
                 "",
             )
         }
@@ -1449,7 +1449,11 @@ mod managed_row {
     impl SessionProvider for Ledger {
         type Session<'c> = Tx<'c>;
 
-        async fn open<'c>(&'c self, conn: &'c mut Conn, (): &'c ()) -> Result<Tx<'c>, OpError> {
+        async fn open<'c>(
+            &'c self,
+            conn: &'c mut Conn,
+            (): &'c (),
+        ) -> Result<Tx<'c>, OperationError> {
             Ok(Tx {
                 conn,
                 pending: Vec::new(),
@@ -1470,7 +1474,7 @@ mod managed_row {
     // ── engine plumbing ──────────────────────────────────────────────────
 
     /// A derived stateless action holding one required
-    /// `ManagedRow<$provider>` field and explicitly declaring that its body
+    /// `ResourceHandle<$provider>` field and explicitly declaring that its body
     /// performs no external business effects. The engine consequently serves
     /// a row facade that admits `Effect::Read` only.
     macro_rules! row_action {
@@ -1479,21 +1483,21 @@ mod managed_row {
             #[action(
                                                     key = $key,
                                                     name = $key,
-                                                    description = "managed row integration action",
+                                                    description = "resource handle integration action",
                                                     input = serde_json::Value,
                                                     output = serde_json::Value,
-                                                    no_external_effects
+                                                    read_only
                                                 )]
             struct $ty {
                 #[resource]
-                $field: ManagedRow<$provider>,
+                $field: ResourceHandle<$provider>,
             }
         };
     }
 
     #[derive(nebula_action::Action)]
     #[action(
-        key = "test.managed_row.undeclared",
+        key = "test.resource_handle.undeclared",
         name = "Undeclared managed row",
         description = "safe-default integration action",
         input = serde_json::Value,
@@ -1501,7 +1505,7 @@ mod managed_row {
     )]
     struct UndeclaredRow {
         #[resource]
-        svc: ManagedRow<Svc>,
+        svc: ResourceHandle<Svc>,
     }
 
     impl StatelessAction for UndeclaredRow {
@@ -1575,7 +1579,7 @@ mod managed_row {
 
         let result = run(
             &engine,
-            node_of("test.managed_row.undeclared", "svc", &Svc::key()),
+            node_of("test.resource_handle.undeclared", "svc", &Svc::key()),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
@@ -1584,7 +1588,7 @@ mod managed_row {
         assert_eq!(calls.count(), 0, "the action was never instantiated");
     }
 
-    row_action!(ReadSvc, "test.managed_row.read", svc: Svc);
+    row_action!(ReadSvc, "test.resource_handle.read", svc: Svc);
 
     impl StatelessAction for ReadSvc {
         async fn execute(
@@ -1598,7 +1602,7 @@ mod managed_row {
     }
 
     #[tokio::test]
-    async fn an_action_runs_a_unit_on_its_managed_row_field() {
+    async fn an_action_runs_a_unit_on_its_resource_handle_field() {
         let manager = Arc::new(Manager::new());
         let calls = register_svc(&manager, None);
         let engine = engine(manager, |registry| {
@@ -1609,7 +1613,7 @@ mod managed_row {
 
         let result = run(
             &engine,
-            NodeDefinition::new(node_key!("row"), "Row", "core", "test.managed_row.read")
+            NodeDefinition::new(node_key!("row"), "Row", "core", "test.resource_handle.read")
                 .expect("valid projected node"),
             serde_json::json!(null),
             ExecutionBudget::default(),
@@ -1622,7 +1626,7 @@ mod managed_row {
 
     // ── (b) a session commits or rolls back ──────────────────────────────
 
-    row_action!(Book, "test.managed_row.book", ledger: Ledger);
+    row_action!(Book, "test.resource_handle.book", ledger: Ledger);
 
     impl StatelessAction for Book {
         async fn execute(
@@ -1639,7 +1643,7 @@ mod managed_row {
                         SESSION_BODIES.fetch_add(1, Ordering::SeqCst);
                         tx.pending.push(entry);
                         if fail {
-                            return Err(OpError::new(ErrorKind::Transient, "body failed"));
+                            return Err(OperationError::new(ErrorKind::Transient, "body failed"));
                         }
                         Ok(())
                     })
@@ -1679,7 +1683,7 @@ mod managed_row {
 
         let result = run(
             &engine,
-            node_of("test.managed_row.book", "ledger", &Ledger::key()),
+            node_of("test.resource_handle.book", "ledger", &Ledger::key()),
             serde_json::json!({ "entry": "a", "fail": false }),
             ExecutionBudget::default(),
         )
@@ -1708,7 +1712,7 @@ mod managed_row {
         type Output = u64;
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<u64, OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<u64, OperationError> {
             CANCEL_WAITING.notify_one();
             let refused = match cx.attempt(Cost::ONE).await {
                 Ok(attempt) => {
@@ -1725,7 +1729,7 @@ mod managed_row {
         }
     }
 
-    row_action!(Twice, "test.managed_row.twice", svc: Svc);
+    row_action!(Twice, "test.resource_handle.twice", svc: Svc);
 
     impl StatelessAction for Twice {
         async fn execute(
@@ -1758,7 +1762,7 @@ mod managed_row {
             async move {
                 run(
                     &engine,
-                    node_of("test.managed_row.twice", "svc", &Svc::key()),
+                    node_of("test.resource_handle.twice", "svc", &Svc::key()),
                     serde_json::json!(null),
                     ExecutionBudget::default(),
                 )
@@ -1790,7 +1794,7 @@ mod managed_row {
 
     // ── (d) the execution budget bounds the unit deadline ────────────────
 
-    row_action!(UnitDeadline, "test.managed_row.deadline", svc: Svc);
+    row_action!(UnitDeadline, "test.resource_handle.deadline", svc: Svc);
 
     /// Yields the seconds left until the unit's deadline.
     struct Remaining;
@@ -1799,7 +1803,7 @@ mod managed_row {
         type Output = f64;
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<f64, OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<f64, OperationError> {
             Ok(cx
                 .deadline()
                 .saturating_duration_since(Instant::now())
@@ -1829,7 +1833,7 @@ mod managed_row {
                 .register_stateless_factory::<UnitDeadline>()
                 .expect("register");
         });
-        let node = || node_of("test.managed_row.deadline", "svc", &Svc::key());
+        let node = || node_of("test.resource_handle.deadline", "svc", &Svc::key());
         let remaining = |result: &nebula_engine::ExecutionResult| {
             output(result)["remaining"]
                 .as_f64()
@@ -1854,7 +1858,7 @@ mod managed_row {
         )
         .await;
         let left = remaining(&unbudgeted);
-        let cap = UNIT_DEADLINE_CAP.as_secs_f64();
+        let cap = OPERATION_DEADLINE_CAP.as_secs_f64();
         assert!(left <= cap && left > cap - 10.0, "the unit cap: {left}");
     }
 
@@ -1870,8 +1874,8 @@ mod managed_row {
         type Output = ();
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, _cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
-            Err(OpError::new(
+        async fn run(self, _cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
+            Err(OperationError::new(
                 ErrorKind::Exhausted {
                     retry_after: Some(Duration::from_millis(300)),
                 },
@@ -1880,7 +1884,7 @@ mod managed_row {
         }
     }
 
-    row_action!(Hinted, "test.managed_row.hinted", svc: Svc);
+    row_action!(Hinted, "test.resource_handle.hinted", svc: Svc);
 
     impl StatelessAction for Hinted {
         async fn execute(
@@ -1911,7 +1915,7 @@ mod managed_row {
                 .register_stateless_factory::<Hinted>()
                 .expect("register");
         });
-        let mut node = node_of("test.managed_row.hinted", "svc", &Svc::key());
+        let mut node = node_of("test.resource_handle.hinted", "svc", &Svc::key());
         node.retry_policy = Some(nebula_workflow::RetryConfig::exponential(3, 1, 10_000));
 
         let result = run(
@@ -1940,7 +1944,7 @@ mod managed_row {
         type Output = ();
         const EFFECT: Effect = Effect::Idempotent;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
             let attempt = cx.attempt(Cost::ONE).await?;
             attempt.instance().0.fetch_add(1, Ordering::SeqCst);
             attempt.settle(SentState::Sent);
@@ -1948,7 +1952,7 @@ mod managed_row {
         }
     }
 
-    row_action!(IdempotentWrite, "test.managed_row.idempotent", svc: Svc);
+    row_action!(IdempotentWrite, "test.resource_handle.idempotent", svc: Svc);
 
     impl StatelessAction for IdempotentWrite {
         async fn execute(
@@ -1977,7 +1981,7 @@ mod managed_row {
 
         let result = run(
             &engine,
-            node_of("test.managed_row.idempotent", "svc", &Svc::key()),
+            node_of("test.resource_handle.idempotent", "svc", &Svc::key()),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
@@ -1998,15 +2002,18 @@ mod managed_row {
         type Output = ();
         const EFFECT: Effect = Effect::Write;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
             let attempt = cx.attempt(Cost::ONE).await?;
             attempt.instance().0.fetch_add(1, Ordering::SeqCst);
             attempt.settle(SentState::MaybeSent);
-            Err(OpError::new(ErrorKind::Transient, "connection reset"))
+            Err(OperationError::new(
+                ErrorKind::Transient,
+                "connection reset",
+            ))
         }
     }
 
-    row_action!(UnknownWrite, "test.managed_row.unknown", svc: Svc);
+    row_action!(UnknownWrite, "test.resource_handle.unknown", svc: Svc);
 
     impl StatelessAction for UnknownWrite {
         async fn execute(
@@ -2030,7 +2037,7 @@ mod managed_row {
                 .register_stateless_factory::<UnknownWrite>()
                 .expect("register");
         });
-        let mut node = node_of("test.managed_row.unknown", "svc", &Svc::key());
+        let mut node = node_of("test.resource_handle.unknown", "svc", &Svc::key());
         node.retry_policy = Some(nebula_workflow::RetryConfig::exponential(3, 1, 10));
 
         let result = run(

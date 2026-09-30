@@ -128,7 +128,7 @@ configuration, and process lifecycle.
   binds canonical requests to the admitted effect contract, tenant, node and operation
   slot. Only acknowledged ledger grants reach the adapter; outcome acknowledgement
   recovery uses database reads and exact evidence recommits. Generic `ActionRuntime`
-  accepts only explicitly declared `NoExternalEffects` factories.
+  accepts only explicitly declared `ReadOnly` factories.
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.

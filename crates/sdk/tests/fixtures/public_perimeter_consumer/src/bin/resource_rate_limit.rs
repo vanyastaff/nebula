@@ -5,7 +5,7 @@
 use std::{num::NonZeroU32, time::Duration};
 
 use nebula_sdk::integration::resource::{
-    Cost, Error, ErrorKind, Managed, OpCx, OpError, Operation, Provider, Rate, Resident,
+    Cost, Error, ErrorKind, Lease, Operation, OperationCx, OperationError, Provider, Rate, Resident,
     ResidentProvider, ResiliencePolicy, ResourceContext, ResourceKey, SentState, TeardownCx,
     Verdict, no_credential_slots, resource_key, retry_after_from_header,
 };
@@ -87,7 +87,7 @@ struct SendMessage {
 impl Operation<ChatProvider> for SendMessage {
     type Output = u64;
 
-    async fn run(self, cx: &mut OpCx<'_, ChatProvider>) -> Result<u64, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, ChatProvider>) -> Result<u64, OperationError> {
         let attempt = cx.attempt(Cost::keyed("chat_id", self.chat_id)).await?;
         let outcome = attempt.instance().send(self.chat_id, &self.text).await;
         match outcome {
@@ -102,7 +102,7 @@ impl Operation<ChatProvider> for SendMessage {
                 attempt.report(refusal.verdict()).await;
                 attempt.settle(SentState::Sent);
                 let ChatError::RetryAfter(after) = refusal;
-                Err(OpError::new(
+                Err(OperationError::new(
                     ErrorKind::Exhausted {
                         retry_after: Some(after),
                     },
@@ -114,7 +114,7 @@ impl Operation<ChatProvider> for SendMessage {
 }
 
 /// What action code does with a managed lease of the chat resource.
-async fn send(chat: &Managed<ChatProvider>, chat_id: i64, text: &str) -> Result<u64, Error> {
+async fn send(chat: &Lease<ChatProvider>, chat_id: i64, text: &str) -> Result<u64, Error> {
     Ok(chat
         .submit(SendMessage {
             chat_id,
@@ -137,7 +137,7 @@ fn main() {
     assert_eq!(retry_after_from_header("30"), Some(Duration::from_secs(30)));
     assert_eq!(Cost::keyed("chat_id", 42).permits(), 1);
 
-    let throttled = OpError::new(
+    let throttled = OperationError::new(
         ErrorKind::Exhausted {
             retry_after: Some(Duration::from_secs(3)),
         },

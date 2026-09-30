@@ -223,7 +223,7 @@ impl Action for EchoHandler {
             nebula_action::metadata_name!("Echo"),
             "echo",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -270,7 +270,7 @@ async fn make_engine_with_plugins(
                 nebula_action::metadata_name!("Echo"),
                 "echo",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             EchoHandler {
                 count: count.clone(),
             },

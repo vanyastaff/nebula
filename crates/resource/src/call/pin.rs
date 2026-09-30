@@ -72,15 +72,23 @@ use crate::resource::HasCredentialSlots;
 /// assert_eq!(pinned.as_deref().map(String::as_str), Some("v1"));
 /// ```
 ///
+/// Hidden from the rendered docs: the derive and
+/// [`no_credential_slots!`](crate::no_credential_slots) emit it, a generic
+/// operation only names it as a bound, and an attempt reaches the snapshot
+/// through [`Attempt::credentials`](crate::call::Attempt::credentials).
+///
 /// [`Provider`]: crate::Provider
+#[doc(hidden)]
 pub trait PinSlots: HasCredentialSlots {
     /// The snapshot of every slot one unit runs on. `()` for a resource
     /// without credential slots.
+    #[doc(hidden)]
     type Pinned: Send + Sync + 'static;
 
     /// Loads every slot's current value once. Called by the facade at a
     /// unit's first grant (again only if a rotation raced it), never per
     /// attempt.
+    #[doc(hidden)]
     fn pin_slots(&self) -> Self::Pinned;
 }
 

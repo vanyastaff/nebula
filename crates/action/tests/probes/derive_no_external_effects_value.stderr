@@ -1,5 +1,0 @@
-error: `no_external_effects` is a flag; write it without `= ...`
-  --> tests/probes/derive_no_external_effects_value.rs:10:5
-   |
-10 |     no_external_effects = true
-   |     ^^^^^^^^^^^^^^^^^^^

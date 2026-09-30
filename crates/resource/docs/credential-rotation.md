@@ -374,8 +374,8 @@ manager.
 
 ### Strict per-attempt admission (managed call facade)
 
-A lease turned into a managed call facade (`ResourceGuard::into_managed`)
-makes each provider call an attempt of a unit (`OpCx::attempt`). On a strict
+A lease turned into a managed call facade (`ResourceGuard::into_lease`)
+makes each provider call an attempt of a unit (`OperationCx::attempt`). On a strict
 manager every attempt on a credential-bound row is a new credentialed unit
 of work and reads its credentials the same way, with the same two functions:
 
@@ -405,8 +405,8 @@ later attempt whose pin a rotation superseded is refused `Rebinding` (retry
 after 1 s) rather than switching material mid-unit; the unit's settled
 outcome decides the retry — `Read` / `Idempotent` units are retryable, a
 `Write` whose earlier attempt was sent ends `OutcomeUnknown`. The next unit
-pins the new material. A pooled `Managed` lease stays checked out while its
-units wait for quota and read; a `ManagedRow` checks out per attempt (below).
+pins the new material. A pooled `Lease` stays checked out while its
+units wait for quota and read; a `ResourceHandle` checks out per attempt (below).
 Interim managers and slot-less rows read nothing and register without the
 lock.
 
@@ -420,7 +420,7 @@ engine that does not yet act on the refusals' backoff hints.
 
 ### Sessions and connection-bound pools
 
-A `ManagedRow` (`Manager::managed_row`) holds no lease: each attempt books
+A `ResourceHandle` (`Manager::handle`) holds no lease: each attempt books
 its quota and waits for the row gate with nothing checked out, then reads
 (R1) outside every lock, pins the unit's slots on its first attempt, and
 checks out through the acquire pipeline's own admission (lock #1: the read

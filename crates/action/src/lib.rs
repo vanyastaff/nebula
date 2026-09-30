@@ -135,8 +135,8 @@ pub use factory::{
 };
 pub use from_workflow_node::FromWorkflowNode;
 pub use handle::{
-    ActionHandle, AgentHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle,
-    StreamHandle, TriggerHandle,
+    ActionHandle, AgentHandle, ControlHandle, ResourceActionHandle, StatefulHandle,
+    StatelessHandle, StreamHandle, TriggerHandle,
 };
 pub use idempotency::IdempotencyKey;
 pub use input::{ActionInput, PreparedActionInput};

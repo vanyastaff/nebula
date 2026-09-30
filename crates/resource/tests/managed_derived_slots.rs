@@ -15,7 +15,7 @@ use nebula_credential::{
 use nebula_resource::{
     AcquireOptions, CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident,
     ResidentConfig, Resource, ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
-    call::{Cost, Effect, OpCx, OpError, Operation, SentState},
+    call::{Cost, Effect, Operation, OperationCx, OperationError, SentState},
     resource::{Provider, ResourceMetadataDraft},
     topology::ResidentProvider,
 };
@@ -109,11 +109,11 @@ impl Operation<Mailer> for ReadSlots {
     type Output = (bool, bool);
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, Mailer>) -> Result<Self::Output, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, Mailer>) -> Result<Self::Output, OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
-        let smtp: Option<&CredentialGuard<ApiToken>> = attempt.slots().smtp();
+        let smtp: Option<&CredentialGuard<ApiToken>> = attempt.credentials().smtp();
         // The alias slot pins the credential's projected scheme.
-        let api: Option<&CredentialGuard<SecretToken>> = attempt.slots().api();
+        let api: Option<&CredentialGuard<SecretToken>> = attempt.credentials().api();
         let pinned = (smtp.is_some(), api.is_some());
         attempt.settle(SentState::Sent);
         Ok(pinned)
@@ -181,7 +181,7 @@ async fn a_unit_reads_the_derived_pin_through_its_attempt() {
         .acquire::<Mailer>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire")
-        .into_managed();
+        .into_lease();
     assert_eq!(
         managed.submit(ReadSlots).await.expect("read"),
         (true, false)

@@ -1,20 +1,20 @@
 //! Managed call facade: provider calls made through a lease as admitted,
 //! budgeted, settled units of work.
 //!
-//! A lease ([`ResourceGuard`](crate::ResourceGuard)) becomes a [`Managed`]
-//! facade with [`into_managed`](crate::ResourceGuard::into_managed). Action
+//! A lease ([`ResourceGuard`](crate::ResourceGuard)) becomes a [`Lease`]
+//! facade with [`into_lease`](crate::ResourceGuard::into_lease). Action
 //! code then describes each provider call as an [`Operation`] and
-//! [`submit`](Managed::submit)s it; the facade has no `Deref` to the
+//! [`submit`](Lease::submit)s it; the facade has no `Deref` to the
 //! instance, so a call cannot bypass it by accident.
 //!
 //! # Unit and attempt
 //!
-//! - A **unit** ([`Unit`]) is one submitted operation: owned intent, a
+//! - A **unit** ([`Submission`]) is one submitted operation: owned intent, a
 //!   runtime-owned task, a deadline, an attempt budget, the credential slots
 //!   pinned at its first grant, and exactly one settled outcome (Design
 //!   CONTRACT.md:36-46, DX-API.md:106-114).
 //! - An **attempt** ([`Attempt`]) is one admitted provider call.
-//!   [`OpCx::attempt`] is the unit's single linearization point: budget,
+//!   [`OperationCx::attempt`] is the unit's single linearization point: budget,
 //!   admission against the lease, quota booking at the attempt's [`Cost`],
 //!   the strict credential read, registration and grant (CONTRACT.md:64,
 //!   :88-92). There is no retry loop
@@ -37,8 +37,8 @@
 //! - otherwise the worst attempt, `MaybeSent > Sent > NotSent`;
 //! - the deadline or a panic after a grant → `MaybeSent`.
 //!
-//! A failed unit's [`OpError`] carries that state and the operation's
-//! [`Effect`], and [`OpError::is_retryable`] decides from them: a unit that
+//! A failed unit's [`OperationError`] carries that state and the operation's
+//! [`Effect`], and [`OperationError::is_retryable`] decides from them: a unit that
 //! may have been applied is retried only when its effect is replay safe.
 //! Converted into a resource [`Error`](crate::Error), a retry-unsafe unit
 //! becomes [`ErrorKind::OutcomeUnknown`](crate::ErrorKind::OutcomeUnknown)
@@ -58,11 +58,11 @@
 //!
 //! Author errors bridge in through the usual route: a
 //! `#[derive(ClassifyError)]` enum converts into [`Error`](crate::Error),
-//! and `?` converts that into [`OpError`], keeping only its kind.
+//! and `?` converts that into [`OperationError`], keeping only its kind.
 //!
 //! # Closing
 //!
-//! [`OpCx::closing`] and [`Managed::closing`] are the lease generation's
+//! [`OperationCx::closing`] and [`Lease::closing`] are the lease generation's
 //! [`LeaseClosing`](crate::LeaseClosing). Once it fires, new attempts are
 //! refused; an attempt already granted is not aborted — an operation that
 //! wants to stop early selects on [`closed`](crate::LeaseClosing::closed)
@@ -87,7 +87,7 @@
 //! that attempt's read, so the first attempt runs on the binding its read
 //! validated — bracketed by the slots' generations and retaken when a
 //! rotation raced it. Every attempt of the unit sees that snapshot through
-//! [`Attempt::slots`], the only way the facade discloses credential material
+//! [`Attempt::credentials`], the only way the facade discloses credential material
 //! (CONTRACT.md:73, DX-API.md:136). A rotation mid-unit reaches the next
 //! unit: on a strict manager a later attempt whose pin it superseded is
 //! refused `Rebinding`, unsent, and the unit's settled outcome decides
@@ -96,23 +96,23 @@
 //!
 //! # Rate limit
 //!
-//! [`into_managed`](crate::ResourceGuard::into_managed) latches the row's
+//! [`into_lease`](crate::ResourceGuard::into_lease) latches the row's
 //! profile to [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt):
 //! each granted attempt books its [`Cost`], and acquires only honour pauses
 //! (QUOTA-DX.md:32, :34). A quota wait is raced against the lease's
-//! generation and against [`Unit::cancel`], so a closed lease never sends
+//! generation and against [`Submission::cancel`], so a closed lease never sends
 //! (CONTRACT.md:88-92).
 //!
 //! # Per-unit checkout and sessions
 //!
-//! A [`ManagedRow`] ([`Manager::managed_row`](crate::Manager::managed_row))
+//! A [`ResourceHandle`] ([`Manager::handle`](crate::Manager::handle))
 //! runs the same [`Operation`]s without a lease: every attempt books its
 //! quota and waits for the row gate with nothing held, then checks out an
 //! instance of its own through the acquire pipeline's admission and
 //! releases it when the attempt ends (see the `row` module docs for the
 //! order, including the second read after a create and the second lock of a
 //! strict row). On a pooled [`SessionProvider`],
-//! [`ManagedRow::session`] runs one session per unit — one attempt, never
+//! [`ResourceHandle::session`] runs one session per unit — one attempt, never
 //! retried, the cost booked once — and settles it from what
 //! [`SessionProvider::close`] reported: `Committed` is `Sent`, `RolledBack`
 //! `NotSent`, `Unknown` `MaybeSent` with the instance destroyed; an
@@ -129,24 +129,24 @@
 //! there and nowhere later. After the first grant the cancel is ignored:
 //! dispatched work runs on to the unit's deadline (DX-API.md:114). The
 //! caller's deadline, when it has one (an action's: the execution budget),
-//! bounds every unit's deadline below [`UNIT_DEADLINE_CAP`]. Actions reach a
-//! row through a `#[resource]` field of type `ManagedRow<R>`, served by the
+//! bounds every unit's deadline below [`OPERATION_DEADLINE_CAP`]. Actions reach a
+//! row through a `#[resource]` field of type `ResourceHandle<R>`, served by the
 //! engine's resource accessor through the type-erased
-//! [`Manager::managed_row_any`](crate::Manager::managed_row_any).
+//! [`Manager::handle_any`](crate::Manager::handle_any).
 //!
 //! # Execution-owned effects
 //!
 //! An action row built without effect-owner authority
-//! ([`Manager::managed_row_any_read_only`](crate::Manager::managed_row_any_read_only))
+//! ([`Manager::handle_any_read_only`](crate::Manager::handle_any_read_only))
 //! runs reads only. A row built with it
-//! ([`Manager::managed_row_any_owned`](crate::Manager::managed_row_any_owned))
-//! carries the execution's [`UnitEffectOwner`](owner::UnitEffectOwner), and
-//! its effects go through [`ManagedRow::submit_effect`] (an
-//! [`EffectOperation`]) or [`ManagedRow::session_effect`]; a plain
-//! [`submit`](ManagedRow::submit) or [`session`](ManagedRow::session) of an
+//! ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled))
+//! carries the execution's [`EffectJournal`](journal::EffectJournal), and
+//! its effects go through [`ResourceHandle::submit_effect`] (an
+//! [`EffectOperation`]) or [`ResourceHandle::session_effect`]; a plain
+//! [`submit`](ResourceHandle::submit) or [`session`](ResourceHandle::session) of an
 //! `Idempotent` or `Write` unit is refused `Permanent` / `NotSent`. The
-//! resource runtime never writes durable effect state; it drives the owner
-//! seam ([`owner`]) at fixed points of the unit:
+//! resource runtime never writes durable effect state; it drives the
+//! journal seam ([`journal`]) at fixed points of the unit:
 //!
 //! 1. **Submit** — the declaration is checked ([`EffectContract`], an
 //!    [`EffectRecovery`] that agrees with the [`Effect`]; a read is
@@ -167,16 +167,16 @@
 //!    grant is explained as not crossed.
 //! 4. **Settle** — the unit's last call is recorded from its result: a
 //!    success with its output, a definitive rejection with its kind
-//!    ([`ErrorKindCode`](owner::ErrorKindCode)), otherwise how the call
+//!    ([`ErrorKindCode`](journal::ErrorKindCode)), otherwise how the call
 //!    crossed (`NotSent` or a throttle: not crossed; `MaybeSent` or a
 //!    retryable failure after `Sent`: ambiguous). A record that fails after
 //!    a possible crossing fails the unit `OutcomeUnknown`.
 //!
-//! [`OpCx::operation_key`] and [`SessionCx::operation_key`] are the provider
-//! idempotency key ([`OperationKey`]) the owner recorded before the first
+//! [`OperationCx::idempotency_key`] and [`SessionCx::idempotency_key`] are the provider
+//! idempotency key ([`IdempotencyKey`]) the owner recorded before the first
 //! attempt: the same for every attempt, retry and resume. A unit cancelled
 //! before its first grant leaves only its prepare behind, which a resumed
-//! unit runs again. The lease facade [`Managed`] has no owner. Interim: the
+//! unit runs again. The lease facade [`Lease`] has no owner. Interim: the
 //! engine does not hand out owned rows yet; its owner over the operation
 //! ledger comes with the engine wiring.
 //!
@@ -186,8 +186,8 @@
 //! revisits it before the surface is frozen (QUOTA-DX.md:57: not frozen,
 //! hence not in any prelude):
 //!
-//! - A unit's deadline is at most [`UNIT_DEADLINE_CAP`] (5 minutes, the
-//!   rate limit's `DEFAULT_MAX_PENALTY`); [`Unit::with_deadline`] can only
+//! - A unit's deadline is at most [`OPERATION_DEADLINE_CAP`] (5 minutes, the
+//!   rate limit's `DEFAULT_MAX_PENALTY`); [`Submission::with_deadline`] can only
 //!   shorten it.
 //! - At most one unit runs at a time on a lease whose topology checks out
 //!   exclusively (`Pooled`, `Bounded`), and 64 on a shared instance
@@ -195,11 +195,11 @@
 //!   deadline, then fail with `Backpressure`.
 //! - A cost booked for an attempt that is cancelled before it reaches the
 //!   provider is not refunded (QUOTA-DX.md:32 baseline).
-//! - A pooled [`Managed`] lease stays checked out while its units wait for
-//!   quota and while their strict credential reads run; a [`ManagedRow`]
+//! - A pooled [`Lease`] stays checked out while its units wait for
+//!   quota and while their strict credential reads run; a [`ResourceHandle`]
 //!   checks out per attempt instead, after those waits (QUOTA-DX.md:41,
 //!   :43).
-//! - The row gate of a [`ManagedRow`] is sized to the topology's capacity
+//! - The row gate of a [`ResourceHandle`] is sized to the topology's capacity
 //!   at its first use and ignores a reload that resizes the pool; a pool
 //!   saturated by plain leases refuses a row attempt `Backpressure` (the
 //!   booked cost is forfeited).
@@ -224,13 +224,13 @@
 //!
 //! # Streaming
 //!
-//! A [`StreamOperation`] submitted with [`Managed::submit_streaming`] or
-//! [`ManagedRow::submit_streaming`] runs as one ordinary unit that also
+//! A [`StreamOperation`] submitted with [`Lease::submit_streaming`] or
+//! [`ResourceHandle::submit_streaming`] runs as one ordinary unit that also
 //! sends items through a bounded [`StreamSink`]; the caller pulls them from
 //! [`Streaming`], then the unit's error, if any, once. A mid-stream failure
 //! is never an item, a dropped or cancelled consumer ends the operation at
 //! its next send, and the lease closing is honoured by selecting on
-//! [`OpCx::closing`] (CONTRACT.md:57). On a row, each attempt still checks
+//! [`OperationCx::closing`] (CONTRACT.md:57). On a row, each attempt still checks
 //! out per attempt after its quota and gate waits; items sent while an
 //! attempt is alive keep its checkout, and a consumer gone mid-stream
 //! releases it with its gate permit. [`StreamOperation`] documents the
@@ -246,14 +246,14 @@
 //! checkouts by whether they created their instance, and sessions by how
 //! they ended; a session unit's span names its operation `session`. A unit
 //! that ends with an unknown outcome publishes
-//! [`ResourceEvent::UnitOutcomeUnknown`](crate::ResourceEvent::UnitOutcomeUnknown).
+//! [`ResourceEvent::OperationOutcomeUnknown`](crate::ResourceEvent::OperationOutcomeUnknown).
 
 mod cost;
 mod effect;
 mod error;
+pub mod journal;
 mod managed;
 mod owned;
-pub mod owner;
 mod pin;
 mod row;
 mod session;
@@ -264,14 +264,14 @@ use std::{future::Future, num::NonZeroU32};
 
 pub use cost::{Cost, Effect, SentState};
 pub use effect::{
-    EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, OccurrenceLabel,
-    OperationKey, Recorded,
+    EffectContract, EffectOperation, EffectRecovery, IdempotencyKey, IdempotencyKeyPart,
+    OccurrenceLabel, Recorded,
 };
-pub use error::OpError;
+pub use error::OperationError;
 pub(crate) use managed::UnitScope;
-pub use managed::{Attempt, Managed, OpCx, UNIT_DEADLINE_CAP, Unit};
+pub use managed::{Attempt, Lease, OPERATION_DEADLINE_CAP, OperationCx, Submission};
 pub use pin::PinSlots;
-pub use row::ManagedRow;
+pub use row::ResourceHandle;
 pub use session::{
     SessionBinding, SessionClosed, SessionCx, SessionEnd, SessionFuture, SessionProvider,
     SessionSpec,
@@ -283,14 +283,14 @@ use crate::resource::Provider;
 /// One kind of provider call, described as data and run by the facade.
 ///
 /// The value is the call's owned intent (a message, a query); [`run`](Self::run)
-/// asks the [`OpCx`] for attempts and settles each. Declare the effect of
+/// asks the [`OperationCx`] for attempts and settles each. Declare the effect of
 /// repeating the call with [`EFFECT`](Self::EFFECT) and how many attempts
 /// one unit may take with [`max_attempts`](Self::max_attempts).
 ///
 /// ```
 /// use nebula_resource::{
 ///     PinSlots, Provider,
-///     call::{Cost, Effect, OpCx, OpError, Operation, SentState},
+///     call::{Cost, Effect, OperationCx, OperationError, Operation, SentState},
 /// };
 ///
 /// /// Reads a counter the instance exposes.
@@ -303,7 +303,7 @@ use crate::resource::Provider;
 ///     type Output = u64;
 ///     const EFFECT: Effect = Effect::Read;
 ///
-///     async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+///     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
 ///         let attempt = cx.attempt(Cost::ONE).await?;
 ///         let value = *attempt.instance();
 ///         attempt.settle(SentState::Sent);
@@ -325,11 +325,11 @@ pub trait Operation<R: Provider + PinSlots>: Send + 'static {
     }
 
     /// Runs the call: every provider request goes through
-    /// [`OpCx::attempt`].
+    /// [`OperationCx::attempt`].
     fn run(
         self,
-        cx: &mut OpCx<'_, R>,
-    ) -> impl Future<Output = Result<Self::Output, OpError>> + Send;
+        cx: &mut OperationCx<'_, R>,
+    ) -> impl Future<Output = Result<Self::Output, OperationError>> + Send;
 }
 
 #[cfg(test)]

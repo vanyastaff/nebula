@@ -235,25 +235,26 @@ Resource authoring types, traits, and derives are in the prelude and the explici
 | **Derives** | `Resource` and `ResourceConfig` are covered by the SDK-only derive compile contract. Manual `Provider` authoring, including a consuming `destroy` over a non-Clone instance using `TeardownCx` and `TeardownReason`, is separately compile-checked through the prelude plus the general-purpose `async-trait` crate. |
 
 **Managed call facade:** `nebula_sdk::integration::resource` (not the prelude —
-the facade is not frozen) re-exports `Managed`, `Operation`, `OpCx`, `Attempt`,
-`Unit`, `Cost`, `Effect`, `SentState`, `OpError` and `PinSlots`.
-`ResourceGuard::into_managed()` turns a lease into a `Managed` facade without
+the facade is not frozen) re-exports `Lease`, `Operation`, `OperationCx`,
+`Attempt`, `Submission`, `Cost`, `Effect`, `SentState`, `OperationError` and
+`PinSlots` (hidden from the rendered docs; the derive emits it).
+`ResourceGuard::into_lease()` turns a lease into a `Lease` facade without
 `Deref`; provider calls are `Operation`s whose attempts are admitted and
-booked per `Cost`, and a failed unit's `OpError` says whether a retry is safe.
-The SDK-only fixture compiles a logger authored against it
-(`resource_managed_logger`) and proves `Managed` does not deref
-(`managed_no_deref`); runtime behaviour is tested in the resource crate. See
+booked per `Cost`, and a failed unit's `OperationError` says whether a retry
+is safe. The SDK-only fixture compiles a logger authored against it
+(`resource_managed_logger`) and proves `Lease` does not deref
+(`lease_no_deref`); runtime behaviour is tested in the resource crate. See
 the resource README, "Managed call facade". Streaming units (`StreamOperation`,
 `StreamSink`, `Streaming`, `ConsumerGone`) run through the same facade with
-`Managed::submit_streaming`, or per-attempt checkout with
-`ManagedRow::submit_streaming`.
+`Lease::submit_streaming`, or per-attempt checkout with
+`ResourceHandle::submit_streaming`.
 
 **Credentialed resources:** `integration::resource` re-exports `CredentialSlot`
 and `CredentialGuard`, and `integration::credential` (and the prelude)
 `BearerTokenCredential`, so a `#[derive(Resource)]` struct with
 `#[credential(key = "token")] token: CredentialSlot<BearerTokenCredential>`
 compiles against the SDK alone (`resource_credentialed` fixture). A unit reads
-the slot only through its pinned snapshot, `attempt.slots().token()`.
+the slot only through its pinned snapshot, `attempt.credentials().token()`.
 
 **HTTP resource adapter (feature `resource-http`):**
 `nebula_sdk::integration::resource::http` (not the prelude) turns HTTP calls
@@ -274,19 +275,20 @@ it against a raw TCP server through a real `Manager`. Out of scope: following
 next-page URLs, query-parameter keys, mTLS, a generic `Http<C>` resource,
 streaming request bodies and a `401` / `403` credential signal.
 
-**Managed row and sessions:** the same persona re-exports `ManagedRow` — the
-facade without a lease, checking out an instance per attempt after its quota
-and row-gate waits — and the session vocabulary `SessionProvider`,
-`SessionSpec`, `SessionCx`, `SessionEnd`, `SessionClosed`, `SessionBinding`
-and `SessionFuture`. `ManagedRow::session` runs several native calls on one
-pooled connection as one unit, committed or rolled back by the provider.
-A `ManagedRow` is obtained from the engine-owned manager (reaching it from
-action code is a follow-up), so the SDK-only fixture compiles a session
+**Resource handle and sessions:** the same persona re-exports
+`ResourceHandle` — the facade without a lease, checking out an instance per
+attempt after its quota and row-gate waits — and the session vocabulary
+`SessionProvider`, `SessionSpec`, `SessionCx`, `SessionEnd`, `SessionClosed`,
+`SessionBinding` and `SessionFuture`. `ResourceHandle::session` runs several
+native calls on one pooled connection as one unit, committed or rolled back
+by the provider. A `ResourceHandle` is obtained from the engine-owned manager
+or, in an action, through a derived `#[resource]` field
+(`action_resource_handle`), so the SDK-only fixture compiles a session
 provider and the action-side call (`resource_session`), proves a
-`ManagedRow` does not deref (`managed_row_no_deref`) and that a body cannot
-keep its borrowed session (`session_escape`); the runtime is tested in the
-resource crate and on real PostgreSQL in the engine. See the resource
-README, "Managed row facade and sessions".
+`ResourceHandle` does not deref (`resource_handle_no_deref`) and that a body
+cannot keep its borrowed session (`session_escape`); the runtime is tested in
+the resource crate and on real PostgreSQL in the engine. See the resource
+README, "Resource handle and sessions".
 
 **Release migration:** `ResourceGuard::release()` now returns
 `Result<ReleaseOutcome, Error>` instead of `Result<(), Error>`. Match

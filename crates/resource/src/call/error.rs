@@ -11,7 +11,7 @@ use crate::{
     rate_limit::DEFAULT_MAX_PENALTY,
 };
 
-/// The error of a managed unit ([`Unit`](super::Unit)).
+/// The error of a managed unit ([`Submission`](super::Submission)).
 ///
 /// Carries an [`ErrorKind`], a static detail, and — once the runtime settled
 /// the unit — the unit's [`SentState`] and its operation's [`Effect`]. From
@@ -32,7 +32,7 @@ use crate::{
 /// | yes | `Sent` / `MaybeSent` | `Read` / `Idempotent` | yes | its kind |
 /// | yes | `Sent` / `MaybeSent` | `Write` | no | [`ErrorKind::OutcomeUnknown`] |
 #[derive(Debug, Clone)]
-pub struct OpError {
+pub struct OperationError {
     kind: ErrorKind,
     detail: &'static str,
     sent: SentState,
@@ -40,7 +40,7 @@ pub struct OpError {
     resource_key: Option<ResourceKey>,
 }
 
-impl OpError {
+impl OperationError {
     /// An error of `kind` with a static, secret-free `detail`. Its sent
     /// state and effect are set by the runtime when the unit settles.
     #[must_use]
@@ -138,7 +138,7 @@ impl OpError {
     }
 }
 
-impl From<Error> for OpError {
+impl From<Error> for OperationError {
     /// Keeps the kind and the resource key; drops the message and source,
     /// which may carry provider or request data.
     fn from(error: Error) -> Self {
@@ -152,12 +152,12 @@ impl From<Error> for OpError {
     }
 }
 
-impl From<OpError> for Error {
+impl From<OperationError> for Error {
     /// A retry-unsafe unit becomes [`ErrorKind::OutcomeUnknown`], so no
     /// caller retries an effect that may have been applied; any other keeps
     /// its kind, with an `Exhausted` hint capped as
-    /// [`OpError::retry_after`] caps it.
-    fn from(error: OpError) -> Self {
+    /// [`OperationError::retry_after`] caps it.
+    fn from(error: OperationError) -> Self {
         let converted = if error.is_outcome_unknown() {
             Error::outcome_unknown(format!(
                 "{} ({}; {} effect {}; outcome unknown)",
@@ -183,7 +183,7 @@ impl From<OpError> for Error {
     }
 }
 
-impl fmt::Display for OpError {
+impl fmt::Display for OperationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(key) = &self.resource_key {
             write!(formatter, "[{key}] ")?;
@@ -192,4 +192,4 @@ impl fmt::Display for OpError {
     }
 }
 
-impl std::error::Error for OpError {}
+impl std::error::Error for OperationError {}

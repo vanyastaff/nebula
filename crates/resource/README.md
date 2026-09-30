@@ -158,7 +158,7 @@ flight (so a queued caller never delays revoke or shutdown drains): it books
 one permit, or, once a lease of the row became a managed call facade, only
 honours pauses, because each provider attempt then books its own cost. Calls
 inside a lease are paced through the facade (see "Managed call facade"
-below): each provider call is one `OpCx::attempt(cost)`, and
+below): each provider call is one `OperationCx::attempt(cost)`, and
 `Attempt::report(verdict)` passes the provider's "slow down" on; every caller
 of the quota then pauses for its `retry_after` (`retry_after_from_header`
 reads seconds and HTTP dates), capped at the policy's `max_penalty`, or backs
@@ -193,14 +193,14 @@ row reports it as a `RateLimitProfile` (`as_str()` in parentheses):
 | `PausesOnly` (`pauses_only`) | no rate declared or set, no wrapped client | nothing | not paced; a provider pause holds acquires | supported |
 | `PerAcquire` (`per_acquire`) | a rate, no wrapped client | acquire | bounded interval: one permit per lease, however many calls it makes | supported |
 | `InterimPerClosure` (`interim_per_closure`) | `Provider::create` wrapped a client | `Limited::run*` closure | strict: each closure is one permit; acquires only honour pauses | **interim, deprecated** since 0.21.0 — replaced by the managed call facade |
-| `PerAttempt` (`per_attempt`) | a lease became a managed call facade (`ResourceGuard::into_managed`) | granted attempt, at its declared cost (`FREE` books nothing) | strict: each provider attempt books its cost; acquires only honour pauses | supported |
+| `PerAttempt` (`per_attempt`) | a lease became a managed call facade (`ResourceGuard::into_lease`) | granted attempt, at its declared cost (`FREE` books nothing) | strict: each provider attempt books its cost; acquires only honour pauses | supported |
 
 Only `InterimPerClosure` is interim (`RateLimitProfile::is_interim`). Its
 closure family — `ResourceLimiter::wrap`, `Limited` (`run`, `run_until`,
 `run_for`, `run_for_until`, `unlimited`) and `LimitedError` — is deprecated
 since 0.21.0 and removed before the API freeze (MIGRATION P10). Migrate each
 call to the managed call facade: keep the client as the provider's instance,
-turn the lease into a facade with `ResourceGuard::into_managed`, and describe
+turn the lease into a facade with `ResourceGuard::into_lease`, and describe
 the call as an `Operation`:
 
 | Closure family | Managed call facade |
@@ -208,14 +208,14 @@ the call as an `Operation`:
 | `ctx.limits().wrap(client, throttle)` in `create` | return the client itself as the instance |
 | `client.run(call)` | `cx.attempt(Cost::ONE)`, then call `attempt.instance()` |
 | `client.run_for("chat_id", id, call)` | `cx.attempt(Cost::keyed("chat_id", id))` |
-| `client.run_until(deadline, call)` | `managed.submit(op).with_deadline(deadline)` |
+| `client.run_until(deadline, call)` | `lease.submit(op).with_deadline(deadline)` |
 | `Throttle::check(&outcome)` | `attempt.report(verdict)` |
 | `client.unlimited()` | none, by design: every provider call is an attempt |
-| `LimitedError::{Limit, Call}` | `OpError` (kind, sent state, effect, `is_retryable`) |
+| `LimitedError::{Limit, Call}` | `OperationError` (kind, sent state, effect, `is_retryable`) |
 
 The profile is observed, not declared: it latches to `InterimPerClosure` at the
 first `ResourceLimiter::wrap`, and to `PerAttempt` at the first
-`into_managed` on one of the row's leases, and keeps it for the row's life
+`into_lease` on one of the row's leases, and keeps it for the row's life
 (`InterimPerClosure` wins when both latched). A row whose instance is created
 lazily reports its pre-wrap profile (`PausesOnly` or `PerAcquire`) until the
 first acquire creates it. In-process status carries it
@@ -484,10 +484,10 @@ follow from the same generation:
 
 ### Managed call facade
 
-`guard.into_managed()` turns a lease into `call::Managed<R>` (requires
+`guard.into_lease()` turns a lease into `call::Lease<R>` (requires
 `R: PinSlots`, emitted by `#[derive(Resource)]` and `no_credential_slots!`).
 It has no `Deref`: every provider call is an `Operation` submitted as a
-`Unit`, and the instance is reached only inside a granted `Attempt`.
+`Submission`, and the instance is reached only inside a granted `Attempt`.
 
 ```rust,ignore
 struct Send { chat: i64, text: String }
@@ -496,22 +496,22 @@ impl Operation<Bot> for Send {
     type Output = MessageId;
     const EFFECT: Effect = Effect::Write; // the default; declare Read / Idempotent
 
-    async fn run(self, cx: &mut OpCx<'_, Bot>) -> Result<MessageId, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, Bot>) -> Result<MessageId, OperationError> {
         let attempt = cx.attempt(Cost::keyed("chat_id", self.chat)).await?;
         let sent = attempt.instance().send(self.chat, &self.text).await;
         attempt.settle(SentState::Sent);
-        Ok(sent?) // `ClassifyError` → `Error` → `OpError` (kind only)
+        Ok(sent?) // `ClassifyError` → `Error` → `OperationError` (kind only)
     }
 }
 
-let managed = guard.into_managed();
-let id = managed.submit(Send { chat, text }).await?;
+let lease = guard.into_lease();
+let id = lease.submit(Send { chat, text }).await?;
 ```
 
 - **Unit vs attempt.** A unit owns the intent, a deadline (at most 5
-  minutes; `Unit::with_deadline` only shortens it), an attempt budget
+  minutes; `Submission::with_deadline` only shortens it), an attempt budget
   (`Operation::max_attempts`, one by default) and one settled outcome.
-  `OpCx::attempt(cost)` is the single linearization point: budget, lease
+  `OperationCx::attempt(cost)` is the single linearization point: budget, lease
   admission, quota booking at the attempt's `Cost` (`ONE`, `FREE`,
   `units(n)`, `keyed(dimension, value)`), final admission, grant. There is no
   retry loop in the facade.
@@ -519,20 +519,20 @@ let id = managed.submit(Send { chat, text }).await?;
   lease (1 for `Pooled` / `Bounded`, 64 for `Resident` / custom), then the
   runtime runs the unit on its own task. Dropped before the first poll it
   never ran; dropped later, the runtime still settles it and the lease is
-  released only after it ends. `Unit::cancel` stops a unit until its first
+  released only after it ends. `Submission::cancel` stops a unit until its first
   grant (it then settles `Cancelled`, `NotSent`); after a grant it is ignored.
 - **Settled outcome.** Each attempt is settled `NotSent` / `Sent` /
   `MaybeSent`; one dropped unsettled is `MaybeSent`. A unit with no grant is
   `NotSent` whatever the author reported; the deadline or a panic after a
-  grant is `MaybeSent`. `OpError::is_retryable` combines that with the
+  grant is `MaybeSent`. `OperationError::is_retryable` combines that with the
   operation's `Effect`: a unit that may have been applied is retried only for
   `Read` / `Idempotent`, and as a resource `Error` a retry-unsafe unit becomes
   `ErrorKind::OutcomeUnknown` (never retried) and publishes
-  `ResourceEvent::UnitOutcomeUnknown`.
+  `ResourceEvent::OperationOutcomeUnknown`.
 - **Closing.** New attempts are refused once the lease's generation closes —
   `Cancelled` (removal, shutdown), `CredentialUnavailable` (suspension),
   `Revoked` (taint), all `NotSent`; a quota wait ends early too. A granted
-  attempt is not aborted: select on `OpCx::closing()` to stop at a safe point.
+  attempt is not aborted: select on `OperationCx::closing()` to stop at a safe point.
   Refresh and reload leave the generation open.
 - **Credentials.** On a strict manager every attempt on a credential-bound
   row reads each bound credential's availability after its quota wait,
@@ -544,7 +544,7 @@ let id = managed.submit(Send { chat, text }).await?;
   unsent. `PinSlots::pin_slots` runs once per unit, at its first grant,
   after that attempt's read (so the first attempt runs on the binding its
   read validated); every attempt reads that snapshot through
-  `Attempt::slots()`, the only way the facade discloses material. The pin is
+  `Attempt::credentials()`, the only way the facade discloses material. The pin is
   bracketed by the slots' generations and retaken when a rotation raced it.
   A rotation reaches the next unit: a later attempt whose pin it superseded
   is refused `Rebinding` (retry after 1 s), unsent, and the unit's settled
@@ -556,12 +556,12 @@ let id = managed.submit(Send { chat, text }).await?;
   (granted / refused by the facade, not a driver's own retries) and
   `call_units` (by sent state).
 
-**Streaming units.** `Managed::submit_streaming(op, capacity)` runs a
+**Streaming units.** `Lease::submit_streaming(op, capacity)` runs a
 `StreamOperation` — `run(self, cx, sink)` — as one ordinary unit and hands
 back `Streaming<Item, Output>`:
 
 ```rust,ignore
-let mut stream = managed.submit_streaming(Tail { from }, NonZeroUsize::new(8).unwrap());
+let mut stream = lease.submit_streaming(Tail { from }, NonZeroUsize::new(8).unwrap());
 while let Some(line) = stream.next().await {
     handle(line?); // the unit's error arrives once, after every item it sent
 }
@@ -570,31 +570,31 @@ while let Some(line) = stream.next().await {
 - The `StreamSink` buffer is bounded (`capacity` items): a slow consumer
   holds the operation at `send`, which is how a streamed body pushes back on
   the provider. Mid-stream failures are never items; the unit's stamped
-  `OpError` follows the items it sent.
+  `OperationError` follows the items it sent.
 - Dropped before its first `next`, the unit never ran. `Streaming::cancel`
   before the first grant settles `Cancelled` / `NotSent`; after it — or when
   the handle is dropped — the sink closes (`send` fails with `ConsumerGone`,
   `StreamSink::closed` resolves) and the operation ends. The lease is
   released after the unit ends.
 - The facade never aborts a granted attempt: a stream that should stop on
-  removal or shutdown selects on `OpCx::closing()`. The 5-minute unit cap
+  removal or shutdown selects on `OperationCx::closing()`. The 5-minute unit cap
   applies to streams too.
 
 Interim defaults, revisited before the surface is frozen (it is not in any
 prelude): the 5-minute unit deadline cap; the per-lease unit caps above; no
 refund of a cost booked for an attempt cancelled or refused before it
-reached the provider; a pooled `Managed` lease stays checked out while its
+reached the provider; a pooled `Lease` stays checked out while its
 units wait for quota and while their credential reads run — use a
-`ManagedRow` (below) to check out per attempt instead; `Sent` with
+`ResourceHandle` (below) to check out per attempt instead; `Sent` with
 `Exhausted` means the provider refused and applied
 nothing, so it stays retryable; the `Read` / `Idempotent` / `Write` effect
 vocabulary; `Rebinding` with a one-second hint for a superseded pin, with no
 runtime-owned re-preparation of the unit.
 
-### Managed row facade and sessions
+### Resource handle and sessions
 
-`Manager::managed_row::<R>(&ctx)` (or `managed_row_for_identity`) returns a
-`call::ManagedRow<R>`: the same `Operation` / `Unit` / `Attempt` vocabulary,
+`Manager::handle::<R>(&ctx)` (or `handle_for_identity`) returns a
+`call::ResourceHandle<R>`: the same `Operation` / `Submission` / `Attempt` vocabulary,
 but the facade holds no lease. Each attempt checks out an instance of its
 own and releases it when the attempt ends, in this order — nothing is held
 across a wait, and `Manager.admission` is never held across an await:
@@ -625,9 +625,9 @@ facade latches the row to `PerAttempt`; a strict row reports
 `StrictPerAttempt`. It is bound to one registration: removed or replaced,
 its units fail `Cancelled`.
 
-`ManagedRow::submit_streaming(op, capacity)` runs a `StreamOperation` as a
+`ResourceHandle::submit_streaming(op, capacity)` runs a `StreamOperation` as a
 row unit, with the same `Streaming` handle and delivery rules as
-`Managed::submit_streaming`: each attempt books its quota and passes the row
+`Lease::submit_streaming`: each attempt books its quota and passes the row
 gate with nothing held, then checks out. Items sent while an `Attempt` is
 alive keep its checkout (a slow consumer holds the connection through
 backpressure); a consumer that drops or cancels mid-stream ends the
@@ -644,7 +644,7 @@ let rows = row
                 .bind(id)
                 .execute(&mut **tx)
                 .await
-                .map_err(|_| OpError::new(ErrorKind::Transient, "insert failed"))?;
+                .map_err(|_| OperationError::new(ErrorKind::Transient, "insert failed"))?;
             Ok(1)
         })
     })
@@ -688,7 +688,7 @@ ordering across several budgets, nested same-row semantics beyond the typed
 refusal, the owner of commit-unknown recovery, sessions on shared
 instances, and bounded overlap under a strict cap during rotation.
 
-### Managed rows in actions
+### Resource handles in actions
 
 An action reaches a row through a derived field — the supported route:
 
@@ -698,23 +698,23 @@ An action reaches a row through a derived field — the supported route:
     key = "example.audit",
     input = u64,
     output = u64,
-    no_external_effects
+    read_only
 )]
 struct Audit {
     #[resource]
-    directory: ManagedRow<Directory>,
+    directory: ResourceHandle<Directory>,
     #[resource]
-    ledger: Option<ManagedRow<Ledger>>, // optional slot
+    ledger: Option<ResourceHandle<Ledger>>, // optional slot
 }
 ```
 
 The factory resolves it synchronously through
-`ActionContextExt::managed_row_by_id`, over the type-erased
-`ResourceAccessor::managed_row_any` seam that the engine's accessor serves
-with `Manager::managed_row_any`: the row is looked up by key, scope and the
+`ActionContextExt::resource_handle_by_id`, over the type-erased
+`ResourceAccessor::resource_handle_any` seam that the engine's accessor serves
+with `Manager::handle_any_read_only`: the row is looked up by key, scope and the
 node's recorded slot identity, nothing is checked out, and a missing row is
-fatal at resolution (`Lazy<ManagedRow<R>>` is rejected: there is nothing to
-defer). Because `no_external_effects` grants generic action dispatch without
+fatal at resolution (`Lazy<ResourceHandle<R>>` is rejected: there is nothing to
+defer). Because `read_only` grants generic action dispatch without
 effect-owner authority, the engine serves this facade read-only: only
 `Effect::Read` units are admitted. `Effect::Idempotent`, `Effect::Write`, and
 the default write session are refused `NotSent` before checkout or provider
@@ -730,15 +730,15 @@ surface. The action facade is bound to the execution:
   DX-API.md:114).
 - **Deadline.** The execution's wall-clock budget (`max_duration`, what is
   left of it when the turn started) bounds every unit's deadline below the
-  5-minute cap; `Unit::with_deadline` can only shorten it. There is no
+  5-minute cap; `Submission::with_deadline` can only shorten it. There is no
   node-level deadline yet.
 
-The typed `Manager::managed_row(_for_identity)` links the context's
+The typed `Manager::handle(_for_identity)` links the context's
 cancellation token the same way. A `ResourceGuard<R>` field (or
 `acquire_resource_by_id`) still takes a lease for the whole action — the
-raw-escape profile; prefer a `ManagedRow<R>` field for provider calls (its
+raw-escape profile; prefer a `ResourceHandle<R>` field for provider calls (its
 deprecation is scheduled with the `Limited` family's removal, MIGRATION
-P10). A derived action must opt into `no_external_effects`; omitting it leaves
+P10). A derived action must opt into `read_only`; omitting it leaves
 the action's effect contract `Undeclared` and generic dispatch refuses it.
 Mutating row operations require the engine-owned remote-effect protocol; the
 current action-row surface does not turn a resource-local retry declaration
@@ -748,14 +748,14 @@ testing hook that builds rows are follow-ups too.
 #### Execution-owned effects (interim: engine wiring pending)
 
 The resource side of that protocol is in place; the engine does not hand
-out owned rows yet. `Manager::managed_row_any_owned` builds a row that
-carries the execution's `call::owner::UnitEffectOwner` — the port the engine
+out owned rows yet. `Manager::handle_any_journaled` builds a row that
+carries the execution's `call::journal::EffectJournal` — the port the engine
 implements over its operation ledger; this crate never writes effect state.
 On such a row reads run as usual, a plain `submit`/`session` of an
 `Idempotent` or `Write` unit is refused `Permanent` / `NotSent`, and effects
 go through:
 
-- `ManagedRow::submit_effect(op)` for an `EffectOperation` — an `Operation`
+- `ResourceHandle::submit_effect(op)` for an `EffectOperation` — an `Operation`
   that also declares its `EffectContract` (id + canonicalization version),
   an `EffectRecovery` that must agree with its effect (`Idempotent` ⇔
   `StableKey { window }`, `Write` ⇔ `Opaque`), what is `Recorded` of a
@@ -763,7 +763,7 @@ go through:
   and optionally the developer part of the provider idempotency key
   (`IdempotencyKeyPart`, built deterministically from input or state — never
   random, never a retry number) and a stable `OccurrenceLabel`;
-- `ManagedRow::session_effect(spec, contract, recovery, canonical_request,
+- `ResourceHandle::session_effect(spec, contract, recovery, canonical_request,
   key_part, body)` for a session.
 
 The unit's occurrence is `unit/v1/{resource_key}/{contract_id}/{label}`, the
@@ -775,7 +775,7 @@ an unknown outcome fail without one. Every attempt's call is granted by the
 owner after the checkout and credential reads, and the unit's last call is
 settled (applied / rejected) or explained (not crossed / ambiguous) before
 the unit settles; a record that fails after a possible crossing makes the
-unit `OutcomeUnknown`. `OpCx::operation_key()` / `SessionCx::operation_key()`
+unit `OutcomeUnknown`. `OperationCx::idempotency_key()` / `SessionCx::idempotency_key()`
 give the owner's provider idempotency key — identical for every attempt,
 retry and resume. On a library row `submit_effect` runs as `submit`, with no
 key. Nothing here is SDK-exported yet.

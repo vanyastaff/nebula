@@ -10,8 +10,8 @@
 //! - `Option<Lazy<ResourceGuard<R>>>` / `Option<Lazy<CredentialGuard<C>>>` — optional + lazy
 //!
 //! A `#[resource]` field may instead hold the row's per-unit checkout
-//! facade: `ManagedRow<R>` (required) or `Option<ManagedRow<R>>` (optional).
-//! Resolving it checks nothing out, so `Lazy<ManagedRow<R>>` is rejected.
+//! facade: `ResourceHandle<R>` (required) or `Option<ResourceHandle<R>>` (optional).
+//! Resolving it checks nothing out, so `Lazy<ResourceHandle<R>>` is rejected.
 //!
 //! Detection is by path-tail name (last `PathSegment::ident`) so the
 //! macro accepts both bare `ResourceGuard<...>` and fully-qualified
@@ -42,7 +42,7 @@ pub(crate) struct ParsedSlotField {
     pub optional: bool,
     /// Whether the field is wrapped in `Lazy<...>`.
     pub lazy: bool,
-    /// Whether a resource field holds the row facade `ManagedRow<R>`
+    /// Whether a resource field holds the row facade `ResourceHandle<R>`
     /// rather than a `ResourceGuard<R>` lease.
     pub row: bool,
     /// The inner concrete type (`R` for resource, `C` for credential).
@@ -167,7 +167,7 @@ struct FieldShape {
     optional: bool,
     /// Wrapped in `Lazy<...>`.
     lazy: bool,
-    /// A `ManagedRow<R>` resource field.
+    /// A `ResourceHandle<R>` resource field.
     row: bool,
     /// The concrete `R` or `C` underneath the wrappers.
     inner: Type,
@@ -194,14 +194,23 @@ fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<FieldShape> {
         (false, after_option)
     };
 
+    // The facade's pre-0.22.0 name gets a hint instead of the generic
+    // wrong-type error.
+    if kind == SlotKind::Resource && strip_path_tail(&after_lazy, "ManagedRow").is_some() {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "`ManagedRow` was renamed to `ResourceHandle`; write `ResourceHandle<T>`",
+        ));
+    }
+
     // A resource field may hold the row facade instead of a lease.
     if kind == SlotKind::Resource
-        && let Some(inner) = strip_path_tail(&after_lazy, "ManagedRow")
+        && let Some(inner) = strip_path_tail(&after_lazy, "ResourceHandle")
     {
         if lazy {
             return Err(syn::Error::new_spanned(
                 ty,
-                "a ManagedRow acquires nothing at resolution; drop `Lazy`",
+                "a ResourceHandle acquires nothing at resolution; drop `Lazy`",
             ));
         }
         return Ok(FieldShape {
@@ -219,7 +228,7 @@ fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<FieldShape> {
             SlotKind::Credential => "credential",
         };
         let row_shape = match kind {
-            SlotKind::Resource => ", or `ManagedRow<T>` (optionally wrapped in `Option<...>`)",
+            SlotKind::Resource => ", or `ResourceHandle<T>` (optionally wrapped in `Option<...>`)",
             SlotKind::Credential => "",
         };
         return Err(syn::Error::new_spanned(
@@ -337,7 +346,7 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
         let resolve_call = match slot.kind {
             SlotKind::Resource if slot.row => quote! {
                 <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
-                    ::managed_row_by_id::<#inner_ty>(ctx, #lookup_id)
+                    ::resource_handle_by_id::<#inner_ty>(ctx, #lookup_id)
             },
             SlotKind::Resource => quote! {
                 <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
@@ -355,7 +364,7 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
         let optional = slot.optional;
         let lazy = slot.lazy;
 
-        // Managed rows already return the action-layer error classification
+        // Resource handles already return the action-layer error classification
         // chosen by the accessor. Preserve it verbatim: wrapping a revoked or
         // suspended row in `fatal` would disable the engine retry policy. An
         // optional row uses the typed try seam so only genuine absence is
@@ -364,13 +373,13 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
         // node, so the no-binding path addresses the activated row by the
         // provider contract key rather than by the authored field name.
         if slot.row {
-            debug_assert!(!lazy, "managed rows cannot be lazy");
+            debug_assert!(!lazy, "resource handles cannot be lazy");
             let stmt = if optional {
                 quote! {
                     let #field = {
                         if let Some(slot_id) = #binding_call {
                             match <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
-                                ::managed_row_by_id::<#inner_ty>(ctx, slot_id)
+                                ::resource_handle_by_id::<#inner_ty>(ctx, slot_id)
                             {
                                 Ok(row) => Some(row),
                                 Err(error) => return Err(error),
@@ -378,7 +387,7 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
                         } else {
                             let resource_key = <#inner_ty as ::nebula_resource::resource::Provider>::key();
                             match <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
-                                ::try_managed_row_by_id::<#inner_ty>(ctx, resource_key.as_str())
+                                ::try_resource_handle_by_id::<#inner_ty>(ctx, resource_key.as_str())
                             {
                                 Ok(row) => row,
                                 Err(error) => return Err(error),
@@ -391,11 +400,11 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
                     let #field = {
                         let resolved = if let Some(slot_id) = #binding_call {
                             <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
-                                ::managed_row_by_id::<#inner_ty>(ctx, slot_id)
+                                ::resource_handle_by_id::<#inner_ty>(ctx, slot_id)
                         } else {
                             let resource_key = <#inner_ty as ::nebula_resource::resource::Provider>::key();
                             <dyn ::nebula_action::ActionContext as ::nebula_action::ActionContextExt>
-                                ::managed_row_by_id::<#inner_ty>(ctx, resource_key.as_str())
+                                ::resource_handle_by_id::<#inner_ty>(ctx, resource_key.as_str())
                         };
                         match resolved {
                             Ok(row) => row,
@@ -531,14 +540,14 @@ mod tests {
     }
 
     #[test]
-    fn a_managed_row_field_decodes_required_or_optional() {
-        let shape = decoded(syn::parse_quote!(ManagedRow<Db>)).expect("required row");
+    fn a_resource_handle_field_decodes_required_or_optional() {
+        let shape = decoded(syn::parse_quote!(ResourceHandle<Db>)).expect("required row");
         assert!(shape.row && !shape.optional && !shape.lazy);
         let inner = &shape.inner;
         assert_eq!(quote!(#inner).to_string(), "Db");
 
         let shape = decoded(syn::parse_quote!(
-            Option<nebula_sdk::integration::resource::ManagedRow<Db>>
+            Option<nebula_sdk::integration::resource::ResourceHandle<Db>>
         ))
         .expect("optional row");
         assert!(shape.row && shape.optional && !shape.lazy);
@@ -548,10 +557,10 @@ mod tests {
     }
 
     #[test]
-    fn a_lazy_managed_row_is_rejected() {
+    fn a_lazy_resource_handle_is_rejected() {
         for ty in [
-            syn::parse_quote!(Lazy<ManagedRow<Db>>),
-            syn::parse_quote!(Option<Lazy<ManagedRow<Db>>>),
+            syn::parse_quote!(Lazy<ResourceHandle<Db>>),
+            syn::parse_quote!(Option<Lazy<ResourceHandle<Db>>>),
         ] {
             let Err(error) = decoded(ty) else {
                 panic!("a lazy row must be rejected");
@@ -561,15 +570,32 @@ mod tests {
     }
 
     #[test]
+    fn the_old_row_facade_name_points_at_its_new_name() {
+        for ty in [
+            syn::parse_quote!(ManagedRow<Db>),
+            syn::parse_quote!(Option<nebula_sdk::integration::resource::ManagedRow<Db>>),
+            syn::parse_quote!(Lazy<ManagedRow<Db>>),
+        ] {
+            let Err(error) = decoded(ty) else {
+                panic!("the old name must be refused");
+            };
+            assert!(
+                error.to_string().contains("renamed to `ResourceHandle`"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn a_credential_field_never_decodes_as_a_row() {
-        let error = decode_field_type(&syn::parse_quote!(ManagedRow<Db>), SlotKind::Credential)
+        let error = decode_field_type(&syn::parse_quote!(ResourceHandle<Db>), SlotKind::Credential)
             .err()
             .expect("credentials have no row facade");
         assert!(error.to_string().contains("CredentialGuard<T>"), "{error}");
     }
 
     #[test]
-    fn a_row_field_resolves_synchronously_through_managed_row_by_id() {
+    fn a_row_field_resolves_synchronously_through_resource_handle_by_id() {
         for optional in [false, true] {
             let row = ParsedSlotField {
                 field_ident: format_ident!("db"),
@@ -581,7 +607,7 @@ mod tests {
             let (block, idents) = emit_slot_resolution_block(&[row]);
             let expanded = block.to_string();
             assert!(
-                expanded.contains("managed_row_by_id :: < Db > (ctx , slot_id)"),
+                expanded.contains("resource_handle_by_id :: < Db > (ctx , slot_id)"),
                 "{expanded}"
             );
             assert!(
@@ -592,7 +618,7 @@ mod tests {
             assert!(!expanded.contains("acquire_resource_by_id"), "{expanded}");
             assert!(!expanded.contains(". await"), "{expanded}");
             assert_eq!(
-                expanded.contains("try_managed_row_by_id :: < Db >"),
+                expanded.contains("try_resource_handle_by_id :: < Db >"),
                 optional,
                 "{expanded}"
             );

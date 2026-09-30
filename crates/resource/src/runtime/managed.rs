@@ -239,7 +239,7 @@ pub struct ManagedResource<R: Provider> {
     /// `None` for a slot-less row and for an interim (row-gate) manager.
     pub(crate) credential_reads: Option<Arc<crate::manager::CredentialReads>>,
     /// The row gate of the managed row facade
-    /// ([`ManagedRow`](crate::call::ManagedRow)): one permit per checkout a
+    /// ([`ResourceHandle`](crate::call::ResourceHandle)): one permit per checkout a
     /// row attempt holds, so attempts queue FIFO for the row's capacity with
     /// nothing checked out rather than failing on a full topology. Sized to
     /// the topology's [`store_capacity`](Topology::store_capacity) at first

@@ -343,7 +343,7 @@ fn build_registry(
                 nebula_action::metadata_name!("WebhookWaitWithTimeout"),
                 "wait_timeout stub",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             WebhookWaitWithTimeout { timeout },
         )
         .expect("valid test catalog definition");
@@ -354,7 +354,7 @@ fn build_registry(
                 nebula_action::metadata_name!("CountingEcho"),
                 "wait_timeout stub",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             CountingEcho {
                 invocations: Arc::clone(main_count),
             },
@@ -367,7 +367,7 @@ fn build_registry(
                 nebula_action::metadata_name!("CountingError"),
                 "wait_timeout stub",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             CountingError {
                 invocations: Arc::clone(error_count),
             },
@@ -581,7 +581,7 @@ fn build_registry_with_blocker(
                 nebula_action::metadata_name!("DurationWaitBlocker"),
                 "wait_timeout stub",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             DurationWaitBlocker {
                 duration: blocker_for,
             },

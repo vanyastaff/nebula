@@ -27,7 +27,7 @@ pub trait ResourceAccessor: Send + Sync {
     ///
     /// Unlike [`acquire_any`](Self::acquire_any) this checks nothing out:
     /// an implementation that serves managed rows returns the resource
-    /// crate's `ManagedRow<R>` boxed, for the caller to downcast, and each
+    /// crate's `ResourceHandle<R>` boxed, for the caller to downcast, and each
     /// unit submitted on it checks out an instance per attempt. The facade
     /// is bound to the calling context: its units are cancelled with it
     /// until their first grant and bounded by its deadline.
@@ -39,7 +39,7 @@ pub trait ResourceAccessor: Send + Sync {
     ///
     /// Whatever the implementation's lookup refuses; the default always
     /// refuses.
-    fn managed_row_any(
+    fn resource_handle_any(
         &self,
         key: &crate::ResourceKey,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, crate::CoreError> {
@@ -62,7 +62,7 @@ pub trait ResourceAccessor: Send + Sync {
     ///
     /// Whatever the implementation's lookup refuses; the default never
     /// errors.
-    fn try_managed_row_any(
+    fn try_resource_handle_any(
         &self,
         _key: &crate::ResourceKey,
     ) -> Result<Option<Box<dyn std::any::Any + Send + Sync>>, crate::CoreError> {
@@ -213,12 +213,12 @@ mod tests {
     }
 
     #[test]
-    fn the_default_accessor_serves_no_managed_rows() {
+    fn the_default_accessor_serves_no_resource_handles() {
         use nebula_error::Classify;
 
         let key = ResourceKey::new("postgres").expect("valid key");
         let error = LeasesOnly
-            .managed_row_any(&key)
+            .resource_handle_any(&key)
             .expect_err("no managed rows by default");
         assert!(!error.is_retryable(), "a missing capability never heals");
         assert_eq!(error.category(), nebula_error::ErrorCategory::Unavailable);
@@ -229,7 +229,7 @@ mod tests {
         ));
         assert!(
             LeasesOnly
-                .try_managed_row_any(&key)
+                .try_resource_handle_any(&key)
                 .expect("the default try lookup is infallible")
                 .is_none()
         );

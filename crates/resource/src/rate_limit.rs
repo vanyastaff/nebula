@@ -633,7 +633,7 @@ impl KeyedLimits {
 /// `Provider::create` wraps a client with [`ResourceLimiter::wrap`], and
 /// [`PerAttempt`](Self::PerAttempt) from the moment a lease of the row is
 /// turned into a managed call facade
-/// ([`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed)); it keeps a latched
+/// ([`ResourceGuard::into_lease`](crate::ResourceGuard::into_lease)); it keeps a latched
 /// profile for the row's life. A row whose instance has not been created yet
 /// reports the profile it has before any latch. When both latches fired,
 /// `InterimPerClosure` wins: closure calls still book their own permits.
@@ -1063,7 +1063,7 @@ impl ResourceLimiter {
     #[must_use]
     #[deprecated(
         since = "0.21.0",
-        note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+        note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
     )]
     #[expect(
         deprecated,
@@ -2019,15 +2019,15 @@ where
 /// [`RateLimitProfile::InterimPerClosure`]. The managed call facade
 /// ([`crate::call`]) replaces the closure family: keep the client as the
 /// provider's instance, turn the lease into a facade with
-/// [`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed), and
+/// [`ResourceGuard::into_lease`](crate::ResourceGuard::into_lease), and
 /// describe each call as an [`Operation`](crate::call::Operation) that asks
-/// for one [`OpCx::attempt`](crate::call::OpCx::attempt) per provider call:
+/// for one [`OperationCx::attempt`](crate::call::OperationCx::attempt) per provider call:
 ///
 /// | Closure family | Managed call facade |
 /// |---|---|
 /// | `run(call)` | `cx.attempt(Cost::ONE)` |
 /// | `run_for(dimension, value, call)` | `cx.attempt(Cost::keyed(dimension, value))` |
-/// | `run_until(deadline, call)` | `Unit::with_deadline(deadline)` on the submitted unit |
+/// | `run_until(deadline, call)` | `Submission::with_deadline(deadline)` on the submitted unit |
 /// | `Throttle::check` | `Attempt::report(verdict)` |
 /// | `unlimited()` | none: every provider call is an attempt, by design |
 ///
@@ -2035,7 +2035,7 @@ where
 /// budgets.
 #[deprecated(
     since = "0.21.0",
-    note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
 )]
 pub struct Limited<C, T = NoThrottle> {
     client: C,
@@ -2212,12 +2212,12 @@ impl<C, T> Limited<C, T> {
 /// Error of a call through [`Limited`].
 ///
 /// Deprecated with [`Limited`]: a managed attempt fails with an
-/// [`OpError`](crate::call::OpError), whose sent state and effect say whether
+/// [`OperationError`](crate::call::OperationError), whose sent state and effect say whether
 /// a retry is safe.
 #[derive(Debug)]
 #[deprecated(
     since = "0.21.0",
-    note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
 )]
 pub enum LimitedError<E> {
     /// The limit refused the call; it never reached the provider.

@@ -168,7 +168,7 @@ fn pure_metadata(
     description: impl Into<String>,
 ) -> ActionMetadataDraft {
     ActionMetadataDraft::new(key, name, description)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> WorkflowDefinition {
@@ -3474,7 +3474,7 @@ async fn version_pinned_node_uses_specified_handler() {
                 nebula_action::metadata_name!("V1"),
                 "v1 handler",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
             .with_version(v1.clone()),
             V1Handler,
         )

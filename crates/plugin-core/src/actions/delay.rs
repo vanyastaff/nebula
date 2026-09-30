@@ -240,7 +240,7 @@ impl nebula_action::action::Action for CoreDelay {
             nebula_action::metadata_name!("Delay"),
             "Parks the execution for a fixed duration or until a timestamp, then resumes",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

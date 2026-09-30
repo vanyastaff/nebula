@@ -7,14 +7,14 @@
 //! its canonical request and, optionally, the developer part of the
 //! provider idempotency key ([`IdempotencyKeyPart`]) and a stable
 //! occurrence label ([`OccurrenceLabel`]). It is submitted with
-//! [`ManagedRow::submit_effect`](super::ManagedRow::submit_effect); the
-//! owner seam that records it lives in [`owner`](super::owner).
+//! [`ResourceHandle::submit_effect`](super::ResourceHandle::submit_effect); the
+//! journal seam that records it lives in [`journal`](super::journal).
 
 use std::{fmt, time::Duration};
 
 use serde::{Serialize, de::DeserializeOwned};
 
-use super::{Operation, cost::Effect, error::OpError, pin::PinSlots};
+use super::{Operation, cost::Effect, error::OperationError, pin::PinSlots};
 use crate::{error::ErrorKind, resource::Provider};
 
 /// Longest contract id, in bytes.
@@ -78,20 +78,20 @@ impl EffectContract {
     /// # Errors
     ///
     /// [`ErrorKind::Permanent`] naming the broken rule.
-    pub fn validate(&self) -> Result<(), OpError> {
+    pub fn validate(&self) -> Result<(), OperationError> {
         let id_is_valid = !self.id.is_empty()
             && self.id.len() <= MAX_CONTRACT_ID_LEN
             && self.id.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/')
             });
         if !id_is_valid {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Permanent,
                 "effect contract id must be 1..=128 bytes of [A-Za-z0-9._/-]",
             ));
         }
         if self.canonicalization_version == 0 {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Permanent,
                 "effect contract canonicalization version must be non-zero",
             ));
@@ -111,7 +111,7 @@ impl EffectContract {
 pub enum EffectRecovery {
     /// The provider deduplicates requests carrying the same idempotency key
     /// for `window`: within it, an ambiguous attempt may be sent again
-    /// with the same [`OperationKey`].
+    /// with the same [`IdempotencyKey`].
     StableKey {
         /// How long the provider remembers a key. Non-zero.
         window: Duration,
@@ -123,17 +123,17 @@ pub enum EffectRecovery {
 
 impl EffectRecovery {
     /// Whether this recovery fits `effect`, and why not.
-    pub(crate) fn check(self, effect: Effect) -> Result<(), OpError> {
+    pub(crate) fn check(self, effect: Effect) -> Result<(), OperationError> {
         match (effect, self) {
-            (Effect::Read, _) => Err(OpError::new(
+            (Effect::Read, _) => Err(OperationError::new(
                 ErrorKind::Permanent,
                 "a read is not an owned effect; submit it with submit",
             )),
             (Effect::Idempotent, Self::StableKey { window }) if window.is_zero() => Err(
-                OpError::new(ErrorKind::Permanent, "a stable-key window must be non-zero"),
+                OperationError::new(ErrorKind::Permanent, "a stable-key window must be non-zero"),
             ),
             (Effect::Idempotent, Self::StableKey { .. }) | (Effect::Write, Self::Opaque) => Ok(()),
-            _ => Err(OpError::new(
+            _ => Err(OperationError::new(
                 ErrorKind::Permanent,
                 "effect recovery disagrees with the effect: idempotent needs a stable key, write is opaque",
             )),
@@ -193,12 +193,12 @@ impl IdempotencyKeyPart {
     ///
     /// [`ErrorKind::Permanent`] when `part` is empty, longer than 256
     /// bytes, or holds anything but visible ASCII.
-    pub fn new(part: impl Into<String>) -> Result<Self, OpError> {
+    pub fn new(part: impl Into<String>) -> Result<Self, OperationError> {
         let part = part.into();
         if visible_ascii(part.as_bytes(), MAX_KEY_PART_LEN) {
             Ok(Self(part))
         } else {
-            Err(OpError::new(
+            Err(OperationError::new(
                 ErrorKind::Permanent,
                 "idempotency key part must be 1..=256 bytes of visible ASCII",
             ))
@@ -233,12 +233,12 @@ impl OccurrenceLabel {
     ///
     /// [`ErrorKind::Permanent`] when `label` is empty, longer than 128
     /// bytes, or holds anything but visible ASCII.
-    pub fn new(label: impl Into<String>) -> Result<Self, OpError> {
+    pub fn new(label: impl Into<String>) -> Result<Self, OperationError> {
         let label = label.into();
         if visible_ascii(label.as_bytes(), MAX_OCCURRENCE_LEN) {
             Ok(Self(label))
         } else {
-            Err(OpError::new(
+            Err(OperationError::new(
                 ErrorKind::Permanent,
                 "occurrence label must be 1..=128 bytes of visible ASCII",
             ))
@@ -253,14 +253,14 @@ impl OccurrenceLabel {
 }
 
 /// An [`Operation`] whose effect an execution owner records, submitted with
-/// [`ManagedRow::submit_effect`](super::ManagedRow::submit_effect).
+/// [`ResourceHandle::submit_effect`](super::ResourceHandle::submit_effect).
 ///
 /// On a row an action got with effect-owner authority, the owner prepares
 /// the effect before anything is checked out: a recorded success is
 /// replayed from its output without a provider call, a recorded failure is
 /// returned again, an effect whose outcome is unknown is refused
 /// `OutcomeUnknown`. Otherwise every attempt is granted by the owner, and
-/// the unit's outcome is recorded when it settles. [`OpCx::operation_key`](super::OpCx::operation_key)
+/// the unit's outcome is recorded when it settles. [`OperationCx::idempotency_key`](super::OperationCx::idempotency_key)
 /// is the provider idempotency key the owner derived: the same for every
 /// attempt, retry and resume of the effect.
 ///
@@ -275,8 +275,8 @@ impl OccurrenceLabel {
 /// use nebula_resource::{
 ///     PinSlots, Provider,
 ///     call::{
-///         Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, OpCx,
-///         OpError, Operation, SentState,
+///         Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, OperationCx,
+///         OperationError, Operation, SentState,
 ///     },
 /// };
 ///
@@ -290,10 +290,10 @@ impl OccurrenceLabel {
 ///     type Output = u64;
 ///     const EFFECT: Effect = Effect::Idempotent;
 ///
-///     async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+///     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
 ///         // The provider's idempotency key: the same for every attempt,
 ///         // retry and resume. Read it before an attempt borrows `cx`.
-///         let _key = cx.operation_key().copied();
+///         let _key = cx.idempotency_key().copied();
 ///         let attempt = cx.attempt(Cost::ONE).await?;
 ///         attempt.settle(SentState::Sent);
 ///         Ok(self.cents)
@@ -306,7 +306,7 @@ impl OccurrenceLabel {
 ///         window: Duration::from_secs(24 * 60 * 60),
 ///     };
 ///
-///     fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
+///     fn canonical_request(&self) -> Result<Vec<u8>, OperationError> {
 ///         Ok(format!("{}:{}", self.order, self.cents).into_bytes())
 ///     }
 ///
@@ -335,7 +335,7 @@ pub trait EffectOperation<R: Provider + PinSlots>:
     /// # Errors
     ///
     /// Any error refuses the unit unsent with that error.
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError>;
+    fn canonical_request(&self) -> Result<Vec<u8>, OperationError>;
 
     /// The developer part of the provider idempotency key; `None` scopes
     /// the key to the execution, node and occurrence.
@@ -357,19 +357,19 @@ pub trait EffectOperation<R: Provider + PinSlots>:
 /// secret — [`Display`](fmt::Display) prints it — but it is not authority
 /// either: holding one grants no provider call.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct OperationKey {
+pub struct IdempotencyKey {
     bytes: [u8; MAX_OPERATION_KEY_LEN],
     len: u8,
 }
 
-impl OperationKey {
+impl IdempotencyKey {
     /// A key of `key`.
     ///
     /// # Errors
     ///
     /// [`ErrorKind::Permanent`] when `key` is empty, longer than 64 bytes,
     /// or not base64url (`[A-Za-z0-9_-]`).
-    pub fn new(key: &str) -> Result<Self, OpError> {
+    pub fn new(key: &str) -> Result<Self, OperationError> {
         let raw = key.as_bytes();
         let valid = !raw.is_empty()
             && raw.len() <= MAX_OPERATION_KEY_LEN
@@ -377,10 +377,10 @@ impl OperationKey {
                 .iter()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
         let Ok(len) = u8::try_from(raw.len()) else {
-            return Err(invalid_operation_key());
+            return Err(invalid_idempotency_key());
         };
         if !valid {
-            return Err(invalid_operation_key());
+            return Err(invalid_idempotency_key());
         }
         let mut bytes = [0; MAX_OPERATION_KEY_LEN];
         bytes[..raw.len()].copy_from_slice(raw);
@@ -395,23 +395,23 @@ impl OperationKey {
     }
 }
 
-fn invalid_operation_key() -> OpError {
-    OpError::new(
+fn invalid_idempotency_key() -> OperationError {
+    OperationError::new(
         ErrorKind::Permanent,
         "operation key must be 1..=64 bytes of base64url",
     )
 }
 
-impl fmt::Display for OperationKey {
+impl fmt::Display for IdempotencyKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
 
-impl fmt::Debug for OperationKey {
+impl fmt::Debug for IdempotencyKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_tuple("OperationKey")
+            .debug_tuple("IdempotencyKey")
             .field(&self.as_str())
             .finish()
     }
@@ -422,7 +422,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        Effect, EffectContract, EffectRecovery, IdempotencyKeyPart, OccurrenceLabel, OperationKey,
+        Effect, EffectContract, EffectRecovery, IdempotencyKey, IdempotencyKeyPart, OccurrenceLabel,
     };
     use crate::ErrorKind;
 
@@ -476,14 +476,14 @@ mod tests {
     }
 
     #[test]
-    fn operation_keys_are_base64url_and_print() {
-        let key = OperationKey::new("AbC-_09").expect("valid");
+    fn idempotency_keys_are_base64url_and_print() {
+        let key = IdempotencyKey::new("AbC-_09").expect("valid");
         assert_eq!(key.as_str(), "AbC-_09");
         assert_eq!(key.to_string(), "AbC-_09");
-        assert_eq!(format!("{key:?}"), "OperationKey(\"AbC-_09\")");
-        assert!(OperationKey::new(&"a".repeat(64)).is_ok());
+        assert_eq!(format!("{key:?}"), "IdempotencyKey(\"AbC-_09\")");
+        assert!(IdempotencyKey::new(&"a".repeat(64)).is_ok());
         for broken in ["", "a=", "a/b", "a+b", &"a".repeat(65)] {
-            assert!(OperationKey::new(broken).is_err(), "{broken:?}");
+            assert!(IdempotencyKey::new(broken).is_err(), "{broken:?}");
         }
     }
 }

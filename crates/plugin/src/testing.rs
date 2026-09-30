@@ -248,7 +248,7 @@ macro_rules! diagnostic_trigger {
                     nebula_action::metadata_name!($name),
                     "Activation diagnostic trigger fixture",
                 )
-                .with_effect_contract(ActionEffectContract::NoExternalEffects)
+                .with_effect_contract(ActionEffectContract::ReadOnly)
             }
 
             fn dependencies() -> &'static Dependencies {
@@ -466,7 +466,7 @@ pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
                 nebula_action::metadata_name!("echo"),
                 "Admission fixture",
             )
-            .with_effect_contract(ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(ActionEffectContract::ReadOnly),
         ),
         stateless_fixture::<Value>(ActionMetadataDraft::new(
             nebula_core::action_key!("core.undeclared"),
@@ -484,7 +484,7 @@ pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
                 nebula_action::metadata_name!("string_input"),
                 "Schema admission fixture",
             )
-            .with_effect_contract(ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(ActionEffectContract::ReadOnly),
         ),
         Arc::new(
             GenericTriggerFactory::<SecretDiagnosticTrigger>::new()
@@ -498,7 +498,7 @@ pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
             nebula_action::metadata_name!("resource_slot"),
             "Unresolved resource slot fixture",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects),
+        .with_effect_contract(ActionEffectContract::ReadOnly),
     ));
     actions.push(dependency_fixture::<CredentialSlotDependencies>(
         ActionMetadataDraft::new(
@@ -506,7 +506,7 @@ pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
             nebula_action::metadata_name!("credential_slot"),
             "Unresolved credential slot fixture",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects),
+        .with_effect_contract(ActionEffectContract::ReadOnly),
     ));
 
     for key in [
@@ -533,7 +533,7 @@ pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
         }
         actions.push(stateless_fixture::<Value>(
             ActionMetadataDraft::new(format!("core.{key}").parse().unwrap(), key, "Port fixture")
-                .with_effect_contract(ActionEffectContract::NoExternalEffects)
+                .with_effect_contract(ActionEffectContract::ReadOnly)
                 .with_inputs(vec![
                     nebula_action::InputPort::flow(nebula_action::port_key!("in")),
                     port,
@@ -547,7 +547,7 @@ pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
             nebula_action::metadata_name!("wrong_dependency_type"),
             "Wrong dependency type fixture",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects),
+        .with_effect_contract(ActionEffectContract::ReadOnly),
     ));
     actions.push(dependency_fixture::<UndeclaredResourceDependencies>(
         ActionMetadataDraft::new(
@@ -555,7 +555,7 @@ pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
             nebula_action::metadata_name!("undeclared_dependency"),
             "Undeclared dependency fixture",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects),
+        .with_effect_contract(ActionEffectContract::ReadOnly),
     ));
 
     let mut registry = PluginRegistry::new();

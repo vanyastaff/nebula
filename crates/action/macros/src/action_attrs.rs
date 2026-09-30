@@ -21,9 +21,12 @@ pub(crate) struct ActionAttrs {
     /// Required `Self::Output` type.
     pub output: Type,
     /// The author explicitly attests that the action performs no external
-    /// business effects.
-    pub no_external_effects: bool,
+    /// business effects (`#[action(read_only)]`).
+    pub read_only: bool,
 }
+
+/// The pre-0.22.0 spelling of the `read_only` flag, refused with a hint.
+const RENAMED_READ_ONLY: &str = "no_external_effects";
 
 impl ActionAttrs {
     /// Parse from `#[action(...)]` attribute args.
@@ -43,7 +46,7 @@ impl ActionAttrs {
             "version",
             "input",
             "output",
-            "no_external_effects",
+            "read_only",
         ];
         for item in &attr_args.items {
             let key = match item {
@@ -51,6 +54,13 @@ impl ActionAttrs {
                 | attrs::AttrItem::Flag(key)
                 | attrs::AttrItem::List { key, .. } => key,
             };
+            if key == RENAMED_READ_ONLY {
+                return Err(syn::Error::new_spanned(
+                    key,
+                    "`no_external_effects` was renamed to `read_only`; \
+                     write `#[action(read_only)]`",
+                ));
+            }
             if !ALLOWED.iter().any(|allowed| key == allowed) {
                 return Err(syn::Error::new_spanned(
                     key,
@@ -61,10 +71,10 @@ impl ActionAttrs {
                     ),
                 ));
             }
-            if key == "no_external_effects" && !matches!(item, attrs::AttrItem::Flag(_)) {
+            if key == "read_only" && !matches!(item, attrs::AttrItem::Flag(_)) {
                 return Err(syn::Error::new_spanned(
                     key,
-                    "`no_external_effects` is a flag; write it without `= ...`",
+                    "`read_only` is a flag; write it without `= ...`",
                 ));
             }
         }
@@ -99,7 +109,7 @@ impl ActionAttrs {
                  — Variant A requires Self::Output to be specified",
             )
         })?;
-        let no_external_effects = attr_args.has_flag("no_external_effects");
+        let read_only = attr_args.has_flag("read_only");
 
         Ok(Self {
             key,
@@ -108,7 +118,7 @@ impl ActionAttrs {
             version,
             input,
             output,
-            no_external_effects,
+            read_only,
         })
     }
 
@@ -118,10 +128,10 @@ impl ActionAttrs {
         let name = &self.name;
         let description = &self.description;
         let version = self.version.to_string();
-        let effect_contract = self.no_external_effects.then(|| {
+        let effect_contract = self.read_only.then(|| {
             quote! {
                 .with_effect_contract(
-                    ::nebula_action::ActionEffectContract::NoExternalEffects
+                    ::nebula_action::ActionEffectContract::ReadOnly
                 )
             }
         });

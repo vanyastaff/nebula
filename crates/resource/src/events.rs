@@ -278,7 +278,7 @@ pub enum ResourceEvent {
     /// got [`crate::ErrorKind::OutcomeUnknown`]
     /// and must reconcile before acting again. Published once per such unit,
     /// never for units that settled cleanly.
-    UnitOutcomeUnknown {
+    OperationOutcomeUnknown {
         /// The resource the unit ran against.
         key: ResourceKey,
     },
@@ -313,7 +313,7 @@ impl ResourceEvent {
             | Self::RateLimitPenalized { key, .. }
             | Self::RateLimitStoreUnavailable { key }
             | Self::RateLimitStoreRecovered { key }
-            | Self::UnitOutcomeUnknown { key } => Some(key),
+            | Self::OperationOutcomeUnknown { key } => Some(key),
         }
     }
 }

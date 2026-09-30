@@ -73,8 +73,8 @@
 //!
 //! Engine-side registration uses deployment/runtime APIs rather than an SDK
 //! re-export of implementation crates. For provider calls, prefer a
-//! `#[resource]` field of type `ManagedRow<R>`
-//! (`nebula_sdk::integration::resource::ManagedRow`, not in the prelude while
+//! `#[resource]` field of type `ResourceHandle<R>`
+//! (`nebula_sdk::integration::resource::ResourceHandle`, not in the prelude while
 //! the facade is unfrozen): each unit checks out an instance per attempt,
 //! after its quota wait. A [`ResourceGuard`] field derefs to
 //! `Provider::Instance` and holds its lease for the whole action — the raw

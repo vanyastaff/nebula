@@ -1,4 +1,4 @@
-//! The lease-owning facade ([`Managed`]), its units ([`Unit`]) and the
+//! The lease-owning facade ([`Lease`]), its units ([`Submission`]) and the
 //! per-unit runtime: permit, spawn, deadline, attempt admission and the
 //! settled outcome.
 
@@ -27,10 +27,10 @@ use tracing::Instrument as _;
 use super::{
     Operation,
     cost::{Cost, Effect, SentState},
-    effect::OperationKey,
-    error::OpError,
+    effect::IdempotencyKey,
+    error::OperationError,
+    journal::{EffectJournal, JournalSlot},
     owned::{self, EffectDeclaration, EffectPlan, OutputCodec, OwnedEffect, OwnedSubmit, Prepared},
-    owner::{UnitEffectOwner, UnitSlot},
     pin::PinSlots,
     row::{CheckoutFit, RowShared},
     session::{SessionBinding, SessionProvider},
@@ -53,13 +53,13 @@ use crate::{
 };
 
 /// Host cap on a unit's deadline, and the deadline a unit gets unless
-/// [`Unit::with_deadline`] shortens it. Interim: equal to
+/// [`Submission::with_deadline`] shortens it. Interim: equal to
 /// [`DEFAULT_MAX_PENALTY`] until the package fixes a host budget.
-pub const UNIT_DEADLINE_CAP: std::time::Duration = DEFAULT_MAX_PENALTY;
+pub const OPERATION_DEADLINE_CAP: std::time::Duration = DEFAULT_MAX_PENALTY;
 
 /// Units that may run at once on one lease whose topology checks out an
 /// instance exclusively ([`Pooled`], [`Bounded`](crate::Bounded)). A
-/// [`ManagedRow`](super::ManagedRow) has no lease-wide cap: it checks out
+/// [`ResourceHandle`](super::ResourceHandle) has no lease-wide cap: it checks out
 /// per attempt.
 const EXCLUSIVE_UNIT_CAP: usize = 1;
 
@@ -71,7 +71,7 @@ const PENDING: u8 = 0;
 const GRANTED: u8 = 1;
 const CANCELLED: u8 = 2;
 
-/// The lease a [`Managed`] facade owns, shared by every unit it started.
+/// The lease a [`Lease`] facade owns, shared by every unit it started.
 ///
 /// Dropping the last reference drops the guard, which releases the lease;
 /// an attempt that [`taint`](Attempt::taint)ed it is re-applied first, so
@@ -94,7 +94,7 @@ impl<R: Provider> ManagedLease<R> {
     ///
     /// The same mapping as the acquire path's hand-out refusal, applied to
     /// the lease's own generation rather than the row's current one.
-    pub(super) fn admission_refusal(&self) -> Result<(), OpError> {
+    pub(super) fn admission_refusal(&self) -> Result<(), OperationError> {
         generation_refusal(&self.managed, &self.generation)
     }
 }
@@ -105,9 +105,9 @@ impl<R: Provider> ManagedLease<R> {
 pub(super) fn generation_refusal<R: Provider>(
     managed: &ManagedResource<R>,
     generation: &AdmissionGeneration,
-) -> Result<(), OpError> {
+) -> Result<(), OperationError> {
     if managed.is_tainted() {
-        return Err(OpError::new(
+        return Err(OperationError::new(
             ErrorKind::Revoked,
             "resource tainted by a credential revoke; new attempts refused",
         ));
@@ -116,16 +116,16 @@ pub(super) fn generation_refusal<R: Provider>(
         return Ok(());
     }
     Err(match generation.close_cause() {
-        Some(CloseCause::Credential(reason)) => OpError::new(
+        Some(CloseCause::Credential(reason)) => OperationError::new(
             ErrorKind::CredentialUnavailable { reason },
             "bound credential unavailable; new attempts refused",
         ),
-        None => OpError::new(ErrorKind::Cancelled, "lease closing; new attempts refused"),
+        None => OperationError::new(ErrorKind::Cancelled, "lease closing; new attempts refused"),
     })
 }
 
-/// What a unit runs against: the lease a [`Managed`] facade owns, or the
-/// row a [`ManagedRow`](super::ManagedRow) checks out from per attempt.
+/// What a unit runs against: the lease a [`Lease`] facade owns, or the
+/// row a [`ResourceHandle`](super::ResourceHandle) checks out from per attempt.
 pub(super) enum UnitHost<R: Provider> {
     /// A lease-wide facade: every attempt runs on the lease's instance.
     Lease(Arc<ManagedLease<R>>),
@@ -164,7 +164,7 @@ impl<R: Provider> UnitHost<R> {
 
     /// The admission generation a unit of this host is refused under: the
     /// lease's own, or the row's current one when the unit starts.
-    fn unit_generation(&self) -> Result<Arc<AdmissionGeneration>, OpError> {
+    fn unit_generation(&self) -> Result<Arc<AdmissionGeneration>, OperationError> {
         match self {
             Self::Lease(lease) => Ok(Arc::clone(&lease.generation)),
             Self::Row(row) => row.unit_generation(),
@@ -195,7 +195,7 @@ impl<R: Provider> UnitHost<R> {
     fn record_settled<T>(
         &self,
         span: &tracing::Span,
-        result: &Result<T, OpError>,
+        result: &Result<T, OperationError>,
         sent: SentState,
         attempts: u32,
     ) {
@@ -220,7 +220,7 @@ impl<R: Provider> UnitHost<R> {
                     "managed unit failed with an unknown outcome; reconcile before retrying"
                 );
                 if let Some(events) = self.events() {
-                    let _ = events.emit(ResourceEvent::UnitOutcomeUnknown {
+                    let _ = events.emit(ResourceEvent::OperationOutcomeUnknown {
                         key: self.key().clone(),
                     });
                 }
@@ -246,17 +246,17 @@ impl<R: Provider> Drop for ManagedLease<R> {
 
 /// A lease turned into a managed call facade.
 ///
-/// Built by [`ResourceGuard::into_managed`]. Provider calls go through
-/// [`submit`](Self::submit), one [`Operation`] per [`Unit`]; each attempt of
+/// Built by [`ResourceGuard::into_lease`]. Provider calls go through
+/// [`submit`](Self::submit), one [`Operation`] per [`Submission`]; each attempt of
 /// a unit is admitted against the lease, booked on the row's rate limit and
 /// settled. There is deliberately no `Deref` to the instance: a call cannot
 /// skip admission and the limit by accident, and the instance is reached
 /// only inside a granted [`Attempt`].
 ///
 /// ```compile_fail
-/// use nebula_resource::{PinSlots, Provider, call::Managed};
+/// use nebula_resource::{PinSlots, Provider, call::Lease};
 ///
-/// fn skip_the_facade<R: Provider + PinSlots>(managed: &Managed<R>) -> &R::Instance {
+/// fn skip_the_facade<R: Provider + PinSlots>(managed: &Lease<R>) -> &R::Instance {
 ///     &**managed
 /// }
 /// ```
@@ -264,11 +264,11 @@ impl<R: Provider> Drop for ManagedLease<R> {
 /// Cloning shares the lease: the lease is released when the last clone and
 /// the last unit any clone started are gone, so a revoke or shutdown drain
 /// waits for running units.
-pub struct Managed<R: Provider> {
+pub struct Lease<R: Provider> {
     lease: Arc<ManagedLease<R>>,
 }
 
-impl<R: Provider> Clone for Managed<R> {
+impl<R: Provider> Clone for Lease<R> {
     fn clone(&self) -> Self {
         Self {
             lease: Arc::clone(&self.lease),
@@ -276,23 +276,23 @@ impl<R: Provider> Clone for Managed<R> {
     }
 }
 
-impl<R: Provider> fmt::Debug for Managed<R> {
+impl<R: Provider> fmt::Debug for Lease<R> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("Managed")
+            .debug_struct("Lease")
             .field("resource_key", &self.lease.key)
             .field("generation", &self.lease.guard.generation())
             .finish_non_exhaustive()
     }
 }
 
-impl<R: Provider + PinSlots> From<ResourceGuard<R>> for Managed<R> {
+impl<R: Provider + PinSlots> From<ResourceGuard<R>> for Lease<R> {
     fn from(guard: ResourceGuard<R>) -> Self {
-        guard.into_managed()
+        guard.into_lease()
     }
 }
 
-impl<R: Provider> Managed<R> {
+impl<R: Provider> Lease<R> {
     /// The row's key.
     #[must_use]
     pub fn resource_key(&self) -> &ResourceKey {
@@ -313,7 +313,7 @@ impl<R: Provider> Managed<R> {
     }
 }
 
-impl<R: Provider + PinSlots> Managed<R> {
+impl<R: Provider + PinSlots> Lease<R> {
     pub(crate) fn from_guard(guard: ResourceGuard<R>) -> Self {
         let managed = Arc::clone(guard.managed());
         managed.rate_limiter.latch_per_attempt();
@@ -341,11 +341,11 @@ impl<R: Provider + PinSlots> Managed<R> {
     /// The unit is lazy: nothing happens until it is first polled. Its first
     /// poll waits for one of the lease's unit slots, then hands the
     /// operation to the runtime, which runs it under the unit's deadline and
-    /// settles it. Dropping the [`Unit`] before its first poll means the
+    /// settles it. Dropping the [`Submission`] before its first poll means the
     /// operation never ran; dropping it later only stops waiting — the
     /// runtime still settles the unit and the lease stays held until it
     /// ends.
-    pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output> {
+    pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output> {
         submit_unit(
             UnitHost::Lease(Arc::clone(&self.lease)),
             &UnitScope::default(),
@@ -359,18 +359,18 @@ impl<R: Provider + PinSlots> Managed<R> {
 
 /// Which effects the caller that built a row facade may submit.
 #[derive(Debug, Clone, Default)]
-pub(crate) enum UnitEffectPolicy {
+pub(crate) enum EffectAuthority {
     /// Library callers may submit every declared operation effect.
     #[default]
-    Any,
+    Unjournaled,
     /// Action execution without effect-owner authority may perform reads only.
     ReadOnly,
     /// Action execution with effect-owner authority: reads as usual,
     /// effects only through `submit_effect` / `session_effect`, driven
     /// through `owner`.
-    Owned {
-        /// The execution owner that records the row's effects.
-        owner: Arc<dyn UnitEffectOwner>,
+    Journaled {
+        /// The execution journal that records the row's effects.
+        owner: Arc<dyn EffectJournal>,
         /// The row's credential slot identity, as the owner binds effects.
         binding: SlotIdentity,
     },
@@ -380,10 +380,10 @@ pub(crate) enum UnitEffectPolicy {
 /// facade: its cancellation, its deadline and its effect authority.
 ///
 /// A parent cancellation that fires before a unit's first grant cancels the
-/// unit as [`Unit::cancel`] does (`Cancelled`, `NotSent`); after the first
+/// unit as [`Submission::cancel`] does (`Cancelled`, `NotSent`); after the first
 /// grant it is ignored and the unit runs to its own deadline (Design
 /// DX-API.md:114). The parent deadline bounds every unit's deadline, below
-/// [`UNIT_DEADLINE_CAP`]; [`Unit::with_deadline`] can only shorten it
+/// [`OPERATION_DEADLINE_CAP`]; [`Submission::with_deadline`] can only shorten it
 /// further. A lease facade's units inherit nothing.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UnitScope {
@@ -392,7 +392,7 @@ pub(crate) struct UnitScope {
     /// The parent deadline.
     pub(crate) deadline: Option<Instant>,
     /// Effects this caller is authorized to submit.
-    pub(crate) effect_policy: UnitEffectPolicy,
+    pub(crate) effect_authority: EffectAuthority,
 }
 
 impl UnitScope {
@@ -405,21 +405,25 @@ impl UnitScope {
         Self {
             cancel: Some(ctx.cancel_token().clone()),
             deadline: options.deadline,
-            effect_policy: UnitEffectPolicy::Any,
+            effect_authority: EffectAuthority::Unjournaled,
         }
     }
 
     /// Restricts the facade to operations that declare [`Effect::Read`].
     pub(crate) fn read_only(mut self) -> Self {
-        self.effect_policy = UnitEffectPolicy::ReadOnly;
+        self.effect_authority = EffectAuthority::ReadOnly;
         self
     }
 
     /// Lets the facade submit effects through `submit_effect` and
     /// `session_effect` only, driven through `owner`; `binding` is the
     /// row's credential slot identity.
-    pub(crate) fn owned(mut self, owner: Arc<dyn UnitEffectOwner>, binding: SlotIdentity) -> Self {
-        self.effect_policy = UnitEffectPolicy::Owned { owner, binding };
+    pub(crate) fn journaled(
+        mut self,
+        owner: Arc<dyn EffectJournal>,
+        binding: SlotIdentity,
+    ) -> Self {
+        self.effect_authority = EffectAuthority::Journaled { owner, binding };
         self
     }
 
@@ -430,13 +434,13 @@ impl UnitScope {
         if effect == Effect::Read {
             return None;
         }
-        match self.effect_policy {
-            UnitEffectPolicy::Any => None,
-            UnitEffectPolicy::ReadOnly => {
+        match self.effect_authority {
+            EffectAuthority::Unjournaled => None,
+            EffectAuthority::ReadOnly => {
                 Some("managed row effect requires execution-owner authority")
             },
-            UnitEffectPolicy::Owned { .. } if declared => None,
-            UnitEffectPolicy::Owned { .. } => {
+            EffectAuthority::Journaled { .. } if declared => None,
+            EffectAuthority::Journaled { .. } => {
                 Some("execution-owned effects go through submit_effect")
             },
         }
@@ -450,15 +454,15 @@ impl UnitScope {
         key: &ResourceKey,
         effect: Effect,
         declaration: Option<EffectDeclaration<O, T>>,
-    ) -> Result<Option<OwnedSubmit<O, T>>, OpError> {
+    ) -> Result<Option<OwnedSubmit<O, T>>, OperationError> {
         if let Some(detail) = self.refusal(effect, declaration.is_some()) {
-            return Err(OpError::new(ErrorKind::Permanent, detail));
+            return Err(OperationError::new(ErrorKind::Permanent, detail));
         }
         let Some(declaration) = declaration else {
             return Ok(None);
         };
         declaration.check(effect)?;
-        let UnitEffectPolicy::Owned { owner, binding } = &self.effect_policy else {
+        let EffectAuthority::Journaled { owner, binding } = &self.effect_authority else {
             // A library row runs a declared effect as a plain unit.
             return Ok(None);
         };
@@ -471,7 +475,7 @@ impl UnitScope {
     }
 }
 
-/// Builds the lazy [`Unit`] of `operation` on `host`, in a
+/// Builds the lazy [`Submission`] of `operation` on `host`, in a
 /// `nebula.resource.unit` span naming it `operation_name`, under `scope`.
 /// A unit submitted with an effect `declaration` on an owned facade is
 /// driven through the facade's owner (see the `owned` module).
@@ -482,7 +486,7 @@ pub(super) fn submit_unit<R, O>(
     effect: Effect,
     operation_name: &'static str,
     declaration: Option<EffectDeclaration<O, O::Output>>,
-) -> Unit<O::Output>
+) -> Submission<O::Output>
 where
     R: Provider + PinSlots,
     O: Operation<R>,
@@ -507,7 +511,8 @@ where
         Err(refusal) => (UnitShared::new(scope), None, Some(refusal)),
     };
     let shared = Arc::new(shared);
-    let run: Pin<Box<dyn Future<Output = Result<O::Output, OpError>> + Send>> = match refused {
+    let run: Pin<Box<dyn Future<Output = Result<O::Output, OperationError>> + Send>> = match refused
+    {
         None => Box::pin(
             start_unit::<R, O>(
                 host,
@@ -550,7 +555,7 @@ where
             )
         },
     };
-    Unit { shared, key, run }
+    Submission { shared, key, run }
 }
 
 /// State one unit shares between its handle, its runtime task and its
@@ -558,7 +563,7 @@ where
 pub(super) struct UnitShared {
     /// `PENDING` until the first grant or a cancel, whichever comes first.
     state: AtomicU8,
-    /// Fired by [`Unit::cancel`] while no attempt was granted, or by the
+    /// Fired by [`Submission::cancel`] while no attempt was granted, or by the
     /// parent cancellation of the unit's [`UnitScope`] (a child token): the
     /// latter is honoured only until the first grant.
     cancel: CancellationToken,
@@ -579,7 +584,7 @@ impl UnitShared {
         let now = tokio::time::Instant::now().into_std();
         let capped = crate::deadline::deadline_after(
             now,
-            UNIT_DEADLINE_CAP,
+            OPERATION_DEADLINE_CAP,
             crate::deadline::UNBOUNDED_HORIZON,
         );
         let deadline = scope.deadline.map_or(capped, |parent| capped.min(parent));
@@ -607,7 +612,7 @@ impl UnitShared {
         self.effect.as_ref()
     }
 
-    /// The unit's cancel: [`Unit::cancel`] or its parent's.
+    /// The unit's cancel: [`Submission::cancel`] or its parent's.
     pub(super) fn cancel_token(&self) -> &CancellationToken {
         &self.cancel
     }
@@ -620,16 +625,16 @@ impl UnitShared {
         self.state.load(Ordering::Acquire) == GRANTED
     }
 
-    /// The cancel a wait of the unit races: [`Unit::cancel`] until the
+    /// The cancel a wait of the unit races: [`Submission::cancel`] until the
     /// first grant, nothing after it.
     pub(super) fn cancel_before_grant(&self) -> Option<&CancellationToken> {
         (!self.is_granted()).then_some(&self.cancel)
     }
 
     /// Refuses a unit whose cancel fired while no attempt was granted —
-    /// [`Unit::cancel`] or the parent cancellation — and latches it
+    /// [`Submission::cancel`] or the parent cancellation — and latches it
     /// cancelled. A fired cancel is ignored once an attempt was granted.
-    pub(super) fn refuse_if_cancelled(&self) -> Result<(), OpError> {
+    pub(super) fn refuse_if_cancelled(&self) -> Result<(), OperationError> {
         if !self.cancel.is_cancelled() {
             return Ok(());
         }
@@ -643,10 +648,10 @@ impl UnitShared {
     }
 
     /// Grants one attempt, unless the unit was cancelled before its first:
-    /// by [`Unit::cancel`], or by the parent cancellation having fired by
+    /// by [`Submission::cancel`], or by the parent cancellation having fired by
     /// now. The grant and a parent cancel race here, never after: a parent
     /// cancel that fires once the first attempt was granted is ignored.
-    pub(super) fn grant(&self) -> Result<(), OpError> {
+    pub(super) fn grant(&self) -> Result<(), OperationError> {
         self.refuse_if_cancelled()?;
         match self
             .state
@@ -706,8 +711,8 @@ impl UnitShared {
     }
 }
 
-pub(super) fn cancelled_before_grant() -> OpError {
-    OpError::new(
+pub(super) fn cancelled_before_grant() -> OperationError {
+    OperationError::new(
         ErrorKind::Cancelled,
         "unit cancelled before its first attempt",
     )
@@ -715,20 +720,20 @@ pub(super) fn cancelled_before_grant() -> OpError {
 
 /// One submitted [`Operation`]: a future of its settled outcome.
 ///
-/// Lazy until first polled (see [`Managed::submit`]). Once started the
+/// Lazy until first polled (see [`Lease::submit`]). Once started the
 /// runtime owns the unit: dropping this handle stops waiting but never
 /// aborts the operation — the runtime settles it, and the lease is released
 /// only after it ends.
 #[must_use = "a unit does nothing until awaited; dropped before its first poll it never runs"]
-pub struct Unit<T> {
+pub struct Submission<T> {
     shared: Arc<UnitShared>,
     key: ResourceKey,
-    run: Pin<Box<dyn Future<Output = Result<T, OpError>> + Send>>,
+    run: Pin<Box<dyn Future<Output = Result<T, OperationError>> + Send>>,
 }
 
-impl<T> Unit<T> {
+impl<T> Submission<T> {
     /// Shortens the unit's deadline to `deadline` (it can never exceed
-    /// [`UNIT_DEADLINE_CAP`] from submission). Call it before the first
+    /// [`OPERATION_DEADLINE_CAP`] from submission). Call it before the first
     /// poll: the runtime reads the deadline when the unit starts.
     pub fn with_deadline(self, deadline: Instant) -> Self {
         {
@@ -753,18 +758,18 @@ impl<T> Unit<T> {
     }
 }
 
-impl<T> Future for Unit<T> {
-    type Output = Result<T, OpError>;
+impl<T> Future for Submission<T> {
+    type Output = Result<T, OperationError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.get_mut().run.as_mut().poll(cx)
     }
 }
 
-impl<T> fmt::Debug for Unit<T> {
+impl<T> fmt::Debug for Submission<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("Unit")
+            .debug_struct("Submission")
             .field("resource_key", &self.key)
             .field("state", &self.shared.state_name())
             .field("attempts", &self.shared.attempts())
@@ -777,19 +782,19 @@ async fn lease_unit_slot<R: Provider>(
     lease: &ManagedLease<R>,
     shared: &UnitShared,
     deadline: tokio::time::Instant,
-) -> Result<OwnedSemaphorePermit, OpError> {
+) -> Result<OwnedSemaphorePermit, OperationError> {
     tokio::select! {
         biased;
         () = shared.cancel.cancelled() => Err(cancelled_before_grant()),
         () = lease.generation.token().cancelled() => {
             Err(lease.admission_refusal().err().unwrap_or_else(|| {
-                OpError::new(ErrorKind::Cancelled, "lease closing; new attempts refused")
+                OperationError::new(ErrorKind::Cancelled, "lease closing; new attempts refused")
             }))
         },
         permit = Arc::clone(&lease.units).acquire_owned() => permit.map_err(|_closed| {
-            OpError::new(ErrorKind::Cancelled, "lease closing; new attempts refused")
+            OperationError::new(ErrorKind::Cancelled, "lease closing; new attempts refused")
         }),
-        () = tokio::time::sleep_until(deadline) => Err(OpError::new(
+        () = tokio::time::sleep_until(deadline) => Err(OperationError::new(
             ErrorKind::Backpressure,
             "the lease's unit slots stayed full until the unit deadline",
         )),
@@ -807,7 +812,7 @@ async fn start_unit<R, O>(
     effect: Effect,
     span: tracing::Span,
     plan: Option<EffectPlan<O, O::Output>>,
-) -> Result<O::Output, OpError>
+) -> Result<O::Output, OperationError>
 where
     R: Provider + PinSlots,
     O: Operation<R>,
@@ -824,10 +829,12 @@ where
         UnitHost::Lease(lease) => lease_unit_slot(lease, &shared, deadline).await.map(Some),
         // Awaited inside a session of the same row, the unit would wait for
         // the row gate while that session holds a checkout.
-        UnitHost::Row(row) if super::session::in_session_of(row.marker()) => Err(OpError::new(
-            ErrorKind::Permanent,
-            "a unit of a row awaited inside a session of the same row; refused",
-        )),
+        UnitHost::Row(row) if super::session::in_session_of(row.marker()) => {
+            Err(OperationError::new(
+                ErrorKind::Permanent,
+                "a unit of a row awaited inside a session of the same row; refused",
+            ))
+        },
         UnitHost::Row(_) => Ok(None),
     };
     let permit = match permit {
@@ -884,7 +891,7 @@ where
     match runtime.await {
         Ok(outcome) => outcome,
         // Only a runtime shutdown aborts the task; the unit never settled.
-        Err(_aborted) => Err(OpError::new(
+        Err(_aborted) => Err(OperationError::new(
             ErrorKind::Cancelled,
             "the runtime stopped before the unit settled",
         )
@@ -904,7 +911,7 @@ async fn run_unit<R, O>(
     _permit: Option<OwnedSemaphorePermit>,
     deadline: tokio::time::Instant,
     span: tracing::Span,
-) -> Result<O::Output, OpError>
+) -> Result<O::Output, OperationError>
 where
     R: Provider + PinSlots,
     O: Operation<R>,
@@ -919,7 +926,7 @@ where
     };
     let max_attempts = operation.max_attempts();
     let outcome = {
-        let mut cx = OpCx {
+        let mut cx = OperationCx {
             host: &host,
             generation: &generation,
             pin: None,
@@ -933,7 +940,10 @@ where
     let (result, abnormal) = match outcome {
         Ok(Ok(result)) => (result, false),
         Ok(Err(_elapsed)) => (
-            Err(OpError::new(ErrorKind::Transient, "unit deadline elapsed")),
+            Err(OperationError::new(
+                ErrorKind::Transient,
+                "unit deadline elapsed",
+            )),
             true,
         ),
         Err(_panic) => {
@@ -942,7 +952,7 @@ where
             } else {
                 ErrorKind::Transient
             };
-            (Err(OpError::new(kind, "operation panicked")), true)
+            (Err(OperationError::new(kind, "operation panicked")), true)
         },
     };
     let sent = shared.fold(abnormal);
@@ -958,7 +968,7 @@ where
 /// What an [`Operation`] runs against: the unit's deadline, its attempt
 /// budget and the lease's closing notice, and the only way to reach the
 /// provider — [`attempt`](Self::attempt).
-pub struct OpCx<'u, R: Provider + PinSlots> {
+pub struct OperationCx<'u, R: Provider + PinSlots> {
     pub(super) host: &'u UnitHost<R>,
     /// The admission generation the unit is refused under: the lease's, or
     /// the row's current one when the unit started.
@@ -970,10 +980,10 @@ pub struct OpCx<'u, R: Provider + PinSlots> {
     max_attempts: NonZeroU32,
 }
 
-impl<R: Provider + PinSlots> fmt::Debug for OpCx<'_, R> {
+impl<R: Provider + PinSlots> fmt::Debug for OperationCx<'_, R> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("OpCx")
+            .debug_struct("OperationCx")
             .field("resource_key", self.host.key())
             .field("attempts", &self.shared.attempts())
             .field("max_attempts", &self.max_attempts)
@@ -981,7 +991,7 @@ impl<R: Provider + PinSlots> fmt::Debug for OpCx<'_, R> {
     }
 }
 
-impl<R: Provider + PinSlots> OpCx<'_, R> {
+impl<R: Provider + PinSlots> OperationCx<'_, R> {
     /// Asks for one provider attempt costing `cost`.
     ///
     /// The single linearization point of a unit. In order:
@@ -1003,13 +1013,13 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     ///    observer) and a row with bound slots, every bound credential's
     ///    availability is read after every wait of the attempt, outside every
     ///    lock, bounded by the unit's deadline and the read timeout, and
-    ///    raced against the lease's generation and [`Unit::cancel`]. Every
+    ///    raced against the lease's generation and [`Submission::cancel`]. Every
     ///    attempt reads, [`Cost::FREE`] included; concurrent attempts of a
     ///    credential share reads join-next (only a read issued after the
     ///    attempt arrived answers it). An interim manager or a slot-less row
     ///    reads nothing.
     /// 5. **Pin** — the unit's first grant pins its credential slots
-    ///    ([`Attempt::slots`]).
+    ///    ([`Attempt::credentials`]).
     /// 6. **Registration and grant** — on a strict read, under the manager's
     ///    admission lock: a revoke taint is `Revoked`, shutdown `Cancelled`;
     ///    the read is applied to the row (a blocked credential suspends it
@@ -1018,7 +1028,7 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     ///    reason; a suspended row or a closed lease refuses; a pin a rotation
     ///    superseded since the unit pinned it refuses `Rebinding`. Without a
     ///    strict read the lease's admission is re-checked, lock-free. The
-    ///    attempt is then granted unless [`Unit::cancel`] won the race for
+    ///    attempt is then granted unless [`Submission::cancel`] won the race for
     ///    the unit's first grant.
     ///
     /// Every refusal means nothing reached the provider; a quota slot booked
@@ -1032,7 +1042,7 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     ///
     /// Dropping the future before it resolves forfeits any booked slot and
     /// grants nothing.
-    pub async fn attempt(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OpError> {
+    pub async fn attempt(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OperationError> {
         let (host, shared) = (self.host, self.shared);
         let admitted = self.admit(&cost).await;
         host.record_attempt(admitted.is_ok());
@@ -1051,12 +1061,15 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     /// attempt, on a checkout that fits the provider's
     /// [`SessionBinding`], and destroyed on release unless the session
     /// closed cleanly ([`Attempt::end_session`]).
-    pub(super) async fn attempt_session(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OpError>
+    pub(super) async fn attempt_session(
+        &mut self,
+        cost: Cost,
+    ) -> Result<Attempt<'_, R>, OperationError>
     where
         R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
     {
         let UnitHost::Row(row) = self.host else {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Permanent,
                 "sessions run on a managed row",
             ));
@@ -1088,7 +1101,7 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     async fn admit(
         &mut self,
         cost: &Cost,
-    ) -> Result<(AttemptTarget<'_, R>, &UnitPin<R::Pinned>), OpError> {
+    ) -> Result<(AttemptTarget<'_, R>, &UnitPin<R::Pinned>), OperationError> {
         match self.host {
             UnitHost::Lease(lease) => {
                 self.admit_local(cost, None).await?;
@@ -1127,9 +1140,9 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
         &self,
         cost: &Cost,
         row: Option<&RowShared<R>>,
-    ) -> Result<(), OpError> {
+    ) -> Result<(), OperationError> {
         if self.shared.attempts() >= self.max_attempts.get() {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Permanent,
                 "attempt budget exhausted",
             ));
@@ -1206,16 +1219,16 @@ impl<R: Provider + PinSlots> OpCx<'_, R> {
     /// for every attempt, retry and resume of the effect. Send it as the
     /// provider's idempotency key. `None` for any other unit.
     #[must_use]
-    pub fn operation_key(&self) -> Option<&OperationKey> {
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
         self.shared
             .effect()
             .and_then(OwnedEffect::slot)
-            .map(UnitSlot::operation_key)
+            .map(JournalSlot::idempotency_key)
     }
 }
 
 /// The refusal of an attempt whose quota booking failed.
-fn quota_refusal(error: &Error) -> OpError {
+fn quota_refusal(error: &Error) -> OperationError {
     let detail = match error.kind() {
         ErrorKind::Cancelled => "unit cancelled before its first attempt",
         ErrorKind::Exhausted { .. } => "rate limit slot lands past the unit deadline",
@@ -1223,7 +1236,7 @@ fn quota_refusal(error: &Error) -> OpError {
         ErrorKind::Permanent => "rate limit can never grant the attempt's cost",
         _ => "rate limit refused the attempt",
     };
-    OpError::new(error.kind().clone(), detail)
+    OperationError::new(error.kind().clone(), detail)
 }
 
 /// One granted provider attempt.
@@ -1309,9 +1322,9 @@ impl<R: Provider + PinSlots> fmt::Debug for Attempt<'_, R> {
 }
 
 impl<R: Provider + PinSlots> Attempt<'_, R> {
-    /// The instance the attempt runs on: the lease's for a [`Managed`]
+    /// The instance the attempt runs on: the lease's for a [`Lease`]
     /// facade, the attempt's own checkout for a
-    /// [`ManagedRow`](super::ManagedRow).
+    /// [`ResourceHandle`](super::ResourceHandle).
     #[must_use]
     pub fn instance(&self) -> &R::Instance {
         match &self.target {
@@ -1323,7 +1336,7 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
     /// The credential slots pinned at the unit's first grant; the same for
     /// every attempt of the unit.
     #[must_use]
-    pub fn slots(&self) -> &R::Pinned {
+    pub fn credentials(&self) -> &R::Pinned {
         self.pinned
     }
 

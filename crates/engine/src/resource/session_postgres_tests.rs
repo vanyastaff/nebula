@@ -21,8 +21,8 @@ use nebula_credential::{BasicAuthCredential, CredentialGuard, scheme::IdentityPa
 use nebula_resource::{
     PoolConfig, Pooled, TeardownCx,
     call::{
-        Cost, ManagedRow, OpError, SentState, SessionClosed, SessionEnd, SessionProvider,
-        SessionSpec,
+        Cost, OperationError, ResourceHandle, SentState, SessionClosed, SessionEnd,
+        SessionProvider, SessionSpec,
     },
     rate_limit::Verdict,
     topology::pooled::{PoolProvider, RecycleDecision},
@@ -294,9 +294,9 @@ impl SessionProvider for PgRow {
         &'c self,
         connection: &'c mut PgConnection,
         _slots: &'c Self::Pinned,
-    ) -> Result<Self::Session<'c>, OpError> {
+    ) -> Result<Self::Session<'c>, OperationError> {
         connection.begin().await.map_err(|_| {
-            OpError::new(
+            OperationError::new(
                 nebula_resource::ErrorKind::Transient,
                 "postgres begin failed",
             )
@@ -313,12 +313,12 @@ impl SessionProvider for PgRow {
         match session.commit().await {
             Ok(()) => SessionClosed::Committed,
             Err(error) if server_refused(&error) => SessionClosed::RolledBack {
-                refused: Some(OpError::new(
+                refused: Some(OperationError::new(
                     nebula_resource::ErrorKind::Permanent,
                     "postgres refused the commit",
                 )),
             },
-            Err(_) => SessionClosed::Unknown(OpError::new(
+            Err(_) => SessionClosed::Unknown(OperationError::new(
                 nebula_resource::ErrorKind::Transient,
                 "postgres connection lost during the commit",
             )),
@@ -339,8 +339,8 @@ fn server_refused(error: &sqlx::Error) -> bool {
     }
 }
 
-fn query_failed(_: sqlx::Error) -> OpError {
-    OpError::new(
+fn query_failed(_: sqlx::Error) -> OperationError {
+    OperationError::new(
         nebula_resource::ErrorKind::Transient,
         "postgres query failed",
     )
@@ -497,7 +497,7 @@ impl Pg {
     }
 
     /// The facade of the activated row.
-    fn row(&self, activated: &ActivatedResource) -> ManagedRow<PgRow> {
+    fn row(&self, activated: &ActivatedResource) -> ResourceHandle<PgRow> {
         let workspace = WorkspaceId::parse(&self.fixture.scope.workspace_id).expect("workspace id");
         let ctx = ResourceContext::minimal(
             nebula_core::scope::Scope {
@@ -508,7 +508,7 @@ impl Pg {
         );
         self.fixture
             .manager
-            .managed_row_for_identity::<PgRow>(&ctx, &activated.slot_identity)
+            .handle_for_identity::<PgRow>(&ctx, &activated.slot_identity)
             .expect("the row facade")
     }
 
@@ -518,7 +518,7 @@ impl Pg {
         &self,
         activated: &ActivatedResource,
         cancel: &CancellationToken,
-    ) -> ManagedRow<PgRow> {
+    ) -> ResourceHandle<PgRow> {
         use nebula_action::ActionContextExt as _;
         action_context(
             &self.fixture.manager,
@@ -527,12 +527,16 @@ impl Pg {
             &activated.slot_identity,
             cancel,
         )
-        .managed_row_by_id::<PgRow>(self.key.as_str())
+        .resource_handle_by_id::<PgRow>(self.key.as_str())
         .expect("the action's row facade")
     }
 
     /// Commits `insert into ledger values (id)`; yields the backend pid.
-    fn insert(&self, row: &ManagedRow<PgRow>, id: i32) -> nebula_resource::call::Unit<i32> {
+    fn insert(
+        &self,
+        row: &ResourceHandle<PgRow>,
+        id: i32,
+    ) -> nebula_resource::call::Submission<i32> {
         row.session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
             Box::pin(async move {
                 sqlx::query("INSERT INTO ledger (id) VALUES ($1)")
@@ -696,7 +700,7 @@ async fn a_failed_body_leaves_nothing_behind() {
                     .execute(&mut **tx)
                     .await
                     .map_err(query_failed)?;
-                Err::<(), _>(OpError::new(
+                Err::<(), _>(OperationError::new(
                     nebula_resource::ErrorKind::Permanent,
                     "the body gave up",
                 ))
@@ -775,7 +779,7 @@ async fn a_backend_lost_during_commit_is_an_unknown_outcome() {
     );
     let mut unknown = 0;
     while let Some(event) = events.try_recv() {
-        if matches!(event, ResourceEvent::UnitOutcomeUnknown { .. }) {
+        if matches!(event, ResourceEvent::OperationOutcomeUnknown { .. }) {
             unknown += 1;
         }
     }
@@ -917,7 +921,7 @@ impl Operation<PgRow> for Throttle {
     type Output = ();
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, PgRow>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, PgRow>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         attempt
             .report(Verdict::Throttled {
@@ -936,7 +940,7 @@ impl Operation<PgRow> for CheckoutRead {
     type Output = ();
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, PgRow>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, PgRow>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::ONE).await?;
         attempt.settle(SentState::NotSent);
         Ok(())

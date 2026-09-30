@@ -20,9 +20,9 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// `try_acquire_any` through
 /// [`Manager::acquire_any`](nebula_resource::Manager::acquire_any)
 /// using the execution scope and optional per-key slot identities recorded
-/// at activation. `managed_row_any` hands out the row's per-unit checkout
+/// at activation. `resource_handle_any` hands out the row's per-unit checkout
 /// facade through
-/// [`Manager::managed_row_any`](nebula_resource::Manager::managed_row_any):
+/// [`Manager::handle_any_read_only`](nebula_resource::Manager::handle_any_read_only):
 /// its units are cancelled with the node's cancellation token until their
 /// first grant and bounded by the execution deadline
 /// ([`with_deadline`](Self::with_deadline)).
@@ -152,13 +152,16 @@ impl ResourceAccessor for EngineResourceAccessor {
         })
     }
 
-    fn managed_row_any(&self, key: &ResourceKey) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
+    fn resource_handle_any(
+        &self,
+        key: &ResourceKey,
+    ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
         let options = match self.deadline {
             Some(deadline) => AcquireOptions::default().with_deadline(deadline),
             None => AcquireOptions::default(),
         };
         self.manager
-            .managed_row_any_read_only(
+            .handle_any_read_only(
                 key,
                 &self.resource_ctx(),
                 &options,
@@ -167,7 +170,7 @@ impl ResourceAccessor for EngineResourceAccessor {
             .map_err(|e| Self::map_err(key, e))
     }
 
-    fn try_managed_row_any(
+    fn try_resource_handle_any(
         &self,
         key: &ResourceKey,
     ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
@@ -175,7 +178,7 @@ impl ResourceAccessor for EngineResourceAccessor {
             Some(deadline) => AcquireOptions::default().with_deadline(deadline),
             None => AcquireOptions::default(),
         };
-        match self.manager.managed_row_any_read_only(
+        match self.manager.handle_any_read_only(
             key,
             &self.resource_ctx(),
             &options,
@@ -404,7 +407,7 @@ mod tests {
     // ── managed rows ─────────────────────────────────────────────────────
 
     use nebula_resource::{
-        call::{Cost, Effect, ManagedRow, OpCx, OpError, Operation, SentState},
+        call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle, SentState},
         rate_limit::{Rate, RowLimit},
     };
 
@@ -423,12 +426,12 @@ mod tests {
             .expect("register");
     }
 
-    fn row_of(accessor: &EngineResourceAccessor) -> ManagedRow<AccResource> {
+    fn row_of(accessor: &EngineResourceAccessor) -> ResourceHandle<AccResource> {
         *accessor
-            .managed_row_any(&AccResource::key())
+            .resource_handle_any(&AccResource::key())
             .expect("managed row")
-            .downcast::<ManagedRow<AccResource>>()
-            .expect("ManagedRow downcast")
+            .downcast::<ResourceHandle<AccResource>>()
+            .expect("ResourceHandle downcast")
     }
 
     /// Reads the instance's value in one attempt costing one permit.
@@ -438,7 +441,7 @@ mod tests {
         type Output = u64;
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, AccResource>) -> Result<u64, OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, AccResource>) -> Result<u64, OperationError> {
             let attempt = cx.attempt(Cost::ONE).await?;
             let value = attempt.instance().load(Ordering::Relaxed);
             attempt.settle(SentState::Sent);
@@ -453,13 +456,16 @@ mod tests {
         type Output = std::time::Instant;
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, AccResource>) -> Result<std::time::Instant, OpError> {
+        async fn run(
+            self,
+            cx: &mut OperationCx<'_, AccResource>,
+        ) -> Result<std::time::Instant, OperationError> {
             Ok(cx.deadline())
         }
     }
 
     #[tokio::test]
-    async fn managed_row_any_serves_the_row_of_the_recorded_slot_identity() {
+    async fn resource_handle_any_serves_the_row_of_the_recorded_slot_identity() {
         let manager = Arc::new(Manager::new());
         let key = AccResource::key();
         let bound = SlotIdentity::from_bindings([("slot", "cred-a")]);
@@ -475,7 +481,7 @@ mod tests {
             SlotIdentity::from_bindings([("slot", "other")]),
         )]));
         let error = wrong
-            .managed_row_any(&key)
+            .resource_handle_any(&key)
             .expect_err("another identity's row is not served");
         assert!(
             matches!(error, CoreError::CredentialNotFound { .. }),
@@ -531,7 +537,7 @@ mod tests {
             .expect("deadline");
         assert_eq!(
             capped,
-            tokio::time::Instant::now().into_std() + nebula_resource::call::UNIT_DEADLINE_CAP
+            tokio::time::Instant::now().into_std() + nebula_resource::call::OPERATION_DEADLINE_CAP
         );
     }
 }

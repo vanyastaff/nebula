@@ -6,7 +6,7 @@ use std::{fmt, num::NonZeroU32};
 /// What one provider attempt costs against the row's rate limit.
 ///
 /// The facade books the cost when it grants the attempt
-/// ([`OpCx::attempt`](super::OpCx::attempt)), never at acquire: a lease that
+/// ([`OperationCx::attempt`](super::OperationCx::attempt)), never at acquire: a lease that
 /// makes three calls books three costs (Design QUOTA-DX.md:32).
 ///
 /// ```

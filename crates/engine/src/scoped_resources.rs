@@ -771,24 +771,27 @@ impl ResourceAccessor for LayeredResourceAccessor {
     /// A key a branch scope holds is served by that scope's payload, which
     /// is no managed row: fail closed rather than bypass the closest scope
     /// for a global row. Otherwise forwards to the global accessor.
-    fn managed_row_any(&self, key: &ResourceKey) -> Result<ScopedLookup, CoreError> {
+    fn resource_handle_any(&self, key: &ResourceKey) -> Result<ScopedLookup, CoreError> {
         if self.scoped.has_in_ancestors(key) {
             return Err(CoreError::scope_violation(
                 format!("managed row of {key}"),
                 "a branch-scoped resource payload, which serves no managed rows",
             ));
         }
-        self.global.managed_row_any(key)
+        self.global.resource_handle_any(key)
     }
 
-    fn try_managed_row_any(&self, key: &ResourceKey) -> Result<Option<ScopedLookup>, CoreError> {
+    fn try_resource_handle_any(
+        &self,
+        key: &ResourceKey,
+    ) -> Result<Option<ScopedLookup>, CoreError> {
         if self.scoped.has_in_ancestors(key) {
             return Err(CoreError::scope_violation(
                 format!("managed row of {key}"),
                 "a branch-scoped resource payload, which serves no managed rows",
             ));
         }
-        self.global.try_managed_row_any(key)
+        self.global.try_resource_handle_any(key)
     }
 }
 

@@ -28,7 +28,7 @@ use nebula_resource::{
 };
 use nebula_sdk::integration::resource::{
     CredentialGuard, CredentialUnavailableReason, Effect, Error, ErrorKind, HasCredentialSlots,
-    Managed, OpError, PinSlots, Provider, Rate, Resident, ResidentProvider, ResourceConfig,
+    Lease, OperationError, PinSlots, Provider, Rate, Resident, ResidentProvider, ResourceConfig,
     ResourceContext, ResourceKey, ResourceMetadataDraft, SentState, SlotCell,
     http::{
         Authorize, HttpApi, HttpConfig, HttpTransport, Request, open_stream, open_stream_until,
@@ -124,7 +124,7 @@ impl Provider for Api {
 impl ResidentProvider for Api {}
 
 impl HttpApi for Api {
-    fn authorize(slots: &Pinned, auth: &mut Authorize<'_>) -> Result<(), OpError> {
+    fn authorize(slots: &Pinned, auth: &mut Authorize<'_>) -> Result<(), OperationError> {
         match slots.auth {
             Auth::Bearer => auth.bearer(slots.token.as_deref()),
             Auth::Basic => auth.basic(slots.login.as_deref()),
@@ -179,13 +179,13 @@ impl Harness {
         harness
     }
 
-    async fn managed(&self) -> Managed<Api> {
+    async fn managed(&self) -> Lease<Api> {
         let context = ResourceContext::minimal(Default::default(), CancellationToken::new());
         self.manager
             .acquire::<Api>(&context, &AcquireOptions::default())
             .await
             .expect("acquire")
-            .into_managed()
+            .into_lease()
     }
 }
 
@@ -202,7 +202,7 @@ fn status(code: u16, extra: &str) -> Reply {
     ))
 }
 
-fn assert_unit_error(error: &OpError, kind: &ErrorKind, sent: SentState) {
+fn assert_unit_error(error: &OperationError, kind: &ErrorKind, sent: SentState) {
     assert_eq!(error.kind(), kind, "{error:?}");
     assert_eq!(error.sent(), sent, "{error:?}");
 }

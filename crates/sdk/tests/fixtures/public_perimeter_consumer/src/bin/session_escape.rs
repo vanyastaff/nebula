@@ -2,10 +2,10 @@
 //! session.
 
 use nebula_sdk::integration::resource::{
-    Cost, ManagedRow, PoolProvider, Pooled, Provider, SessionProvider, SessionSpec,
+    Cost, PoolProvider, Pooled, Provider, ResourceHandle, SessionProvider, SessionSpec,
 };
 
-fn smuggle<R>(row: &ManagedRow<R>)
+fn smuggle<R>(row: &ResourceHandle<R>)
 where
     R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
 {
