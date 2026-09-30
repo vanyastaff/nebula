@@ -115,12 +115,10 @@ fn only_the_journaled_epoch_admits_a_journaled_effect_record() {
     );
 
     // Epoch 5 records read exactly as before.
-    for effect in [RecordedActionEffectV1::ReadOnly] {
-        let legacy = effect_epoch_record(PlanEpoch::GraphV5, effect);
-        let loaded = ExecutablePlanRevision::try_from_recorded_v1(legacy.clone())
-            .expect("an epoch-5 read-only record stays readable");
-        assert_eq!(loaded.id(), legacy.claimed_id);
-    }
+    let legacy = effect_epoch_record(PlanEpoch::GraphV5, RecordedActionEffectV1::ReadOnly);
+    let loaded = ExecutablePlanRevision::try_from_recorded_v1(legacy.clone())
+        .expect("an epoch-5 read-only record stays readable");
+    assert_eq!(loaded.id(), legacy.claimed_id);
 }
 
 #[test]

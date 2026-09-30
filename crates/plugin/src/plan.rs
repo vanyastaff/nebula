@@ -849,6 +849,10 @@ pub(crate) struct RecordedBindingV1 {
 /// instead of failing partway through its body. Every other field is
 /// skipped unread.
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names are the persisted record's wire keys"
+)]
 pub struct RecordedPlanEpochV1 {
     record_version: u16,
     compiler_version: u16,
