@@ -3,6 +3,7 @@
 
 use std::{fmt, marker::PhantomData, num::NonZeroU32};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use http::{
     HeaderMap, HeaderName, HeaderValue, StatusCode,
@@ -13,7 +14,7 @@ use nebula_resource::{
     call::{Cost, Effect, OperationError},
 };
 use reqwest::Url;
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de, ser};
 
 use super::config::HttpTransport;
 
@@ -21,22 +22,25 @@ pub(super) mod sealed {
     /// Seals [`Method`](super::Method): only the markers of this module
     /// implement it.
     pub trait Sealed {
+        /// Whether the request carries an `Idempotency-Key`.
+        const KEYED: bool = false;
+
         /// The request method.
         fn http_method() -> http::Method;
     }
 }
 
-/// An HTTP method marker. It fixes the method and the [`Effect`] a
-/// [`Request`] declares, so the retry safety of a request is a property of
-/// its type.
+/// An HTTP method marker. It fixes the method, the [`Effect`] a
+/// [`Request`] declares and its operation key, so the retry safety of a
+/// request is a property of its type.
 ///
-/// | Marker | Method | Effect |
-/// |---|---|---|
-/// | [`Get`], [`Head`], [`Options`] | `GET`, `HEAD`, `OPTIONS` | `Read` |
-/// | [`Put`], [`Delete`] | `PUT`, `DELETE` | `Idempotent` |
-/// | [`Post`], [`Patch`] | `POST`, `PATCH` | `Write` |
-/// | [`Keyed<Post>`](Keyed), [`Keyed<Patch>`](Keyed) | with an `Idempotency-Key` | `Idempotent` |
-/// | [`AsWrite<Put>`](AsWrite), [`AsWrite<Delete>`](AsWrite) | a non-idempotent `PUT` / `DELETE` | `Write` |
+/// | Marker | Method | Effect | Operation key |
+/// |---|---|---|---|
+/// | [`Get`], [`Head`], [`Options`] | `GET`, `HEAD`, `OPTIONS` | `Read` | `http.get`, `http.head`, `http.options` |
+/// | [`Put`], [`Delete`] | `PUT`, `DELETE` | `Idempotent` | `http.put`, `http.delete` |
+/// | [`Post`], [`Patch`] | `POST`, `PATCH` | `Write` | `http.post`, `http.patch` |
+/// | [`Keyed<Post>`](Keyed), [`Keyed<Patch>`](Keyed) | with an `Idempotency-Key` | `Idempotent` | `http.post.keyed`, `http.patch.keyed` |
+/// | [`AsWrite<Put>`](AsWrite), [`AsWrite<Delete>`](AsWrite) | a non-idempotent `PUT` / `DELETE` | `Write` | `http.put.as_write`, `http.delete.as_write` |
 ///
 /// `TRACE` and `CONNECT` have no marker.
 pub trait Method: sealed::Sealed + Send + 'static {
@@ -44,10 +48,13 @@ pub trait Method: sealed::Sealed + Send + 'static {
     const METHOD: &'static str;
     /// What repeating the request does to the provider.
     const EFFECT: Effect;
+    /// The [`Operation::KEY`](nebula_resource::call::Operation::KEY) a
+    /// request of this marker is journaled under.
+    const OPERATION_KEY: &'static str;
 }
 
 macro_rules! method_marker {
-    ($(#[$doc:meta])* $marker:ident, $method:ident, $effect:ident) => {
+    ($(#[$doc:meta])* $marker:ident, $method:ident, $effect:ident, $key:literal) => {
         $(#[$doc])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct $marker;
@@ -61,39 +68,40 @@ macro_rules! method_marker {
         impl Method for $marker {
             const METHOD: &'static str = stringify!($method);
             const EFFECT: Effect = Effect::$effect;
+            const OPERATION_KEY: &'static str = $key;
         }
     };
 }
 
 method_marker!(
     /// `GET`: reads.
-    Get, GET, Read
+    Get, GET, Read, "http.get"
 );
 method_marker!(
     /// `HEAD`: reads.
-    Head, HEAD, Read
+    Head, HEAD, Read, "http.head"
 );
 method_marker!(
     /// `OPTIONS`: reads.
-    Options, OPTIONS, Read
+    Options, OPTIONS, Read, "http.options"
 );
 method_marker!(
     /// `PUT`: idempotent by HTTP semantics; [`Request::as_write`] declares a
     /// provider that breaks them.
-    Put, PUT, Idempotent
+    Put, PUT, Idempotent, "http.put"
 );
 method_marker!(
     /// `DELETE`: idempotent by HTTP semantics; [`Request::as_write`]
     /// declares a provider that breaks them.
-    Delete, DELETE, Idempotent
+    Delete, DELETE, Idempotent, "http.delete"
 );
 method_marker!(
     /// `POST`: a write; [`Request::idempotency_key`] makes it idempotent.
-    Post, POST, Write
+    Post, POST, Write, "http.post"
 );
 method_marker!(
     /// `PATCH`: a write; [`Request::idempotency_key`] makes it idempotent.
-    Patch, PATCH, Write
+    Patch, PATCH, Write, "http.patch"
 );
 
 /// A `POST` or `PATCH` carrying an `Idempotency-Key`: the provider absorbs a
@@ -108,8 +116,10 @@ pub struct Keyed<M>(PhantomData<M>);
 pub struct AsWrite<M>(PhantomData<M>);
 
 macro_rules! wrapped_marker {
-    ($wrapper:ident < $inner:ident >, $effect:ident) => {
+    ($wrapper:ident < $inner:ident >, $effect:ident, $keyed:literal, $key:literal) => {
         impl sealed::Sealed for $wrapper<$inner> {
+            const KEYED: bool = $keyed;
+
             fn http_method() -> http::Method {
                 <$inner as sealed::Sealed>::http_method()
             }
@@ -118,20 +128,21 @@ macro_rules! wrapped_marker {
         impl Method for $wrapper<$inner> {
             const METHOD: &'static str = <$inner as Method>::METHOD;
             const EFFECT: Effect = Effect::$effect;
+            const OPERATION_KEY: &'static str = $key;
         }
     };
 }
 
-wrapped_marker!(Keyed<Post>, Idempotent);
-wrapped_marker!(Keyed<Patch>, Idempotent);
-wrapped_marker!(AsWrite<Put>, Write);
-wrapped_marker!(AsWrite<Delete>, Write);
+wrapped_marker!(Keyed<Post>, Idempotent, true, "http.post.keyed");
+wrapped_marker!(Keyed<Patch>, Idempotent, true, "http.patch.keyed");
+wrapped_marker!(AsWrite<Put>, Write, false, "http.put.as_write");
+wrapped_marker!(AsWrite<Delete>, Write, false, "http.delete.as_write");
 
 /// Headers a request may not set: credentials are applied from the unit's
 /// pinned slots by [`HttpApi::authorize`](super::HttpApi::authorize) only.
 const FORBIDDEN_HEADERS: [HeaderName; 3] = [AUTHORIZATION, PROXY_AUTHORIZATION, COOKIE];
 
-const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
+pub(super) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 
 /// One HTTP request, described as data and submitted as an
 /// [`Operation`](nebula_resource::call::Operation) on a resource that
@@ -146,6 +157,12 @@ const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 ///
 /// Defaults: [`Cost::ONE`], one attempt, the transport's response budget.
 /// `Debug` shows the method and header names only.
+///
+/// A request is its own journaled intent: it serializes as
+/// `{path, query, headers: [[name, value]], body?: base64, accept,
+/// max_bytes, idempotency_key?}` — the cost and the attempt budget are
+/// policy, not intent, and are not serialized (a deserialized request has
+/// the defaults).
 ///
 /// ```
 /// # fn build() -> Result<(), nebula_sdk::integration::resource::OperationError> {
@@ -167,10 +184,102 @@ pub struct Request<M: Method> {
     max_attempts: NonZeroU32,
     accept: Vec<StatusCode>,
     max_bytes: Option<u64>,
-    /// A defect found by a builder that cannot fail (an invalid
-    /// idempotency key): the request is refused before any attempt.
-    defect: Option<&'static str>,
+    /// The developer part of the provider idempotency key of a
+    /// [`Keyed`] request.
+    key_part: Option<String>,
     method: PhantomData<fn() -> M>,
+}
+
+/// The wire form of a [`Request`]: its intent only.
+#[derive(Serialize, Deserialize)]
+struct RequestWire {
+    path: String,
+    query: Vec<(String, String)>,
+    headers: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    body: Option<String>,
+    accept: Vec<u16>,
+    max_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    idempotency_key: Option<String>,
+}
+
+/// `headers` as `[name, value]` pairs, repeated names kept in order.
+pub(super) fn header_pairs<E: ser::Error>(headers: &HeaderMap) -> Result<Vec<(String, String)>, E> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            let value = std::str::from_utf8(value.as_bytes())
+                .map_err(|_| E::custom("a header value is not UTF-8"))?;
+            Ok((name.as_str().to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+/// The header map of `[name, value]` pairs.
+pub(super) fn header_map<E: de::Error>(pairs: Vec<(String, String)>) -> Result<HeaderMap, E> {
+    let mut headers = HeaderMap::with_capacity(pairs.len());
+    for (name, value) in pairs {
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| E::custom("invalid header name"))?;
+        let value = HeaderValue::try_from(value).map_err(|_| E::custom("invalid header value"))?;
+        headers.append(name, value);
+    }
+    Ok(headers)
+}
+
+impl<M: Method> Serialize for Request<M> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        RequestWire {
+            path: self.path.clone(),
+            query: self.query.clone(),
+            headers: header_pairs(&self.headers)?,
+            body: self.body.as_ref().map(|body| STANDARD.encode(body)),
+            accept: self.accept.iter().map(StatusCode::as_u16).collect(),
+            max_bytes: self.max_bytes,
+            idempotency_key: self.key_part.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de, M: Method> Deserialize<'de> for Request<M> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = RequestWire::deserialize(deserializer)?;
+        validate_path(&wire.path).map_err(|error| de::Error::custom(error.detail()))?;
+        let headers = header_map(wire.headers)?;
+        if FORBIDDEN_HEADERS
+            .iter()
+            .any(|name| headers.contains_key(name))
+        {
+            return Err(de::Error::custom(
+                "credential headers are applied from credential slots only",
+            ));
+        }
+        let body = wire
+            .body
+            .map(|body| STANDARD.decode(body).map(Bytes::from))
+            .transpose()
+            .map_err(|_| de::Error::custom("request body is not base64"))?;
+        let accept = wire
+            .accept
+            .into_iter()
+            .map(StatusCode::from_u16)
+            .collect::<Result<_, _>>()
+            .map_err(|_| de::Error::custom("invalid accepted status"))?;
+        Ok(Self {
+            path: wire.path,
+            query: wire.query,
+            headers,
+            body,
+            cost: Cost::ONE,
+            max_attempts: NonZeroU32::MIN,
+            accept,
+            max_bytes: wire.max_bytes,
+            key_part: wire.idempotency_key.filter(|_| M::KEYED),
+            method: PhantomData,
+        })
+    }
 }
 
 impl<M: Method> fmt::Debug for Request<M> {
@@ -205,7 +314,7 @@ impl<M: Method> Request<M> {
             max_attempts: NonZeroU32::MIN,
             accept: Vec::new(),
             max_bytes: None,
-            defect: None,
+            key_part: None,
             method: PhantomData,
         })
     }
@@ -318,9 +427,9 @@ impl<M: Method> Request<M> {
             .map_or(transport_budget, |bytes| bytes.min(transport_budget))
     }
 
-    /// The defect a builder recorded, refused before any attempt.
-    pub(super) fn check(&self) -> Result<(), OperationError> {
-        self.defect.map_or(Ok(()), |detail| Err(invalid(detail)))
+    /// The developer part of a [`Keyed`] request's idempotency key.
+    pub(super) fn key_part(&self) -> Option<&str> {
+        self.key_part.as_deref()
     }
 
     /// The outgoing request, without credentials: its URL is the base plus
@@ -329,7 +438,6 @@ impl<M: Method> Request<M> {
         &self,
         transport: &HttpTransport,
     ) -> Result<reqwest::Request, OperationError> {
-        self.check()?;
         let base = transport.base();
         let prefix = base.path().trim_end_matches('/');
         let mut url: Url = base.clone();
@@ -365,18 +473,13 @@ impl<M: Method> Request<M> {
             max_attempts: self.max_attempts,
             accept: self.accept,
             max_bytes: self.max_bytes,
-            defect: self.defect,
+            key_part: self.key_part,
             method: PhantomData,
         }
     }
 
     fn with_idempotency_key(mut self, key: String) -> Self {
-        match HeaderValue::try_from(key) {
-            Ok(value) if !value.is_empty() => {
-                self.headers.insert(IDEMPOTENCY_KEY, value);
-            },
-            _ => self.defect = Some("invalid idempotency key"),
-        }
+        self.key_part = Some(key);
         self
     }
 }
@@ -426,8 +529,15 @@ impl Request<Post> {
 
     /// Sends the `POST` with an `Idempotency-Key`: the provider absorbs a
     /// repeat, so the request becomes `Idempotent` and a unit with an
-    /// unknown outcome may be retried with the same key. An empty or invalid
-    /// key refuses the request before any attempt.
+    /// unknown outcome may be retried with the same key.
+    ///
+    /// `key` is the developer part of the key
+    /// ([`Operation::idempotency_key`](nebula_resource::call::Operation::idempotency_key)):
+    /// 1 to 256 bytes of visible ASCII, deterministic for the call. The
+    /// header carries the unit's derived key
+    /// ([`OperationCx::idempotency_key`](nebula_resource::call::OperationCx::idempotency_key)),
+    /// never `key` itself. An invalid key refuses the request before any
+    /// attempt.
     #[must_use]
     pub fn idempotency_key(self, key: impl Into<String>) -> Request<Keyed<Post>> {
         self.with_idempotency_key(key.into()).retag()
@@ -514,7 +624,7 @@ fn validate_path(path: &str) -> Result<(), OperationError> {
 mod tests {
     use rstest::rstest;
 
-    use super::*;
+    use super::{sealed::Sealed as _, *};
 
     #[rstest]
     #[case::relative("user")]
@@ -561,16 +671,104 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_idempotency_key_refuses_the_request() {
-        let keyed = Request::post("/charges").expect("path").idempotency_key("");
+    fn the_marker_fixes_the_operation_key() {
+        let keys = [
+            Get::OPERATION_KEY,
+            Head::OPERATION_KEY,
+            Options::OPERATION_KEY,
+            Put::OPERATION_KEY,
+            Delete::OPERATION_KEY,
+            Post::OPERATION_KEY,
+            Patch::OPERATION_KEY,
+            <Keyed<Post>>::OPERATION_KEY,
+            <Keyed<Patch>>::OPERATION_KEY,
+            <AsWrite<Put>>::OPERATION_KEY,
+            <AsWrite<Delete>>::OPERATION_KEY,
+        ];
         assert_eq!(
-            *keyed.check().expect_err("refused").kind(),
-            ErrorKind::Permanent
+            keys,
+            [
+                "http.get",
+                "http.head",
+                "http.options",
+                "http.put",
+                "http.delete",
+                "http.post",
+                "http.patch",
+                "http.post.keyed",
+                "http.patch.keyed",
+                "http.put.as_write",
+                "http.delete.as_write",
+            ]
         );
+        const {
+            assert!(<Keyed<Post>>::KEYED && <Keyed<Patch>>::KEYED);
+            assert!(!Post::KEYED && !<AsWrite<Put>>::KEYED);
+        };
+    }
+
+    #[test]
+    fn a_keyed_request_carries_its_key_part_not_a_header() {
         let keyed = Request::post("/charges")
             .expect("path")
             .idempotency_key("key-1");
-        keyed.check().expect("valid key");
+        assert_eq!(keyed.key_part(), Some("key-1"));
+        assert!(keyed.headers.get(IDEMPOTENCY_KEY).is_none());
+        assert_eq!(Request::post("/charges").expect("path").key_part(), None);
+    }
+
+    #[test]
+    fn a_request_serializes_its_intent_and_round_trips() {
+        let request = Request::post("/charges")
+            .expect("path")
+            .query(&[("dry", "1")])
+            .header("x-trace", "t-1")
+            .expect("header")
+            .header("x-trace", "t-2")
+            .expect("repeated header")
+            .body(&b"\x00\xff"[..])
+            .accept_status(StatusCode::CONFLICT)
+            .max_bytes(64)
+            .cost(Cost::FREE)
+            .max_attempts(NonZeroU32::new(3).expect("three"))
+            .idempotency_key("charge-1");
+        let json = serde_json::to_value(&request).expect("serializes");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "path": "/charges",
+                "query": [["dry", "1"]],
+                "headers": [["x-trace", "t-2"]],
+                "body": "AP8=",
+                "accept": [409],
+                "max_bytes": 64,
+                "idempotency_key": "charge-1",
+            }),
+            "policy (cost, attempts) is not intent"
+        );
+        let back: Request<Keyed<Post>> = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back.path, "/charges");
+        assert_eq!(back.body.as_deref(), Some(&b"\x00\xff"[..]));
+        assert_eq!(back.key_part(), Some("charge-1"));
+        assert!(back.accepts(StatusCode::CONFLICT));
+        assert_eq!(back.cost_value(), &Cost::ONE, "the default policy");
+        assert_eq!(back.attempts(), NonZeroU32::MIN);
+    }
+
+    #[test]
+    fn a_deserialized_request_keeps_the_path_and_credential_rules() {
+        let wire = |path: &str, header: &str| {
+            serde_json::json!({
+                "path": path,
+                "query": [],
+                "headers": [[header, "v"]],
+                "accept": [],
+                "max_bytes": null,
+            })
+        };
+        assert!(serde_json::from_value::<Request<Get>>(wire("/ok", "x-a")).is_ok());
+        assert!(serde_json::from_value::<Request<Get>>(wire("//evil", "x-a")).is_err());
+        assert!(serde_json::from_value::<Request<Get>>(wire("/ok", "authorization")).is_err());
     }
 
     #[test]

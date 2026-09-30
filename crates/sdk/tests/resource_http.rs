@@ -600,10 +600,62 @@ async fn a_read_is_re_attempted_after_a_reset_and_a_write_is_not() {
         .expect("a keyed write is replay safe");
     let seen = server.seen();
     assert_eq!(seen.len(), 2);
+    let keys: Vec<&str> = seen
+        .iter()
+        .map(|request| idempotency_header(request))
+        .collect();
+    // The header is the key the unit derived from the developer part
+    // (base64url SHA-256), never the part itself, and every attempt sends
+    // the same one.
+    assert_eq!(keys[0].len(), 43, "{keys:?}");
     assert!(
-        seen.iter()
-            .all(|request| request.contains("idempotency-key: key-1"))
+        keys[0]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')),
+        "{keys:?}"
     );
+    assert_ne!(keys[0], "key-1");
+    assert_eq!(keys[0], keys[1], "one key for every attempt");
+
+    // The same part derives the same key; another part another one.
+    let server = Server::start(vec![ok("{}"), ok("{}")]).await;
+    let harness = Harness::bearer(&server);
+    let managed = harness.managed().await;
+    for part in ["key-1", "key-2"] {
+        managed
+            .submit(
+                Request::post("/items")
+                    .expect("path")
+                    .body("{}")
+                    .idempotency_key(part),
+            )
+            .await
+            .expect("keyed");
+    }
+    let seen = server.seen();
+    assert_eq!(idempotency_header(&seen[0]), keys[0]);
+    assert_ne!(idempotency_header(&seen[1]), keys[0]);
+
+    // An invalid part is refused before anything is sent.
+    let error = managed
+        .submit(
+            Request::post("/items")
+                .expect("path")
+                .idempotency_key("has space"),
+        )
+        .await
+        .expect_err("not visible ASCII");
+    assert_unit_error(&error, &ErrorKind::Permanent, SentState::NotSent);
+    assert_eq!(server.seen().len(), 2);
+}
+
+/// The `idempotency-key` header value of a raw request.
+fn idempotency_header(request: &str) -> &str {
+    request
+        .lines()
+        .find_map(|line| line.strip_prefix("idempotency-key: "))
+        .expect("an idempotency-key header")
+        .trim()
 }
 
 // ── credentials ──────────────────────────────────────────────────────────

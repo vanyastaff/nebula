@@ -11,7 +11,10 @@
 //!
 //! Provider calls go through the managed call facade: a lease becomes a
 //! [`Lease`] with [`ResourceGuard::into_lease`], and each provider call is
-//! an [`Operation`] submitted as a [`Submission`]. Inside it, [`OperationCx::attempt`]
+//! an [`Operation`] submitted as a [`Submission`]: serializable intent under a
+//! [`KEY`](Operation::KEY), which an execution journal records and replays
+//! (derive serde with `#[serde(crate = "nebula_sdk::serde")]` when the SDK
+//! is the only dependency). Inside it, [`OperationCx::attempt`]
 //! admits one provider [`Attempt`] against the lease, books its [`Cost`] and
 //! hands out the instance and the unit's pinned credential slots
 //! ([`PinSlots`]). Each attempt is settled with a [`SentState`], and a failed
@@ -26,7 +29,8 @@
 //! unit waiting for its rate limit holds no connection. On a pooled
 //! [`SessionProvider`] it also runs sessions — several native calls on one
 //! connection as one unit: [`ResourceHandle::session`] books the
-//! [`SessionSpec`]'s cost once, opens the session, runs the body with it
+//! [`SessionSpec`]'s cost once (the spec also names the session and
+//! carries its request), opens the session, runs the body with it
 //! borrowed ([`SessionFuture`], [`SessionCx`]) and closes it with a commit
 //! or a rollback ([`SessionEnd`], [`SessionClosed`]). A
 //! [`SessionBinding::Connection`] provider only runs on a connection built
