@@ -99,11 +99,13 @@ fn facade<R: Provider + PinSlots>(manager: &Manager) -> ResourceHandle<R> {
 }
 
 fn write() -> SessionSpec {
-    SessionSpec::new(Cost::ONE)
+    SessionSpec::write("ledger.add", &()).cost(Cost::ONE)
 }
 
 fn read() -> SessionSpec {
-    SessionSpec::new(Cost::ONE).with_effect(Effect::Read)
+    let spec = SessionSpec::read("ledger.read").cost(Cost::ONE);
+    assert_eq!(spec.effect(), Effect::Read);
+    spec
 }
 
 /// Yields until the row has no lease out and returns its idle entries.
@@ -511,16 +513,20 @@ async fn a_nested_session_on_the_same_row_is_refused_permanently() {
     pooled(&manager);
     let row = facade::<StrictPooled>(&manager);
     let inner_row = row.clone();
+    // A session's output is recorded as JSON; the inner error is not.
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let inner_seen = Arc::clone(&seen);
 
-    let inner = row
-        .session(write(), move |_tx, _cx| {
-            Box::pin(async move {
-                let inner = add(&inner_row, write(), 1).await;
-                Ok(inner.expect_err("nested on the same row"))
-            })
+    row.session(write(), move |_tx, _cx| {
+        Box::pin(async move {
+            let inner = add(&inner_row, write(), 1).await;
+            *inner_seen.lock().expect("cell") = Some(inner.expect_err("nested on the same row"));
+            Ok(())
         })
-        .await
-        .expect("the outer session commits");
+    })
+    .await
+    .expect("the outer session commits");
+    let inner = seen.lock().expect("cell").take().expect("the body ran");
     assert_eq!(*inner.kind(), ErrorKind::Permanent);
     assert_eq!(inner.sent(), SentState::NotSent);
     assert!(!inner.is_retryable());
@@ -574,7 +580,7 @@ async fn sessions_are_counted_by_outcome_and_checkouts_by_creation() {
 }
 
 #[tokio::test]
-async fn a_session_runs_in_a_unit_span_named_session() {
+async fn a_session_runs_in_a_unit_span_named_by_its_spec() {
     let capture = super::super::tests::SpanCapture::default();
     let _default = tracing::subscriber::set_default(capture.clone());
     let manager = Manager::new();
@@ -583,7 +589,10 @@ async fn a_session_runs_in_a_unit_span_named_session() {
     add(&row, write(), 0).await.expect("committed");
 
     let span = "nebula.resource.unit";
-    assert_eq!(capture.field(span, "operation").as_deref(), Some("session"));
+    assert_eq!(
+        capture.field(span, "operation").as_deref(),
+        Some("ledger.add")
+    );
     assert_eq!(capture.field(span, "sent").as_deref(), Some("sent"));
     assert_eq!(capture.field(span, "outcome").as_deref(), Some("ok"));
 }

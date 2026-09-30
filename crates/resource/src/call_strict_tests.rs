@@ -23,9 +23,9 @@ use crate::{
     manager::{
         CredentialReads,
         strict_fixtures::{
-            CREDENTIAL_READ_TIMEOUT, PinnedEpochs, ScriptedObserver, StrictPooled, StrictResident,
-            UnboundRow, bind, config, context, credential_id, pool_config, register, resident, row,
-            seen, strict_manager, tenant,
+            CREDENTIAL_READ_TIMEOUT, OwnedEpochs, PinnedEpochs, ScriptedObserver, StrictPooled,
+            StrictResident, UnboundRow, bind, config, context, credential_id, owned_epochs,
+            pool_config, register, resident, row, seen, strict_manager, tenant,
         },
     },
     rate_limit::{Rate, RowLimit},
@@ -142,15 +142,31 @@ async fn settle_tasks() {
 
 // ── operations ───────────────────────────────────────────────────────────
 
+/// A deserialized test operation books nothing.
+fn free() -> Cost {
+    Cost::FREE
+}
+
 /// One attempt at `cost`, settled `Sent`, on any row.
-struct Once(Cost);
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Once {
+    #[serde(skip, default = "free")]
+    cost: Cost,
+}
+
+impl Once {
+    fn at(cost: Cost) -> Self {
+        Self { cost }
+    }
+}
 
 impl<R: Provider + PinSlots> Operation<R> for Once {
     type Output = ();
+    const KEY: &'static str = "test.once";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(self.0).await?;
+        let attempt = cx.attempt(self.cost).await?;
         attempt.settle(SentState::Sent);
         Ok(())
     }
@@ -158,8 +174,10 @@ impl<R: Provider + PinSlots> Operation<R> for Once {
 
 /// `n` attempts at `cost`, each settled `Sent`; yields what each attempt
 /// was pinned on.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Attempts {
     n: u32,
+    #[serde(skip, default = "free")]
     cost: Cost,
 }
 
@@ -173,7 +191,8 @@ impl Attempts {
 }
 
 impl<R: Provider + PinSlots<Pinned = PinnedEpochs>> Operation<R> for Attempts {
-    type Output = Vec<PinnedEpochs>;
+    type Output = Vec<OwnedEpochs>;
+    const KEY: &'static str = "test.attempts";
     const EFFECT: Effect = Effect::Read;
 
     fn max_attempts(&self) -> NonZeroU32 {
@@ -184,7 +203,7 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>> Operation<R> for Attempts {
         let mut pinned = Vec::new();
         for _ in 0..self.n {
             let attempt = cx.attempt(self.cost.clone()).await?;
-            pinned.push(attempt.credentials().clone());
+            pinned.push(owned_epochs(attempt.credentials()));
             attempt.settle(SentState::Sent);
         }
         Ok(pinned)
@@ -193,8 +212,11 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>> Operation<R> for Attempts {
 
 /// Two free attempts; after the first is granted and settled `Sent` it
 /// signals `between` and waits for `resume`.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Paused<const WRITE: bool> {
+    #[serde(skip)]
     between: Arc<Notify>,
+    #[serde(skip)]
     resume: Arc<Notify>,
 }
 
@@ -220,7 +242,8 @@ fn paused<const WRITE: bool>() -> (Paused<WRITE>, Pause) {
 impl<R: Provider + PinSlots<Pinned = PinnedEpochs>, const WRITE: bool> Operation<R>
     for Paused<WRITE>
 {
-    type Output = Vec<PinnedEpochs>;
+    type Output = Vec<OwnedEpochs>;
+    const KEY: &'static str = "test.paused";
     const EFFECT: Effect = if WRITE { Effect::Write } else { Effect::Read };
 
     fn max_attempts(&self) -> NonZeroU32 {
@@ -229,12 +252,12 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>, const WRITE: bool> Operation
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::FREE).await?;
-        let mut pinned = vec![first.credentials().clone()];
+        let mut pinned = vec![owned_epochs(first.credentials())];
         first.settle(SentState::Sent);
         self.between.notify_one();
         self.resume.notified().await;
         let second = cx.attempt(Cost::FREE).await?;
-        pinned.push(second.credentials().clone());
+        pinned.push(owned_epochs(second.credentials()));
         second.settle(SentState::Sent);
         Ok(pinned)
     }
@@ -256,8 +279,14 @@ async fn a_slot_less_row_on_a_strict_manager_reads_nothing_per_attempt() {
     resident(&manager);
 
     let unbound = facade::<UnboundRow>(&manager).await;
-    unbound.submit(Once(Cost::ONE)).await.expect("slot-less");
-    unbound.submit(Once(Cost::FREE)).await.expect("slot-less");
+    unbound
+        .submit(Once::at(Cost::ONE))
+        .await
+        .expect("slot-less");
+    unbound
+        .submit(Once::at(Cost::FREE))
+        .await
+        .expect("slot-less");
     let never_bound = facade::<StrictResident>(&manager).await;
     never_bound
         .submit(Attempts::free(2))
@@ -274,7 +303,7 @@ async fn an_interim_manager_reads_nothing_per_attempt() {
 
     let managed = facade::<StrictResident>(&manager).await;
     let pinned = managed.submit(Attempts::free(2)).await.expect("granted");
-    assert_eq!(pinned, vec![vec![("db", Some(1))]; 2]);
+    assert_eq!(pinned, vec![owned_epochs(&[("db", Some(1))]); 2]);
     let row = row::<StrictResident>(&manager);
     assert!(row.credential_reads.is_none(), "nothing to read through");
     assert_eq!(
@@ -300,7 +329,7 @@ async fn every_attempt_reads_once() {
         })
         .await
         .expect("granted");
-    assert_eq!(pinned, vec![vec![("db", Some(1))]; 3]);
+    assert_eq!(pinned, vec![owned_epochs(&[("db", Some(1))]); 3]);
     assert_eq!(observer.calls(), 1 + 3);
     assert_eq!(reads_total::<StrictResident>(&manager), 1 + 3);
 }
@@ -331,7 +360,7 @@ async fn a_reauthentication_during_the_quota_wait_refuses_and_suspends() {
     let (manager, _resource) = setup_limited(&observer);
     let managed = facade::<StrictResident>(&manager).await;
     let mut events = manager.subscribe_events();
-    let unit = tokio::spawn(managed.submit(Once(Cost::ONE)));
+    let unit = tokio::spawn(managed.submit(Once::at(Cost::ONE)));
     settle_tasks().await;
 
     observer.answer(reauth(1, 2));
@@ -354,7 +383,7 @@ async fn a_reauthentication_during_the_quota_wait_refuses_and_suspends() {
     // The next unit is refused by the closed lease before it reads.
     let calls = observer.calls();
     let error = managed
-        .submit(Once(Cost::FREE))
+        .submit(Once::at(Cost::FREE))
         .await
         .expect_err("closed lease");
     assert_eq!(reason(&error), Some(REAUTH));
@@ -370,7 +399,7 @@ async fn the_admission_lock_is_not_held_across_an_attempt_read() {
     let (manager, _resource) = setup(&observer);
     let managed = facade::<StrictResident>(&manager).await;
 
-    let unit = tokio::spawn(managed.submit(Once(Cost::FREE)));
+    let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
     observer.until_calls(2).await;
     // Completes while the attempt's read is gated.
     manager
@@ -400,7 +429,7 @@ async fn a_taint_during_an_attempt_read_refuses_as_revoked() {
     let (manager, _resource) = setup(&observer);
     let managed = facade::<StrictResident>(&manager).await;
 
-    let unit = tokio::spawn(managed.submit(Once(Cost::FREE)));
+    let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
     observer.until_calls(2).await;
     let _tainted = manager
         .taint_slot_for_identity(&StrictResident::key(), ScopeLevel::Global, "db", &tenant())
@@ -420,7 +449,7 @@ async fn a_lease_closing_during_an_attempt_read_refuses_as_cancelled() {
     let managed = facade::<StrictResident>(&manager).await;
     let reads = reads(&manager);
 
-    let unit = tokio::spawn(managed.submit(Once(Cost::FREE)));
+    let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
     observer.until_calls(2).await;
     manager.remove(&StrictResident::key()).expect("remove");
 
@@ -539,7 +568,7 @@ async fn a_first_attempt_runs_on_material_installed_during_its_wait() {
     let pinned = unit.await.expect("joined").expect("granted");
     assert_eq!(
         pinned,
-        vec![vec![("db", Some(2))]],
+        vec![owned_epochs(&[("db", Some(2))])],
         "pinned after the read that validated it"
     );
 }
@@ -565,7 +594,7 @@ async fn a_later_attempt_whose_pin_was_superseded_is_refused_rebinding() {
 
     // The next unit pins the new material.
     let pinned = managed.submit(Attempts::free(1)).await.expect("granted");
-    assert_eq!(pinned, vec![vec![("db", Some(2))]]);
+    assert_eq!(pinned, vec![owned_epochs(&[("db", Some(2))])]);
 }
 
 #[tokio::test]
@@ -605,13 +634,13 @@ async fn attempts_of_concurrent_units_join_the_next_read_only() {
     let managed = facade::<StrictResident>(&manager).await;
     let reads = reads(&manager);
 
-    let first = tokio::spawn(managed.submit(Once(Cost::FREE)));
+    let first = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
     observer.until_calls(2).await;
     // A block commits after the first read started: the later units must
     // not take that read's answer.
     observer.answer(reauth(1, 2));
     let rest: Vec<_> = (0..7)
-        .map(|_| tokio::spawn(managed.submit(Once(Cost::FREE))))
+        .map(|_| tokio::spawn(managed.submit(Once::at(Cost::FREE))))
         .collect();
     while reads.users(credential_id()) < 8 {
         tokio::task::yield_now().await;
@@ -638,7 +667,7 @@ async fn a_shutdown_during_an_attempt_read_refuses_as_cancelled() {
     let (manager, _resource) = setup(&observer);
     let managed = facade::<StrictResident>(&manager).await;
 
-    let unit = tokio::spawn(managed.submit(Once(Cost::FREE)));
+    let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
     observer.until_calls(2).await;
     let shutdown = {
         let manager = Arc::clone(&manager);

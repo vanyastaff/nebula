@@ -40,6 +40,7 @@ use nebula_resource::{
     resource::{Provider, ResourceMetadataDraft},
     topology::ResidentProvider,
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Semaphore, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -236,23 +237,25 @@ impl ResidentProvider for Logger {}
 // ── the operations ───────────────────────────────────────────────────────
 
 /// A line accepted into the buffer; not yet written.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Enqueued {
     seq: u64,
 }
 
 /// Every line enqueued before the flush started is written.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Flushed {
     through: u64,
 }
 
+#[derive(Serialize, Deserialize)]
 struct Write {
     line: String,
 }
 
 impl Operation<Logger> for Write {
     type Output = Enqueued;
+    const KEY: &'static str = "logger.write";
     const EFFECT: Effect = Effect::Write;
 
     async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Enqueued, OperationError> {
@@ -277,10 +280,12 @@ impl Operation<Logger> for Write {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct Flush;
 
 impl Operation<Logger> for Flush {
     type Output = Flushed;
+    const KEY: &'static str = "logger.flush";
     const EFFECT: Effect = Effect::Idempotent;
 
     async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Flushed, OperationError> {

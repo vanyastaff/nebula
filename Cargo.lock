@@ -3580,6 +3580,7 @@ version = "0.22.0"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "base64",
  "codspeed-criterion-compat",
  "dashmap",
  "fastrand",

@@ -142,6 +142,7 @@ enum Wait {
 impl StreamOperation<Feed> for Emit {
     type Item = u64;
     type Output = u64;
+    const KEY: &'static str = "test.emit";
     const EFFECT: Effect = Effect::Write;
 
     async fn run(

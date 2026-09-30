@@ -4,14 +4,14 @@
 //! The resource runtime never writes durable effect state. A row an action
 //! gets with effect-owner authority
 //! ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled))
-//! carries a [`EffectJournal`]; every unit submitted with
-//! [`ResourceHandle::submit_effect`](super::ResourceHandle::submit_effect) or
-//! [`ResourceHandle::session_effect`](super::ResourceHandle::session_effect) is
-//! driven through it:
+//! carries a [`EffectJournal`]; every `Idempotent` or `Write` unit
+//! submitted with [`ResourceHandle::submit`](super::ResourceHandle::submit)
+//! or [`ResourceHandle::session`](super::ResourceHandle::session) is driven
+//! through it (a `Read` never is):
 //!
 //! 1. **Submit** — the unit takes an in-flight [`InFlight`]
-//!    ([`track`](EffectJournal::track)) and, without an author label, an
-//!    ordinal ([`next_ordinal`](EffectJournal::next_ordinal)); a
+//!    ([`track`](EffectJournal::track)) and its ordinal per resource, unit
+//!    kind and name ([`next_ordinal`](EffectJournal::next_ordinal)); a
 //!    [closed](EffectJournal::is_closed) owner refuses it.
 //! 2. **Prepare** — the first poll hands the owner a [`JournalIntent`]; the
 //!    returned [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome,
@@ -25,14 +25,11 @@
 //! The engine implements the owner over its operation ledger; this crate
 //! only drives the seam.
 
-use std::{fmt, num::NonZeroU32, sync::Mutex};
+use std::{fmt, num::NonZeroU32, sync::Mutex, time::Duration};
 
 use nebula_core::ResourceKey;
 
-use super::{
-    cost::Effect,
-    effect::{EffectContract, EffectRecovery, IdempotencyKey, IdempotencyKeyPart, Recorded},
-};
+use super::{cost::Effect, declaration::IdempotencyKey};
 use crate::{dedup::SlotIdentity, error::ErrorKind};
 
 /// The owner of a row's execution-owned effects: prepares, grants and
@@ -44,10 +41,10 @@ use crate::{dedup::SlotIdentity, error::ErrorKind};
 /// step. A refusal ([`JournalRefusal`]) never means a provider call happened.
 #[async_trait::async_trait]
 pub trait EffectJournal: Send + Sync + fmt::Debug {
-    /// The next ordinal of an unlabeled unit of `contract` on `key`, in
-    /// program (submit) order. Synchronous: it is taken when the unit is
-    /// submitted.
-    fn next_ordinal(&self, key: &ResourceKey, contract: EffectContract) -> u32;
+    /// The next ordinal of a unit of `kind` named `name` (an operation key
+    /// or a session name) on `key`, in program (submit) order. Synchronous:
+    /// it is taken when the unit is submitted.
+    fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind, name: &str) -> u32;
 
     /// Durably prepares the effect `intent` describes (recovering an
     /// unacknowledged earlier prepare) and returns its slot.
@@ -103,7 +100,68 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
     fn is_closed(&self) -> bool;
 }
 
+/// What kind of unit an effect belongs to: its occurrence namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum UnitKind {
+    /// A submitted [`Operation`](super::Operation), named by its key.
+    Operation,
+    /// A session, named by its [`SessionSpec`](super::SessionSpec) name.
+    Session,
+}
+
+impl UnitKind {
+    /// The kind's segment of an occurrence label: `op` or `session`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Operation => "op",
+            Self::Session => "session",
+        }
+    }
+}
+
+impl fmt::Display for UnitKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// How the owner recovers an effect whose outcome it does not know, derived
+/// from the unit's [`Effect`]: an [`Idempotent`](Effect::Idempotent) unit
+/// recovers by [`StableKey`](Self::StableKey) within its key window, a
+/// [`Write`](Effect::Write) is [`Opaque`](Self::Opaque).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Recovery {
+    /// The provider deduplicates requests carrying the same idempotency key
+    /// for `window`: within it, an ambiguous attempt may be sent again
+    /// with the same [`IdempotencyKey`].
+    StableKey {
+        /// How long the provider remembers a key. Non-zero.
+        window: Duration,
+    },
+    /// Nothing tells a repeat apart: an ambiguous attempt is never sent
+    /// again, its outcome is unknown until reconciled.
+    Opaque,
+}
+
+impl Recovery {
+    /// Stable lowercase name: `stable_key` or `opaque`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StableKey { .. } => "stable_key",
+            Self::Opaque => "opaque",
+        }
+    }
+}
+
 /// What an owner prepares: one effect of one unit.
+///
+/// Derived by the runtime from the operation (or the session spec): its
+/// contract is `(operation, version)`, its canonical request the
+/// key-sorted JSON of the operation value, its recovery the effect's.
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct JournalIntent<'a> {
@@ -111,24 +169,33 @@ pub struct JournalIntent<'a> {
     pub resource_key: &'a ResourceKey,
     /// The row's credential slot identity.
     pub binding: &'a SlotIdentity,
-    /// The operation's integration contract.
-    pub contract: EffectContract,
-    /// The operation's declared effect: `Idempotent` or `Write`.
+    /// Whether an operation or a session.
+    pub kind: UnitKind,
+    /// The operation key or the session name: unique within the resource.
+    pub operation: &'a str,
+    /// The operation's interface version: the journal contract, with
+    /// `operation`. At least 1.
+    pub version: u32,
+    /// The unit's declared effect: `Idempotent` or `Write`.
     pub effect: Effect,
     /// How an unknown outcome is recovered.
-    pub recovery: EffectRecovery,
-    /// What the owner records of a success.
-    pub recorded: Recorded,
+    pub recovery: Recovery,
+    /// Whether a success is recorded with its output (replayed on resume)
+    /// or digest-only (a resume fails `Permanent`).
+    pub record_output: bool,
     /// Attempts the unit may be granted
     /// ([`Operation::max_attempts`](super::Operation::max_attempts)).
     pub max_invocations: NonZeroU32,
-    /// The occurrence label, `unit/v1/{resource_key}/{contract_id}/{label}`:
+    /// The occurrence label,
+    /// `unit/v1/{resource_key}/{kind}/{operation}/v{version}/#{ordinal:06}`:
     /// visible ASCII, at most 512 bytes.
     pub occurrence: &'a str,
-    /// The canonical request, 1 byte to 1 MiB; digest it, never store it.
+    /// The canonical request (canonicalization version 1: key-sorted
+    /// compact JSON), 1 byte to 1 MiB; digest it, never store it.
     pub canonical_request: &'a [u8],
-    /// The developer part of the provider idempotency key.
-    pub key_part: Option<&'a IdempotencyKeyPart>,
+    /// The developer part of the provider idempotency key: 1 to 256 bytes
+    /// of visible ASCII.
+    pub key_part: Option<&'a str>,
 }
 
 impl fmt::Debug for JournalIntent<'_> {
@@ -136,10 +203,12 @@ impl fmt::Debug for JournalIntent<'_> {
         formatter
             .debug_struct("JournalIntent")
             .field("resource_key", self.resource_key)
-            .field("contract", &self.contract)
+            .field("kind", &self.kind)
+            .field("operation", &self.operation)
+            .field("version", &self.version)
             .field("effect", &self.effect)
             .field("recovery", &self.recovery)
-            .field("recorded", &self.recorded)
+            .field("record_output", &self.record_output)
             .field("max_invocations", &self.max_invocations)
             .field("occurrence", &self.occurrence)
             .field("canonical_request_len", &self.canonical_request.len())
@@ -167,8 +236,8 @@ pub enum SlotPhase {
 pub enum RecordedOutcome {
     /// The effect applied; its output serialized as JSON.
     Succeeded(Vec<u8>),
-    /// The effect applied and only a digest was kept
-    /// ([`Recorded::DigestOnly`]).
+    /// The effect applied and only a digest was kept (the unit declared no
+    /// recorded output, or its output was over the recording cap).
     OutputUnavailable,
     /// The provider definitively rejected the effect.
     Failed(ErrorKindCode),
@@ -280,7 +349,7 @@ pub enum JournalRefusal {
     /// The owner could not learn whether its write was acknowledged.
     AcknowledgementUnknown,
     /// The effect differs from the one recorded under its occurrence (its
-    /// contract, request or key changed).
+    /// operation, version, request or key part changed).
     Mismatch,
     /// The owner closed: its node finished.
     Closed,

@@ -59,6 +59,8 @@ fastrand = "2.4"
 # Per-key rate limits hash the key's value (a chat id, an e-mail address)
 # before it reaches a limit store.
 sha2 = { workspace = true }
+# A library unit's local idempotency key is a base64url SHA-256 digest.
+base64 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

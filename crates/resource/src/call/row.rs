@@ -37,9 +37,9 @@
 //! 8. **Credential read R2** — only for a checkout that *created* its
 //!    instance on a strict row: the instance was built after R1, so a
 //!    join-next re-read decides; an idle hit is served by R1.
-//! 9. **Owner grant** — only for a unit of an execution-owned effect
-//!    ([`ResourceHandle::submit_effect`], [`ResourceHandle::session_effect`]): the
-//!    row's owner grants the attempt's provider call, outside every lock.
+//! 9. **Owner grant** — only for a unit of an execution-owned effect (an
+//!    `Idempotent` or `Write` unit on a journaled row): the row's owner
+//!    grants the attempt's provider call, outside every lock.
 //!    Before step 1 such an attempt also explains its predecessor's call.
 //! 10. **Lock #2 and grant** — on a strict row, under `Manager.admission`:
 //!     taint, shutdown, R2 applied, suspension, the checkout's generation
@@ -62,16 +62,15 @@ use tokio::sync::Semaphore;
 use super::{
     Operation,
     cost::Cost,
-    effect::{EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, Recorded},
     error::OperationError,
     managed::{
-        Checkout, OperationCx, Submission, UnitHost, UnitScope, cancelled_before_grant,
-        generation_refusal, submit_unit,
+        Checkout, OperationCx, Submission, UnitHost, UnitScope, assert_declaration,
+        cancelled_before_grant, generation_refusal, submit_unit,
     },
-    owned::{EffectDeclaration, OutputCodec},
     pin::PinSlots,
     session::{SessionCx, SessionFuture, SessionProvider, SessionSpec, Sessioned},
     strict::{UnitPin, capture_pin, read_credentials, register_grant},
+    work::Plain,
 };
 use crate::{
     context::ResourceContext,
@@ -179,6 +178,16 @@ impl<R: Provider> ResourceHandle<R> {
     pub fn resource_key(&self) -> &ResourceKey {
         &self.shared.key
     }
+
+    /// The host every unit of this facade runs against: the row.
+    pub(super) fn unit_host(&self) -> UnitHost<R> {
+        UnitHost::Row(Arc::clone(&self.shared))
+    }
+
+    /// What every unit of this facade inherits from its caller.
+    pub(super) fn unit_scope(&self) -> &UnitScope {
+        &self.scope
+    }
 }
 
 impl<R: Provider + PinSlots> ResourceHandle<R> {
@@ -191,35 +200,28 @@ impl<R: Provider + PinSlots> ResourceHandle<R> {
     /// poll means the operation never ran; dropping it later only stops
     /// waiting.
     ///
-    /// On a row an action got with effect-owner authority, an operation
-    /// declaring [`Idempotent`](super::Effect::Idempotent) or
-    /// [`Write`](super::Effect::Write) is refused `Permanent` / `NotSent`:
-    /// such effects go through [`submit_effect`](Self::submit_effect).
-    pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output> {
-        submit_unit(
-            UnitHost::Row(Arc::clone(&self.shared)),
-            &self.scope,
-            operation,
-            O::EFFECT,
-            std::any::type_name::<O>(),
-            None,
-        )
-    }
-
-    /// Submits `operation` as one unit whose effect the row's execution
-    /// owner records.
+    /// How the unit runs is decided by the operation's
+    /// [`EFFECT`](Operation::EFFECT) and the authority of the caller that
+    /// built the row:
     ///
-    /// On a row an action got with effect-owner authority, the unit's first
-    /// poll asks the owner to prepare the effect under its occurrence label
-    /// (`unit/v1/{resource_key}/{contract_id}/{label}`, the label being
-    /// [`EffectOperation::occurrence`] or the unit's submit ordinal per
-    /// resource and contract), before anything is booked, read or checked
-    /// out:
+    /// | Row | `Read` | `Idempotent` / `Write` |
+    /// |---|---|---|
+    /// | library ([`Manager::handle`](crate::Manager::handle), [`handle_any`](crate::Manager::handle_any)) | runs | runs |
+    /// | read-only action ([`handle_any_read_only`](crate::Manager::handle_any_read_only)) | runs | refused `Permanent` / `NotSent` |
+    /// | journaled action ([`handle_any_journaled`](crate::Manager::handle_any_journaled)) | runs, never recorded | runs through the row's execution owner |
+    ///
+    /// On a journaled row an effect's first poll asks the owner to prepare
+    /// it under its occurrence label
+    /// (`unit/v1/{resource_key}/op/{KEY}/v{VERSION}/#{ordinal:06}`, the
+    /// ordinal counting units of the operation key on the resource in
+    /// submit order), from the operation's canonical request (its JSON with
+    /// sorted keys) and [`Operation::idempotency_key`], before anything is
+    /// booked, read or checked out:
     ///
     /// | Owner says | Unit |
     /// |---|---|
     /// | recorded success | `Ok` with the recorded output; no provider call |
-    /// | recorded without output ([`Recorded::DigestOnly`]) | `Permanent`, `Sent`; no provider call |
+    /// | recorded without output ([`RECORD_OUTPUT`](Operation::RECORD_OUTPUT) off, or over the 1 MiB cap) | `Permanent`, `Sent`; no provider call |
     /// | recorded rejection | the recorded kind, `Sent`, not retryable; no provider call |
     /// | outcome unknown | `OutcomeUnknown`, `MaybeSent`; no provider call |
     /// | a different effect under the label | `Permanent`, `NotSent` |
@@ -233,35 +235,16 @@ impl<R: Provider + PinSlots> ResourceHandle<R> {
     /// result is recorded before it settles: a success with its output, a
     /// definitive rejection with its kind, anything else as how its last
     /// call crossed. When the owner cannot record a call that may have
-    /// crossed, the unit fails `OutcomeUnknown`. [`OperationCx::idempotency_key`] is
-    /// the provider idempotency key the owner derived.
+    /// crossed, the unit fails `OutcomeUnknown`.
+    /// [`OperationCx::idempotency_key`] is the provider idempotency key to
+    /// send.
     ///
-    /// A declaration whose contract is malformed, whose
-    /// [`RECOVERY`](EffectOperation::RECOVERY) disagrees with its
-    /// [`EFFECT`](Operation::EFFECT), or that declares
-    /// [`Read`](super::Effect::Read), is refused `Permanent` / `NotSent`;
-    /// so is any effect on a read-only row. On a library row (no owner) the
-    /// unit runs as [`submit`](Self::submit) runs it and has no operation
-    /// key.
-    pub fn submit_effect<O: EffectOperation<R>>(&self, operation: O) -> Submission<O::Output> {
-        let declaration = EffectDeclaration {
-            contract: O::CONTRACT,
-            recovery: O::RECOVERY,
-            recorded: O::RECORDED,
-            occurrence: operation.occurrence(),
-            request: Box::new(|operation: &O| {
-                Ok((operation.canonical_request()?, operation.idempotency_key()))
-            }),
-            codec: OutputCodec::json(),
-        };
-        submit_unit(
-            UnitHost::Row(Arc::clone(&self.shared)),
-            &self.scope,
-            operation,
-            O::EFFECT,
-            std::any::type_name::<O>(),
-            Some(declaration),
-        )
+    /// A malformed declaration fails the build (see [`Operation`]); an
+    /// invalid developer key part or a request that does not canonicalize
+    /// is refused `Permanent` / `NotSent`.
+    pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output> {
+        assert_declaration::<R, O>();
+        submit_unit(self.unit_host(), &self.scope, Plain(operation))
     }
 }
 
@@ -297,35 +280,14 @@ where
     /// session is never aborted. A session (or any unit) of the same row
     /// awaited inside a session body is refused `Permanent` — it would wait
     /// for the row gate while this session holds a checkout.
-    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Submission<T>
-    where
-        T: Send + 'static,
-        F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T>
-            + Send
-            + 'static,
-    {
-        let effect = spec.effect();
-        submit_unit(
-            UnitHost::Row(Arc::clone(&self.shared)),
-            &self.scope,
-            Sessioned::new(spec, body),
-            effect,
-            "session",
-            None,
-        )
-    }
-
-    /// Runs `body` as one session whose effect the row's execution owner
-    /// records: [`session`](Self::session) under
-    /// [`submit_effect`](Self::submit_effect)'s owner protocol.
     ///
-    /// `spec`'s effect must agree with `recovery` (see
-    /// [`EffectOperation::RECOVERY`]); `canonical_request` and `key_part`
-    /// are what [`EffectOperation::canonical_request`] and
-    /// [`EffectOperation::idempotency_key`] return for an operation, and the
-    /// occurrence label is the unit's submit ordinal. The body's output is
-    /// recorded, and replayed without opening a session. How the session
-    /// closed is recorded as:
+    /// A session routes as [`submit`](Self::submit) does, by `spec`'s
+    /// effect and the row's authority. On a journaled row an `Idempotent`
+    /// or `Write` session is prepared, granted and recorded by the row's
+    /// owner under `unit/v1/{resource_key}/session/{name}/v{version}/#{ordinal:06}`
+    /// from `spec`'s canonical request and key part; its output is recorded
+    /// and replayed without opening a session. How it closed is recorded
+    /// as:
     ///
     /// | Session | Recorded |
     /// |---|---|
@@ -333,41 +295,17 @@ where
     /// | `RolledBack` (or open failed) | not crossed |
     /// | `Unknown`, deadline, panic | ambiguous crossing |
     ///
-    /// [`SessionCx::idempotency_key`] is the provider idempotency key the
-    /// owner derived. On a library row the session runs as
-    /// [`session`](Self::session) runs it.
-    pub fn session_effect<T, F>(
-        &self,
-        spec: SessionSpec,
-        contract: EffectContract,
-        recovery: EffectRecovery,
-        canonical_request: Vec<u8>,
-        key_part: Option<IdempotencyKeyPart>,
-        body: F,
-    ) -> Submission<T>
+    /// [`SessionCx::idempotency_key`] is the provider idempotency key to
+    /// send. A `spec` whose name breaks the key rules, or whose request did
+    /// not canonicalize, is refused `Permanent` / `NotSent`.
+    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Submission<T>
     where
         T: Serialize + DeserializeOwned + Send + 'static,
         F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T>
             + Send
             + 'static,
     {
-        let effect = spec.effect();
-        let declaration = EffectDeclaration {
-            contract,
-            recovery,
-            recorded: Recorded::Output,
-            occurrence: None,
-            request: Box::new(move |_: &Sessioned<R, F, T>| Ok((canonical_request, key_part))),
-            codec: OutputCodec::json(),
-        };
-        submit_unit(
-            UnitHost::Row(Arc::clone(&self.shared)),
-            &self.scope,
-            Sessioned::new(spec, body),
-            effect,
-            "session",
-            Some(declaration),
-        )
+        submit_unit(self.unit_host(), &self.scope, Sessioned::new(spec, body))
     }
 }
 

@@ -251,9 +251,26 @@ fn in_one(after: Duration) -> std::time::Instant {
 
 // ── operations ───────────────────────────────────────────────────────────
 
+// The operations here are never journaled: fields that are not intent are
+// skipped, and a deserialized operation takes these defaults.
+fn free() -> Cost {
+    Cost::FREE
+}
+
+fn sent() -> SentState {
+    SentState::Sent
+}
+
+fn permanent() -> ErrorKind {
+    ErrorKind::Permanent
+}
+
 /// One attempt at `cost`, settled `sent`; yields the attempts granted.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Once {
+    #[serde(skip, default = "free")]
     cost: Cost,
+    #[serde(skip, default = "sent")]
     sent: SentState,
 }
 
@@ -268,6 +285,7 @@ impl Once {
 
 impl<R: Provider + PinSlots> Operation<R> for Once {
     type Output = u32;
+    const KEY: &'static str = "test.once";
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u32, OperationError> {
         let attempt = cx.attempt(self.cost).await?;
@@ -277,12 +295,15 @@ impl<R: Provider + PinSlots> Operation<R> for Once {
 }
 
 /// One attempt that the provider answers with `kind`.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Refused {
+    #[serde(skip, default = "permanent")]
     kind: ErrorKind,
 }
 
 impl<R: Provider + PinSlots> Operation<R> for Refused {
     type Output = ();
+    const KEY: &'static str = "test.refused";
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::ONE).await?;
@@ -294,9 +315,13 @@ impl<R: Provider + PinSlots> Operation<R> for Refused {
 
 /// A granted attempt parked until `release` fires; it records whether the
 /// lease was closing once released.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Gated {
+    #[serde(skip)]
     entered: Arc<Notify>,
+    #[serde(skip)]
     release: Arc<Notify>,
+    #[serde(skip)]
     closed_seen: Arc<AtomicUsize>,
 }
 
@@ -324,6 +349,7 @@ fn gated() -> (Gated, Gate) {
 
 impl<R: Provider + PinSlots> Operation<R> for Gated {
     type Output = ();
+    const KEY: &'static str = "test.gated";
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let closing = cx.closing();
@@ -339,10 +365,12 @@ impl<R: Provider + PinSlots> Operation<R> for Gated {
 }
 
 /// A granted attempt that never answers: the unit hits its deadline.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Hang<const READ: bool>;
 
 impl<R: Provider + PinSlots, const READ: bool> Operation<R> for Hang<READ> {
     type Output = ();
+    const KEY: &'static str = "test.hang";
     const EFFECT: Effect = if READ { Effect::Read } else { Effect::Write };
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
@@ -353,23 +381,30 @@ impl<R: Provider + PinSlots, const READ: bool> Operation<R> for Hang<READ> {
 }
 
 /// A write whose body records an authority leak if it is ever polled.
-struct NeverWrite(Arc<AtomicUsize>);
+#[derive(serde::Serialize, serde::Deserialize)]
+struct NeverWrite {
+    #[serde(skip)]
+    polled: Arc<AtomicUsize>,
+}
 
 impl<R: Provider + PinSlots> Operation<R> for NeverWrite {
     type Output = ();
+    const KEY: &'static str = "test.never_write";
     const EFFECT: Effect = Effect::Write;
 
     async fn run(self, _cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        self.polled.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
 
 /// Panics after its attempt was granted and answered.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PanicAfterGrant;
 
 impl<R: Provider + PinSlots> Operation<R> for PanicAfterGrant {
     type Output = ();
+    const KEY: &'static str = "test.panic_after_grant";
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
@@ -379,10 +414,12 @@ impl<R: Provider + PinSlots> Operation<R> for PanicAfterGrant {
 }
 
 /// Asks for three attempts with a budget of two.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OverBudget;
 
 impl<R: Provider + PinSlots> Operation<R> for OverBudget {
     type Output = ();
+    const KEY: &'static str = "test.over_budget";
     const EFFECT: Effect = Effect::Idempotent;
 
     fn max_attempts(&self) -> NonZeroU32 {
@@ -400,12 +437,15 @@ impl<R: Provider + PinSlots> Operation<R> for OverBudget {
 
 /// Reads the pinned token on two attempts, rotating the live slot between
 /// them when asked.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PinnedTwice {
+    #[serde(skip)]
     rotate: Option<(Arc<SlotCell<String>>, &'static str)>,
 }
 
 impl Operation<Api> for PinnedTwice {
     type Output = (Option<String>, Option<String>);
+    const KEY: &'static str = "test.pinned_twice";
     const EFFECT: Effect = Effect::Read;
 
     fn max_attempts(&self) -> NonZeroU32 {
@@ -432,13 +472,17 @@ fn pinned_token(attempt: &Attempt<'_, Api>) -> Option<String> {
 
 /// Parks after the unit started and before its first attempt, then yields
 /// the token its first attempt was pinned on.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PinAfterRelease {
+    #[serde(skip)]
     entered: Arc<Notify>,
+    #[serde(skip)]
     release: Arc<Notify>,
 }
 
 impl Operation<Api> for PinAfterRelease {
     type Output = Option<String>;
+    const KEY: &'static str = "test.pin_after_release";
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, Api>) -> Result<Self::Output, OperationError> {
@@ -734,7 +778,9 @@ async fn a_denied_unit_honours_pre_grant_cancellation_and_records_every_settleme
     let row = read_only_row::<Api>(&manager, &ctx);
     let ran = Arc::new(AtomicUsize::new(0));
 
-    let unit = row.submit(NeverWrite(Arc::clone(&ran)));
+    let unit = row.submit(NeverWrite {
+        polled: Arc::clone(&ran),
+    });
     unit.cancel();
     let cancelled = unit
         .await
@@ -743,7 +789,9 @@ async fn a_denied_unit_honours_pre_grant_cancellation_and_records_every_settleme
     assert_eq!(cancelled.sent(), SentState::NotSent);
 
     let denied = row
-        .submit(NeverWrite(Arc::clone(&ran)))
+        .submit(NeverWrite {
+            polled: Arc::clone(&ran),
+        })
         .await
         .expect_err("a write needs execution-owner authority");
     assert_eq!(*denied.kind(), ErrorKind::Permanent);
@@ -751,7 +799,9 @@ async fn a_denied_unit_honours_pre_grant_cancellation_and_records_every_settleme
 
     parent.cancel();
     let parent_cancelled = row
-        .submit(NeverWrite(Arc::clone(&ran)))
+        .submit(NeverWrite {
+            polled: Arc::clone(&ran),
+        })
         .await
         .expect_err("parent cancellation wins before a grant");
     assert_eq!(*parent_cancelled.kind(), ErrorKind::Cancelled);
@@ -1270,7 +1320,11 @@ async fn each_unit_runs_in_a_span_with_its_outcome() {
             .map(|(_, value)| value.clone())
     };
     assert_eq!(field("key").as_deref(), Some("call-resident"));
-    assert!(field("operation").is_some_and(|operation| operation.ends_with("Once")));
+    assert_eq!(
+        field("operation").as_deref(),
+        Some("test.once"),
+        "the operation key, not the Rust type"
+    );
     assert_eq!(field("attempts").as_deref(), Some("1"));
     assert_eq!(field("sent").as_deref(), Some("sent"));
     assert_eq!(field("outcome").as_deref(), Some("ok"));

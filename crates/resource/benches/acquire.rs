@@ -431,10 +431,12 @@ fn bench_strict_credential_admission(c: &mut Criterion) {
 }
 
 /// One free attempt on the bound resident, settled `Sent`.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OneAttempt;
 
 impl nebula_resource::call::Operation<BoundResident> for OneAttempt {
     type Output = u64;
+    const KEY: &'static str = "bench.one_attempt";
 
     async fn run(
         self,
@@ -505,10 +507,12 @@ fn bench_strict_attempt_admission(c: &mut Criterion) {
 }
 
 /// One free attempt on the keep-pool, settled `Sent`.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PooledAttempt;
 
 impl nebula_resource::call::Operation<KeepPool> for PooledAttempt {
     type Output = u64;
+    const KEY: &'static str = "bench.pooled_attempt";
 
     async fn run(
         self,
