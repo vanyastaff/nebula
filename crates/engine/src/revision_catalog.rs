@@ -10,7 +10,7 @@ use std::{fmt, sync::Arc};
 
 use nebula_plugin::{
     ExecutablePlanIntegrityError, ExecutablePlanRevision, FrozenPluginRegistry,
-    PlanRegistryCompatibilityError, RecordedExecutablePlanRevisionV1,
+    PlanRegistryCompatibilityError, RecordedExecutablePlanRevisionV1, RecordedPlanEpochV1,
     RecordedWorkerFlavorRevisionV1, WorkerFlavorIntegrityError, WorkerFlavorRevision,
 };
 use nebula_storage_port::{
@@ -156,6 +156,17 @@ impl PlanFlavorRevisionLoader {
             });
         }
 
+        // Each compiler epoch freezes its own record grammar: refuse an epoch
+        // this reader does not know before decoding the body in its grammar.
+        stored
+            .plan_record_bytes()
+            .deserialize_json::<RecordedPlanEpochV1>(PlanFlavorRevisionTarget::ExecutablePlan(
+                ids.plan(),
+            ))
+            .map_err(|source| {
+                record_decode_error(source, PlanFlavorRevisionBridgeError::PlanRecordDecode)
+            })?
+            .check()?;
         let recorded_plan = stored
             .plan_record_bytes()
             .deserialize_json::<RecordedExecutablePlanRevisionV1>(

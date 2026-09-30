@@ -25,7 +25,17 @@ changes are expected between minor releases — call them out here.
     `PLUGIN_PLAN_GRAPH_V1:UNDECLARED_EFFECTS` (and its activation diagnostic
     and remediation are gone). New plans record the default as
     `{"Journaled":{"protocol_version":1}}`; an unknown protocol version fails
-    the plan's integrity check. A plan recorded without an effect field stays
+    the plan's integrity check. Because the closed effect grammar grew a
+    variant, new plans use compiler epoch 6 (canonical hash version 3), so
+    their plan revision ids differ from epoch-5 ids for the same workflow.
+    Epoch-5 records stay readable exactly as before and reject a `Journaled`
+    effect as non-canonical. `nebula_plugin::RecordedPlanEpochV1` decodes a
+    record's version header so a reader refuses an unknown epoch
+    (`UnsupportedFormat`) before decoding its body; the engine's plan loader
+    does. A reader from before this release decodes the body first, so it
+    refuses an epoch-6 record either as an unsupported format or, when an
+    action records `Journaled`, as a record decode error — never as a
+    readable plan. A plan recorded without an effect field stays
     `PlanActionEffectContract::LegacyUndeclared` and is still refused — it is
     never reinterpreted as `Journaled`.
   - Only handle-routed effects are journaled; a side channel an action opens

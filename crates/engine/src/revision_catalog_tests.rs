@@ -289,6 +289,39 @@ async fn load_rejects_historical_schema_authority_without_rewriting_catalog_evid
 }
 
 #[tokio::test]
+async fn load_refuses_an_unknown_epoch_before_decoding_its_body() {
+    let registry = frozen(0x3a);
+    let plan = compile(&registry);
+    let mut wire = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+    // A later epoch may carry an effect variant this reader's closed grammar
+    // cannot decode: the header alone refuses it as an unsupported format.
+    wire["compiler_version"] = serde_json::json!(u16::MAX);
+    wire["content"]["actions"][0]["effect_contract"] = serde_json::json!({ "FutureEffect": {} });
+    let record = PlanFlavorRevisionRecord::graph_v1_json(
+        plan.id(),
+        RevisionRecordBytes::try_from_vec(serde_json::to_vec(&wire).unwrap()).unwrap(),
+        WorkerFlavorRevisionRecord::v1_json(
+            registry.revision().id(),
+            RevisionRecordBytes::try_from_vec(
+                serde_json::to_vec(&RecordedWorkerFlavorRevisionV1::from(registry.revision()))
+                    .unwrap(),
+            )
+            .unwrap(),
+        ),
+    );
+    let catalog = Arc::new(StubCatalog::default());
+    catalog.replace(record);
+    let loader = PlanFlavorRevisionLoader::new(catalog);
+    let ids = PlanFlavorRevisionIds::new(plan.id(), registry.revision().id());
+    std::assert_matches!(
+        loader.load_exact(ids, registry).await,
+        Err(PlanFlavorRevisionBridgeError::PlanIntegrity {
+            source: ExecutablePlanIntegrityError::UnsupportedFormat,
+        })
+    );
+}
+
+#[tokio::test]
 async fn stored_empty_record_cannot_rebind_to_live_unit_null() {
     let archived = frozen(0x38);
     let live = frozen_for::<()>(0x38);

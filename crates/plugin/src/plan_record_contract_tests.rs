@@ -56,8 +56,109 @@ fn a_journaled_effect_record_round_trips_and_rejects_unknown_protocols() {
 }
 
 #[test]
-fn current_compiler_epoch_identifies_property_semantics() {
-    assert_eq!(PlanEpoch::CURRENT.compiler_version(), 5);
+fn current_compiler_epoch_identifies_property_semantics_with_journaled_effects() {
+    assert_eq!(PlanEpoch::CURRENT.compiler_version(), 6);
+    assert_eq!(PlanEpoch::CURRENT.canonical_hash_version(), 3);
+    assert!(PlanEpoch::CURRENT.records_journaled_effects());
+    assert!(!PlanEpoch::GraphV5.records_journaled_effects());
+    assert_eq!(
+        PlanEpoch::from_record(COMPILER_VERSION_GRAPH_V5, CANONICAL_HASH_VERSION_V3),
+        Some(PlanEpoch::GraphV5),
+        "epoch-5 records stay readable"
+    );
+}
+
+/// `fixture_record` at `epoch` with its action's effect replaced by `effect`.
+fn effect_epoch_record(
+    epoch: PlanEpoch,
+    effect: crate::plan_effect::RecordedActionEffectV1,
+) -> RecordedExecutablePlanRevisionV1 {
+    let mut record = fixture_record();
+    record.compiler_version = epoch.compiler_version();
+    record.canonical_hash_version = epoch.canonical_hash_version();
+    record.content.actions[0].effect_contract = Some(effect);
+    reseal(&mut record);
+    record
+}
+
+#[test]
+fn only_the_journaled_epoch_admits_a_journaled_effect_record() {
+    use crate::plan_effect::RecordedActionEffectV1;
+
+    let journaled = || RecordedActionEffectV1::Journaled {
+        protocol_version: 1,
+    };
+    let current = effect_epoch_record(PlanEpoch::GraphV6, journaled());
+    assert_eq!(
+        current.claimed_id.to_string(),
+        "61ef9b245b264410fe697345dfd5c82571d89bce16ba83372bbf180be41bd607",
+        "the epoch-6 Journaled record identity is a frozen golden vector"
+    );
+    let encoded = serde_json::to_vec(&current).unwrap();
+    let loaded =
+        ExecutablePlanRevision::try_from_recorded_v1(serde_json::from_slice(&encoded).unwrap())
+            .expect("epoch 6 records Journaled effects");
+    assert_eq!(loaded.id(), current.claimed_id);
+    assert_eq!(
+        serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&loaded)).unwrap(),
+        encoded
+    );
+
+    // Epoch 5 froze a grammar without Journaled: the same bytes relabelled
+    // as epoch 5 are never reinterpreted, even with a valid seal.
+    let relabelled = effect_epoch_record(PlanEpoch::GraphV5, journaled());
+    assert_matches!(
+        ExecutablePlanRevision::try_from_recorded_v1(relabelled),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "actions.effects"
+        })
+    );
+
+    // Epoch 5 records read exactly as before.
+    for effect in [RecordedActionEffectV1::ReadOnly] {
+        let legacy = effect_epoch_record(PlanEpoch::GraphV5, effect);
+        let loaded = ExecutablePlanRevision::try_from_recorded_v1(legacy.clone())
+            .expect("an epoch-5 read-only record stays readable");
+        assert_eq!(loaded.id(), legacy.claimed_id);
+    }
+}
+
+#[test]
+fn the_epoch_header_refuses_unknown_epochs_before_the_body() {
+    let header = |record: &RecordedExecutablePlanRevisionV1| {
+        serde_json::from_value::<RecordedPlanEpochV1>(serde_json::to_value(record).unwrap())
+            .unwrap()
+    };
+    for epoch in [PlanEpoch::GraphV5, PlanEpoch::GraphV6] {
+        let record =
+            effect_epoch_record(epoch, crate::plan_effect::RecordedActionEffectV1::ReadOnly);
+        header(&record).check().unwrap();
+    }
+
+    // A future epoch whose body carries an effect variant this reader's
+    // closed grammar cannot decode is refused by its header alone.
+    let mut future = serde_json::to_value(effect_epoch_record(
+        PlanEpoch::GraphV6,
+        crate::plan_effect::RecordedActionEffectV1::ReadOnly,
+    ))
+    .unwrap();
+    future["compiler_version"] = json!(COMPILER_VERSION_GRAPH_V6 + 1);
+    future["content"]["actions"][0]["effect_contract"] = json!({ "FutureEffect": {} });
+    assert!(serde_json::from_value::<RecordedExecutablePlanRevisionV1>(future.clone()).is_err());
+    let header = serde_json::from_value::<RecordedPlanEpochV1>(future).unwrap();
+    assert_matches!(
+        header.check(),
+        Err(ExecutablePlanIntegrityError::UnsupportedFormat)
+    );
+
+    let mut legacy = fixture_record();
+    legacy.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    assert_matches!(
+        serde_json::from_value::<RecordedPlanEpochV1>(serde_json::to_value(&legacy).unwrap())
+            .unwrap()
+            .check(),
+        Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
+    );
 }
 
 #[test]
@@ -596,6 +697,7 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
         COMPILER_VERSION_GRAPH_V3,
         COMPILER_VERSION_GRAPH_V4,
         COMPILER_VERSION_GRAPH_V5,
+        COMPILER_VERSION_GRAPH_V6,
     ] {
         for hash in [
             CANONICAL_HASH_VERSION_V1,
@@ -609,8 +711,10 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
                 record.content.actions[0].effect_contract =
                     declared.then_some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
                 reseal(&mut record);
-                let expected = compiler == COMPILER_VERSION_GRAPH_V5
-                    && hash == CANONICAL_HASH_VERSION_V3
+                let expected = matches!(
+                    compiler,
+                    COMPILER_VERSION_GRAPH_V5 | COMPILER_VERSION_GRAPH_V6
+                ) && hash == CANONICAL_HASH_VERSION_V3
                     && declared;
                 assert_eq!(
                     ExecutablePlanRevision::try_from(record.clone()).is_ok(),
@@ -1072,7 +1176,7 @@ fn unsupported_versions_and_profile_fail_closed() {
     for mutate in [
         |record: &mut RecordedExecutablePlanRevisionV1| record.record_version += 1,
         |record: &mut RecordedExecutablePlanRevisionV1| {
-            record.compiler_version = COMPILER_VERSION_GRAPH_V5 + 1;
+            record.compiler_version = COMPILER_VERSION_GRAPH_V6 + 1;
         },
         |record: &mut RecordedExecutablePlanRevisionV1| record.canonical_hash_version += 1,
     ] {
@@ -1392,6 +1496,7 @@ fn static_root_rules_are_proved_in_current_plans_without_changing_legacy_epochs(
         PlanEpoch::GraphV3,
         PlanEpoch::GraphV4,
         PlanEpoch::GraphV5,
+        PlanEpoch::GraphV6,
     ] {
         for value in [json!([]), json!([1])] {
             let record = root_rule_record(
@@ -1403,7 +1508,7 @@ fn static_root_rules_are_proved_in_current_plans_without_changing_legacy_epochs(
             let checked = ExecutablePlanRevision::try_from_recorded_v1(
                 serde_json::from_slice(&encoded).unwrap(),
             );
-            if epoch == PlanEpoch::GraphV5 {
+            if matches!(epoch, PlanEpoch::GraphV5 | PlanEpoch::GraphV6) {
                 let checked = checked.expect("current plans prove pure root presence predicates");
                 assert_eq!(checked.id(), record.claimed_id);
                 assert_eq!(

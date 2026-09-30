@@ -25,6 +25,8 @@ pub(crate) const COMPILER_VERSION_GRAPH_V1: u16 = 1;
 pub(crate) const COMPILER_VERSION_GRAPH_V3: u16 = 3;
 pub(crate) const COMPILER_VERSION_GRAPH_V4: u16 = 4;
 pub(crate) const COMPILER_VERSION_GRAPH_V5: u16 = 5;
+/// The first epoch whose action effect records may carry `Journaled`.
+pub(crate) const COMPILER_VERSION_GRAPH_V6: u16 = 6;
 pub(crate) const CANONICAL_HASH_VERSION_V1: u16 = 1;
 pub(crate) const CANONICAL_HASH_VERSION_V2: u16 = 2;
 pub(crate) const CANONICAL_HASH_VERSION_V3: u16 = 3;
@@ -49,10 +51,12 @@ pub(crate) enum PlanEpoch {
     GraphV4Legacy,
     GraphV4,
     GraphV5,
+    /// Graph-v5 semantics whose effect grammar adds `Journaled`.
+    GraphV6,
 }
 
 impl PlanEpoch {
-    pub(crate) const CURRENT: Self = Self::GraphV5;
+    pub(crate) const CURRENT: Self = Self::GraphV6;
 
     pub(crate) const fn from_record(
         compiler_version: u16,
@@ -64,6 +68,7 @@ impl PlanEpoch {
             (COMPILER_VERSION_GRAPH_V4, CANONICAL_HASH_VERSION_V2) => Some(Self::GraphV4Legacy),
             (COMPILER_VERSION_GRAPH_V4, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV4),
             (COMPILER_VERSION_GRAPH_V5, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV5),
+            (COMPILER_VERSION_GRAPH_V6, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV6),
             _ => None,
         }
     }
@@ -74,6 +79,7 @@ impl PlanEpoch {
             Self::GraphV3 => COMPILER_VERSION_GRAPH_V3,
             Self::GraphV4Legacy | Self::GraphV4 => COMPILER_VERSION_GRAPH_V4,
             Self::GraphV5 => COMPILER_VERSION_GRAPH_V5,
+            Self::GraphV6 => COMPILER_VERSION_GRAPH_V6,
         }
     }
 
@@ -82,38 +88,51 @@ impl PlanEpoch {
             Self::GraphV1 => CANONICAL_HASH_VERSION_V1,
             Self::GraphV3 => CANONICAL_HASH_VERSION_V2,
             Self::GraphV4Legacy => CANONICAL_HASH_VERSION_V2,
-            Self::GraphV4 | Self::GraphV5 => CANONICAL_HASH_VERSION_V3,
+            Self::GraphV4 | Self::GraphV5 | Self::GraphV6 => CANONICAL_HASH_VERSION_V3,
         }
     }
 
     pub(crate) const fn records_effect_contract(self) -> bool {
         matches!(
             self,
-            Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5
+            Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6
         )
+    }
+
+    /// Whether this epoch's effect grammar includes `Journaled`. Earlier
+    /// epochs froze a closed grammar without it, so a `Journaled` record
+    /// labelled with one of them is non-canonical, never reinterpreted.
+    pub(crate) const fn records_journaled_effects(self) -> bool {
+        matches!(self, Self::GraphV6)
     }
 
     const fn supports_intrinsic_error_port(self) -> bool {
         matches!(
             self,
-            Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5
+            Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6
         )
     }
 
     const fn records_binding_selector_provenance(self) -> bool {
-        matches!(self, Self::GraphV4 | Self::GraphV5)
+        matches!(self, Self::GraphV4 | Self::GraphV5 | Self::GraphV6)
     }
 
     const fn supports_scalar_schema(self) -> bool {
-        matches!(self, Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5)
+        matches!(
+            self,
+            Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6
+        )
     }
 
     const fn supports_static_root_rules(self) -> bool {
-        matches!(self, Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5)
+        matches!(
+            self,
+            Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6
+        )
     }
 
     const fn supports_property_policy(self) -> bool {
-        matches!(self, Self::GraphV5)
+        matches!(self, Self::GraphV5 | Self::GraphV6)
     }
 }
 
@@ -818,6 +837,61 @@ pub(crate) struct RecordedBindingV1 {
     pub(crate) lazy: bool,
 }
 
+/// The version header of a persisted executable plan, decoded ahead of its
+/// body.
+///
+/// Each compiler epoch freezes its own closed record grammar: a later epoch
+/// may add variants an earlier reader cannot decode. Decode this header from
+/// the stored bytes and [`check`](Self::check) it before decoding a
+/// [`RecordedExecutablePlanRevisionV1`], so a record from an epoch this
+/// reader does not know is refused as
+/// [`UnsupportedFormat`](ExecutablePlanIntegrityError::UnsupportedFormat)
+/// instead of failing partway through its body. Every other field is
+/// skipped unread.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct RecordedPlanEpochV1 {
+    record_version: u16,
+    compiler_version: u16,
+    canonical_hash_version: u16,
+}
+
+impl RecordedPlanEpochV1 {
+    /// Refuses a record this reader cannot decode as a current plan.
+    ///
+    /// # Errors
+    ///
+    /// [`UnsupportedFormat`](ExecutablePlanIntegrityError::UnsupportedFormat)
+    /// for an unknown record version or compiler epoch, and
+    /// [`UnsupportedSchemaPolicy`](ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
+    /// for a known epoch older than the property schema policy.
+    pub fn check(&self) -> Result<(), ExecutablePlanIntegrityError> {
+        checked_epoch(
+            self.record_version,
+            self.compiler_version,
+            self.canonical_hash_version,
+        )
+        .map(|_| ())
+    }
+}
+
+/// The epoch of a record whose body this reader decodes as a current plan.
+fn checked_epoch(
+    record_version: u16,
+    compiler_version: u16,
+    canonical_hash_version: u16,
+) -> Result<PlanEpoch, ExecutablePlanIntegrityError> {
+    if record_version != RECORD_VERSION_V1 {
+        return Err(ExecutablePlanIntegrityError::UnsupportedFormat);
+    }
+    let Some(epoch) = PlanEpoch::from_record(compiler_version, canonical_hash_version) else {
+        return Err(ExecutablePlanIntegrityError::UnsupportedFormat);
+    };
+    if !epoch.supports_property_policy() {
+        return Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy);
+    }
+    Ok(epoch)
+}
+
 /// Version-one persisted projection of an immutable executable plan.
 ///
 /// Fields are private so deserialization never creates an integrity-checked plan. Use
@@ -1329,19 +1403,14 @@ impl TryFrom<&RecordedSemverV1> for Version {
 fn validate_record(
     record: &RecordedExecutablePlanRevisionV1,
 ) -> Result<(), ExecutablePlanIntegrityError> {
-    if record.record_version != RECORD_VERSION_V1
-        || record.profile != RecordedPlanProfileV1::GraphV1
-    {
+    if record.profile != RecordedPlanProfileV1::GraphV1 {
         return Err(ExecutablePlanIntegrityError::UnsupportedFormat);
     }
-    let Some(epoch) =
-        PlanEpoch::from_record(record.compiler_version, record.canonical_hash_version)
-    else {
-        return Err(ExecutablePlanIntegrityError::UnsupportedFormat);
-    };
-    if !epoch.supports_property_policy() {
-        return Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy);
-    }
+    let epoch = checked_epoch(
+        record.record_version,
+        record.compiler_version,
+        record.canonical_hash_version,
+    )?;
     for action in &record.content.actions {
         match (&action.effect_contract, epoch.records_effect_contract()) {
             (None, false) => {},
@@ -1349,12 +1418,18 @@ fn validate_record(
                 let declared = contract
                     .checked_contract()
                     .map_err(|_| noncanonical("actions.effects"))?;
-                if matches!(
-                    declared,
+                match declared {
                     nebula_action::effect::ActionEffectContract::Remote(_)
-                ) && action.kind != RecordedActionKindV1::Stateless
-                {
-                    return Err(noncanonical("actions.effects"));
+                        if action.kind != RecordedActionKindV1::Stateless =>
+                    {
+                        return Err(noncanonical("actions.effects"));
+                    },
+                    nebula_action::effect::ActionEffectContract::Journaled(_)
+                        if !epoch.records_journaled_effects() =>
+                    {
+                        return Err(noncanonical("actions.effects"));
+                    },
+                    _ => {},
                 }
             },
             _ => return Err(noncanonical("actions.effects")),
