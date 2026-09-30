@@ -255,7 +255,7 @@
 //!   waits for capacity after its read is not read again here; the managed
 //!   call facade reads per attempt instead (below).
 //!
-//!   **Per attempt.** Every attempt of a managed call unit (`OpCx::attempt`)
+//!   **Per attempt.** Every attempt of a managed call unit (`OperationCx::attempt`)
 //!   on such a row repeats the two phases with the same functions, after
 //!   every wait of the attempt (its quota booking): the read outside every
 //!   lock, raced against the lease's own generation and the unit's cancel;
@@ -271,7 +271,7 @@
 //!   `CredentialAdmissionProfile::StrictPerAttempt`.
 //!
 //!   **Per-unit checkout.** An attempt of a managed row facade
-//!   (`ManagedRow`) holds no lease between attempts: it books its quota and
+//!   (`ResourceHandle`) holds no lease between attempts: it books its quota and
 //!   waits for the row gate (one permit per checkout, sized to the store's
 //!   capacity) with nothing checked out, reads (R1) outside every lock, then
 //!   runs the acquire pipeline's own admission — the in-flight count and

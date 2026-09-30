@@ -10,7 +10,7 @@ use http::{
 };
 use nebula_resource::{
     ErrorKind,
-    call::{Cost, Effect, OpError},
+    call::{Cost, Effect, OperationError},
 };
 use reqwest::Url;
 use serde::Serialize;
@@ -148,7 +148,7 @@ const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 /// `Debug` shows the method and header names only.
 ///
 /// ```
-/// # fn build() -> Result<(), nebula_sdk::integration::resource::OpError> {
+/// # fn build() -> Result<(), nebula_sdk::integration::resource::OperationError> {
 /// use nebula_sdk::integration::resource::http::Request;
 ///
 /// let request = Request::post("/repos/acme/app/issues")?
@@ -189,12 +189,12 @@ impl<M: Method> fmt::Debug for Request<M> {
     }
 }
 
-fn invalid(detail: &'static str) -> OpError {
-    OpError::new(ErrorKind::Permanent, detail)
+fn invalid(detail: &'static str) -> OperationError {
+    OperationError::new(ErrorKind::Permanent, detail)
 }
 
 impl<M: Method> Request<M> {
-    fn new(path: &str) -> Result<Self, OpError> {
+    fn new(path: &str) -> Result<Self, OperationError> {
         validate_path(path)?;
         Ok(Self {
             path: path.to_owned(),
@@ -229,7 +229,11 @@ impl<M: Method> Request<M> {
     /// `Authorization`, `Proxy-Authorization` and `Cookie`: credentials come
     /// from the resource's slots through
     /// [`HttpApi::authorize`](super::HttpApi::authorize).
-    pub fn header(mut self, name: &'static str, value: impl Into<String>) -> Result<Self, OpError> {
+    pub fn header(
+        mut self,
+        name: &'static str,
+        value: impl Into<String>,
+    ) -> Result<Self, OperationError> {
         let name = HeaderName::from_bytes(name.as_bytes())
             .map_err(|_| invalid("invalid request header name"))?;
         if FORBIDDEN_HEADERS.contains(&name) {
@@ -255,7 +259,7 @@ impl<M: Method> Request<M> {
     /// # Errors
     ///
     /// A permanent error when `value` does not serialize.
-    pub fn json<T: Serialize + ?Sized>(mut self, value: &T) -> Result<Self, OpError> {
+    pub fn json<T: Serialize + ?Sized>(mut self, value: &T) -> Result<Self, OperationError> {
         let body =
             serde_json::to_vec(value).map_err(|_| invalid("request body does not serialize"))?;
         self.headers
@@ -315,13 +319,16 @@ impl<M: Method> Request<M> {
     }
 
     /// The defect a builder recorded, refused before any attempt.
-    pub(super) fn check(&self) -> Result<(), OpError> {
+    pub(super) fn check(&self) -> Result<(), OperationError> {
         self.defect.map_or(Ok(()), |detail| Err(invalid(detail)))
     }
 
     /// The outgoing request, without credentials: its URL is the base plus
     /// this path, and must stay under the base's mount prefix.
-    pub(super) fn outgoing(&self, transport: &HttpTransport) -> Result<reqwest::Request, OpError> {
+    pub(super) fn outgoing(
+        &self,
+        transport: &HttpTransport,
+    ) -> Result<reqwest::Request, OperationError> {
         self.check()?;
         let base = transport.base();
         let prefix = base.path().trim_end_matches('/');
@@ -380,7 +387,7 @@ impl Request<Get> {
     /// # Errors
     ///
     /// A permanent error when `path` breaks the path rules of [`Request`].
-    pub fn get(path: &str) -> Result<Self, OpError> {
+    pub fn get(path: &str) -> Result<Self, OperationError> {
         Self::new(path)
     }
 }
@@ -391,7 +398,7 @@ impl Request<Head> {
     /// # Errors
     ///
     /// A permanent error when `path` breaks the path rules of [`Request`].
-    pub fn head(path: &str) -> Result<Self, OpError> {
+    pub fn head(path: &str) -> Result<Self, OperationError> {
         Self::new(path)
     }
 }
@@ -402,7 +409,7 @@ impl Request<Options> {
     /// # Errors
     ///
     /// A permanent error when `path` breaks the path rules of [`Request`].
-    pub fn options(path: &str) -> Result<Self, OpError> {
+    pub fn options(path: &str) -> Result<Self, OperationError> {
         Self::new(path)
     }
 }
@@ -413,7 +420,7 @@ impl Request<Post> {
     /// # Errors
     ///
     /// A permanent error when `path` breaks the path rules of [`Request`].
-    pub fn post(path: &str) -> Result<Self, OpError> {
+    pub fn post(path: &str) -> Result<Self, OperationError> {
         Self::new(path)
     }
 
@@ -433,7 +440,7 @@ impl Request<Patch> {
     /// # Errors
     ///
     /// A permanent error when `path` breaks the path rules of [`Request`].
-    pub fn patch(path: &str) -> Result<Self, OpError> {
+    pub fn patch(path: &str) -> Result<Self, OperationError> {
         Self::new(path)
     }
 
@@ -451,7 +458,7 @@ impl Request<Put> {
     /// # Errors
     ///
     /// A permanent error when `path` breaks the path rules of [`Request`].
-    pub fn put(path: &str) -> Result<Self, OpError> {
+    pub fn put(path: &str) -> Result<Self, OperationError> {
         Self::new(path)
     }
 
@@ -469,7 +476,7 @@ impl Request<Delete> {
     /// # Errors
     ///
     /// A permanent error when `path` breaks the path rules of [`Request`].
-    pub fn delete(path: &str) -> Result<Self, OpError> {
+    pub fn delete(path: &str) -> Result<Self, OperationError> {
         Self::new(path)
     }
 
@@ -481,7 +488,7 @@ impl Request<Delete> {
     }
 }
 
-fn validate_path(path: &str) -> Result<(), OpError> {
+fn validate_path(path: &str) -> Result<(), OperationError> {
     if !path.starts_with('/') || path.starts_with("//") {
         return Err(invalid("request path must start with a single `/`"));
     }

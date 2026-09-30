@@ -23,8 +23,8 @@ use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::super::{
-    Cost, Effect, ManagedRow, OpCx, OpError, Operation, PinSlots, SentState, SessionSpec,
-    StreamOperation, StreamSink, UNIT_DEADLINE_CAP, UnitScope,
+    Cost, Effect, OPERATION_DEADLINE_CAP, Operation, OperationCx, OperationError, PinSlots,
+    ResourceHandle, SentState, SessionSpec, StreamOperation, StreamSink, UnitScope,
 };
 use crate::{
     AcquireOptions, CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind,
@@ -103,9 +103,9 @@ fn pooled(manager: &Manager, max_size: u32, limit: Option<RowLimit>) -> StrictPo
     resource
 }
 
-fn facade<R: Provider + PinSlots>(manager: &Manager) -> ManagedRow<R> {
+fn facade<R: Provider + PinSlots>(manager: &Manager) -> ResourceHandle<R> {
     manager
-        .managed_row_for_identity::<R>(&context(), &tenant())
+        .handle_for_identity::<R>(&context(), &tenant())
         .expect("row facade")
 }
 
@@ -146,7 +146,7 @@ fn reads(manager: &Manager) -> Arc<CredentialReads> {
         .expect("strict row")
 }
 
-fn reason(error: &OpError) -> Option<CredentialUnavailableReason> {
+fn reason(error: &OperationError) -> Option<CredentialUnavailableReason> {
     match error.kind() {
         ErrorKind::CredentialUnavailable { reason } => Some(*reason),
         _ => None,
@@ -178,7 +178,7 @@ impl<R: Provider + PinSlots> Operation<R> for Once {
     type Output = ();
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(self.0).await?;
         attempt.settle(SentState::Sent);
         Ok(())
@@ -216,7 +216,7 @@ impl<R: Provider + PinSlots> Operation<R> for Held {
     type Output = ();
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(self.cost).await?;
         self.entered.notify_one();
         self.release.notified().await;
@@ -240,14 +240,14 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>> Operation<R> for Paused {
         NonZeroU32::new(2).expect("two")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<Self::Output, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::FREE).await?;
-        let mut pinned = vec![first.slots().clone()];
+        let mut pinned = vec![first.credentials().clone()];
         first.settle(SentState::Sent);
         self.between.notify_one();
         self.resume.notified().await;
         let second = cx.attempt(Cost::FREE).await?;
-        pinned.push(second.slots().clone());
+        pinned.push(second.credentials().clone());
         second.settle(SentState::Sent);
         Ok(pinned)
     }
@@ -263,11 +263,11 @@ impl<R: Provider + PinSlots, const WRITE: bool> Operation<R> for Reply<WRITE> {
     type Output = ();
     const EFFECT: Effect = if WRITE { Effect::Write } else { Effect::Read };
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         attempt.settle(self.sent);
         match self.kind {
-            Some(kind) => Err(OpError::new(kind, "provider answered")),
+            Some(kind) => Err(OperationError::new(kind, "provider answered")),
             None => Ok(()),
         }
     }
@@ -315,8 +315,8 @@ impl PoolProvider for PlainPool {
 fn the_row_facade_and_its_units_cross_threads() {
     fn send_sync_clone<T: Send + Sync + Clone>() {}
     fn send<T: Send + Unpin>() {}
-    send_sync_clone::<ManagedRow<StrictPooled>>();
-    send::<super::super::Unit<()>>();
+    send_sync_clone::<ResourceHandle<StrictPooled>>();
+    send::<super::super::Submission<()>>();
 }
 
 // ── R1: a unit waiting for quota holds no connection ─────────────────────
@@ -358,7 +358,7 @@ async fn a_lease_facade_holds_its_connection_while_its_unit_waits_for_quota() {
         .acquire_for_identity::<StrictPooled>(&context(), &AcquireOptions::default(), &tenant())
         .await
         .expect("acquire")
-        .into_managed();
+        .into_lease();
 
     let unit = tokio::spawn(lease.submit(Once(Cost::ONE)));
     settle_tasks().await;
@@ -578,7 +578,7 @@ async fn a_suspension_during_the_create_is_refused_at_hand_out() {
 
 // ── R8: cancel before the grant, at every wait ───────────────────────────
 
-async fn assert_cancelled(unit: super::super::Unit<()>) {
+async fn assert_cancelled(unit: super::super::Submission<()>) {
     unit.cancel();
     let error = unit.await.expect_err("cancelled");
     assert_eq!(*error.kind(), ErrorKind::Cancelled);
@@ -703,7 +703,11 @@ enum Host {
     Row,
 }
 
-async fn reply<const WRITE: bool>(host: Host, sent: SentState, kind: Option<ErrorKind>) -> OpError {
+async fn reply<const WRITE: bool>(
+    host: Host,
+    sent: SentState,
+    kind: Option<ErrorKind>,
+) -> OperationError {
     let manager = Manager::new();
     pooled(&manager, 1, None);
     let operation = Reply::<WRITE> { sent, kind };
@@ -712,7 +716,7 @@ async fn reply<const WRITE: bool>(host: Host, sent: SentState, kind: Option<Erro
             .acquire_for_identity::<StrictPooled>(&context(), &AcquireOptions::default(), &tenant())
             .await
             .expect("acquire")
-            .into_managed()
+            .into_lease()
             .submit(operation),
         Host::Row => facade::<StrictPooled>(&manager).submit(operation),
     };
@@ -896,7 +900,11 @@ impl<R: Provider + PinSlots> StreamOperation<R> for RowFeed {
     type Output = u64;
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, R>, mut sink: StreamSink<u64>) -> Result<u64, OpError> {
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, R>,
+        mut sink: StreamSink<u64>,
+    ) -> Result<u64, OperationError> {
         let _ended = Ended(Arc::clone(&self.ended));
         let attempt = cx.attempt(self.cost).await?;
         for value in 0..self.items {
@@ -1021,14 +1029,14 @@ fn context_of(token: &CancellationToken) -> ResourceContext {
 }
 
 /// A row facade whose units inherit `token`, built the typed way.
-fn linked(manager: &Manager, token: &CancellationToken) -> ManagedRow<StrictPooled> {
+fn linked(manager: &Manager, token: &CancellationToken) -> ResourceHandle<StrictPooled> {
     manager
-        .managed_row_for_identity::<StrictPooled>(&context_of(token), &tenant())
+        .handle_for_identity::<StrictPooled>(&context_of(token), &tenant())
         .expect("row facade")
 }
 
 /// A row facade whose units inherit only `deadline`.
-fn bounded(manager: &Manager, deadline: std::time::Instant) -> ManagedRow<StrictPooled> {
+fn bounded(manager: &Manager, deadline: std::time::Instant) -> ResourceHandle<StrictPooled> {
     facade::<StrictPooled>(manager).with_unit_scope(UnitScope {
         cancel: None,
         deadline: Some(deadline),
@@ -1043,7 +1051,7 @@ impl<R: Provider + PinSlots> Operation<R> for Deadline {
     type Output = std::time::Instant;
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<std::time::Instant, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<std::time::Instant, OperationError> {
         Ok(cx.deadline())
     }
 }
@@ -1055,7 +1063,7 @@ impl<R: Provider + PinSlots> Operation<R> for Tracked {
     type Output = ();
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         self.0.store(true, Ordering::SeqCst);
         let attempt = cx.attempt(Cost::FREE).await?;
         attempt.settle(SentState::Sent);
@@ -1063,7 +1071,7 @@ impl<R: Provider + PinSlots> Operation<R> for Tracked {
     }
 }
 
-fn assert_cancelled_unsent(error: &OpError) {
+fn assert_cancelled_unsent(error: &OperationError) {
     assert_eq!(*error.kind(), ErrorKind::Cancelled);
     assert_eq!(error.sent(), SentState::NotSent);
 }
@@ -1207,7 +1215,7 @@ async fn the_scope_deadline_bounds_the_unit_and_with_deadline_cannot_extend_it()
         .submit(Deadline)
         .await
         .expect("deadline");
-    assert_eq!(capped, in_one(UNIT_DEADLINE_CAP));
+    assert_eq!(capped, in_one(OPERATION_DEADLINE_CAP));
 
     // The scope's deadline is shorter than the cap; a later one cannot
     // extend it, an earlier one shortens it.
@@ -1257,7 +1265,7 @@ fn erased_row(
     options: &AcquireOptions,
     identity: &SlotIdentity,
 ) -> Result<Box<dyn std::any::Any + Send + Sync>, Error> {
-    manager.managed_row_any(key, ctx, options, identity)
+    manager.handle_any(key, ctx, options, identity)
 }
 
 /// The erased facade of the strict-fixture row, downcast.
@@ -1265,12 +1273,12 @@ fn typed_row(
     manager: &Manager,
     ctx: &ResourceContext,
     options: &AcquireOptions,
-) -> ManagedRow<StrictPooled> {
+) -> ResourceHandle<StrictPooled> {
     let erased = erased_row(manager, &StrictPooled::key(), ctx, options, &tenant())
         .expect("erased row facade");
     *erased
-        .downcast::<ManagedRow<StrictPooled>>()
-        .expect("a ManagedRow<StrictPooled>")
+        .downcast::<ResourceHandle<StrictPooled>>()
+        .expect("a ResourceHandle<StrictPooled>")
 }
 
 /// A pooled strict-fixture row of one instance for `identity`.
@@ -1298,7 +1306,7 @@ fn identity(tenant: &str) -> SlotIdentity {
 #[test]
 fn the_erased_facade_is_send_sync_and_static() {
     fn erasable<T: Send + Sync + 'static>() {}
-    erasable::<ManagedRow<StrictPooled>>();
+    erasable::<ResourceHandle<StrictPooled>>();
 }
 
 #[tokio::test]
@@ -1320,7 +1328,7 @@ async fn the_erased_facade_downcasts_to_its_row_and_nothing_else() {
         &tenant(),
     )
     .expect("erased row facade");
-    assert!(erased.downcast::<ManagedRow<PlainPool>>().is_err());
+    assert!(erased.downcast::<ResourceHandle<PlainPool>>().is_err());
     let erased = erased_row(
         &manager,
         &StrictPooled::key(),
@@ -1397,7 +1405,7 @@ async fn a_pinned_identity_reaches_its_own_row() {
         &identity("tenant-b"),
     )
     .expect("tenant b's row")
-    .downcast::<ManagedRow<StrictPooled>>()
+    .downcast::<ResourceHandle<StrictPooled>>()
     .expect("typed");
     row.submit(Once(Cost::FREE)).await.expect("granted");
     assert_eq!(b.probe.creates(), 1, "tenant b's instance");

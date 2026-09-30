@@ -17,7 +17,7 @@ use nebula_eventbus::EventBus;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
 
 use crate::{
-    call::{Managed, PinSlots},
+    call::{Lease, PinSlots},
     context::ResourceContext,
     events::ResourceEvent,
     metrics::ResourceOpsMetrics,
@@ -321,7 +321,7 @@ impl<R: Provider> ResourceGuard<R> {
     }
 
     /// Turns this lease into a managed call facade: provider calls go
-    /// through [`Managed::submit`] as admitted,
+    /// through [`Lease::submit`] as admitted,
     /// budgeted units of work, and the lease is released when the facade and
     /// every unit it started are gone.
     ///
@@ -331,11 +331,11 @@ impl<R: Provider> ResourceGuard<R> {
     /// row only honour pauses.
     ///
     /// See the [`call`](crate::call) module for the contract.
-    pub fn into_managed(self) -> Managed<R>
+    pub fn into_lease(self) -> Lease<R>
     where
         R: PinSlots,
     {
-        Managed::from_guard(self)
+        Lease::from_guard(self)
     }
 
     /// Attaches the manager's event bus so this guard emits

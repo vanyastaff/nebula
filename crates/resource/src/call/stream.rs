@@ -15,21 +15,21 @@ use tokio_util::sync::CancellationToken;
 use super::{
     Operation,
     cost::Effect,
-    error::OpError,
-    managed::{Managed, OpCx, Unit},
+    error::OperationError,
+    managed::{Lease, OperationCx, Submission},
     pin::PinSlots,
-    row::ManagedRow,
+    row::ResourceHandle,
 };
 use crate::{error::ErrorKind, resource::Provider};
 
 /// A provider call that yields items while it runs, submitted with
-/// [`Managed::submit_streaming`] or [`ManagedRow::submit_streaming`].
+/// [`Lease::submit_streaming`] or [`ResourceHandle::submit_streaming`].
 ///
 /// For a response read in chunks, a subscription, a long poll. It runs as
-/// one ordinary [`Unit`]: the same lazy start, unit slot, deadline, attempt
+/// one ordinary [`Submission`]: the same lazy start, unit slot, deadline, attempt
 /// admission, pinned credential slots and settled outcome as
-/// [`Managed::submit`]. Every provider request still goes through
-/// [`OpCx::attempt`], and the unit settles once, with [`run`](Self::run)'s
+/// [`Lease::submit`]. Every provider request still goes through
+/// [`OperationCx::attempt`], and the unit settles once, with [`run`](Self::run)'s
 /// result. The only difference is the [`StreamSink`] it sends items into,
 /// and the [`Streaming`] handle the caller pulls them from.
 ///
@@ -41,7 +41,7 @@ use crate::{error::ErrorKind, resource::Provider};
 ///   backpressure) — instead of buffering without bound. The wait is still
 ///   bounded by the unit's deadline.
 /// - Mid-stream failures are never items. An operation that fails returns
-///   its [`OpError`]; the caller first receives every item already sent,
+///   its [`OperationError`]; the caller first receives every item already sent,
 ///   then that error once, stamped with the unit's settled state, then
 ///   `None`.
 /// - Only the operation's return ends the stream. Items sent before the
@@ -61,17 +61,17 @@ use crate::{error::ErrorKind, resource::Provider};
 ///   ends (Design DX-API.md:114).
 /// - Honouring the lease closing is the operation's choice, as for any
 ///   unit (Design CONTRACT.md:57): the facade never aborts a granted
-///   attempt. A long-lived stream selects on [`OpCx::closing`] so a
+///   attempt. A long-lived stream selects on [`OperationCx::closing`] so a
 ///   removal or a shutdown drain does not wait for it.
 ///
-/// The 5-minute [`UNIT_DEADLINE_CAP`](super::UNIT_DEADLINE_CAP) applies to
+/// The 5-minute [`OPERATION_DEADLINE_CAP`](super::OPERATION_DEADLINE_CAP) applies to
 /// a streaming unit too; a stream that must outlive it is out of scope
 /// until the package fixes an interval profile.
 ///
 /// ```
 /// use nebula_resource::{
 ///     PinSlots, Provider,
-///     call::{Cost, Effect, OpCx, OpError, SentState, StreamOperation, StreamSink},
+///     call::{Cost, Effect, OperationCx, OperationError, SentState, StreamOperation, StreamSink},
 /// };
 ///
 /// /// Counts down from the instance's value, one item per step.
@@ -85,7 +85,7 @@ use crate::{error::ErrorKind, resource::Provider};
 ///     type Output = ();
 ///     const EFFECT: Effect = Effect::Read;
 ///
-///     async fn run(self, cx: &mut OpCx<'_, R>, mut sink: StreamSink<u64>) -> Result<(), OpError> {
+///     async fn run(self, cx: &mut OperationCx<'_, R>, mut sink: StreamSink<u64>) -> Result<(), OperationError> {
 ///         let attempt = cx.attempt(Cost::ONE).await?;
 ///         let start = *attempt.instance();
 ///         attempt.settle(SentState::Sent);
@@ -116,13 +116,13 @@ pub trait StreamOperation<R: Provider + PinSlots>: Send + 'static {
     /// Runs the call, sending items into `sink`.
     fn run(
         self,
-        cx: &mut OpCx<'_, R>,
+        cx: &mut OperationCx<'_, R>,
         sink: StreamSink<Self::Item>,
-    ) -> impl Future<Output = Result<Self::Output, OpError>> + Send;
+    ) -> impl Future<Output = Result<Self::Output, OperationError>> + Send;
 }
 
 /// The consumer of a stream is gone: its [`Streaming`] handle was dropped or
-/// cancelled. Converts into a `Cancelled` [`OpError`].
+/// cancelled. Converts into a `Cancelled` [`OperationError`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConsumerGone;
 
@@ -134,9 +134,9 @@ impl fmt::Display for ConsumerGone {
 
 impl std::error::Error for ConsumerGone {}
 
-impl From<ConsumerGone> for OpError {
+impl From<ConsumerGone> for OperationError {
     fn from(_: ConsumerGone) -> Self {
-        OpError::new(ErrorKind::Cancelled, "the stream's consumer is gone")
+        OperationError::new(ErrorKind::Cancelled, "the stream's consumer is gone")
     }
 }
 
@@ -211,7 +211,7 @@ where
         self.operation.max_attempts()
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<O::Output, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<O::Output, OperationError> {
         self.operation.run(cx, self.sink).await
     }
 }
@@ -221,7 +221,7 @@ where
 fn streaming<O, T, Out>(
     operation: O,
     capacity: NonZeroUsize,
-    submit: impl FnOnce(Streamed<O, T>) -> Unit<Out>,
+    submit: impl FnOnce(Streamed<O, T>) -> Submission<Out>,
 ) -> Streaming<T, Out> {
     // Tokio's bounded channel refuses a buffer above its permit limit.
     let capacity = capacity.get().min(Semaphore::MAX_PERMITS);
@@ -243,7 +243,7 @@ fn streaming<O, T, Out>(
     }
 }
 
-impl<R: Provider + PinSlots> Managed<R> {
+impl<R: Provider + PinSlots> Lease<R> {
     /// Submits `operation` as one streaming unit whose items reach the
     /// returned [`Streaming`] through a buffer of `capacity` items.
     ///
@@ -258,7 +258,7 @@ impl<R: Provider + PinSlots> Managed<R> {
     }
 }
 
-impl<R: Provider + PinSlots> ManagedRow<R> {
+impl<R: Provider + PinSlots> ResourceHandle<R> {
     /// Submits `operation` as one streaming unit whose items reach the
     /// returned [`Streaming`] through a buffer of `capacity` items.
     ///
@@ -291,10 +291,10 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
 #[must_use = "a streaming unit does nothing until polled; dropped before its first poll it never runs"]
 pub struct Streaming<T, O = ()> {
     /// `None` once the unit settled.
-    unit: Option<Unit<O>>,
+    unit: Option<Submission<O>>,
     items: mpsc::Receiver<T>,
     cancel: CancellationToken,
-    outcome: Option<Result<O, OpError>>,
+    outcome: Option<Result<O, OperationError>>,
     error_yielded: bool,
 }
 
@@ -317,7 +317,7 @@ impl<T, O> Streaming<T, O> {
     ///
     /// Cancel safe: dropping the future loses no item and leaves the unit
     /// running.
-    pub async fn next(&mut self) -> Option<Result<T, OpError>> {
+    pub async fn next(&mut self) -> Option<Result<T, OperationError>> {
         if let Some(unit) = self.unit.as_mut() {
             let settled = tokio::select! {
                 biased;
@@ -353,12 +353,12 @@ impl<T, O> Streaming<T, O> {
     /// # Errors
     ///
     /// The unit's error, even when [`next`](Self::next) already yielded it.
-    pub async fn finish(mut self) -> Result<O, OpError> {
+    pub async fn finish(mut self) -> Result<O, OperationError> {
         while let Some(item) = self.next().await {
             item?;
         }
         self.outcome.take().unwrap_or_else(|| {
-            Err(OpError::new(
+            Err(OperationError::new(
                 ErrorKind::Permanent,
                 "streaming unit ended without an outcome",
             ))
@@ -366,7 +366,7 @@ impl<T, O> Streaming<T, O> {
     }
 
     /// Cancels the stream. Before the unit's first grant it settles
-    /// `Cancelled` and `NotSent`, as [`Unit::cancel`]; after it, the
+    /// `Cancelled` and `NotSent`, as [`Submission::cancel`]; after it, the
     /// operation's sink closes and the operation ends at its next send or
     /// [`StreamSink::closed`] check. Idempotent.
     pub fn cancel(&self) {
@@ -376,7 +376,7 @@ impl<T, O> Streaming<T, O> {
         self.cancel.cancel();
     }
 
-    /// Shortens the unit's deadline, as [`Unit::with_deadline`]; call it
+    /// Shortens the unit's deadline, as [`Submission::with_deadline`]; call it
     /// before the first [`next`](Self::next).
     pub fn with_deadline(mut self, deadline: Instant) -> Self {
         self.unit = self.unit.take().map(|unit| unit.with_deadline(deadline));

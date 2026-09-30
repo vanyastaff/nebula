@@ -3,10 +3,10 @@
 //!
 //! The resource runtime never writes durable effect state. A row an action
 //! gets with effect-owner authority
-//! ([`Manager::managed_row_any_owned`](crate::Manager::managed_row_any_owned))
+//! ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled))
 //! carries a [`UnitEffectOwner`]; every unit submitted with
-//! [`ManagedRow::submit_effect`](super::ManagedRow::submit_effect) or
-//! [`ManagedRow::session_effect`](super::ManagedRow::session_effect) is
+//! [`ResourceHandle::submit_effect`](super::ResourceHandle::submit_effect) or
+//! [`ResourceHandle::session_effect`](super::ResourceHandle::session_effect) is
 //! driven through it:
 //!
 //! 1. **Submit** — the unit takes an in-flight [`OwnerTicket`]
@@ -31,7 +31,7 @@ use nebula_core::ResourceKey;
 
 use super::{
     cost::Effect,
-    effect::{EffectContract, EffectRecovery, IdempotencyKeyPart, OperationKey, Recorded},
+    effect::{EffectContract, EffectRecovery, IdempotencyKey, IdempotencyKeyPart, Recorded},
 };
 use crate::{dedup::SlotIdentity, error::ErrorKind};
 
@@ -181,19 +181,24 @@ pub enum RecordedOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitSlot {
     id: [u8; 16],
-    operation_key: OperationKey,
+    idempotency_key: IdempotencyKey,
     revision: u64,
     phase: SlotPhase,
 }
 
 impl UnitSlot {
     /// The slot `id` at `revision`, whose provider idempotency key is
-    /// `operation_key`, in `phase`.
+    /// `idempotency_key`, in `phase`.
     #[must_use]
-    pub fn new(id: [u8; 16], operation_key: OperationKey, revision: u64, phase: SlotPhase) -> Self {
+    pub fn new(
+        id: [u8; 16],
+        idempotency_key: IdempotencyKey,
+        revision: u64,
+        phase: SlotPhase,
+    ) -> Self {
         Self {
             id,
-            operation_key,
+            idempotency_key,
             revision,
             phase,
         }
@@ -207,8 +212,8 @@ impl UnitSlot {
 
     /// The provider idempotency key of the effect.
     #[must_use]
-    pub fn operation_key(&self) -> &OperationKey {
-        &self.operation_key
+    pub fn idempotency_key(&self) -> &IdempotencyKey {
+        &self.idempotency_key
     }
 
     /// The revision the slot was prepared at.

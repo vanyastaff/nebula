@@ -10,8 +10,8 @@
 //! - `Option<Lazy<ResourceGuard<R>>>` / `Option<Lazy<CredentialGuard<C>>>` — optional + lazy
 //!
 //! A `#[resource]` field may instead hold the row's per-unit checkout
-//! facade: `ManagedRow<R>` (required) or `Option<ManagedRow<R>>` (optional).
-//! Resolving it checks nothing out, so `Lazy<ManagedRow<R>>` is rejected.
+//! facade: `ResourceHandle<R>` (required) or `Option<ResourceHandle<R>>` (optional).
+//! Resolving it checks nothing out, so `Lazy<ResourceHandle<R>>` is rejected.
 //!
 //! Detection is by path-tail name (last `PathSegment::ident`) so the
 //! macro accepts both bare `ResourceGuard<...>` and fully-qualified
@@ -42,7 +42,7 @@ pub(crate) struct ParsedSlotField {
     pub optional: bool,
     /// Whether the field is wrapped in `Lazy<...>`.
     pub lazy: bool,
-    /// Whether a resource field holds the row facade `ManagedRow<R>`
+    /// Whether a resource field holds the row facade `ResourceHandle<R>`
     /// rather than a `ResourceGuard<R>` lease.
     pub row: bool,
     /// The inner concrete type (`R` for resource, `C` for credential).
@@ -167,7 +167,7 @@ struct FieldShape {
     optional: bool,
     /// Wrapped in `Lazy<...>`.
     lazy: bool,
-    /// A `ManagedRow<R>` resource field.
+    /// A `ResourceHandle<R>` resource field.
     row: bool,
     /// The concrete `R` or `C` underneath the wrappers.
     inner: Type,
@@ -196,12 +196,12 @@ fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<FieldShape> {
 
     // A resource field may hold the row facade instead of a lease.
     if kind == SlotKind::Resource
-        && let Some(inner) = strip_path_tail(&after_lazy, "ManagedRow")
+        && let Some(inner) = strip_path_tail(&after_lazy, "ResourceHandle")
     {
         if lazy {
             return Err(syn::Error::new_spanned(
                 ty,
-                "a ManagedRow acquires nothing at resolution; drop `Lazy`",
+                "a ResourceHandle acquires nothing at resolution; drop `Lazy`",
             ));
         }
         return Ok(FieldShape {
@@ -219,7 +219,7 @@ fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<FieldShape> {
             SlotKind::Credential => "credential",
         };
         let row_shape = match kind {
-            SlotKind::Resource => ", or `ManagedRow<T>` (optionally wrapped in `Option<...>`)",
+            SlotKind::Resource => ", or `ResourceHandle<T>` (optionally wrapped in `Option<...>`)",
             SlotKind::Credential => "",
         };
         return Err(syn::Error::new_spanned(
@@ -532,13 +532,13 @@ mod tests {
 
     #[test]
     fn a_managed_row_field_decodes_required_or_optional() {
-        let shape = decoded(syn::parse_quote!(ManagedRow<Db>)).expect("required row");
+        let shape = decoded(syn::parse_quote!(ResourceHandle<Db>)).expect("required row");
         assert!(shape.row && !shape.optional && !shape.lazy);
         let inner = &shape.inner;
         assert_eq!(quote!(#inner).to_string(), "Db");
 
         let shape = decoded(syn::parse_quote!(
-            Option<nebula_sdk::integration::resource::ManagedRow<Db>>
+            Option<nebula_sdk::integration::resource::ResourceHandle<Db>>
         ))
         .expect("optional row");
         assert!(shape.row && shape.optional && !shape.lazy);
@@ -550,8 +550,8 @@ mod tests {
     #[test]
     fn a_lazy_managed_row_is_rejected() {
         for ty in [
-            syn::parse_quote!(Lazy<ManagedRow<Db>>),
-            syn::parse_quote!(Option<Lazy<ManagedRow<Db>>>),
+            syn::parse_quote!(Lazy<ResourceHandle<Db>>),
+            syn::parse_quote!(Option<Lazy<ResourceHandle<Db>>>),
         ] {
             let Err(error) = decoded(ty) else {
                 panic!("a lazy row must be rejected");
@@ -562,7 +562,7 @@ mod tests {
 
     #[test]
     fn a_credential_field_never_decodes_as_a_row() {
-        let error = decode_field_type(&syn::parse_quote!(ManagedRow<Db>), SlotKind::Credential)
+        let error = decode_field_type(&syn::parse_quote!(ResourceHandle<Db>), SlotKind::Credential)
             .err()
             .expect("credentials have no row facade");
         assert!(error.to_string().contains("CredentialGuard<T>"), "{error}");

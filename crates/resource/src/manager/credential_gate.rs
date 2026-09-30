@@ -185,7 +185,7 @@ pub enum CredentialAdmissionProfile {
     StrictPerAcquire,
     /// As [`StrictPerAcquire`](Self::StrictPerAcquire), and a lease of the
     /// row became a managed call facade
-    /// ([`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed)):
+    /// ([`ResourceGuard::into_lease`](crate::ResourceGuard::into_lease)):
     /// every provider attempt also reads the bound credentials after its
     /// waits and is refused unless each is usable at the material the unit
     /// pinned.

@@ -20,7 +20,9 @@ use nebula_credential::{
     CredentialState, DispatchOps, ErasedPendingStore, SecretString, StateSource,
     register_runtime_ops, scheme::SecretToken,
 };
-use nebula_resource::call::{Cost, Effect, Managed, OpCx, OpError, Operation, PinSlots, SentState};
+use nebula_resource::call::{
+    Cost, Effect, Lease, Operation, OperationCx, OperationError, PinSlots, SentState,
+};
 use nebula_storage::credential::{
     EncryptionLayer, EnvKeyProvider, SqliteCredentialPersistence, SqliteRefreshClaimRepo,
 };
@@ -704,11 +706,11 @@ impl SqliteFixture {
     }
 
     /// A lease turned into a managed call facade.
-    async fn facade(&self, key: &ResourceKey, activated: &ActivatedResource) -> Managed<BearerRow> {
+    async fn facade(&self, key: &ResourceKey, activated: &ActivatedResource) -> Lease<BearerRow> {
         self.acquire(key, activated)
             .await
             .expect("serves")
-            .into_managed()
+            .into_lease()
     }
 
     /// `(material_epoch, admission_epoch)` the activator tracks.
@@ -1241,7 +1243,7 @@ impl<R: Provider + PinSlots> Operation<R> for Attempts {
         NonZeroU32::new(self.0).expect("at least one attempt")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         for _ in 0..self.0 {
             let attempt = cx.attempt(Cost::ONE).await?;
             attempt.settle(SentState::Sent);
@@ -1278,20 +1280,23 @@ impl Operation<BearerRow> for PausedRead {
         NonZeroU32::new(2).expect("two")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, BearerRow>) -> Result<Self::Output, OpError> {
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, BearerRow>,
+    ) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::ONE).await?;
-        let mut pinned = vec![first.slots().as_ref().map(|(material, _)| *material)];
+        let mut pinned = vec![first.credentials().as_ref().map(|(material, _)| *material)];
         first.settle(SentState::Sent);
         self.between.notify_one();
         self.resume.notified().await;
         let second = cx.attempt(Cost::ONE).await?;
-        pinned.push(second.slots().as_ref().map(|(material, _)| *material));
+        pinned.push(second.credentials().as_ref().map(|(material, _)| *material));
         second.settle(SentState::Sent);
         Ok(pinned)
     }
 }
 
-fn op_reason(error: &OpError) -> Option<CredentialUnavailableReason> {
+fn op_reason(error: &OperationError) -> Option<CredentialUnavailableReason> {
     match error.kind() {
         nebula_resource::ErrorKind::CredentialUnavailable { reason } => Some(*reason),
         _ => None,
@@ -1509,7 +1514,7 @@ async fn a_slot_less_facade_on_a_strict_manager_reads_nothing() {
         .acquire::<Plain>(&ctx, &nebula_resource::AcquireOptions::default())
         .await
         .expect("serves")
-        .into_managed();
+        .into_lease();
     managed.submit(Attempts(2)).await.expect("granted");
     assert_eq!(fixture.reads(), 0);
 }
@@ -1549,7 +1554,7 @@ fn action_row(
     fixture: &SqliteFixture,
     key: &ResourceKey,
     identity: &SlotIdentity,
-) -> Result<nebula_resource::call::ManagedRow<BearerRow>, nebula_action::ActionError> {
+) -> Result<nebula_resource::call::ResourceHandle<BearerRow>, nebula_action::ActionError> {
     use nebula_action::ActionContextExt as _;
     action_context(
         &fixture.manager,

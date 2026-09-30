@@ -17,7 +17,7 @@
 //!   ([`Get`], [`Post`], [`Keyed`], [`AsWrite`], …) fixes the
 //!   [`Effect`](nebula_resource::call::Effect), and so whether an unknown
 //!   outcome may be retried. Submit it with
-//!   [`Managed::submit`](nebula_resource::call::Managed::submit) — or call
+//!   [`Lease::submit`](nebula_resource::call::Lease::submit) — or call
 //!   [`send`] on an attempt of a custom operation.
 //! - **Answers.** [`send`] documents the classification: throttles are
 //!   reported to the rate limit and fail `Exhausted`; a `Write` that may

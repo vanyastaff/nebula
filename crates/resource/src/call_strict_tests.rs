@@ -13,7 +13,9 @@ use nebula_credential::{
 };
 use tokio::{sync::Notify, time::Instant};
 
-use super::super::{Cost, Effect, Managed, OpCx, OpError, Operation, PinSlots, SentState};
+use super::super::{
+    Cost, Effect, Lease, Operation, OperationCx, OperationError, PinSlots, SentState,
+};
 use crate::{
     AcquireOptions, CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind,
     Manager, Pooled, Provider, RegistrationSpec, Resident, ResidentConfig, ResourceEvent,
@@ -87,12 +89,12 @@ fn setup_limited(observer: &Arc<ScriptedObserver>) -> (Arc<Manager>, StrictResid
     (manager, resource)
 }
 
-async fn facade<R: Provider + PinSlots>(manager: &Manager) -> Managed<R> {
+async fn facade<R: Provider + PinSlots>(manager: &Manager) -> Lease<R> {
     manager
         .acquire_for_identity::<R>(&context(), &AcquireOptions::default(), &tenant())
         .await
         .expect("acquire")
-        .into_managed()
+        .into_lease()
 }
 
 fn reads(manager: &Manager) -> Arc<CredentialReads> {
@@ -122,7 +124,7 @@ fn gate_epoch<R: Provider>(manager: &Manager) -> u64 {
     row::<R>(manager).admission.gate_epoch()
 }
 
-fn reason(error: &OpError) -> Option<CredentialUnavailableReason> {
+fn reason(error: &OperationError) -> Option<CredentialUnavailableReason> {
     match error.kind() {
         ErrorKind::CredentialUnavailable { reason } => Some(*reason),
         _ => None,
@@ -147,7 +149,7 @@ impl<R: Provider + PinSlots> Operation<R> for Once {
     type Output = ();
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(self.0).await?;
         attempt.settle(SentState::Sent);
         Ok(())
@@ -178,11 +180,11 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>> Operation<R> for Attempts {
         NonZeroU32::new(self.n).expect("at least one attempt")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<Self::Output, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Self::Output, OperationError> {
         let mut pinned = Vec::new();
         for _ in 0..self.n {
             let attempt = cx.attempt(self.cost.clone()).await?;
-            pinned.push(attempt.slots().clone());
+            pinned.push(attempt.credentials().clone());
             attempt.settle(SentState::Sent);
         }
         Ok(pinned)
@@ -225,14 +227,14 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>, const WRITE: bool> Operation
         NonZeroU32::new(2).expect("two")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<Self::Output, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::FREE).await?;
-        let mut pinned = vec![first.slots().clone()];
+        let mut pinned = vec![first.credentials().clone()];
         first.settle(SentState::Sent);
         self.between.notify_one();
         self.resume.notified().await;
         let second = cx.attempt(Cost::FREE).await?;
-        pinned.push(second.slots().clone());
+        pinned.push(second.credentials().clone());
         second.settle(SentState::Sent);
         Ok(pinned)
     }
@@ -586,7 +588,7 @@ async fn a_write_whose_later_attempt_rebinds_has_an_unknown_outcome() {
     assert_eq!(*Error::from(error).kind(), ErrorKind::OutcomeUnknown);
     let mut unknown = 0;
     while let Some(event) = events.try_recv() {
-        if matches!(event, ResourceEvent::UnitOutcomeUnknown { .. }) {
+        if matches!(event, ResourceEvent::OperationOutcomeUnknown { .. }) {
             unknown += 1;
         }
     }

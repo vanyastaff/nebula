@@ -6,7 +6,10 @@ use bytes::Bytes;
 use http::{HeaderMap, HeaderName, StatusCode};
 use nebula_resource::{
     ErrorKind,
-    call::{Effect, Managed, OpCx, OpError, SentState, StreamOperation, StreamSink, Streaming},
+    call::{
+        Effect, Lease, OperationCx, OperationError, SentState, StreamOperation, StreamSink,
+        Streaming,
+    },
 };
 use tracing::Instrument as _;
 
@@ -36,8 +39,8 @@ struct StreamExchange<M: Method> {
     request: Request<M>,
 }
 
-fn stopped(detail: &'static str) -> OpError {
-    OpError::new(ErrorKind::Cancelled, detail)
+fn stopped(detail: &'static str) -> OperationError {
+    OperationError::new(ErrorKind::Cancelled, detail)
 }
 
 impl<R, M> StreamOperation<R> for StreamExchange<M>
@@ -50,7 +53,11 @@ where
     type Output = ();
     const EFFECT: Effect = M::EFFECT;
 
-    async fn run(self, cx: &mut OpCx<'_, R>, mut sink: StreamSink<Frame>) -> Result<(), OpError> {
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, R>,
+        mut sink: StreamSink<Frame>,
+    ) -> Result<(), OperationError> {
         let request = self.request;
         request.check()?;
         let closing = cx.closing();
@@ -89,7 +96,7 @@ where
                 .is_some_and(|length| length > budget)
             {
                 settle(attempt, SentState::Sent, &span);
-                return Err(OpError::new(
+                return Err(OperationError::new(
                     ErrorKind::Permanent,
                     "streamed body exceeds its byte budget",
                 ));
@@ -110,7 +117,7 @@ where
                     Ok(Some(chunk)) => chunk,
                     Ok(None) => return Ok(()),
                     Err(_) => {
-                        return Err(OpError::new(
+                        return Err(OperationError::new(
                             ErrorKind::Transient,
                             "reading the response stream failed",
                         ));
@@ -118,7 +125,7 @@ where
                 };
                 streamed = streamed.saturating_add(chunk.len() as u64);
                 if streamed > budget {
-                    return Err(OpError::new(
+                    return Err(OperationError::new(
                         ErrorKind::Permanent,
                         "streamed body exceeds its byte budget",
                     ));
@@ -165,10 +172,10 @@ impl ResponseStream {
     /// # Cancel safety
     ///
     /// Cancel safe, as [`Streaming::next`].
-    pub async fn next(&mut self) -> Option<Result<Bytes, OpError>> {
+    pub async fn next(&mut self) -> Option<Result<Bytes, OperationError>> {
         match self.frames.next().await? {
             Ok(Frame::Chunk(chunk)) => Some(Ok(chunk)),
-            Ok(Frame::Head { .. }) => Some(Err(OpError::new(
+            Ok(Frame::Head { .. }) => Some(Err(OperationError::new(
                 ErrorKind::Permanent,
                 "response stream repeated its head",
             ))),
@@ -209,15 +216,15 @@ impl fmt::Debug for ResponseStream {
 ///
 /// The unit's error when it failed before the head.
 pub async fn open_stream<R, M>(
-    managed: &Managed<R>,
+    lease: &Lease<R>,
     request: Request<M>,
-) -> Result<ResponseStream, OpError>
+) -> Result<ResponseStream, OperationError>
 where
     R: HttpApi,
     R::Instance: AsRef<HttpTransport>,
     M: Method,
 {
-    first_frame(managed.submit_streaming(StreamExchange { request }, STREAM_CAPACITY)).await
+    first_frame(lease.submit_streaming(StreamExchange { request }, STREAM_CAPACITY)).await
 }
 
 /// [`open_stream`] with the unit's deadline shortened to `deadline`.
@@ -226,34 +233,34 @@ where
 ///
 /// As [`open_stream`].
 pub async fn open_stream_until<R, M>(
-    managed: &Managed<R>,
+    lease: &Lease<R>,
     request: Request<M>,
     deadline: Instant,
-) -> Result<ResponseStream, OpError>
+) -> Result<ResponseStream, OperationError>
 where
     R: HttpApi,
     R::Instance: AsRef<HttpTransport>,
     M: Method,
 {
-    let frames = managed
+    let frames = lease
         .submit_streaming(StreamExchange { request }, STREAM_CAPACITY)
         .with_deadline(deadline);
     first_frame(frames).await
 }
 
-async fn first_frame(mut frames: Streaming<Frame, ()>) -> Result<ResponseStream, OpError> {
+async fn first_frame(mut frames: Streaming<Frame, ()>) -> Result<ResponseStream, OperationError> {
     match frames.next().await {
         Some(Ok(Frame::Head { status, headers })) => Ok(ResponseStream {
             status,
             headers,
             frames,
         }),
-        Some(Ok(Frame::Chunk(_))) => Err(OpError::new(
+        Some(Ok(Frame::Chunk(_))) => Err(OperationError::new(
             ErrorKind::Permanent,
             "response stream sent a chunk before its head",
         )),
         Some(Err(error)) => Err(error),
-        None => Err(OpError::new(
+        None => Err(OperationError::new(
             ErrorKind::Permanent,
             "response stream ended before its head",
         )),

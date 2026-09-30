@@ -36,7 +36,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use super::{
     cost::{Effect, SentState},
     effect::{EffectContract, EffectRecovery, IdempotencyKeyPart, OccurrenceLabel, Recorded},
-    error::OpError,
+    error::OperationError,
     managed::{UnitShared, cancelled_before_grant},
     owner::{
         Crossing, ErrorKindCode, OwnerRefusal, OwnerTicket, RecordedOutcome, SlotPhase, UnitCall,
@@ -54,7 +54,7 @@ const MAX_CANONICAL_REQUEST_LEN: usize = 1024 * 1024;
 /// Computes an owned unit's canonical request and developer key part from
 /// its operation, at the first poll.
 pub(super) type RequestFn<O> =
-    Box<dyn FnOnce(&O) -> Result<(Vec<u8>, Option<IdempotencyKeyPart>), OpError> + Send>;
+    Box<dyn FnOnce(&O) -> Result<(Vec<u8>, Option<IdempotencyKeyPart>), OperationError> + Send>;
 
 /// How a unit's output is recorded and replayed: JSON.
 pub(super) struct OutputCodec<T> {
@@ -92,7 +92,7 @@ pub(super) struct EffectDeclaration<O, T> {
 impl<O, T> EffectDeclaration<O, T> {
     /// Refuses a declaration whose contract is malformed or whose recovery
     /// disagrees with `effect` (a `Read` included).
-    pub(super) fn check(&self, effect: Effect) -> Result<(), OpError> {
+    pub(super) fn check(&self, effect: Effect) -> Result<(), OperationError> {
         self.contract.validate()?;
         self.recovery.check(effect)
     }
@@ -158,9 +158,9 @@ impl OwnedEffect {
         key: &ResourceKey,
         effect: Effect,
         declaration: &EffectDeclaration<O, T>,
-    ) -> Result<Self, OpError> {
+    ) -> Result<Self, OperationError> {
         if owner.is_closed() {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Cancelled,
                 "effect owner closed; unit refused",
             ));
@@ -173,7 +173,7 @@ impl OwnedEffect {
         let fits = occurrence.len() <= MAX_OCCURRENCE_LABEL_LEN
             && occurrence.bytes().all(|byte| (0x21..=0x7E).contains(&byte));
         if !fits {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Permanent,
                 "effect occurrence label must be at most 512 bytes of visible ASCII",
             ));
@@ -228,7 +228,7 @@ impl OwnedEffect {
     /// Explains the previous attempt's call when a new attempt starts: it
     /// did not cross when it was unsent or throttled, and may have
     /// otherwise.
-    pub(super) async fn flush_previous(&self) -> Result<(), OpError> {
+    pub(super) async fn flush_previous(&self) -> Result<(), OperationError> {
         let (Some(pending), Some(slot)) = (self.take_pending(), self.slot()) else {
             return Ok(());
         };
@@ -245,9 +245,9 @@ impl OwnedEffect {
 
     /// Asks the owner for the current attempt's call; on a grant the call
     /// is pending until the attempt is explained or settled.
-    pub(super) async fn grant(&self) -> Result<(), OpError> {
+    pub(super) async fn grant(&self) -> Result<(), OperationError> {
         let Some(slot) = self.slot() else {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Permanent,
                 "effect slot missing at the grant",
             ));
@@ -293,10 +293,10 @@ impl OwnedEffect {
     /// | `Err` | `Sent` and a non-retryable kind | settle `Rejected` |
     pub(super) async fn finish<T>(
         &self,
-        result: Result<T, OpError>,
+        result: Result<T, OperationError>,
         abnormal: bool,
         codec: OutputCodec<T>,
-    ) -> Result<T, OpError> {
+    ) -> Result<T, OperationError> {
         let (Some(pending), Some(slot)) = (self.take_pending(), self.slot()) else {
             return result;
         };
@@ -365,7 +365,7 @@ impl OwnedEffect {
     }
 
     /// The unit error of an owner `refusal` of `step`, logged.
-    fn refused(&self, step: &'static str, refusal: OwnerRefusal) -> OpError {
+    fn refused(&self, step: &'static str, refusal: OwnerRefusal) -> OperationError {
         tracing::warn!(
             target: "nebula.resource",
             occurrence = %self.occurrence,
@@ -378,7 +378,7 @@ impl OwnedEffect {
 
     /// The unit error when the owner could not record a call that may have
     /// crossed: the outcome is unknown.
-    fn unrecorded(&self, step: &'static str, refusal: OwnerRefusal) -> OpError {
+    fn unrecorded(&self, step: &'static str, refusal: OwnerRefusal) -> OperationError {
         tracing::warn!(
             target: "nebula.resource",
             occurrence = %self.occurrence,
@@ -386,7 +386,7 @@ impl OwnedEffect {
             refusal = refusal.as_str(),
             "effect owner could not record a call that may have crossed; outcome unknown"
         );
-        OpError::new(
+        OperationError::new(
             ErrorKind::OutcomeUnknown,
             "effect outcome could not be recorded by its owner",
         )
@@ -394,19 +394,21 @@ impl OwnedEffect {
 }
 
 /// The unit error of an owner refusal.
-fn refusal_error(refusal: OwnerRefusal) -> OpError {
+fn refusal_error(refusal: OwnerRefusal) -> OperationError {
     match refusal {
-        OwnerRefusal::Unknown => OpError::new(
+        OwnerRefusal::Unknown => OperationError::new(
             ErrorKind::OutcomeUnknown,
             "effect outcome unknown; no provider call granted",
         ),
-        OwnerRefusal::Mismatch => OpError::new(ErrorKind::Permanent, "effect occurrence mismatch"),
+        OwnerRefusal::Mismatch => {
+            OperationError::new(ErrorKind::Permanent, "effect occurrence mismatch")
+        },
         OwnerRefusal::Closed => {
-            OpError::new(ErrorKind::Cancelled, "effect owner closed; unit refused")
+            OperationError::new(ErrorKind::Cancelled, "effect owner closed; unit refused")
         },
         OwnerRefusal::Unavailable
         | OwnerRefusal::AcknowledgementUnknown
-        | OwnerRefusal::LeaseLost => OpError::new(
+        | OwnerRefusal::LeaseLost => OperationError::new(
             ErrorKind::Backpressure,
             "effect owner unavailable; unit refused",
         ),
@@ -420,7 +422,7 @@ pub(super) enum Prepared<T> {
     /// A recorded success, replayed without a provider call.
     Replayed(T),
     /// No run: the unit settles with this error and sent state.
-    Refused(OpError, SentState),
+    Refused(OperationError, SentState),
 }
 
 /// The first poll of an owned unit: the canonical `request`, then the
@@ -429,7 +431,7 @@ pub(super) async fn prepare<T>(
     shared: &UnitShared,
     effect: &OwnedEffect,
     max_invocations: NonZeroU32,
-    request: Result<(Vec<u8>, Option<IdempotencyKeyPart>), OpError>,
+    request: Result<(Vec<u8>, Option<IdempotencyKeyPart>), OperationError>,
     codec: OutputCodec<T>,
     deadline: tokio::time::Instant,
 ) -> Prepared<T> {
@@ -439,7 +441,7 @@ pub(super) async fn prepare<T>(
     };
     if canonical_request.is_empty() || canonical_request.len() > MAX_CANONICAL_REQUEST_LEN {
         return Prepared::Refused(
-            OpError::new(
+            OperationError::new(
                 ErrorKind::Permanent,
                 "canonical request must be 1 byte to 1 MiB",
             ),
@@ -466,7 +468,7 @@ pub(super) async fn prepare<T>(
         },
         () = tokio::time::sleep_until(deadline) => {
             return Prepared::Refused(
-                OpError::new(
+                OperationError::new(
                     ErrorKind::Backpressure,
                     "the effect owner did not prepare before the unit deadline",
                 ),
@@ -494,7 +496,7 @@ pub(super) async fn prepare<T>(
         SlotPhase::Replay(RecordedOutcome::Succeeded(bytes)) => match (codec.decode)(&bytes) {
             Ok(output) => Prepared::Replayed(output),
             Err(_) => Prepared::Refused(
-                OpError::new(
+                OperationError::new(
                     ErrorKind::Permanent,
                     "recorded effect output does not deserialize",
                 ),
@@ -502,11 +504,11 @@ pub(super) async fn prepare<T>(
             ),
         },
         SlotPhase::Replay(RecordedOutcome::OutputUnavailable) => Prepared::Refused(
-            OpError::new(ErrorKind::Permanent, "effect recorded without output"),
+            OperationError::new(ErrorKind::Permanent, "effect recorded without output"),
             SentState::Sent,
         ),
         SlotPhase::Replay(RecordedOutcome::Failed(code)) => Prepared::Refused(
-            OpError::new(code.replayed_kind(), "recorded provider rejection replayed"),
+            OperationError::new(code.replayed_kind(), "recorded provider rejection replayed"),
             SentState::Sent,
         ),
         SlotPhase::Unknown => {

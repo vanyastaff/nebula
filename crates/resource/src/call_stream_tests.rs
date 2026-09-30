@@ -19,7 +19,7 @@ use super::{StreamOperation, StreamSink};
 use crate::{
     AcquireOptions, Error, ErrorKind, Manager, Provider, RegistrationSpec, Resident,
     ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity,
-    call::{Cost, Effect, Managed, OpCx, OpError, SentState},
+    call::{Cost, Effect, Lease, OperationCx, OperationError, SentState},
     resource::ResourceMetadataDraft,
     runtime::managed::ManagedResource,
     topology::ResidentProvider,
@@ -65,7 +65,7 @@ impl ResidentProvider for Feed {}
 
 crate::no_credential_slots!(Feed);
 
-async fn feed(manager: &Manager) -> Managed<Feed> {
+async fn feed(manager: &Manager) -> Lease<Feed> {
     manager
         .register(RegistrationSpec {
             resource: Feed,
@@ -82,7 +82,7 @@ async fn feed(manager: &Manager) -> Managed<Feed> {
         .acquire::<Feed>(&context, &AcquireOptions::default())
         .await
         .expect("acquire")
-        .into_managed()
+        .into_lease()
 }
 
 fn leases(manager: &Manager) -> u64 {
@@ -144,7 +144,11 @@ impl StreamOperation<Feed> for Emit {
     type Output = u64;
     const EFFECT: Effect = Effect::Write;
 
-    async fn run(self, cx: &mut OpCx<'_, Feed>, mut sink: StreamSink<u64>) -> Result<u64, OpError> {
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, Feed>,
+        mut sink: StreamSink<u64>,
+    ) -> Result<u64, OperationError> {
         self.probe.started.fetch_add(1, Ordering::SeqCst);
         let closing = cx.closing();
         let attempt = cx.attempt(Cost::FREE).await?;
@@ -159,17 +163,17 @@ impl StreamOperation<Feed> for Emit {
             Wait::Nothing => {},
             Wait::ConsumerGone => {
                 sink.closed().await;
-                return Err(OpError::new(ErrorKind::Cancelled, "consumer gone"));
+                return Err(OperationError::new(ErrorKind::Cancelled, "consumer gone"));
             },
             Wait::LeaseClosing => {
                 closing.closed().await;
-                return Err(OpError::new(ErrorKind::Cancelled, "lease closing"));
+                return Err(OperationError::new(ErrorKind::Cancelled, "lease closing"));
             },
             Wait::Forever => std::future::pending::<()>().await,
         }
         drop(ended);
         self.end
-            .map_err(|kind| OpError::new(kind, "provider failed mid-stream"))
+            .map_err(|kind| OperationError::new(kind, "provider failed mid-stream"))
     }
 }
 

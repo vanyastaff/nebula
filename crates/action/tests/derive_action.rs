@@ -216,7 +216,7 @@ mod managed_row_fields {
     use nebula_resource::{
         AcquireOptions, ErrorKind, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
-        call::{Cost, Effect, ManagedRow, OpCx, OpError, Operation, SentState},
+        call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle, SentState},
         resource::{Provider, ResourceMetadataDraft},
         topology::ResidentProvider,
     };
@@ -286,9 +286,9 @@ mod managed_row_fields {
     )]
     struct RowAction {
         #[resource]
-        db: ManagedRow<Db>,
+        db: ResourceHandle<Db>,
         #[resource(key = "cache")]
-        cache: Option<ManagedRow<Cache>>,
+        cache: Option<ResourceHandle<Cache>>,
     }
 
     impl StatelessAction for RowAction {
@@ -308,7 +308,7 @@ mod managed_row_fields {
         type Output = u64;
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
             let attempt = cx.attempt(Cost::FREE).await?;
             let value = *attempt.instance();
             attempt.settle(SentState::Sent);
@@ -345,12 +345,12 @@ mod managed_row_fields {
             Box::pin(async { Ok(None) })
         }
 
-        fn managed_row_any(
+        fn resource_handle_any(
             &self,
             key: &ResourceKey,
         ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
             self.0
-                .managed_row_any(
+                .handle_any(
                     key,
                     &ResourceContext::minimal(Scope::default(), CancellationToken::new()),
                     &AcquireOptions::default(),
@@ -359,11 +359,11 @@ mod managed_row_fields {
                 .map_err(|error| error.to_core_error())
         }
 
-        fn try_managed_row_any(
+        fn try_resource_handle_any(
             &self,
             key: &ResourceKey,
         ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
-            match self.0.managed_row_any(
+            match self.0.handle_any(
                 key,
                 &ResourceContext::minimal(Scope::default(), CancellationToken::new()),
                 &AcquireOptions::default(),
@@ -406,7 +406,7 @@ mod managed_row_fields {
             Box::pin(async { Ok(None) })
         }
 
-        fn managed_row_any(
+        fn resource_handle_any(
             &self,
             key: &ResourceKey,
         ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
@@ -418,10 +418,10 @@ mod managed_row_fields {
                     None,
                 ));
             }
-            RowsOf(Arc::clone(&self.manager)).managed_row_any(key)
+            RowsOf(Arc::clone(&self.manager)).resource_handle_any(key)
         }
 
-        fn try_managed_row_any(
+        fn try_resource_handle_any(
             &self,
             key: &ResourceKey,
         ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
@@ -433,7 +433,7 @@ mod managed_row_fields {
                     None,
                 ));
             }
-            RowsOf(Arc::clone(&self.manager)).try_managed_row_any(key)
+            RowsOf(Arc::clone(&self.manager)).try_resource_handle_any(key)
         }
     }
 

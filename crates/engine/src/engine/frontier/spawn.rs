@@ -370,7 +370,7 @@ impl WorkflowEngine {
                 merged.extend(node_rows.iter().map(|(key, id)| (key.clone(), id.clone())));
                 slot_identities = Arc::new(merged);
             }
-            // Managed row units are cancelled with the node until their
+            // Resource handle units are cancelled with the node until their
             // first grant and bounded by the execution's wall-clock budget.
             let global: Arc<dyn ResourceAccessor> = Arc::new(
                 EngineResourceAccessor::new(Arc::clone(manager), scope, cancel_token.clone())

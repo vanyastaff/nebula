@@ -1,5 +1,5 @@
-error: a ManagedRow acquires nothing at resolution; drop `Lazy`
+error: a ResourceHandle acquires nothing at resolution; drop `Lazy`
   --> tests/probes/derive_lazy_managed_row.rs:18:9
    |
-18 |     db: Lazy<ManagedRow<R>>,
-   |         ^^^^^^^^^^^^^^^^^^^
+18 |     db: Lazy<ResourceHandle<R>>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^

@@ -10,7 +10,7 @@
 //! - both `#[resource]` and `#[credential]` on the same field,
 //! - unknown keys inside `#[action(...)]`,
 //! - a value assigned to the `no_external_effects` flag,
-//! - `Lazy<ManagedRow<R>>` (a row facade acquires nothing to defer).
+//! - `Lazy<ResourceHandle<R>>` (a resource handle acquires nothing to defer).
 //!
 //! The positive probe (`tests/probes/derive_positive_guard_shapes.rs`)
 //! checks all four allowed guard shapes compile in a single struct:

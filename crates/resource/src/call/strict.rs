@@ -46,7 +46,7 @@
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    error::OpError,
+    error::OperationError,
     managed::{ManagedLease, UnitShared, cancelled_before_grant, generation_refusal},
     pin::PinSlots,
 };
@@ -157,7 +157,7 @@ impl<R: Provider + PinSlots> ManagedLease<R> {
         &self,
         deadline: tokio::time::Instant,
         cancel: Option<&CancellationToken>,
-    ) -> Result<Option<StrictReading>, OpError> {
+    ) -> Result<Option<StrictReading>, OperationError> {
         read_credentials(&self.managed, &self.generation, deadline, cancel).await
     }
 
@@ -168,7 +168,7 @@ impl<R: Provider + PinSlots> ManagedLease<R> {
         reading: Option<&StrictReading>,
         pin: &UnitPin<R::Pinned>,
         shared: &UnitShared,
-    ) -> Result<(), OpError> {
+    ) -> Result<(), OperationError> {
         register_grant(
             &self.managed,
             reading.is_some(),
@@ -186,7 +186,7 @@ impl<R: Provider + PinSlots> ManagedLease<R> {
 ///
 /// The read is bounded by `deadline` (and by the read's own timeout) and
 /// raced, closing first, against `generation` (the unit's) and, until the
-/// unit's first grant, against [`Unit::cancel`](super::Unit::cancel).
+/// unit's first grant, against [`Submission::cancel`](super::Submission::cancel).
 ///
 /// # Cancel safety
 ///
@@ -196,7 +196,7 @@ pub(super) async fn read_credentials<R: Provider>(
     generation: &AdmissionGeneration,
     deadline: tokio::time::Instant,
     cancel: Option<&CancellationToken>,
-) -> Result<Option<StrictReading>, OpError> {
+) -> Result<Option<StrictReading>, OperationError> {
     if managed.credential_reads.is_none() {
         return Ok(None);
     }
@@ -230,7 +230,7 @@ pub(super) fn register_grant<R: Provider, P>(
     generation: &AdmissionGeneration,
     pin: &UnitPin<P>,
     shared: &UnitShared,
-) -> Result<(), OpError> {
+) -> Result<(), OperationError> {
     let (true, Some(reads)) = (strict, managed.credential_reads.as_deref()) else {
         generation_refusal(managed, generation)?;
         return shared.grant();
@@ -239,23 +239,23 @@ pub(super) fn register_grant<R: Provider, P>(
     let link = reads.link();
     let _admission = link.lock();
     if managed.is_tainted() {
-        return Err(OpError::new(
+        return Err(OperationError::new(
             ErrorKind::Revoked,
             "resource tainted by a credential revoke; new attempts refused",
         ));
     }
     link.shutdown_guard().map_err(|_| {
-        OpError::new(
+        OperationError::new(
             ErrorKind::Cancelled,
             "manager shutting down; attempt refused",
         )
     })?;
     if let Some(reading) = reading {
         link.apply_strict_reading_under_admission(&key, managed, reading, reads)
-            .map_err(OpError::from)?;
+            .map_err(OperationError::from)?;
     }
     if let Some(suspension) = managed.admission.suspension() {
-        return Err(OpError::new(
+        return Err(OperationError::new(
             ErrorKind::CredentialUnavailable {
                 reason: suspension.reason(),
             },
@@ -271,7 +271,7 @@ pub(super) fn register_grant<R: Provider, P>(
             resource.key = %key,
             "credential slots rotated since the unit pinned them; attempt refused"
         );
-        return Err(OpError::new(
+        return Err(OperationError::new(
             ErrorKind::CredentialUnavailable {
                 reason: CredentialUnavailableReason::Rebinding,
             },

@@ -36,7 +36,7 @@ use nebula_resource::{
     AcquireOptions, CredentialAdmissionProfile, Error, ErrorKind, Manager, ManagerConfig,
     RateLimitProfile, RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext,
     ResourceEvent, ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
-    call::{Cost, Effect, Managed, OpCx, OpError, Operation, SentState},
+    call::{Cost, Effect, Lease, Operation, OperationCx, OperationError, SentState},
     resource::{Provider, ResourceMetadataDraft},
     topology::ResidentProvider,
 };
@@ -255,7 +255,7 @@ impl Operation<Logger> for Write {
     type Output = Enqueued;
     const EFFECT: Effect = Effect::Write;
 
-    async fn run(self, cx: &mut OpCx<'_, Logger>) -> Result<Enqueued, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Enqueued, OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         match attempt.instance().enqueue(self.line) {
             Ok(seq) => {
@@ -264,11 +264,14 @@ impl Operation<Logger> for Write {
             },
             Err(Rejected::Full) => {
                 attempt.settle(SentState::NotSent);
-                Err(OpError::new(ErrorKind::Backpressure, "log buffer full"))
+                Err(OperationError::new(
+                    ErrorKind::Backpressure,
+                    "log buffer full",
+                ))
             },
             Err(Rejected::Closed) => {
                 attempt.settle(SentState::NotSent);
-                Err(OpError::new(ErrorKind::Cancelled, "log sink closed"))
+                Err(OperationError::new(ErrorKind::Cancelled, "log sink closed"))
             },
         }
     }
@@ -280,14 +283,14 @@ impl Operation<Logger> for Flush {
     type Output = Flushed;
     const EFFECT: Effect = Effect::Idempotent;
 
-    async fn run(self, cx: &mut OpCx<'_, Logger>) -> Result<Flushed, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Flushed, OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         let through = attempt.instance().enqueued();
         let flushed = attempt.instance().flushed_through(through).await;
         attempt.settle(SentState::Sent);
         flushed
             .map(|through| Flushed { through })
-            .map_err(|()| OpError::new(ErrorKind::Cancelled, "log worker stopped"))
+            .map_err(|()| OperationError::new(ErrorKind::Cancelled, "log worker stopped"))
     }
 }
 
@@ -411,12 +414,12 @@ impl Fixture {
         ResourceContext::new(base, Arc::new(NoResources), credentials)
     }
 
-    async fn managed(&self) -> Managed<Logger> {
+    async fn managed(&self) -> Lease<Logger> {
         self.manager
             .acquire::<Logger>(&self.context(), &AcquireOptions::default())
             .await
             .expect("acquire the logger")
-            .into_managed()
+            .into_lease()
     }
 
     fn units_settled(&self) -> nebula_resource::CallUnitsSnapshot {

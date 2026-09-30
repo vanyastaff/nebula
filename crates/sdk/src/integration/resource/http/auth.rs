@@ -4,33 +4,35 @@
 use base64::Engine as _;
 use http::{HeaderMap, HeaderName, HeaderValue, header::AUTHORIZATION};
 use nebula_credential::{CredentialGuard, IdentityPassword, OAuth2Token, SecretToken};
-use nebula_resource::{CredentialUnavailableReason, ErrorKind, PinSlots, Provider, call::OpError};
+use nebula_resource::{
+    CredentialUnavailableReason, ErrorKind, PinSlots, Provider, call::OperationError,
+};
 use zeroize::Zeroizing;
 
 use super::config::HttpTransport;
 
 mod sealed {
     use nebula_credential::{OAuth2Token, SecretToken};
-    use nebula_resource::{ErrorKind, call::OpError};
+    use nebula_resource::{ErrorKind, call::OperationError};
 
     /// Seals [`BearerMaterial`](super::BearerMaterial) and reads the token.
     /// Carries the `Zeroize` bound privately so it stays out of the SDK's
     /// public API while every bearer material is still zeroizing.
     pub trait Sealed: zeroize::Zeroize {
         /// The bearer token, or why it cannot be used now.
-        fn bearer_token(&self) -> Result<&str, OpError>;
+        fn bearer_token(&self) -> Result<&str, OperationError>;
     }
 
     impl Sealed for SecretToken {
-        fn bearer_token(&self) -> Result<&str, OpError> {
+        fn bearer_token(&self) -> Result<&str, OperationError> {
             Ok(self.token().expose_secret())
         }
     }
 
     impl Sealed for OAuth2Token {
-        fn bearer_token(&self) -> Result<&str, OpError> {
+        fn bearer_token(&self) -> Result<&str, OperationError> {
             if self.is_expired() {
-                return Err(OpError::new(
+                return Err(OperationError::new(
                     ErrorKind::Transient,
                     "oauth2 access token expired; waiting for its refresh",
                 ));
@@ -54,7 +56,7 @@ impl BearerMaterial for OAuth2Token {}
 /// ```
 /// use nebula_sdk::integration::credential::BearerTokenCredential;
 /// use nebula_sdk::integration::resource::{
-///     CredentialSlot, Error, OpError, Provider, Resident, ResidentProvider, Resource,
+///     CredentialSlot, Error, OperationError, Provider, Resident, ResidentProvider, Resource,
 ///     ResourceContext, ResourceKey, ResourceMetadataDraft, resource_key,
 ///     http::{Authorize, HttpApi, HttpConfig, HttpTransport},
 /// };
@@ -91,7 +93,7 @@ impl BearerMaterial for OAuth2Token {}
 /// impl ResidentProvider for GitHub {}
 ///
 /// impl HttpApi for GitHub {
-///     fn authorize(slots: &Self::Pinned, auth: &mut Authorize<'_>) -> Result<(), OpError> {
+///     fn authorize(slots: &Self::Pinned, auth: &mut Authorize<'_>) -> Result<(), OperationError> {
 ///         auth.bearer(slots.token())
 ///     }
 /// }
@@ -110,7 +112,7 @@ where
     /// # Errors
     ///
     /// Whatever the helpers return, or the author's own refusal.
-    fn authorize(slots: &Self::Pinned, auth: &mut Authorize<'_>) -> Result<(), OpError>;
+    fn authorize(slots: &Self::Pinned, auth: &mut Authorize<'_>) -> Result<(), OperationError>;
 }
 
 /// The credential headers of one attempt, filled by
@@ -131,8 +133,8 @@ impl std::fmt::Debug for Authorize<'_> {
     }
 }
 
-fn absent() -> OpError {
-    OpError::new(
+fn absent() -> OperationError {
+    OperationError::new(
         ErrorKind::CredentialUnavailable {
             reason: CredentialUnavailableReason::Absent,
         },
@@ -152,9 +154,9 @@ fn joined(parts: &[&str]) -> Zeroizing<String> {
     buffer
 }
 
-fn sensitive(value: &str) -> Result<HeaderValue, OpError> {
+fn sensitive(value: &str) -> Result<HeaderValue, OperationError> {
     let mut header = HeaderValue::from_str(value).map_err(|_| {
-        OpError::new(
+        OperationError::new(
             ErrorKind::Permanent,
             "credential material is not a valid header value",
         )
@@ -178,7 +180,7 @@ impl<'a> Authorize<'a> {
     pub fn bearer<S: BearerMaterial>(
         &mut self,
         guard: Option<&CredentialGuard<S>>,
-    ) -> Result<(), OpError> {
+    ) -> Result<(), OperationError> {
         let material: &S = guard.ok_or_else(absent)?;
         let value = joined(&["Bearer ", material.bearer_token()?]);
         self.headers.insert(AUTHORIZATION, sensitive(&value)?);
@@ -193,7 +195,7 @@ impl<'a> Authorize<'a> {
     pub fn basic(
         &mut self,
         guard: Option<&CredentialGuard<IdentityPassword>>,
-    ) -> Result<(), OpError> {
+    ) -> Result<(), OperationError> {
         let material: &IdentityPassword = guard.ok_or_else(absent)?;
         let pair = joined(&[
             material.identity(),
@@ -220,9 +222,10 @@ impl<'a> Authorize<'a> {
         &mut self,
         name: &'static str,
         guard: Option<&CredentialGuard<SecretToken>>,
-    ) -> Result<(), OpError> {
-        let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| OpError::new(ErrorKind::Permanent, "invalid api key header name"))?;
+    ) -> Result<(), OperationError> {
+        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+            OperationError::new(ErrorKind::Permanent, "invalid api key header name")
+        })?;
         let material: &SecretToken = guard.ok_or_else(absent)?;
         let value = sensitive(material.token().expose_secret())?;
         self.headers.insert(name, value);
@@ -234,7 +237,7 @@ impl<'a> Authorize<'a> {
     /// # Errors
     ///
     /// Never; the signature matches the other helpers.
-    pub fn none(&mut self) -> Result<(), OpError> {
+    pub fn none(&mut self) -> Result<(), OperationError> {
         Ok(())
     }
 }
@@ -246,8 +249,8 @@ mod tests {
     use super::*;
 
     fn apply(
-        fill: impl FnOnce(&mut Authorize<'_>) -> Result<(), OpError>,
-    ) -> Result<HeaderMap, OpError> {
+        fill: impl FnOnce(&mut Authorize<'_>) -> Result<(), OperationError>,
+    ) -> Result<HeaderMap, OperationError> {
         let mut headers = HeaderMap::new();
         fill(&mut Authorize::new(&mut headers))?;
         Ok(headers)

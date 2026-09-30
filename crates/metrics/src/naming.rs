@@ -769,7 +769,7 @@ pub const NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL: &str =
     "nebula_resource_call_units_settled_total";
 
 /// Counter: instances checked out by managed row attempts
-/// (`ManagedRow`), one per granted attempt.
+/// (`ResourceHandle`), one per granted attempt.
 ///
 /// Labeled by `created` (see [`row_checkout_created`]): whether the attempt
 /// created its instance or took an idle one. A climbing `created="true"`
@@ -779,7 +779,7 @@ pub const NEBULA_RESOURCE_CALL_UNITS_SETTLED_TOTAL: &str =
 /// Bounded cardinality (2 closed values) — no `resource_key` label.
 pub const NEBULA_RESOURCE_ROW_CHECKOUTS_TOTAL: &str = "nebula_resource_row_checkouts_total";
 
-/// Counter: managed sessions (`ManagedRow::session`) by how they ended.
+/// Counter: managed sessions (`ResourceHandle::session`) by how they ended.
 ///
 /// Labeled by `outcome` (see [`session_outcome`]). A climbing `unknown` or
 /// `abandoned` series is the signal to reconcile writes whose commit may

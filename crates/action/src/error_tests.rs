@@ -297,7 +297,7 @@ mod managed_unit {
     use nebula_resource::{
         AcquireOptions, CredentialUnavailableReason, ErrorKind, Manager, RegistrationSpec,
         Resident, ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity,
-        call::{Cost, OpCx, OpError, Operation},
+        call::{Cost, Operation, OperationCx, OperationError},
         resource::{Provider, ResourceMetadataDraft},
         topology::ResidentProvider,
     };
@@ -352,7 +352,7 @@ mod managed_unit {
     impl Operation<Ledger> for PostEntry {
         type Output = ();
 
-        async fn run(self, cx: &mut OpCx<'_, Ledger>) -> Result<(), OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, Ledger>) -> Result<(), OperationError> {
             let _attempt = cx.attempt(Cost::ONE).await?;
             std::future::pending::<()>().await;
             Ok(())
@@ -379,7 +379,7 @@ mod managed_unit {
             .acquire::<Ledger>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire")
-            .into_managed();
+            .into_lease();
 
         let deadline = tokio::time::Instant::now().into_std() + Duration::from_secs(1);
         let unknown = managed
@@ -390,7 +390,7 @@ mod managed_unit {
         let unknown: ActionError = unknown.into();
         assert!(unknown.is_fatal(), "{unknown:?}");
 
-        let suspended: ActionError = OpError::new(
+        let suspended: ActionError = OperationError::new(
             ErrorKind::CredentialUnavailable {
                 reason: CredentialUnavailableReason::ReauthRequired,
             },
@@ -400,7 +400,7 @@ mod managed_unit {
         assert!(suspended.is_retryable());
         assert_eq!(suspended.backoff_hint(), Some(Duration::from_secs(30)));
 
-        let throttled: ActionError = OpError::new(
+        let throttled: ActionError = OperationError::new(
             ErrorKind::Exhausted {
                 retry_after: Some(Duration::from_hours(1)),
             },

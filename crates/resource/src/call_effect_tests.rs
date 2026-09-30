@@ -21,9 +21,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::super::{
-    Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, ManagedRow,
-    OccurrenceLabel, OpCx, OpError, Operation, OperationKey, PinSlots, Recorded, SentState,
-    SessionClosed, SessionSpec,
+    Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKey,
+    IdempotencyKeyPart, OccurrenceLabel, Operation, OperationCx, OperationError, PinSlots,
+    Recorded, ResourceHandle, SentState, SessionClosed, SessionSpec,
     owner::{
         Crossing, ErrorKindCode, OwnerRefusal, OwnerTicket, RecordedOutcome, SlotPhase, UnitCall,
         UnitEffectOwner, UnitIntent, UnitOutcome, UnitSlot,
@@ -65,7 +65,7 @@ enum Phase {
 #[derive(Debug)]
 struct FakeSlot {
     id: [u8; 16],
-    key: OperationKey,
+    key: IdempotencyKey,
     /// Contract id, canonical request and key part: what a resumed effect
     /// must present again.
     fingerprint: (&'static str, Vec<u8>, Option<String>),
@@ -167,7 +167,7 @@ impl FakeOwner {
             occurrence.to_owned(),
             FakeSlot {
                 id: [id; 16],
-                key: OperationKey::new(&format!("key-{id}")).expect("key"),
+                key: IdempotencyKey::new(&format!("key-{id}")).expect("key"),
                 fingerprint: (fingerprint.0, fingerprint.1.to_vec(), None),
                 recovery: EffectRecovery::Opaque,
                 max_invocations: 1,
@@ -247,7 +247,7 @@ impl UnitEffectOwner for FakeOwner {
         let id = state.next_id;
         let slot = FakeSlot {
             id: [id; 16],
-            key: OperationKey::new(&format!("key-{id}")).expect("key"),
+            key: IdempotencyKey::new(&format!("key-{id}")).expect("key"),
             fingerprint,
             recovery: intent.recovery,
             max_invocations: intent.max_invocations.get(),
@@ -433,12 +433,12 @@ impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Pay<IDEM> {
         NonZeroU32::new(u32::try_from(self.replies.len()).expect("few")).expect("a reply")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
         let last = self.replies.len() - 1;
         for (index, reply) in self.replies.into_iter().enumerate() {
             // The key is the same for every attempt; it is read while no
             // attempt borrows the context.
-            let key = cx.operation_key().copied();
+            let key = cx.idempotency_key().copied();
             let attempt = cx.attempt(self.cost.clone()).await?;
             self.calls.made.fetch_add(1, Ordering::SeqCst);
             self.calls
@@ -454,18 +454,24 @@ impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Pay<IDEM> {
                 Reply::Fail(sent, kind) => {
                     attempt.settle(sent);
                     if index == last {
-                        return Err(OpError::new(kind, "provider answered"));
+                        return Err(OperationError::new(kind, "provider answered"));
                     }
                 },
                 Reply::Unsettled => {
                     drop(attempt);
                     if index == last {
-                        return Err(OpError::new(ErrorKind::Transient, "connection reset"));
+                        return Err(OperationError::new(
+                            ErrorKind::Transient,
+                            "connection reset",
+                        ));
                     }
                 },
             }
         }
-        Err(OpError::new(ErrorKind::Permanent, "no reply scripted"))
+        Err(OperationError::new(
+            ErrorKind::Permanent,
+            "no reply scripted",
+        ))
     }
 }
 
@@ -477,7 +483,7 @@ impl<R: Provider + PinSlots, const IDEM: bool> EffectOperation<R> for Pay<IDEM> 
         EffectRecovery::Opaque
     };
 
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
+    fn canonical_request(&self) -> Result<Vec<u8>, OperationError> {
         Ok(self.request.as_bytes().to_vec())
     }
 
@@ -498,7 +504,7 @@ struct Refund(Arc<Calls>);
 impl<R: Provider + PinSlots> Operation<R> for Refund {
     type Output = u64;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         self.0.made.fetch_add(1, Ordering::SeqCst);
         attempt.settle(SentState::Sent);
@@ -511,7 +517,7 @@ impl<R: Provider + PinSlots> EffectOperation<R> for Refund {
     const RECOVERY: EffectRecovery = EffectRecovery::Opaque;
     const RECORDED: Recorded = Recorded::DigestOnly;
 
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
+    fn canonical_request(&self) -> Result<Vec<u8>, OperationError> {
         Ok(b"refund".to_vec())
     }
 }
@@ -532,7 +538,7 @@ impl<R: Provider + PinSlots, const READ: bool, const BAD_CONTRACT: bool> Operati
         Effect::Idempotent
     };
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         self.0.made.fetch_add(1, Ordering::SeqCst);
         attempt.settle(SentState::Sent);
@@ -550,7 +556,7 @@ impl<R: Provider + PinSlots, const READ: bool, const BAD_CONTRACT: bool> EffectO
     };
     const RECOVERY: EffectRecovery = EffectRecovery::Opaque;
 
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
+    fn canonical_request(&self) -> Result<Vec<u8>, OperationError> {
         Ok(b"x".to_vec())
     }
 }
@@ -562,7 +568,7 @@ impl<R: Provider + PinSlots> Operation<R> for Look {
     type Output = ();
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(self.1).await?;
         self.0.made.fetch_add(1, Ordering::SeqCst);
         attempt.settle(SentState::Sent);
@@ -625,11 +631,11 @@ impl Fixture {
         ResourceContext::minimal(Scope::default(), self.parent.clone())
     }
 
-    fn owned(&self) -> ManagedRow<StrictPooled> {
+    fn owned(&self) -> ResourceHandle<StrictPooled> {
         let owner = Arc::clone(&self.owner) as Arc<dyn UnitEffectOwner>;
         *self
             .manager
-            .managed_row_any_owned(
+            .handle_any_journaled(
                 &StrictPooled::key(),
                 &self.ctx(),
                 &AcquireOptions::default(),
@@ -637,35 +643,35 @@ impl Fixture {
                 owner,
             )
             .expect("owned row")
-            .downcast::<ManagedRow<StrictPooled>>()
+            .downcast::<ResourceHandle<StrictPooled>>()
             .expect("typed row")
     }
 
-    fn library(&self) -> ManagedRow<StrictPooled> {
+    fn library(&self) -> ResourceHandle<StrictPooled> {
         *self
             .manager
-            .managed_row_any(
+            .handle_any(
                 &StrictPooled::key(),
                 &self.ctx(),
                 &AcquireOptions::default(),
                 &tenant(),
             )
             .expect("library row")
-            .downcast::<ManagedRow<StrictPooled>>()
+            .downcast::<ResourceHandle<StrictPooled>>()
             .expect("typed row")
     }
 
-    fn read_only(&self) -> ManagedRow<StrictPooled> {
+    fn read_only(&self) -> ResourceHandle<StrictPooled> {
         *self
             .manager
-            .managed_row_any_read_only(
+            .handle_any_read_only(
                 &StrictPooled::key(),
                 &self.ctx(),
                 &AcquireOptions::default(),
                 &tenant(),
             )
             .expect("read-only row")
-            .downcast::<ManagedRow<StrictPooled>>()
+            .downcast::<ResourceHandle<StrictPooled>>()
             .expect("typed row")
     }
 
@@ -684,7 +690,7 @@ fn occurrence(contract: EffectContract, label: &str) -> String {
     format!("unit/v1/{}/{}/{label}", StrictPooled::key(), contract.id())
 }
 
-fn assert_unsent(error: &OpError, kind: &ErrorKind) {
+fn assert_unsent(error: &OperationError, kind: &ErrorKind) {
     assert_eq!(error.kind(), kind, "{error}");
     assert_eq!(error.sent(), SentState::NotSent, "{error}");
 }
@@ -696,7 +702,7 @@ fn the_owner_is_object_safe_and_an_owned_row_crosses_threads() {
     fn send_sync_clone<T: Send + Sync + Clone>() {}
     let _: Option<Arc<dyn UnitEffectOwner>> = None;
     send_sync_clone::<Arc<dyn UnitEffectOwner>>();
-    send_sync_clone::<ManagedRow<StrictPooled>>();
+    send_sync_clone::<ResourceHandle<StrictPooled>>();
 }
 
 // ── replay ───────────────────────────────────────────────────────────────
@@ -1290,11 +1296,11 @@ const SESSION: EffectContract = EffectContract::new("billing.session", 1);
 /// A `Write` session effect of `request` whose body does `body`; `calls`
 /// counts the bodies run and the operation key each saw.
 fn session(
-    row: &ManagedRow<StrictPooled>,
+    row: &ResourceHandle<StrictPooled>,
     request: &'static str,
     body: Body,
     calls: &Arc<Calls>,
-) -> super::super::Unit<u64> {
+) -> super::super::Submission<u64> {
     let calls = Arc::clone(calls);
     row.session_effect(
         SessionSpec::new(Cost::FREE),
@@ -1308,12 +1314,12 @@ fn session(
                 .keys
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .push(cx.operation_key().map(ToString::to_string));
+                .push(cx.idempotency_key().map(ToString::to_string));
             Box::pin(async move {
                 tx.pending += 1;
                 match body {
                     Body::Ok(value) => Ok(value),
-                    Body::Fail => Err(OpError::new(ErrorKind::Permanent, "constraint")),
+                    Body::Fail => Err(OperationError::new(ErrorKind::Permanent, "constraint")),
                     Body::Hang => {
                         tokio::time::sleep(Duration::from_hours(1)).await;
                         Ok(0)
@@ -1355,7 +1361,7 @@ async fn session_outcomes_are_recorded_by_how_the_session_closed() {
     fixture
         .resource
         .probe
-        .close_next_with(SessionClosed::Unknown(OpError::new(
+        .close_next_with(SessionClosed::Unknown(OperationError::new(
             ErrorKind::Transient,
             "connection dropped",
         )));

@@ -111,7 +111,7 @@ mod sealed {
 /// **Prefer a managed row for provider calls.** Both methods take a lease
 /// that stays checked out until the guard drops — the raw-escape profile. An
 /// action that makes provider calls declares a `#[resource]` field of type
-/// [`ManagedRow<R>`](crate::call::ManagedRow) instead: each unit checks out
+/// [`ResourceHandle<R>`](crate::call::ResourceHandle) instead: each unit checks out
 /// an instance per attempt, after its quota wait, bound to the execution's
 /// cancellation and deadline. There is no ad-hoc row accessor on this trait
 /// yet.

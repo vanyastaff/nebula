@@ -1,12 +1,12 @@
-//! The per-unit checkout facade ([`ManagedRow`]): a row whose units check
+//! The per-unit checkout facade ([`ResourceHandle`]): a row whose units check
 //! out an instance per attempt, only after the attempt's quota and row-gate
 //! waits.
 //!
 //! # Why a row facade
 //!
-//! A [`Managed`](super::Managed) facade owns one lease for all its units:
+//! A [`Lease`](super::Lease) facade owns one lease for all its units:
 //! a pooled connection stays checked out while its units wait for quota
-//! (QUOTA-DX.md:41-43). A [`ManagedRow`] holds no lease. Each attempt, in
+//! (QUOTA-DX.md:41-43). A [`ResourceHandle`] holds no lease. Each attempt, in
 //! order (never holding `Manager.admission` or any sync lock across an
 //! await, and never waiting for quota or the row gate while holding a
 //! checkout):
@@ -21,7 +21,7 @@
 //! 3. **Quota**, nothing held — the attempt's [`Cost`] is booked on the
 //!    row's limit (a [`Cost::FREE`] attempt only waits out a pause), raced
 //!    against the unit's generation, the manager's shutdown and
-//!    [`Unit::cancel`](super::Unit::cancel).
+//!    [`Submission::cancel`](super::Submission::cancel).
 //! 4. **Row gate** — one permit per checkout, FIFO, sized to the topology's
 //!    capacity: attempts queue here instead of failing on a full pool.
 //!    Still full at the unit's deadline: `Backpressure`.
@@ -38,7 +38,7 @@
 //!    instance on a strict row: the instance was built after R1, so a
 //!    join-next re-read decides; an idle hit is served by R1.
 //! 9. **Owner grant** — only for a unit of an execution-owned effect
-//!    ([`ManagedRow::submit_effect`], [`ManagedRow::session_effect`]): the
+//!    ([`ResourceHandle::submit_effect`], [`ResourceHandle::session_effect`]): the
 //!    row's owner grants the attempt's provider call, outside every lock.
 //!    Before step 1 such an attempt also explains its predecessor's call.
 //! 10. **Lock #2 and grant** — on a strict row, under `Manager.admission`:
@@ -63,10 +63,10 @@ use super::{
     Operation,
     cost::Cost,
     effect::{EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, Recorded},
-    error::OpError,
+    error::OperationError,
     managed::{
-        Checkout, OpCx, Unit, UnitHost, UnitScope, cancelled_before_grant, generation_refusal,
-        submit_unit,
+        Checkout, OperationCx, Submission, UnitHost, UnitScope, cancelled_before_grant,
+        generation_refusal, submit_unit,
     },
     owned::{EffectDeclaration, OutputCodec},
     pin::PinSlots,
@@ -88,17 +88,17 @@ use crate::{
 
 /// A registered row turned into a per-unit checkout facade.
 ///
-/// Built by [`Manager::managed_row`](crate::Manager::managed_row). Unlike
-/// [`Managed`](super::Managed) it holds no lease: every attempt of a
+/// Built by [`Manager::handle`](crate::Manager::handle). Unlike
+/// [`Lease`](super::Lease) it holds no lease: every attempt of a
 /// submitted [`Operation`] checks out an instance of its own after its
 /// quota and row-gate waits and releases it when the attempt ends, so a
 /// unit waiting for its rate limit holds no connection (see the module
 /// docs). There is no `Deref` to an instance:
 ///
 /// ```compile_fail
-/// use nebula_resource::{Provider, call::ManagedRow};
+/// use nebula_resource::{Provider, call::ResourceHandle};
 ///
-/// fn skip_the_facade<R: Provider>(row: &ManagedRow<R>) -> &R::Instance {
+/// fn skip_the_facade<R: Provider>(row: &ResourceHandle<R>) -> &R::Instance {
 ///     &**row
 /// }
 /// ```
@@ -110,7 +110,7 @@ use crate::{
 /// context's cancellation (a unit whose first attempt was not granted yet
 /// is cancelled `NotSent`; a granted one runs on to its deadline) and, when
 /// the caller has one, its deadline, which bounds every unit's deadline.
-pub struct ManagedRow<R: Provider> {
+pub struct ResourceHandle<R: Provider> {
     shared: Arc<RowShared<R>>,
     scope: UnitScope,
 }
@@ -126,7 +126,7 @@ pub(super) struct RowShared<R: Provider> {
     gate: Option<Arc<Semaphore>>,
 }
 
-impl<R: Provider> Clone for ManagedRow<R> {
+impl<R: Provider> Clone for ResourceHandle<R> {
     fn clone(&self) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
@@ -135,16 +135,16 @@ impl<R: Provider> Clone for ManagedRow<R> {
     }
 }
 
-impl<R: Provider> fmt::Debug for ManagedRow<R> {
+impl<R: Provider> fmt::Debug for ResourceHandle<R> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("ManagedRow")
+            .debug_struct("ResourceHandle")
             .field("resource_key", &self.shared.key)
             .finish_non_exhaustive()
     }
 }
 
-impl<R: Provider> ManagedRow<R> {
+impl<R: Provider> ResourceHandle<R> {
     /// A facade over `managed`, latching the row's rate-limit profile to
     /// per attempt. Its units inherit nothing until
     /// [`with_unit_scope`](Self::with_unit_scope).
@@ -181,13 +181,13 @@ impl<R: Provider> ManagedRow<R> {
     }
 }
 
-impl<R: Provider + PinSlots> ManagedRow<R> {
+impl<R: Provider + PinSlots> ResourceHandle<R> {
     /// Submits `operation` as one unit of work; each of its attempts checks
     /// out an instance of its own (see the module docs).
     ///
     /// The unit is lazy: nothing happens until it is first polled. Its first
     /// poll hands the operation to the runtime, which runs it under the
-    /// unit's deadline and settles it. Dropping the [`Unit`] before its first
+    /// unit's deadline and settles it. Dropping the [`Submission`] before its first
     /// poll means the operation never ran; dropping it later only stops
     /// waiting.
     ///
@@ -195,7 +195,7 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
     /// declaring [`Idempotent`](super::Effect::Idempotent) or
     /// [`Write`](super::Effect::Write) is refused `Permanent` / `NotSent`:
     /// such effects go through [`submit_effect`](Self::submit_effect).
-    pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output> {
+    pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output> {
         submit_unit(
             UnitHost::Row(Arc::clone(&self.shared)),
             &self.scope,
@@ -233,7 +233,7 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
     /// result is recorded before it settles: a success with its output, a
     /// definitive rejection with its kind, anything else as how its last
     /// call crossed. When the owner cannot record a call that may have
-    /// crossed, the unit fails `OutcomeUnknown`. [`OpCx::operation_key`] is
+    /// crossed, the unit fails `OutcomeUnknown`. [`OperationCx::idempotency_key`] is
     /// the provider idempotency key the owner derived.
     ///
     /// A declaration whose contract is malformed, whose
@@ -243,7 +243,7 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
     /// so is any effect on a read-only row. On a library row (no owner) the
     /// unit runs as [`submit`](Self::submit) runs it and has no operation
     /// key.
-    pub fn submit_effect<O: EffectOperation<R>>(&self, operation: O) -> Unit<O::Output> {
+    pub fn submit_effect<O: EffectOperation<R>>(&self, operation: O) -> Submission<O::Output> {
         let declaration = EffectDeclaration {
             contract: O::CONTRACT,
             recovery: O::RECOVERY,
@@ -265,7 +265,7 @@ impl<R: Provider + PinSlots> ManagedRow<R> {
     }
 }
 
-impl<R> ManagedRow<R>
+impl<R> ResourceHandle<R>
 where
     R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
 {
@@ -297,7 +297,7 @@ where
     /// session is never aborted. A session (or any unit) of the same row
     /// awaited inside a session body is refused `Permanent` — it would wait
     /// for the row gate while this session holds a checkout.
-    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Unit<T>
+    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Submission<T>
     where
         T: Send + 'static,
         F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T>
@@ -333,7 +333,7 @@ where
     /// | `RolledBack` (or open failed) | not crossed |
     /// | `Unknown`, deadline, panic | ambiguous crossing |
     ///
-    /// [`SessionCx::operation_key`] is the provider idempotency key the
+    /// [`SessionCx::idempotency_key`] is the provider idempotency key the
     /// owner derived. On a library row the session runs as
     /// [`session`](Self::session) runs it.
     pub fn session_effect<T, F>(
@@ -344,7 +344,7 @@ where
         canonical_request: Vec<u8>,
         key_part: Option<IdempotencyKeyPart>,
         body: F,
-    ) -> Unit<T>
+    ) -> Submission<T>
     where
         T: Serialize + DeserializeOwned + Send + 'static,
         F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T>
@@ -379,12 +379,12 @@ impl<R: Provider> RowShared<R> {
 
     /// The admission generation a new unit of the row runs under: the row's
     /// current one, or the refusal of a row that has none.
-    pub(super) fn unit_generation(&self) -> Result<Arc<AdmissionGeneration>, OpError> {
+    pub(super) fn unit_generation(&self) -> Result<Arc<AdmissionGeneration>, OperationError> {
         if let Some(generation) = self.managed.admission.current() {
             return Ok(generation);
         }
         self.precheck_row()?;
-        Err(OpError::new(
+        Err(OperationError::new(
             ErrorKind::Cancelled,
             "resource removed; new attempts refused",
         ))
@@ -392,33 +392,33 @@ impl<R: Provider> RowShared<R> {
 
     /// Step 2 of a row attempt: the lock-free pre-check (see the module
     /// docs), against the unit's `generation`.
-    pub(super) fn precheck(&self, generation: &AdmissionGeneration) -> Result<(), OpError> {
+    pub(super) fn precheck(&self, generation: &AdmissionGeneration) -> Result<(), OperationError> {
         generation_refusal(&self.managed, generation)?;
         self.precheck_row()
     }
 
     /// The pre-check's row-wide part: shutdown, removal, suspension, phase.
-    fn precheck_row(&self) -> Result<(), OpError> {
+    fn precheck_row(&self) -> Result<(), OperationError> {
         if self.managed.is_tainted() {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Revoked,
                 "resource tainted by a credential revoke; new attempts refused",
             ));
         }
         if self.link.admission().shutdown_guard().is_err() {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Cancelled,
                 "manager shutting down; attempt refused",
             ));
         }
         if self.managed.store.is_closed() {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Cancelled,
                 "resource removed or replaced; new attempts refused",
             ));
         }
         if let Some(suspension) = self.managed.admission.suspension() {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::CredentialUnavailable {
                     reason: suspension.reason(),
                 },
@@ -426,7 +426,7 @@ impl<R: Provider> RowShared<R> {
             ));
         }
         if !self.managed.phase().is_accepting() {
-            return Err(OpError::new(
+            return Err(OperationError::new(
                 ErrorKind::Backpressure,
                 "resource cannot accept work in its current phase",
             ));
@@ -443,7 +443,7 @@ async fn cancelled(cancel: Option<&tokio_util::sync::CancellationToken>) {
     }
 }
 
-impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
+impl<'u, R: Provider + PinSlots> OperationCx<'u, R> {
     /// Steps 1–9 of a row attempt (see the module docs); on a grant, the
     /// attempt's checkout and the unit's pin.
     ///
@@ -456,7 +456,7 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
         row: &'u RowShared<R>,
         cost: &Cost,
         fit: Option<CheckoutFit<R>>,
-    ) -> Result<(Checkout<R>, &UnitPin<R::Pinned>), OpError> {
+    ) -> Result<(Checkout<R>, &UnitPin<R::Pinned>), OperationError> {
         // An owned effect's previous attempt is over: its call is explained
         // before this attempt waits for anything.
         if let Some(effect) = self.shared.effect() {
@@ -479,10 +479,10 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
                 () = generation.token().cancelled() => return Err(closed_refusal(row, generation)),
                 () = shutdown.cancelled() => return Err(closed_refusal(row, generation)),
                 permit = Arc::clone(gate).acquire_owned() => permit.map_err(|_closed| {
-                    OpError::new(ErrorKind::Cancelled, "row gate closed; attempt refused")
+                    OperationError::new(ErrorKind::Cancelled, "row gate closed; attempt refused")
                 })?,
                 () = tokio::time::sleep_until(self.deadline) => {
-                    return Err(OpError::new(
+                    return Err(OperationError::new(
                         ErrorKind::Backpressure,
                         "the row gate stayed full until the unit deadline",
                     ));
@@ -571,10 +571,9 @@ impl<'u, R: Provider + PinSlots> OpCx<'u, R> {
         // 10. Lock #2 (strict rows) and the grant. A refusal drops the
         //     checkout untainted: the instance goes back to the pool, and an
         //     owned call that was granted did not cross.
-        let pin = self
-            .pin
-            .as_ref()
-            .ok_or_else(|| OpError::new(ErrorKind::Permanent, "unit pin missing at registration"));
+        let pin = self.pin.as_ref().ok_or_else(|| {
+            OperationError::new(ErrorKind::Permanent, "unit pin missing at registration")
+        });
         let registered = pin.and_then(|pin| {
             register_grant(
                 managed,
@@ -643,7 +642,7 @@ fn evict_unfit<R: Provider>(
 
 /// The refusal of a row attempt whose checkout failed: the acquire
 /// pipeline's kind, unsent.
-fn checkout_refusal(error: Error) -> OpError {
+fn checkout_refusal(error: Error) -> OperationError {
     let detail = match error.kind() {
         ErrorKind::Backpressure => "row checkout refused: no capacity or not accepting",
         ErrorKind::Cancelled => "row checkout refused: row closing",
@@ -651,15 +650,18 @@ fn checkout_refusal(error: Error) -> OpError {
         ErrorKind::CredentialUnavailable { .. } => "row checkout refused: credential unavailable",
         _ => "row checkout failed",
     };
-    OpError::new(error.kind().clone(), detail)
+    OperationError::new(error.kind().clone(), detail)
 }
 
 /// The refusal of a row attempt whose wait ended because the unit's
 /// generation closed or the manager began shutting down.
-fn closed_refusal<R: Provider>(row: &RowShared<R>, generation: &AdmissionGeneration) -> OpError {
-    row.precheck(generation)
-        .err()
-        .unwrap_or_else(|| OpError::new(ErrorKind::Cancelled, "row closing; attempt refused"))
+fn closed_refusal<R: Provider>(
+    row: &RowShared<R>,
+    generation: &AdmissionGeneration,
+) -> OperationError {
+    row.precheck(generation).err().unwrap_or_else(|| {
+        OperationError::new(ErrorKind::Cancelled, "row closing; attempt refused")
+    })
 }
 
 #[cfg(test)]
