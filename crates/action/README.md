@@ -220,7 +220,7 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 
 ## Migration recipe (pre-v4 → v4)
 
-The v4 surface is a hard break per `feedback_no_shims.md` / `feedback_hard_breaking_changes.md`. There is no automated codemod; migrate by hand:
+The v4 surface is a hard break: no compatibility shims preserve the old shapes (see the *Nebula is / is not* table in [`docs/PRODUCT_CANON.md`](../../docs/PRODUCT_CANON.md)). There is no automated codemod; migrate by hand:
 
 1. **Split form data off `Self`.** Move `#[field]`-bearing fields off the action struct into a `<Name>Input: HasSchema + Deserialize` companion struct. Add `type Input = <Name>Input` to the `Action` impl (or `input = <Name>Input` to the derive's struct attribute).
 2. **Drop `metadata()` boilerplate from `Self`.** The derive emits fallible `metadata()` from the `#[action(key, version, …)]` arguments and the associated input/output schemas. Generic factories cache the admission result. Delete the manual `impl Action::metadata` block.

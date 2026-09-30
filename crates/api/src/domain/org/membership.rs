@@ -59,7 +59,7 @@ use crate::{
 ///
 /// The constructor fails closed on a malformed id (never silently seeds
 /// nothing, which would leave a wired-but-empty store dead-locking the
-/// RBAC gate — `feedback_no_shims`). String-typed parsing is kept in the
+/// RBAC gate). String-typed parsing is kept in the
 /// API tier so an integrator crate that does not depend on `nebula_core`
 /// can still provision a store (3).
 #[derive(Debug, Error)]
@@ -146,8 +146,7 @@ fn is_privileged(role: OrgRole) -> bool {
 }
 
 /// The single org-lockout decision, shared by both guarded mutations so
-/// the add-demotion path and the remove path **cannot drift**
-/// (`feedback_type_enforce_not_discipline`).
+/// the add-demotion path and the remove path **cannot drift**.
 ///
 /// Given the org's *current* member map and the write about to be applied
 /// to `target_key`, return `true` iff the write is **safe** (leaves ≥ 1

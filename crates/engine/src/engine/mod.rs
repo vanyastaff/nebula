@@ -1975,15 +1975,22 @@ impl WorkflowEngine {
         // execution honours the same limits (issue #289).
         exec_state.set_budget(budget.clone());
         for node_key in &pinned {
-            // NOTE: errors are intentionally discarded here. Pinned nodes are
-            // forced through Ready→Running→Completed for bookkeeping; the
-            // transitions are best-effort. A failure (e.g. unexpected current
-            // state) is non-fatal because the node was already completed in a
-            // prior run. TODO: log a warning on failure once the engine has a
-            // structured logger handle.
-            let _ = exec_state.transition_node(node_key.clone(), NodeState::Ready);
-            let _ = exec_state.transition_node(node_key.clone(), NodeState::Running);
-            let _ = exec_state.transition_node(node_key.clone(), NodeState::Completed);
+            // Pinned nodes are forced through Ready→Running→Completed for
+            // bookkeeping; the transitions are best-effort. A rejected one
+            // (e.g. unexpected current state) is non-fatal because the node
+            // was already completed in a prior run, but it is logged so the
+            // divergence is visible.
+            for target in [NodeState::Ready, NodeState::Running, NodeState::Completed] {
+                if let Err(error) = exec_state.transition_node(node_key.clone(), target) {
+                    tracing::warn!(
+                        %execution_id,
+                        %node_key,
+                        ?target,
+                        error = %error,
+                        "replay: pinned node bookkeeping transition rejected"
+                    );
+                }
+            }
         }
 
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));

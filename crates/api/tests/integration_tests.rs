@@ -13,19 +13,27 @@ async fn create_test_state() -> AppState {
 
 #[tokio::test]
 async fn test_health_endpoint() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
     let state = create_test_state().await;
     let api_config = ApiConfig::for_test();
-    let _app = app::build_app(state, &api_config);
+    let app = app::build_app(state, &api_config);
 
-    // TODO: Use axum test helpers to test endpoints
-    // let response = app.oneshot(Request::builder()
-    //     .uri("/health")
-    //     .body(Body::empty())
-    //     .unwrap())
-    //     .await
-    //     .unwrap();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
 
-    // assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

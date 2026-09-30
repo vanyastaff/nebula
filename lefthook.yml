@@ -61,18 +61,16 @@ pre-push:
     clippy-full:
       # Authoritative full-workspace clippy — CI `clippy` required-job
       # parity. Moved here from pre-commit (spec D3 / §7 F) so commits stay
-      # changed-crate scoped; pre-push must mirror CI required jobs
-      # (feedback_lefthook_mirrors_ci.md).
+      # changed-crate scoped; pre-push must mirror every CI required job.
       run: cargo clippy --workspace --all-targets -- -D warnings
     crate-diff-gate:
       # Runs `cargo nextest run` + `cargo check` + `RUSTDOCFLAGS=-D warnings
-      # cargo doc --no-deps` (CI Documentation required-job parity,
-      # reference_rustdoc_verification_gap.md) for changed crates plus, when
+      # cargo doc --no-deps --document-private-items` (CI Documentation
+      # required-job parity) for changed crates plus, when
       # `DATABASE_URL` is set, the `--features postgres` storage
       # integration tests (`pg_idempotency`, `execution_lease_pg_integration`,
       # `refresh_claim_conformance_postgres`). Skips with a single WARN line
-      # when `DATABASE_URL` is unset (M2.2 / M3.4 contract — see
-      # `feedback_lefthook_mirrors_ci.md`).
+      # when `DATABASE_URL` is unset (M2.2 / M3.4 contract).
       run: bash scripts/pre-push-crate-diff.sh
 
 # Doctests / MSRV remain CI-owned checks (rustdoc -D warnings is now

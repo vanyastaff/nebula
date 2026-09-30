@@ -24,9 +24,8 @@ use crate::scoped_resources::BranchId;
 /// `NodeFailedDetails` is an **in-process event payload only** — it is NOT
 /// persisted to the durable execution journal. The durable error string lives
 /// on `NodeState::error_message` inside `ExecutionState`; reshaping that
-/// field requires a version-envelope migration (see ADR-TODO: durable
-/// `error_message` sanitization). Sanitization of the durable field is
-/// deferred until that ADR lands.
+/// field requires a version-envelope migration. Sanitization of the durable
+/// `error_message` is deferred until that migration is designed.
 #[derive(Debug, Clone)]
 pub struct NodeFailedDetails {
     /// Engine-assigned classification code for the failure (e.g.
