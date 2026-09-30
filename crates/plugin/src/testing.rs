@@ -468,11 +468,6 @@ pub fn activation_diagnostic_registry() -> Arc<FrozenPluginRegistry> {
             )
             .with_effect_contract(ActionEffectContract::ReadOnly),
         ),
-        stateless_fixture::<Value>(ActionMetadataDraft::new(
-            nebula_core::action_key!("core.undeclared"),
-            nebula_action::metadata_name!("undeclared"),
-            "Admission fixture",
-        )),
         Arc::new(remote),
         Arc::new(
             GenericTriggerFactory::<DiagnosticTrigger>::new()

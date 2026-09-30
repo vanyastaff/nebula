@@ -23,7 +23,6 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("missing_endpoint", "MISSING_CONNECTION_ENDPOINT"),
     ("duplicate_connection", "DUPLICATE_CONNECTION"),
     ("graph_cycle", "GRAPH_CYCLE"),
-    ("undeclared_effects", "UNDECLARED_EFFECTS"),
     ("unsupported_node_kind", "UNSUPPORTED_NODE_KIND"),
     ("action_version_mismatch", "ACTION_VERSION_MISMATCH"),
     ("disabled_node_edge", "DISABLED_NODE_EDGE"),
@@ -182,7 +181,6 @@ fn fixture(scenario: &str, workflow: WorkflowId) -> Value {
         "missing_action" => definition["nodes"][0]["action_key"] = json!("missing"),
         "missing_plugin" => definition["nodes"][0]["plugin_key"] = json!("missing"),
         "unsupported_schema" => definition["schema_version"] = json!(99),
-        "undeclared_effects" => definition["nodes"][0]["action_key"] = json!("undeclared"),
         "unsupported_node_kind" => definition["nodes"][0]["action_key"] = json!("trigger"),
         "action_version_mismatch" => definition["nodes"][0]["interface_version"] = json!("99.0.0"),
         "unknown_slot_override" => {

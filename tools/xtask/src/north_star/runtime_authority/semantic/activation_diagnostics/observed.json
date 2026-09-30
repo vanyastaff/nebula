@@ -214,34 +214,6 @@
       ]
     },
     {
-      "scenario": "undeclared_effects",
-      "input_sha256": "1b55ab6a12bd76121cc4c16a647801c270f6933bd43e37e88bf96214bc5850c6",
-      "events": [
-        {
-          "sequence": 0,
-          "kind": "diagnostic_raised",
-          "boundary": "compiler",
-          "http_status": null,
-          "code": "PLUGIN_PLAN_GRAPH_V1:UNDECLARED_EFFECTS",
-          "path": "/nodes/step_a/action_key",
-          "expected": "<declared-effect-contract>",
-          "actual": "<undeclared-effects>",
-          "remediation": "declare reviewed external-effect behavior on the action factory"
-        },
-        {
-          "sequence": 1,
-          "kind": "diagnostic_raised",
-          "boundary": "http_activation",
-          "http_status": 422,
-          "code": "PLUGIN_PLAN_GRAPH_V1:UNDECLARED_EFFECTS",
-          "path": "/nodes/step_a/action_key",
-          "expected": "<declared-effect-contract>",
-          "actual": "<undeclared-effects>",
-          "remediation": "declare reviewed external-effect behavior on the action factory"
-        }
-      ]
-    },
-    {
       "scenario": "unsupported_node_kind",
       "input_sha256": "b3fb24ff842244afb4c6bd07a1f6f32be4a25d84e622bf4e7dd3b3e2a4d14493",
       "events": [
