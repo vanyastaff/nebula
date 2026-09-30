@@ -422,8 +422,9 @@ mod tests {
 
         // Past half the visibility timeout (200ms) but inside the lease (400ms): the
         // warning has fired, the nack is still waiting, and nothing was dropped.
-        // Staying inside the lease matters: an expired lease would be reclaimed into
-        // the full queue by `dequeue`, which is a different scenario.
+        // Staying inside the lease matters: once it expires, `dequeue` re-leases the
+        // stale in-flight task ahead of the channel, so the filler would never be
+        // consumed and the pending nack would never get its slot.
         tokio::time::sleep(Duration::from_millis(260)).await;
         assert!(!nack_task.is_finished(), "nack keeps waiting after warning");
         assert_eq!(warnings.load(Ordering::SeqCst), 1);
