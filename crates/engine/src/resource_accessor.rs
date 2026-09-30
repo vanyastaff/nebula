@@ -9,7 +9,9 @@
 use std::{any::Any, collections::HashMap, fmt, future::Future, pin::Pin, sync::Arc};
 
 use nebula_core::{CoreError, ResourceKey, accessor::ResourceAccessor, scope::Scope};
-use nebula_resource::{AcquireOptions, ErrorKind, Manager, ResourceContext, SlotIdentity};
+use nebula_resource::{
+    AcquireOptions, ErrorKind, Manager, ResourceContext, SlotIdentity, call::journal::EffectJournal,
+};
 use tokio_util::sync::CancellationToken;
 
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -21,11 +23,17 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// [`Manager::acquire_any`](nebula_resource::Manager::acquire_any)
 /// using the execution scope and optional per-key slot identities recorded
 /// at activation. `resource_handle_any` hands out the row's per-unit checkout
-/// facade through
+/// facade, by default through
 /// [`Manager::handle_any_read_only`](nebula_resource::Manager::handle_any_read_only):
 /// its units are cancelled with the node's cancellation token until their
 /// first grant and bounded by the execution deadline
 /// ([`with_deadline`](Self::with_deadline)).
+///
+/// The handles it hands out are read-only unless the engine gave a node's
+/// accessor that node's effect journal: its handles then drive every
+/// `Idempotent` and `Write` unit through the journal
+/// ([`Manager::handle_any_journaled`](nebula_resource::Manager::handle_any_journaled)).
+#[derive(Clone)]
 pub struct EngineResourceAccessor {
     manager: Arc<Manager>,
     scope: Scope,
@@ -34,6 +42,18 @@ pub struct EngineResourceAccessor {
     /// The execution deadline bounding every managed row unit; `None` when
     /// the execution has no wall-clock budget.
     deadline: Option<std::time::Instant>,
+    /// What the handed-out handles may do with effects.
+    effects: HandleEffects,
+}
+
+/// The effect authority of an engine accessor's resource handles.
+#[derive(Clone)]
+enum HandleEffects {
+    /// Reads only; an effect is refused with the detail, or the resource
+    /// runtime's generic one.
+    ReadOnly(Option<&'static str>),
+    /// Effects are prepared, granted and recorded by the node's journal.
+    Journaled(Arc<dyn EffectJournal>),
 }
 
 impl EngineResourceAccessor {
@@ -46,7 +66,26 @@ impl EngineResourceAccessor {
             cancel,
             slot_identities: Arc::new(HashMap::new()),
             deadline: None,
+            effects: HandleEffects::ReadOnly(None),
         }
+    }
+
+    /// Hands out handles whose `Idempotent` and `Write` units `journal`
+    /// prepares, grants and records, instead of read-only handles. The
+    /// engine sets it only for a node whose admitted journaled action runs
+    /// under that node attempt's journal.
+    #[must_use]
+    pub(crate) fn with_journal(mut self, journal: Arc<dyn EffectJournal>) -> Self {
+        self.effects = HandleEffects::Journaled(journal);
+        self
+    }
+
+    /// Keeps the handles read-only, refusing an effect with `detail` — why
+    /// the node has no effect journal.
+    #[must_use]
+    pub(crate) fn with_read_only_detail(mut self, detail: &'static str) -> Self {
+        self.effects = HandleEffects::ReadOnly(Some(detail));
+        self
     }
 
     /// Bounds the units of every managed row this accessor hands out by
@@ -98,6 +137,34 @@ impl EngineResourceAccessor {
     fn map_err(_key: &ResourceKey, err: nebula_resource::Error) -> CoreError {
         err.to_core_error()
     }
+
+    /// The resource handle of `key` under the accessor's effect authority.
+    fn handle(
+        &self,
+        key: &ResourceKey,
+    ) -> Result<Box<dyn Any + Send + Sync>, nebula_resource::Error> {
+        let options = match self.deadline {
+            Some(deadline) => AcquireOptions::default().with_deadline(deadline),
+            None => AcquireOptions::default(),
+        };
+        let ctx = self.resource_ctx();
+        let identity = self.slot_identity_for(key);
+        match &self.effects {
+            HandleEffects::Journaled(journal) => self.manager.handle_any_journaled(
+                key,
+                &ctx,
+                &options,
+                &identity,
+                Arc::clone(journal),
+            ),
+            HandleEffects::ReadOnly(Some(detail)) => self
+                .manager
+                .handle_any_read_only_because(key, &ctx, &options, &identity, detail),
+            HandleEffects::ReadOnly(None) => self
+                .manager
+                .handle_any_read_only(key, &ctx, &options, &identity),
+        }
+    }
 }
 
 impl fmt::Debug for EngineResourceAccessor {
@@ -105,6 +172,10 @@ impl fmt::Debug for EngineResourceAccessor {
         f.debug_struct("EngineResourceAccessor")
             .field("manager", &"<Manager>")
             .field("scope", &self.scope)
+            .field(
+                "journaled",
+                &matches!(self.effects, HandleEffects::Journaled(_)),
+            )
             .finish()
     }
 }
@@ -156,34 +227,14 @@ impl ResourceAccessor for EngineResourceAccessor {
         &self,
         key: &ResourceKey,
     ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
-        let options = match self.deadline {
-            Some(deadline) => AcquireOptions::default().with_deadline(deadline),
-            None => AcquireOptions::default(),
-        };
-        self.manager
-            .handle_any_read_only(
-                key,
-                &self.resource_ctx(),
-                &options,
-                &self.slot_identity_for(key),
-            )
-            .map_err(|e| Self::map_err(key, e))
+        self.handle(key).map_err(|e| Self::map_err(key, e))
     }
 
     fn try_resource_handle_any(
         &self,
         key: &ResourceKey,
     ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
-        let options = match self.deadline {
-            Some(deadline) => AcquireOptions::default().with_deadline(deadline),
-            None => AcquireOptions::default(),
-        };
-        match self.manager.handle_any_read_only(
-            key,
-            &self.resource_ctx(),
-            &options,
-            &self.slot_identity_for(key),
-        ) {
+        match self.handle(key) {
             Ok(row) => Ok(Some(row)),
             Err(error) if matches!(error.kind(), ErrorKind::NotFound) => Ok(None),
             Err(error) => Err(Self::map_err(key, error)),
@@ -205,16 +256,17 @@ const RAW_LEASE_REFUSED: &str = "a journaled action cannot check out a raw resou
 /// before any lookup with a non-retryable
 /// [`CoreError::ResourceUnavailable`]: a lease derefs to the provider
 /// client, so any call made through it would be an unjournaled effect. A
-/// refused optional slot fails rather than reading as absent. Managed row
-/// facades are forwarded to the engine-built accessor, which serves them
-/// read-only until the engine effect journal lands.
+/// refused optional slot fails rather than reading as absent. Resource
+/// handles are forwarded to the engine-built accessor, which serves them
+/// under the node's effect journal — or read-only when the node has none (a
+/// storeless run, a stateful action, a direct-definition dispatch).
 pub(crate) struct JournaledResourceAccessor {
     inner: Arc<dyn ResourceAccessor>,
 }
 
 impl JournaledResourceAccessor {
-    /// Restricts `inner` — an accessor the engine built, whose managed row
-    /// facades are read-only — to handle-routed access.
+    /// Restricts `inner` — an accessor the engine built, whose resource
+    /// handles are journaled or read-only — to handle-routed access.
     pub(crate) fn new(inner: Arc<dyn ResourceAccessor>) -> Self {
         Self { inner }
     }
@@ -602,6 +654,45 @@ mod tests {
         let error = queued.await.expect("joined").expect_err("cancelled");
         assert_eq!(*error.kind(), ErrorKind::Cancelled);
         assert_eq!(error.sent(), SentState::NotSent);
+    }
+
+    /// A write the provider would apply.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Bump;
+
+    impl Operation<AccResource> for Bump {
+        type Output = u64;
+        const KEY: &'static str = "acc.bump";
+        const EFFECT: Effect = Effect::Write;
+
+        async fn run(self, cx: &mut OperationCx<'_, AccResource>) -> Result<u64, OperationError> {
+            cx.call(Cost::ONE, async |value, ()| {
+                Ok(value.fetch_add(1, Ordering::Relaxed))
+            })
+            .await
+        }
+    }
+
+    #[tokio::test]
+    async fn read_only_handles_refuse_writes_with_the_accessors_detail() {
+        let manager = Arc::new(Manager::new());
+        register_acc(&manager, SlotIdentity::Unbound, None);
+
+        let plain = row_of(&make_accessor(Arc::clone(&manager)));
+        let refused = plain.submit(Bump).await.expect_err("read-only");
+        assert_eq!(
+            refused.detail(),
+            "managed row effect requires execution-owner authority"
+        );
+
+        let storeless = row_of(
+            &make_accessor(Arc::clone(&manager))
+                .with_read_only_detail("journaled effects need execution stores"),
+        );
+        let refused = storeless.submit(Bump).await.expect_err("read-only");
+        assert_eq!(refused.detail(), "journaled effects need execution stores");
+        assert_eq!(refused.sent(), SentState::NotSent);
+        assert_eq!(storeless.submit(Read).await.expect("a read runs"), 42);
     }
 
     #[tokio::test(start_paused = true)]
