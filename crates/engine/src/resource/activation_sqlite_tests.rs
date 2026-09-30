@@ -12,7 +12,7 @@
 //! the credential's availability through the real runtime, and a change
 //! landing between two attempts of one unit refuses the later one. F7 takes
 //! the action path: the engine's resource accessor and
-//! `ActionContextExt::managed_row_by_id`.
+//! `ActionContextExt::resource_handle_by_id`.
 use std::{num::NonZeroU32, str::FromStr, time::Duration};
 
 use nebula_credential::{
@@ -1563,7 +1563,7 @@ fn action_row(
         identity,
         &CancellationToken::new(),
     )
-    .managed_row_by_id::<BearerRow>(key.as_str())
+    .resource_handle_by_id::<BearerRow>(key.as_str())
 }
 
 /// F7: an action's managed row reads the credential once per attempt
@@ -1571,7 +1571,7 @@ fn action_row(
 /// refuses its unit unsent, retryable with the reason's hint; another
 /// identity's row is not served.
 #[tokio::test]
-async fn an_action_managed_row_reads_per_attempt_and_refuses_retryably() {
+async fn an_action_resource_handle_reads_per_attempt_and_refuses_retryably() {
     // One read per attempt, nothing decrypted.
     let fixture = SqliteFixture::strict().await;
     let (resource_id, key) = fixture.store_row().await;

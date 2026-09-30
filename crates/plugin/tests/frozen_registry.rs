@@ -107,7 +107,7 @@ fn action_factory(key: &str) -> Arc<dyn ActionFactory> {
                 nebula_action::MetadataName::try_from(key).expect("fixture display name"),
                 "test action",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             MetadataAction,
         )
         .expect("test action metadata admits through its structural factory"),
@@ -160,7 +160,7 @@ impl Action for ObservedAction {
             nebula_action::metadata_name!("Run"),
             "Observed action admission fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {

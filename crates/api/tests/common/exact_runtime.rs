@@ -24,7 +24,7 @@ impl Action for Echo {
             nebula_action::metadata_name!("Echo"),
             "HTTP fixture echo",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static nebula_core::Dependencies {

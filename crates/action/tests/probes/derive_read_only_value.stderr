@@ -1,0 +1,5 @@
+error: `read_only` is a flag; write it without `= ...`
+  --> tests/probes/derive_read_only_value.rs:10:5
+   |
+10 |     read_only = true
+   |     ^^^^^^^^^

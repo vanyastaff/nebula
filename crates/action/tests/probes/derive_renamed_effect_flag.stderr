@@ -1,0 +1,5 @@
+error: `no_external_effects` was renamed to `read_only`; write `#[action(read_only)]`
+  --> tests/probes/derive_renamed_effect_flag.rs:11:5
+   |
+11 |     no_external_effects
+   |     ^^^^^^^^^^^^^^^^^^^

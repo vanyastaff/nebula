@@ -29,7 +29,7 @@ impl Action for CancelProbe {
             nebula_action::metadata_name!("Cancel input"),
             "Observe input cancellation before execution",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {

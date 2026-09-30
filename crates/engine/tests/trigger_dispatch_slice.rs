@@ -177,7 +177,7 @@ impl Action for SliceTrigger {
             nebula_action::metadata_name!("Slice trigger"),
             "Explicit test event source",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -237,7 +237,7 @@ impl Action for EchoHandler {
             nebula_action::metadata_name!("Echo"),
             "echo",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -267,7 +267,7 @@ async fn make_engine(stores: &TestStores) -> (Arc<WorkflowEngine>, Arc<AtomicU32
                 nebula_action::metadata_name!("Echo"),
                 "echo",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             EchoHandler {
                 count: count.clone(),
             },

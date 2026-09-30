@@ -60,7 +60,7 @@ impl Action for ResourceConsumerHandler {
             nebula_action::metadata_name!("ResourceConsumer"),
             "static",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -101,7 +101,7 @@ impl Action for ResourceProbeHandler {
             nebula_action::metadata_name!("ResourceProbe"),
             "static",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -160,7 +160,7 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
 fn meta(key: ActionKey) -> ActionMetadataDraft {
     let name = key.clone().into();
     ActionMetadataDraft::new(key, name, "resource integration test")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +371,7 @@ impl Action for IntegrationAcquireHandler {
             nebula_action::metadata_name!("IntegrationAcquire"),
             "static",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -1483,10 +1483,10 @@ mod resource_handle {
             #[action(
                                                     key = $key,
                                                     name = $key,
-                                                    description = "managed row integration action",
+                                                    description = "resource handle integration action",
                                                     input = serde_json::Value,
                                                     output = serde_json::Value,
-                                                    no_external_effects
+                                                    read_only
                                                 )]
             struct $ty {
                 #[resource]

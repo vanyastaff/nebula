@@ -40,7 +40,7 @@ where
             nebula_action::metadata_name!("Root echo"),
             "Preserve root input data",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -91,7 +91,7 @@ impl Action for SupportEcho {
             nebula_action::metadata_name!("Support echo"),
             "Return support input data",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {

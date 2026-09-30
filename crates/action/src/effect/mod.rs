@@ -20,7 +20,11 @@ pub enum ActionEffectContract {
     #[default]
     Undeclared,
     /// The adapter performs no external business effect, including during construction.
-    NoExternalEffects,
+    ///
+    /// Serialized as `"NoExternalEffects"`, its name before 0.21.0, so plan
+    /// records frozen with the old spelling stay readable.
+    #[serde(rename = "NoExternalEffects")]
+    ReadOnly,
     /// Provider effects require the declared preparation and recovery protocol.
     Remote(Box<RemoteEffectDescriptor>),
 }
@@ -415,6 +419,17 @@ mod tests {
             .recovery_window(Duration::from_mins(1))
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn a_read_only_contract_keeps_its_frozen_wire_tag() {
+        let frozen = serde_json::json!("NoExternalEffects");
+        let decoded: ActionEffectContract = serde_json::from_value(frozen.clone()).unwrap();
+        assert_eq!(decoded, ActionEffectContract::ReadOnly);
+        assert_eq!(
+            serde_json::to_value(ActionEffectContract::ReadOnly).unwrap(),
+            frozen
+        );
     }
 
     #[test]

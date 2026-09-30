@@ -182,7 +182,7 @@ impl ExecutionStore for FaultInjectingExecutionStore {
 macro_rules! pure_action_metadata {
     ($key:expr, $name:expr, $description:expr $(,)?) => {
         nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     };
 }
 

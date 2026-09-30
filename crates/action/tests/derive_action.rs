@@ -53,15 +53,15 @@ fn metadata_key_matches_attribute() {
 
 #[derive(Action)]
 #[action(
-    key = "test.no_external_effects",
+    key = "test.read_only",
     description = "explicit no-effect contract",
     input = serde_json::Value,
     output = serde_json::Value,
-    no_external_effects
+    read_only
 )]
-struct NoExternalEffectsAction;
+struct ReadOnlyAction;
 
-impl StatelessAction for NoExternalEffectsAction {
+impl StatelessAction for ReadOnlyAction {
     async fn execute(
         &self,
         input: serde_json::Value,
@@ -75,7 +75,7 @@ impl StatelessAction for NoExternalEffectsAction {
 fn effect_contract_requires_an_explicit_author_attestation() {
     let undeclared = nebula_action::GenericStatelessFactory::<NoCredAction>::new()
         .expect("valid undeclared definition");
-    let declared = nebula_action::GenericStatelessFactory::<NoExternalEffectsAction>::new()
+    let declared = nebula_action::GenericStatelessFactory::<ReadOnlyAction>::new()
         .expect("valid no-effect definition");
 
     assert_eq!(
@@ -84,7 +84,7 @@ fn effect_contract_requires_an_explicit_author_attestation() {
     );
     assert_eq!(
         declared.metadata().effect_contract(),
-        &ActionEffectContract::NoExternalEffects
+        &ActionEffectContract::ReadOnly
     );
 }
 
@@ -203,9 +203,9 @@ fn macro_and_manual_metadata_preserve_the_exact_full_semver() {
     assert_eq!(**generated.metadata(), **manual.metadata());
 }
 
-// -- Managed row fields -----------------------------------------------------
+// -- Resource handle fields -------------------------------------------------
 
-mod managed_row_fields {
+mod resource_handle_fields {
     use std::{any::Any, future::Future, pin::Pin, sync::Arc};
 
     use nebula_action::{FromWorkflowNode, testing::TestContextBuilder};
@@ -277,12 +277,12 @@ mod managed_row_fields {
 
     #[derive(Action)]
     #[action(
-        key = "test.managed_row_fields",
-        name = "Managed row fields",
+        key = "test.resource_handle_fields",
+        name = "Resource handle fields",
         description = "row facade slots",
         input = serde_json::Value,
         output = serde_json::Value,
-        no_external_effects
+        read_only
     )]
     struct RowAction {
         #[resource]
@@ -455,9 +455,14 @@ mod managed_row_fields {
     }
 
     fn node() -> NodeDefinition {
-        NodeDefinition::new(node_key!("rows"), "Rows", "test", "test.managed_row_fields")
-            .expect("valid node")
-            .with_resource_binding("db", "derive.row.db")
+        NodeDefinition::new(
+            node_key!("rows"),
+            "Rows",
+            "test",
+            "test.resource_handle_fields",
+        )
+        .expect("valid node")
+        .with_resource_binding("db", "derive.row.db")
     }
 
     #[test]
@@ -505,9 +510,13 @@ mod managed_row_fields {
         let context = TestContextBuilder::new()
             .build()
             .with_resources(Arc::new(RowsOf(Arc::clone(&manager))));
-        let projected =
-            NodeDefinition::new(node_key!("rows"), "Rows", "test", "test.managed_row_fields")
-                .expect("valid projected node");
+        let projected = NodeDefinition::new(
+            node_key!("rows"),
+            "Rows",
+            "test",
+            "test.resource_handle_fields",
+        )
+        .expect("valid projected node");
 
         let action = RowAction::from_workflow_node(&projected, &context)
             .await

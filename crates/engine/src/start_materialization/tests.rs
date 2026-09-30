@@ -165,7 +165,7 @@ impl Action for FixtureAction {
             nebula_action::metadata_name!("Run"),
             "start fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -196,7 +196,7 @@ impl Action for ResourceBoundAction {
             nebula_action::metadata_name!("Resource Bound"),
             "resource-bound start fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {

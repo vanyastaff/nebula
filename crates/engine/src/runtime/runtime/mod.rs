@@ -483,7 +483,7 @@ impl ActionRuntime {
         }
         if !matches!(
             metadata.effect_contract(),
-            nebula_action::effect::ActionEffectContract::NoExternalEffects
+            nebula_action::effect::ActionEffectContract::ReadOnly
         ) || factory.remote_effect_factory().is_some()
         {
             self.observe_rejected("effect_requires_owner");

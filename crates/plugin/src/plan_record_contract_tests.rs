@@ -20,6 +20,17 @@ fn current_schema_policy_uses_its_own_plan_envelope() {
 }
 
 #[test]
+fn a_frozen_read_only_effect_record_keeps_its_wire_tag() {
+    use crate::plan_effect::RecordedActionEffectV1;
+
+    let frozen = json!("NoExternalEffects");
+    let decoded: RecordedActionEffectV1 = serde_json::from_value(frozen.clone()).unwrap();
+    assert!(decoded == RecordedActionEffectV1::ReadOnly);
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), frozen);
+    assert!(serde_json::from_value::<RecordedActionEffectV1>(json!("ReadOnly")).is_err());
+}
+
+#[test]
 fn current_compiler_epoch_identifies_property_semantics() {
     assert_eq!(PlanEpoch::CURRENT.compiler_version(), 5);
 }
@@ -231,7 +242,7 @@ fn empty_dependencies() -> RecordedDependenciesV1 {
 
 fn minimal_action(dependencies: RecordedDependenciesV1) -> RecordedActionV1 {
     RecordedActionV1 {
-        effect_contract: Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects),
+        effect_contract: Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly),
         key: "demo.echo".into(),
         plugin_key: "demo".into(),
         version: recorded_semver(1, 0, 0),
@@ -510,9 +521,7 @@ fn effect_lookup_distinguishes_current_declarations_from_unknown_actions() {
     assert_eq!(
         plan.action_effect_contract(&ActionKey::new("demo.echo").unwrap())
             .unwrap(),
-        PlanActionEffectContract::Declared(
-            nebula_action::effect::ActionEffectContract::NoExternalEffects
-        )
+        PlanActionEffectContract::Declared(nebula_action::effect::ActionEffectContract::ReadOnly)
     );
     assert_eq!(
         plan.action_effect_contract(&ActionKey::new("demo.missing").unwrap())
@@ -572,8 +581,8 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
                 let mut record = fixture_record();
                 record.compiler_version = compiler;
                 record.canonical_hash_version = hash;
-                record.content.actions[0].effect_contract = declared
-                    .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+                record.content.actions[0].effect_contract =
+                    declared.then_some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
                 reseal(&mut record);
                 let expected = compiler == COMPILER_VERSION_GRAPH_V5
                     && hash == CANONICAL_HASH_VERSION_V3
@@ -601,7 +610,7 @@ fn scalar_aware_compiler_epoch_preserves_legacy_schema_bytes() {
     record.compiler_version = COMPILER_VERSION_GRAPH_V4;
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     reseal(&mut record);
     let encoded = serde_json::to_vec(&record).unwrap();
     let decoded: RecordedExecutablePlanRevisionV1 = serde_json::from_slice(&encoded).unwrap();
@@ -630,7 +639,7 @@ fn legacy_empty_record_never_decodes_as_null() {
         (
             COMPILER_VERSION_GRAPH_V3,
             CANONICAL_HASH_VERSION_V2,
-            Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects),
+            Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly),
         ),
     ] {
         let mut record = historical_fixture_record();
@@ -678,8 +687,8 @@ fn scalar_schema_envelopes_require_current_policy_at_every_contract_site() {
                 };
                 record.compiler_version = compiler;
                 record.canonical_hash_version = compiler_epoch_hash(compiler);
-                record.content.actions[0].effect_contract = (compiler != 1)
-                    .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+                record.content.actions[0].effect_contract =
+                    (compiler != 1).then_some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
                 let contract = match site {
                     "input" => &mut record.content.actions[0].input_schema,
                     "output" => &mut record.content.actions[0].output_schema,
@@ -779,7 +788,7 @@ fn scalar_compiler_does_not_relabel_legacy_record_any_or_union_schema_wire() {
             record.canonical_hash_version = epoch.canonical_hash_version();
             record.content.actions[0].effect_contract = epoch
                 .records_effect_contract()
-                .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+                .then_some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
             record.content.actions[0].output_schema = RecordedSchemaV1::new(schema.clone());
             assert_eq!(
                 record.content.actions[0].output_schema.schema_wire_version,
@@ -834,7 +843,7 @@ fn effect_plan_hash_uses_new_domain_and_complete_record_projection() {
     record.compiler_version = COMPILER_VERSION_GRAPH_V3;
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V2;
     record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     reseal(&mut record);
     let mut projected = serde_json::to_value(&record).unwrap();
     projected.as_object_mut().unwrap().remove("claimed_id");
@@ -930,7 +939,7 @@ fn intrinsic_error_edges_cannot_name_a_support_port() {
 fn resealed_error_references_cannot_read_success_only_fields() {
     let mut record = fixture_record();
     record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     record.content.actions[0].input_schema.schema =
         nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
             .expect("valid test catalog definition");
@@ -1322,7 +1331,7 @@ fn root_rule_record(
     record.canonical_hash_version = epoch.canonical_hash_version();
     record.content.actions[0].effect_contract = epoch
         .records_effect_contract()
-        .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        .then_some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     record.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
             .property(
@@ -1959,7 +1968,7 @@ fn current_binding_records_distinguish_defaults_from_overrides_without_prefix_in
     default_record.compiler_version = COMPILER_VERSION_GRAPH_V5;
     default_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     default_record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     default_record.bindings[0].slot_key = "auth".into();
     default_record.bindings[0].selector = "auth".into();
     default_record.bindings[0].selector_provenance =
@@ -1971,7 +1980,7 @@ fn current_binding_records_distinguish_defaults_from_overrides_without_prefix_in
     override_record.compiler_version = COMPILER_VERSION_GRAPH_V5;
     override_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     override_record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     override_record.bindings[0].selector_provenance =
         Some(RecordedBindingSelectorProvenanceV1::CredentialIdOverride);
     reseal(&mut override_record);
@@ -1995,7 +2004,7 @@ fn current_binding_record_rejects_cross_kind_selector_provenance() {
     record.compiler_version = COMPILER_VERSION_GRAPH_V5;
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     record.bindings[0].selector_provenance =
         Some(RecordedBindingSelectorProvenanceV1::ResourceIdOverride);
     reseal(&mut record);

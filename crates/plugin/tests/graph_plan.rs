@@ -30,7 +30,7 @@ impl ContractAction {
             "demo.echo",
             input_schema,
             ValidSchema::empty(),
-            nebula_action::effect::ActionEffectContract::NoExternalEffects,
+            nebula_action::effect::ActionEffectContract::ReadOnly,
             None,
         )
     }
@@ -304,7 +304,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
             .property(Property::string(field_key!("success_only")).required())
             .build()
             .unwrap(),
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         Some(source_outputs),
     );
     let target = ContractAction::with_contract(
@@ -312,7 +312,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
         nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
             .expect("valid test catalog definition"),
         ValidSchema::empty(),
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         None,
     );
     let incompatible = ContractAction::with_contract(
@@ -322,7 +322,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
             .build()
             .unwrap(),
         ValidSchema::empty(),
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         None,
     );
     let mut plugins = PluginRegistry::new();
@@ -472,7 +472,7 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         "demo.echo",
         ValidSchema::empty(),
         ValidSchema::empty(),
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         None,
     );
     plugin.action = action;
@@ -835,7 +835,7 @@ fn execution_graph_preserves_parameter_variants_and_canonical_reference_ports() 
         "demo.echo",
         schema.clone(),
         schema,
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         None,
     );
     let plugin = ContractPlugin {

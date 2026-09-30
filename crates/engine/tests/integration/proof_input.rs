@@ -237,7 +237,7 @@ impl Action for IterationProbe {
             nebula_action::metadata_name!("Iteration probe"),
             "Observe the same prepared input each iteration",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {

@@ -7,7 +7,7 @@ use nebula_action::Action;
     key = "bad.effect-value",
     input = serde_json::Value,
     output = serde_json::Value,
-    no_external_effects = true
+    read_only = true
 )]
 struct EffectValue;
 

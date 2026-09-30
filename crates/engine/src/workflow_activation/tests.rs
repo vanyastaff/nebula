@@ -223,7 +223,7 @@ impl Action for FixtureAction {
             nebula_action::metadata_name!("Run"),
             "fixture",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {

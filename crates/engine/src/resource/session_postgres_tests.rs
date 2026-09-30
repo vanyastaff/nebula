@@ -527,7 +527,7 @@ impl Pg {
             &activated.slot_identity,
             cancel,
         )
-        .managed_row_by_id::<PgRow>(self.key.as_str())
+        .resource_handle_by_id::<PgRow>(self.key.as_str())
         .expect("the action's row facade")
     }
 

@@ -1,5 +1,5 @@
 error: a ResourceHandle acquires nothing at resolution; drop `Lazy`
-  --> tests/probes/derive_lazy_managed_row.rs:18:9
+  --> tests/probes/derive_lazy_resource_handle.rs:18:9
    |
 18 |     db: Lazy<ResourceHandle<R>>,
    |         ^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: `ManagedRow` was renamed to `ResourceHandle`; write `ResourceHandle<T>`
+  --> tests/probes/derive_renamed_resource_handle.rs:17:9
+   |
+17 |     db: ManagedRow<R>,
+   |         ^^^^^^^^^^^^^

@@ -160,7 +160,7 @@ impl Action for Echo {
             nebula_action::metadata_name!("Echo"),
             "pure recovery fixture",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();

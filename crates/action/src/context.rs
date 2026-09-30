@@ -824,7 +824,7 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// The lease stays checked out until the guard drops, whatever the
     /// action waits for meanwhile — the raw-escape profile. For provider
     /// calls prefer a `ResourceHandle<R>` field
-    /// ([`managed_row_by_id`](Self::managed_row_by_id)), which checks out
+    /// ([`resource_handle_by_id`](Self::resource_handle_by_id)), which checks out
     /// per attempt after the attempt's quota wait; this method's deprecation
     /// is scheduled with the `Limited` family's removal (MIGRATION P10).
     ///
@@ -884,7 +884,7 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// names the expected type only). The accessor's own refusal converts
     /// through `From<CoreError>`: a missing row is fatal, a revoked or
     /// suspended one retryable with its hint.
-    fn managed_row_by_id<R>(
+    fn resource_handle_by_id<R>(
         &self,
         id: &str,
     ) -> Result<nebula_resource::call::ResourceHandle<R>, ActionError>
@@ -911,7 +911,7 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// to `id`.
     ///
     /// This is the optional-slot counterpart of
-    /// [`managed_row_by_id`](Self::managed_row_by_id): only a genuinely
+    /// [`resource_handle_by_id`](Self::resource_handle_by_id): only a genuinely
     /// absent row becomes `Ok(None)`. Lifecycle refusal and type mismatch
     /// remain classified errors.
     ///
@@ -920,7 +920,7 @@ pub trait ActionContextExt: HasResources + HasCredentials {
     /// [`ActionError::Fatal`] for an invalid id or a facade of the wrong
     /// provider type. Accessor refusals preserve their fatal or retryable
     /// classification through `From<CoreError>`.
-    fn try_managed_row_by_id<R>(
+    fn try_resource_handle_by_id<R>(
         &self,
         id: &str,
     ) -> Result<Option<nebula_resource::call::ResourceHandle<R>>, ActionError>
@@ -1100,9 +1100,9 @@ mod tests {
         assert_error_is_fatal_and_redacted(&error);
     }
 
-    // ── managed rows ─────────────────────────────────────────────────────
+    // ── resource handles ─────────────────────────────────────────────────
 
-    mod managed_row {
+    mod resource_handle {
         use nebula_core::{ScopeLevel, resource_key};
         use nebula_resource::{
             ErrorKind, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceConfig,
@@ -1271,7 +1271,7 @@ mod tests {
             let context = context_with(RowResponse::Manager(manager));
 
             let row: ResourceHandle<Ledger> = context
-                .managed_row_by_id::<Ledger>(Ledger::key().as_str())
+                .resource_handle_by_id::<Ledger>(Ledger::key().as_str())
                 .expect("row facade");
             assert_eq!(row.resource_key(), &Ledger::key());
         }
@@ -1280,7 +1280,7 @@ mod tests {
         fn a_type_mismatch_is_fatal_and_names_only_the_type() {
             let context = context_with(RowResponse::UnexpectedType);
             let error = context
-                .managed_row_by_id::<Ledger>(RESOURCE_ID_CANARY)
+                .resource_handle_by_id::<Ledger>(RESOURCE_ID_CANARY)
                 .expect_err("() is no ResourceHandle");
             std::assert_matches!(error, ActionError::Fatal { .. });
             let rendered = format!("{error:?}\n{error}");
@@ -1293,7 +1293,7 @@ mod tests {
             let context = context_with(RowResponse::UnexpectedType);
             let invalid_id = format!("{RESOURCE_ID_CANARY} invalid");
             let error = context
-                .managed_row_by_id::<Ledger>(&invalid_id)
+                .resource_handle_by_id::<Ledger>(&invalid_id)
                 .expect_err("invalid ids fail before accessor dispatch");
             std::assert_matches!(error, ActionError::Fatal { .. });
             let rendered = format!("{error:?}\n{error}");
@@ -1304,12 +1304,12 @@ mod tests {
         fn a_revoked_row_is_retryable() {
             let context = context_with(RowResponse::Revoked);
             let error = context
-                .managed_row_by_id::<Ledger>("action.context.ledger")
+                .resource_handle_by_id::<Ledger>("action.context.ledger")
                 .expect_err("revoked");
             std::assert_matches!(error, ActionError::Retryable { .. });
 
             let error = context
-                .try_managed_row_by_id::<Ledger>("action.context.ledger")
+                .try_resource_handle_by_id::<Ledger>("action.context.ledger")
                 .expect_err("revoked optional row is not absent");
             std::assert_matches!(error, ActionError::Retryable { .. });
         }
@@ -1318,7 +1318,7 @@ mod tests {
         fn an_optional_type_mismatch_is_fatal() {
             let context = context_with(RowResponse::UnexpectedType);
             let error = context
-                .try_managed_row_by_id::<Ledger>(RESOURCE_ID_CANARY)
+                .try_resource_handle_by_id::<Ledger>(RESOURCE_ID_CANARY)
                 .expect_err("() is no optional ResourceHandle");
             std::assert_matches!(error, ActionError::Fatal { .. });
         }
@@ -1327,13 +1327,13 @@ mod tests {
         fn the_default_accessor_serves_no_rows() {
             let error = TestContextBuilder::new()
                 .build()
-                .managed_row_by_id::<Ledger>("action.context.ledger")
+                .resource_handle_by_id::<Ledger>("action.context.ledger")
                 .expect_err("no managed rows");
             std::assert_matches!(error, ActionError::Fatal { .. });
             assert!(
                 TestContextBuilder::new()
                     .build()
-                    .try_managed_row_by_id::<Ledger>("action.context.ledger")
+                    .try_resource_handle_by_id::<Ledger>("action.context.ledger")
                     .expect("the default optional lookup is infallible")
                     .is_none()
             );

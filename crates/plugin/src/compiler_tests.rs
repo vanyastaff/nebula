@@ -250,7 +250,7 @@ fn action_factory(
         nebula_action::MetadataName::try_from(local_key).expect("fixture display name"),
         "compiler contract fixture",
     )
-    .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects);
+    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly);
     INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(input_schema));
     OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(output_schema));
     let factory: Arc<dyn ActionFactory> = match kind {

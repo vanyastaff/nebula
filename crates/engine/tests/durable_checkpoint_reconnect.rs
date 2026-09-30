@@ -56,7 +56,7 @@ impl Action for Echo {
             nebula_action::metadata_name!("Echo"),
             "pure payload echo",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -88,7 +88,7 @@ impl Action for Park {
             nebula_action::metadata_name!("Park"),
             "durable signal wait",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         Echo::dependencies()

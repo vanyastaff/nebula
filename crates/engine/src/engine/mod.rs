@@ -3193,9 +3193,7 @@ impl NodeTask {
                     );
                 }
                 match &effect_contract {
-                    ActionEffectContract::NoExternalEffects
-                        if factory.remote_effect_factory().is_none() =>
-                    {
+                    ActionEffectContract::ReadOnly if factory.remote_effect_factory().is_none() => {
                         self.runtime
                             .execute_resolved_action(factory, &self.node, input, &action_ctx)
                             .await

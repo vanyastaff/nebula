@@ -88,7 +88,7 @@ impl Action for LeakyProviderAction {
             nebula_action::metadata_name!("LeakyProvider"),
             "always fails quoting a provider payload",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
