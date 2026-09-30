@@ -608,7 +608,6 @@ pub async fn restart_execution(
     Extension(_tenant): Extension<TenantContext>,
     Path((_org, _ws, _exec)): Path<(String, String, String)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    // TODO: Restart a failed/cancelled execution
     Err(ApiError::NotImplemented(
         "handler stub — tracked under stub endpoint policy".to_string(),
     ))
