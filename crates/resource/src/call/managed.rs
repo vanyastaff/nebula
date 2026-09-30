@@ -376,14 +376,21 @@ pub(super) fn assert_declaration<R: Provider + PinSlots, O: Operation<R>>() {
     }
 }
 
+/// The refusal detail of an effect on a read-only row facade.
+const NO_EFFECT_AUTHORITY: &str = "managed row effect requires execution-owner authority";
+
 /// Which effects the caller that built a row facade may submit.
 #[derive(Debug, Clone, Default)]
 pub(crate) enum EffectAuthority {
     /// Library callers run every effect unjournaled.
     #[default]
     Unjournaled,
-    /// Action execution without effect-owner authority may perform reads only.
-    ReadOnly,
+    /// Action execution without effect-owner authority may perform reads
+    /// only; an effect is refused with `detail`.
+    ReadOnly {
+        /// Why the caller has no effect authority.
+        detail: &'static str,
+    },
     /// Action execution with effect-owner authority: reads as usual,
     /// `Idempotent` and `Write` units driven through `owner`.
     Journaled {
@@ -428,8 +435,14 @@ impl UnitScope {
     }
 
     /// Restricts the facade to operations that declare [`Effect::Read`].
-    pub(crate) fn read_only(mut self) -> Self {
-        self.effect_authority = EffectAuthority::ReadOnly;
+    pub(crate) fn read_only(self) -> Self {
+        self.read_only_because(NO_EFFECT_AUTHORITY)
+    }
+
+    /// Restricts the facade to operations that declare [`Effect::Read`],
+    /// refusing an effect with `detail`.
+    pub(crate) fn read_only_because(mut self, detail: &'static str) -> Self {
+        self.effect_authority = EffectAuthority::ReadOnly { detail };
         self
     }
 
@@ -486,11 +499,8 @@ impl UnitScope {
         }
         let (owner, binding) = match &self.effect_authority {
             EffectAuthority::Unjournaled => return plain(key_part),
-            EffectAuthority::ReadOnly => {
-                return Err(OperationError::new(
-                    ErrorKind::Permanent,
-                    "managed row effect requires execution-owner authority",
-                ));
+            EffectAuthority::ReadOnly { detail } => {
+                return Err(OperationError::new(ErrorKind::Permanent, detail));
             },
             EffectAuthority::Journaled { owner, binding } => (owner, binding),
         };

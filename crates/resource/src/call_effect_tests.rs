@@ -1680,6 +1680,31 @@ async fn a_library_row_runs_effects_plain_and_a_read_only_row_refuses_them() {
         .expect("a read runs");
     assert_eq!(calls.made(), 3);
     assert!(fixture.owner.log().is_empty());
+
+    let explained = *fixture
+        .manager
+        .handle_any_read_only_because(
+            &StrictPooled::key(),
+            &fixture.ctx(),
+            &AcquireOptions::default(),
+            &tenant(),
+            "journaled effects need execution stores",
+        )
+        .expect("read-only row")
+        .downcast::<ResourceHandle<StrictPooled>>()
+        .expect("typed row");
+    let refused = explained
+        .submit(Pay::<true>::new(&calls, vec![Reply::Ok(4)]))
+        .await
+        .expect_err("no effect authority, with its reason");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(refused.detail(), "journaled effects need execution stores");
+    explained
+        .submit(Look::new(&calls, Cost::FREE))
+        .await
+        .expect("a read runs");
+    assert_eq!(calls.made(), 4);
+    assert!(fixture.owner.log().is_empty());
 }
 
 #[tokio::test(start_paused = true)]
