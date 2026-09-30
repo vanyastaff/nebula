@@ -8,7 +8,8 @@ use std::{
 };
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ErrorKind, Managed, OpCx, OpError, Operation, PinSlots, Provider,
+    Cost, Effect, Error, ErrorKind, Lease, Operation, OperationCx, OperationError, PinSlots,
+    Provider,
     Resident, ResidentProvider, ResourceContext, ResourceKey, ResourceMetadataDraft, SentState,
     TeardownCx, no_credential_slots, resource_key,
 };
@@ -83,7 +84,7 @@ struct Write {
 impl Operation<Logger> for Write {
     type Output = Enqueued;
 
-    async fn run(self, cx: &mut OpCx<'_, Logger>) -> Result<Enqueued, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Enqueued, OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         match attempt.instance().enqueue(self.line) {
             Some(seq) => {
@@ -92,7 +93,7 @@ impl Operation<Logger> for Write {
             },
             None => {
                 attempt.settle(SentState::NotSent);
-                Err(OpError::new(ErrorKind::Backpressure, "log buffer full"))
+                Err(OperationError::new(ErrorKind::Backpressure, "log buffer full"))
             },
         }
     }
@@ -109,7 +110,7 @@ impl Operation<Logger> for Flush {
         NonZeroU32::MIN.saturating_add(1)
     }
 
-    async fn run(self, cx: &mut OpCx<'_, Logger>) -> Result<usize, OpError> {
+    async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<usize, OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
         let written = attempt.instance().written();
         attempt.settle(SentState::Sent);
@@ -118,7 +119,7 @@ impl Operation<Logger> for Flush {
 }
 
 /// What action code does with a managed lease.
-async fn log_and_flush(logger: &Managed<Logger>) -> Result<usize, Error> {
+async fn log_and_flush(logger: &Lease<Logger>) -> Result<usize, Error> {
     let Enqueued(_seq) = logger
         .submit(Write {
             line: "hello".to_owned(),
@@ -133,7 +134,7 @@ fn main() {
     assert_eq!(<Write as Operation<Logger>>::EFFECT, Effect::Write);
     assert!(<Flush as Operation<Logger>>::EFFECT.is_replay_safe());
     assert_eq!(Cost::FREE.permits(), 0);
-    let refused = OpError::new(ErrorKind::Backpressure, "log buffer full");
+    let refused = OperationError::new(ErrorKind::Backpressure, "log buffer full");
     assert!(refused.is_retryable(), "nothing was sent");
     assert_eq!(refused.sent(), SentState::NotSent);
 }

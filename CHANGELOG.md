@@ -671,13 +671,14 @@ let admitted = recorded.readmit_against(fresh)?;
   `EffectRecovery` that must agree with its effect — `Idempotent` with
   `StableKey { window }`, `Write` with `Opaque` — what is `Recorded` of a
   success, its canonical request, and optionally an `IdempotencyKeyPart` and
-  an `OccurrenceLabel`) and the owner-derived `OperationKey`, exposed by
-  `OpCx::operation_key` and `SessionCx::operation_key`. The public seam
-  `call::owner::UnitEffectOwner` (with `UnitIntent`, `UnitSlot`, `SlotPhase`,
-  `RecordedOutcome`, `UnitCall`, `Crossing`, `UnitOutcome`, `OwnerRefusal`,
-  `OwnerTicket`, `ErrorKindCode`) is what the engine will implement over the
-  operation ledger. `Manager::managed_row_any_owned` builds a row carrying an
-  owner: `ManagedRow::submit_effect` and `ManagedRow::session_effect` prepare
+  an `OccurrenceLabel`) and the owner-derived `IdempotencyKey`, exposed by
+  `OperationCx::idempotency_key` and `SessionCx::idempotency_key`. The public
+  seam `call::journal::EffectJournal` (with `JournalIntent`, `JournalSlot`,
+  `SlotPhase`, `RecordedOutcome`, `CallGrant`, `Crossing`, `CallOutcome`,
+  `JournalRefusal`, `InFlight`, `ErrorKindCode`) is what the engine will
+  implement over the operation ledger. `Manager::handle_any_journaled` builds
+  a handle carrying a journal: `ResourceHandle::submit_effect` and
+  `ResourceHandle::session_effect` prepare
   the effect under `unit/v1/{resource_key}/{contract_id}/{label}` before any
   quota, checkout or credential read (a recorded success replays with no
   provider call; a recorded rejection, a digest-only success or an unknown
@@ -685,8 +686,8 @@ let admitted = recorded.readmit_against(fresh)?;
   after the checkout and reads, and record the unit's last call before it
   settles; a plain `submit`/`session` of an effect on such a row is refused
   `Permanent` / `NotSent`. On a library row `submit_effect` runs as `submit`.
-  An `OpError` of kind `OutcomeUnknown` now counts as an unknown outcome (span
-  field, `UnitOutcomeUnknown` event). Not SDK-exported yet.
+  An `OperationError` of kind `OutcomeUnknown` now counts as an unknown
+  outcome (span field, `OperationOutcomeUnknown` event). Not SDK-exported yet.
 
 - **The operation ledger is ready for many effects per node.**
   `OperationLedger::read_occurrences(scope, execution_id, node_key)` lists
@@ -702,14 +703,16 @@ let admitted = recorded.readmit_against(fresh)?;
   `PreparedOperation::provider_key` so a resumed owner reads it back. A retry
   must reuse the key.
 
-- **Actions reach managed rows.** A `#[derive(Action)]` `#[resource]` field
-  may hold `ManagedRow<R>` or `Option<ManagedRow<R>>` (`Lazy<ManagedRow<R>>`
-  is rejected: resolution checks nothing out); the factory resolves it
-  synchronously through the new `ActionContextExt::managed_row_by_id`, over
-  the provided `nebula_core::accessor::ResourceAccessor::managed_row_any`
-  seam (the default refuses: an accessor serves no rows unless it opts in).
+- **Actions reach resource handles.** A `#[derive(Action)]` `#[resource]`
+  field may hold `ResourceHandle<R>` or `Option<ResourceHandle<R>>`
+  (`Lazy<ResourceHandle<R>>` is rejected: resolution checks nothing out; the
+  former `ManagedRow` spelling is refused with a hint); the factory resolves
+  it synchronously through the new `ActionContextExt::resource_handle_by_id`,
+  over the provided
+  `nebula_core::accessor::ResourceAccessor::resource_handle_any` seam (the
+  default refuses: an accessor serves no rows unless it opts in).
   The engine's `EngineResourceAccessor` serves it with the new read-only
-  `Manager::managed_row_any_read_only` under the node's recorded slot identity; the
+  `Manager::handle_any_read_only` under the node's recorded slot identity; the
   layered accessor fails closed for a key a branch scope holds. The facade's
   units inherit the node's cancellation token — a unit not granted yet
   settles `Cancelled` / `NotSent`, a granted one runs on to its deadline —
@@ -717,14 +720,18 @@ let admitted = recorded.readmit_against(fresh)?;
   (`EngineResourceAccessor::with_deadline`) bounds every unit's deadline.
   Accepted through the engine end to end, over encrypted SQLite (F7) and on
   real PostgreSQL (PG9); the SDK perimeter proves the derived field
-  (`action_managed_row`). `#[action(no_external_effects)]` explicitly emits
-  the no-effect contract; omitting it remains fail-closed `Undeclared`.
+  (`action_resource_handle`). `#[action(read_only)]` explicitly emits the
+  no-effect contract, `ActionEffectContract::ReadOnly` (its serde tag stays
+  `"NoExternalEffects"`, so frozen plan records still decode; the former
+  `no_external_effects` flag is refused with a hint); omitting it remains
+  fail-closed `Undeclared`. The engine-side sealed dispatch trait for
+  graph-scoped resource actions is `ResourceActionHandle`.
   Action-scoped rows admit `Effect::Read` only: idempotent/write operations
   and write sessions are refused `NotSent` before provider code because their
   business effects require execution-owner authority. No public ad-hoc
   accessor or SDK testing hook builds a row.
-- **Managed row facade and sessions.** `Manager::managed_row` /
-  `managed_row_for_identity` return `nebula_resource::call::ManagedRow<R>`:
+- **Resource handle and sessions.** `Manager::handle` /
+  `handle_for_identity` return `nebula_resource::call::ResourceHandle<R>`:
   the managed call facade without a lease. Each attempt of a submitted
   `Operation` books its quota and waits on a FIFO row gate (sized to the
   topology's capacity) with nothing checked out, reads its bound credentials
@@ -734,7 +741,7 @@ let admitted = recorded.readmit_against(fresh)?;
   granted under `Manager.admission`. Refusals are unsent and a refused
   checkout returns to the pool. On a pooled provider implementing
   `call::SessionProvider` (`open` / `close` over a `Session<'c>` borrowing
-  the instance), `ManagedRow::session(SessionSpec, body)` runs one
+  the instance), `ResourceHandle::session(SessionSpec, body)` runs one
   transaction per unit: the cost is booked once, the unannotated
   higher-ranked body borrows the session (`SessionFuture`, `SessionCx`), and
   `close` commits or rolls back (`SessionEnd`); `SessionClosed::Committed` is
@@ -744,12 +751,12 @@ let admitted = recorded.readmit_against(fresh)?;
   `nebula_resource_row_checkouts_total{created}` and
   `nebula_resource_sessions_total{outcome}`, reported in
   `ResourceOpsSnapshot::{row_checkouts, sessions}`. The SDK curates
-  `ManagedRow` and the session vocabulary in
+  `ResourceHandle` and the session vocabulary in
   `nebula_sdk::integration::resource` (not the prelude). The engine accepts
   sessions on real PostgreSQL connections (PG1–PG8, run by the PostgreSQL
   CI job). Interim: `Pooled`-only sessions, the 5-minute unit deadline (no
   `LISTEN` / `NOTIFY` or IMAP `IDLE`); actions reach a row through a
-  derived field (see "Actions reach managed rows").
+  derived field (see "Actions reach resource handles").
 - **HTTP resource adapter in the SDK (feature `resource-http`).**
   `nebula_sdk::integration::resource::http` sends HTTP calls as managed
   units: `HttpConfig` (https, or http for a loopback host; timeouts, byte
@@ -772,11 +779,11 @@ let admitted = recorded.readmit_against(fresh)?;
   header value or transport error reaches `Debug`, errors or logs.
 - **Streaming units in the managed call facade.** `nebula-resource`
   `call::{StreamOperation, StreamSink, Streaming, ConsumerGone}` and
-  `Managed::submit_streaming` run an operation that yields items as one
+  `Lease::submit_streaming` run an operation that yields items as one
   ordinary unit, through a bounded buffer; the unit's error follows the
   items once, and a dropped or cancelled consumer ends the operation. The
   SDK re-exports the family in `integration::resource`.
-  `ManagedRow::submit_streaming` runs one on a managed row: each attempt
+  `ResourceHandle::submit_streaming` runs one on a resource handle: each attempt
   waits for quota and the row gate with nothing checked out, and a consumer
   gone mid-stream releases the attempt's checkout and gate permit.
 - **SDK-only credentialed resources.** `integration::resource` re-exports
@@ -811,34 +818,35 @@ let admitted = recorded.readmit_against(fresh)?;
   rows stay on the interim row gate with a one-time warning; the default
   becomes strict before the API freeze.
 
-- **Managed call facade.** `ResourceGuard::into_managed` turns a lease into
-  `nebula_resource::call::Managed<R>` (no `Deref`): each provider call is an
-  `Operation` submitted as a lazy, runtime-owned `Unit`, and
-  `OpCx::attempt(Cost)` admits, books and grants one provider `Attempt`
+- **Managed call facade.** `ResourceGuard::into_lease` turns a lease into
+  `nebula_resource::call::Lease<R>` (no `Deref`): each provider call is an
+  `Operation` submitted as a lazy, runtime-owned `Submission`, and
+  `OperationCx::attempt(Cost)` admits, books and grants one provider `Attempt`
   against the lease (budget, lease admission, quota at the attempt's cost
-  raced against the lease closing and `Unit::cancel`, final admission). Each
-  attempt settles a `SentState`; a failed unit's `OpError` decides retry
+  raced against the lease closing and `Submission::cancel`, final admission).
+  Each attempt settles a `SentState`; a failed unit's `OperationError` decides retry
   safety from the unit's sent state and the operation's `Effect`
   (`Read` / `Idempotent` / `Write`). New `ErrorKind::OutcomeUnknown`
   (`RESOURCE:OUTCOME_UNKNOWN`, never retried) is what a retry-unsafe unit
-  becomes as a resource `Error`, with `ResourceEvent::UnitOutcomeUnknown`.
-  `PinSlots` pins credential slots once per unit; `#[derive(Resource)]` emits
-  it (with a generated `<Name>PinnedSlots` for credentialed structs), as does
+  becomes as a resource `Error`, with `ResourceEvent::OperationOutcomeUnknown`.
+  `PinSlots` (hidden from the rendered docs) pins credential slots once per
+  unit, read through `Attempt::credentials`; `#[derive(Resource)]` emits it
+  (with a generated `<Name>PinnedSlots` for credentialed structs), as does
   `no_credential_slots!`. A row used this way reports
   `RateLimitProfile::PerAttempt`, and its acquires only honour pauses.
   Metrics: `nebula_resource_call_attempts_total{outcome}` and
   `nebula_resource_call_units_settled_total{sent}`; a `nebula.resource.unit`
-  span per unit. `nebula-action` converts `OpError` into `ActionError`
+  span per unit. `nebula-action` converts `OperationError` into `ActionError`
   (backoff hint kept, unknown outcome fatal). The SDK re-exports the facade
   from `integration::resource`, not the prelude: it is not frozen. Interim
   defaults (5-minute unit deadline cap, one unit per exclusive lease and 64
   per shared one, no refund on cancel) are listed in the resource README.
 
 - **Strict per-attempt credential admission for managed calls.** On a
-  manager with a credential availability observer, every `OpCx::attempt` on
+  manager with a credential availability observer, every `OperationCx::attempt` on
   a credential-bound row reads the bound credentials' availability after
   the attempt's quota wait — outside every lock, join-next shared with
-  acquires, raced against the lease closing and `Unit::cancel` — and is
+  acquires, raced against the lease closing and `Submission::cancel` — and is
   registered under `Manager.admission`: taint and shutdown re-checked, the
   reading applied to the row (a block suspends it and closes its leases, an
   outage refuses `CheckUnavailable` without changing it, uninstalled
@@ -1082,9 +1090,9 @@ let admitted = recorded.readmit_against(fresh)?;
 - **The `Limited` closure family is deprecated since 0.21.0** in favour of
   the managed call facade: `ResourceLimiter::wrap`, `Limited` (`run`,
   `run_until`, `run_for`, `run_for_until`, `unlimited`) and `LimitedError`.
-  Migrate each call to an `Operation` on `ResourceGuard::into_managed`: `run`
-  becomes `OpCx::attempt(Cost::ONE)`, `run_for` becomes `Cost::keyed`,
-  `run_until` becomes `Unit::with_deadline`, a `Throttle` becomes
+  Migrate each call to an `Operation` on `ResourceGuard::into_lease`: `run`
+  becomes `OperationCx::attempt(Cost::ONE)`, `run_for` becomes `Cost::keyed`,
+  `run_until` becomes `Submission::with_deadline`, a `Throttle` becomes
   `Attempt::report(Verdict)`, and `unlimited` has no replacement by design.
   They still work and stay re-exported by the SDK until their removal before
   the API freeze; the resource README carries the migration table.
@@ -1254,19 +1262,20 @@ let admitted = recorded.readmit_against(fresh)?;
   `OperationLedgerError` gains `InvalidOccurrence`. `OperationMismatch` now
   also covers a differing provider key.
 
-- **A managed row is bound to the caller that built it.**
-  `Manager::managed_row` / `managed_row_for_identity` link the context's
+- **A resource handle is bound to the caller that built it.**
+  `Manager::handle` / `handle_for_identity` link the context's
   cancellation token: once it fires, a unit whose first attempt was not
   granted yet (queued for quota, the row gate, a strict read or its
   checkout, or not started) settles `Cancelled` / `NotSent`, and the grant
-  re-checks it; after the first grant it is ignored. `Unit::with_deadline`
-  still only shortens a unit's deadline. The derive's error for a
-  `#[resource]` field of another type now lists `ManagedRow<T>`.
+  re-checks it; after the first grant it is ignored.
+  `Submission::with_deadline` still only shortens a unit's deadline. The
+  derive's error for a `#[resource]` field of another type now lists
+  `ResourceHandle<T>`.
 - **A managed unit pins its credential slots at its first grant**, not when
   it starts: the first attempt runs on the binding its final admission (and,
   on a strict manager, its credential read) validated. The pin is bracketed
   by the slots' generations and retaken when a rotation races it; a refused
-  first attempt keeps no pin. `Attempt::slots()` is unchanged for every
+  first attempt keeps no pin. `Attempt::credentials()` is unchanged for every
   attempt of a unit. The SDK's `integration::resource` docs now lead with
   the managed call facade.
 

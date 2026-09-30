@@ -4,7 +4,7 @@
 
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
-    CredentialSlot, Effect, Error, Managed, OpError, Operation, Provider, Resident,
+    CredentialSlot, Effect, Error, Lease, Operation, OperationError, Provider, Resident,
     ResidentProvider, Resource, ResourceContext, ResourceKey, ResourceMetadataDraft,
     http::{
         AsWrite, Authorize, Delete, Get, HttpApi, HttpConfig, HttpTransport, Keyed, Patch, Post,
@@ -50,13 +50,13 @@ impl Provider for GitHub {
 impl ResidentProvider for GitHub {}
 
 impl HttpApi for GitHub {
-    fn authorize(slots: &Self::Pinned, auth: &mut Authorize<'_>) -> Result<(), OpError> {
+    fn authorize(slots: &Self::Pinned, auth: &mut Authorize<'_>) -> Result<(), OperationError> {
         auth.bearer(slots.token())
     }
 }
 
 /// What action code does with a managed lease.
-async fn action_code(github: &Managed<GitHub>) -> Result<(Value, usize), OpError> {
+async fn action_code(github: &Lease<GitHub>) -> Result<(Value, usize), OperationError> {
     let user: Value = github.submit(Request::get("/user")?).await?.json()?;
     let mut events = open_stream(github, Request::get("/events")?).await?;
     let mut streamed = 0;
@@ -74,7 +74,7 @@ where
     <Request<M> as Operation<GitHub>>::EFFECT
 }
 
-fn main() -> Result<(), OpError> {
+fn main() -> Result<(), OperationError> {
     let _action_code = action_code;
     assert_eq!(effect(&Request::get("/user")?), Effect::Read);
     assert_eq!(effect(&Request::put("/user")?), Effect::Idempotent);

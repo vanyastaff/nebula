@@ -1,10 +1,10 @@
 //! An SDK-only session provider: a pooled ledger whose transactions borrow
 //! their connection, and the action-side code that runs one through a
-//! managed row, all through `nebula_sdk::integration::resource`.
+//! resource handle, all through `nebula_sdk::integration::resource`.
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ManagedRow, OpError, PoolProvider, Pooled, Provider, ResourceContext,
-    ResourceKey, ResourceMetadataDraft, SessionBinding, SessionClosed, SessionEnd,
+    Cost, Effect, Error, OperationError, PoolProvider, Pooled, Provider, ResourceContext,
+    ResourceHandle, ResourceKey, ResourceMetadataDraft, SessionBinding, SessionClosed, SessionEnd,
     SessionProvider, SessionSpec, no_credential_slots, resource_key,
 };
 
@@ -59,7 +59,7 @@ impl PoolProvider for Ledger {}
 impl SessionProvider for Ledger {
     type Session<'c> = Tx<'c>;
 
-    async fn open<'c>(&'c self, conn: &'c mut Conn, _slots: &'c ()) -> Result<Tx<'c>, OpError> {
+    async fn open<'c>(&'c self, conn: &'c mut Conn, _slots: &'c ()) -> Result<Tx<'c>, OperationError> {
         Ok(Tx {
             conn,
             pending: Vec::new(),
@@ -77,7 +77,7 @@ impl SessionProvider for Ledger {
 }
 
 /// What action code does with a managed row: one transaction, booked once.
-async fn transfer(ledger: &ManagedRow<Ledger>) -> Result<u64, Error> {
+async fn transfer(ledger: &ResourceHandle<Ledger>) -> Result<u64, Error> {
     let rows = ledger
         .session(SessionSpec::new(Cost::ONE), |tx, cx| {
             let key = cx.resource_key().clone();

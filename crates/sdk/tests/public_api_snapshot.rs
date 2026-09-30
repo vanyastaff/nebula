@@ -148,13 +148,16 @@ fn sdk_resource_signatures() {
 }
 
 /// The managed call facade reaches the instance only through a granted
-/// attempt: neither the facade nor a unit derefs.
+/// attempt: neither the lease facade nor a submission derefs.
 #[test]
-fn managed_and_unit_have_no_deref() {
+fn lease_and_submission_have_no_deref() {
     let text = resource_signatures(&workspace());
     for (item, method) in [
-        ("nebula_resource::call::managed::Managed", "pub fn submit<"),
-        ("nebula_resource::call::managed::Unit", "pub fn cancel("),
+        ("nebula_resource::call::managed::Lease", "pub fn submit<"),
+        (
+            "nebula_resource::call::managed::Submission",
+            "pub fn cancel(",
+        ),
     ] {
         let lines = section(&text, item);
         assert!(
@@ -173,19 +176,19 @@ fn managed_and_unit_have_no_deref() {
 /// The per-unit checkout facade holds no instance: it neither derefs nor
 /// exposes one, and sessions borrow theirs only inside the body.
 #[test]
-fn managed_row_has_no_deref() {
+fn resource_handle_has_no_deref() {
     let text = resource_signatures(&workspace());
-    let lines = section(&text, "nebula_resource::call::row::ManagedRow");
+    let lines = section(&text, "nebula_resource::call::row::ResourceHandle");
     for method in ["pub fn submit<", "pub fn session<"] {
         assert!(
             lines.iter().any(|line| line.contains(method)),
-            "ManagedRow's `{method}` must be rendered: {lines:#?}"
+            "ResourceHandle's `{method}` must be rendered: {lines:#?}"
         );
     }
     for line in &lines {
         assert!(
             !(line.starts_with("impl") && line.contains("Deref")),
-            "ManagedRow must not deref: {line}"
+            "ResourceHandle must not deref: {line}"
         );
     }
 }

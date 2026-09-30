@@ -1063,7 +1063,7 @@ impl ResourceLimiter {
     #[must_use]
     #[deprecated(
         since = "0.21.0",
-        note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+        note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
     )]
     #[expect(
         deprecated,
@@ -2035,7 +2035,7 @@ where
 /// budgets.
 #[deprecated(
     since = "0.21.0",
-    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
 )]
 pub struct Limited<C, T = NoThrottle> {
     client: C,
@@ -2217,7 +2217,7 @@ impl<C, T> Limited<C, T> {
 #[derive(Debug)]
 #[deprecated(
     since = "0.21.0",
-    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
 )]
 pub enum LimitedError<E> {
     /// The limit refused the call; it never reached the provider.

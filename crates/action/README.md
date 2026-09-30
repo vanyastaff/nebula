@@ -248,7 +248,7 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
 - **[L2-§11.3]** Remote effects are not atomic with Nebula's database. The current
   `IdempotencyKey` / `check_and_mark` path is a local replay/dedup oracle only; it does not prove
   whether a provider accepted an effect. Durable compilation requires an explicit
-  `ActionEffectContract`: `NoExternalEffects` or `Remote(RemoteEffectDescriptor)`;
+  `ActionEffectContract`: `ReadOnly` or `Remote(RemoteEffectDescriptor)`;
   the default `Undeclared` is rejected. A remote stateless factory exposes
   `RemoteEffectFactory`; generic action dispatch cannot invoke it. Preparation produces
   bounded canonical request and destination-binding bytes without invocation authority.
@@ -268,9 +268,10 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   `ReadOnlyEffectQuery` capability. Known applied outputs are replayed from bounded
   persisted evidence; oversized or unsupported outputs become `OutputUnavailable`
   without another effect call.
-- **Derived no-effect actions.** `#[action(no_external_effects)]` is an
-  explicit author attestation and emits `ActionEffectContract::NoExternalEffects`.
-  Omitting the flag keeps the safe `Undeclared` default. The flag never grants
+- **Derived no-effect actions.** `#[action(read_only)]` is an
+  explicit author attestation and emits `ActionEffectContract::ReadOnly`
+  (serialized with its frozen `"NoExternalEffects"` tag, so recorded plans stay
+  readable). Omitting the flag keeps the safe `Undeclared` default. The flag never grants
   remote-effect authority: effecting adapters still use the execution-owned
   preparation, operation-ledger, invocation, and recovery protocol above.
 - **[L2-§13.4]** For `TriggerAction`-backed workflow starts, tests must cover the declared delivery contract (at-least-once): no silent drop, and duplicate delivery is handled via stable event identity and dedup/idempotency. Seam: `TriggerAction::start`, `TriggerEvent`.

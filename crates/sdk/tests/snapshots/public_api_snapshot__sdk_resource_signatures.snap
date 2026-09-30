@@ -49,8 +49,8 @@ exported as nebula_sdk::integration::resource::SessionClosed
 #[non_exhaustive]
 pub enum SessionClosed {
     Committed,
-    RolledBack { refused: Option<OpError> },
-    Unknown(OpError),
+    RolledBack { refused: Option<OperationError> },
+    Unknown(OperationError),
 }
 
 ## enum nebula_resource::call::session::SessionEnd
@@ -120,7 +120,7 @@ pub enum LimitScope {
 ## enum nebula_resource::rate_limit::LimitedError
 exported as nebula_sdk::integration::resource::LimitedError
 #[derive(Debug)]
-#[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)")]
+#[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)")]
 pub enum LimitedError<E> {
     Limit(Error),
     Call(E),
@@ -323,15 +323,15 @@ pub fn retry_after_from_header(value: &str) -> Option<Duration>;
 
 ## fn nebula_sdk::integration::resource::http::exchange::send [cfg(feature = "resource-http")]
 exported as nebula_sdk::integration::resource::http::send
-pub async fn send<R, M>(attempt: Attempt<'_, R>, request: &Request<M>) -> Result<Response, OpError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
+pub async fn send<R, M>(attempt: Attempt<'_, R>, request: &Request<M>) -> Result<Response, OperationError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
 
 ## fn nebula_sdk::integration::resource::http::stream::open_stream [cfg(feature = "resource-http")]
 exported as nebula_sdk::integration::resource::http::open_stream
-pub async fn open_stream<R, M>(managed: &Managed<R>, request: Request<M>) -> Result<ResponseStream, OpError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
+pub async fn open_stream<R, M>(lease: &Lease<R>, request: Request<M>) -> Result<ResponseStream, OperationError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
 
 ## fn nebula_sdk::integration::resource::http::stream::open_stream_until [cfg(feature = "resource-http")]
 exported as nebula_sdk::integration::resource::http::open_stream_until
-pub async fn open_stream_until<R, M>(managed: &Managed<R>, request: Request<M>, deadline: Instant) -> Result<ResponseStream, OpError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
+pub async fn open_stream_until<R, M>(lease: &Lease<R>, request: Request<M>, deadline: Instant) -> Result<ResponseStream, OperationError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
 
 ## macro-generated nebula_core::keys::ResourceKey
 exported as nebula_sdk::integration::resource::ResourceKey
@@ -448,13 +448,13 @@ impl Cost {
 }
 impl fmt::Debug for Cost
 
-## struct nebula_resource::call::error::OpError
-exported as nebula_sdk::integration::resource::OpError
+## struct nebula_resource::call::error::OperationError
+exported as nebula_sdk::integration::resource::OperationError
 #[derive(Debug, Clone)]
-pub struct OpError {
+pub struct OperationError {
     /* private fields */
 }
-impl OpError {
+impl OperationError {
     pub fn new(kind: ErrorKind, detail: &'static str) -> Self;
     pub fn kind(&self) -> &ErrorKind;
     pub fn sent(&self) -> SentState;
@@ -464,10 +464,10 @@ impl OpError {
     pub fn is_retryable(&self) -> bool;
     pub fn retry_after(&self) -> Option<Duration>;
 }
-impl From<ConsumerGone> for OpError
-impl From<Error> for OpError
-impl fmt::Display for OpError
-impl std::error::Error for OpError
+impl From<ConsumerGone> for OperationError
+impl From<Error> for OperationError
+impl fmt::Display for OperationError
+impl std::error::Error for OperationError
 
 ## struct nebula_resource::call::managed::Attempt
 exported as nebula_sdk::integration::resource::Attempt
@@ -476,7 +476,7 @@ pub struct Attempt<'a, R: Provider + PinSlots> {
 }
 impl<R: Provider + PinSlots> Attempt<'_, R> {
     pub fn instance(&self) -> &R::Instance;
-    pub fn slots(&self) -> &R::Pinned;
+    pub fn credentials(&self) -> &R::Pinned;
     pub async fn report(&self, verdict: Verdict);
     pub fn taint(&self);
     pub fn settle(self, sent: SentState);
@@ -484,73 +484,73 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
 impl<R: Provider + PinSlots> Drop for Attempt<'_, R>
 impl<R: Provider + PinSlots> fmt::Debug for Attempt<'_, R>
 
-## struct nebula_resource::call::managed::Managed
-exported as nebula_sdk::integration::resource::Managed
-pub struct Managed<R: Provider> {
+## struct nebula_resource::call::managed::Lease
+exported as nebula_sdk::integration::resource::Lease
+pub struct Lease<R: Provider> {
     /* private fields */
 }
-impl<R: Provider> Managed<R> {
+impl<R: Provider> Lease<R> {
     pub fn resource_key(&self) -> &ResourceKey;
     pub fn closing(&self) -> LeaseClosing;
     pub fn is_closing(&self) -> bool;
 }
-impl<R: Provider + PinSlots> Managed<R> {
-    pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output>;
+impl<R: Provider + PinSlots> Lease<R> {
+    pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output>;
 }
-impl<R: Provider + PinSlots> Managed<R> {
+impl<R: Provider + PinSlots> Lease<R> {
     pub fn submit_streaming<O: StreamOperation<R>>(&self, operation: O, capacity: NonZeroUsize) -> Streaming<O::Item, O::Output>;
 }
-impl<R: Provider + PinSlots> From<ResourceGuard<R>> for Managed<R>
-impl<R: Provider> Clone for Managed<R>
-impl<R: Provider> fmt::Debug for Managed<R>
+impl<R: Provider + PinSlots> From<ResourceGuard<R>> for Lease<R>
+impl<R: Provider> Clone for Lease<R>
+impl<R: Provider> fmt::Debug for Lease<R>
 
-## struct nebula_resource::call::managed::OpCx
-exported as nebula_sdk::integration::resource::OpCx
-pub struct OpCx<'u, R: Provider + PinSlots> {
+## struct nebula_resource::call::managed::OperationCx
+exported as nebula_sdk::integration::resource::OperationCx
+pub struct OperationCx<'u, R: Provider + PinSlots> {
     /* private fields */
 }
-impl<R: Provider + PinSlots> OpCx<'_, R> {
-    pub async fn attempt(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OpError>;
+impl<R: Provider + PinSlots> OperationCx<'_, R> {
+    pub async fn attempt(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OperationError>;
     pub fn deadline(&self) -> Instant;
     pub fn closing(&self) -> LeaseClosing;
     pub fn attempts(&self) -> u32;
-    pub fn operation_key(&self) -> Option<&OperationKey>;
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey>;
 }
-impl<R: Provider + PinSlots> fmt::Debug for OpCx<'_, R>
+impl<R: Provider + PinSlots> fmt::Debug for OperationCx<'_, R>
 
-## struct nebula_resource::call::managed::Unit
-exported as nebula_sdk::integration::resource::Unit
-pub struct Unit<T> {
+## struct nebula_resource::call::managed::Submission
+exported as nebula_sdk::integration::resource::Submission
+pub struct Submission<T> {
     /* private fields */
 }
-impl<T> Unit<T> {
+impl<T> Submission<T> {
     pub fn with_deadline(self, deadline: Instant) -> Self;
     pub fn cancel(&self);
 }
-impl<T> Future for Unit<T>
-impl<T> fmt::Debug for Unit<T>
+impl<T> Future for Submission<T>
+impl<T> fmt::Debug for Submission<T>
 
-## struct nebula_resource::call::row::ManagedRow
-exported as nebula_sdk::integration::resource::ManagedRow
-pub struct ManagedRow<R: Provider> {
+## struct nebula_resource::call::row::ResourceHandle
+exported as nebula_sdk::integration::resource::ResourceHandle
+pub struct ResourceHandle<R: Provider> {
     /* private fields */
 }
-impl<R: Provider> ManagedRow<R> {
+impl<R: Provider> ResourceHandle<R> {
     pub fn resource_key(&self) -> &ResourceKey;
 }
-impl<R: Provider + PinSlots> ManagedRow<R> {
-    pub fn submit<O: Operation<R>>(&self, operation: O) -> Unit<O::Output>;
-    pub fn submit_effect<O: EffectOperation<R>>(&self, operation: O) -> Unit<O::Output>;
+impl<R: Provider + PinSlots> ResourceHandle<R> {
+    pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output>;
+    pub fn submit_effect<O: EffectOperation<R>>(&self, operation: O) -> Submission<O::Output>;
 }
-impl<R> ManagedRow<R> where R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone {
-    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Unit<T> where T: Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
-    pub fn session_effect<T, F>(&self, spec: SessionSpec, contract: EffectContract, recovery: EffectRecovery, canonical_request: Vec<u8>, key_part: Option<IdempotencyKeyPart>, body: F) -> Unit<T> where T: Serialize + DeserializeOwned + Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
+impl<R> ResourceHandle<R> where R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone {
+    pub fn session<T, F>(&self, spec: SessionSpec, body: F) -> Submission<T> where T: Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
+    pub fn session_effect<T, F>(&self, spec: SessionSpec, contract: EffectContract, recovery: EffectRecovery, canonical_request: Vec<u8>, key_part: Option<IdempotencyKeyPart>, body: F) -> Submission<T> where T: Serialize + DeserializeOwned + Send + 'static, F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T> + Send + 'static;
 }
-impl<R: Provider + PinSlots> ManagedRow<R> {
+impl<R: Provider + PinSlots> ResourceHandle<R> {
     pub fn submit_streaming<O: StreamOperation<R>>(&self, operation: O, capacity: NonZeroUsize) -> Streaming<O::Item, O::Output>;
 }
-impl<R: Provider> Clone for ManagedRow<R>
-impl<R: Provider> fmt::Debug for ManagedRow<R>
+impl<R: Provider> Clone for ResourceHandle<R>
+impl<R: Provider> fmt::Debug for ResourceHandle<R>
 
 ## struct nebula_resource::call::session::SessionCx
 exported as nebula_sdk::integration::resource::SessionCx
@@ -558,7 +558,7 @@ pub struct SessionCx {
     /* private fields */
 }
 impl SessionCx {
-    pub fn operation_key(&self) -> Option<&OperationKey>;
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey>;
     pub fn deadline(&self) -> Instant;
     pub fn closing(&self) -> &LeaseClosing;
     pub fn resource_key(&self) -> &ResourceKey;
@@ -603,8 +603,8 @@ pub struct Streaming<T, O = ()> {
     /* private fields */
 }
 impl<T, O> Streaming<T, O> {
-    pub async fn next(&mut self) -> Option<Result<T, OpError>>;
-    pub async fn finish(mut self) -> Result<O, OpError>;
+    pub async fn next(&mut self) -> Option<Result<T, OperationError>>;
+    pub async fn finish(mut self) -> Result<O, OperationError>;
     pub fn cancel(&self);
     pub fn with_deadline(mut self, deadline: Instant) -> Self;
 }
@@ -658,7 +658,7 @@ impl Error {
     pub fn unknown_credential_slot(key: ResourceKey, slot_name: &str) -> Self;
     pub fn to_core_error(&self) -> nebula_core::CoreError;
 }
-impl From<OpError> for Error
+impl From<OperationError> for Error
 impl From<nebula_core::CoreError> for Error
 impl fmt::Display for Error
 impl nebula_error::Classify for Error
@@ -681,7 +681,7 @@ pub struct ResourceGuard<R: Provider> {
     /* private fields */
 }
 impl<R: Provider> ResourceGuard<R> {
-    pub fn into_managed(self) -> Managed<R> where R: PinSlots;
+    pub fn into_lease(self) -> Lease<R> where R: PinSlots;
     pub fn taint(&mut self);
     pub fn hold_duration(&self) -> Duration;
     pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter>;
@@ -700,7 +700,7 @@ impl<R: Provider> std::fmt::Debug for ResourceGuard<R>
 
 ## struct nebula_resource::rate_limit::Limited [interim]
 exported as nebula_sdk::integration::resource::Limited
-#[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)")]
+#[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)")]
 pub struct Limited<C, T = NoThrottle> {
     /* private fields */
 }
@@ -774,7 +774,7 @@ pub struct ResourceLimiter {
 impl ResourceLimiter {
     pub fn rate(&self) -> Option<Rate>;
     pub fn profile(&self) -> RateLimitProfile;
-    #[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)")] pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T>;
+    #[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)")] pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T>;
     pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error>;
     pub async fn ready_for(&self, dimension: &str, value: impl fmt::Display, deadline: Option<std::time::Instant>) -> Result<(), Error>;
     pub async fn penalize(&self, retry_after: Duration) -> Result<(), Error>;
@@ -1050,10 +1050,10 @@ pub struct Authorize<'a> {
     /* private fields */
 }
 impl<'a> Authorize<'a> {
-    pub fn bearer<S: BearerMaterial>(&mut self, guard: Option<&CredentialGuard<S>>) -> Result<(), OpError>;
-    pub fn basic(&mut self, guard: Option<&CredentialGuard<IdentityPassword>>) -> Result<(), OpError>;
-    pub fn api_key_header(&mut self, name: &'static str, guard: Option<&CredentialGuard<SecretToken>>) -> Result<(), OpError>;
-    pub fn none(&mut self) -> Result<(), OpError>;
+    pub fn bearer<S: BearerMaterial>(&mut self, guard: Option<&CredentialGuard<S>>) -> Result<(), OperationError>;
+    pub fn basic(&mut self, guard: Option<&CredentialGuard<IdentityPassword>>) -> Result<(), OperationError>;
+    pub fn api_key_header(&mut self, name: &'static str, guard: Option<&CredentialGuard<SecretToken>>) -> Result<(), OperationError>;
+    pub fn none(&mut self) -> Result<(), OperationError>;
 }
 impl std::fmt::Debug for Authorize<'_>
 
@@ -1113,37 +1113,37 @@ pub struct Request<M: Method> {
 }
 impl<M: Method> Request<M> {
     pub fn query(mut self, pairs: &[(&str, &str)]) -> Self;
-    pub fn header(mut self, name: &'static str, value: impl Into<String>) -> Result<Self, OpError>;
+    pub fn header(mut self, name: &'static str, value: impl Into<String>) -> Result<Self, OperationError>;
     pub fn body(mut self, body: impl Into<Bytes>) -> Self;
-    pub fn json<T: Serialize + ?Sized>(mut self, value: &T) -> Result<Self, OpError>;
+    pub fn json<T: Serialize + ?Sized>(mut self, value: &T) -> Result<Self, OperationError>;
     pub fn cost(mut self, cost: Cost) -> Self;
     pub fn max_attempts(mut self, attempts: NonZeroU32) -> Self;
     pub fn accept_status(mut self, status: StatusCode) -> Self;
     pub fn max_bytes(mut self, bytes: u64) -> Self;
 }
 impl Request<Get> {
-    pub fn get(path: &str) -> Result<Self, OpError>;
+    pub fn get(path: &str) -> Result<Self, OperationError>;
 }
 impl Request<Head> {
-    pub fn head(path: &str) -> Result<Self, OpError>;
+    pub fn head(path: &str) -> Result<Self, OperationError>;
 }
 impl Request<Options> {
-    pub fn options(path: &str) -> Result<Self, OpError>;
+    pub fn options(path: &str) -> Result<Self, OperationError>;
 }
 impl Request<Post> {
-    pub fn post(path: &str) -> Result<Self, OpError>;
+    pub fn post(path: &str) -> Result<Self, OperationError>;
     pub fn idempotency_key(self, key: impl Into<String>) -> Request<Keyed<Post>>;
 }
 impl Request<Patch> {
-    pub fn patch(path: &str) -> Result<Self, OpError>;
+    pub fn patch(path: &str) -> Result<Self, OperationError>;
     pub fn idempotency_key(self, key: impl Into<String>) -> Request<Keyed<Patch>>;
 }
 impl Request<Put> {
-    pub fn put(path: &str) -> Result<Self, OpError>;
+    pub fn put(path: &str) -> Result<Self, OperationError>;
     pub fn as_write(self) -> Request<AsWrite<Put>>;
 }
 impl Request<Delete> {
-    pub fn delete(path: &str) -> Result<Self, OpError>;
+    pub fn delete(path: &str) -> Result<Self, OperationError>;
     pub fn as_write(self) -> Request<AsWrite<Delete>>;
 }
 impl<M: Method> fmt::Debug for Request<M>
@@ -1159,7 +1159,7 @@ impl Response {
     pub fn headers(&self) -> &HeaderMap;
     pub fn body(&self) -> &Bytes;
     pub fn into_body(self) -> Bytes;
-    pub fn json<T: DeserializeOwned>(&self) -> Result<T, OpError>;
+    pub fn json<T: DeserializeOwned>(&self) -> Result<T, OperationError>;
 }
 impl fmt::Debug for Response
 
@@ -1171,7 +1171,7 @@ pub struct ResponseStream {
 impl ResponseStream {
     pub fn status(&self) -> StatusCode;
     pub fn headers(&self) -> &HeaderMap;
-    pub async fn next(&mut self) -> Option<Result<Bytes, OpError>>;
+    pub async fn next(&mut self) -> Option<Result<Bytes, OperationError>>;
     pub fn cancel(&self);
 }
 impl fmt::Debug for ResponseStream
@@ -1182,14 +1182,14 @@ pub trait Operation<R: Provider + PinSlots>: Send + 'static {
     type Output: Send + 'static;
     const EFFECT: Effect = Effect::Write;
     fn max_attempts(&self) -> NonZeroU32 { .. }
-    fn run(self, cx: &mut OpCx<'_, R>) -> impl Future<Output = Result<Self::Output, OpError>> + Send;
+    fn run(self, cx: &mut OperationCx<'_, R>) -> impl Future<Output = Result<Self::Output, OperationError>> + Send;
 }
 
-## trait nebula_resource::call::pin::PinSlots
+## trait nebula_resource::call::pin::PinSlots [hidden]
 exported as nebula_sdk::integration::resource::PinSlots
 pub trait PinSlots: HasCredentialSlots {
-    type Pinned: Send + Sync + 'static;
-    fn pin_slots(&self) -> Self::Pinned;
+    type Pinned: Send + Sync + 'static; [hidden]
+    fn pin_slots(&self) -> Self::Pinned; [hidden]
 }
 
 ## trait nebula_resource::call::session::SessionProvider
@@ -1197,7 +1197,7 @@ exported as nebula_sdk::integration::resource::SessionProvider
 pub trait SessionProvider: Provider + PinSlots {
     type Session<'c>: Send where Self: 'c;
     const BINDING: SessionBinding = SessionBinding::Connection;
-    fn open<'c>(&'c self, instance: &'c mut Self::Instance, slots: &'c Self::Pinned) -> impl Future<Output = Result<Self::Session<'c>, OpError>> + Send + 'c;
+    fn open<'c>(&'c self, instance: &'c mut Self::Instance, slots: &'c Self::Pinned) -> impl Future<Output = Result<Self::Session<'c>, OperationError>> + Send + 'c;
     fn close<'c>(&'c self, session: Self::Session<'c>, end: SessionEnd) -> impl Future<Output = SessionClosed> + Send + 'c;
 }
 
@@ -1208,7 +1208,7 @@ pub trait StreamOperation<R: Provider + PinSlots>: Send + 'static {
     type Output: Send + 'static;
     const EFFECT: Effect = Effect::Write;
     fn max_attempts(&self) -> NonZeroU32 { .. }
-    fn run(self, cx: &mut OpCx<'_, R>, sink: StreamSink<Self::Item>) -> impl Future<Output = Result<Self::Output, OpError>> + Send;
+    fn run(self, cx: &mut OperationCx<'_, R>, sink: StreamSink<Self::Item>) -> impl Future<Output = Result<Self::Output, OperationError>> + Send;
 }
 
 ## trait nebula_resource::rate_limit::Throttle
@@ -1316,7 +1316,7 @@ pub trait BearerMaterial: sealed::Sealed + Send + Sync + 'static {
 ## trait nebula_sdk::integration::resource::http::auth::HttpApi [cfg(feature = "resource-http")]
 exported as nebula_sdk::integration::resource::http::HttpApi
 pub trait HttpApi: Provider + PinSlots where Self::Instance: AsRef<HttpTransport> {
-    fn authorize(slots: &Self::Pinned, auth: &mut Authorize<'_>) -> Result<(), OpError>;
+    fn authorize(slots: &Self::Pinned, auth: &mut Authorize<'_>) -> Result<(), OperationError>;
 }
 
 ## trait nebula_sdk::integration::resource::http::request::Method [cfg(feature = "resource-http")]
@@ -1328,7 +1328,7 @@ pub trait Method: sealed::Sealed + Send + 'static {
 
 ## type nebula_resource::call::session::SessionFuture
 exported as nebula_sdk::integration::resource::SessionFuture
-pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> + Send + 's>>;
+pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OperationError>> + Send + 's>>;
 
 ## type nebula_resource::slot::CredentialSlot
 exported as nebula_sdk::integration::resource::CredentialSlot
