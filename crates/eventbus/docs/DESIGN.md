@@ -5,7 +5,7 @@
 | **Status** | Stable — transport-only leaf primitive |
 | **Layer** | Cross-cutting (leaf; **ноль** `nebula-*` зависимостей) |
 | **Redesign role** | **Не затронут** post-0092 — стабильный фундамент. Служит каналом fan-out (`CredentialEvent`), но сам не содержит ни одного доменного типа. |
-| **Related** | ADR-0067 (rotation/revoke fan-out wired через эту шину), `project_eventbus_status`, issue #262 (атрибуция Lagged) |
+| **Related** | ADR-0067 (rotation/revoke fan-out wired через эту шину), issue #262 (атрибуция Lagged) |
 
 ---
 

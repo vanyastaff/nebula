@@ -925,8 +925,8 @@ pub(crate) async fn build_auth_backend(
 ///
 /// `Postgres` requires the `nebula-api/postgres` cargo feature **and** a
 /// reachable `DATABASE_URL`; either missing component fails closed with
-/// [`TransportInitError::IdempotencyBackendUnavailable`] (silent
-/// fallback to memory is rejected per `feedback_no_shims.md`).
+/// [`TransportInitError::IdempotencyBackendUnavailable`] (a silent
+/// fallback to memory is rejected: it would mask a misconfigured deployment).
 pub(crate) async fn build_idempotency_store(
     api_config: &ApiConfig,
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
