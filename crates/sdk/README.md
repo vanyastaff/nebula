@@ -239,9 +239,16 @@ the facade is not frozen) re-exports `Lease`, `Operation`, `OperationCx`,
 `Attempt`, `Submission`, `Cost`, `Effect`, `SentState`, `OperationError` and
 `PinSlots` (hidden from the rendered docs; the derive emits it).
 `ResourceGuard::into_lease()` turns a lease into a `Lease` facade without
-`Deref`; provider calls are `Operation`s whose attempts are admitted and
-booked per `Cost`, and a failed unit's `OperationError` says whether a retry
-is safe. An `Operation` declares a `KEY` (unique within the resource) and is
+`Deref`; provider calls are `Operation`s that call the provider through
+`OperationCx::call(cost, async move |client, credentials| ..)`, each attempt
+admitted and booked per `Cost`. The closure classifies its answer once with
+an `OperationError` constructor (`throttled`, `throttled_key`, `unreachable`,
+`interrupted`, `rejected`, …) and the runtime derives the attempt's sent
+state, the rate limit's verdict, a journal's record and any re-attempt
+(within `max_attempts`) from it; a failed unit's `OperationError` says
+whether a retry is safe, and an attempt cannot be settled by hand
+(`attempt_settle_private`; `resource_call_classify` shows a classified call
+with the SDK alone). An `Operation` declares a `KEY` (unique within the resource) and is
 `Serialize + DeserializeOwned` with a serializable `Output` — with the SDK
 alone, `#[derive(Serialize, Deserialize)]` from the prelude plus
 `#[serde(crate = "nebula_sdk::serde")]` — so an execution journal can record
@@ -258,7 +265,8 @@ and `CredentialGuard`, and `integration::credential` (and the prelude)
 `BearerTokenCredential`, so a `#[derive(Resource)]` struct with
 `#[credential(key = "token")] token: CredentialSlot<BearerTokenCredential>`
 compiles against the SDK alone (`resource_credentialed` fixture). A unit reads
-the slot only through its pinned snapshot, `attempt.credentials().token()`.
+the slot only through its pinned snapshot, the `credentials` a call hands its
+closure (`credentials.token()`).
 
 **HTTP resource adapter (feature `resource-http`):**
 `nebula_sdk::integration::resource::http` (not the prelude) turns HTTP calls
@@ -276,8 +284,12 @@ query, headers, base64 bodies; cost and attempt budget are policy and are
 not serialized). A keyed request's `idempotency_key(part)` is the developer
 part: the `Idempotency-Key` header carries the key the unit derives from it
 (the journal's, or a local base64url SHA-256 of resource, operation, version
-and part), not the part itself. `send` classifies one attempt's answer, and
-`open_stream` returns a `ResponseStream` for a chunked body. No URL, header
+and part), not the part itself. Every exchange classifies its answer once
+(connect failure `unreachable`, lost connection or `5xx` `interrupted`, `429`
+`throttled`, other `4xx` `rejected`); a `Request` runs through `cx.call`, so
+it is re-attempted only as that classification allows and a `Write` that may
+have been sent never is. `send` runs one exchange on an attempt a custom
+operation holds and finishes it, and `open_stream` returns a `ResponseStream` for a chunked body. No URL, header
 value or transport error reaches `Debug`, errors or logs. The SDK-only fixture
 compiles a GitHub-style resource against it (`resource_http`) and proves the
 raw client is private (`http_no_raw_client`); `tests/resource_http.rs` drives
