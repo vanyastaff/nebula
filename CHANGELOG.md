@@ -527,6 +527,21 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **An effect that was provably never sent no longer spends its invocation
+  budget or expires into `OutcomeUnknown`.** The operation ledger counted every
+  grant against `max_invocations` and checked the recovery and stable-key
+  windows on every re-grant, so a budget-one `Write` became `OutcomeUnknown`
+  after a single local refusal recorded as `BeforeBoundary`, and a slot that
+  never crossed expired although nothing had reached the provider. Now only
+  calls that may have crossed spend the budget, and the windows bind only once
+  a call may have crossed; a never-crossed slot stays grantable at any age,
+  bounded by a total of `OperationProtocolRecord::GRANT_CEILING` (10 000)
+  grants whose refusal is `RecoveryExhausted` with no state change. Applies to
+  every ledger backend and to the remote-effect driver, whose first possibly
+  crossing call now takes its deadline from its own grant. Remaining
+  limitation: after a late first crossing the windows are still measured from
+  preparation, so such a slot fails closed early.
+
 - **A resource lease is no longer handed out after a revoke that straddled
   its create.** A resident or bounded acquire whose create was in flight when
   `taint_slot`/`revoke_slot` returned now fails with `Revoked` (or `Cancelled`
@@ -1245,6 +1260,18 @@ let admitted = recorded.readmit_against(fresh)?;
   classifications map to wire code `other`.
 
 ### Changed
+
+- **`OperationProtocolRecord` counts not-crossed calls.** The record gains
+  `not_crossed` (with `not_crossed()`, `crossed_invocations()`, the builder
+  setter `not_crossed`, and the constant `GRANT_CEILING`). It lives in the
+  existing protocol JSON payload, so no migration is needed: it is omitted when
+  zero, keeping such records byte-identical, and a record written before it
+  existed decodes with one not-crossed call when its latest disposition was
+  `BeforeBoundary`, zero otherwise. `validate()` now requires
+  `not_crossed <= invocations <= GRANT_CEILING`, bounds only the
+  possibly-crossed calls by `max_invocations`, and rejects a `BeforeBoundary`
+  disposition without a not-crossed call or an outstanding/ambiguous call
+  counted as not crossed.
 
 - **Breaking (workspace-internal): `EffectSlotBinding` gains `provider_key`.**
   The public-field struct now carries `provider_key:

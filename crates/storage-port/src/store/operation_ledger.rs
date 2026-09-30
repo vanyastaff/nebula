@@ -112,8 +112,15 @@ pub trait OperationLedger: Send + Sync + fmt::Debug {
     /// *different* terminal outcome exists, and
     /// [`OperationLedgerError::SlotUnprepared`] when nothing was prepared.
     /// Stale revisions or call identities return [`OperationLedgerError::ProtocolConflict`].
-    /// Exhausted effect grants record `OutcomeUnknown` without a permit;
-    /// exhausted read-only queries return [`OperationLedgerError::RecoveryExhausted`].
+    /// Exhausted effect grants record `OutcomeUnknown` without a permit. Only
+    /// calls that may have crossed spend the invocation budget, and the
+    /// recovery and stable-key windows bind only after the first such call, so
+    /// a slot that never crossed is granted at any age.
+    /// A grant beyond [`OperationProtocolRecord::GRANT_CEILING`] total permits
+    /// and exhausted read-only queries return
+    /// [`OperationLedgerError::RecoveryExhausted`] with no state change.
+    ///
+    /// [`OperationProtocolRecord::GRANT_CEILING`]: crate::dto::OperationProtocolRecord::GRANT_CEILING
     /// Commit uncertainty returns [`OperationLedgerError::AcknowledgementUnknown`].
     async fn advance(
         &self,

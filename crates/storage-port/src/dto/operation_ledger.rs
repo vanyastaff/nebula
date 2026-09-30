@@ -725,7 +725,10 @@ pub enum OperationLedgerError {
     /// Protocol revision, outstanding call or disposition no longer matches.
     #[error("operation protocol transition is not permitted")]
     ProtocolConflict,
-    /// Recovery count or backend-clock deadline has been exhausted.
+    /// Recovery count or backend-clock deadline has been exhausted: a
+    /// read-only query beyond its budget or window, or an invocation grant
+    /// beyond the slot's total grant ceiling. Nothing was authorized and no
+    /// state changed, so the refused call is known not sent.
     #[error("operation recovery budget is exhausted")]
     RecoveryExhausted,
     /// Attempt provenance exceeds the portable durable integer range.

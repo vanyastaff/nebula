@@ -75,7 +75,10 @@ does **not** implement any backend.
   its audit evidence; it remains a separate capability from ordinary effect calls.
 - **Bounded effect protocol.** `OperationLedger::advance` grants explicit invocation
   and read-only query attempts under persisted policy limits and backend-clock
-  deadlines. Lost grant acknowledgements never reconstruct egress authority from
+  deadlines. Only calls that may have crossed the provider boundary spend the
+  invocation budget or start the recovery and stable-key windows; calls proven
+  `BeforeBoundary` are counted separately (`not_crossed`) and bounded only by
+  `OperationProtocolRecord::GRANT_CEILING`. Lost grant acknowledgements never reconstruct egress authority from
   reads. Exact outcome bytes, integrity digest, terminal state and owner journal
   commit atomically. Legacy ledger rows remain readable without invocation authority.
 - **Many effects per node.** A node may own many slots, one per occurrence label

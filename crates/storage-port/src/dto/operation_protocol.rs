@@ -116,7 +116,8 @@ impl PreparedEffectPolicy {
     pub const fn capability(&self) -> DestinationCapability {
         self.capability
     }
-    /// Total permitted effect calls, including the first call.
+    /// Total permitted effect calls that may cross the provider boundary,
+    /// including the first; calls proven not to cross are not counted.
     pub const fn max_invocations(&self) -> u32 {
         self.max_invocations
     }
@@ -135,7 +136,8 @@ impl PreparedEffectPolicy {
 }
 
 impl PreparedEffectPolicyBuilder {
-    /// Set the total permitted provider invocations, including the first call.
+    /// Set the total permitted provider invocations that may cross the
+    /// boundary, including the first call.
     pub const fn maximum_invocations(mut self, maximum: u32) -> Self {
         self.max_invocations = Some(maximum);
         self
