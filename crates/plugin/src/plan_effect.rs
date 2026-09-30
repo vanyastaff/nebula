@@ -50,12 +50,9 @@ impl RecordedActionEffectV1 {
     pub(crate) fn project(contract: &ActionEffectContract) -> Result<Self, InvalidEffectContract> {
         match contract {
             ActionEffectContract::ReadOnly => Ok(Self::ReadOnly),
-            ActionEffectContract::Journaled(protocol) => match protocol {
-                JournalProtocol::V1 => Ok(Self::Journaled {
-                    protocol_version: 1,
-                }),
-                _ => Err(InvalidEffectContract),
-            },
+            ActionEffectContract::Journaled(JournalProtocol::V1) => Ok(Self::Journaled {
+                protocol_version: 1,
+            }),
             ActionEffectContract::Remote(descriptor) => {
                 descriptor.validate().map_err(|_| InvalidEffectContract)?;
                 let policy = descriptor.policy();
