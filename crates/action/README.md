@@ -247,9 +247,13 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
 - **[L1-§3.5]** The action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`) is the typed dispatch surface. Adding a new trait requires a canon revision (§0.2). The engine routes by trait, not by `ActionKind` — that field is metadata for UI, validation, and audit only.
 - **[L2-§11.3]** Remote effects are not atomic with Nebula's database. The current
   `IdempotencyKey` / `check_and_mark` path is a local replay/dedup oracle only; it does not prove
-  whether a provider accepted an effect. Durable compilation requires an explicit
-  `ActionEffectContract`: `ReadOnly` or `Remote(RemoteEffectDescriptor)`;
-  the default `Undeclared` is rejected. A remote stateless factory exposes
+  whether a provider accepted an effect. Every compiled action carries an
+  `ActionEffectContract`: the default `Journaled(JournalProtocol::V1)`, `ReadOnly`, or
+  `Remote(RemoteEffectDescriptor)`. `Journaled` covers only effects routed through
+  resource handles; a side channel the action opens itself is invisible to the engine
+  and is never journaled. Until the engine effect journal lands, a `Journaled` action
+  runs with read-only handle authority: reads run and writes through handles are
+  refused before any provider call. A remote stateless factory exposes
   `RemoteEffectFactory`; generic action dispatch cannot invoke it. Preparation produces
   bounded canonical request and destination-binding bytes without invocation authority.
   Only the execution owner issues an `EffectInvocationContext` after the ledger
@@ -271,7 +275,9 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
 - **Derived no-effect actions.** `#[action(read_only)]` is an
   explicit author attestation and emits `ActionEffectContract::ReadOnly`
   (serialized with its frozen `"NoExternalEffects"` tag, so recorded plans stay
-  readable). Omitting the flag keeps the safe `Undeclared` default. The flag never grants
+  readable). Omitting the flag keeps the `Journaled(JournalProtocol::V1)` default
+  (serialized as `{"Journaled":"V1"}`); the old `Undeclared` tag was removed and no
+  longer decodes. The flag never grants
   remote-effect authority: effecting adapters still use the execution-owned
   preparation, operation-ledger, invocation, and recovery protocol above.
 - **[L2-§13.4]** For `TriggerAction`-backed workflow starts, tests must cover the declared delivery contract (at-least-once): no silent drop, and duplicate delivery is handled via stable event identity and dedup/idempotency. Seam: `TriggerAction::start`, `TriggerEvent`.

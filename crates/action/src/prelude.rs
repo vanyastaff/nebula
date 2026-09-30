@@ -34,7 +34,7 @@ pub use crate::{
     effect::{
         ActionEffectContract, EffectContractError, EffectFailureCode, EffectInvocationContext,
         EffectInvocationOutcome, EffectPreparationContext, EffectPreparationError,
-        EffectQueryContext, EffectReconciliationOutcome, PreparedEffectAdapter,
+        EffectQueryContext, EffectReconciliationOutcome, JournalProtocol, PreparedEffectAdapter,
         PreparedRemoteEffect, ReadOnlyEffectQuery, RemoteDestinationGuarantee, RemoteEffectAction,
         RemoteEffectDescriptor, RemoteEffectFactory, RemoteEffectPolicy, RemoteEffectPolicyError,
         StableKeyGuarantee,

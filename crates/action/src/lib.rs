@@ -121,9 +121,10 @@ pub use control::{ControlAction, ControlActionAdapter, ControlOutcome};
 pub use effect::{
     ActionEffectContract, EffectContractError, EffectFailureCode, EffectInvocationContext,
     EffectInvocationOutcome, EffectPreparationContext, EffectPreparationError, EffectQueryContext,
-    EffectReconciliationOutcome, PreparedEffectAdapter, PreparedRemoteEffect, ReadOnlyEffectQuery,
-    RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDescriptor, RemoteEffectFactory,
-    RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError, StableKeyGuarantee,
+    EffectReconciliationOutcome, JournalProtocol, PreparedEffectAdapter, PreparedRemoteEffect,
+    ReadOnlyEffectQuery, RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDescriptor,
+    RemoteEffectFactory, RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError,
+    StableKeyGuarantee,
 };
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,

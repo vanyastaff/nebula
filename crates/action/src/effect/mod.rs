@@ -12,13 +12,21 @@ pub use adapter::{
     PreparedRemoteEffect, ReadOnlyEffectQuery, RemoteEffectAction, RemoteEffectFactory,
 };
 
-/// Explicit effect declaration retained in the exact compiled action contract.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Effect declaration retained in the exact compiled action contract.
+///
+/// The default is [`Journaled`](Self::Journaled) at [`JournalProtocol::V1`]:
+/// an action that declares nothing may perform effects, but only through
+/// resource handles. Only handle-routed effects are journaled; a side channel
+/// the action opens itself is invisible to the engine. Until the engine effect
+/// journal lands, a journaled action runs with read-only handle authority:
+/// reads run and writes through handles are refused before any provider call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ActionEffectContract {
-    /// No trusted declaration exists; durable admission must reject this action.
-    #[default]
-    Undeclared,
+    /// Effects are routed through resource handles and journaled by the engine.
+    ///
+    /// Serialized as `{"Journaled":"V1"}`.
+    Journaled(JournalProtocol),
     /// The adapter performs no external business effect, including during construction.
     ///
     /// Serialized as `"NoExternalEffects"`, its name before 0.22.0, so plan
@@ -27,6 +35,20 @@ pub enum ActionEffectContract {
     ReadOnly,
     /// Provider effects require the declared preparation and recovery protocol.
     Remote(Box<RemoteEffectDescriptor>),
+}
+
+impl Default for ActionEffectContract {
+    fn default() -> Self {
+        Self::Journaled(JournalProtocol::V1)
+    }
+}
+
+/// Version of the engine protocol that journals handle-routed effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum JournalProtocol {
+    /// First journal protocol: one journal slot per handle-routed occurrence.
+    V1,
 }
 
 /// Provider guarantee available to recover one remote business effect.
@@ -429,6 +451,27 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ActionEffectContract::ReadOnly).unwrap(),
             frozen
+        );
+    }
+
+    #[test]
+    fn the_default_contract_is_journaled_v1_and_round_trips() {
+        let contract = ActionEffectContract::default();
+        assert_eq!(
+            contract,
+            ActionEffectContract::Journaled(JournalProtocol::V1)
+        );
+        let wire = serde_json::to_value(&contract).unwrap();
+        assert_eq!(wire, serde_json::json!({ "Journaled": "V1" }));
+        let decoded: ActionEffectContract = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded, contract);
+    }
+
+    #[test]
+    fn the_removed_undeclared_tag_fails_to_decode() {
+        assert!(
+            serde_json::from_value::<ActionEffectContract>(serde_json::json!("Undeclared"))
+                .is_err()
         );
     }
 

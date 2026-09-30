@@ -72,15 +72,15 @@ impl StatelessAction for ReadOnlyAction {
 }
 
 #[test]
-fn effect_contract_requires_an_explicit_author_attestation() {
-    let undeclared = nebula_action::GenericStatelessFactory::<NoCredAction>::new()
-        .expect("valid undeclared definition");
+fn effect_contract_defaults_to_journaled_unless_read_only_is_attested() {
+    let journaled = nebula_action::GenericStatelessFactory::<NoCredAction>::new()
+        .expect("valid default-journaled definition");
     let declared = nebula_action::GenericStatelessFactory::<ReadOnlyAction>::new()
         .expect("valid no-effect definition");
 
     assert_eq!(
-        undeclared.metadata().effect_contract(),
-        &ActionEffectContract::Undeclared
+        journaled.metadata().effect_contract(),
+        &ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1)
     );
     assert_eq!(
         declared.metadata().effect_contract(),
