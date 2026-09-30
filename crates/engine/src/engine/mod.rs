@@ -262,6 +262,15 @@ enum NodeFactoryDispatch {
     },
 }
 
+impl NodeFactoryDispatch {
+    /// The factory this node dispatches, whichever path resolved it.
+    fn factory(&self) -> &Arc<dyn nebula_action::ActionFactory> {
+        match self {
+            Self::DirectRegistry { factory } | Self::Frozen { factory, .. } => factory,
+        }
+    }
+}
+
 /// The workflow execution engine.
 ///
 /// Orchestrates graph execution with bounded concurrency, predecessor input
@@ -3132,6 +3141,17 @@ impl NodeTask {
                 );
             },
         };
+        // A journaled action reaches resources through managed row facades
+        // only: until the engine effect journal lands, the engine accessor
+        // serves them read-only, and raw leases — which would bypass the
+        // journal — are refused before any lookup.
+        let resources = match self.factory_dispatch.factory().metadata().effect_contract() {
+            nebula_action::effect::ActionEffectContract::Journaled(_) => Arc::new(
+                crate::resource_accessor::JournaledResourceAccessor::new(self.resources.clone()),
+            )
+                as Arc<dyn ResourceAccessor>,
+            _ => self.resources.clone(),
+        };
         let action_ctx = nebula_action::ActionRuntimeContext::new(
             base,
             self.execution_id,
@@ -3139,7 +3159,7 @@ impl NodeTask {
             self.workflow_id,
         )
         .with_credentials(self.credentials.clone())
-        .with_resources(self.resources.clone())
+        .with_resources(resources)
         .with_support_inputs(nebula_action::SupportInputs::new(self.support_inputs));
 
         // Acquire rate limit permit if configured. If the limiter rejects the
@@ -3200,9 +3220,10 @@ impl NodeTask {
                             .map_err(EngineError::Runtime)
                     },
                     // Interim: read-only handle authority until the engine
-                    // effect journal (PR-5b). The resource accessor hands out
-                    // read-only handles, so reads run and writes through
-                    // handles are refused as NotSent before any provider call.
+                    // effect journal (PR-5b). The context's accessor hands
+                    // out read-only handles and refuses raw leases, so reads
+                    // run and writes through handles are refused as NotSent
+                    // before any provider call.
                     ActionEffectContract::Journaled(_)
                         if factory.remote_effect_factory().is_none() =>
                     {

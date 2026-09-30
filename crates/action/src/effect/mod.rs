@@ -20,6 +20,10 @@ pub use adapter::{
 /// the action opens itself is invisible to the engine. Until the engine effect
 /// journal lands, a journaled action runs with read-only handle authority:
 /// reads run and writes through handles are refused before any provider call.
+/// A raw lease (a `ResourceGuard<R>` slot or `acquire_resource_by_id`) is
+/// refused outright, since it would bypass the journal, and only the engine's
+/// node dispatch runs a journaled action: the generic runtime entry points
+/// cannot vouch for a caller-supplied resource accessor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ActionEffectContract {

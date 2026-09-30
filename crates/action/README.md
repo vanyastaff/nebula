@@ -252,8 +252,10 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   `Remote(RemoteEffectDescriptor)`. `Journaled` covers only effects routed through
   resource handles; a side channel the action opens itself is invisible to the engine
   and is never journaled. Until the engine effect journal lands, a `Journaled` action
-  runs with read-only handle authority: reads run and writes through handles are
-  refused before any provider call. A remote stateless factory exposes
+  runs with read-only handle authority on the engine's node dispatch only: reads run,
+  writes through handles are refused before any provider call, and raw leases
+  (`ResourceGuard<R>` slots, `acquire_resource_by_id`) are refused because they would
+  bypass the journal. A remote stateless factory exposes
   `RemoteEffectFactory`; generic action dispatch cannot invoke it. Preparation produces
   bounded canonical request and destination-binding bytes without invocation authority.
   Only the execution owner issues an `EffectInvocationContext` after the ledger

@@ -191,6 +191,82 @@ impl ResourceAccessor for EngineResourceAccessor {
     }
 }
 
+/// The refusal detail of a raw lease requested by a journaled action.
+const RAW_LEASE_REFUSED: &str = "a journaled action cannot check out a raw resource lease: \
+     a lease bypasses the effect journal; hold a ResourceHandle<R> field instead";
+
+/// The resource authority of an action whose admitted contract is
+/// [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled).
+///
+/// Handle-routed effects are the only effects the engine can journal, so
+/// raw leases — [`acquire_any`](ResourceAccessor::acquire_any) and
+/// [`try_acquire_any`](ResourceAccessor::try_acquire_any), which back
+/// `ResourceGuard<R>` slots and `acquire_resource_by_id` — are refused
+/// before any lookup with a non-retryable
+/// [`CoreError::ResourceUnavailable`]: a lease derefs to the provider
+/// client, so any call made through it would be an unjournaled effect. A
+/// refused optional slot fails rather than reading as absent. Managed row
+/// facades are forwarded to the engine-built accessor, which serves them
+/// read-only until the engine effect journal lands.
+pub(crate) struct JournaledResourceAccessor {
+    inner: Arc<dyn ResourceAccessor>,
+}
+
+impl JournaledResourceAccessor {
+    /// Restricts `inner` — an accessor the engine built, whose managed row
+    /// facades are read-only — to handle-routed access.
+    pub(crate) fn new(inner: Arc<dyn ResourceAccessor>) -> Self {
+        Self { inner }
+    }
+
+    fn raw_lease_refused(key: &ResourceKey) -> CoreError {
+        CoreError::resource_unavailable(key.as_str(), RAW_LEASE_REFUSED, false, None)
+    }
+}
+
+impl fmt::Debug for JournaledResourceAccessor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JournaledResourceAccessor")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResourceAccessor for JournaledResourceAccessor {
+    fn has(&self, key: &ResourceKey) -> bool {
+        self.inner.has(key)
+    }
+
+    fn acquire_any(
+        &self,
+        key: &ResourceKey,
+    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
+        let refused = Self::raw_lease_refused(key);
+        Box::pin(async move { Err(refused) })
+    }
+
+    fn try_acquire_any(
+        &self,
+        key: &ResourceKey,
+    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
+        let refused = Self::raw_lease_refused(key);
+        Box::pin(async move { Err(refused) })
+    }
+
+    fn resource_handle_any(
+        &self,
+        key: &ResourceKey,
+    ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
+        self.inner.resource_handle_any(key)
+    }
+
+    fn try_resource_handle_any(
+        &self,
+        key: &ResourceKey,
+    ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
+        self.inner.try_resource_handle_any(key)
+    }
+}
+
 /// Build slot identities for activation from resolved `(slot, credential)`
 /// pairs, keyed by the **collision-free structural**
 /// [`SlotIdentity`].

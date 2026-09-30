@@ -128,11 +128,15 @@ configuration, and process lifecycle.
   binds canonical requests to the admitted effect contract, tenant, node and operation
   slot. Only acknowledged ledger grants reach the adapter; outcome acknowledgement
   recovery uses database reads and exact evidence recommits. Generic `ActionRuntime`
-  accepts `ReadOnly` and `Journaled` factories without a remote-effect capability.
-  Only handle-routed effects are journaled. Until the engine effect journal lands,
-  `Journaled` actions (every kind, including stateful) run with read-only handle
-  authority: reads run and writes through handles are refused as `NotSent` before
-  any provider call. Plans recorded without an effect field stay refused.
+  accepts only explicitly declared `ReadOnly` factories: a caller-supplied context may
+  carry any resource accessor, so its public entry points refuse `Journaled` actions
+  (`EffectRequiresOwner`). The engine's own node dispatch admits `Journaled` factories
+  without a remote-effect capability. Only handle-routed effects are journaled. Until
+  the engine effect journal lands, `Journaled` actions (every kind, including stateful)
+  run with read-only handle authority: reads run, writes through handles are refused
+  as `NotSent` before any provider call, and raw leases (`ResourceGuard<R>` slots,
+  `acquire_resource_by_id`) are refused because they would bypass the journal. Plans
+  recorded without an effect field stay refused.
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.

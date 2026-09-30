@@ -32,7 +32,15 @@ changes are expected between minor releases — call them out here.
     itself is invisible to the engine. Until the engine effect journal lands,
     a `Journaled` action of any kind runs with read-only handle authority:
     reads run, and a write through a handle is refused as `NotSent` before
-    any provider call.
+    any provider call. A `Journaled` action cannot take a raw lease: a
+    `ResourceGuard<R>` slot, `acquire_resource_by_id` or a raw
+    `acquire_any` / `try_acquire_any` fails with a non-retryable
+    `CoreError::ResourceUnavailable` pointing at `ResourceHandle<R>`.
+  - The public `ActionRuntime` entry points (`execute_action*`,
+    `execute_action_with_node`) still run only explicitly `ReadOnly`
+    actions and refuse a `Journaled` one with `EffectRequiresOwner`, as they
+    refused `Undeclared`: a caller-supplied context may carry any resource
+    accessor. `Journaled` actions run through the engine's node dispatch.
 
 - **One outcome classification for managed calls advances development
   packages to 0.24.0 in lockstep.** A provider call's result is classified
