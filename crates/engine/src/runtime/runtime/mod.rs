@@ -480,6 +480,10 @@ impl ActionRuntime {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the shared dispatch core takes every entry point's inputs plus its authority"
+    )]
     async fn run_factory(
         &self,
         action_key: &str,
