@@ -3199,6 +3199,18 @@ impl NodeTask {
                             .await
                             .map_err(EngineError::Runtime)
                     },
+                    // Interim: read-only handle authority until the engine
+                    // effect journal (PR-5b). The resource accessor hands out
+                    // read-only handles, so reads run and writes through
+                    // handles are refused as NotSent before any provider call.
+                    ActionEffectContract::Journaled(_)
+                        if factory.remote_effect_factory().is_none() =>
+                    {
+                        self.runtime
+                            .execute_resolved_action(factory, &self.node, input, &action_ctx)
+                            .await
+                            .map_err(EngineError::Runtime)
+                    },
                     ActionEffectContract::Remote(descriptor) => {
                         let Some(remote) = factory.remote_effect_factory() else {
                             return (

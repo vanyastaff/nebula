@@ -1505,27 +1505,36 @@ mod resource_handle {
         };
     }
 
+    /// No `read_only` attestation: the default `Journaled(V1)` contract.
     #[derive(nebula_action::Action)]
     #[action(
-        key = "test.resource_handle.undeclared",
-        name = "Undeclared managed row",
-        description = "safe-default integration action",
+        key = "test.resource_handle.journaled",
+        name = "Journaled managed row",
+        description = "default-contract integration action",
         input = serde_json::Value,
         output = serde_json::Value
     )]
-    struct UndeclaredRow {
+    struct JournaledRow {
         #[resource]
         svc: ResourceHandle<Svc>,
     }
 
-    impl StatelessAction for UndeclaredRow {
+    impl StatelessAction for JournaledRow {
         async fn execute(
             &self,
             _input: serde_json::Value,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             let calls = self.svc.submit(Call { cost: Cost::ONE }).await?;
-            Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
+            let refused = self
+                .svc
+                .submit(LostWrite)
+                .await
+                .expect_err("a journaled write needs the engine journal");
+            Ok(ActionResult::success(serde_json::json!({
+                "calls": calls,
+                "write_sent": refused.sent().as_str(),
+            })))
         }
     }
 
@@ -1578,24 +1587,30 @@ mod resource_handle {
     // ── (a) a unit runs on the row ───────────────────────────────────────
 
     #[tokio::test]
-    async fn a_derived_action_without_effect_attestation_is_rejected_before_instantiation() {
+    async fn a_journaled_action_reads_but_its_writes_are_refused_before_the_provider() {
         let manager = Arc::new(Manager::new());
         let calls = register_svc(&manager, None);
         let engine = engine(manager, |registry| {
             registry
-                .register_stateless_factory::<UndeclaredRow>()
+                .register_stateless_factory::<JournaledRow>()
                 .expect("register");
         });
 
         let result = run(
             &engine,
-            node_of("test.resource_handle.undeclared", "svc", &Svc::key()),
+            node_of("test.resource_handle.journaled", "svc", &Svc::key()),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
         .await;
-        assert!(!result.is_success());
-        assert_eq!(calls.count(), 0, "the action was never instantiated");
+        assert!(result.is_success(), "{result:?}");
+        assert_eq!(output(&result)["calls"], 1, "the read ran");
+        assert_eq!(output(&result)["write_sent"], "not_sent");
+        assert_eq!(
+            calls.count(),
+            1,
+            "only the read reached the provider; the write made zero provider calls"
+        );
     }
 
     row_action!(ReadSvc, "test.resource_handle.read", svc: Svc);

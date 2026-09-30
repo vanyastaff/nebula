@@ -481,9 +481,13 @@ impl ActionRuntime {
                 key: action_key.to_owned(),
             });
         }
+        // Journaled actions run here with read-only handle authority until the
+        // engine effect journal lands: reads run, writes through handles are
+        // refused before any provider call. Remote effects need their owner.
         if !matches!(
             metadata.effect_contract(),
             nebula_action::effect::ActionEffectContract::ReadOnly
+                | nebula_action::effect::ActionEffectContract::Journaled(_)
         ) || factory.remote_effect_factory().is_some()
         {
             self.observe_rejected("effect_requires_owner");
