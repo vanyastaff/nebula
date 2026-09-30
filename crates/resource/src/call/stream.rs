@@ -32,7 +32,9 @@ use crate::{error::ErrorKind, resource::Provider};
 /// one ordinary [`Submission`]: the same lazy start, unit slot, deadline, attempt
 /// admission, pinned credential slots and settled outcome as
 /// [`Lease::submit`]. Every provider request still goes through
-/// [`OperationCx::attempt`], and the unit settles once, with [`run`](Self::run)'s
+/// [`OperationCx::attempt`] — finished with
+/// [`Attempt::finish`](super::Attempt::finish) once the stream's head is
+/// known — and the unit settles once, with [`run`](Self::run)'s
 /// result. The only difference is the [`StreamSink`] it sends items into,
 /// and the [`Streaming`] handle the caller pulls them from.
 ///
@@ -83,7 +85,7 @@ use crate::{error::ErrorKind, resource::Provider};
 /// ```
 /// use nebula_resource::{
 ///     PinSlots, Provider,
-///     call::{Cost, Effect, OperationCx, OperationError, SentState, StreamOperation, StreamSink},
+///     call::{Cost, Effect, OperationCx, OperationError, StreamOperation, StreamSink},
 /// };
 ///
 /// /// Counts down from the instance's value, one item per step.
@@ -99,9 +101,12 @@ use crate::{error::ErrorKind, resource::Provider};
 ///     const EFFECT: Effect = Effect::Read;
 ///
 ///     async fn run(self, cx: &mut OperationCx<'_, R>, mut sink: StreamSink<u64>) -> Result<(), OperationError> {
+///         // The head of the stream is the call; the attempt is finished
+///         // from it before the items flow.
 ///         let attempt = cx.attempt(Cost::ONE).await?;
-///         let start = *attempt.instance();
-///         attempt.settle(SentState::Sent);
+///         let head: Result<u64, OperationError> = Ok(*attempt.instance());
+///         attempt.finish(&head).await;
+///         let start = head?;
 ///         for value in (0..=start).rev() {
 ///             // `ConsumerGone` converts into a `Cancelled` error.
 ///             sink.send(value).await?;

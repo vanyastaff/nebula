@@ -1063,7 +1063,7 @@ impl ResourceLimiter {
     #[must_use]
     #[deprecated(
         since = "0.21.0",
-        note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+        note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::call(Cost, ..)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, returning `OperationError::throttled` replaces `Throttle`)"
     )]
     #[expect(
         deprecated,
@@ -2020,22 +2020,22 @@ where
 /// ([`crate::call`]) replaces the closure family: keep the client as the
 /// provider's instance, turn the lease into a facade with
 /// [`ResourceGuard::into_lease`](crate::ResourceGuard::into_lease), and
-/// describe each call as an [`Operation`](crate::call::Operation) that asks
-/// for one [`OperationCx::attempt`](crate::call::OperationCx::attempt) per provider call:
+/// describe each call as an [`Operation`](crate::call::Operation) that makes
+/// each provider call through [`OperationCx::call`](crate::call::OperationCx::call):
 ///
 /// | Closure family | Managed call facade |
 /// |---|---|
-/// | `run(call)` | `cx.attempt(Cost::ONE)` |
-/// | `run_for(dimension, value, call)` | `cx.attempt(Cost::keyed(dimension, value))` |
+/// | `run(call)` | `cx.call(Cost::ONE, call)` |
+/// | `run_for(dimension, value, call)` | `cx.call(Cost::keyed(dimension, value), call)` |
 /// | `run_until(deadline, call)` | `Submission::with_deadline(deadline)` on the submitted unit |
-/// | `Throttle::check` | `Attempt::report(verdict)` |
+/// | `Throttle::check` | the call returns [`OperationError::throttled`](crate::call::OperationError::throttled) (or `throttled_key`) |
 /// | `unlimited()` | none: every provider call is an attempt, by design |
 ///
 /// The crate README's rate-limit profile table says what each profile
 /// budgets.
 #[deprecated(
     since = "0.21.0",
-    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::call(Cost, ..)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, returning `OperationError::throttled` replaces `Throttle`)"
 )]
 pub struct Limited<C, T = NoThrottle> {
     client: C,
@@ -2217,7 +2217,7 @@ impl<C, T> Limited<C, T> {
 #[derive(Debug)]
 #[deprecated(
     since = "0.21.0",
-    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
+    note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::call(Cost, ..)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, returning `OperationError::throttled` replaces `Throttle`)"
 )]
 pub enum LimitedError<E> {
     /// The limit refused the call; it never reached the provider.

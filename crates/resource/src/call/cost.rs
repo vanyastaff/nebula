@@ -139,7 +139,9 @@ impl Effect {
 
 /// Whether a unit's provider attempts reached the provider.
 ///
-/// The author settles each attempt ([`Attempt::settle`](super::Attempt::settle));
+/// Each attempt is finished from its call's classified result
+/// ([`Attempt::finish`](super::Attempt::finish), which
+/// [`OperationCx::call`](super::OperationCx::call) runs);
 /// the runtime folds them into the unit's state. Ordered by how much it
 /// commits the caller: `NotSent < Sent < MaybeSent`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

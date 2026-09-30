@@ -15,7 +15,7 @@ use nebula_credential::{
 use nebula_resource::{
     AcquireOptions, CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident,
     ResidentConfig, Resource, ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
-    call::{Cost, Effect, Operation, OperationCx, OperationError, SentState},
+    call::{Cost, Effect, Operation, OperationCx, OperationError},
     resource::{Provider, ResourceMetadataDraft},
     topology::ResidentProvider,
 };
@@ -112,13 +112,13 @@ impl Operation<Mailer> for ReadSlots {
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, Mailer>) -> Result<Self::Output, OperationError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        let smtp: Option<&CredentialGuard<ApiToken>> = attempt.credentials().smtp();
-        // The alias slot pins the credential's projected scheme.
-        let api: Option<&CredentialGuard<SecretToken>> = attempt.credentials().api();
-        let pinned = (smtp.is_some(), api.is_some());
-        attempt.settle(SentState::Sent);
-        Ok(pinned)
+        cx.call(Cost::FREE, async |(), credentials| {
+            let smtp: Option<&CredentialGuard<ApiToken>> = credentials.smtp();
+            // The alias slot pins the credential's projected scheme.
+            let api: Option<&CredentialGuard<SecretToken>> = credentials.api();
+            Ok((smtp.is_some(), api.is_some()))
+        })
+        .await
     }
 }
 

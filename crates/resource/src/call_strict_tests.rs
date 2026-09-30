@@ -14,7 +14,7 @@ use nebula_credential::{
 use tokio::{sync::Notify, time::Instant};
 
 use super::super::{
-    Cost, Effect, Lease, Operation, OperationCx, OperationError, PinSlots, SentState,
+    Attempt, Cost, Effect, Lease, Operation, OperationCx, OperationError, PinSlots, SentState,
 };
 use crate::{
     AcquireOptions, CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind,
@@ -147,7 +147,12 @@ fn free() -> Cost {
     Cost::FREE
 }
 
-/// One attempt at `cost`, settled `Sent`, on any row.
+/// Finishes `attempt` as answered: `Sent`.
+async fn answered<R: Provider + PinSlots>(attempt: Attempt<'_, R>) {
+    attempt.finish(&Ok::<(), OperationError>(())).await;
+}
+
+/// One answered call at `cost`, on any row.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Once {
     #[serde(skip, default = "free")]
@@ -166,9 +171,7 @@ impl<R: Provider + PinSlots> Operation<R> for Once {
     const EFFECT: Effect = Effect::Read;
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(self.cost).await?;
-        attempt.settle(SentState::Sent);
-        Ok(())
+        cx.call(self.cost, async |_, _| Ok(())).await
     }
 }
 
@@ -204,7 +207,7 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>> Operation<R> for Attempts {
         for _ in 0..self.n {
             let attempt = cx.attempt(self.cost.clone()).await?;
             pinned.push(owned_epochs(attempt.credentials()));
-            attempt.settle(SentState::Sent);
+            answered(attempt).await;
         }
         Ok(pinned)
     }
@@ -253,12 +256,12 @@ impl<R: Provider + PinSlots<Pinned = PinnedEpochs>, const WRITE: bool> Operation
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::FREE).await?;
         let mut pinned = vec![owned_epochs(first.credentials())];
-        first.settle(SentState::Sent);
+        answered(first).await;
         self.between.notify_one();
         self.resume.notified().await;
         let second = cx.attempt(Cost::FREE).await?;
         pinned.push(owned_epochs(second.credentials()));
-        second.settle(SentState::Sent);
+        answered(second).await;
         Ok(pinned)
     }
 }

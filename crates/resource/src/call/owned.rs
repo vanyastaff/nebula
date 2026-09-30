@@ -105,8 +105,20 @@ struct PendingCall {
     call: CallGrant,
     /// `MaybeSent` until the attempt settles.
     sent: SentState,
-    /// The attempt reported a provider throttle.
-    throttled: bool,
+    /// What the attempt's classified result said about the call.
+    note: CallNote,
+}
+
+/// What a finished attempt's classified result said about its call, beyond
+/// its sent state ([`Attempt::finish`](super::Attempt::finish)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CallNote {
+    /// Nothing more: a success, an unclassified or unsettled attempt.
+    Plain,
+    /// The provider throttled the call and applied nothing.
+    Throttled,
+    /// The provider definitively rejected the call with this kind.
+    Rejected(ErrorKindCode),
 }
 
 impl fmt::Debug for OwnedEffect {
@@ -180,30 +192,27 @@ impl OwnedEffect {
         self.pending().take()
     }
 
-    /// The current attempt settled `sent` (or was dropped: `MaybeSent`).
-    pub(super) fn record(&self, sent: SentState) {
+    /// The current attempt settled `sent` as `note` says (or was dropped:
+    /// `MaybeSent`).
+    pub(super) fn record(&self, sent: SentState, note: CallNote) {
         if let Some(pending) = self.pending().as_mut() {
             pending.sent = sent;
-        }
-    }
-
-    /// The current attempt reported a provider throttle.
-    pub(super) fn note_throttled(&self) {
-        if let Some(pending) = self.pending().as_mut() {
-            pending.throttled = true;
+            pending.note = note;
         }
     }
 
     /// Explains the previous attempt's call when a new attempt starts: it
-    /// did not cross when it was unsent or throttled, and may have
-    /// otherwise.
+    /// did not cross when it was unsent, throttled or rejected, and may
+    /// have otherwise.
     pub(super) async fn flush_previous(&self) -> Result<(), OperationError> {
         let (Some(pending), Some(slot)) = (self.take_pending(), self.slot()) else {
             return Ok(());
         };
-        let crossing = match pending.sent {
-            SentState::NotSent => Crossing::NotCrossed,
-            SentState::Sent if pending.throttled => Crossing::NotCrossed,
+        let crossing = match (pending.sent, pending.note) {
+            (SentState::NotSent, _)
+            | (SentState::Sent, CallNote::Throttled | CallNote::Rejected(_)) => {
+                Crossing::NotCrossed
+            },
             _ => Crossing::Ambiguous,
         };
         self.owner
@@ -229,7 +238,7 @@ impl OwnedEffect {
         *self.pending() = Some(PendingCall {
             call,
             sent: SentState::MaybeSent,
-            throttled: false,
+            note: CallNote::Plain,
         });
         Ok(())
     }
@@ -257,8 +266,9 @@ impl OwnedEffect {
     /// | Result | Last call | Recorded |
     /// |---|---|---|
     /// | `Ok` | any | settle `Applied` (`AppliedWithoutOutput` without `record_output`, or for an output over the 1 MiB cap) |
-    /// | `Err` | `NotSent`, or `Sent` and `Exhausted` | explain `NotCrossed` |
-    /// | `Err` | `MaybeSent`, or `Sent` and a retryable kind | explain `Ambiguous` |
+    /// | `Err` | `NotSent`, or throttled | explain `NotCrossed` |
+    /// | `Err` | rejected | settle `Rejected` with the rejection's kind |
+    /// | `Err` | `MaybeSent`, or `Sent` (a success the unit then failed) and a retryable kind | explain `Ambiguous` |
     /// | `Err` | `Sent` and a non-retryable kind | settle `Rejected` |
     pub(super) async fn finish<T>(
         &self,
@@ -292,12 +302,14 @@ impl OwnedEffect {
             },
             Err(error) => {
                 let kind = error.kind();
-                let recorded = match sent {
-                    SentState::NotSent => Err(Crossing::NotCrossed),
-                    SentState::Sent if matches!(kind, ErrorKind::Exhausted { .. }) => {
+                let recorded = match (sent, pending.note) {
+                    (SentState::NotSent, _) | (SentState::Sent, CallNote::Throttled) => {
                         Err(Crossing::NotCrossed)
                     },
-                    SentState::Sent if !kind.is_default_retryable() => Ok(ErrorKindCode::of(kind)),
+                    (SentState::Sent, CallNote::Rejected(code)) => Ok(code),
+                    (SentState::Sent, CallNote::Plain) if !kind.is_default_retryable() => {
+                        Ok(ErrorKindCode::of(kind))
+                    },
                     _ => Err(Crossing::Ambiguous),
                 };
                 let (step, written) = match recorded {

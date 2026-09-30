@@ -24,7 +24,7 @@ use crate::{
     AcquireOptions, CredentialUnavailableReason, Error, ErrorKind, Manager, ManagerConfig,
     PoolConfig, Pooled, Provider, RateLimitProfile, RegistrationSpec, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, ResourceEvent, ResourceGuard, SlotCell, SlotIdentity,
-    rate_limit::{Rate, ResiliencePolicy, RowLimit, Verdict},
+    rate_limit::{Rate, ResiliencePolicy, RowLimit},
     resource::{HasCredentialSlots, ResourceMetadataDraft},
     runtime::managed::ManagedResource,
     topology::{
@@ -257,29 +257,25 @@ fn free() -> Cost {
     Cost::FREE
 }
 
-fn sent() -> SentState {
-    SentState::Sent
+fn rejected() -> OperationError {
+    OperationError::rejected("provider refused")
 }
 
-fn permanent() -> ErrorKind {
-    ErrorKind::Permanent
+/// Finishes `attempt` as answered: `Sent`, the limit told it passed.
+async fn answered<R: Provider + PinSlots>(attempt: Attempt<'_, R>) {
+    attempt.finish(&Ok::<(), OperationError>(())).await;
 }
 
-/// One attempt at `cost`, settled `sent`; yields the attempts granted.
+/// One answered call at `cost`; yields the attempts granted.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Once {
     #[serde(skip, default = "free")]
     cost: Cost,
-    #[serde(skip, default = "sent")]
-    sent: SentState,
 }
 
 impl Once {
     fn sent(cost: Cost) -> Self {
-        Self {
-            cost,
-            sent: SentState::Sent,
-        }
+        Self { cost }
     }
 }
 
@@ -288,17 +284,16 @@ impl<R: Provider + PinSlots> Operation<R> for Once {
     const KEY: &'static str = "test.once";
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u32, OperationError> {
-        let attempt = cx.attempt(self.cost).await?;
-        attempt.settle(self.sent);
+        cx.call(self.cost, async |_, _| Ok(())).await?;
         Ok(cx.attempts())
     }
 }
 
-/// One attempt that the provider answers with `kind`.
+/// One call that the provider answers with `error`.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Refused {
-    #[serde(skip, default = "permanent")]
-    kind: ErrorKind,
+    #[serde(skip, default = "rejected")]
+    error: OperationError,
 }
 
 impl<R: Provider + PinSlots> Operation<R> for Refused {
@@ -306,10 +301,9 @@ impl<R: Provider + PinSlots> Operation<R> for Refused {
     const KEY: &'static str = "test.refused";
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
-        let attempt = cx.attempt(Cost::ONE).await?;
-        attempt.report(Verdict::Pass).await;
-        attempt.settle(SentState::Sent);
-        Err(OperationError::new(self.kind, "provider refused"))
+        let error = self.error;
+        cx.call(Cost::ONE, async move |_, _| Err(error.clone()))
+            .await
     }
 }
 
@@ -359,7 +353,7 @@ impl<R: Provider + PinSlots> Operation<R> for Gated {
         if closing.is_closing() {
             self.closed_seen.fetch_add(1, Ordering::SeqCst);
         }
-        attempt.settle(SentState::Sent);
+        answered(attempt).await;
         Ok(())
     }
 }
@@ -408,7 +402,7 @@ impl<R: Provider + PinSlots> Operation<R> for PanicAfterGrant {
 
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         let attempt = cx.attempt(Cost::FREE).await?;
-        attempt.settle(SentState::Sent);
+        answered(attempt).await;
         panic!("operation bug after the grant");
     }
 }
@@ -429,7 +423,7 @@ impl<R: Provider + PinSlots> Operation<R> for OverBudget {
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
         for _ in 0..3 {
             let attempt = cx.attempt(Cost::FREE).await?;
-            attempt.settle(SentState::Sent);
+            answered(attempt).await;
         }
         Ok(())
     }
@@ -455,13 +449,13 @@ impl Operation<Api> for PinnedTwice {
     async fn run(self, cx: &mut OperationCx<'_, Api>) -> Result<Self::Output, OperationError> {
         let first = cx.attempt(Cost::FREE).await?;
         let seen_first = pinned_token(&first);
-        first.settle(SentState::Sent);
+        answered(first).await;
         if let Some((cell, next)) = self.rotate {
             cell.store(Arc::new(next.to_owned()));
         }
         let second = cx.attempt(Cost::FREE).await?;
         let seen_second = pinned_token(&second);
-        second.settle(SentState::Sent);
+        answered(second).await;
         Ok((seen_first, seen_second))
     }
 }
@@ -490,7 +484,7 @@ impl Operation<Api> for PinAfterRelease {
         self.release.notified().await;
         let attempt = cx.attempt(Cost::FREE).await?;
         let token = pinned_token(&attempt);
-        attempt.settle(SentState::Sent);
+        answered(attempt).await;
         Ok(token)
     }
 }
@@ -934,19 +928,9 @@ async fn a_provider_refusal_is_sent_and_retryable_with_a_capped_hint() {
     let manager = Manager::new();
     resident(&manager, None);
     let facade = managed::<Api>(&manager).await;
-    let granted = facade
-        .submit(Once {
-            cost: Cost::FREE,
-            sent: SentState::NotSent,
-        })
-        .await
-        .expect("settled not sent");
-    assert_eq!(granted, 1);
     let error = facade
         .submit(Refused {
-            kind: ErrorKind::Exhausted {
-                retry_after: Some(Duration::from_mins(10)),
-            },
+            error: OperationError::throttled(Some(Duration::from_mins(10))),
         })
         .await
         .expect_err("throttled");
@@ -1368,4 +1352,439 @@ async fn a_parent_cancel_refuses_the_first_grant_and_is_ignored_after_it() {
     unit.grant()
         .expect("a later attempt ignores the parent cancel");
     assert_eq!(unit.attempts(), 2);
+}
+
+// ── classified calls ─────────────────────────────────────────────────────
+
+const READ: u8 = 0;
+const IDEMPOTENT: u8 = 1;
+const WRITE: u8 = 2;
+
+const fn effect_of(effect: u8) -> Effect {
+    match effect {
+        READ => Effect::Read,
+        IDEMPOTENT => Effect::Idempotent,
+        _ => Effect::Write,
+    }
+}
+
+fn one() -> Cost {
+    Cost::ONE
+}
+
+fn single() -> NonZeroU32 {
+    NonZeroU32::MIN
+}
+
+/// One [`OperationCx::call`] whose attempts answer the scripted results in
+/// order (`Ok(0)` once the script ran out), within `budget` attempts.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Scripted<const EFFECT: u8> {
+    #[serde(skip)]
+    script: Vec<Result<u32, OperationError>>,
+    #[serde(skip, default = "one")]
+    cost: Cost,
+    #[serde(skip, default = "single")]
+    budget: NonZeroU32,
+    #[serde(skip)]
+    calls: Arc<AtomicUsize>,
+}
+
+impl<const EFFECT: u8> Scripted<EFFECT> {
+    fn new(script: Vec<Result<u32, OperationError>>) -> Self {
+        Self {
+            script,
+            cost: Cost::ONE,
+            budget: NonZeroU32::MIN,
+            calls: Arc::default(),
+        }
+    }
+
+    fn budget(mut self, attempts: u32) -> Self {
+        self.budget = NonZeroU32::new(attempts).expect("non-zero");
+        self
+    }
+
+    fn cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
+    }
+
+    fn calls(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.calls)
+    }
+}
+
+impl<R: Provider + PinSlots, const EFFECT: u8> Operation<R> for Scripted<EFFECT> {
+    type Output = u32;
+    const KEY: &'static str = "test.scripted";
+    const EFFECT: Effect = effect_of(EFFECT);
+
+    fn max_attempts(&self) -> NonZeroU32 {
+        self.budget
+    }
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u32, OperationError> {
+        let mut script = std::collections::VecDeque::from(self.script);
+        let calls = self.calls;
+        cx.call(self.cost, async move |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            script.pop_front().unwrap_or(Ok(0))
+        })
+        .await
+    }
+}
+
+async fn scripted<const EFFECT: u8>(
+    facade: &Lease<Api>,
+    operation: Scripted<EFFECT>,
+) -> (Result<u32, OperationError>, usize) {
+    let calls = operation.calls();
+    let result = facade.submit(operation).await;
+    (result, calls.load(Ordering::SeqCst))
+}
+
+#[test]
+fn each_constructor_classifies_its_call() {
+    let cases = [
+        // (error, kind, attempt sent, retried for Read, Idempotent, Write)
+        (
+            OperationError::throttled(Some(Duration::from_secs(2))),
+            ErrorKind::Exhausted {
+                retry_after: Some(Duration::from_secs(2)),
+            },
+            SentState::Sent,
+            [true, true, true],
+        ),
+        (
+            OperationError::throttled_key(None),
+            ErrorKind::Exhausted { retry_after: None },
+            SentState::Sent,
+            [true, true, true],
+        ),
+        (
+            OperationError::unreachable("no route"),
+            ErrorKind::Transient,
+            SentState::NotSent,
+            [true, true, true],
+        ),
+        (
+            OperationError::unreachable_as(ErrorKind::Backpressure, "buffer full"),
+            ErrorKind::Backpressure,
+            SentState::NotSent,
+            [true, true, true],
+        ),
+        (
+            OperationError::unreachable_as(ErrorKind::Cancelled, "client closed"),
+            ErrorKind::Cancelled,
+            SentState::NotSent,
+            [false, false, false],
+        ),
+        (
+            OperationError::interrupted("reset"),
+            ErrorKind::Transient,
+            SentState::MaybeSent,
+            [true, true, false],
+        ),
+        (
+            OperationError::rejected("bad request"),
+            ErrorKind::Permanent,
+            SentState::Sent,
+            [false, false, false],
+        ),
+        (
+            OperationError::rejected_as(ErrorKind::NotFound, "no such row"),
+            ErrorKind::NotFound,
+            SentState::Sent,
+            [false, false, false],
+        ),
+        (
+            OperationError::rejected_as(ErrorKind::Transient, "declined"),
+            ErrorKind::Permanent,
+            SentState::Sent,
+            [false, false, false],
+        ),
+        (
+            OperationError::new(ErrorKind::Transient, "unclassified"),
+            ErrorKind::Transient,
+            SentState::MaybeSent,
+            [true, true, false],
+        ),
+        (
+            OperationError::new(ErrorKind::Permanent, "unclassified"),
+            ErrorKind::Permanent,
+            SentState::MaybeSent,
+            [false, false, false],
+        ),
+        (
+            OperationError::from(Error::transient("converted")),
+            ErrorKind::Transient,
+            SentState::MaybeSent,
+            [true, true, false],
+        ),
+    ];
+    let effects = [Effect::Read, Effect::Idempotent, Effect::Write];
+    for (error, kind, sent, retried) in cases {
+        assert_eq!(*error.kind(), kind, "{error:?}");
+        assert_eq!(error.attempt_sent(), sent, "{error:?}");
+        for (effect, retried) in effects.into_iter().zip(retried) {
+            assert_eq!(
+                error.retried_in_call(effect),
+                retried,
+                "{error:?} for {effect:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_called_unit_folds_its_classified_sent_state() {
+    let manager = Manager::new();
+    resident(&manager, None);
+    let facade = managed::<Api>(&manager).await;
+    let cases = [
+        (Ok(1), SentState::Sent),
+        (Err(OperationError::throttled(None)), SentState::Sent),
+        (
+            Err(OperationError::unreachable("no route")),
+            SentState::NotSent,
+        ),
+        (
+            Err(OperationError::interrupted("reset")),
+            SentState::MaybeSent,
+        ),
+        (
+            Err(OperationError::rejected("bad request")),
+            SentState::Sent,
+        ),
+        (
+            Err(OperationError::new(ErrorKind::Permanent, "unclassified")),
+            SentState::MaybeSent,
+        ),
+    ];
+    for (reply, sent) in cases {
+        let expected_ok = reply.is_ok();
+        let operation = Scripted::<WRITE>::new(vec![reply]).cost(Cost::FREE);
+        let (result, calls) = scripted(&facade, operation).await;
+        assert_eq!(calls, 1);
+        match result {
+            Ok(_) => assert!(expected_ok),
+            Err(error) => {
+                assert!(!expected_ok);
+                assert_eq!(error.sent(), sent, "{error:?}");
+            },
+        }
+    }
+    let operation =
+        Scripted::<WRITE>::new(vec![Err(OperationError::interrupted("reset"))]).cost(Cost::FREE);
+    let error = scripted(&facade, operation)
+        .await
+        .0
+        .expect_err("interrupted");
+    assert_eq!(
+        *Error::from(error).kind(),
+        ErrorKind::OutcomeUnknown,
+        "an interrupted write has an unknown outcome"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_throttle_pauses_the_quota_and_the_next_attempt_waits_it_out() {
+    let manager = Manager::new();
+    resident(&manager, Some(RowLimit::rate(per_second(10, 10))));
+    let facade = managed::<Api>(&manager).await;
+    let started = Instant::now();
+    let operation = Scripted::<WRITE>::new(vec![
+        Err(OperationError::throttled(Some(Duration::from_secs(3)))),
+        Ok(7),
+    ])
+    .budget(2);
+    let (result, calls) = scripted(&facade, operation).await;
+    assert_eq!(result.expect("the retry was answered"), 7);
+    assert_eq!(calls, 2, "a throttle is retried, even for a write");
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_secs(3),
+        "the next attempt's booking waited the pause out; nothing slept"
+    );
+    // The pause holds the whole quota: another unit waits too.
+    let operation = Scripted::<READ>::new(vec![Err(OperationError::throttled(Some(
+        Duration::from_secs(2),
+    )))]);
+    let error = scripted(&facade, operation)
+        .await
+        .0
+        .expect_err("no attempt left");
+    assert_eq!(error.sent(), SentState::Sent);
+    assert!(error.is_retryable(), "a throttle applied nothing");
+    let paused = Instant::now();
+    facade
+        .submit(Once::sent(Cost::ONE))
+        .await
+        .expect("after the pause");
+    assert_eq!(paused.elapsed(), Duration::from_secs(2));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_throttle_pauses_only_its_key() {
+    let manager = Manager::new();
+    resident(&manager, Some(RowLimit::rate(per_second(10, 10))));
+    let facade = managed::<Api>(&manager).await;
+    let operation = Scripted::<WRITE>::new(vec![Err(OperationError::throttled_key(Some(
+        Duration::from_secs(5),
+    )))])
+    .cost(Cost::keyed("chat_id", 7));
+    assert!(scripted(&facade, operation).await.0.is_err());
+    let started = Instant::now();
+    facade
+        .submit(Once::sent(Cost::keyed("chat_id", 8)))
+        .await
+        .expect("another chat");
+    facade
+        .submit(Once::sent(Cost::ONE))
+        .await
+        .expect("the account quota");
+    assert_eq!(started.elapsed(), Duration::ZERO, "only chat 7 paused");
+    facade
+        .submit(Once::sent(Cost::keyed("chat_id", 7)))
+        .await
+        .expect("the chat after its pause");
+    assert_eq!(started.elapsed(), Duration::from_secs(5));
+}
+
+/// Throttles without a hint, then answers `between`, then throttles again:
+/// how long the next booking waits after the second throttle.
+async fn second_backoff(between: OperationError) -> Duration {
+    let manager = Manager::new();
+    resident(&manager, Some(RowLimit::rate(per_second(10, 10))));
+    let facade = managed::<Api>(&manager).await;
+    for reply in [
+        OperationError::throttled(None),
+        between,
+        OperationError::throttled(None),
+    ] {
+        let (result, _) = scripted(&facade, Scripted::<READ>::new(vec![Err(reply)])).await;
+        assert!(result.is_err());
+    }
+    let started = Instant::now();
+    facade
+        .submit(Once::sent(Cost::ONE))
+        .await
+        .expect("after the backoff");
+    started.elapsed()
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unreachable_or_interrupted_call_never_resets_the_backoff() {
+    // The second consecutive refusal backs off 1 s to 2 s, a first one
+    // half a second to 1 s.
+    for between in [
+        OperationError::unreachable("no route"),
+        OperationError::interrupted("reset"),
+    ] {
+        let waited = second_backoff(between.clone()).await;
+        assert!(
+            waited >= Duration::from_secs(1),
+            "{between:?} kept the streak: {waited:?}"
+        );
+    }
+    let waited = second_backoff(OperationError::rejected("bad request")).await;
+    assert!(
+        waited <= Duration::from_secs(1),
+        "an answer resets the streak: {waited:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn retries_inside_a_call_follow_the_classification_within_the_budget() {
+    let manager = Manager::new();
+    resident(&manager, None);
+    let facade = managed::<Api>(&manager).await;
+    let interrupted = || Err(OperationError::interrupted("reset"));
+
+    // An interrupted write is never sent twice.
+    let operation = Scripted::<WRITE>::new(vec![interrupted(), Ok(1)]).budget(3);
+    let (result, calls) = scripted(&facade, operation).await;
+    assert_eq!(calls, 1);
+    let error = result.expect_err("not retried");
+    assert_eq!(error.sent(), SentState::MaybeSent);
+
+    // A replay-safe one is, until the budget runs out.
+    let operation =
+        Scripted::<IDEMPOTENT>::new(vec![interrupted(), interrupted(), interrupted(), Ok(1)])
+            .budget(3);
+    let (result, calls) = scripted(&facade, operation).await;
+    assert_eq!(calls, 3, "bounded by max_attempts");
+    let error = result.expect_err("the budget ran out");
+    assert_eq!(error.detail(), "reset", "the last attempt's error");
+
+    // An unreachable provider is retried for a write, and the unit counts
+    // only what may have been applied.
+    let operation = Scripted::<WRITE>::new(vec![
+        Err(OperationError::throttled(None)),
+        Err(OperationError::unreachable("no route")),
+    ])
+    .cost(Cost::FREE)
+    .budget(2);
+    let (result, calls) = scripted(&facade, operation).await;
+    assert_eq!(calls, 2);
+    let error = result.expect_err("unreachable at last");
+    assert_eq!(
+        error.sent(),
+        SentState::NotSent,
+        "a throttle applied nothing"
+    );
+    assert!(error.is_retryable());
+
+    // Rejections and unclassified permanent errors end the call.
+    for reply in [
+        OperationError::rejected("bad request"),
+        OperationError::new(ErrorKind::Permanent, "unclassified"),
+    ] {
+        let operation = Scripted::<READ>::new(vec![Err(reply), Ok(1)]).budget(3);
+        assert_eq!(scripted(&facade, operation).await.1, 1);
+    }
+
+    // An unclassified retryable error is retried for a replay-safe effect.
+    let operation = Scripted::<READ>::new(vec![
+        Err(OperationError::new(ErrorKind::Transient, "unclassified")),
+        Ok(4),
+    ])
+    .budget(3);
+    let (result, calls) = scripted(&facade, operation).await;
+    assert_eq!((result.expect("retried"), calls), (4, 2));
+
+    // Without a budget there is no hidden retry.
+    let operation =
+        Scripted::<READ>::new(vec![Err(OperationError::unreachable("no route")), Ok(1)]);
+    assert_eq!(scripted(&facade, operation).await.1, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pause_past_the_deadline_ends_the_call_with_the_throttle() {
+    let manager = Manager::new();
+    resident(&manager, Some(RowLimit::rate(per_second(10, 10))));
+    let facade = managed::<Api>(&manager).await;
+    let operation = Scripted::<READ>::new(vec![
+        Err(OperationError::throttled(Some(Duration::from_mins(1)))),
+        Ok(1),
+    ])
+    .budget(3);
+    let calls = operation.calls();
+    let started = Instant::now();
+    let error = facade
+        .submit(operation)
+        .with_deadline(in_one(Duration::from_secs(5)))
+        .await
+        .expect_err("the pause outlasts the deadline");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *error.kind(),
+        ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_mins(1))
+        },
+        "the throttle, not the refused booking"
+    );
+    assert_eq!(error.sent(), SentState::Sent);
+    assert!(started.elapsed() < Duration::from_secs(5), "nothing slept");
 }

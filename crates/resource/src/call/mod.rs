@@ -17,9 +17,14 @@
 //!   [`OperationCx::attempt`] is the unit's single linearization point: budget,
 //!   admission against the lease, quota booking at the attempt's [`Cost`],
 //!   the strict credential read, registration and grant (CONTRACT.md:64,
-//!   :88-92). There is no retry loop
-//!   here: an operation that retries asks for another attempt, within
-//!   [`Operation::max_attempts`] (DX-API.md:36, CONTRACT.md:96).
+//!   :88-92).
+//! - A **call** ([`OperationCx::call`]) is the usual way to use attempts:
+//!   a closure makes the provider request on each attempt and returns a
+//!   classified result; the runtime finishes the attempt from it and takes
+//!   another only when the classification says it is safe, within
+//!   [`Operation::max_attempts`] (one by default: no hidden retry) and the
+//!   unit's deadline (DX-API.md:36, CONTRACT.md:96). An operation that
+//!   holds the attempt itself finishes it with [`Attempt::finish`].
 //!
 //! A unit is lazy. Its first poll waits for one of the lease's unit slots on
 //! the caller's task, then the runtime runs it on its own task until it
@@ -29,12 +34,27 @@
 //!
 //! # Settled outcome
 //!
-//! Each attempt is settled by the author with a [`SentState`]; an attempt
-//! dropped unsettled counts as `MaybeSent`. The unit folds them:
+//! Each attempt is finished from its call's result, classified once by the
+//! [`OperationError`] constructor that built the error; the runtime derives
+//! the rest (see [`OperationError`] for the full table):
 //!
-//! - no attempt granted → `NotSent`, whatever the author reported (the
+//! | Result | Sent | Rate limit | Journal | Retried inside `call` |
+//! |---|---|---|---|---|
+//! | `Ok` | `Sent` | pass | applied | — |
+//! | [`throttled`](OperationError::throttled) / [`throttled_key`](OperationError::throttled_key) | `Sent` (`Exhausted`) | throttled / key throttled | not crossed | yes |
+//! | [`unreachable`](OperationError::unreachable) | `NotSent` | nothing | not crossed | yes |
+//! | [`interrupted`](OperationError::interrupted) | `MaybeSent` | nothing | ambiguous | only a replay-safe effect |
+//! | [`rejected`](OperationError::rejected) / [`rejected_as`](OperationError::rejected_as) | `Sent` | pass | rejected | no |
+//! | unclassified ([`OperationError::new`], `?`) | `MaybeSent` | nothing | ambiguous | only replay-safe with a retryable kind |
+//!
+//! An attempt dropped unfinished counts as `MaybeSent`. The unit folds its
+//! attempts:
+//!
+//! - no attempt granted → `NotSent`, whatever the attempts reported (the
 //!   runtime proves nothing was sent);
-//! - otherwise the worst attempt, `MaybeSent > Sent > NotSent`;
+//! - otherwise the worst attempt, `MaybeSent > Sent > NotSent`, where a
+//!   throttled attempt only counts when it was the last (the provider
+//!   applied nothing);
 //! - the deadline or a panic after a grant → `MaybeSent`.
 //!
 //! A failed unit's [`OperationError`] carries that state and the operation's
@@ -53,7 +73,7 @@
 //! | the unit's pinned slots were rotated since its first grant | `CredentialUnavailable { Rebinding }` | `NotSent` |
 //! | local quota slot past the deadline | `Exhausted` | `NotSent` |
 //! | limit store down, unit slots full until the deadline | `Backpressure` | `NotSent` |
-//! | provider throttled (`Attempt::report(Verdict::Throttled)`) | `Exhausted` | `Sent` |
+//! | provider throttled ([`OperationError::throttled`]) | `Exhausted` | `Sent` |
 //! | retry-unsafe effect with an unknown outcome | `OutcomeUnknown` (as `Error`) | `Sent` / `MaybeSent` |
 //!
 //! Author errors bridge in through the usual route: a
@@ -172,12 +192,13 @@
 //!    before the registration, the owner grants the attempt's call (the
 //!    only provider-call authority); a registration that refuses after the
 //!    grant is explained as not crossed.
-//! 4. **Settle** — the unit's last call is recorded from its result: a
-//!    success with its output, a definitive rejection with its kind
+//! 4. **Settle** — the unit's last call is recorded from its result and
+//!    the last attempt's classification: a success with its output, a
+//!    [`rejected`](OperationError::rejected) call with its kind
 //!    ([`ErrorKindCode`](journal::ErrorKindCode)), otherwise how the call
-//!    crossed (`NotSent` or a throttle: not crossed; `MaybeSent` or a
-//!    retryable failure after `Sent`: ambiguous). A record that fails after
-//!    a possible crossing fails the unit `OutcomeUnknown`.
+//!    crossed (unreachable or throttled: not crossed; interrupted or
+//!    unclassified: ambiguous). A record that fails after a possible
+//!    crossing fails the unit `OutcomeUnknown`.
 //!
 //! [`OperationCx::idempotency_key`] and [`SessionCx::idempotency_key`] are the provider
 //! idempotency key ([`IdempotencyKey`]) to send: for a journaled effect the
@@ -295,7 +316,8 @@ use crate::resource::Provider;
 /// One kind of provider call, described as data and run by the facade.
 ///
 /// The value is the call's owned intent (a message, a query); [`run`](Self::run)
-/// asks the [`OperationCx`] for attempts and settles each. Declare the effect of
+/// makes the provider call through [`OperationCx::call`], classifying its
+/// result with an [`OperationError`] constructor. Declare the effect of
 /// repeating the call with [`EFFECT`](Self::EFFECT) and how many attempts
 /// one unit may take with [`max_attempts`](Self::max_attempts).
 ///
@@ -330,7 +352,7 @@ use crate::resource::Provider;
 /// ```
 /// use nebula_resource::{
 ///     PinSlots, Provider,
-///     call::{Cost, Effect, OperationCx, OperationError, Operation, SentState},
+///     call::{Cost, Effect, OperationCx, OperationError, Operation},
 /// };
 /// use serde::{Deserialize, Serialize};
 ///
@@ -347,10 +369,7 @@ use crate::resource::Provider;
 ///     const EFFECT: Effect = Effect::Read;
 ///
 ///     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
-///         let attempt = cx.attempt(Cost::ONE).await?;
-///         let value = *attempt.instance();
-///         attempt.settle(SentState::Sent);
-///         Ok(value)
+///         cx.call(Cost::ONE, async |counter, _credentials| Ok(*counter)).await
 ///     }
 /// }
 ///
@@ -372,11 +391,15 @@ use crate::resource::Provider;
 ///
 ///     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
 ///         // The key to send: the same for every attempt, retry and resume.
-///         // Read it before an attempt borrows `cx`.
-///         let _key = cx.idempotency_key().copied();
-///         let attempt = cx.attempt(Cost::ONE).await?;
-///         attempt.settle(SentState::Sent);
-///         Ok(self.cents)
+///         // Read it before the call borrows `cx`.
+///         let key = cx.idempotency_key().copied();
+///         let cents = self.cents;
+///         cx.call(Cost::ONE, async move |_client, _credentials| {
+///             // Send the charge with `key`, classify the answer.
+///             let _ = key;
+///             Ok(cents)
+///         })
+///         .await
 ///     }
 /// }
 /// ```
@@ -422,7 +445,8 @@ pub trait Operation<R: Provider + PinSlots>: Serialize + DeserializeOwned + Send
     }
 
     /// Runs the call: every provider request goes through
-    /// [`OperationCx::attempt`].
+    /// [`OperationCx::call`] (or an [`OperationCx::attempt`] finished with
+    /// [`Attempt::finish`]).
     fn run(
         self,
         cx: &mut OperationCx<'_, R>,

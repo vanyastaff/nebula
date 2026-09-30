@@ -30,9 +30,9 @@ use super::{
         IdempotencyKey, check_declaration, check_key_part, is_valid_declaration,
         local_idempotency_key,
     },
-    error::OperationError,
-    journal::{EffectJournal, JournalSlot, Recovery},
-    owned::{self, JournalDeclaration, OutputCodec, OwnedEffect, Prepared},
+    error::{OperationError, Signal},
+    journal::{EffectJournal, ErrorKindCode, JournalSlot, Recovery},
+    owned::{self, CallNote, JournalDeclaration, OutputCodec, OwnedEffect, Prepared},
     pin::PinSlots,
     row::{CheckoutFit, RowShared},
     session::{SessionBinding, SessionProvider},
@@ -615,8 +615,11 @@ pub(super) struct UnitShared {
     deadline: Mutex<tokio::time::Instant>,
     /// Attempts granted so far.
     granted: AtomicU32,
-    /// Worst settled [`SentState`] rank across granted attempts.
+    /// Worst settled [`SentState`] rank across granted attempts, a
+    /// throttled attempt's aside: the provider applied nothing.
     worst: AtomicU8,
+    /// The latest settled attempt's [`SentState`] rank, throttled or not.
+    last: AtomicU8,
     /// The unit's owned effect, for an `Idempotent` or `Write` unit on a
     /// journaled row facade.
     effect: Option<OwnedEffect>,
@@ -645,6 +648,7 @@ impl UnitShared {
             deadline: Mutex::new(tokio::time::Instant::from_std(deadline)),
             granted: AtomicU32::new(0),
             worst: AtomicU8::new(SentState::NotSent.rank()),
+            last: AtomicU8::new(SentState::NotSent.rank()),
             effect: None,
             local_key: None,
         }
@@ -741,12 +745,15 @@ impl UnitShared {
         }
     }
 
-    /// A granted attempt settled `sent`; an owned effect's pending call
-    /// settles with it.
-    fn record(&self, sent: SentState) {
-        self.worst.fetch_max(sent.rank(), Ordering::AcqRel);
+    /// A granted attempt settled `sent`, as `note` says; an owned effect's
+    /// pending call settles with it.
+    fn record(&self, sent: SentState, note: CallNote) {
+        self.last.store(sent.rank(), Ordering::Release);
+        if note != CallNote::Throttled {
+            self.worst.fetch_max(sent.rank(), Ordering::AcqRel);
+        }
         if let Some(effect) = &self.effect {
-            effect.record(sent);
+            effect.record(sent, note);
         }
     }
 
@@ -755,8 +762,10 @@ impl UnitShared {
     }
 
     /// The unit's sent state: `NotSent` when no attempt was granted, however
-    /// the author settled; otherwise the worst settled attempt, raised to
-    /// `MaybeSent` when the unit ended abnormally (deadline, panic).
+    /// the author settled; otherwise the worst settled attempt — a throttled
+    /// attempt only counts when it was the last, as the provider applied
+    /// nothing — raised to `MaybeSent` when the unit ended abnormally
+    /// (deadline, panic).
     fn fold(&self, abnormal: bool) -> SentState {
         if self.attempts() == 0 {
             return SentState::NotSent;
@@ -764,7 +773,8 @@ impl UnitShared {
         if abnormal {
             return SentState::MaybeSent;
         }
-        SentState::from_rank(self.worst.load(Ordering::Acquire))
+        let worst = self.worst.load(Ordering::Acquire);
+        SentState::from_rank(worst.max(self.last.load(Ordering::Acquire)))
     }
 
     fn state_name(&self) -> &'static str {
@@ -987,6 +997,7 @@ where
             shared: &shared,
             deadline,
             max_attempts,
+            effect,
         };
         let run = tokio::time::timeout_at(deadline, work.run(&mut cx));
         AssertUnwindSafe(run).catch_unwind().await
@@ -1032,6 +1043,9 @@ pub struct OperationCx<'u, R: Provider + PinSlots> {
     pub(super) shared: &'u UnitShared,
     pub(super) deadline: tokio::time::Instant,
     max_attempts: NonZeroU32,
+    /// The unit's declared effect: whether [`call`](Self::call) may send
+    /// an attempt that may have been applied again.
+    effect: Effect,
 }
 
 impl<R: Provider + PinSlots> fmt::Debug for OperationCx<'_, R> {
@@ -1109,6 +1123,121 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
             cost,
             settled: false,
         })
+    }
+
+    /// Makes one provider call costing `cost` per attempt: `f` runs on each
+    /// granted attempt's instance and the unit's pinned credential slots,
+    /// and returns the call's result, its error classified with an
+    /// [`OperationError`] constructor
+    /// ([`throttled`](OperationError::throttled),
+    /// [`unreachable`](OperationError::unreachable),
+    /// [`interrupted`](OperationError::interrupted),
+    /// [`rejected`](OperationError::rejected), …). Each attempt is
+    /// [`finish`](Attempt::finish)ed from that result: its sent state, the
+    /// rate limit's verdict and an execution journal's record all derive
+    /// from it (see [`OperationError`] for the table).
+    ///
+    /// A failed attempt is taken again while the unit's attempt budget
+    /// ([`Operation::max_attempts`], one by default: no hidden retry) and
+    /// deadline allow, when the error says it is safe: a throttle or an
+    /// unreachable provider always, an interrupted call only for a
+    /// replay-safe [`Operation::EFFECT`], a rejection never — an
+    /// interrupted `Write` is never sent twice. Nothing sleeps between
+    /// attempts: a throttle's pause is waited out by the next attempt's
+    /// quota booking, and a pause that lands past the deadline ends the
+    /// call.
+    ///
+    /// The closure owns what it captures (write `async move`): each attempt
+    /// borrows the captures from it, but a closure that borrows from the
+    /// operation cannot prove its future `Send` (an async closure limit), so
+    /// the bound asks for `'static`. Move the operation's fields in, and
+    /// read [`idempotency_key`](Self::idempotency_key) before the call.
+    ///
+    /// For a call that needs the attempt itself — a stream past its head,
+    /// several requests on one checkout — use [`attempt`](Self::attempt) and
+    /// [`Attempt::finish`].
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use nebula_resource::{
+    ///     PinSlots, Provider,
+    ///     call::{Cost, Effect, Operation, OperationCx, OperationError},
+    /// };
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// /// What a client call can answer.
+    /// enum Reply {
+    ///     Value(u64),
+    ///     SlowDown(Option<Duration>),
+    ///     NoRoute,
+    ///     Missing,
+    /// }
+    ///
+    /// fn classify(reply: Reply) -> Result<u64, OperationError> {
+    ///     match reply {
+    ///         Reply::Value(value) => Ok(value),
+    ///         Reply::SlowDown(after) => Err(OperationError::throttled(after)),
+    ///         Reply::NoRoute => Err(OperationError::unreachable("no route to the provider")),
+    ///         Reply::Missing => Err(OperationError::rejected("no such counter")),
+    ///     }
+    /// }
+    ///
+    /// #[derive(Serialize, Deserialize)]
+    /// struct ReadCounter {
+    ///     offset: u64,
+    /// }
+    ///
+    /// impl<R> Operation<R> for ReadCounter
+    /// where
+    ///     R: Provider<Instance = u64> + PinSlots,
+    /// {
+    ///     type Output = u64;
+    ///     const KEY: &'static str = "counter.read";
+    ///     const EFFECT: Effect = Effect::Read;
+    ///
+    ///     fn max_attempts(&self) -> std::num::NonZeroU32 {
+    ///         std::num::NonZeroU32::new(3).unwrap_or(std::num::NonZeroU32::MIN)
+    ///     }
+    ///
+    ///     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+    ///         let offset = self.offset;
+    ///         cx.call(Cost::ONE, async move |counter, _credentials| {
+    ///             classify(Reply::Value(*counter + offset))
+    ///         })
+    ///         .await
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// The first attempt's refusal (see [`attempt`](Self::attempt)); after
+    /// that, the last attempt's error — a retry the runtime refused (the
+    /// budget, the deadline, the lease closing) returns the error of the
+    /// attempt it would have retried.
+    pub async fn call<T, F>(&mut self, cost: Cost, mut f: F) -> Result<T, OperationError>
+    where
+        F: AsyncFnMut(&R::Instance, &R::Pinned) -> Result<T, OperationError> + Send + 'static,
+    {
+        let effect = self.effect;
+        let mut previous: Option<OperationError> = None;
+        loop {
+            if let Some(error) = previous.take_if(|_| self.attempts() >= self.max_attempts.get()) {
+                return Err(error);
+            }
+            let attempt = match self.attempt(cost.clone()).await {
+                Ok(attempt) => attempt,
+                Err(refusal) => return Err(previous.unwrap_or(refusal)),
+            };
+            let result = f(attempt.instance(), attempt.credentials()).await;
+            attempt.finish(&result).await;
+            match result {
+                Ok(output) => return Ok(output),
+                Err(error) if error.retried_in_call(effect) => previous = Some(error),
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// A session's single attempt on a row host: admitted like a row
@@ -1404,22 +1533,6 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
         self.shared.idempotency_key()
     }
 
-    /// Reports what the provider said about its limit on this attempt: a
-    /// [`Verdict::Throttled`] pauses every caller of the quota (a keyed
-    /// cost's [`Verdict::KeyThrottled`] pauses only its key), a
-    /// [`Verdict::Pass`] resets the backoff. Bounded; never fails the unit.
-    pub async fn report(&self, verdict: Verdict) {
-        if let (Verdict::Throttled { .. } | Verdict::KeyThrottled { .. }, Some(effect)) =
-            (&verdict, self.shared.effect())
-        {
-            effect.note_throttled();
-        }
-        self.managed
-            .rate_limiter
-            .report(verdict, self.cost.key())
-            .await;
-    }
-
     /// Marks the instance tainted: when its lease is released it is
     /// destroyed, not recycled. Use it when the instance is left in an
     /// unknown state.
@@ -1430,10 +1543,74 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
         }
     }
 
-    /// Settles the attempt with what happened to the request.
-    pub fn settle(self, sent: SentState) {
+    /// Finishes the attempt from its call's `result`: the low-level side of
+    /// [`OperationCx::call`], for an operation that holds the attempt
+    /// itself (a stream finished at its head, several steps on one
+    /// checkout). Everything derives from the result, classified by its
+    /// [`OperationError`] constructor (see its table):
+    ///
+    /// - a success, or a [`rejected`](OperationError::rejected) call, was
+    ///   `Sent` and tells the rate limit the call passed, resetting its
+    ///   backoff;
+    /// - a [`throttled`](OperationError::throttled) call was `Sent` and
+    ///   pauses the quota for the provider's hint, a
+    ///   [`throttled_key`](OperationError::throttled_key) one only the
+    ///   attempt's [`Cost::keyed`] key; neither counts as a call that may
+    ///   have been applied;
+    /// - an [`unreachable`](OperationError::unreachable) call was `NotSent`,
+    ///   an [`interrupted`](OperationError::interrupted) or unclassified one
+    ///   `MaybeSent`; neither tells the rate limit anything.
+    ///
+    /// Telling the rate limit is bounded and never fails the unit. An
+    /// attempt dropped unfinished counts as `MaybeSent`.
+    pub async fn finish<T>(self, result: &Result<T, OperationError>) {
         let mut attempt = self;
-        attempt.shared.record(sent);
+        let (sent, note, verdict) = match result {
+            Ok(_) => (SentState::Sent, CallNote::Plain, Some(Verdict::Pass)),
+            Err(error) => {
+                let sent = error.attempt_sent();
+                match error.signal() {
+                    Signal::Throttled { per_key } => {
+                        let retry_after = match error.kind() {
+                            ErrorKind::Exhausted { retry_after } => *retry_after,
+                            _ => None,
+                        };
+                        let verdict = if per_key {
+                            Verdict::KeyThrottled { retry_after }
+                        } else {
+                            Verdict::Throttled { retry_after }
+                        };
+                        (sent, CallNote::Throttled, Some(verdict))
+                    },
+                    Signal::Rejected => (
+                        sent,
+                        CallNote::Rejected(ErrorKindCode::of(error.kind())),
+                        Some(Verdict::Pass),
+                    ),
+                    Signal::Unreachable | Signal::Interrupted | Signal::Unclassified => {
+                        (sent, CallNote::Plain, None)
+                    },
+                }
+            },
+        };
+        // Recorded before the verdict's bounded wait: the attempt is over
+        // even when its future is dropped mid-report.
+        attempt.shared.record(sent, note);
+        attempt.settled = true;
+        if let Some(verdict) = verdict {
+            attempt
+                .managed
+                .rate_limiter
+                .report(verdict, attempt.cost.key())
+                .await;
+        }
+    }
+
+    /// Settles the attempt with what happened to the request, telling the
+    /// rate limit nothing: a session's single attempt.
+    pub(crate) fn settle(self, sent: SentState) {
+        let mut attempt = self;
+        attempt.shared.record(sent, CallNote::Plain);
         attempt.settled = true;
     }
 }
@@ -1487,7 +1664,7 @@ where
 impl<R: Provider + PinSlots> Drop for Attempt<'_, R> {
     fn drop(&mut self) {
         if !self.settled {
-            self.shared.record(SentState::MaybeSent);
+            self.shared.record(SentState::MaybeSent, CallNote::Plain);
         }
     }
 }

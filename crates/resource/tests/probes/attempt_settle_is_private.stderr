@@ -1,0 +1,10 @@
+error[E0624]: method `settle` is private
+  --> tests/probes/attempt_settle_is_private.rs:17:17
+   |
+17 |         attempt.settle(SentState::Sent);
+   |                 ^^^^^^ private method
+   |
+  ::: src/call/managed.rs
+   |
+   |     pub(crate) fn settle(self, sent: SentState) {
+   |     ------------------------------------------- private method defined here

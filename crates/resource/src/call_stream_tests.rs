@@ -153,7 +153,7 @@ impl StreamOperation<Feed> for Emit {
         self.probe.started.fetch_add(1, Ordering::SeqCst);
         let closing = cx.closing();
         let attempt = cx.attempt(Cost::FREE).await?;
-        attempt.settle(SentState::Sent);
+        attempt.finish(&Ok::<(), OperationError>(())).await;
         self.probe.granted.notify_one();
         let ended = EndGuard(Arc::clone(&self.probe.ended));
         for value in 0..self.items {
