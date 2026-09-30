@@ -284,7 +284,7 @@ impl Driver<'_, '_> {
             return Err(EffectExecutionError::InvalidEvidence);
         }
         protocol.validate()?;
-        if protocol.invocations() > self.contract.policy().max_invocations()
+        if protocol.crossed_invocations() > self.contract.policy().max_invocations()
             || protocol.queries() > self.contract.policy().max_queries()
             || (protocol.phase() == EffectPhase::Resolved) != protocol.evidence().is_some()
         {
@@ -394,18 +394,35 @@ impl Driver<'_, '_> {
             .ok_or(EffectExecutionError::InvalidEvidence)
     }
 
-    fn deadline(&self, purpose: CallPurpose) -> Result<i64, EffectExecutionError> {
+    /// Backend deadline of the call the current record just authorized.
+    ///
+    /// The ledger lets a slot whose every earlier call was proven not to cross
+    /// be granted at any age, so the first call that may reach the provider
+    /// takes its window from its own authorization; every later call stays
+    /// bounded by the window measured from preparation, as the ledger's
+    /// re-grant rule is.
+    fn deadline(
+        &self,
+        purpose: CallPurpose,
+        authorized_at_ms: i64,
+    ) -> Result<i64, EffectExecutionError> {
         let protocol = self.protocol()?;
         let policy = self.contract.policy();
-        let window = match purpose {
-            CallPurpose::Reconciliation => policy.recovery_window_ms(),
-            CallPurpose::Invocation => policy.stable_window_ms().map_or_else(
-                || policy.recovery_window_ms(),
-                |stable| stable.min(policy.recovery_window_ms()),
+        let (window, anchor_ms) = match purpose {
+            CallPurpose::Reconciliation => (policy.recovery_window_ms(), protocol.prepared_at_ms()),
+            CallPurpose::Invocation => (
+                policy.stable_window_ms().map_or_else(
+                    || policy.recovery_window_ms(),
+                    |stable| stable.min(policy.recovery_window_ms()),
+                ),
+                if protocol.crossed_invocations() == 1 {
+                    authorized_at_ms
+                } else {
+                    protocol.prepared_at_ms()
+                },
             ),
         };
-        protocol
-            .prepared_at_ms()
+        anchor_ms
             .checked_add(i64::try_from(window).map_err(|_| EffectExecutionError::InvalidContract)?)
             .ok_or(EffectExecutionError::InvalidEvidence)
     }
@@ -416,7 +433,7 @@ impl Driver<'_, '_> {
         authorized_at_ms: i64,
         request_started: Instant,
     ) -> Result<(i64, Duration), EffectExecutionError> {
-        let deadline = self.deadline(purpose)?;
+        let deadline = self.deadline(purpose, authorized_at_ms)?;
         let remaining = remaining_call_budget(
             deadline,
             authorized_at_ms,
