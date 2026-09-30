@@ -989,4 +989,143 @@ mod tests {
         let error = serde_json::from_value::<OperationProtocolRecord>(encoded).unwrap_err();
         assert!(error.to_string().contains("phase and retained evidence"));
     }
+
+    fn opaque_contract(max_invocations: u32) -> PreparedEffectContract {
+        let policy = PreparedEffectPolicy::builder(DestinationCapability::Opaque)
+            .maximum_invocations(max_invocations)
+            .maximum_queries(0)
+            .recovery_window(Duration::from_secs(1))
+            .build()
+            .unwrap();
+        PreparedEffectContract::new(RequestFingerprint::new(1, [7; 32]), policy).unwrap()
+    }
+
+    fn before_boundary(invocations: u32, not_crossed: u32) -> OperationProtocolRecordBuilder {
+        OperationProtocolRecord::prepared(opaque_contract(1), 0)
+            .revision(u64::from(invocations) * 2)
+            .phase(EffectPhase::BeforeBoundary)
+            .invocations(invocations, Some(OperationCallId::from_bytes([1; 16])))
+            .not_crossed(not_crossed)
+            .disposition(Some(InvocationDisposition::BeforeBoundary))
+    }
+
+    #[test]
+    fn a_zero_not_crossed_counter_serializes_as_before_it_existed() {
+        let record = OperationProtocolRecord::prepared(opaque_contract(1), 0)
+            .build()
+            .unwrap();
+        let encoded = serde_json::to_value(&record).unwrap();
+        assert!(encoded.get("not_crossed").is_none());
+        assert!(encoded.get("provider_key").is_none());
+        let mut fields: Vec<&str> = encoded
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            [
+                "adjudication_audit_digest",
+                "contract",
+                "disposition",
+                "evidence",
+                "invocation",
+                "invocations",
+                "phase",
+                "prepared_at_ms",
+                "queries",
+                "query",
+                "revision",
+                "version",
+            ],
+            "a record with no not-crossed call keeps the pre-counter wire shape"
+        );
+
+        let counted = before_boundary(3, 2).build().unwrap();
+        let encoded = serde_json::to_value(&counted).unwrap();
+        assert_eq!(encoded["not_crossed"], serde_json::json!(2));
+        assert_eq!(
+            serde_json::from_value::<OperationProtocolRecord>(encoded).unwrap(),
+            counted
+        );
+    }
+
+    #[test]
+    fn a_record_written_before_the_counter_decodes_from_its_disposition() {
+        let ambiguous_contract = {
+            let policy = PreparedEffectPolicy::builder(DestinationCapability::StableKey)
+                .maximum_invocations(2)
+                .maximum_queries(0)
+                .recovery_window(Duration::from_secs(1))
+                .stable_key_window(Duration::from_secs(1))
+                .build()
+                .unwrap();
+            PreparedEffectContract::new(RequestFingerprint::new(1, [7; 32]), policy).unwrap()
+        };
+        let ambiguous = OperationProtocolRecord::prepared(ambiguous_contract, 0)
+            .revision(2)
+            .phase(EffectPhase::Ambiguous)
+            .invocations(1, Some(OperationCallId::from_bytes([1; 16])))
+            .disposition(Some(InvocationDisposition::Ambiguous))
+            .build()
+            .unwrap();
+        let prepared = OperationProtocolRecord::prepared(opaque_contract(1), 0)
+            .build()
+            .unwrap();
+        for record in [prepared, ambiguous] {
+            let encoded = serde_json::to_string(&record).unwrap();
+            assert!(!encoded.contains("not_crossed"));
+            let decoded = serde_json::from_str::<OperationProtocolRecord>(&encoded).unwrap();
+            assert_eq!(decoded.not_crossed(), 0);
+            assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
+        }
+
+        // A legacy BeforeBoundary record carries no counter, yet its latest
+        // call was proven not sent: it decodes with exactly that one.
+        let mut legacy = serde_json::to_value(before_boundary(1, 1).build().unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("not_crossed");
+        let decoded = serde_json::from_value::<OperationProtocolRecord>(legacy).unwrap();
+        assert_eq!(decoded.not_crossed(), 1);
+        assert_eq!(decoded.crossed_invocations(), 0);
+    }
+
+    #[test]
+    fn validate_rejects_inconsistent_not_crossed_counters() {
+        let counter_limit = Err(violation(OperationProtocolViolation::CounterLimit));
+        let inconsistent = Err(violation(OperationProtocolViolation::InconsistentState));
+
+        assert_eq!(before_boundary(1, 2).build().map(drop), counter_limit);
+        // Budget 1 admits any number of not-crossed calls, but only one crossed.
+        assert!(before_boundary(5, 4).build().is_ok());
+        assert_eq!(before_boundary(5, 3).build().map(drop), counter_limit);
+        assert_eq!(
+            before_boundary(
+                OperationProtocolRecord::GRANT_CEILING + 1,
+                OperationProtocolRecord::GRANT_CEILING
+            )
+            .build()
+            .map(drop),
+            counter_limit
+        );
+        assert_eq!(before_boundary(1, 0).build().map(drop), inconsistent);
+        assert_eq!(
+            OperationProtocolRecord::prepared(opaque_contract(1), 0)
+                .not_crossed(1)
+                .build()
+                .map(drop),
+            counter_limit,
+            "no call was issued, so none can be not-crossed"
+        );
+        assert_eq!(
+            before_boundary(2, 2)
+                .phase(EffectPhase::InvocationOutstanding)
+                .disposition(None)
+                .build()
+                .map(drop),
+            inconsistent,
+            "an outstanding call is unexplained and counts as crossed"
+        );
+    }
 }

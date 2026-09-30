@@ -994,6 +994,77 @@ mod tests {
         );
     }
 
+    /// A slot refused locally on every call spends no budget, so the total
+    /// ceiling is what stops it; that refusal authorizes and changes nothing.
+    #[test]
+    fn the_grant_ceiling_refuses_as_known_not_sent_without_a_state_change() {
+        let ceiling = OperationProtocolRecord::GRANT_CEILING;
+        let at_ceiling = |not_crossed| {
+            let protocol = OperationProtocolRecord::prepared(contract(), 0)
+                .revision(u64::from(ceiling) * 2)
+                .phase(EffectPhase::BeforeBoundary)
+                .invocations(ceiling, Some(OperationCallId::from_bytes([7; 16])))
+                .not_crossed(not_crossed)
+                .disposition(Some(InvocationDisposition::BeforeBoundary))
+                .build()
+                .unwrap();
+            record(OperationState::Prepared, 0).with_protocol(protocol)
+        };
+        let grant = OperationCommand::GrantInvocation {
+            expected_revision: u64::from(ceiling) * 2,
+        };
+
+        // Nothing ever crossed: the window is irrelevant, the ceiling is not.
+        let stored = at_ceiling(ceiling);
+        assert_eq!(
+            decide_advance(
+                &stored,
+                &grant,
+                30_000,
+                OperationCallId::from_bytes([8; 16])
+            )
+            .map(|decision| decision.changed),
+            Err(OperationLedgerError::RecoveryExhausted)
+        );
+        // One call may have crossed and budget remains: still the ceiling.
+        let stored = at_ceiling(ceiling - 1);
+        assert_eq!(
+            decide_advance(
+                &stored,
+                &grant,
+                30_000,
+                OperationCallId::from_bytes([8; 16])
+            )
+            .map(|decision| decision.changed),
+            Err(OperationLedgerError::RecoveryExhausted)
+        );
+
+        // One below the ceiling a never-crossed slot is still granted, even
+        // long after its recovery and stable-key windows.
+        let protocol = OperationProtocolRecord::prepared(contract(), 0)
+            .revision(u64::from(ceiling - 1) * 2)
+            .phase(EffectPhase::BeforeBoundary)
+            .invocations(ceiling - 1, Some(OperationCallId::from_bytes([7; 16])))
+            .not_crossed(ceiling - 1)
+            .disposition(Some(InvocationDisposition::BeforeBoundary))
+            .build()
+            .unwrap();
+        let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
+        let decision = decide_advance(
+            &stored,
+            &OperationCommand::GrantInvocation {
+                expected_revision: u64::from(ceiling - 1) * 2,
+            },
+            i64::from(u32::MAX),
+            OperationCallId::from_bytes([8; 16]),
+        )
+        .unwrap();
+        std::assert_matches!(decision.response, OperationAdvance::Granted { .. });
+        let granted = decision.record.protocol().unwrap();
+        assert_eq!(granted.invocations(), ceiling);
+        assert_eq!(granted.crossed_invocations(), 1);
+    }
+
     #[test]
     fn reconciliation_requires_unknown_outcome_without_an_outstanding_query() {
         use nebula_core::OperationCallId;
