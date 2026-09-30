@@ -149,6 +149,7 @@ struct ProtocolTransition {
     revision: u64,
     phase: EffectPhase,
     invocations: u32,
+    not_crossed: u32,
     queries: u32,
     invocation: Option<OperationCallId>,
     disposition: Option<InvocationDisposition>,
@@ -164,6 +165,7 @@ impl ProtocolTransition {
             revision: protocol.revision(),
             phase: protocol.phase(),
             invocations: protocol.invocations(),
+            not_crossed: protocol.not_crossed(),
             queries: protocol.queries(),
             invocation: protocol.invocation(),
             disposition: protocol.disposition(),
@@ -190,6 +192,7 @@ impl ProtocolTransition {
     fn has_changes(&self) -> bool {
         self.phase != self.original.phase()
             || self.invocations != self.original.invocations()
+            || self.not_crossed != self.original.not_crossed()
             || self.queries != self.original.queries()
             || self.invocation != self.original.invocation()
             || self.disposition != self.original.disposition()
@@ -215,15 +218,30 @@ fn grant_invocation(
         return Err(OperationLedgerError::ProtocolConflict);
     }
 
+    // Only a call that may have reached the provider spends the budget or
+    // starts the clocks: a slot whose every call was proven not to cross has
+    // sent nothing, so there is nothing to duplicate and nothing to expire.
     let policy = transition.original.contract().policy();
+    let crossed = transition
+        .invocations
+        .saturating_sub(transition.not_crossed);
+    let ever_crossed = crossed > 0;
     let stable_key_is_valid = match policy.capability() {
-        DestinationCapability::StableKey => policy
-            .stable_window_ms()
-            .is_some_and(|window_ms| transition.is_within_window(window_ms, now_ms)),
+        DestinationCapability::StableKey => {
+            !ever_crossed
+                || policy
+                    .stable_window_ms()
+                    .is_some_and(|window_ms| transition.is_within_window(window_ms, now_ms))
+        },
         _ => transition.phase != EffectPhase::Ambiguous,
     };
-    if transition.invocations >= policy.max_invocations()
-        || !transition.is_within_window(policy.recovery_window_ms(), now_ms)
+    // The total ceiling bounds a slot that is refused locally forever. Its
+    // refusal changes nothing and authorizes nothing, so it is known not sent.
+    if transition.invocations >= OperationProtocolRecord::GRANT_CEILING {
+        return Err(OperationLedgerError::RecoveryExhausted);
+    }
+    if crossed >= policy.max_invocations()
+        || (ever_crossed && !transition.is_within_window(policy.recovery_window_ms(), now_ms))
         || !stable_key_is_valid
     {
         transition.phase = EffectPhase::OutcomeUnknown;
@@ -257,8 +275,16 @@ fn record_invocation_disposition(
         return Err(OperationLedgerError::ProtocolConflict);
     }
 
+    // Reached once per permit: a grant clears the disposition, and a repeated
+    // report of the recorded disposition returned above without counting.
     let next_phase = match reported_disposition {
-        InvocationDisposition::BeforeBoundary => EffectPhase::BeforeBoundary,
+        InvocationDisposition::BeforeBoundary => {
+            transition.not_crossed = transition
+                .not_crossed
+                .checked_add(1)
+                .ok_or(OperationLedgerError::InvalidProtocol)?;
+            EffectPhase::BeforeBoundary
+        },
         InvocationDisposition::Ambiguous
             if transition.original.contract().policy().capability()
                 == DestinationCapability::StableKey =>
@@ -388,6 +414,7 @@ fn finalize_transition(
         .revision(transition.revision)
         .phase(transition.phase)
         .invocations(transition.invocations, transition.invocation)
+        .not_crossed(transition.not_crossed)
         .queries(transition.queries, transition.query)
         .disposition(transition.disposition)
         .evidence(transition.outcome_evidence, adjudication_audit_digest)
@@ -934,9 +961,15 @@ mod tests {
         assert_eq!(legacy.protocol(), None);
     }
 
+    /// Windows constrain only a slot that may have sent something, so the
+    /// rollback is exercised on a slot whose first call crossed ambiguously.
     #[test]
     fn backend_clock_rollback_cannot_expand_the_recovery_window() {
         let protocol = OperationProtocolRecord::prepared(contract(), 100)
+            .revision(2)
+            .phase(EffectPhase::Ambiguous)
+            .invocations(1, Some(OperationCallId::from_bytes([7; 16])))
+            .disposition(Some(InvocationDisposition::Ambiguous))
             .build()
             .unwrap();
         let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
@@ -944,7 +977,7 @@ mod tests {
         let result = decide_advance(
             &stored,
             &OperationCommand::GrantInvocation {
-                expected_revision: 0,
+                expected_revision: 2,
             },
             99,
             OperationCallId::from_bytes([1; 16]),
@@ -959,6 +992,77 @@ mod tests {
             record.protocol().map(OperationProtocolRecord::phase),
             Some(EffectPhase::OutcomeUnknown),
         );
+    }
+
+    /// A slot refused locally on every call spends no budget, so the total
+    /// ceiling is what stops it; that refusal authorizes and changes nothing.
+    #[test]
+    fn the_grant_ceiling_refuses_as_known_not_sent_without_a_state_change() {
+        let ceiling = OperationProtocolRecord::GRANT_CEILING;
+        let at_ceiling = |not_crossed| {
+            let protocol = OperationProtocolRecord::prepared(contract(), 0)
+                .revision(u64::from(ceiling) * 2)
+                .phase(EffectPhase::BeforeBoundary)
+                .invocations(ceiling, Some(OperationCallId::from_bytes([7; 16])))
+                .not_crossed(not_crossed)
+                .disposition(Some(InvocationDisposition::BeforeBoundary))
+                .build()
+                .unwrap();
+            record(OperationState::Prepared, 0).with_protocol(protocol)
+        };
+        let grant = OperationCommand::GrantInvocation {
+            expected_revision: u64::from(ceiling) * 2,
+        };
+
+        // Nothing ever crossed: the window is irrelevant, the ceiling is not.
+        let stored = at_ceiling(ceiling);
+        assert_eq!(
+            decide_advance(
+                &stored,
+                &grant,
+                30_000,
+                OperationCallId::from_bytes([8; 16])
+            )
+            .map(|decision| decision.changed),
+            Err(OperationLedgerError::RecoveryExhausted)
+        );
+        // One call may have crossed and budget remains: still the ceiling.
+        let stored = at_ceiling(ceiling - 1);
+        assert_eq!(
+            decide_advance(
+                &stored,
+                &grant,
+                30_000,
+                OperationCallId::from_bytes([8; 16])
+            )
+            .map(|decision| decision.changed),
+            Err(OperationLedgerError::RecoveryExhausted)
+        );
+
+        // One below the ceiling a never-crossed slot is still granted, even
+        // long after its recovery and stable-key windows.
+        let protocol = OperationProtocolRecord::prepared(contract(), 0)
+            .revision(u64::from(ceiling - 1) * 2)
+            .phase(EffectPhase::BeforeBoundary)
+            .invocations(ceiling - 1, Some(OperationCallId::from_bytes([7; 16])))
+            .not_crossed(ceiling - 1)
+            .disposition(Some(InvocationDisposition::BeforeBoundary))
+            .build()
+            .unwrap();
+        let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
+        let decision = decide_advance(
+            &stored,
+            &OperationCommand::GrantInvocation {
+                expected_revision: u64::from(ceiling - 1) * 2,
+            },
+            i64::from(u32::MAX),
+            OperationCallId::from_bytes([8; 16]),
+        )
+        .unwrap();
+        std::assert_matches!(decision.response, OperationAdvance::Granted { .. });
+        let granted = decision.record.protocol().unwrap();
+        assert_eq!(granted.invocations(), ceiling);
+        assert_eq!(granted.crossed_invocations(), 1);
     }
 
     #[test]

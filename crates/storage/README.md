@@ -227,8 +227,12 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   runtime-minted `OperationId`; same-slot mismatch is `OperationMismatch` with no durable delta,
   while distinct slots remain distinct. Only a pinned stable-key destination may make bounded
   effect-call re-invocations of that same `Prepared` operation and `OperationId` while its
-  guarantee remains valid; reconciliation is read-only. Exhaustion or expiry records
-  `OutcomeUnknown`, after which no effecting call may repeat. `AcknowledgementUnknown` applies to
+  guarantee remains valid; reconciliation is read-only. Only calls that may have crossed the
+  provider boundary spend `max_invocations`, and the recovery and stable-key windows bind only
+  after the first such call: a call recorded `BeforeBoundary` is counted in `not_crossed`, so a
+  slot that never crossed stays grantable at any age, up to `GRANT_CEILING` (10 000) total
+  grants, whose refusal is `RecoveryExhausted` with no state change. Exhaustion or expiry
+  records `OutcomeUnknown`, after which no effecting call may repeat. `AcknowledgementUnknown` applies to
   prepare and outcome database commits: prepare uncertainty forbids provider invocation until
   database-only reconciliation confirms the exact durable prepared record and ID; outcome
   uncertainty permits only ledger reads and exact frozen-evidence recommit. All three
