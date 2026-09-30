@@ -2,8 +2,9 @@
 //!
 //! An action whose admitted contract is
 //! [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled)
-//! submits its effects as units on [`ResourceHandle`]s. For a stateless
-//! action on a durable turn the engine builds one [`NodeEffectJournal`] per
+//! submits its effects as units on resource handles
+//! ([`ResourceHandle`](nebula_resource::call::ResourceHandle)). For a
+//! stateless action on a durable turn the engine builds one [`NodeEffectJournal`] per
 //! node attempt and hands it to the node's handles
 //! ([`Manager::handle_any_journaled`](nebula_resource::Manager::handle_any_journaled));
 //! the resource runtime drives every `Idempotent` or `Write` unit through
