@@ -11,6 +11,50 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **The unified resource `Operation` advances development packages to 0.23.0
+  in lockstep.** An operation declares only what an execution journal needs,
+  and the runtime derives the rest:
+  - `Operation` is now `Serialize + DeserializeOwned` with a serializable
+    `Output`, and gains `KEY` (required: 1–64 bytes of `[A-Za-z0-9_.-]`,
+    alphanumeric at both ends, unique within the resource), `VERSION`
+    (default 1), `KEY_WINDOW` (default 24 h, non-zero for `Idempotent`),
+    `RECORD_OUTPUT` (default `true`) and `idempotency_key()` (the developer
+    part, default `None`). A malformed declaration fails the build at
+    `submit` and is refused `Permanent` / `NotSent` at runtime.
+    `StreamOperation` gains `KEY`, `VERSION` and `idempotency_key()`, without
+    serde bounds.
+  - Removed: `EffectOperation`, `EffectContract`, `EffectRecovery`,
+    `Recorded`, `IdempotencyKeyPart` (now a `String`), `OccurrenceLabel`,
+    `ResourceHandle::submit_effect` / `session_effect`, and
+    `SessionSpec::new` / `with_effect` / the `cost()` getter. One `submit`
+    and one `session` route each unit by effect and caller authority: a
+    journaled row drives `Idempotent` / `Write` units through its
+    `EffectJournal` (streamed effects are refused), a read-only row refuses
+    them, a library row or `Lease` runs them.
+  - Sessions are declared with `SessionSpec::read(name)`,
+    `::idempotent(name, &request)` or `::write(name, &request)` plus
+    `.cost(..)`, `.idempotency_key(..)`, `.key_window(..)`, `.version(..)`;
+    `ResourceHandle::session`'s output is `Serialize + DeserializeOwned`.
+  - The journal seam: `EffectRecovery` → `call::journal::Recovery`;
+    `JournalIntent` carries `kind` (`UnitKind`), `operation`, `version`,
+    `record_output` and a `&str` key part instead of the contract, recovery
+    declaration and `Recorded`; `EffectJournal::next_ordinal(key, kind, name)`;
+    occurrences are `unit/v1/{resource}/{op|session}/{name}/v{version}/#{n:06}`
+    from the key-sorted JSON of the operation as canonical request. An output
+    over 1 MiB is recorded digest-only.
+  - `OperationCx::idempotency_key()` (and the new
+    `Attempt::idempotency_key()`) also returns a local key — base64url
+    SHA-256 of resource, operation key, version and developer part — for an
+    unjournaled unit that declares a part. The unit's span names its
+    operation by `KEY` (or the session name), not its Rust type.
+  - SDK HTTP adapter: `Method::OPERATION_KEY` (`http.get`, `http.post.keyed`,
+    …); `Request` and `Response` serialize; the `Idempotency-Key` header of a
+    `Keyed` request now carries the key derived from the developer part, not
+    the raw part, so its bytes on the wire change.
+
+  Every `Operation` implementation must add `KEY` and serde derives
+  (non-intent fields `#[serde(skip)]`; with the SDK alone,
+  `#[serde(crate = "nebula_sdk::serde")]`).
 - **The managed call facade renames advance development packages to 0.22.0 in
   lockstep.** The resource facade is renamed to its approved names:
   - `ManagedRow` → `ResourceHandle<R>` (`Manager::handle*`) and
