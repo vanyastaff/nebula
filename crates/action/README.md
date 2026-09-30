@@ -251,11 +251,16 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   `ActionEffectContract`: the default `Journaled(JournalProtocol::V1)`, `ReadOnly`, or
   `Remote(RemoteEffectDescriptor)`. `Journaled` covers only effects routed through
   resource handles; a side channel the action opens itself is invisible to the engine
-  and is never journaled. Until the engine effect journal lands, a `Journaled` action
-  runs with read-only handle authority on the engine's node dispatch only: reads run,
-  writes through handles are refused before any provider call, and raw leases
-  (`ResourceGuard<R>` slots, `acquire_resource_by_id`) are refused because they would
-  bypass the journal. A remote stateless factory exposes
+  and is never journaled (nor is a lease-facade unit). A `Journaled` action runs on the
+  engine's node dispatch only. When the turn has execution stores, a stateless one gets
+  resource handles under its node attempt's effect journal: every `Idempotent` /
+  `Write` unit is prepared, granted and recorded in the operation ledger, replayed on
+  retry or resume, and an unknown outcome fails the node even if the action swallowed
+  the unit's error. Without execution stores (refusal detail "journaled effects need
+  execution stores"), and for stateful, control and agent actions until their
+  iterations are journaled, the handles are read-only: reads run and writes are refused
+  before any provider call. Raw leases (`ResourceGuard<R>` slots,
+  `acquire_resource_by_id`) are always refused because they would bypass the journal. A remote stateless factory exposes
   `RemoteEffectFactory`; generic action dispatch cannot invoke it. Preparation produces
   bounded canonical request and destination-binding bytes without invocation authority.
   Only the execution owner issues an `EffectInvocationContext` after the ledger

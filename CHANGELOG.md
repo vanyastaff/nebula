@@ -39,7 +39,8 @@ changes are expected between minor releases — call them out here.
     `PlanActionEffectContract::LegacyUndeclared` and is still refused — it is
     never reinterpreted as `Journaled`.
   - Only handle-routed effects are journaled; a side channel an action opens
-    itself is invisible to the engine. Until the engine effect journal lands,
+    itself is invisible to the engine. Until the engine effect journal lands
+    (it now has, for stateless actions — see "Changed"),
     a `Journaled` action of any kind runs with read-only handle authority:
     reads run, and a write through a handle is refused as `NotSent` before
     any provider call. A `Journaled` action cannot take a raw lease: a
@@ -1408,6 +1409,36 @@ let admitted = recorded.readmit_against(fresh)?;
   classifications map to wire code `other`.
 
 ### Changed
+
+- **Stateless `Journaled` actions get journaled resource effects.** On a
+  durable turn (operation ledger and execution fence present), the engine
+  runs a frozen, stateless `Journaled` action under one `NodeEffectJournal`
+  per node attempt, and its resource handles drive every `Idempotent` /
+  `Write` unit through it: each effect is one operation-ledger slot under the
+  natural key `(scope, execution, node, occurrence)`, prepared lazily (no
+  ledger I/O until the first effect; reads are never prepared), granted per
+  provider call and settled or explained. Occurrences restart per node
+  attempt, so a retry or resume replays a settled effect's recorded output
+  with no provider call, refuses an unknown one and re-grants a retryable
+  failure within `Operation::max_attempts`; the `it{n}/` occurrence prefix is
+  reserved for stateful iterations. The provider receives the key recorded at
+  prepare, `base64url(SHA-256(...))` over the tenant, resource, operation,
+  version and the developer key part (or execution, node and occurrence) —
+  never an attempt number. The journal's verdict overrides the action's
+  result: any unknown slot fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN`
+  (even when the action swallowed the unit's error), a changed request or
+  binding under a recorded occurrence fails it with the new
+  `ENGINE:EFFECT_OCCURRENCE_MISMATCH` (`EffectExecutionError::OccurrenceMismatch`,
+  plus `JournalOutcomeUnknown`), and a lost lease releases the turn without
+  finalizing. Raw leases stay refused; only handle-routed effects are
+  journaled (lease-facade units and raw egress are outside the journal).
+  Without execution stores a journaled node keeps read-only handles whose
+  refused writes say "journaled effects need execution stores"
+  (`Manager::handle_any_read_only_because` is new); stateful, control and
+  agent `Journaled` actions stay read-only until their iterations are
+  journaled. New counters: `nebula_effect_journal_prepares_total{phase}`,
+  `nebula_effect_journal_refusals_total{step,refusal}`,
+  `nebula_effect_journal_verdicts_total{code}`.
 
 - **`OperationProtocolRecord` counts not-crossed calls.** The record gains
   `not_crossed` (with `not_crossed()`, `crossed_invocations()`, the builder

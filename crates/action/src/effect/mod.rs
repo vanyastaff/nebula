@@ -17,10 +17,13 @@ pub use adapter::{
 /// The default is [`Journaled`](Self::Journaled) at [`JournalProtocol::V1`]:
 /// an action that declares nothing may perform effects, but only through
 /// resource handles. Only handle-routed effects are journaled; a side channel
-/// the action opens itself is invisible to the engine. Until the engine effect
-/// journal lands, a journaled action runs with read-only handle authority:
-/// reads run and writes through handles are refused before any provider call.
-/// A raw lease (a `ResourceGuard<R>` slot or `acquire_resource_by_id`) is
+/// the action opens itself is invisible to the engine. A stateless journaled
+/// action on a turn with execution stores gets handles under its node's
+/// effect journal (writes are prepared, granted and recorded by the engine);
+/// otherwise — no execution stores, or a stateful, control or agent action
+/// until its iterations are journaled — it runs with read-only handle
+/// authority: reads run and writes through handles are refused before any
+/// provider call. A raw lease (a `ResourceGuard<R>` slot or `acquire_resource_by_id`) is
 /// refused outright, since it would bypass the journal, and only the engine's
 /// node dispatch runs a journaled action: the generic runtime entry points
 /// cannot vouch for a caller-supplied resource accessor.
