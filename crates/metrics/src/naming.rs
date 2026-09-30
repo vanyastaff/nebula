@@ -1,7 +1,7 @@
 //! Standard metric names for Nebula.
 //!
 //! Convention: `nebula_<domain>_<metric>_<unit>`.
-//! See [docs/crates/metrics/TARGET.md](https://github.com/vanyastaff/nebula/blob/main/docs/crates/metrics/TARGET.md).
+//! The naming and label-cardinality policy is described in `crates/metrics/README.md`.
 
 // ---------------------------------------------------------------------------
 // Workflow (engine)
