@@ -468,7 +468,52 @@ mod tests {
     struct Meters(f64);
 
     /// Serializes through `serialize_bytes`, not as a sequence.
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
     struct Bytes(&'static [u8]);
+
+    /// Serializes through `collect_str`, its text from `Display`.
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    struct Displayed(&'static str);
+
+    impl std::fmt::Display for Displayed {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.0)
+        }
+    }
+
+    impl Serialize for Displayed {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(self)
+        }
+    }
+
+    /// A map keyed by floats, which a `BTreeMap` cannot hold.
+    struct FloatKeys;
+
+    impl Serialize for FloatKeys {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap as _;
+            let mut map = serializer.serialize_map(Some(5))?;
+            map.serialize_entry(&1.5_f64, &0)?;
+            map.serialize_entry(&-0.0_f64, &1)?;
+            map.serialize_entry(&1e300_f64, &2)?;
+            map.serialize_entry(&0.1_f32, &3)?;
+            map.serialize_entry(&Meters(2.0), &4)?;
+            map.end()
+        }
+    }
+
+    /// A map keyed by a NaN, which no JSON key can spell.
+    struct NonFiniteKey;
+
+    impl Serialize for NonFiniteKey {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap as _;
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry(&f64::NAN, &0)?;
+            map.end()
+        }
+    }
 
     impl Serialize for Bytes {
         fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -595,6 +640,19 @@ mod tests {
         );
         same_as_legacy("tuple keys", &BTreeMap::from([((1, 2), "pair")]));
         same_as_legacy("option keys", &BTreeMap::from([(Some(1), "some")]));
+        same_as_legacy("float keys", &FloatKeys);
+        same_as_legacy(
+            "displayed keys and values",
+            &BTreeMap::from([
+                (Displayed("b\n\u{e9}"), Displayed("value \"quoted\"")),
+                (Displayed(""), Displayed("")),
+                (Displayed("a"), Displayed("\u{1f600}")),
+            ]),
+        );
+        same_as_legacy("unit keys", &BTreeMap::from([((), 1)]));
+        same_as_legacy("bytes keys", &BTreeMap::from([(Bytes(b"k"), 1)]));
+        same_as_legacy("sequence keys", &BTreeMap::from([(vec![1], 1)]));
+        same_as_legacy("non-finite float keys", &NonFiniteKey);
         same_as_legacy("raw value", &raw);
         for text in [
             "null",
@@ -822,6 +880,87 @@ mod tests {
             canonical_json(&"\u{0}".repeat(MAX_CANONICAL_REQUEST_LEN)).expect_err("over the cap");
         assert_eq!(error.detail(), "canonical request must be 1 byte to 1 MiB");
     }
+
+    /// `Display`s `chunks` chunks of 1 KiB through `collect_str`, counting
+    /// the chunks formatted.
+    struct Endless {
+        chunks: usize,
+        written: Cell<usize>,
+    }
+
+    impl std::fmt::Display for Endless {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let chunk = "k".repeat(1024);
+            for _ in 0..self.chunks {
+                self.written.set(self.written.get() + 1);
+                formatter.write_str(&chunk)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl Serialize for Endless {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(self)
+        }
+    }
+
+    /// A one-member map keyed by `key`.
+    struct KeyedBy<'a, K>(&'a K);
+
+    impl<K: Serialize> Serialize for KeyedBy<'_, K> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeMap as _;
+            let mut map = serializer.serialize_map(Some(1))?;
+            map.serialize_entry(self.0, &1)?;
+            map.end()
+        }
+    }
+
+    #[test]
+    fn a_map_key_over_the_cap_is_refused_before_it_is_built() {
+        let too_large = "canonical request must be 1 byte to 1 MiB";
+        // `{"k…":1}`: the key alone takes the whole cap.
+        let fits = "k".repeat(MAX_CANONICAL_REQUEST_LEN - 6);
+        assert_eq!(
+            canonical_json(&BTreeMap::from([(fits.as_str(), 1)]))
+                .expect("exactly the cap")
+                .len(),
+            MAX_CANONICAL_REQUEST_LEN
+        );
+        let over = "k".repeat(MAX_CANONICAL_REQUEST_LEN - 1);
+        let error = canonical_json(&BTreeMap::from([(over.as_str(), 1)])).expect_err("over");
+        assert_eq!(error.detail(), too_large);
+        let newtype = BTreeMap::from([(KeyNewtypeText(over), 1)]);
+        assert_eq!(
+            canonical_json(&newtype).expect_err("over").detail(),
+            too_large
+        );
+
+        // A key formatted through `Display` stops at the cap, not after
+        // its 64 MiB: only about the cap's worth of chunks is formatted.
+        for keyed in [true, false] {
+            let endless = Endless {
+                chunks: 64 * 1024,
+                written: Cell::new(0),
+            };
+            let error = if keyed {
+                canonical_json(&KeyedBy(&endless))
+            } else {
+                canonical_json(&endless)
+            }
+            .expect_err("over the cap");
+            assert_eq!(error.detail(), too_large, "keyed: {keyed}");
+            let written = endless.written.get();
+            assert!(
+                written <= MAX_CANONICAL_REQUEST_LEN / 1024 + 1,
+                "keyed: {keyed}: {written} chunks formatted before the refusal"
+            );
+        }
+    }
+
+    #[derive(Serialize, PartialEq, Eq, PartialOrd, Ord)]
+    struct KeyNewtypeText(String);
 
     #[test]
     fn the_cap_counts_every_byte_of_a_nested_request_exactly_once() {
