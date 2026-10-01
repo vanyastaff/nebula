@@ -839,6 +839,9 @@ impl ActionRuntime {
             }
 
             if context.cancellation().is_cancelled() {
+                if let Some(gate) = iteration_gate {
+                    gate.cancel_iteration();
+                }
                 return Err(ActionError::Cancelled.into());
             }
 
@@ -899,6 +902,13 @@ impl ActionRuntime {
                         tokio::select! {
                             () = tokio::time::sleep(d) => {}
                             () = context.cancellation().cancelled() => {
+                                // Between iterations: a detached submission
+                                // from now on is refused as closed, not as
+                                // a barrier violation — the node stays
+                                // cancelled.
+                                if let Some(gate) = iteration_gate {
+                                    gate.cancel_iteration();
+                                }
                                 return Err(ActionError::Cancelled.into());
                             }
                         }

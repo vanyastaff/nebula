@@ -2200,6 +2200,105 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
     }
 }
 
+/// Continues after every iteration with a one-hour delay.
+struct DelayedStateful;
+
+impl Action for DelayedStateful {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        pure_metadata(
+            action_key!("test.delayed"),
+            "DelayedStateful",
+            "continues after a delay",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+impl StatefulAction for DelayedStateful {
+    type State = JsonValue;
+    fn init_state(&self) -> Self::State {
+        serde_json::json!({ "count": 0u32 })
+    }
+    async fn execute(
+        &self,
+        _input: &Self::Input,
+        state: &mut Self::State,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        let count = state
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        *state = serde_json::json!({ "count": count + 1 });
+        Ok(ActionResult::Continue {
+            output: ActionOutput::Value(serde_json::json!(null)),
+            progress: None,
+            delay: Some(std::time::Duration::from_hours(1)),
+        })
+    }
+}
+impl FromWorkflowNode for DelayedStateful {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(DelayedStateful)
+    }
+}
+
+/// A cancellation during the delay between two iterations closes admission
+/// too: a detached submission is refused as closed, not as a barrier
+/// violation, and the node stays cancelled.
+#[tokio::test(start_paused = true)]
+async fn a_cancellation_during_the_delay_closes_admission() {
+    let gate = Arc::new(ScriptedGate::default());
+    let ctx = test_context();
+    let cancel = ctx.cancellation().clone();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<DelayedStateful>::new()
+            .expect("valid test catalog definition"),
+    );
+    let run = tokio::spawn({
+        let gate = Arc::clone(&gate);
+        async move {
+            let node =
+                NodeDefinition::new(node_key!("test"), "Delayed", "test", "delayed").unwrap();
+            make_runtime(Arc::new(ActionRegistry::new()))
+                .run_factory(
+                    "test.delayed",
+                    factory,
+                    &node,
+                    nebula_action::ActionInput::Raw(serde_json::Value::Null),
+                    &ctx,
+                    None,
+                    ResourceAuthority::CallerSupplied,
+                    Some(gate.as_ref()),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+        .await
+        .expect("cancellation is observed")
+        .expect("task");
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["begin 0", "end 0 ok", "cancel 0"]);
+}
+
 /// A cancellation during an iteration's dispatch ends the iteration at the
 /// barrier — no later submission is admitted — instead of leaving it open.
 #[tokio::test(start_paused = true)]
