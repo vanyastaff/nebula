@@ -448,3 +448,77 @@ fn a_config_without_a_stable_fingerprint_is_refused_by_validate() {
     assert_eq!(cfg.fingerprint(), 0xdb2b_8946_e87e_08ab);
     let _ = (&cfg.broken, &cfg.opaque);
 }
+
+// ── Hash-ordered sets ────────────────────────────────────────────────────────
+//
+// A fingerprinted `HashSet` field is a compile error (see
+// `tests/probes/config_unordered_set_field.rs`): it serializes as an array in
+// per-process hash order. A `HashMap` serializes as an object whose keys the
+// canonical encoding sorts, so it is accepted and stable; a skipped set is
+// accepted and ignored.
+
+#[derive(Clone, ResourceConfig)]
+#[config(schema = external)]
+struct MapAndSkippedSetCfg {
+    headers: std::collections::HashMap<String, String>,
+    #[config(skip_fingerprint)]
+    labels: std::collections::HashSet<String>,
+}
+
+nebula_resource::impl_empty_has_schema!(MapAndSkippedSetCfg);
+
+fn map_cfg(order: &[usize], labels: &[&str]) -> MapAndSkippedSetCfg {
+    let pairs = [("accept", "json"), ("x-region", "eu"), ("x-tenant", "a")];
+    let mut headers = std::collections::HashMap::new();
+    for index in order {
+        let (key, value) = pairs[*index];
+        headers.insert(key.to_owned(), value.to_owned());
+    }
+    MapAndSkippedSetCfg {
+        headers,
+        labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+    }
+}
+
+#[test]
+fn a_hash_map_field_is_accepted_and_stable() {
+    // `{"headers":{"accept":"json","x-region":"eu","x-tenant":"a"}}`
+    let golden = 0x78d2_b6f4_5eca_2110;
+    for order in [[0, 1, 2], [2, 1, 0], [1, 2, 0]] {
+        for _ in 0..8 {
+            let cfg = map_cfg(&order, &["b", "a", "c"]);
+            assert!(cfg.validate().is_ok());
+            assert_eq!(cfg.fingerprint(), golden, "insertion order {order:?}");
+        }
+    }
+    assert_eq!(
+        map_cfg(&[0, 1, 2], &[]).fingerprint(),
+        golden,
+        "skipped set"
+    );
+    assert!(map_cfg(&[0, 1, 2], &["x"]).labels.contains("x"));
+}
+
+#[derive(Clone, ResourceConfig)]
+#[config(schema = external)]
+struct FloatCfg {
+    ratio: f64,
+}
+
+nebula_resource::impl_empty_has_schema!(FloatCfg);
+
+#[test]
+fn a_non_finite_float_config_is_refused_by_validate() {
+    for ratio in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let error = FloatCfg { ratio }.validate().unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            nebula_resource::error::ErrorKind::Permanent
+        ));
+    }
+    assert!(FloatCfg { ratio: 0.5 }.validate().is_ok());
+    assert_ne!(
+        FloatCfg { ratio: 0.5 }.fingerprint(),
+        FloatCfg { ratio: 0.25 }.fingerprint()
+    );
+}

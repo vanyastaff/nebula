@@ -33,8 +33,17 @@ changes are expected between minor releases — call them out here.
     `serde::Serialize` instead of `std::hash::Hash` (skip a field with
     `#[config(skip_fingerprint)]`). The derive now always emits `validate`
     for a config with fingerprinted fields, refusing a config whose fields
-    have no stable fingerprint (`Error::permanent`) before delegating to
-    `#[config(validate = path)]`. Fieldless configs still return `0`.
+    have no stable fingerprint (`Error::permanent`, traced as a `warn` event
+    with the field name and the failed invariant, never the value, under a
+    `resource.config.validate` span carrying the resource key) before
+    delegating to `#[config(validate = path)]`. Fieldless configs still
+    return `0`. A fingerprinted field whose type names a hash-ordered set
+    (`HashSet`, `FxHashSet`, …) is a compile error — its array order follows
+    the per-process hash seed; use `BTreeSet`, a sorted `Vec` or
+    `#[config(skip_fingerprint)]` (`HashMap` is fine: object keys are
+    sorted). A NaN or infinite float is refused
+    (`ConfigFingerprintError::NonFiniteFloat`) instead of aliasing `null`;
+    operation-request canonicalization is unchanged.
   - Every fingerprint value changes once: a hot reload compares values within
     one process and is unaffected; journaled slots recorded by an earlier
     build under a fingerprint of the old scheme resolve as a contract

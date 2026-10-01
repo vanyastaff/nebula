@@ -40,6 +40,12 @@
 //! - Tuple struct fields with `#[config]`: compile error.
 //! - Field included in fingerprint that does not impl `serde::Serialize` — compile
 //!   error from the emitted `ConfigFingerprint::field(name, &self.field)` call.
+//! - Field included in fingerprint whose type names a hash-ordered set (`HashSet`,
+//!   `hashbrown::HashSet`, `FxHashSet`, … anywhere in the type) — compile error at
+//!   the segment: its array order follows the per-process hash seed, so the
+//!   fingerprint would not be stable. `HashMap` is fine (object keys are sorted).
+//!
+//! `validate` also refuses NaN/infinite floats (JSON would alias them to `null`).
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -295,6 +301,7 @@ fn fingerprinted_fields(fields: &Fields) -> syn::Result<Option<TokenStream2>> {
                          report this as a #[derive(ResourceConfig)] bug",
                     ));
                 };
+                reject_unordered(&field.ty)?;
                 let name = ident.unraw().to_string();
                 Ok(Some(quote! { .field(#name, &self.#ident) }))
             })
@@ -309,6 +316,7 @@ fn fingerprinted_fields(fields: &Fields) -> syn::Result<Option<TokenStream2>> {
                 if field_opts.skip_fingerprint {
                     return Ok(None);
                 }
+                reject_unordered(&field.ty)?;
                 let idx = syn::Index::from(i);
                 let name = i.to_string();
                 Ok(Some(quote! { .field(#name, &self.#idx) }))
@@ -322,6 +330,58 @@ fn fingerprinted_fields(fields: &Fields) -> syn::Result<Option<TokenStream2>> {
     Ok(Some(quote! {
         ::nebula_resource::ConfigFingerprint::new() #(#calls)*
     }))
+}
+
+/// Refuses a fingerprinted field whose type names a hash-ordered set
+/// anywhere in it (`HashSet`, `hashbrown::HashSet`, `FxHashSet`, …, also
+/// inside `Option`/`Vec`/references/tuples/arrays).
+///
+/// The canonical encoding sorts object keys — so a `HashMap` is fine — but
+/// keeps array order, which is content for a `Vec`. A hash set serializes
+/// as an array in its iteration order, which follows the per-process hash
+/// seed: equal configurations would get different fingerprints, and a
+/// journaled effect would be refused after a restart. The check is
+/// syntactic: a set hidden behind a type alias or inside another type is
+/// the field type's own determinism contract (documented on
+/// `ConfigFingerprint`).
+fn reject_unordered(ty: &syn::Type) -> syn::Result<()> {
+    match ty {
+        syn::Type::Path(path) => {
+            if let Some(qself) = &path.qself {
+                reject_unordered(&qself.ty)?;
+            }
+            for segment in &path.path.segments {
+                if segment.ident.to_string().ends_with("HashSet") {
+                    return Err(syn::Error::new_spanned(
+                        segment,
+                        format!(
+                            "`{}` iterates in hash order, which differs between processes, so \
+                             the configuration fingerprint (recorded by the effect journal) \
+                             would not be stable; use `BTreeSet`, a sorted `Vec`, or mark the \
+                             field `#[config(skip_fingerprint)]`",
+                            segment.ident
+                        ),
+                    ));
+                }
+                if let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments {
+                    for argument in &arguments.args {
+                        if let syn::GenericArgument::Type(inner) = argument {
+                            reject_unordered(inner)?;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        },
+        syn::Type::Reference(reference) => reject_unordered(&reference.elem),
+        syn::Type::Array(array) => reject_unordered(&array.elem),
+        syn::Type::Slice(slice) => reject_unordered(&slice.elem),
+        syn::Type::Paren(paren) => reject_unordered(&paren.elem),
+        syn::Type::Group(group) => reject_unordered(&group.elem),
+        syn::Type::Ptr(pointer) => reject_unordered(&pointer.elem),
+        syn::Type::Tuple(tuple) => tuple.elems.iter().try_for_each(reject_unordered),
+        _ => Ok(()),
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────

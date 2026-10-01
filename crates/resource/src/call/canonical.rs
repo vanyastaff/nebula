@@ -42,6 +42,9 @@ pub(crate) enum CanonicalError {
     DuplicateKey,
     /// The canonical form outgrows [`MAX_CANONICAL_REQUEST_LEN`].
     TooLarge,
+    /// A float is NaN or infinite, refused by [`to_canonical_finite`] only:
+    /// JSON writes it `null`, aliasing a real `null`.
+    NonFiniteFloat,
 }
 
 impl fmt::Display for CanonicalError {
@@ -50,6 +53,7 @@ impl fmt::Display for CanonicalError {
             Self::Unserializable => "the request does not serialize to JSON",
             Self::DuplicateKey => "an object of the request has a duplicate key",
             Self::TooLarge => "the canonical request is over its cap",
+            Self::NonFiniteFloat => "a float of the value is NaN or infinite",
         })
     }
 }
@@ -67,6 +71,29 @@ impl ser::Error for CanonicalError {
 pub(crate) fn to_canonical<T: Serialize + ?Sized>(request: &T) -> Result<Vec<u8>, CanonicalError> {
     let mut out = Vec::new();
     write_canonical(request, &mut out)?;
+    Ok(out)
+}
+
+/// The canonical JSON of `value`, refusing a NaN or infinite float
+/// ([`CanonicalError::NonFiniteFloat`]) — as a value or a map key — rather
+/// than writing it `null`.
+///
+/// For a digest that must tell every distinct value apart, such as a
+/// configuration fingerprint. An operation request keeps
+/// [`to_canonical`]: what reaches its provider is `serde_json`'s output,
+/// which writes such a float `null` too, so the alias is faithful there.
+pub(crate) fn to_canonical_finite<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<Vec<u8>, CanonicalError> {
+    let mut out = Vec::new();
+    let budget = Budget {
+        finite_only: true,
+        ..Budget::default()
+    };
+    value.serialize(Canonical {
+        out: &mut out,
+        budget: &budget,
+    })?;
     Ok(out)
 }
 
@@ -96,9 +123,20 @@ struct Budget {
     /// the refusal surfaces as — `serde_json`'s, a formatter's, a parser's —
     /// it is [`CanonicalError::TooLarge`].
     over: Cell<bool>,
+    /// Refuse a non-finite float instead of writing it `null`.
+    finite_only: bool,
 }
 
 impl Budget {
+    /// Refuses `finite == false` when only finite floats are admitted.
+    fn float(&self, finite: bool) -> Result<(), CanonicalError> {
+        if self.finite_only && !finite {
+            Err(CanonicalError::NonFiniteFloat)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Refuses when `len` more bytes would not fit.
     fn check(&self, len: usize) -> Result<(), CanonicalError> {
         if self.used.get().saturating_add(len) > MAX_CANONICAL_REQUEST_LEN {
@@ -285,8 +323,6 @@ impl Serializer for MapKey<'_> {
         serialize_u32(u32);
         serialize_u64(u64);
         serialize_u128(u128);
-        serialize_f32(f32);
-        serialize_f64(f64);
         serialize_char(char);
     }
 
@@ -295,6 +331,16 @@ impl Serializer for MapKey<'_> {
         serialize_none();
         serialize_unit();
         serialize_unit_struct(&'static str);
+    }
+
+    fn serialize_f32(self, key: f32) -> Result<String, CanonicalError> {
+        self.budget.float(key.is_finite())?;
+        scalar_key(key)
+    }
+
+    fn serialize_f64(self, key: f64) -> Result<String, CanonicalError> {
+        self.budget.float(key.is_finite())?;
+        scalar_key(key)
     }
 
     fn serialize_str(self, key: &str) -> Result<String, CanonicalError> {
@@ -481,10 +527,12 @@ impl<'a> Serializer for Canonical<'a> {
     }
 
     fn serialize_f32(self, value: f32) -> Result<(), CanonicalError> {
+        self.budget.float(value.is_finite())?;
         push_scalar(self.out, self.budget, value)
     }
 
     fn serialize_f64(self, value: f64) -> Result<(), CanonicalError> {
+        self.budget.float(value.is_finite())?;
         push_scalar(self.out, self.budget, value)
     }
 

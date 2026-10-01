@@ -1,0 +1,17 @@
+error: `HashSet` iterates in hash order, which differs between processes, so the configuration fingerprint (recorded by the effect journal) would not be stable; use `BTreeSet`, a sorted `Vec`, or mark the field `#[config(skip_fingerprint)]`
+  --> tests/probes/config_unordered_set_field.rs:13:12
+   |
+13 |     hosts: HashSet<String>,
+   |            ^^^^^^^^^^^^^^^
+
+error: `HashSet` iterates in hash order, which differs between processes, so the configuration fingerprint (recorded by the effect journal) would not be stable; use `BTreeSet`, a sorted `Vec`, or mark the field `#[config(skip_fingerprint)]`
+  --> tests/probes/config_unordered_set_field.rs:19:41
+   |
+19 |     hosts: Option<Vec<std::collections::HashSet<u16>>>,
+   |                                         ^^^^^^^^^^^^
+
+error: `HashSet` iterates in hash order, which differs between processes, so the configuration fingerprint (recorded by the effect journal) would not be stable; use `BTreeSet`, a sorted `Vec`, or mark the field `#[config(skip_fingerprint)]`
+  --> tests/probes/config_unordered_set_field.rs:24:25
+   |
+24 | struct TupleSet(String, HashSet<u8>);
+   |                         ^^^^^^^^^^^
