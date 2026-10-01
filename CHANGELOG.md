@@ -44,6 +44,18 @@ changes are expected between minor releases — call them out here.
     sorted). A NaN or infinite float is refused
     (`ConfigFingerprintError::NonFiniteFloat`) instead of aliasing `null`;
     operation-request canonicalization is unchanged.
+  - The manager computes a row's fingerprint once, when its configuration
+    is registered or reloaded, and stores it with the configuration behind
+    the same atomic swap; unit binding, grants and topology acquires read
+    the stored value instead of re-encoding the configuration.
+  - Canonical JSON (fingerprints and operation requests alike) keeps a raw
+    JSON number's exact decimal value — a `RawValue`'s numbers, and a
+    `serde_json::Number` should a dependency enable `arbitrary_precision`
+    — instead of collapsing it through an `f64`. Canonical bytes change
+    only for raw numbers an `f64` cannot hold (integers outside
+    `i64`/`u64`, decimals with more digits than an `f64` keeps): such a
+    request recorded by an earlier build resolves as a mismatch once,
+    nothing sent.
   - Every fingerprint value changes once: a hot reload compares values within
     one process and is unaffected; journaled slots recorded by an earlier
     build under a fingerprint of the old scheme resolve as a contract
