@@ -12,7 +12,7 @@ changes are expected between minor releases — call them out here.
 ### Breaking
 
 - **`nebula-storage-port`: `EffectSlotBinding` gains `concurrent_floor:
-  Option<u32>`** (rides the 0.28.0 lockstep bump below). The owner's
+  Option<u32>`; development packages advance to 0.29.0 in lockstep.** The owner's
   concurrency floor for an occurrence — the lowest position of its run
   whose unit was still open when it was first prepared — is persisted with
   the first preparation inside the protocol record
