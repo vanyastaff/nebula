@@ -1047,6 +1047,51 @@ async fn a_grant_budget_bounds_the_unit_and_a_spent_one_sends_nothing() {
     );
 }
 
+// Real time: the registration blocks on the admission lock a thread holds.
+#[tokio::test]
+async fn a_grant_that_expires_during_registration_sends_nothing() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    fixture.owner.grant_with_budget(Duration::from_millis(50));
+    // While the owner grants, another thread takes the admission lock the
+    // strict registration needs and holds it past the grant's budget.
+    let lock = fixture.manager.admission_lock_for_tests();
+    let (held, holding) = std::sync::mpsc::channel();
+    let holder = Arc::new(Mutex::new(None));
+    let holder_slot = Arc::clone(&holder);
+    fixture.owner.on_next_grant(move || {
+        let thread = std::thread::spawn(move || {
+            let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            held.send(()).expect("signal");
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        holding.recv().expect("the lock is held");
+        *holder_slot.lock().expect("holder") = Some(thread);
+    });
+
+    let refused = row
+        .submit(Called::<false>::new(&calls, vec![Ok(1)]))
+        .await
+        .expect_err("the grant expired while the attempt registered");
+    assert_unsent(&refused, &ErrorKind::Backpressure);
+    assert_eq!(
+        refused.detail(),
+        "effect grant expired during registration; attempt refused"
+    );
+    assert_eq!(calls.made(), 0, "no provider call");
+    assert_eq!(
+        fixture.owner.log(),
+        vec![
+            Step::Prepare(pay(0)),
+            Step::Grant,
+            Step::Explain(Crossing::NotCrossed)
+        ]
+    );
+    let thread = holder.lock().expect("holder").take();
+    thread.expect("the holder ran").join().expect("joined");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_reload_after_submit_refuses_the_grant_and_sends_nothing() {
     let fixture = Fixture::new(None);

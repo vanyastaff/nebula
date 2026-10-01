@@ -667,6 +667,13 @@ impl Manager {
         Self::with_config(ManagerConfig::default())
     }
 
+    /// The admission lock, for tests that hold it across an attempt's
+    /// registration.
+    #[cfg(test)]
+    pub(crate) fn admission_lock_for_tests(&self) -> Arc<std::sync::Mutex<()>> {
+        Arc::clone(&self.admission)
+    }
+
     /// Creates a new empty manager with the given configuration.
     pub fn with_config(config: ManagerConfig) -> Self {
         Self::warn_once_if_panic_abort();

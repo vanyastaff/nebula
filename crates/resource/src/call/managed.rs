@@ -738,6 +738,12 @@ impl UnitShared {
     async fn run_until_deadline<F: Future>(&self, mut run: Pin<&mut F>) -> Option<F::Output> {
         loop {
             let deadline = self.deadline();
+            // An already-expired deadline wins before the operation is
+            // polled again: a grant that shrank it must not let the
+            // operation run on past it for one more poll.
+            if deadline <= tokio::time::Instant::now() {
+                return None;
+            }
             tokio::select! {
                 biased;
                 output = &mut run => return Some(output),

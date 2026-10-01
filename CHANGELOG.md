@@ -1501,7 +1501,10 @@ let admitted = recorded.readmit_against(fresh)?;
   journaled. A unit that fails locally (non-retryable) after its call
   succeeded — or a session the provider committed although its body
   failed — records the effect applied without output, never a provider
-  rejection; only a call classified `rejected` records one. New counters: `nebula_effect_journal_prepares_total{phase}`,
+  rejection; only a call classified `rejected` records one. A grant whose
+  budget the attempt's registration (the strict admission lock and
+  reading) spent is explained not crossed and the attempt refused unsent;
+  an expired unit deadline wins before the operation is polled again. New counters: `nebula_effect_journal_prepares_total{phase}`,
   `nebula_effect_journal_refusals_total{step,refusal}`,
   `nebula_effect_journal_verdicts_total{code}`.
 

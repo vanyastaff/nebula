@@ -538,8 +538,21 @@ impl<'u, R: Provider + PinSlots> OperationCx<'u, R> {
             },
         };
         // The owner vouches for the call only within its grant's budget: the
-        // unit — this attempt and every later wait — stops there.
+        // unit — this attempt and every later wait — stops there. The
+        // registration (lock #2, the strict reading) may have spent what was
+        // left: the provider call would start right after this returns, in
+        // the same poll and before any timer is seen, so an expired grant is
+        // explained not crossed and the attempt refused, unsent.
         if let Some(grant_deadline) = grant_deadline {
+            if grant_deadline <= tokio::time::Instant::now() {
+                if let Some(effect) = owned {
+                    effect.release_refused().await;
+                }
+                return Err(OperationError::new(
+                    ErrorKind::Backpressure,
+                    "effect grant expired during registration; attempt refused",
+                ));
+            }
             self.deadline = self.deadline.min(grant_deadline);
             self.shared.shrink_deadline(grant_deadline);
         }
