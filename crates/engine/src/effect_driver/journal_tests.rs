@@ -2810,6 +2810,56 @@ async fn a_caught_mismatch_and_a_new_submission_still_conclude_the_mismatch() {
     assert_eq!(harness.desk.keys().len(), 1, "nothing sent again");
 }
 
+/// A recorded effect after a replay mismatch is never granted: the first
+/// attempt applied #0 and died with #1 only prepared; a retry diverges at
+/// #0, catches the mismatch and submits #1 exactly as recorded — the
+/// grantable prepared slot is refused, so the divergent run sends nothing.
+#[tokio::test]
+async fn no_recorded_effect_is_granted_after_a_replay_mismatch() {
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 46 })
+        .await
+        .expect("applied");
+    harness
+        .ledger
+        .lose_next_prepare_answer
+        .store(true, Ordering::SeqCst);
+    let crashed = tokio::spawn(harness.handle(&first).submit(Charge::<false> { order: 47 }));
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while harness.slots().await.len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the second prepare committed");
+    crashed.abort();
+    let _ = crashed.await;
+    assert_eq!(harness.desk.keys().len(), 1);
+
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    let mismatch = handle
+        .submit(Charge::<false> { order: 48 })
+        .await
+        .expect_err("another request under #0");
+    assert_eq!(mismatch.detail(), "effect occurrence mismatch");
+    let refused = handle
+        .submit(Charge::<false> { order: 47 })
+        .await
+        .expect_err("#1 as recorded, after the halting mismatch");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    let verdict = retry.conclude(DRAIN).await;
+    assert_eq!(verdict, Err(EffectExecutionError::OccurrenceMismatch));
+    assert_eq!(
+        harness.desk.keys().len(),
+        1,
+        "the prepared #1 was never sent"
+    );
+}
+
 /// A terminal failure noted first is never displaced by a later deferral;
 /// a halting one displaces any other.
 #[tokio::test]

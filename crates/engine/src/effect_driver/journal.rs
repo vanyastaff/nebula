@@ -2354,6 +2354,18 @@ impl EffectJournal for NodeEffectJournal {
         if self.is_closed() {
             return Err(self.refused(STEP, JournalRefusal::Closed));
         }
+        // Once the node holds a halting verdict (a replay mismatch, an
+        // unknown outcome) its run is divergent and must stop: no later
+        // prepare — fresh or recorded, which a crash may have left only
+        // prepared and so grantable — may reach the provider, even if the
+        // action caught the halting unit error and submitted on.
+        let halted = self
+            .state()
+            .failure
+            .filter(|failure| failure.halts_execution());
+        if let Some(halted) = halted {
+            return Err(self.refuse_prepare(intent.occurrence, halted));
+        }
         let authority = &self.inner.authority;
         // Every refusal from here until the ledger answers goes through
         // `refuse_prepare`: a definitive one resolves the position as
@@ -2603,6 +2615,16 @@ impl EffectJournal for NodeEffectJournal {
         let protocol = slot.protocol().map_err(|error| self.refuse(STEP, error))?;
         if protocol.phase() == EffectPhase::OutcomeUnknown {
             return Err(self.refused(STEP, JournalRefusal::Unknown));
+        }
+        // A halting verdict stops the run: a slot prepared before it (a
+        // concurrent unit) is not granted after it, so nothing new reaches
+        // the provider once the node is known divergent or unknown.
+        let halted = self
+            .state()
+            .failure
+            .filter(|failure| failure.halts_execution());
+        if let Some(halted) = halted {
+            return Err(self.refuse(STEP, halted));
         }
         let revision = protocol.revision();
         match slot
