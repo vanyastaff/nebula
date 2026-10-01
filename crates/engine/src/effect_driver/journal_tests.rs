@@ -2770,6 +2770,79 @@ async fn idempotent_crash_residue_is_granted_again_under_the_same_key() {
 }
 
 #[tokio::test]
+async fn a_caught_mismatch_and_a_new_submission_still_conclude_the_mismatch() {
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 40 })
+        .await
+        .expect("applied");
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+
+    // The retry diverges at #0, catches the mismatch and submits again.
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    let mismatch = handle
+        .submit(Charge::<false> { order: 41 })
+        .await
+        .expect_err("another request under the recorded occurrence");
+    assert_eq!(mismatch.detail(), "effect occurrence mismatch");
+    // #0 was refused, not abandoned: the next one is not deferred as if a
+    // unit had given up below it — it is a mismatch too (#0 stays unmet).
+    let again = handle
+        .submit(Charge::<false> { order: 42 })
+        .await
+        .expect_err("above a recorded effect this attempt never met");
+    assert_eq!(again.detail(), "effect occurrence mismatch");
+    assert_eq!(again.sent(), SentState::NotSent);
+    let verdict = retry.conclude(DRAIN).await;
+    assert_eq!(verdict, Err(EffectExecutionError::OccurrenceMismatch));
+    assert!(verdict.is_err_and(EffectExecutionError::halts_execution));
+    assert_eq!(harness.desk.keys().len(), 1, "nothing sent again");
+}
+
+/// A terminal failure noted first is never displaced by a later deferral;
+/// a halting one displaces any other.
+#[tokio::test]
+async fn a_later_deferral_never_displaces_a_terminal_verdict() {
+    let harness = Harness::new().await;
+    let journal = harness.capped_journal(1, 1);
+    let handle = harness.handle(&journal);
+    handle
+        .submit(Charge::<false> { order: 43 })
+        .await
+        .expect("under the cap");
+    handle
+        .submit(Charge::<false> { order: 44 })
+        .await
+        .expect_err("over the cap");
+    // A later step that only defers (a lost lease, an unanswered ledger).
+    journal.note_failure(EffectExecutionError::Ledger(
+        OperationLedgerError::ExecutionLeaseRejected,
+    ));
+    assert_eq!(
+        journal.conclude(DRAIN).await,
+        Err(EffectExecutionError::JournalSlotCapExceeded { cap: 1 })
+    );
+
+    // A halting failure displaces a deferral and a terminal one alike.
+    let other = harness.journal(2);
+    other.note_failure(EffectExecutionError::Ledger(
+        OperationLedgerError::Unavailable,
+    ));
+    other.note_failure(EffectExecutionError::JournalSlotCapExceeded { cap: 1 });
+    other.note_failure(EffectExecutionError::OccurrenceMismatch);
+    other.note_failure(EffectExecutionError::Ledger(
+        OperationLedgerError::AcknowledgementUnknown,
+    ));
+    assert_eq!(
+        other.state().failure,
+        Some(EffectExecutionError::OccurrenceMismatch)
+    );
+}
+
+#[tokio::test]
 async fn a_changed_request_under_the_same_occurrence_is_a_mismatch_and_sends_nothing() {
     let harness = Harness::new().await;
     let first = harness.journal(1);

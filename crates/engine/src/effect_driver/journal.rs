@@ -985,6 +985,12 @@ struct MetPositions {
     /// yet, not given up
     /// ([`EffectJournal::release_occurrence`] settles them).
     claimed: HashSet<String>,
+    /// Labels whose prepare this attempt refused definitively — a
+    /// mismatch, a cap, a contract it cannot record — with nothing written
+    /// by the refusal: resolved, not abandoned. Their unit let them go
+    /// because the journal said no, not because it gave up, so nothing
+    /// above them defers on them; the refusal's own verdict stands.
+    refused: HashSet<String>,
     /// Per family, how many of the earlier attempts' recorded positions —
     /// in order — this attempt is known to have met: every position before
     /// it was.
@@ -995,8 +1001,9 @@ struct MetPositions {
     /// slot above it is prepared in this attempt.
     uncertain: HashMap<Family, (u32, u32)>,
     /// Per family, the lowest position handed out in this attempt whose
-    /// unit let it go without its prepare being met — it gave up before
-    /// reaching the ledger, or its prepare was refused. No fresh slot above
+    /// unit let it go without its prepare being met or definitively
+    /// refused — it gave up before reaching the ledger or before the ledger
+    /// answered, or a deferring failure stopped it. No fresh slot above
     /// it is prepared in this attempt (the node defers), so the next attempt
     /// can still meet the position — rather than a later effect being
     /// written above an empty one.
@@ -1422,6 +1429,7 @@ impl NodeEffectJournal {
                         Position::parse(label).is_some_and(|lower| {
                             lower.family == position.family && lower.order() < position.order()
                         }) && !positions.met.contains(label)
+                            && !positions.refused.contains(label)
                     })
             };
             if !pending {
@@ -1589,13 +1597,18 @@ impl NodeEffectJournal {
     }
 
     /// Records a failure of the node's verdict: the first one wins, except
-    /// that a deferring failure (lease, acknowledgement, availability)
-    /// replaces a non-deferring one.
+    /// that a halting failure ([`EffectExecutionError::halts_execution`])
+    /// replaces a non-halting one. A deferral never replaces an earlier
+    /// failure.
     fn note_failure(&self, error: EffectExecutionError) {
         let mut state = self.state();
+        // The first failure stands, except that a halting one (an unknown
+        // outcome, a mismatch) replaces any other: a later deferral never
+        // displaces a terminal verdict — the retry it would allow meets the
+        // same refusal again — and nothing displaces a halting one.
         let replace = match state.failure {
             None => true,
-            Some(current) => !current.is_deferred() && error.is_deferred(),
+            Some(current) => error.halts_execution() && !current.halts_execution(),
         };
         if replace {
             state.failure = Some(error);
@@ -1629,6 +1642,20 @@ impl NodeEffectJournal {
         );
         self.note_failure(verdict);
         self.refused(step, refusal)
+    }
+
+    /// [`refuse`](Self::refuse) the prepare of `occurrence`. A definitive
+    /// refusal — its verdict does not defer: a mismatch, a cap, a contract
+    /// that cannot be recorded — wrote nothing and resolves the position as
+    /// refused, so its unit letting it go does not abandon it and nothing
+    /// above it defers in place of this verdict. A deferring refusal leaves
+    /// the position to its unit: let go unmet, it is abandoned.
+    fn refuse_prepare(&self, occurrence: &str, error: EffectExecutionError) -> JournalRefusal {
+        if !classify_failure(error).1.is_deferred() {
+            self.state().positions.refused.insert(occurrence.to_owned());
+            self.inner.claims_settled.notify_waiters();
+        }
+        self.refuse(effect_journal_step::PREPARE, error)
     }
 
     /// The slot this journal prepared for `unit`, for `step`.
@@ -2158,9 +2185,11 @@ impl EffectJournal for NodeEffectJournal {
             let mut state = self.state();
             let positions = &mut state.positions;
             positions.claimed.remove(occurrence);
-            // Let go without being met: the position stays empty in this
-            // attempt, and nothing fresh is written above it.
+            // Let go without being met or definitively refused — given up,
+            // or stopped by a deferring failure: the position stays empty in
+            // this attempt, and nothing fresh is written above it.
             if !positions.met.contains(occurrence)
+                && !positions.refused.contains(occurrence)
                 && let Some(position) = Position::parse(occurrence)
             {
                 let order = position.order();
@@ -2177,21 +2206,26 @@ impl EffectJournal for NodeEffectJournal {
             return Err(self.refused(STEP, JournalRefusal::Closed));
         }
         let authority = &self.inner.authority;
+        // Every refusal from here until the ledger answers goes through
+        // `refuse_prepare`: a definitive one resolves the position as
+        // refused (never abandoned), a deferring one leaves it to its unit.
         let derived = self
             .derive(intent)
-            .map_err(|error| self.refuse(STEP, error))?;
+            .map_err(|error| self.refuse_prepare(intent.occurrence, error))?;
         // Every prepare waits for the one read of what earlier attempts
         // recorded, taken before this attempt writes anything.
         let prior = self
             .prior()
             .await
-            .map_err(|error| self.refuse(STEP, error))?;
+            .map_err(|error| self.refuse_prepare(intent.occurrence, error))?;
         if prior.refuses(intent.occurrence) {
             // An earlier attempt reached a later position without recording
             // this one — the effect may be one it recorded further on, and a
             // fresh slot here would send it again — or recorded positions of
             // the other family (the node's action changed kind).
-            return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
+            return Err(
+                self.refuse_prepare(intent.occurrence, EffectExecutionError::OccurrenceMismatch)
+            );
         }
         let fresh = !prior.labels.contains(intent.occurrence);
         if fresh {
@@ -2215,8 +2249,8 @@ impl EffectJournal for NodeEffectJournal {
                 occurrence = intent.occurrence,
                 "a fresh effect above a position left unresolved in this attempt; deferring"
             );
-            return Err(self.refuse(
-                STEP,
+            return Err(self.refuse_prepare(
+                intent.occurrence,
                 EffectExecutionError::Ledger(OperationLedgerError::AcknowledgementUnknown),
             ));
         }
@@ -2232,7 +2266,9 @@ impl EffectJournal for NodeEffectJournal {
                 skipped = %skipped,
                 "a fresh effect above a recorded one this attempt never met; refused"
             );
-            return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
+            return Err(
+                self.refuse_prepare(intent.occurrence, EffectExecutionError::OccurrenceMismatch)
+            );
         }
         // Recorded with a fresh slot only; a recorded one keeps its own.
         let concurrent_with = self.concurrent_with(intent.occurrence);
@@ -2240,8 +2276,8 @@ impl EffectJournal for NodeEffectJournal {
             // The lower units still open form more runs than a slot records:
             // recording fewer would let a recovery read one of them as
             // settled before this effect and never send it. Refused, nothing
-            // written or sent; the position counts as met, so nothing above
-            // it waits on it.
+            // written or sent; the position is resolved as refused, so
+            // nothing above it waits or defers on it.
             tracing::warn!(
                 execution_id = %authority.execution_id,
                 node_key = %authority.node_key,
@@ -2249,13 +2285,8 @@ impl EffectJournal for NodeEffectJournal {
                 limit = OperationProtocolRecord::MAX_CONCURRENT_RANGES,
                 "too many interleaved concurrent effects to record; refused"
             );
-            self.state()
-                .positions
-                .met
-                .insert(intent.occurrence.to_owned());
-            self.inner.claims_settled.notify_waiters();
-            return Err(self.refuse(
-                STEP,
+            return Err(self.refuse_prepare(
+                intent.occurrence,
                 EffectExecutionError::JournalConcurrencyLimit {
                     limit: u32::try_from(OperationProtocolRecord::MAX_CONCURRENT_RANGES)
                         .unwrap_or(u32::MAX),
@@ -2270,20 +2301,19 @@ impl EffectJournal for NodeEffectJournal {
             let capped = {
                 let mut state = self.state();
                 let capped = state.reserved >= cap;
-                if capped {
-                    // A definitive refusal, like the concurrency limit: the
-                    // position counts as met, so a later submission neither
-                    // waits on it nor reads it as abandoned and defers in
-                    // place of this terminal cap verdict.
-                    state.positions.met.insert(intent.occurrence.to_owned());
-                } else {
+                if !capped {
                     state.reserved += 1;
                 }
                 capped
             };
             if capped {
-                self.inner.claims_settled.notify_waiters();
-                return Err(self.refuse(STEP, EffectExecutionError::JournalSlotCapExceeded { cap }));
+                // A definitive refusal: the position is resolved as refused,
+                // so a later submission neither waits on it nor reads it as
+                // abandoned and defers in place of this cap verdict.
+                return Err(self.refuse_prepare(
+                    intent.occurrence,
+                    EffectExecutionError::JournalSlotCapExceeded { cap },
+                ));
             }
         }
         let concurrent_with = concurrent_with.unwrap_or_default();
@@ -2319,7 +2349,7 @@ impl EffectJournal for NodeEffectJournal {
             Err(error) => !error.is_deferred(),
         };
         drop(in_flight);
-        let slot = prepared.map_err(|error| self.refuse(STEP, error))?;
+        let slot = prepared.map_err(|error| self.refuse_prepare(intent.occurrence, error))?;
         // The position is met: the slot recorded here is this unit's.
         self.state()
             .positions
