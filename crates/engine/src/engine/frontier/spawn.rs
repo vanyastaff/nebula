@@ -339,10 +339,10 @@ impl WorkflowEngine {
         // Build resource accessor: wrap the manager-backed global accessor in
         // a LayeredResourceAccessor (M6.1 — Phase 6). Phase 6 plugs in the
         // empty scoped map; Phase 7 (M6.2) swaps the inner scoped layer for
-        // the per-branch DashMap implementation. Action call sites
-        // (`ctx.acquire_resource_by_id`, `ctx.resource::<R>()`) consult the
-        // layered accessor transparently — `scoped → global`, closest
-        // ancestor wins.
+        // the per-branch DashMap implementation. An action's
+        // `ResourceHandle<R>` slots resolve through the layered accessor
+        // transparently — a key a branch scope holds fails closed, every
+        // other key reaches the global rows.
         let mut engine_resources = None;
         let resources: Arc<dyn ResourceAccessor> = if let Some(manager) = &self.resource_manager {
             let extra = self

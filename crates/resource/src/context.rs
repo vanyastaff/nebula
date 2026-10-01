@@ -27,34 +27,6 @@ impl ResourceAccessor for NoopResourceAccessor {
     fn has(&self, _key: &nebula_core::ResourceKey) -> bool {
         false
     }
-    fn acquire_any(
-        &self,
-        _key: &nebula_core::ResourceKey,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Box<dyn Any + Send + Sync>, nebula_core::CoreError>>
-                + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async {
-            Err(nebula_core::CoreError::CredentialNotConfigured(
-                "resource capability is not configured in ResourceContext".to_owned(),
-            ))
-        })
-    }
-    fn try_acquire_any(
-        &self,
-        _key: &nebula_core::ResourceKey,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Option<Box<dyn Any + Send + Sync>>, nebula_core::CoreError>>
-                + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async { Ok(None) })
-    }
 }
 
 /// No-op [`CredentialAccessor`] for contexts that don't need credential access.
@@ -199,7 +171,7 @@ impl ResourceContext {
     /// this returned a [`minimal`](Self::minimal) context, which silently
     /// clobbered the principal to [`Principal::System`], dropped the trace, and
     /// substituted no-op accessors — breaking authz checks, span parentage, and
-    /// nested `ctx.resource::<R>()` calls during creation.
+    /// nested resource or credential lookups during creation.
     ///
     /// The clock is not forwarded — it is not part of the identity and
     /// `BaseContext` is not `Clone` (its clock is boxed); a fresh `SystemClock`
@@ -401,38 +373,6 @@ mod tests {
         impl ResourceAccessor for AlwaysHasAccessor {
             fn has(&self, _key: &nebula_core::ResourceKey) -> bool {
                 true
-            }
-            fn acquire_any(
-                &self,
-                _key: &nebula_core::ResourceKey,
-            ) -> Pin<
-                Box<
-                    dyn Future<Output = Result<Box<dyn Any + Send + Sync>, nebula_core::CoreError>>
-                        + Send
-                        + '_,
-                >,
-            > {
-                Box::pin(async {
-                    Err(nebula_core::CoreError::RegistryInvariant(
-                        "test accessor never resolves",
-                    ))
-                })
-            }
-            fn try_acquire_any(
-                &self,
-                _key: &nebula_core::ResourceKey,
-            ) -> Pin<
-                Box<
-                    dyn Future<
-                            Output = Result<
-                                Option<Box<dyn Any + Send + Sync>>,
-                                nebula_core::CoreError,
-                            >,
-                        > + Send
-                        + '_,
-                >,
-            > {
-                Box::pin(async { Ok(None) })
             }
         }
 

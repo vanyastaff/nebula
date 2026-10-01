@@ -29,7 +29,8 @@ read `src/lib.rs`'s module doc directly) and the doctest on
 | `Resource` (derive) | Emits credential-slot plumbing (`HasCredentialSlots`, `<field>_slot()` accessors) for a hand-written `impl Provider` |
 | `Pooled` / `Resident` / `Bounded` | The three built-in topologies — see below |
 | `Manager` | Central registry — single `register(RegistrationSpec { … })` funnel, typed acquire dispatch (`acquire_any`, `acquire_pooled[_for_identity]`, `acquire_resident[_for_identity]`, `acquire_bounded[_for_identity]`), slot rotation, graceful shutdown |
-| `ResourceGuard` | RAII guard; derefs to `R::Instance`, releases on drop, tainting supported |
+| `ResourceHandle` | The action-facing row facade: units check out an instance per attempt |
+| `ResourceGuard` | Host-only RAII guard (never an action route); derefs to `R::Instance`, releases on drop, tainting supported |
 | `ResourceContext` | Execution context — scope, cancellation, capability traits |
 | `Error` / `ErrorKind` | Unified error with retryability, scope, and optional retry-after hint — see the `error` module rustdoc for the full kind → caller-action table |
 

@@ -23,10 +23,11 @@ pub use adapter::{
 /// otherwise — no execution stores, or a stateful, control or agent action
 /// until its iterations are journaled — it runs with read-only handle
 /// authority: reads run and writes through handles are refused before any
-/// provider call. A raw lease (a `ResourceGuard<R>` slot or `acquire_resource_by_id`) is
-/// refused outright, since it would bypass the journal, and only the engine's
-/// node dispatch runs a journaled action: the generic runtime entry points
-/// cannot vouch for a caller-supplied resource accessor.
+/// provider call. No contract reaches a raw lease: since 0.27.0 the action
+/// surface serves resource handles only, since a lease would bypass the
+/// journal. Only the engine's node dispatch runs a journaled action: the
+/// generic runtime entry points cannot vouch for a caller-supplied resource
+/// accessor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ActionEffectContract {

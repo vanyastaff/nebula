@@ -1,12 +1,15 @@
 //! Engine-side [`ResourceAccessor`] implementation.
 //!
 //! [`EngineResourceAccessor`] bridges the engine's resource manager to the
-//! [`ResourceAccessor`] capability trait consumed by actions. Acquire runs
-//! the full manager lease pipeline (slot-identity-pinned, scope-aware) and
-//! returns a boxed [`nebula_resource::ResourceGuard`] for downcast by action
-//! code — not a raw `ManagedResource` handle.
+//! [`ResourceAccessor`] capability trait consumed by actions. It serves each
+//! row's per-unit checkout facade — a boxed
+//! [`ResourceHandle<R>`](nebula_resource::call::ResourceHandle) for downcast
+//! by action code (slot-identity-pinned, scope-aware) — and nothing else: a
+//! raw lease ([`nebula_resource::ResourceGuard`]) bypasses the effect journal,
+//! so it stays a host-only capability of the manager and never reaches an
+//! action context.
 
-use std::{any::Any, collections::HashMap, fmt, future::Future, pin::Pin, sync::Arc};
+use std::{any::Any, collections::HashMap, fmt, sync::Arc};
 
 use nebula_core::{CoreError, ResourceKey, accessor::ResourceAccessor, scope::Scope};
 use nebula_resource::{
@@ -14,15 +17,11 @@ use nebula_resource::{
 };
 use tokio_util::sync::CancellationToken;
 
-type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
 /// Engine-side implementation of [`ResourceAccessor`].
 ///
-/// Wraps an [`Arc<nebula_resource::Manager>`] and dispatches `acquire_any` /
-/// `try_acquire_any` through
-/// [`Manager::acquire_any`](nebula_resource::Manager::acquire_any)
-/// using the execution scope and optional per-key slot identities recorded
-/// at activation. `resource_handle_any` hands out the row's per-unit checkout
+/// Wraps an [`Arc<nebula_resource::Manager>`] and resolves rows using the
+/// execution scope and optional per-key slot identities recorded at
+/// activation. `resource_handle_any` hands out the row's per-unit checkout
 /// facade, by default through
 /// [`Manager::handle_any_read_only`](nebula_resource::Manager::handle_any_read_only):
 /// its units are cancelled with the node's cancellation token until their
@@ -189,40 +188,6 @@ impl ResourceAccessor for EngineResourceAccessor {
         )
     }
 
-    fn acquire_any(
-        &self,
-        key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-        let manager = Arc::clone(&self.manager);
-        let key = key.clone();
-        let ctx = self.resource_ctx();
-        let slot_identity = self.slot_identity_for(&key);
-        let options = AcquireOptions::default();
-        Box::pin(async move {
-            Manager::acquire_any(manager, &key, &ctx, &options, &slot_identity)
-                .await
-                .map_err(|e| Self::map_err(&key, e))
-        })
-    }
-
-    fn try_acquire_any(
-        &self,
-        key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-        let manager = Arc::clone(&self.manager);
-        let key = key.clone();
-        let ctx = self.resource_ctx();
-        let slot_identity = self.slot_identity_for(&key);
-        let options = AcquireOptions::default();
-        Box::pin(async move {
-            match Manager::acquire_any(manager, &key, &ctx, &options, &slot_identity).await {
-                Ok(value) => Ok(Some(value)),
-                Err(e) if matches!(e.kind(), ErrorKind::NotFound) => Ok(None),
-                Err(e) => Err(Self::map_err(&key, e)),
-            }
-        })
-    }
-
     fn resource_handle_any(
         &self,
         key: &ResourceKey,
@@ -239,83 +204,6 @@ impl ResourceAccessor for EngineResourceAccessor {
             Err(error) if matches!(error.kind(), ErrorKind::NotFound) => Ok(None),
             Err(error) => Err(Self::map_err(key, error)),
         }
-    }
-}
-
-/// The refusal detail of a raw lease requested by a journaled action.
-const RAW_LEASE_REFUSED: &str = "a journaled action cannot check out a raw resource lease: \
-     a lease bypasses the effect journal; hold a ResourceHandle<R> field instead";
-
-/// The resource authority of an action whose admitted contract is
-/// [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled).
-///
-/// Handle-routed effects are the only effects the engine can journal, so
-/// raw leases — [`acquire_any`](ResourceAccessor::acquire_any) and
-/// [`try_acquire_any`](ResourceAccessor::try_acquire_any), which back
-/// `ResourceGuard<R>` slots and `acquire_resource_by_id` — are refused
-/// before any lookup with a non-retryable
-/// [`CoreError::ResourceUnavailable`]: a lease derefs to the provider
-/// client, so any call made through it would be an unjournaled effect. A
-/// refused optional slot fails rather than reading as absent. Resource
-/// handles are forwarded to the engine-built accessor, which serves them
-/// under the node's effect journal — or read-only when the node has none (a
-/// storeless run, a stateful action, a direct-definition dispatch).
-pub(crate) struct JournaledResourceAccessor {
-    inner: Arc<dyn ResourceAccessor>,
-}
-
-impl JournaledResourceAccessor {
-    /// Restricts `inner` — an accessor the engine built, whose resource
-    /// handles are journaled or read-only — to handle-routed access.
-    pub(crate) fn new(inner: Arc<dyn ResourceAccessor>) -> Self {
-        Self { inner }
-    }
-
-    fn raw_lease_refused(key: &ResourceKey) -> CoreError {
-        CoreError::resource_unavailable(key.as_str(), RAW_LEASE_REFUSED, false, None)
-    }
-}
-
-impl fmt::Debug for JournaledResourceAccessor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("JournaledResourceAccessor")
-            .finish_non_exhaustive()
-    }
-}
-
-impl ResourceAccessor for JournaledResourceAccessor {
-    fn has(&self, key: &ResourceKey) -> bool {
-        self.inner.has(key)
-    }
-
-    fn acquire_any(
-        &self,
-        key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-        let refused = Self::raw_lease_refused(key);
-        Box::pin(async move { Err(refused) })
-    }
-
-    fn try_acquire_any(
-        &self,
-        key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-        let refused = Self::raw_lease_refused(key);
-        Box::pin(async move { Err(refused) })
-    }
-
-    fn resource_handle_any(
-        &self,
-        key: &ResourceKey,
-    ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
-        self.inner.resource_handle_any(key)
-    }
-
-    fn try_resource_handle_any(
-        &self,
-        key: &ResourceKey,
-    ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
-        self.inner.try_resource_handle_any(key)
     }
 }
 
@@ -440,9 +328,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acquire_any_returns_err_for_unregistered_key() {
+    async fn resource_handle_any_refuses_an_unregistered_key() {
         let accessor = make_accessor(Arc::new(Manager::new()));
-        let result = accessor.acquire_any(&rk("postgres")).await;
+        let result = accessor.resource_handle_any(&rk("postgres"));
         assert!(
             matches!(result, Err(CoreError::CredentialNotFound { .. })),
             "expected CredentialNotFound, got {result:?}"
@@ -450,14 +338,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_acquire_any_returns_none_for_unregistered_key() {
+    async fn try_resource_handle_any_returns_none_for_unregistered_key() {
         let accessor = make_accessor(Arc::new(Manager::new()));
-        let result = accessor.try_acquire_any(&rk("postgres")).await;
+        let result = accessor.try_resource_handle_any(&rk("postgres"));
         assert!(matches!(result, Ok(None)));
     }
 
     #[tokio::test]
-    async fn acquire_any_returns_guard_for_registered_resource() {
+    async fn resource_handle_any_serves_a_registered_row() {
         let manager = Arc::new(Manager::new());
         manager
             .register(RegistrationSpec {
@@ -472,15 +360,8 @@ mod tests {
             .expect("register");
 
         let accessor = make_accessor(Arc::clone(&manager));
-        let key = AccResource::key();
-        let boxed = accessor
-            .acquire_any(&key)
-            .await
-            .expect("acquire through accessor");
-        let guard = boxed
-            .downcast::<nebula_resource::ResourceGuard<AccResource>>()
-            .expect("ResourceGuard downcast");
-        assert_eq!(guard.load(Ordering::Relaxed), 42);
+        let row = row_of(&accessor);
+        assert_eq!(row.submit(Read).await.expect("a read runs"), 42);
     }
 
     #[tokio::test]
@@ -491,7 +372,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acquire_any_uses_recorded_slot_identity_not_unbound() {
+    async fn handles_use_the_recorded_slot_identity_not_unbound() {
         let manager = Arc::new(Manager::new());
         let key = AccResource::key();
         let bound = SlotIdentity::from_bindings([("slot", "cred-a")]);
@@ -511,14 +392,24 @@ mod tests {
         let accessor = make_accessor(Arc::clone(&manager))
             .with_slot_identities(HashMap::from([(key.clone(), bound)]));
         assert!(accessor.has(&key));
+        let row = accessor
+            .try_resource_handle_any(&key)
+            .expect("lookup with matching slot identity")
+            .expect("the cred-bound row is served");
+        let row = row
+            .downcast::<ResourceHandle<AccResource>>()
+            .expect("ResourceHandle downcast");
+        assert_eq!(row.submit(Read).await.expect("a read runs"), 42);
 
-        let boxed = accessor
-            .acquire_any(&key)
-            .await
-            .expect("acquire with matching slot identity");
-        let _guard = boxed
-            .downcast::<nebula_resource::ResourceGuard<AccResource>>()
-            .expect("ResourceGuard downcast");
+        // The unbound identity never reaches a credential-bound row.
+        let unbound = make_accessor(Arc::clone(&manager));
+        assert!(!unbound.has(&key));
+        assert!(
+            unbound
+                .try_resource_handle_any(&key)
+                .expect("lookup")
+                .is_none()
+        );
 
         let wrong = make_accessor(manager).with_slot_identities(HashMap::from([(
             key.clone(),
@@ -528,7 +419,7 @@ mod tests {
             !wrong.has(&key),
             "has must not see cred-bound row under a different slot identity"
         );
-        let missing = wrong.try_acquire_any(&key).await.expect("try_acquire");
+        let missing = wrong.try_resource_handle_any(&key).expect("try lookup");
         assert!(missing.is_none());
     }
 

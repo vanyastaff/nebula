@@ -685,8 +685,12 @@ the current action lazy expansion already resolves before Lazy::with_value.
 |---|---|---|
 | Action | CredentialGuard<S> | Required projected auth scheme S. |
 | Action | Option<CredentialGuard<S>> | Inactive yields None; active absence follows the binding policy. |
-| Action | ResourceGuard<R> | Required lease for Provider R. |
-| Action | Option<ResourceGuard<R>> | Inactive or optional resource dependency, with independent active binding policy. |
+| Action | ResourceHandle<R> | Required per-unit checkout facade for Provider R (no lease is held; each attempt checks out). |
+| Action | Option<ResourceHandle<R>> | Inactive or optional resource dependency, with independent active binding policy. |
+
+Since 0.27.0 an action never holds a `ResourceGuard<R>` lease: the derive refuses
+it in any wrapper (a lease bypasses the effect journal), and the guard stays a
+host-only capability of the resource manager and the engine.
 | Resource | CredentialSlot<S> / SlotCell<CredentialGuard<S>> | Generation-stamped cell of projected auth scheme S; binding controls absence. |
 | Credential | `Properties` DTO — `#[derive(Schema)]`, value-only `#[property(...)]` fields | Explicit, canonical setup-form shape declared via `type Properties`; consumer `#[slot(credential, ...)]` dependencies stay outside properties. |
 
@@ -759,7 +763,9 @@ using a stale binding. Cancellation drops acquired leases; no partial operation.
 Resource `self.auth_slot()` returns Option<Arc<CredentialGuard<S>>>: retain that
 owned snapshot across await; never return a borrow from a temporary Arc load.
 Action guard borrows are bounded by the receiver's lifetime. Resource lease
-ownership/release remains with ResourceGuard; no accidental guard Clone bound.
+ownership/release remains with the host-side ResourceGuard (an action's
+ResourceHandle units check out and release per attempt); no accidental guard
+Clone bound.
 Runtime keeps inactive versus absent decision evidence even if both map to None;
 user code handles None explicitly and never relies on unconditional Deref.
 Long-lived trigger/resource operations use their owning lifecycle/rebind policy,

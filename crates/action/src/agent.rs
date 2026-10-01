@@ -24,7 +24,7 @@
 //!
 //! The machinery here is Llm-agnostic: the `Llm` provider is injected as a
 //! slot field on the concrete action struct (e.g. `#[resource(key = "llm")]
-//! llm: ResourceGuard<L>` where `L: Llm + Provider`), resolved at instantiation
+//! llm: ResourceHandle<L>` where `L: Llm + Provider`), resolved at instantiation
 //! time by `from_workflow_node`. The `step` signature does not name `Llm` — this
 //! crate does not depend on a `nebula-agent` crate and never will.
 //!
@@ -74,7 +74,7 @@ use crate::{
 /// # Slots and the Llm provider
 ///
 /// An LLM provider reaches the action as a slot field (`#[resource(key = "llm")]
-/// llm: ResourceGuard<L>`), resolved at instantiation. The `step` signature does
+/// llm: ResourceHandle<L>`), resolved at instantiation. The `step` signature does
 /// not reference `Llm` — the crate is Llm-agnostic, which keeps `AgentHandle`
 /// object-safe and avoids a dependency on `nebula-agent`.
 ///

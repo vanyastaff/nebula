@@ -2,8 +2,8 @@
 //!
 //! A resource action runs `configure` before the downstream subtree and
 //! `cleanup` when the scope ends. The produced resource is visible only
-//! to the downstream branch, unlike `ctx.resource()` from the global
-//! registry.
+//! to the downstream branch, unlike a `ResourceHandle<R>` slot served from
+//! the global registry.
 
 use std::{any::Any, fmt, future::Future};
 
@@ -22,7 +22,7 @@ use crate::{
 /// resource is scoped to the branch. When the scope ends, the engine
 /// calls `cleanup` with the same resource. Use for connection pools,
 /// caches, or other resources visible only to the downstream subtree
-/// (unlike `ctx.resource()` from the global registry).
+/// (unlike a `ResourceHandle<R>` slot served from the global registry).
 ///
 /// A single associated type `Resource` is used for both the `configure`
 /// return and the `cleanup` parameter. Earlier iterations split these

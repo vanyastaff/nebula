@@ -263,9 +263,6 @@ struct Script {
     /// Submit every unit without waiting for it.
     #[serde(default)]
     leak: bool,
-    /// Try a raw lease of the payments resource first.
-    #[serde(default)]
-    raw_lease: bool,
 }
 
 /// Test controls the action reads on every run.
@@ -300,15 +297,6 @@ async fn run_script(
     ctx: &(impl ActionContext + ?Sized),
 ) -> Result<Value, ActionError> {
     controls.dispatches.fetch_add(1, Ordering::SeqCst);
-    let raw_lease = if script.raw_lease {
-        let refused = ctx
-            .acquire_resource_by_id::<Payments>(Payments::key().as_str())
-            .await
-            .is_err();
-        Some(refused)
-    } else {
-        None
-    };
     let handle = ctx.resource_handle_by_id::<Payments>(Payments::key().as_str())?;
     if controls.drop_unpolled_once.swap(false, Ordering::SeqCst) {
         drop(handle.submit(Charge::<false>(UnitSpec {
@@ -371,7 +359,7 @@ async fn run_script(
     {
         return Err(ActionError::retryable("downstream step failed"));
     }
-    Ok(json!({ "receipts": receipts, "raw_lease_refused": raw_lease }))
+    Ok(json!({ "receipts": receipts }))
 }
 
 /// The journaled stateless action.

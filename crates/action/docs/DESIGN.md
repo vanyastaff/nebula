@@ -154,20 +154,22 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   УДАЛЕНЫ. Для `nebula-action` это означает: те же типы guard'а, но из единого `nebula-credential` — точка
   проекции state→scheme должна уважать correction «policy(&State) driving routing» и `CredentialSelector` owner-isolation
   на стороне резолвера (action их не реализует, но получает уже-изолированный guard).
-- **Resource-слоты.** `#[resource(key = "…")]`-поле держит `ResourceGuard<R>`; re-export `ResourceRef` в `lib.rs:133`.
+- **Resource-слоты.** `#[resource(key = "…")]`-поле держит `ResourceHandle<R>` (или `Option<ResourceHandle<R>>`) —
+  с 0.27.0 единственная resource-capability, которую action может назвать. `ResourceGuard<R>`-слот в любой обёртке
+  derive отклоняет с migration-подсказкой (лиза обходит effect journal); re-export `ResourceRef` удалён.
   `ResourceAction` ставит `type Output = ResourceProduces<Self::Resource>` (graph-side эффект, пустая data-схема).
   Per-slot rotation FAN-OUT теперь во владении `nebula-resource` (`credential_fanout/`, ex-engine) — action только
   потребляет уже-резолвленный/уже-ротированный guard, не участвует в fan-out-механике.
 - **Bind-population seam (M12.4).** `FromWorkflowNode::from_workflow_node` — **то самое место**, где slot-bindings
   резолвятся: derive читает `node.resource_binding(slot)` / `node.credential_binding(slot)` (fallback на
-  `default_id` = slot key), зовёт `ctx.acquire_resource_by_id::<R>` / `ctx.resolve_credential_by_id::<C>`,
+  provider contract key для resource-слота), зовёт `ctx.resource_handle_by_id::<R>` / `ctx.resolve_credential_by_id::<C>`,
   собирает `Self`. Это consumer-конец producer-gap'а bind-population — `slot_bindings` отделены от `parameters`,
   привязка к конкретному `CredentialId`/resource-id идёт через ADR-0042 hybrid-механизм (default=slot key,
   override через `node.slot_bindings`). Values-only persistence: схема приходит из зарегистрированных типов
   (`HasSchema` → `nebula-metadata` → API catalog), не из inline-значений.
 - **Что меняется:** dep-пути (всё credential — из одного крейта за sole-public-`nebula-sdk`), потенциально
   упрощение re-export-блока в `lib.rs`. **Что остаётся:** сама форма слотов (`#[credential]`/`#[resource]`,
-  `CredentialGuard<Scheme>`, `ResourceGuard<R>`), `FromWorkflowNode`-seam, webhook «секрет не через dyn»-инвариант,
+  `CredentialGuard<Scheme>`, `ResourceHandle<R>`), `FromWorkflowNode`-seam, webhook «секрет не через dyn»-инвариант,
   routing-по-трейту. Lease — first-class на стороне credential; action видит его опосредованно через guard, не как
   собственный примитив. [Phase-5 authoring](../../schema/docs/PHASE5_PROPERTY.md) — target design,
   implementation pending; текущие field-атрибуты слотов остаются implementation baseline.

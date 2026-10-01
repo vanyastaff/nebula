@@ -4,7 +4,7 @@
 //! Embeds [`BaseContext`](nebula_core::BaseContext) for identity/scope/clock/cancellation and implements
 //! core capability traits ([`HasCredentials`](nebula_core::HasCredentials), [`HasResources`](nebula_core::HasResources)).
 
-use std::{fmt, future::Future, sync::Arc};
+use std::{fmt, sync::Arc};
 
 use nebula_core::{
     BaseContext, Context, HasCredentials, HasResources,
@@ -27,41 +27,6 @@ struct NoopResourceAccessor;
 impl ResourceAccessor for NoopResourceAccessor {
     fn has(&self, _key: &nebula_core::ResourceKey) -> bool {
         false
-    }
-
-    fn acquire_any(
-        &self,
-        _key: &nebula_core::ResourceKey,
-    ) -> std::pin::Pin<
-        Box<
-            dyn Future<
-                    Output = Result<Box<dyn std::any::Any + Send + Sync>, nebula_core::CoreError>,
-                > + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async {
-            Err(nebula_core::CoreError::CredentialNotConfigured(
-                "resource capability is not configured in CredentialContext".to_owned(),
-            ))
-        })
-    }
-
-    fn try_acquire_any(
-        &self,
-        _key: &nebula_core::ResourceKey,
-    ) -> std::pin::Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        Option<Box<dyn std::any::Any + Send + Sync>>,
-                        nebula_core::CoreError,
-                    >,
-                > + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async { Ok(None) })
     }
 }
 

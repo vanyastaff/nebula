@@ -12,7 +12,7 @@
 //! type the runtime chooses to supply (engine runtime, test harness,
 //! runner context wrapper,...).
 
-use std::{any::Any, collections::HashMap, fmt, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashMap, fmt, future::Future, pin::Pin, sync::Arc};
 
 use nebula_core::{
     AttemptId, BaseContext, CredentialKey, NodeKey, PortKey, ResourceKey,
@@ -300,18 +300,6 @@ impl ActionRuntimeContext {
     pub fn with_support_inputs(mut self, support_inputs: SupportInputs) -> Self {
         self.support_inputs = support_inputs;
         self
-    }
-
-    /// Acquire a resource by string key through the configured accessor.
-    ///
-    /// Invalid keys surface as fatal [`ActionError`].
-    pub async fn resource(&self, key: &str) -> Result<Box<dyn Any + Send + Sync>, ActionError> {
-        let rk = ResourceKey::new(key)
-            .map_err(|e| ActionError::fatal(format!("invalid resource key `{key}`: {e}")))?;
-        self.resources
-            .acquire_any(&rk)
-            .await
-            .map_err(ActionError::from)
     }
 
     /// Check whether a resource exists under the given string key.
@@ -815,63 +803,13 @@ impl<T: ?Sized + HasCredentials> CredentialContextExt for T {}
 /// derive macro emits the call sites. They are public so authors who
 /// hand-roll a factory (advanced cases) can use the same pipeline.
 pub trait ActionContextExt: HasResources + HasCredentials {
-    /// Acquire a [`nebula_resource::ResourceGuard<R>`] by string id.
-    ///
-    /// Mirrors [`nebula_resource::ResourceRef::resolve`] but takes the id
-    /// directly so the derive-generated factory can pass the
-    /// slot binding without constructing an intermediate `ResourceRef<R>`.
-    ///
-    /// The lease stays checked out until the guard drops, whatever the
-    /// action waits for meanwhile — the raw-escape profile. For provider
-    /// calls prefer a `ResourceHandle<R>` field
-    /// ([`resource_handle_by_id`](Self::resource_handle_by_id)), which checks out
-    /// per attempt after the attempt's quota wait; this method's deprecation
-    /// is scheduled with the `Limited` family's removal (MIGRATION P10).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ActionError::Fatal`] if the id is not a valid
-    /// [`ResourceKey`], the resource is not
-    /// registered, or the accessor returns the wrong type.
-    fn acquire_resource_by_id<'a, R>(
-        &'a self,
-        id: &'a str,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<nebula_resource::ResourceGuard<R>, ActionError>> + Send + 'a,
-        >,
-    >
-    where
-        R: nebula_resource::resource::Provider + 'a,
-        Self: Sync,
-    {
-        Box::pin(async move {
-            let key = ResourceKey::new(id)
-                .map_err(|e| ActionError::fatal(format!("invalid resource id `{id}`: {e}")))?;
-            let boxed = self
-                .resources()
-                .acquire_any(&key)
-                .await
-                .map_err(ActionError::from)?;
-            boxed
-                .downcast::<nebula_resource::ResourceGuard<R>>()
-                .map(|b| *b)
-                .map_err(|_| {
-                    ActionError::fatal(format!(
-                        "resource `{id}`: type mismatch (expected ResourceGuard<{ty}>)",
-                        ty = std::any::type_name::<R>(),
-                    ))
-                })
-        })
-    }
-
     /// The per-unit checkout facade ([`nebula_resource::call::ResourceHandle<R>`])
     /// of the resource bound to `id`.
     ///
     /// The derive-generated factory calls this for a `#[resource]` field
-    /// of type `ResourceHandle<R>`. Unlike
-    /// [`acquire_resource_by_id`](Self::acquire_resource_by_id) nothing is
-    /// checked out: each unit submitted on the row checks out an instance
+    /// of type `ResourceHandle<R>` — the only resource capability an action
+    /// can name. Nothing is checked out at resolution: each unit submitted
+    /// on the row checks out an instance
     /// per attempt, after its quota and row-gate waits. The facade is bound
     /// to this context: its units are cancelled with the execution until
     /// their first grant (`Cancelled`, `NotSent`) and bounded by the
@@ -995,6 +933,8 @@ impl<T: ?Sized + HasResources + HasCredentials> ActionContextExt for T {}
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
+
     use super::*;
     use crate::testing::TestContextBuilder;
     use nebula_core::CoreError;
@@ -1175,28 +1115,6 @@ mod tests {
         impl ResourceAccessor for StubResourceAccessor {
             fn has(&self, _key: &ResourceKey) -> bool {
                 true
-            }
-
-            fn acquire_any(
-                &self,
-                _key: &ResourceKey,
-            ) -> Pin<
-                Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, CoreError>> + Send + '_>,
-            > {
-                Box::pin(async { Ok(Box::new(()) as Box<dyn Any + Send + Sync>) })
-            }
-
-            fn try_acquire_any(
-                &self,
-                _key: &ResourceKey,
-            ) -> Pin<
-                Box<
-                    dyn Future<Output = Result<Option<Box<dyn Any + Send + Sync>>, CoreError>>
-                        + Send
-                        + '_,
-                >,
-            > {
-                Box::pin(async { Ok(None) })
             }
 
             fn resource_handle_any(

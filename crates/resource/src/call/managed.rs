@@ -267,6 +267,12 @@ impl<R: Provider> Drop for ManagedLease<R> {
 /// Cloning shares the lease: the lease is released when the last clone and
 /// the last unit any clone started are gone, so a revoke or shutdown drain
 /// waits for running units.
+///
+/// Host-only, like the [`ResourceGuard`] it wraps: a `Lease` holds one
+/// checkout for its whole life and its units are not journaled, so it is
+/// never an action route and `nebula-sdk` does not export it. Actions hold
+/// [`ResourceHandle<R>`](crate::call::ResourceHandle), which checks out per
+/// attempt. The type is scheduled for removal.
 pub struct Lease<R: Provider> {
     lease: Arc<ManagedLease<R>>,
 }

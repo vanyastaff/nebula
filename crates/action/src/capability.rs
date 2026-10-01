@@ -220,30 +220,14 @@ impl ExecutionEmitter for NoopExecutionEmitter {
 
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// No-op resource accessor — fails closed on every `acquire_any`.
+/// No-op resource accessor — serves no resource handles (the trait's
+/// fail-closed defaults).
 #[derive(Debug, Default)]
 pub struct NoopResourceAccessor;
 
 impl ResourceAccessor for NoopResourceAccessor {
     fn has(&self, _key: &ResourceKey) -> bool {
         false
-    }
-    fn acquire_any(
-        &self,
-        key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-        let key_str = key.as_str().to_owned();
-        Box::pin(async move {
-            Err(CoreError::CredentialNotConfigured(format!(
-                "resource accessor is not configured (requested `{key_str}`)"
-            )))
-        })
-    }
-    fn try_acquire_any(
-        &self,
-        _key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-        Box::pin(async { Ok(None) })
     }
 }
 
