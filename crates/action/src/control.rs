@@ -280,7 +280,9 @@ impl<T> From<ControlOutcome<T>> for ActionResult<T> {
 /// # Contract
 ///
 /// `evaluate` must not block on external resources or persist state
-/// between calls. It must not panic. The returned future must be
+/// between calls. It must not panic. Control actions are never journaled:
+/// the engine refuses a write through their resource handles before any
+/// provider call. The returned future must be
 /// `Send` — the runtime runs it in `tokio::select!` against
 /// cancellation.
 pub trait ControlAction: Action {

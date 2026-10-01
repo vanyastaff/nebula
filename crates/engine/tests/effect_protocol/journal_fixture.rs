@@ -440,16 +440,14 @@ impl StatefulAction for StatefulCharge {
     }
 }
 
-/// The controls of the control actions, which the generic control factory
-/// builds per dispatch.
-static CONTROL_CONTROLS: OnceLock<Arc<Controls>> = OnceLock::new();
-
-/// The journaled control action: it passes the script's receipts on.
+/// A control action of the default (`Journaled`) contract that tries the
+/// script's units anyway and passes their receipts on. It runs with fresh
+/// default controls on every evaluation — no state shared between tests.
 #[derive(nebula_action::Action)]
 #[action(
     key = "journal.charge",
     name = "Charge",
-    description = "Journaled control test action",
+    description = "Default-contract control test action",
     input = Value,
     output = Value
 )]
@@ -463,8 +461,7 @@ impl ControlAction for ControlCharge {
     ) -> Result<ControlOutcome<Value>, ActionError> {
         let script: Script = serde_json::from_value(input)
             .map_err(|error| ActionError::fatal(format!("bad script: {error}")))?;
-        let controls = CONTROL_CONTROLS.get_or_init(Arc::default);
-        let output = run_script(controls, script, ctx).await?;
+        let output = run_script(&Controls::default(), script, ctx).await?;
         Ok(ControlOutcome::Pass { output })
     }
 }
@@ -600,9 +597,8 @@ impl JournalFixture {
         let controls = match kind {
             Kind::Stateless => Arc::new(Controls::default()),
             Kind::Stateful => Arc::clone(STATEFUL_CONTROLS.get_or_init(Arc::default)),
-            Kind::Control | Kind::ReadOnlyControl => {
-                Arc::clone(CONTROL_CONTROLS.get_or_init(Arc::default))
-            },
+            // A control action runs with its own fresh controls.
+            Kind::Control | Kind::ReadOnlyControl => Arc::new(Controls::default()),
         };
         let manager = Arc::new(Manager::new());
         for identity in [

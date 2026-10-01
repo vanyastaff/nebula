@@ -4,7 +4,7 @@
 //! [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled)
 //! submits its effects as units on resource handles
 //! ([`ResourceHandle`](nebula_resource::call::ResourceHandle)). For a
-//! stateless or control action on a durable turn the engine builds one
+//! stateless action on a durable turn the engine builds one
 //! [`NodeEffectJournal`] per node attempt and hands it to the node's handles
 //! ([`Manager::handle_any_journaled`](nebula_resource::Manager::handle_any_journaled));
 //! the resource runtime drives every `Idempotent` or `Write` unit through
@@ -65,11 +65,11 @@
 //! reserved for the iterations of a stateful action, which a later stage
 //! journals.
 //!
-//! **Kinds** ([`JournalShape`]). Stateless and control actions are
-//! journaled alike: one flat occurrence sequence per node attempt. A
-//! stateful action keeps read-only handles until its iterations are
-//! journaled; agent, stream and other actions keep read-only handles. Each
-//! says why in the refusal of a write.
+//! **Kinds** ([`JournalShape`]). Only stateless actions are journaled: one
+//! flat occurrence sequence per node attempt. A control action decides flow
+//! and must not cause effects; a stateful action keeps read-only handles
+//! until its iterations are journaled; agent, stream and other actions keep
+//! read-only handles. Each says why in the refusal of a write.
 //!
 //! **Provider key.** Every slot records the idempotency key the provider
 //! receives ([`provider_idempotency_key`]); a unit always presents the key
@@ -171,6 +171,9 @@ const MAX_SLOT_INVOCATIONS: u32 = 10_000;
 /// action with write authority.
 pub(crate) struct JournalAdmission(());
 
+/// Why a journaled control action has read-only resource handles.
+const CONTROL_NOT_JOURNALED: &str =
+    "control actions decide flow and must not cause effects; move effects to a stateless action";
 /// Why a journaled stateful action has read-only resource handles.
 const STATEFUL_NOT_JOURNALED: &str =
     "stateful effects are journaled per iteration in a later release";
@@ -184,13 +187,14 @@ const KIND_NOT_JOURNALED: &str = "effects of this action kind are not journaled"
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JournalShape {
     /// One run per node attempt: one flat occurrence sequence
-    /// (`unit/v1/#n`). Stateless and control actions.
+    /// (`unit/v1/#n`). Stateless actions.
     Flat,
     /// One run per iteration: a stateful action, whose occurrences the
     /// `it{n}/` prefix is reserved for. Not journaled yet — read-only
     /// handles.
     Iterated,
-    /// No journal: an agent action (whose profile is planned), a stream
+    /// No journal: a control action (which decides flow and must not cause
+    /// effects), an agent action (whose profile is planned), a stream
     /// action, and every other kind keep read-only handles.
     None,
 }
@@ -199,7 +203,7 @@ impl JournalShape {
     /// The shape of `kind`'s effects.
     pub(crate) const fn of(kind: nebula_action::ActionKind) -> Self {
         match kind {
-            nebula_action::ActionKind::Stateless | nebula_action::ActionKind::Control => Self::Flat,
+            nebula_action::ActionKind::Stateless => Self::Flat,
             nebula_action::ActionKind::Stateful => Self::Iterated,
             _ => Self::None,
         }
@@ -217,6 +221,7 @@ impl JournalShape {
         match (Self::of(kind), kind) {
             (Self::Flat, _) => None,
             (Self::Iterated, _) => Some(STATEFUL_NOT_JOURNALED),
+            (Self::None, nebula_action::ActionKind::Control) => Some(CONTROL_NOT_JOURNALED),
             (Self::None, nebula_action::ActionKind::Agent) => Some(AGENT_NOT_JOURNALED),
             (Self::None, _) => Some(KIND_NOT_JOURNALED),
         }

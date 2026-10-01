@@ -19,13 +19,18 @@ use super::*;
 // ── the journal shape of each action kind ────────────────────────────────
 
 #[test]
-fn stateless_and_control_actions_are_journaled_flat_and_the_rest_read_only() {
+fn only_stateless_actions_are_journaled_and_the_rest_say_why_not() {
     use nebula_action::ActionKind;
-    for kind in [ActionKind::Stateless, ActionKind::Control] {
-        assert_eq!(JournalShape::of(kind), JournalShape::Flat, "{kind:?}");
-        assert!(JournalShape::of(kind).is_journaled(), "{kind:?}");
-        assert_eq!(JournalShape::read_only_detail(kind), None, "{kind:?}");
-    }
+    assert_eq!(JournalShape::of(ActionKind::Stateless), JournalShape::Flat);
+    assert!(JournalShape::Flat.is_journaled());
+    assert_eq!(JournalShape::read_only_detail(ActionKind::Stateless), None);
+    assert_eq!(
+        JournalShape::read_only_detail(ActionKind::Control),
+        Some(
+            "control actions decide flow and must not cause effects; move effects to a \
+             stateless action"
+        )
+    );
     assert_eq!(
         JournalShape::of(ActionKind::Stateful),
         JournalShape::Iterated
@@ -40,6 +45,7 @@ fn stateless_and_control_actions_are_journaled_flat_and_the_rest_read_only() {
         Some("agent effects are not journaled; the agent profile is planned")
     );
     for kind in [
+        ActionKind::Control,
         ActionKind::Agent,
         ActionKind::Stream,
         ActionKind::Interactive,
