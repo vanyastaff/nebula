@@ -633,7 +633,8 @@ pub(super) struct UnitShared {
     /// Worst settled [`SentState`] rank across granted attempts, a
     /// throttled attempt's aside: the provider applied nothing.
     worst: AtomicU8,
-    /// The latest settled attempt's [`SentState`] rank, throttled or not.
+    /// The latest settled attempt's [`SentState`] rank, throttled or not;
+    /// `NotSent` once an execution owner refused an attempt after it.
     last: AtomicU8,
     /// The unit's owned effect, for an `Idempotent` or `Write` unit on a
     /// journaled row facade.
@@ -641,6 +642,11 @@ pub(super) struct UnitShared {
     /// The local idempotency key of a plain unit that declared a
     /// developer key part.
     local_key: Option<IdempotencyKey>,
+    /// The throttle of a finished attempt while it is reported to the rate
+    /// limit: a unit deadline that cuts the report off settles the unit
+    /// with it, not as ended abnormally. Cleared by the report's end and by
+    /// the next grant.
+    reporting: Mutex<Option<OperationError>>,
 }
 
 impl UnitShared {
@@ -667,6 +673,7 @@ impl UnitShared {
             last: AtomicU8::new(SentState::NotSent.rank()),
             effect: None,
             local_key: None,
+            reporting: Mutex::new(None),
         }
     }
 
@@ -781,6 +788,7 @@ impl UnitShared {
             .compare_exchange(PENDING, GRANTED, Ordering::AcqRel, Ordering::Acquire)
         {
             Ok(_) | Err(GRANTED) => {
+                self.set_reporting(None);
                 self.granted.fetch_add(1, Ordering::AcqRel);
                 Ok(())
             },
@@ -815,11 +823,37 @@ impl UnitShared {
         self.granted.load(Ordering::Acquire)
     }
 
+    /// An execution owner refused the attempt after the latest settled one:
+    /// its refusal, not that attempt, is now the unit's last word, so a
+    /// throttle it followed no longer counts — the provider applied nothing.
+    /// An attempt that may have crossed still counts through `worst`.
+    fn owner_refused_next(&self) {
+        self.last
+            .store(SentState::NotSent.rank(), Ordering::Release);
+    }
+
+    fn set_reporting(&self, throttle: Option<OperationError>) {
+        *self
+            .reporting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = throttle;
+    }
+
+    /// The throttle of a finished attempt whose report the unit deadline
+    /// cut off, if that is where the unit was.
+    fn take_reporting(&self) -> Option<OperationError> {
+        self.reporting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
     /// The unit's sent state: `NotSent` when no attempt was granted, however
     /// the author settled; otherwise the worst settled attempt — a throttled
-    /// attempt only counts when it was the last, as the provider applied
-    /// nothing — raised to `MaybeSent` when the unit ended abnormally
-    /// (deadline, panic).
+    /// attempt only counts when it was the last and no execution owner
+    /// refused an attempt after it, as the provider applied nothing —
+    /// raised to `MaybeSent` when the unit ended abnormally (deadline,
+    /// panic).
     fn fold(&self, abnormal: bool) -> SentState {
         if self.attempts() == 0 {
             return SentState::NotSent;
@@ -1074,13 +1108,18 @@ where
     };
     let (result, abnormal) = match outcome {
         Ok(Some(result)) => (result, false),
-        Ok(None) => (
-            Err(OperationError::new(
-                ErrorKind::Transient,
-                "unit deadline elapsed",
-            )),
-            true,
-        ),
+        // The deadline cut off the report of a finished throttle: the
+        // provider applied nothing, and the unit settles as the throttle.
+        Ok(None) => match shared.take_reporting() {
+            Some(throttle) => (Err(throttle), false),
+            None => (
+                Err(OperationError::new(
+                    ErrorKind::Transient,
+                    "unit deadline elapsed",
+                )),
+                true,
+            ),
+        },
         Err(_panic) => {
             let kind = if shared.attempts() == 0 {
                 ErrorKind::Permanent
@@ -1184,6 +1223,11 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
         let (host, shared) = (self.host, self.shared);
         let admitted = self.admit(&cost).await;
         host.record_attempt(admitted.is_ok());
+        if let Err(refusal) = &admitted
+            && refusal.supersedes_retried()
+        {
+            shared.owner_refused_next();
+        }
         let (target, pin) = admitted?;
         Ok(Attempt {
             target,
@@ -1285,7 +1329,9 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
     /// The first attempt's refusal (see [`attempt`](Self::attempt)); after
     /// that, the last attempt's error — a retry the runtime refused (the
     /// budget, the deadline, the lease closing) returns the error of the
-    /// attempt it would have retried.
+    /// attempt it would have retried, but a retry an execution owner refused
+    /// (an unknown outcome, a closed owner, a mismatch) returns that
+    /// refusal: it is authoritative.
     pub async fn call<T, F>(&mut self, cost: Cost, f: F) -> Result<T, OperationError>
     where
         F: AsyncFnMut(&R::Instance, &R::Pinned) -> Result<T, OperationError> + Send + 'static,
@@ -1299,7 +1345,14 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
             }
             let attempt = match self.attempt(cost.clone()).await {
                 Ok(attempt) => attempt,
-                Err(refusal) => return Err(previous.unwrap_or(refusal)),
+                // A local refusal says nothing new: the attempt it would have
+                // retried explains the call. An owner's refusal is final.
+                Err(refusal) => {
+                    return Err(match previous {
+                        Some(error) if !refusal.supersedes_retried() => error,
+                        _ => refusal,
+                    });
+                },
             };
             let result = f(attempt.instance(), attempt.credentials()).await;
             attempt.finish(&result).await;
@@ -1665,15 +1718,22 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
             },
         };
         // Recorded before the verdict's bounded wait: the attempt is over
-        // even when its future is dropped mid-report.
+        // even when its future is dropped mid-report, and a throttle whose
+        // report the unit deadline cuts off still settles the unit as one.
         attempt.shared.record(sent, note);
         attempt.settled = true;
         if let Some(verdict) = verdict {
+            let throttle = result
+                .as_ref()
+                .err()
+                .filter(|_| note == CallNote::Throttled);
+            attempt.shared.set_reporting(throttle.cloned());
             attempt
                 .managed
                 .rate_limiter
                 .report(verdict, attempt.cost.key())
                 .await;
+            attempt.shared.set_reporting(None);
         }
     }
 

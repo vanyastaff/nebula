@@ -286,6 +286,7 @@
 //! that ends with an unknown outcome publishes
 //! [`ResourceEvent::OperationOutcomeUnknown`](crate::ResourceEvent::OperationOutcomeUnknown).
 
+mod canonical;
 mod cost;
 mod declaration;
 mod error;

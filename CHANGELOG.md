@@ -668,6 +668,34 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **Journaled requests canonicalize without losing or hiding members.** The
+  canonical request of an `Operation` was built from `serde_json::to_value`,
+  which keeps only the last member of an object that writes one key twice (a
+  `#[serde(flatten)]` collision, a hand-written impl), so two different
+  requests could share canonical bytes and a changed effect would replay
+  instead of reporting a mismatch; the 1 MiB cap was also checked only after
+  the whole request had been materialized twice. A streaming serializer now
+  writes the canonical form directly, refuses a duplicate key (`Permanent`,
+  nothing echoed) and stops as soon as the output crosses the cap. The bytes
+  of every valid request are unchanged. A `serde_json::value::RawValue` in a
+  request is canonicalized as its text is parsed, under the same duplicate-key
+  refusal and cap, instead of being parsed into a JSON value first. The HTTP
+  adapter's `Request` also
+  sorts its headers by name in its journaled intent (a repeated name keeps its
+  values in order), so the same request built in another header order no
+  longer resumes as a mismatch.
+
+- **`OperationCx::call` no longer turns definite outcomes into ambiguous
+  ones.** A retry refused by the execution owner (an unknown outcome once a
+  stable-key window expired, a closed owner, a mismatch) ended the call with
+  the retryable error of the previous attempt, letting a caller resubmit; it
+  now ends with the owner's refusal, and a throttle before it no longer folds
+  the unit `Sent` (which turned a `Write`'s retryable owner refusal into an
+  unknown outcome). And a throttle whose rate-limit report
+  a stalling shared limit store held until the unit deadline settled the unit
+  as ended abnormally (`MaybeSent`, an unknown outcome for a `Write`, an
+  ambiguous journal crossing); it now settles as the throttle it was.
+
 - **An effect that was provably never sent no longer spends its invocation
   budget or expires into `OutcomeUnknown`.** The operation ledger counted every
   grant against `max_invocations` and checked the recovery and stable-key

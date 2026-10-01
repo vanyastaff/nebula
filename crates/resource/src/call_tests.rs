@@ -1788,3 +1788,111 @@ async fn a_pause_past_the_deadline_ends_the_call_with_the_throttle() {
     assert_eq!(error.sent(), SentState::Sent);
     assert!(started.elapsed() < Duration::from_secs(5), "nothing slept");
 }
+
+/// A shared limit store whose penalty writes never finish.
+struct StalledPenalties(crate::rate_limit::MemoryLimitStore);
+
+impl crate::rate_limit::ErasedLimitStore for StalledPenalties {
+    fn reserve_boxed<'a>(
+        &'a self,
+        key: &'a crate::rate_limit::LimitKey,
+        rate: &'a Rate,
+        request: crate::rate_limit::ReserveRequest,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Result<crate::rate_limit::Grant, crate::rate_limit::Denied>,
+                        crate::rate_limit::LimitStoreError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        self.0.reserve_boxed(key, rate, request)
+    }
+
+    fn penalize_boxed<'a>(
+        &'a self,
+        _key: &'a crate::rate_limit::LimitKey,
+        _rate: &'a Rate,
+        _retry_after: Duration,
+        _max_penalty: Duration,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<(), crate::rate_limit::LimitStoreError>> + Send + 'a>,
+    > {
+        Box::pin(std::future::pending())
+    }
+
+    fn cancel_boxed<'a>(
+        &'a self,
+        key: &'a crate::rate_limit::LimitKey,
+        rate: &'a Rate,
+        grant: &'a crate::rate_limit::Grant,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<bool, crate::rate_limit::LimitStoreError>> + Send + 'a>,
+    > {
+        self.0.cancel_boxed(key, rate, grant)
+    }
+
+    fn penalty_boxed<'a>(
+        &'a self,
+        key: &'a crate::rate_limit::LimitKey,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Duration, crate::rate_limit::LimitStoreError>> + Send + 'a>,
+    > {
+        self.0.penalty_boxed(key)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_throttle_whose_report_outlasts_the_deadline_settles_as_the_throttle() {
+    let store = Arc::new(StalledPenalties(crate::rate_limit::MemoryLimitStore::new()));
+    let manager = Manager::with_config(ManagerConfig::default().with_shared_limit_store(store));
+    let shared = crate::rate_limit::LimitKey::new("acct:stalled").expect("limit key");
+    resident(
+        &manager,
+        Some(RowLimit::rate(per_second(10, 10)).with_key(shared)),
+    );
+    let facade = managed::<Api>(&manager).await;
+    // The deadline lands inside the report's own budget: it cuts the
+    // stalled penalty write off after the attempt finished as throttled.
+    let operation = Scripted::<WRITE>::new(vec![Err(OperationError::throttled(Some(
+        Duration::from_secs(30),
+    )))]);
+    let calls = operation.calls();
+    let started = Instant::now();
+    let error = facade
+        .submit(operation)
+        .with_deadline(in_one(Duration::from_secs(1)))
+        .await
+        .expect_err("throttled");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_secs(1),
+        "the deadline cut the report off"
+    );
+    assert_eq!(
+        *error.kind(),
+        ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_secs(30))
+        },
+        "the throttle, not an abnormal end: {error}"
+    );
+    assert_eq!(error.sent(), SentState::Sent);
+    assert!(error.is_retryable(), "the provider applied nothing");
+    assert!(!matches!(
+        Error::from(error).kind(),
+        ErrorKind::OutcomeUnknown
+    ));
+
+    // A deadline during the provider call itself is still an abnormal end.
+    let operation = Hang::<false>;
+    let error = facade
+        .submit(operation)
+        .with_deadline(in_one(Duration::from_secs(1)))
+        .await
+        .expect_err("cut off");
+    assert_eq!(error.sent(), SentState::MaybeSent);
+}

@@ -433,7 +433,7 @@ impl OwnedEffect {
             refusal = refusal.as_str(),
             "effect owner refused a step"
         );
-        refusal_error(refusal)
+        refusal_error(refusal).refused_by_owner()
     }
 
     /// The unit error when the owner could not record a call that may have
