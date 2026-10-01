@@ -414,6 +414,13 @@ struct CountingLedger {
     prepare_stalled: tokio::sync::Notify,
     /// The next unsent-failure record is refused, unwritten.
     fail_next_unsent_failure: AtomicBool,
+    /// The next call grant commits, then its answer waits for
+    /// `release_grant`.
+    hold_next_grant: AtomicBool,
+    /// Notified when a grant is held.
+    grant_held: tokio::sync::Notify,
+    /// Releases a held grant's answer.
+    release_grant: tokio::sync::Notify,
     /// Notified when an outcome write hangs.
     hung: tokio::sync::Notify,
 }
@@ -510,6 +517,16 @@ impl OperationLedger for CountingLedger {
         {
             return Err(OperationLedgerError::Unavailable);
         }
+        if matches!(command, OperationCommand::GrantInvocation { .. })
+            && self.hold_next_grant.swap(false, Ordering::SeqCst)
+        {
+            // Committed; the answer comes back only when released.
+            let granted = self.inner.advance(scope, slot_id, fencing, command).await;
+            let released = self.release_grant.notified();
+            self.grant_held.notify_one();
+            released.await;
+            return granted;
+        }
         self.inner.advance(scope, slot_id, fencing, command).await
     }
 }
@@ -568,6 +585,9 @@ impl Harness {
             stall_next_prepare: AtomicBool::new(false),
             prepare_stalled: tokio::sync::Notify::new(),
             fail_next_unsent_failure: AtomicBool::new(false),
+            hold_next_grant: AtomicBool::new(false),
+            grant_held: tokio::sync::Notify::new(),
+            release_grant: tokio::sync::Notify::new(),
             hung: tokio::sync::Notify::new(),
         });
         let scope = Scope::new("workspace-a", "org-a");
@@ -2857,6 +2877,42 @@ async fn no_recorded_effect_is_granted_after_a_replay_mismatch() {
         harness.desk.keys().len(),
         1,
         "the prepared #1 was never sent"
+    );
+}
+
+/// A halting verdict another unit records while a grant is in flight stops
+/// that grant too: the committed call is recorded not crossed and refused,
+/// so nothing reaches the provider after the node is known divergent.
+#[tokio::test]
+async fn a_halting_verdict_during_a_grant_withholds_its_call() {
+    let harness = Harness::new().await;
+    harness.ledger.hold_next_grant.store(true, Ordering::SeqCst);
+    let journal = harness.journal(1);
+    let held = harness.ledger.grant_held.notified();
+    let unit = tokio::spawn(
+        harness
+            .handle(&journal)
+            .submit(Charge::<false> { order: 49 }),
+    );
+    held.await;
+    // Another unit's divergence lands while this grant's answer is held.
+    journal.note_failure(EffectExecutionError::OccurrenceMismatch);
+    harness.ledger.release_grant.notify_one();
+    let refused = unit
+        .await
+        .expect("unit task")
+        .expect_err("granted after the halting verdict");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert!(
+        harness.desk.keys().is_empty(),
+        "nothing reached the provider"
+    );
+    let slots = harness.slots().await;
+    assert_eq!(slots.len(), 1);
+    assert_eq!(Harness::phase(&slots[0]), EffectPhase::BeforeBoundary);
+    assert_eq!(
+        journal.conclude(DRAIN).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
     );
 }
 

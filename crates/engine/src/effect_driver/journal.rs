@@ -2727,9 +2727,15 @@ impl EffectJournal for NodeEffectJournal {
                 authorized_at_ms,
                 request_started,
             })) => {
-                if self.is_closed() {
-                    // The node concluded while the grant was in flight: the
-                    // call is never handed out, so it provably did not cross.
+                // The node concluded, or another unit recorded a halting
+                // verdict, while the grant was in flight: the call is never
+                // handed out, so it provably did not cross.
+                let closed = self.is_closed();
+                let halted = self
+                    .state()
+                    .failure
+                    .filter(|failure| failure.halts_execution());
+                if closed || halted.is_some() {
                     let _ = slot
                         .advance(
                             self.access(),
@@ -2739,7 +2745,10 @@ impl EffectJournal for NodeEffectJournal {
                             },
                         )
                         .await;
-                    return Err(self.refused(STEP, JournalRefusal::Closed));
+                    return Err(match halted {
+                        Some(halted) if !closed => self.refuse(STEP, halted),
+                        _ => self.refused(STEP, JournalRefusal::Closed),
+                    });
                 }
                 // The ledger vouches for the call only until its window ends
                 // (a stable key's deduplication, an opaque effect's recovery
