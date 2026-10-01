@@ -9,9 +9,10 @@
 //! or [`ResourceHandle::session`](super::ResourceHandle::session) is driven
 //! through it (a `Read` never is):
 //!
-//! 1. **Submit** — the unit takes an in-flight [`InFlight`]
-//!    ([`track`](EffectJournal::track)); a
-//!    [closed](EffectJournal::is_closed) owner refuses it. A submission is
+//! 1. **Submit** — the owner admits the unit with an in-flight [`InFlight`]
+//!    ([`admit`](EffectJournal::admit)); a
+//!    [closed](EffectJournal::is_closed) owner, or one between two runs,
+//!    refuses it. A submission is
 //!    lazy: one dropped before its first poll never reaches the owner.
 //! 2. **Prepare** — the first poll takes the unit's positional occurrence
 //!    label in the owner's one sequence for all its effect units, whatever
@@ -142,6 +143,25 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
     /// An in-flight ticket held by every submitted unit until it is gone;
     /// the owner drains them before finalizing its node.
     fn track(&self) -> InFlight;
+
+    /// Admits a submitted unit: its in-flight ticket, or why the owner
+    /// refuses it — [`Closed`](JournalRefusal::Closed) when it
+    /// [closed](Self::is_closed), or
+    /// [`BetweenRuns`](JournalRefusal::BetweenRuns) when its units run in
+    /// positional runs and none is open. The unit runtime submits through
+    /// it. Defaults to [`track`](Self::track) unless closed; an owner whose
+    /// runs roll over overrides it so that admission and rollover are one
+    /// atomic transition.
+    ///
+    /// # Errors
+    ///
+    /// Why the owner refuses the unit; nothing was sent.
+    fn admit(&self) -> Result<InFlight, JournalRefusal> {
+        if self.is_closed() {
+            return Err(JournalRefusal::Closed);
+        }
+        Ok(self.track())
+    }
 
     /// Whether the owner closed (its node finished): a closed owner refuses
     /// every new unit.
@@ -441,6 +461,10 @@ pub enum JournalRefusal {
     /// The owner already holds as many effects as it records for one run
     /// of its node: no further effect is prepared.
     SlotCapExceeded,
+    /// The owner's units run in positional runs (a stateful action's
+    /// iterations) and none is open: a unit submitted between two runs
+    /// belongs to neither.
+    BetweenRuns,
 }
 
 impl JournalRefusal {
@@ -455,6 +479,7 @@ impl JournalRefusal {
             Self::LeaseLost => "lease_lost",
             Self::Unknown => "unknown",
             Self::SlotCapExceeded => "slot_cap_exceeded",
+            Self::BetweenRuns => "between_runs",
         }
     }
 }

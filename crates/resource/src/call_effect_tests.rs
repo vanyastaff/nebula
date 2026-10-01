@@ -122,6 +122,8 @@ struct FakeState {
     fail_prepare: Option<JournalRefusal>,
     fail_settle: Option<JournalRefusal>,
     fail_grant: Option<JournalRefusal>,
+    /// The next submission is refused with this.
+    fail_admit: Option<JournalRefusal>,
     on_grant: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -431,6 +433,16 @@ impl EffectJournal for FakeOwner {
         InFlight::new(move || {
             in_flight.fetch_sub(1, Ordering::SeqCst);
         })
+    }
+
+    fn admit(&self) -> Result<InFlight, JournalRefusal> {
+        if let Some(refusal) = self.state().fail_admit.take() {
+            return Err(refusal);
+        }
+        if self.is_closed() {
+            return Err(JournalRefusal::Closed);
+        }
+        Ok(self.track())
     }
 
     fn is_closed(&self) -> bool {
@@ -1094,6 +1106,34 @@ impl EffectJournal for OrdinalOnly {
     fn is_closed(&self) -> bool {
         true
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_unit_its_owner_does_not_admit_is_refused_unsent() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    fixture.owner.state().fail_admit = Some(JournalRefusal::BetweenRuns);
+    let refused = row
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+        .await
+        .expect_err("between the owner's runs");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(
+        refused.detail(),
+        "effect submitted while its owner has no open run (between stateful iterations); unit \
+         refused"
+    );
+    assert!(
+        fixture.owner.intents().is_empty(),
+        "nothing reached the owner"
+    );
+    assert_eq!(calls.made(), 0);
+    // The default admission refuses only a closed owner.
+    assert_eq!(
+        OrdinalOnly::default().admit().map(|_| ()),
+        Err(JournalRefusal::Closed)
+    );
 }
 
 #[test]

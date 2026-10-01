@@ -142,8 +142,10 @@ impl fmt::Debug for OwnedEffect {
 
 impl OwnedEffect {
     /// The owned state of a unit of `declaration` on `key`, whose row is at
-    /// `config_fingerprint`: refused `Cancelled` when `owner` closed;
-    /// otherwise with an in-flight ticket. Its occurrence is assigned later,
+    /// `config_fingerprint`: refused when `owner` does not admit it
+    /// ([`EffectJournal::admit`]: `Cancelled` when it closed, `Permanent`
+    /// between its runs); otherwise with an in-flight ticket. Its occurrence
+    /// is assigned later,
     /// when its first poll starts the prepare
     /// ([`assign_occurrence`](Self::assign_occurrence)): a submission
     /// dropped before it is polled takes no position.
@@ -154,12 +156,7 @@ impl OwnedEffect {
         config_fingerprint: u64,
         declaration: JournalDeclaration,
     ) -> Result<Self, OperationError> {
-        if owner.is_closed() {
-            return Err(OperationError::new(
-                ErrorKind::Cancelled,
-                "effect owner closed; unit refused",
-            ));
-        }
+        let ticket = owner.admit().map_err(refusal_error)?;
         Ok(Self {
             owner: Arc::clone(owner),
             resource_key: key.clone(),
@@ -169,7 +166,7 @@ impl OwnedEffect {
             occurrence: OnceLock::new(),
             slot: OnceLock::new(),
             pending: Mutex::new(None),
-            _ticket: owner.track(),
+            _ticket: ticket,
         })
     }
 
@@ -458,6 +455,11 @@ fn refusal_error(refusal: JournalRefusal) -> OperationError {
         JournalRefusal::SlotCapExceeded => OperationError::new(
             ErrorKind::Permanent,
             "effect journal slot cap reached; unit refused",
+        ),
+        JournalRefusal::BetweenRuns => OperationError::new(
+            ErrorKind::Permanent,
+            "effect submitted while its owner has no open run (between stateful iterations); \
+             unit refused",
         ),
         JournalRefusal::Unavailable
         | JournalRefusal::AcknowledgementUnknown
