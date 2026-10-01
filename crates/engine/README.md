@@ -186,7 +186,9 @@ configuration, and process lifecycle.
   stuck unit) fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even if the action
   swallowed the unit's error), and a changed request, key part, credential binding,
   configuration or recording policy under a recorded occurrence fails it
-  `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent. Counters:
+  `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent — as does a node about to
+  succeed although an earlier attempt recorded an effect (settled, or a call that
+  crossed) this attempt never met again. Counters:
   `nebula_effect_journal_prepares_total{phase}`,
   `nebula_effect_journal_refusals_total{step,refusal}`,
   `nebula_effect_journal_verdicts_total{code}`. Every other `Journaled` node keeps

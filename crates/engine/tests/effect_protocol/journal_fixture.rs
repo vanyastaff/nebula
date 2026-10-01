@@ -283,6 +283,8 @@ pub(super) struct Controls {
     /// On the next dispatch only, the action first builds a write
     /// submission and drops it unpolled (a branch taken once).
     pub drop_unpolled_once: AtomicBool,
+    /// The action skips every unit of its script (another branch).
+    pub skip_units: AtomicBool,
     /// Retryable failures the action returns after its units.
     pub fail_after_units: AtomicU32,
     /// Dispatches of the action.
@@ -315,7 +317,12 @@ async fn run_script(
         })));
     }
     let mut receipts = Vec::new();
-    for mut spec in script.units {
+    let units = if controls.skip_units.load(Ordering::SeqCst) {
+        Vec::new()
+    } else {
+        script.units
+    };
+    for mut spec in units {
         if let Some(request) = controls.request_override.lock().clone() {
             spec.request = request;
         }

@@ -193,6 +193,46 @@ async fn a_submission_dropped_unpolled_before_a_crash_shifts_nothing(#[case] bac
 #[case::sqlite(Backend::Sqlite)]
 #[case::postgres(Backend::Postgres)]
 #[tokio::test]
+async fn a_resume_that_skips_a_settled_effect_fails_the_node(#[case] backend: Backend) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = JournalFixture::new(database.ports()).await;
+    let execution = fixture.start(&[write("order-9:7")], json!({})).await;
+    fixture
+        .controls
+        .hold_after_units
+        .store(true, Ordering::SeqCst);
+    fixture
+        .crash_at(execution, &fixture.controls.after_units)
+        .await;
+    let settled = fixture.slots(execution).await;
+    assert_eq!(phase(&settled[0]), EffectPhase::Resolved);
+
+    // The resumed dispatch takes another branch and submits nothing.
+    fixture
+        .controls
+        .hold_after_units
+        .store(false, Ordering::SeqCst);
+    fixture.controls.skip_units.store(true, Ordering::SeqCst);
+    fixture.ports = database.reconnect().await;
+    database.expire_abandoned_leases().await;
+    let result = fixture.run(execution).await.unwrap();
+    assert_eq!(result.status, ExecutionStatus::Failed, "{result:?}");
+    assert!(
+        node_error(&result).starts_with("ENGINE:EFFECT_OCCURRENCE_MISMATCH"),
+        "{}",
+        node_error(&result)
+    );
+    assert_eq!(fixture.gateway.call_count(), 1);
+    assert_eq!(fixture.slots(execution).await, settled);
+}
+
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[case::postgres(Backend::Postgres)]
+#[tokio::test]
 async fn an_interrupted_write_fails_the_node_unknown_and_a_resume_sends_nothing(
     #[case] backend: Backend,
 ) {

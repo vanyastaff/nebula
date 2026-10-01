@@ -96,7 +96,10 @@
 //! ambiguous (within the drain limit) and reports a verdict that overrides
 //! the node's result. Any slot whose call may have crossed without a
 //! recorded outcome — this attempt's or an earlier dispatch's — fails the
-//! node as unknown.
+//! node as unknown. A node about to succeed although an earlier attempt
+//! recorded an effect (settled, or a call that crossed) this attempt never
+//! prepared took another path past an applied mutation: it fails as an
+//! occurrence mismatch.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -488,10 +491,21 @@ impl NodeEffectJournal {
     ///   crossed (an ambiguous stable-key call), or a slot a stuck unit kept
     ///   locked past the drain limit — even if the action swallowed the
     ///   unit's error;
+    /// - [`OccurrenceMismatch`](EffectExecutionError::OccurrenceMismatch)
+    ///   when the node is about to succeed (`node_succeeded`) although an
+    ///   earlier attempt recorded an effect — settled, or a call that
+    ///   crossed — that this attempt never prepared: the program took
+    ///   another path, and its result would ignore an applied mutation.
+    ///   A failing node is not checked: it retries (revisiting the effect)
+    ///   or fails anyway;
     /// - any other failure the journal met (an occurrence mismatch, an
     ///   invalid contract or record).
-    pub(crate) async fn conclude(&self, drain_limit: Duration) -> Result<(), EffectExecutionError> {
-        let verdict = self.verdict(drain_limit).await;
+    pub(crate) async fn conclude_node(
+        &self,
+        drain_limit: Duration,
+        node_succeeded: bool,
+    ) -> Result<(), EffectExecutionError> {
+        let verdict = self.verdict(drain_limit, node_succeeded).await;
         let label = verdict_label(verdict.as_ref().err());
         let metrics = &self.inner.authority.metrics;
         let labels = metrics.interner().single("code", label);
@@ -502,7 +516,18 @@ impl NodeEffectJournal {
         verdict
     }
 
-    async fn verdict(&self, drain_limit: Duration) -> Result<(), EffectExecutionError> {
+    /// [`conclude_node`](Self::conclude_node) of a node whose action
+    /// succeeded.
+    #[cfg(test)]
+    pub(crate) async fn conclude(&self, drain_limit: Duration) -> Result<(), EffectExecutionError> {
+        self.conclude_node(drain_limit, true).await
+    }
+
+    async fn verdict(
+        &self,
+        drain_limit: Duration,
+        node_succeeded: bool,
+    ) -> Result<(), EffectExecutionError> {
         let authority = &self.inner.authority;
         let drain_started = tokio::time::Instant::now();
         if !self.drain(drain_limit).await {
@@ -563,6 +588,28 @@ impl NodeEffectJournal {
                 slot_id: *first,
                 unresolved: u32::try_from(unresolved.len()).unwrap_or(u32::MAX),
             });
+        }
+        if node_succeeded && failure.is_none() {
+            // Every effect an earlier attempt recorded must have been met
+            // again: the node's result stands for all of them.
+            let prepared = self.state().slots.keys().copied().collect::<HashSet<_>>();
+            let skipped: Vec<&str> = slots
+                .iter()
+                .filter(|slot| {
+                    !prepared.contains(&slot.record().operation().slot_id())
+                        && is_consequential(slot.record())
+                })
+                .map(EffectOccurrenceRecord::occurrence)
+                .collect();
+            if !skipped.is_empty() {
+                tracing::error!(
+                    execution_id = %authority.execution_id,
+                    node_key = %authority.node_key,
+                    occurrences = ?skipped,
+                    "an earlier attempt's recorded effect was not met again; failing the node"
+                );
+                return Err(EffectExecutionError::OccurrenceMismatch);
+            }
         }
         failure.map_or(Ok(()), Err)
     }
@@ -1019,6 +1066,15 @@ fn is_unresolved(record: &OperationRecord) -> bool {
             _ => protocol.crossed_invocations() > 0,
         },
     )
+}
+
+/// Whether a slot records something that may have changed the provider: a
+/// recorded outcome, or a call that crossed. A slot only prepared, or whose
+/// calls all stayed before the boundary, changed nothing.
+fn is_consequential(record: &OperationRecord) -> bool {
+    record.protocol().is_none_or(|protocol| {
+        protocol.phase() == EffectPhase::Resolved || protocol.crossed_invocations() > 0
+    })
 }
 
 /// The phase a unit sees for a prepared `slot` with no outstanding call.

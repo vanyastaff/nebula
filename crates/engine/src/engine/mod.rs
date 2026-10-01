@@ -3188,7 +3188,10 @@ impl NodeTask {
         result: Result<ActionResult<serde_json::Value>, EngineError>,
     ) -> Result<ActionResult<serde_json::Value>, EngineError> {
         match journal
-            .conclude(Self::journal_drain_limit(execution_deadline))
+            .conclude_node(
+                Self::journal_drain_limit(execution_deadline),
+                result.is_ok(),
+            )
             .await
         {
             Ok(()) => result,

@@ -902,6 +902,38 @@ async fn an_effect_prepared_into_an_earlier_attempts_gap_is_a_mismatch() {
 }
 
 #[tokio::test]
+async fn a_succeeding_node_that_skips_a_recorded_effect_is_a_mismatch() {
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 5 })
+        .await
+        .expect("applied");
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+
+    // The recovered dispatch takes another path and submits nothing: its
+    // success would stand for an attempt that never applied the charge.
+    let skipping = harness.journal(2);
+    assert_eq!(
+        skipping.conclude(DRAIN).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
+    );
+    // A failing dispatch is not checked: it retries or fails anyway.
+    let failing = harness.journal(2);
+    assert_eq!(failing.conclude_node(DRAIN, false).await, Ok(()));
+    // A dispatch that meets the effect again replays it and succeeds.
+    let replaying = harness.journal(2);
+    harness
+        .handle(&replaying)
+        .submit(Charge::<false> { order: 5 })
+        .await
+        .expect("replayed");
+    assert_eq!(replaying.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 1, "one provider call");
+}
+
+#[tokio::test]
 async fn a_read_only_in_practice_node_writes_nothing_and_reads_once() {
     let harness = Harness::new().await;
     let journal = harness.journal(1);

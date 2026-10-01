@@ -1488,7 +1488,9 @@ let admitted = recorded.readmit_against(fresh)?;
   swallowed the unit's error), a changed request, binding, configuration or
   recording policy under a recorded occurrence fails it with the new
   `ENGINE:EFFECT_OCCURRENCE_MISMATCH` (`EffectExecutionError::OccurrenceMismatch`,
-  plus `JournalOutcomeUnknown`), and a lost lease releases the turn without
+  plus `JournalOutcomeUnknown`) — as does a node about to succeed although
+  an earlier attempt recorded an effect (settled, or a call that crossed)
+  this attempt never met again —, and a lost lease releases the turn without
   finalizing. Raw leases stay refused; only handle-routed effects are
   journaled (lease-facade units and raw egress are outside the journal).
   A journaled node's accessor keeps the node's branch-scoped layer in front
