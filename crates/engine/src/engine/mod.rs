@@ -3194,7 +3194,13 @@ impl NodeTask {
             )
             .await
         {
-            Ok(()) => result,
+            Ok(crate::effect_driver::Concluded::Clean) => result,
+            // The node is failing past an effect an earlier attempt
+            // recorded: its failure may be retried, never recovered or
+            // routed past by an error strategy.
+            Ok(crate::effect_driver::Concluded::SkippedRecordedEffect) => {
+                result.map_err(|error| EngineError::SkippedJournaledEffect(Box::new(error)))
+            },
             Err(verdict) => {
                 tracing::warn!(
                     execution_id = %execution_id,

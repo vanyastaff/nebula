@@ -80,6 +80,13 @@ impl WorkflowEngine {
         err: &EngineError,
     ) -> Result<Option<(NodeKey, String)>, EngineError> {
         ctx.task_nodes.remove(&task_id);
+        // A failure past an effect an earlier attempt recorded: its own
+        // error drives cancellation, retry and the durable record; only the
+        // finalize path below changes — no strategy recovers or routes it.
+        let (err, skipped_recorded_effect) = match err {
+            EngineError::SkippedJournaledEffect(inner) => (inner.as_ref(), true),
+            other => (other, false),
+        };
         if let EngineError::Effect(effect) = err
             && effect.is_deferred()
         {
@@ -319,7 +326,11 @@ impl WorkflowEngine {
         // error strategy: `IgnoreErrors` would complete the node and
         // `ContinueOnError` / OnError edges would route past a mutation
         // nobody can vouch for. The node fails and the execution stops.
-        let halts = matches!(err, EngineError::Effect(effect) if effect.halts_execution());
+        // A failure past an earlier attempt's recorded effect that no retry
+        // takes up halts the same way: recovering or routing past the node
+        // would continue past an applied mutation its result does not show.
+        let halts = skipped_recorded_effect
+            || matches!(err, EngineError::Effect(effect) if effect.halts_execution());
         let outcome = if halts {
             FailureOutcome::Fail
         } else {

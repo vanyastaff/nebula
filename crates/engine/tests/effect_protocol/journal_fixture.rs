@@ -285,6 +285,8 @@ pub(super) struct Controls {
     pub drop_unpolled_once: AtomicBool,
     /// The action skips every unit of its script (another branch).
     pub skip_units: AtomicBool,
+    /// Retryable failures the action returns before its units.
+    pub fail_before_units: AtomicU32,
     /// Retryable failures the action returns after its units.
     pub fail_after_units: AtomicU32,
     /// Dispatches of the action.
@@ -315,6 +317,15 @@ async fn run_script(
             key: None,
             budget: 1,
         })));
+    }
+    if controls
+        .fail_before_units
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            left.checked_sub(1)
+        })
+        .is_ok()
+    {
+        return Err(ActionError::retryable("upstream step failed"));
     }
     let mut receipts = Vec::new();
     let units = if controls.skip_units.load(Ordering::SeqCst) {

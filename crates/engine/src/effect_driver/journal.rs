@@ -103,7 +103,10 @@
 //! prepared took another path past an applied mutation: it fails as an
 //! occurrence mismatch. No error strategy recovers or routes past either
 //! verdict ([`EffectExecutionError::halts_execution`]): the execution
-//! stops.
+//! stops. A node *failing* past such an effect keeps its own failure
+//! ([`Concluded::SkippedRecordedEffect`]): the node's retry policy may take
+//! it up — the retry meets the effect and replays it — but a final failure
+//! halts the execution the same way instead of being ignored or routed.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -162,6 +165,18 @@ const MAX_SLOT_INVOCATIONS: u32 = 10_000;
 /// only this module can mint it, so generic dispatch cannot run a journaled
 /// action with write authority.
 pub(crate) struct JournalAdmission(());
+
+/// How a node attempt's journal concluded without a verdict of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Concluded {
+    /// Nothing contradicts the node's result.
+    Clean,
+    /// The node is failing, and an earlier attempt recorded an effect —
+    /// settled, or a call that crossed — this attempt never met again. Its
+    /// failure may be retried (the retry meets the effect and replays it),
+    /// but never recovered or routed past by an error strategy.
+    SkippedRecordedEffect,
+}
 
 /// Everything a journal is built from: the authority of the node attempt
 /// that runs the action.
@@ -502,11 +517,14 @@ impl NodeEffectJournal {
     ///   when the node is about to succeed (`node_succeeded`) although an
     ///   earlier attempt recorded an effect — settled, or a call that
     ///   crossed — that this attempt never prepared: the program took
-    ///   another path, and its result would ignore an applied mutation.
-    ///   A failing node is not checked: it retries (revisiting the effect)
-    ///   or fails anyway;
+    ///   another path, and its result would ignore an applied mutation;
     /// - any other failure the journal met (an occurrence mismatch, an
     ///   invalid contract or record).
+    ///
+    /// A failing node that skipped such an effect concludes
+    /// [`SkippedRecordedEffect`](Concluded::SkippedRecordedEffect): its own
+    /// failure stands — a retry may meet the effect again and replay it —
+    /// but no error strategy may recover the node or route past it.
     ///
     /// The final read is bounded by what is left of `drain_limit`, and at
     /// least [`FINAL_READ_FLOOR`]; a read that does not answer by then is a
@@ -515,7 +533,7 @@ impl NodeEffectJournal {
         &self,
         drain_limit: Duration,
         node_succeeded: bool,
-    ) -> Result<(), EffectExecutionError> {
+    ) -> Result<Concluded, EffectExecutionError> {
         let verdict = self.verdict(drain_limit, node_succeeded).await;
         let label = verdict_label(verdict.as_ref().err());
         let metrics = &self.inner.authority.metrics;
@@ -531,14 +549,14 @@ impl NodeEffectJournal {
     /// succeeded.
     #[cfg(test)]
     pub(crate) async fn conclude(&self, drain_limit: Duration) -> Result<(), EffectExecutionError> {
-        self.conclude_node(drain_limit, true).await
+        self.conclude_node(drain_limit, true).await.map(|_| ())
     }
 
     async fn verdict(
         &self,
         drain_limit: Duration,
         node_succeeded: bool,
-    ) -> Result<(), EffectExecutionError> {
+    ) -> Result<Concluded, EffectExecutionError> {
         let authority = &self.inner.authority;
         let drain_started = tokio::time::Instant::now();
         if !self.drain(drain_limit).await {
@@ -618,29 +636,39 @@ impl NodeEffectJournal {
                 unresolved: u32::try_from(unresolved.len()).unwrap_or(u32::MAX),
             });
         }
-        if node_succeeded && failure.is_none() {
-            // Every effect an earlier attempt recorded must have been met
-            // again: the node's result stands for all of them.
-            let prepared = self.state().slots.keys().copied().collect::<HashSet<_>>();
-            let skipped: Vec<&str> = slots
-                .iter()
-                .filter(|slot| {
-                    !prepared.contains(&slot.record().operation().slot_id())
-                        && is_consequential(slot.record())
-                })
-                .map(EffectOccurrenceRecord::occurrence)
-                .collect();
-            if !skipped.is_empty() {
-                tracing::error!(
-                    execution_id = %authority.execution_id,
-                    node_key = %authority.node_key,
-                    occurrences = ?skipped,
-                    "an earlier attempt's recorded effect was not met again; failing the node"
-                );
-                return Err(EffectExecutionError::OccurrenceMismatch);
-            }
+        if let Some(failure) = failure {
+            return Err(failure);
         }
-        failure.map_or(Ok(()), Err)
+        // Every effect an earlier attempt recorded must have been met again:
+        // the node's result stands for all of them.
+        let prepared = self.state().slots.keys().copied().collect::<HashSet<_>>();
+        let skipped: Vec<&str> = slots
+            .iter()
+            .filter(|slot| {
+                !prepared.contains(&slot.record().operation().slot_id())
+                    && is_consequential(slot.record())
+            })
+            .map(EffectOccurrenceRecord::occurrence)
+            .collect();
+        if skipped.is_empty() {
+            return Ok(Concluded::Clean);
+        }
+        if node_succeeded {
+            tracing::error!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                occurrences = ?skipped,
+                "an earlier attempt's recorded effect was not met again; failing the node"
+            );
+            return Err(EffectExecutionError::OccurrenceMismatch);
+        }
+        tracing::warn!(
+            execution_id = %authority.execution_id,
+            node_key = %authority.node_key,
+            occurrences = ?skipped,
+            "a failing node did not meet an earlier attempt's recorded effect again"
+        );
+        Ok(Concluded::SkippedRecordedEffect)
     }
 
     /// Records every call a unit was granted and never explained as an

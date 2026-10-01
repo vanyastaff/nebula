@@ -230,6 +230,89 @@ async fn a_resume_that_skips_a_settled_effect_fails_the_node(#[case] backend: Ba
 #[case::sqlite(Backend::Sqlite)]
 #[case::postgres(Backend::Postgres)]
 #[tokio::test]
+async fn a_failing_resume_that_skipped_a_settled_effect_is_retried_never_routed_past(
+    #[case] backend: Backend,
+) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    #[derive(Debug, Clone, Copy)]
+    enum Policy {
+        Strategy(nebula_workflow::ErrorStrategy),
+        Retry,
+    }
+    for policy in [
+        Policy::Strategy(nebula_workflow::ErrorStrategy::IgnoreErrors),
+        Policy::Strategy(nebula_workflow::ErrorStrategy::ContinueOnError),
+        Policy::Retry,
+    ] {
+        let mut fixture = match policy {
+            Policy::Strategy(strategy) => {
+                JournalFixture::with_error_strategy(database.ports(), strategy).await
+            },
+            Policy::Retry => {
+                JournalFixture::with_retry(
+                    database.ports(),
+                    nebula_workflow::RetryConfig::fixed(3, 1),
+                )
+                .await
+            },
+        };
+        let execution = fixture.start(&[write("order-12:7")], json!({})).await;
+        fixture
+            .controls
+            .hold_after_units
+            .store(true, Ordering::SeqCst);
+        fixture
+            .crash_at(execution, &fixture.controls.after_units)
+            .await;
+        let settled = fixture.slots(execution).await;
+
+        // The resumed dispatch fails before it reaches the settled write.
+        fixture
+            .controls
+            .hold_after_units
+            .store(false, Ordering::SeqCst);
+        fixture
+            .controls
+            .fail_before_units
+            .store(1, Ordering::SeqCst);
+        fixture.ports = database.reconnect().await;
+        database.expire_abandoned_leases().await;
+        let result = fixture.run(execution).await.unwrap();
+        match policy {
+            // No strategy completes the node or routes past it.
+            Policy::Strategy(_) => {
+                assert_eq!(
+                    result.status,
+                    ExecutionStatus::Failed,
+                    "{policy:?}: {result:?}"
+                );
+                assert!(
+                    !result.node_outputs.contains_key(&node_key!("charge")),
+                    "{policy:?}: no output stands for the node"
+                );
+            },
+            // The retry meets the write again and replays it.
+            Policy::Retry => {
+                assert_eq!(
+                    result.status,
+                    ExecutionStatus::Completed,
+                    "{policy:?}: {result:?}"
+                );
+                assert_eq!(receipts(&result), json!([1]));
+            },
+        }
+        assert_eq!(fixture.gateway.call_count(), 1, "{policy:?}: sent once");
+        assert_eq!(fixture.slots(execution).await, settled, "{policy:?}");
+    }
+}
+
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[case::postgres(Backend::Postgres)]
+#[tokio::test]
 async fn an_interrupted_write_fails_the_node_unknown_and_a_resume_sends_nothing(
     #[case] backend: Backend,
 ) {

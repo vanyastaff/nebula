@@ -935,10 +935,15 @@ async fn a_succeeding_node_that_skips_a_recorded_effect_is_a_mismatch() {
         skipping.conclude(DRAIN).await,
         Err(EffectExecutionError::OccurrenceMismatch)
     );
-    // A failing dispatch is not checked: it retries or fails anyway.
+    // A failing dispatch keeps its own failure, flagged: a retry may meet
+    // the effect again, no error strategy may route past it.
     let failing = harness.journal(2);
-    assert_eq!(failing.conclude_node(DRAIN, false).await, Ok(()));
-    // A dispatch that meets the effect again replays it and succeeds.
+    assert_eq!(
+        failing.conclude_node(DRAIN, false).await,
+        Ok(Concluded::SkippedRecordedEffect)
+    );
+    // A dispatch that meets the effect again replays it and succeeds, and
+    // a failing one that met it is clean.
     let replaying = harness.journal(2);
     harness
         .handle(&replaying)
@@ -946,6 +951,16 @@ async fn a_succeeding_node_that_skips_a_recorded_effect_is_a_mismatch() {
         .await
         .expect("replayed");
     assert_eq!(replaying.conclude(DRAIN).await, Ok(()));
+    let failing_after_replay = harness.journal(2);
+    harness
+        .handle(&failing_after_replay)
+        .submit(Charge::<false> { order: 5 })
+        .await
+        .expect("replayed");
+    assert_eq!(
+        failing_after_replay.conclude_node(DRAIN, false).await,
+        Ok(Concluded::Clean)
+    );
     assert_eq!(harness.desk.keys().len(), 1, "one provider call");
 }
 

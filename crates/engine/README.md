@@ -194,7 +194,11 @@ configuration, and process lifecycle.
   crossed) this attempt never met again. Such a verdict — like a remote effect's unknown
   outcome or unreadable evidence (`EffectExecutionError::halts_execution`) — takes no
   error strategy: `IgnoreErrors`, `ContinueOnError` and OnError edges never recover or
-  route past it; the node fails and the execution stops. Counters:
+  route past it; the node fails and the execution stops. A node that fails before
+  meeting such an earlier effect again keeps its own error
+  (`EngineError::SkippedJournaledEffect`): its retry policy may re-dispatch it (the
+  retry replays the effect), but a final failure halts the execution instead of being
+  ignored or routed. Counters:
   `nebula_effect_journal_prepares_total{phase}`,
   `nebula_effect_journal_refusals_total{step,refusal}`,
   `nebula_effect_journal_verdicts_total{code}`. Every other `Journaled` node keeps

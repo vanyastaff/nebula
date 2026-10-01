@@ -1497,7 +1497,11 @@ let admitted = recorded.readmit_against(fresh)?;
   unknown outcome and unreadable effect evidence
   (`EffectExecutionError::halts_execution`, new) take no error strategy:
   the node fails and the execution stops even under `IgnoreErrors` or
-  `ContinueOnError`, and no OnError edge is routed; and a lost lease (or a final occurrence
+  `ContinueOnError`, and no OnError edge is routed. A node that fails before
+  meeting such an earlier effect again keeps its own error, wrapped in the
+  new `EngineError::SkippedJournaledEffect`: its retry policy may
+  re-dispatch it (the retry replays the effect), but a final failure halts
+  the execution the same way; and a lost lease (or a final occurrence
   read that does not answer within the verdict budget, at least 5 s)
   releases the turn without
   finalizing. Raw leases stay refused; only handle-routed effects are

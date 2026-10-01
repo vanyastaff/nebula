@@ -9,7 +9,7 @@ mod recovery;
 mod slot;
 
 pub use error::EffectExecutionError;
-pub(crate) use journal::{JournalAdmission, JournalAuthority, NodeEffectJournal};
+pub(crate) use journal::{Concluded, JournalAdmission, JournalAuthority, NodeEffectJournal};
 use slot::{CallPurpose, GrantedCall, LedgerAccess, LedgerSlot};
 
 use std::panic::AssertUnwindSafe;
