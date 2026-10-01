@@ -145,11 +145,16 @@
 //!   - an `L` that changed nothing (only prepared, or every call
 //!     explained not crossed) failed unsent before the program moved on —
 //!     it is refused [`Superseded`](JournalRefusal::Superseded): the unit
-//!     fails permanently, *not sent*, with no failure of the journal's
-//!     own, so a deterministic program that handled that failure before
-//!     handles it again and replays on. The same ledger always answers the
-//!     same way; the replayed failure is permanent whatever kind the
-//!     original was;
+//!     fails *not sent*, with no failure of the journal's own, and with the
+//!     failure the earlier run saw — the kind and its payload (an
+//!     `Exhausted` retry hint, a `CredentialUnavailable` reason), recorded
+//!     when the unit settled
+//!     ([`EffectJournal::record_unsent_failure`], kept in the slot's
+//!     protocol record) — so a deterministic program that branched on that
+//!     failure takes the same branch and replays on. The same ledger always
+//!     answers the same way. A slot recorded before failures were (or whose
+//!     best-effort recording did not land) fails `Permanent`; the unit's
+//!     static detail and sent state are not replayed;
 //!   - an `L` whose call crossed without a recorded outcome (a stable-key
 //!     effect left ambiguous or outstanding) may or may not have applied
 //!     before `H`: granting it again could apply it after `H`, so its
@@ -162,9 +167,17 @@
 //!   ([`EffectSlotBinding::concurrent_with`]), the exact lower positions of
 //!   its iteration whose unit was still open — handed out and not yet
 //!   settled ([`EffectJournal::finish_occurrence`], signalled when the unit
-//!   settles, whoever keeps its handle) — at most
-//!   [`MAX_CONCURRENT_WITH`](nebula_storage_port::dto::OperationProtocolRecord::MAX_CONCURRENT_WITH),
-//!   the nearest kept. A listed unit ran concurrently with `H` (units
+//!   settles, whoever keeps its handle) — as canonical runs of positions
+//!   ([`PositionRange`]): any number of open units, never truncated. A
+//!   fresh effect whose open lower units would need more than
+//!   [`MAX_CONCURRENT_RANGES`](OperationProtocolRecord::MAX_CONCURRENT_RANGES)
+//!   (64) separate runs — open units interleaved with settled ones beyond
+//!   that — is refused unsent
+//!   ([`ConcurrencyLimit`](JournalRefusal::ConcurrencyLimit), the node
+//!   failing
+//!   [`JournalConcurrencyLimit`](EffectExecutionError::JournalConcurrencyLimit)):
+//!   a shorter list would read a concurrent unit as settled before it. A
+//!   listed unit ran concurrently with `H` (units
 //!   awaited together), the program did not order them, and `L` replays
 //!   under its recorded provider key — at least once, as a
 //!   durable-execution engine re-sends an unsettled scheduled effect. Any
@@ -267,7 +280,12 @@
 //! halts the execution the same way instead of being ignored or routed.
 //! The skipped effects are checked before any failure the journal noted
 //! that would not halt on its own (a detached unit refused between
-//! iterations): with one, the verdict halts all the same.
+//! iterations): with one, the verdict halts all the same. A noted
+//! *deferring* failure (a lost lease, an unavailable or unanswered ledger)
+//! still lets the verdict read the node's occurrences first, within the
+//! same bound: an unknown outcome another unit recorded halts the node; the
+//! deferral stands only when there is none, or when the read itself cannot
+//! run.
 //!
 //! **Invariants.** Whatever the crash, retry or redeploy, within a node's
 //! effect family:
@@ -278,9 +296,11 @@
 //! - **S2** no recorded effect is sent again after the program diverged
 //!   from the run that recorded it (mismatch, nothing sent);
 //! - **S3** a lower effect is never applied after a higher one the program
-//!   ran after it (refused superseded, or unknown);
+//!   ran after it (refused superseded — with the failure the program saw —
+//!   or unknown);
 //! - **S4** units the program ran concurrently replay at least once under
-//!   their recorded keys;
+//!   their recorded keys: every open lower unit is recorded with a fresh
+//!   slot, exactly, or the fresh slot is refused unsent;
 //! - **S5** every wait — drain, barrier read, prepare ordering — is bounded
 //!   by the node's drain limit or the unit's deadline;
 //! - **S6** a slot recorded without a concurrency list orders nothing, as
@@ -290,7 +310,7 @@
 //!   the refusals that follow add no failure of their own (only a halting
 //!   verdict, S2 or S8, overrides it);
 //! - **S8** an unknown outcome is never masked: it halts the execution
-//!   before any other verdict.
+//!   before any other verdict, a deferral included.
 //!
 //! A correct deterministic program is stranded only where the ledger cannot
 //! tell what happened: a crossed call with no recorded outcome that is
@@ -322,11 +342,13 @@ use nebula_resource::{
         journal::{
             CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight,
             JournalIntent, JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase,
+            UnsentFailure,
         },
     },
 };
 use nebula_storage_port::dto::{
-    EffectOccurrenceRecord, EffectSlotId, KnownOutcome, OperationState, ProviderIdempotencyKey,
+    EffectOccurrenceRecord, EffectSlotId, KnownOutcome, OperationProtocolRecord, OperationState,
+    PositionRange, ProviderIdempotencyKey, UnsentFailureCode,
 };
 use serde::{Deserialize, Serialize};
 
@@ -747,8 +769,8 @@ struct PriorOccurrences {
 }
 
 /// An applied recorded slot's ordinal and the lower ordinals of its
-/// iteration still open when it was first prepared.
-type ConsequentialSlot = (u32, Vec<u32>);
+/// iteration still open when it was first prepared, as canonical runs.
+type ConsequentialSlot = (u32, Vec<PositionRange>);
 
 /// What a recorded slot means for the order of a recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -796,7 +818,7 @@ impl SlotWeight {
 
 /// One recorded occurrence as the journal weighs it: its label, its
 /// [`SlotWeight`] and the lower positions recorded as concurrent with it.
-type RecordedOccurrence<'a> = (&'a str, SlotWeight, Option<&'a [u32]>);
+type RecordedOccurrence<'a> = (&'a str, SlotWeight, Option<&'a [PositionRange]>);
 
 impl PriorOccurrences {
     /// Every label as applied (a recorded success), with nothing concurrent.
@@ -898,7 +920,7 @@ impl PriorOccurrences {
                 .is_some_and(|slots| {
                     slots.iter().any(|(ordinal, concurrent_with)| {
                         *ordinal > position.ordinal
-                            && concurrent_with.binary_search(&position.ordinal).is_err()
+                            && !PositionRange::any_contains(concurrent_with, position.ordinal)
                     })
                 });
             later_iteration || later_in_order
@@ -1355,28 +1377,26 @@ impl NodeEffectJournal {
     }
 
     /// The lower ordinals of `occurrence`'s iteration (its family's one
-    /// run, for a flat label) whose unit is still open now, ascending: they
-    /// run concurrently with it. Every other lower position settled before
-    /// it began. At most
-    /// [`OperationProtocolRecord::MAX_CONCURRENT_WITH`](nebula_storage_port::dto::OperationProtocolRecord::MAX_CONCURRENT_WITH),
-    /// the nearest kept: an omitted one reads as settled before — the
-    /// strict reading.
-    fn concurrent_with(&self, occurrence: &str) -> Vec<u32> {
+    /// run, for a flat label) whose unit is still open now, as canonical
+    /// runs: they run concurrently with it. Every other lower position
+    /// settled before it began. The exact set, however many positions —
+    /// `None` when they form more runs than a slot records
+    /// ([`OperationProtocolRecord::MAX_CONCURRENT_RANGES`](nebula_storage_port::dto::OperationProtocolRecord::MAX_CONCURRENT_RANGES)):
+    /// a list cut short would let a recovery read a concurrent unit as
+    /// settled before this one.
+    fn concurrent_with(&self, occurrence: &str) -> Option<Vec<PositionRange>> {
         let Some(position) = Position::parse(occurrence) else {
-            return Vec::new();
+            return Some(Vec::new());
         };
         let state = self.state();
         let Some(open) = state.positions.open.get(&position.family) else {
-            return Vec::new();
+            return Some(Vec::new());
         };
-        let mut nearest: Vec<u32> = open
-            .range((position.iteration, 0)..position.order())
-            .rev()
-            .take(nebula_storage_port::dto::OperationProtocolRecord::MAX_CONCURRENT_WITH)
-            .map(|&(_, ordinal)| ordinal)
-            .collect();
-        nearest.reverse();
-        nearest
+        PositionRange::coalesce(
+            open.range((position.iteration, 0)..position.order())
+                .map(|&(_, ordinal)| ordinal),
+        )
+        .filter(|runs| runs.len() <= OperationProtocolRecord::MAX_CONCURRENT_RANGES)
     }
 
     /// Waits until no lower position of `occurrence`'s family handed out in
@@ -2214,6 +2234,34 @@ impl EffectJournal for NodeEffectJournal {
             );
             return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
         }
+        // Recorded with a fresh slot only; a recorded one keeps its own.
+        let concurrent_with = self.concurrent_with(intent.occurrence);
+        if fresh && concurrent_with.is_none() {
+            // The lower units still open form more runs than a slot records:
+            // recording fewer would let a recovery read one of them as
+            // settled before this effect and never send it. Refused, nothing
+            // written or sent; the position counts as met, so nothing above
+            // it waits on it.
+            tracing::warn!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                occurrence = intent.occurrence,
+                limit = OperationProtocolRecord::MAX_CONCURRENT_RANGES,
+                "too many interleaved concurrent effects to record; refused"
+            );
+            self.state()
+                .positions
+                .met
+                .insert(intent.occurrence.to_owned());
+            self.inner.claims_settled.notify_waiters();
+            return Err(self.refuse(
+                STEP,
+                EffectExecutionError::JournalConcurrencyLimit {
+                    limit: u32::try_from(OperationProtocolRecord::MAX_CONCURRENT_RANGES)
+                        .unwrap_or(u32::MAX),
+                },
+            ));
+        }
         if fresh {
             // Only a fresh slot counts against the cap — a recorded one
             // replays however many there are — and the cap is taken before
@@ -2231,7 +2279,7 @@ impl EffectJournal for NodeEffectJournal {
                 return Err(self.refuse(STEP, EffectExecutionError::JournalSlotCapExceeded { cap }));
             }
         }
-        let concurrent_with = self.concurrent_with(intent.occurrence);
+        let concurrent_with = concurrent_with.unwrap_or_default();
         let binding = EffectSlotBinding {
             scope: &authority.scope,
             execution_id: &self.inner.execution,
@@ -2283,7 +2331,13 @@ impl EffectJournal for NodeEffectJournal {
                 occurrence = intent.occurrence,
                 "a recorded effect never sent, superseded by a later applied one; not sent"
             );
-            return Err(self.refused(STEP, JournalRefusal::Superseded));
+            // It fails as the earlier run saw it fail, when recorded.
+            let failure = slot
+                .protocol()
+                .ok()
+                .and_then(OperationProtocolRecord::unsent_failure)
+                .and_then(|code| UnsentFailure::parse(code.as_str()));
+            return Err(self.refused(STEP, JournalRefusal::Superseded(failure)));
         }
         // The key the provider receives is the durable one, read back from
         // the ledger — never recomputed for an existing slot.
@@ -2473,6 +2527,41 @@ impl EffectJournal for NodeEffectJournal {
             .map_err(|error| self.refuse(STEP, error))
     }
 
+    /// Best effort, and never a failure of the node: the unit's result
+    /// stands, and a slot whose failure was not recorded replays a
+    /// superseded refusal as `Permanent`. The ledger keeps it only while
+    /// nothing of the slot is in flight or settled.
+    async fn record_unsent_failure(
+        &self,
+        unit: &JournalSlot,
+        failure: UnsentFailure,
+    ) -> Result<(), JournalRefusal> {
+        let Some(code) = UnsentFailureCode::new(&failure.code()) else {
+            return Err(JournalRefusal::Mismatch);
+        };
+        let entry = {
+            let state = self.state();
+            state
+                .slots
+                .get(&EffectSlotId::from_storage_bytes(*unit.id()))
+                .cloned()
+        };
+        let Some(entry) = entry else {
+            return Err(JournalRefusal::Mismatch);
+        };
+        let mut slot = entry.lock().await;
+        if self.is_closed() {
+            return Err(JournalRefusal::Closed);
+        }
+        slot.advance(
+            self.access(),
+            &OperationCommand::RecordUnsentFailure { failure: code },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| classify_failure(error).0)
+    }
+
     /// A ticket raised under the state lock, like every admission.
     fn track(&self) -> InFlight {
         let _state = self.state();
@@ -2541,6 +2630,9 @@ fn classify_failure(error: EffectExecutionError) -> (JournalRefusal, EffectExecu
         EffectExecutionError::JournalSlotCapExceeded { .. } => {
             (JournalRefusal::SlotCapExceeded, error)
         },
+        EffectExecutionError::JournalConcurrencyLimit { .. } => {
+            (JournalRefusal::ConcurrencyLimit, error)
+        },
         error => (JournalRefusal::Unavailable, error),
     }
 }
@@ -2563,6 +2655,9 @@ fn verdict_label(failure: Option<&EffectExecutionError>) -> &'static str {
         },
         Some(EffectExecutionError::IterationUnitsOutstanding { .. }) => {
             effect_journal_verdict::ITERATION_BARRIER
+        },
+        Some(EffectExecutionError::JournalConcurrencyLimit { .. }) => {
+            effect_journal_verdict::CONCURRENCY_LIMIT
         },
         Some(_) => effect_journal_verdict::LEDGER,
     }

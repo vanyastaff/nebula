@@ -1100,6 +1100,10 @@ where
         Ok(generation) => generation,
         Err(refusal) => {
             if let Some(owned) = shared.effect() {
+                // Prepared and refused before any call: nothing was sent.
+                if let Some(slot) = owned.slot() {
+                    owned.record_unsent(slot, refusal.kind()).await;
+                }
                 owned.conclude();
             }
             let result = Err(refusal.settled(SentState::NotSent, effect, host.key()));

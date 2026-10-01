@@ -1591,12 +1591,22 @@ async fn a_crossed_stable_key_effect_below_a_later_applied_one_is_not_granted_ag
     ));
 }
 
+/// The single position `ordinal`, as a run.
+const fn at(ordinal: u32) -> PositionRange {
+    match PositionRange::new(ordinal, ordinal) {
+        Some(run) => run,
+        None => panic!("a single position is a run"),
+    }
+}
+
 #[test]
 fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     use SlotWeight::{Applied, Inert, Unsettled};
-    const NONE: Option<&[u32]> = Some(&[]);
+    const NONE: Option<&[PositionRange]> = Some(&[]);
+    const AT_0: &[PositionRange] = &[at(0)];
+    const AT_1: &[PositionRange] = &[at(1)];
     let lower = "unit/v1/#000000";
-    let with_higher = |concurrent: Option<&'static [u32]>| {
+    let with_higher = |concurrent: Option<&'static [PositionRange]>| {
         PriorOccurrences::from_records([
             (lower, Unsettled, NONE),
             ("unit/v1/#000001", Applied, concurrent),
@@ -1604,7 +1614,7 @@ fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     };
     // The higher effect was prepared while the lower unit was open: they
     // ran concurrently, and the lower one replays.
-    assert!(!with_higher(Some(&[0])).reorders_at(lower));
+    assert!(!with_higher(Some(AT_0)).reorders_at(lower));
     // The lower unit settled first (an explicit empty list): replaying it
     // now would reverse them.
     assert!(with_higher(NONE).reorders_at(lower));
@@ -1633,7 +1643,7 @@ fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     let hole = PriorOccurrences::from_records([
         ("unit/v1/#000000", Unsettled, NONE),
         ("unit/v1/#000001", Unsettled, NONE),
-        ("unit/v1/#000002", Applied, Some(&[0])),
+        ("unit/v1/#000002", Applied, Some(AT_0)),
     ]);
     assert!(!hole.reorders_at("unit/v1/#000000"));
     assert!(hole.reorders_at("unit/v1/#000001"));
@@ -1641,18 +1651,18 @@ fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     // Iterations are always ordered: the barrier drains one before the next.
     let across = PriorOccurrences::from_records([
         ("it0/unit/v1/#000000", Unsettled, NONE),
-        ("it1/unit/v1/#000000", Applied, Some(&[0])),
+        ("it1/unit/v1/#000000", Applied, Some(AT_0)),
     ]);
     assert!(across.reorders_at("it0/unit/v1/#000000"));
     // Within an iteration, positions count from the iteration's ordinals.
-    let within = |concurrent: &'static [u32]| {
+    let within = |concurrent: &'static [PositionRange]| {
         PriorOccurrences::from_records([
             ("it1/unit/v1/#000001", Unsettled, NONE),
             ("it1/unit/v1/#000002", Applied, Some(concurrent)),
         ])
     };
-    assert!(!within(&[1]).reorders_at("it1/unit/v1/#000001"));
-    assert!(within(&[0]).reorders_at("it1/unit/v1/#000001"));
+    assert!(!within(AT_1).reorders_at("it1/unit/v1/#000001"));
+    assert!(within(AT_0).reorders_at("it1/unit/v1/#000001"));
 }
 
 #[tokio::test]
@@ -1881,7 +1891,7 @@ async fn a_fresh_slot_records_exactly_the_lower_units_still_open() {
         .submit(Charge::<false> { order: 52 })
         .await
         .expect("applied while 0 is open and 1 settled");
-    let recorded: Vec<Vec<u32>> = harness
+    let recorded: Vec<Vec<PositionRange>> = harness
         .slots()
         .await
         .iter()
@@ -1896,8 +1906,18 @@ async fn a_fresh_slot_records_exactly_the_lower_units_still_open() {
         .collect();
     assert_eq!(
         recorded,
-        [vec![], vec![0], vec![0]],
+        [vec![], vec![at(0)], vec![at(0)]],
         "1 settled: not listed"
+    );
+    // 1 recorded how it failed: throttled, sending nothing.
+    assert_eq!(
+        harness.slots().await[1]
+            .record()
+            .protocol()
+            .expect("protocol")
+            .unsent_failure()
+            .map(UnsentFailureCode::as_str),
+        Some("exhausted")
     );
     // The process dies with 0 mid-call.
     open.abort();
@@ -1921,9 +1941,167 @@ async fn a_fresh_slot_records_exactly_the_lower_units_still_open() {
         refused.detail(),
         "effect failed unsent in an earlier run that moved past it; not sent again"
     );
+    // The same failure the program saw: throttled, not a new `Permanent`.
+    assert_eq!(
+        *refused.kind(),
+        nebula_resource::error::ErrorKind::Exhausted { retry_after: None }
+    );
     let keys = harness.desk.keys();
     assert_eq!(keys.len(), 4, "0, 1 throttled, 2, 0 again");
     assert_eq!(keys[0], keys[3], "0 again under its recorded key");
+}
+
+/// Waits until the gateway received `calls` calls.
+async fn calls_reach(desk: &Desk, calls: usize) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while desk.keys().len() < calls {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the calls reached the gateway");
+}
+
+/// A hundred units awaited together, all mid-call when a later effect
+/// applies, and the process dies: the later slot records all hundred as
+/// concurrent — one run — so the recovery grants every one of them again
+/// under its recorded key instead of reading any as settled before.
+#[tokio::test]
+async fn a_hundred_concurrent_units_are_all_recorded_and_all_recovered() {
+    const UNITS: u64 = 100;
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Held; 100]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    let joined: Vec<_> = (0..UNITS)
+        .map(|order| tokio::spawn(handle.submit(Charge::<true> { order })))
+        .collect();
+    calls_reach(&harness.desk, 100).await;
+    handle
+        .submit(Charge::<false> { order: UNITS })
+        .await
+        .expect("applied while all hundred are open");
+    let slots = harness.slots().await;
+    assert_eq!(slots.len(), 101);
+    assert_eq!(
+        slots[100]
+            .record()
+            .protocol()
+            .expect("protocol")
+            .concurrent_with(),
+        Some(&[PositionRange::new(0, 99).expect("run")][..]),
+        "every open unit, as one run"
+    );
+    // The process dies with all hundred mid-call.
+    for unit in joined {
+        unit.abort();
+        let _ = unit.await;
+    }
+    for ordinal in 0..100 {
+        first.finish_occurrence(&format!("unit/v1/#{ordinal:06}"));
+    }
+
+    // Every lower unit ran alongside the applied one: each is granted again
+    // under its recorded key, none refused or unknown.
+    let recovery = harness.journal(2);
+    let handle = harness.handle(&recovery);
+    let keys = harness.desk.keys();
+    for order in 0..UNITS {
+        handle
+            .submit(Charge::<true> { order })
+            .await
+            .expect("granted again: it ran concurrently");
+    }
+    handle
+        .submit(Charge::<false> { order: UNITS })
+        .await
+        .expect("replayed");
+    assert_eq!(recovery.conclude(DRAIN).await, Ok(()));
+    let resent = harness.desk.keys();
+    assert_eq!(
+        resent.len(),
+        201,
+        "each lower one once more, the higher none"
+    );
+    let mut first_keys: Vec<_> = keys[..100].to_vec();
+    let mut again: Vec<_> = resent[101..].to_vec();
+    first_keys.sort();
+    again.sort();
+    assert_eq!(first_keys, again, "under their recorded keys");
+}
+
+/// Open units interleaved with settled ones beyond what a slot records: the
+/// fresh effect that would need more runs is refused unsent — never
+/// recorded with a truncated list — and the node fails with the limit.
+#[tokio::test]
+async fn too_interleaved_concurrent_units_refuse_the_fresh_effect_unsent() {
+    let limit = u64::try_from(OperationProtocolRecord::MAX_CONCURRENT_RANGES).expect("fits");
+    let harness = Harness::new().await;
+    let journal = harness.journal(1);
+    let handle = harness.handle(&journal);
+    let mut held = Vec::new();
+    let mut calls = 0;
+    for run in 0..=limit {
+        // An open unit, then a settled one: each settled one sees one more
+        // run of open positions below it.
+        harness.desk.script(&[Reply::Held]);
+        held.push(tokio::spawn(
+            handle.submit(Charge::<true> { order: run * 2 }),
+        ));
+        calls += 1;
+        calls_reach(&harness.desk, calls).await;
+        let settled = handle.submit(Charge::<false> { order: run * 2 + 1 });
+        if run < limit {
+            settled.await.expect("its open units fit");
+            calls += 1;
+        } else {
+            let refused = settled.await.expect_err("one run too many");
+            assert_eq!(refused.sent(), SentState::NotSent);
+            assert_eq!(
+                *refused.kind(),
+                nebula_resource::error::ErrorKind::Permanent
+            );
+            assert!(
+                refused
+                    .detail()
+                    .contains("too many interleaved concurrent effects"),
+                "{}",
+                refused.detail()
+            );
+        }
+    }
+    assert_eq!(
+        harness.desk.keys().len(),
+        calls,
+        "the refused one sent nothing"
+    );
+    let refused_label = format!("unit/v1/#{:06}", limit * 2 + 1);
+    assert!(
+        harness
+            .slots()
+            .await
+            .iter()
+            .all(|slot| slot.occurrence() != refused_label),
+        "nothing written"
+    );
+    harness.desk.release.notify_waiters();
+    for unit in held {
+        unit.await.expect("task").expect("released");
+    }
+    assert_eq!(
+        journal.conclude(DRAIN).await,
+        Err(EffectExecutionError::JournalConcurrencyLimit { limit: 64 })
+    );
+    assert_eq!(
+        harness.counter(
+            NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+            &[
+                ("step", effect_journal_step::PREPARE),
+                ("refusal", JournalRefusal::ConcurrencyLimit.as_str()),
+            ]
+        ),
+        1
+    );
 }
 
 #[tokio::test]
@@ -2685,7 +2863,7 @@ async fn a_deferral_never_masks_an_unknown_outcome_another_unit_recorded() {
         ),
         "{verdict:?}"
     );
-    assert!(verdict.is_err_and(|error| error.halts_execution()));
+    assert!(verdict.is_err_and(EffectExecutionError::halts_execution));
     assert_eq!(harness.desk.keys().len(), 1);
 }
 

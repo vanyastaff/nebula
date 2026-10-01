@@ -70,8 +70,8 @@ pub use operation_ledger::{
 };
 pub use operation_protocol::{
     EffectPhase, FrozenOutcomeEvidence, InvocationDisposition, OperationAdvance, OperationCommand,
-    OperationProtocolRecord, OutcomeEvidenceSource, PreparedEffectContract, PreparedEffectPolicy,
-    PreparedEffectPolicyBuilder,
+    OperationProtocolRecord, OutcomeEvidenceSource, PositionRange, PreparedEffectContract,
+    PreparedEffectPolicy, PreparedEffectPolicyBuilder, UnsentFailureCode,
 };
 pub use resource_event::{
     AcceptResourceEventOutcome, AcceptResourceEventRequest, ClaimedResourceDelivery,

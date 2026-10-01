@@ -2917,3 +2917,77 @@ async fn a_library_session_runs_without_an_owner() {
     assert_unsent(&refused, &ErrorKind::Permanent);
     assert!(fixture.owner.log().is_empty());
 }
+
+#[test]
+fn an_unsent_failure_round_trips_its_kind_and_payload_through_its_code() {
+    use super::super::journal::UnsentFailure;
+    use crate::error::CredentialUnavailableReason;
+    let kinds = [
+        ErrorKind::Transient,
+        ErrorKind::Permanent,
+        ErrorKind::Exhausted { retry_after: None },
+        ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_millis(1500)),
+        },
+        ErrorKind::Backpressure,
+        ErrorKind::NotFound,
+        ErrorKind::Cancelled,
+        ErrorKind::Revoked,
+        ErrorKind::Ambiguous,
+        ErrorKind::CredentialUnavailable {
+            reason: CredentialUnavailableReason::ReauthRequired,
+        },
+        ErrorKind::CredentialUnavailable {
+            reason: CredentialUnavailableReason::CheckUnavailable,
+        },
+        ErrorKind::OutcomeUnknown,
+    ];
+    for kind in kinds {
+        let failure = UnsentFailure::of(&kind);
+        let code = failure.code();
+        assert!(code.len() <= 64, "{code}");
+        assert!(
+            code.bytes().all(|byte| byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || b"_@".contains(&byte)),
+            "{code}"
+        );
+        assert_eq!(UnsentFailure::parse(&code), Some(failure), "{code}");
+        assert_eq!(failure.kind(), kind, "{code}");
+    }
+    assert_eq!(
+        UnsentFailure::of(&ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_millis(1500)),
+        })
+        .code(),
+        "exhausted@1500"
+    );
+    for unknown in [
+        "",
+        "teapot",
+        "transient@1",
+        "exhausted@soon",
+        "credential_unavailable@x",
+    ] {
+        assert_eq!(UnsentFailure::parse(unknown), None, "{unknown}");
+    }
+}
+
+#[test]
+fn a_superseded_effect_fails_with_its_recorded_kind_or_permanent_without_one() {
+    use super::super::journal::UnsentFailure;
+    let throttled = ErrorKind::Exhausted {
+        retry_after: Some(Duration::from_secs(2)),
+    };
+    let replayed = super::refusal_error(JournalRefusal::Superseded(Some(UnsentFailure::of(
+        &throttled,
+    ))));
+    assert_eq!(*replayed.kind(), throttled);
+    // A slot recorded before failures were (legacy) fails `Permanent`.
+    let legacy = super::refusal_error(JournalRefusal::Superseded(None));
+    assert_eq!(*legacy.kind(), ErrorKind::Permanent);
+    assert_eq!(
+        replayed.detail(),
+        "effect failed unsent in an earlier run that moved past it; not sent again"
+    );
+}

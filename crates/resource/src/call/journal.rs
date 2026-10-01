@@ -36,7 +36,10 @@ use std::{fmt, num::NonZeroU32, sync::Mutex, time::Duration};
 use nebula_core::ResourceKey;
 
 use super::{cost::Effect, declaration::IdempotencyKey};
-use crate::{dedup::SlotIdentity, error::ErrorKind};
+use crate::{
+    dedup::SlotIdentity,
+    error::{CredentialUnavailableReason, ErrorKind},
+};
 
 /// The owner of a row's execution-owned effects: prepares, grants and
 /// records them. Implemented by the engine; object safe
@@ -152,6 +155,26 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
         call: CallGrant,
         outcome: CallOutcome<'_>,
     ) -> Result<(), JournalRefusal>;
+
+    /// The unit of `slot` settled failing with `failure`, and nothing of it
+    /// crossed: its last call was explained
+    /// [`NotCrossed`](Crossing::NotCrossed), or it failed before a call was
+    /// granted. An owner keeps it to fail the effect the same way when a
+    /// later run must not send it again
+    /// ([`JournalRefusal::Superseded`]). Best effort — a refusal changes
+    /// nothing about the unit's result; defaults to nothing.
+    ///
+    /// # Errors
+    ///
+    /// Why the owner did not record it.
+    async fn record_unsent_failure(
+        &self,
+        slot: &JournalSlot,
+        failure: UnsentFailure,
+    ) -> Result<(), JournalRefusal> {
+        let _ = (slot, failure);
+        Ok(())
+    }
 
     /// An in-flight ticket held by every submitted unit until it is gone;
     /// the owner drains them before finalizing its node.
@@ -481,8 +504,15 @@ pub enum JournalRefusal {
     /// The effect was recorded and never sent, and a later effect of the
     /// owner's run may since have been applied: sending it now would apply
     /// it out of order. It is not sent; the unit fails as it did when the
-    /// run moved past it.
-    Superseded,
+    /// run moved past it — with the recorded [`UnsentFailure`]
+    /// ([`EffectJournal::record_unsent_failure`]), or `Permanent` when none
+    /// was recorded.
+    Superseded(Option<UnsentFailure>),
+    /// The owner records, with each fresh effect, the lower units of its run
+    /// still open, and these are too interleaved — more separate runs of
+    /// open positions than it can record — to record exactly. Nothing is
+    /// prepared or sent.
+    ConcurrencyLimit,
 }
 
 impl JournalRefusal {
@@ -498,7 +528,8 @@ impl JournalRefusal {
             Self::Unknown => "unknown",
             Self::SlotCapExceeded => "slot_cap_exceeded",
             Self::BetweenRuns => "between_runs",
-            Self::Superseded => "superseded",
+            Self::Superseded(_) => "superseded",
+            Self::ConcurrencyLimit => "concurrency_limit",
         }
     }
 }
@@ -605,6 +636,25 @@ impl ErrorKindCode {
         }
     }
 
+    /// The code [`as_str`](Self::as_str) names.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [
+            Self::Transient,
+            Self::Permanent,
+            Self::Exhausted,
+            Self::Backpressure,
+            Self::NotFound,
+            Self::Cancelled,
+            Self::Revoked,
+            Self::Ambiguous,
+            Self::CredentialUnavailable,
+            Self::OutcomeUnknown,
+        ]
+        .into_iter()
+        .find(|code| code.as_str() == name)
+    }
+
     /// The kind a replayed rejection fails with. Only non-retryable kinds
     /// are recorded as rejections; a retryable code is replayed as
     /// `Permanent`, because a recorded rejection is final.
@@ -628,4 +678,132 @@ impl fmt::Display for ErrorKindCode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
+}
+
+/// How a unit that sent nothing failed: its [`ErrorKind`] with the kind's
+/// own secret-free payload (an `Exhausted` retry hint, in whole
+/// milliseconds; a `CredentialUnavailable` reason). The unit's static detail
+/// and sent state are not part of it.
+///
+/// Recorded by the owner when the unit settles
+/// ([`EffectJournal::record_unsent_failure`]) and handed back with
+/// [`JournalRefusal::Superseded`], so a run that must not send the effect
+/// again fails it the same way the run that moved past it saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnsentFailure {
+    code: ErrorKindCode,
+    /// `Exhausted` only: the retry hint, in whole milliseconds.
+    retry_after_ms: Option<u64>,
+    /// `CredentialUnavailable` only.
+    credential: Option<CredentialUnavailableReason>,
+}
+
+impl UnsentFailure {
+    /// The failure of `kind`.
+    #[must_use]
+    pub fn of(kind: &ErrorKind) -> Self {
+        let (retry_after_ms, credential) = match kind {
+            ErrorKind::Exhausted { retry_after } => (
+                retry_after
+                    .map(|retry_after| u64::try_from(retry_after.as_millis()).unwrap_or(u64::MAX)),
+                None,
+            ),
+            ErrorKind::CredentialUnavailable { reason } => (None, Some(*reason)),
+            _ => (None, None),
+        };
+        Self {
+            code: ErrorKindCode::of(kind),
+            retry_after_ms,
+            credential,
+        }
+    }
+
+    /// The kind the failure is replayed as: the recorded kind with its
+    /// payload.
+    #[must_use]
+    pub fn kind(self) -> ErrorKind {
+        match self.code {
+            ErrorKindCode::Transient => ErrorKind::Transient,
+            ErrorKindCode::Permanent => ErrorKind::Permanent,
+            ErrorKindCode::Exhausted => ErrorKind::Exhausted {
+                retry_after: self.retry_after_ms.map(Duration::from_millis),
+            },
+            ErrorKindCode::Backpressure => ErrorKind::Backpressure,
+            ErrorKindCode::NotFound => ErrorKind::NotFound,
+            ErrorKindCode::Cancelled => ErrorKind::Cancelled,
+            ErrorKindCode::Revoked => ErrorKind::Revoked,
+            ErrorKindCode::Ambiguous => ErrorKind::Ambiguous,
+            ErrorKindCode::CredentialUnavailable => {
+                self.credential.map_or(ErrorKind::Permanent, |reason| {
+                    ErrorKind::CredentialUnavailable { reason }
+                })
+            },
+            ErrorKindCode::OutcomeUnknown => ErrorKind::OutcomeUnknown,
+        }
+    }
+
+    /// The failure's code: its kind
+    /// ([`ErrorKindCode::as_str`]), then `@` and the retry hint in
+    /// milliseconds for `exhausted`, or `@` and the reason for
+    /// `credential_unavailable` — e.g. `exhausted@1500`,
+    /// `credential_unavailable@reauth_required`. At most 64 bytes of
+    /// `[a-z0-9_@]`.
+    #[must_use]
+    pub fn code(self) -> String {
+        match (self.retry_after_ms, self.credential) {
+            (Some(retry_after_ms), _) => format!("{}@{retry_after_ms}", self.code),
+            (None, Some(reason)) => format!("{}@{}", self.code, credential_code(reason)),
+            (None, None) => self.code.as_str().to_owned(),
+        }
+    }
+
+    /// The failure a [`code`](Self::code) names; `None` for a code this
+    /// version does not know.
+    #[must_use]
+    pub fn parse(code: &str) -> Option<Self> {
+        let (kind, payload) = match code.split_once('@') {
+            Some((kind, payload)) => (kind, Some(payload)),
+            None => (code, None),
+        };
+        let code = ErrorKindCode::parse(kind)?;
+        let (retry_after_ms, credential) = match (code, payload) {
+            (_, None) => (None, None),
+            (ErrorKindCode::Exhausted, Some(payload)) => (Some(payload.parse().ok()?), None),
+            (ErrorKindCode::CredentialUnavailable, Some(payload)) => {
+                (None, Some(credential_reason(payload)?))
+            },
+            (_, Some(_)) => return None,
+        };
+        Some(Self {
+            code,
+            retry_after_ms,
+            credential,
+        })
+    }
+}
+
+/// The stable code of a credential `reason`.
+const fn credential_code(reason: CredentialUnavailableReason) -> &'static str {
+    match reason {
+        CredentialUnavailableReason::ReauthRequired => "reauth_required",
+        CredentialUnavailableReason::OperationBlocked => "operation_blocked",
+        CredentialUnavailableReason::RefreshInFlight => "refresh_in_flight",
+        CredentialUnavailableReason::Rebinding => "rebinding",
+        CredentialUnavailableReason::CheckUnavailable => "check_unavailable",
+        CredentialUnavailableReason::Absent => "absent",
+    }
+}
+
+/// The credential reason a [`credential_code`] names.
+fn credential_reason(code: &str) -> Option<CredentialUnavailableReason> {
+    [
+        CredentialUnavailableReason::ReauthRequired,
+        CredentialUnavailableReason::OperationBlocked,
+        CredentialUnavailableReason::RefreshInFlight,
+        CredentialUnavailableReason::Rebinding,
+        CredentialUnavailableReason::CheckUnavailable,
+        CredentialUnavailableReason::Absent,
+    ]
+    .into_iter()
+    .find(|reason| credential_code(*reason) == code)
 }

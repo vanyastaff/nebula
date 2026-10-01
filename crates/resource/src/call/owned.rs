@@ -20,7 +20,8 @@
 //!   shrinks to the grant's budget; a registration that then refuses
 //!   explains it `NotCrossed` ([`OwnedEffect::release_refused`]);
 //! - **settle** ([`OwnedEffect::finish`]) — the last call is settled or
-//!   explained from the unit's result.
+//!   explained from the unit's result; a failure with nothing crossed is
+//!   recorded with the owner ([`OwnedEffect::record_unsent`]).
 //!
 //! A unit cancelled before its first grant leaves only its prepare behind:
 //! the slot stays prepared and a resumed unit runs it again. A grant still
@@ -43,7 +44,7 @@ use super::{
     error::OperationError,
     journal::{
         CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight, JournalIntent,
-        JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase, UnitKind,
+        JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase, UnitKind, UnsentFailure,
     },
     managed::{UnitShared, cancelled_before_grant},
 };
@@ -352,7 +353,8 @@ impl OwnedEffect {
     /// | Result | Last call | Recorded |
     /// |---|---|---|
     /// | `Ok` | any | settle `Applied` (`AppliedWithoutOutput` without `record_output`, or for an output over the 1 MiB cap) |
-    /// | `Err` | `NotSent`, or throttled | explain `NotCrossed` |
+    /// | `Err` | none pending (every call already explained) | record the unsent failure |
+    /// | `Err` | `NotSent`, or throttled | explain `NotCrossed`, then record the unsent failure |
     /// | `Err` | rejected | settle `Rejected` with the rejection's kind |
     /// | `Err` | `MaybeSent`, or applied (a success the unit then failed) and a retryable kind | explain `Ambiguous` |
     /// | `Err` | applied and a non-retryable kind | settle `AppliedWithoutOutput` |
@@ -368,7 +370,15 @@ impl OwnedEffect {
         abnormal: bool,
         codec: OutputCodec<T>,
     ) -> Result<T, OperationError> {
-        let (Some(pending), Some(slot)) = (self.take_pending(), self.slot()) else {
+        let Some(slot) = self.slot() else {
+            return result;
+        };
+        let Some(pending) = self.take_pending() else {
+            // No call in flight: every call the unit was granted is already
+            // explained, so a failure now sent nothing more.
+            if let Err(error) = &result {
+                self.record_unsent(slot, error.kind()).await;
+            }
             return result;
         };
         let sent = if abnormal {
@@ -415,7 +425,12 @@ impl OwnedEffect {
                     ),
                 };
                 match written {
-                    Ok(()) => Err(error),
+                    Ok(()) => {
+                        if matches!(recorded, Err(Crossing::NotCrossed)) {
+                            self.record_unsent(slot, kind).await;
+                        }
+                        Err(error)
+                    },
                     Err(refusal) if matches!(recorded, Err(Crossing::NotCrossed)) => {
                         let _ = self.refused(step, refusal);
                         Err(error)
@@ -423,6 +438,24 @@ impl OwnedEffect {
                     Err(refusal) => Err(self.unrecorded(step, refusal)),
                 }
             },
+        }
+    }
+
+    /// Tells the owner how the unit failed while sending nothing
+    /// ([`EffectJournal::record_unsent_failure`]): best effort, the unit's
+    /// result stands either way.
+    pub(super) async fn record_unsent(&self, slot: &JournalSlot, kind: &ErrorKind) {
+        if let Err(refusal) = self
+            .owner
+            .record_unsent_failure(slot, UnsentFailure::of(kind))
+            .await
+        {
+            tracing::debug!(
+                target: "nebula.resource",
+                occurrence = self.occurrence(),
+                refusal = refusal.as_str(),
+                "effect owner did not record how the unsent unit failed"
+            );
         }
     }
 
@@ -496,9 +529,16 @@ fn refusal_error(refusal: JournalRefusal) -> OperationError {
             ErrorKind::Permanent,
             "effect journal slot cap reached; unit refused",
         ),
-        JournalRefusal::Superseded => OperationError::new(
-            ErrorKind::Permanent,
+        // The failure the earlier run saw, kind and payload; `Permanent` when
+        // it was not recorded (a slot recorded before failures were).
+        JournalRefusal::Superseded(failure) => OperationError::new(
+            failure.map_or(ErrorKind::Permanent, UnsentFailure::kind),
             "effect failed unsent in an earlier run that moved past it; not sent again",
+        ),
+        JournalRefusal::ConcurrencyLimit => OperationError::new(
+            ErrorKind::Permanent,
+            "too many interleaved concurrent effects: the lower effects still open form more \
+             separate runs than the journal records (64); unit refused",
         ),
         JournalRefusal::BetweenRuns => OperationError::new(
             ErrorKind::Permanent,

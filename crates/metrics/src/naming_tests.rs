@@ -917,6 +917,7 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_refusal::SLOT_CAP_EXCEEDED,
         effect_journal_refusal::BETWEEN_RUNS,
         effect_journal_refusal::SUPERSEDED,
+        effect_journal_refusal::CONCURRENCY_LIMIT,
     ];
     let verdicts = [
         effect_journal_verdict::OK,
@@ -928,12 +929,13 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_verdict::LEDGER,
         effect_journal_verdict::SLOT_CAP_EXCEEDED,
         effect_journal_verdict::ITERATION_BARRIER,
+        effect_journal_verdict::CONCURRENCY_LIMIT,
     ];
     for (set, expected) in [
         (&phases[..], 3),
         (&steps[..], 6),
-        (&refusals[..], 9),
-        (&verdicts[..], 9),
+        (&refusals[..], 10),
+        (&verdicts[..], 10),
     ] {
         let unique: HashSet<_> = set.iter().collect();
         assert_eq!(unique.len(), expected);

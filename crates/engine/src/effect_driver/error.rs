@@ -71,6 +71,17 @@ pub enum EffectExecutionError {
         /// The cap: journaled effects one node attempt may prepare.
         cap: u32,
     },
+    /// A fresh journaled effect was refused because the lower effects of
+    /// its run still open formed more separate runs of positions than one
+    /// slot records: recording fewer would misorder them on recovery. No
+    /// further effect was prepared or sent at that position.
+    #[error(
+        "journaled effects too interleaved: the open lower effects form more than {limit} runs"
+    )]
+    JournalConcurrencyLimit {
+        /// Most runs of open lower positions one slot records.
+        limit: u32,
+    },
     /// A stateful action's iteration ended with effect units of the node
     /// still in flight past the drain limit — or the next one was about to
     /// begin with one in flight: the iterations stop. After a drain that
@@ -102,6 +113,7 @@ impl EffectExecutionError {
             Self::Rejected { .. } => "ENGINE:EFFECT_REJECTED",
             Self::InvalidEvidence => "ENGINE:EFFECT_INVALID_EVIDENCE",
             Self::JournalSlotCapExceeded { .. } => "ENGINE:EFFECT_JOURNAL_SLOT_CAP",
+            Self::JournalConcurrencyLimit { .. } => "ENGINE:EFFECT_JOURNAL_CONCURRENCY_LIMIT",
             Self::IterationUnitsOutstanding { .. } => "ENGINE:EFFECT_ITERATION_BARRIER",
         }
     }

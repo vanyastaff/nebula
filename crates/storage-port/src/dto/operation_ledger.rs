@@ -353,17 +353,18 @@ pub struct EffectSlotBinding<'a> {
     /// The lower positions of this occurrence's positional run whose unit
     /// was still open when this one was first prepared: they ran
     /// concurrently with it. Every other lower position had finished before
-    /// it began. Strictly ascending, at most
-    /// [`OperationProtocolRecord::MAX_CONCURRENT_WITH`](super::OperationProtocolRecord::MAX_CONCURRENT_WITH)
-    /// (an owner with more keeps the nearest; the rest read as finished
-    /// before it). `Some(&[])` when none was; `None` when the owner records
-    /// no concurrency — the record's concurrency is then unknown.
+    /// it began. Canonical runs ([`PositionRange`](super::PositionRange):
+    /// ascending, disjoint, not adjacent), at most
+    /// [`OperationProtocolRecord::MAX_CONCURRENT_RANGES`](super::OperationProtocolRecord::MAX_CONCURRENT_RANGES):
+    /// the exact set, never truncated — a longer list is an invalid
+    /// protocol. `Some(&[])` when none was; `None` when the owner records no
+    /// concurrency — the record's concurrency is then unknown.
     ///
     /// Persisted with the first preparation only, read back from
     /// [`OperationProtocolRecord::concurrent_with`](super::OperationProtocolRecord::concurrent_with).
     /// Never part of the natural key or of the prepare identity: re-preparing
     /// with another list replays the recorded slot unchanged.
-    pub concurrent_with: Option<&'a [u32]>,
+    pub concurrent_with: Option<&'a [super::PositionRange]>,
 }
 
 impl EffectSlotBinding<'_> {

@@ -185,7 +185,7 @@ pub mod effect_journal_step {
 
 /// Refusal labels for [`NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL`].
 ///
-/// Closed set of nine values, one per journal refusal.
+/// Closed set of ten values, one per journal refusal.
 pub mod effect_journal_refusal {
     /// The journal's store is unavailable.
     pub const UNAVAILABLE: &str = "unavailable";
@@ -207,6 +207,9 @@ pub mod effect_journal_refusal {
     /// A recorded, never-sent effect below a later applied one was not
     /// sent again.
     pub const SUPERSEDED: &str = "superseded";
+    /// The lower effects still open were too interleaved to record exactly
+    /// with a fresh effect: it was not prepared.
+    pub const CONCURRENCY_LIMIT: &str = "concurrency_limit";
 }
 
 /// Counter: node verdicts of effect journals.
@@ -218,7 +221,7 @@ pub const NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL: &str = "nebula_effect_journal_ve
 
 /// Code labels for [`NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL`].
 ///
-/// Closed set of nine values.
+/// Closed set of ten values.
 pub mod effect_journal_verdict {
     /// The journal agrees with the action's result.
     pub const OK: &str = "ok";
@@ -239,6 +242,9 @@ pub mod effect_journal_verdict {
     /// A stateful action's iteration ended with its effect units still in
     /// flight past the drain limit.
     pub const ITERATION_BARRIER: &str = "iteration_barrier";
+    /// A fresh effect was refused: the lower effects still open were too
+    /// interleaved to record exactly.
+    pub const CONCURRENCY_LIMIT: &str = "concurrency_limit";
 }
 
 // ---------------------------------------------------------------------------

@@ -740,6 +740,11 @@ macro_rules! operation_ledger_conformance_suite {
             0x49,
             $ledger
         );
+        $crate::operation_ledger_case!(
+            an_unsent_failure_is_durable_until_a_later_call,
+            0x4a,
+            $ledger
+        );
     };
 }
 
@@ -2129,8 +2134,9 @@ pub(crate) async fn the_concurrent_positions_are_durable_and_outside_the_prepare
     let scope = scope();
     let execution = execution_id(seed);
     let fence = create_leased_execution(executions, &scope, &execution).await;
-    let listing =
-        |occurrence: &'static str, concurrent_with: Option<&'static [u32]>| EffectSlotBinding {
+    use nebula_storage_port::dto::PositionRange;
+    let listing = |occurrence: &'static str, concurrent_with: Option<&'static [PositionRange]>| {
+        EffectSlotBinding {
             concurrent_with,
             ..binding(
                 &scope,
@@ -2140,24 +2146,35 @@ pub(crate) async fn the_concurrent_positions_are_durable_and_outside_the_prepare
                 0x11,
                 DestinationCapability::StableKey,
             )
-        };
+        }
+    };
     let positions = |record: &nebula_storage_port::dto::OperationRecord| {
         record
             .protocol()
             .unwrap()
             .concurrent_with()
-            .map(<[u32]>::to_vec)
+            .map(<[PositionRange]>::to_vec)
     };
+    // Position 0, and the hundred positions 3 to 102: two runs.
+    static LISTED: std::sync::LazyLock<[PositionRange; 2]> = std::sync::LazyLock::new(|| {
+        [
+            PositionRange::new(0, 0).unwrap(),
+            PositionRange::new(3, 102).unwrap(),
+        ]
+    });
+    static OTHER: std::sync::LazyLock<[PositionRange; 1]> =
+        std::sync::LazyLock::new(|| [PositionRange::new(1, 1).unwrap()]);
+    let listed_runs = LISTED.to_vec();
 
     let prepared = ledger
-        .prepare(&listing("listed", Some(&[0, 3])), fence)
+        .prepare(&listing("listed", Some(&LISTED[..])), fence)
         .await
         .unwrap();
     let slot = prepared.operation().slot_id();
     let before = ledger.read_exact(&scope, slot).await.unwrap();
-    assert_eq!(positions(&before), Some(vec![0, 3]));
+    assert_eq!(positions(&before), Some(listed_runs.clone()));
 
-    for other in [Some(&[1][..]), Some(&[]), None] {
+    for other in [Some(&OTHER[..]), Some(&[]), None] {
         assert_eq!(
             ledger.prepare(&listing("listed", other), fence).await,
             Ok(PrepareOutcome::Replayed(prepared.operation())),
@@ -2182,7 +2199,7 @@ pub(crate) async fn the_concurrent_positions_are_durable_and_outside_the_prepare
     };
     assert_eq!(
         positions(&record),
-        Some(vec![0, 3]),
+        Some(listed_runs.clone()),
         "transitions keep the positions"
     );
 
@@ -2209,7 +2226,7 @@ pub(crate) async fn the_concurrent_positions_are_durable_and_outside_the_prepare
             .find(|occurrence| occurrence.occurrence() == label)
             .map(|occurrence| positions(occurrence.record()))
     };
-    assert_eq!(listed_positions("listed"), Some(Some(vec![0, 3])));
+    assert_eq!(listed_positions("listed"), Some(Some(listed_runs)));
     assert_eq!(listed_positions("alone"), Some(Some(Vec::new())));
     assert_eq!(listed_positions("unknown"), Some(None));
     assert_eq!(
@@ -2220,6 +2237,114 @@ pub(crate) async fn the_concurrent_positions_are_durable_and_outside_the_prepare
         positions(&ledger.read_exact(&scope, unknown).await.unwrap()),
         None
     );
+    // More runs than a record holds are refused, never truncated.
+    static FRAGMENTED: std::sync::LazyLock<Vec<PositionRange>> = std::sync::LazyLock::new(|| {
+        let runs =
+            u32::try_from(nebula_storage_port::dto::OperationProtocolRecord::MAX_CONCURRENT_RANGES)
+                .unwrap();
+        (0..=runs)
+            .map(|run| PositionRange::new(run * 2, run * 2).unwrap())
+            .collect()
+    });
+    assert!(
+        ledger
+            .prepare(&listing("fragmented", Some(&FRAGMENTED[..])), fence)
+            .await
+            .is_err()
+    );
+    assert!(
+        ledger
+            .read_occurrences(&scope, &execution, "charge")
+            .await
+            .unwrap()
+            .iter()
+            .all(|occurrence| occurrence.occurrence() != "fragmented"),
+        "nothing written"
+    );
+}
+
+/// How a unit that sent nothing failed is kept with its slot, read back by
+/// every read and listing, replaced by a later classification and cleared
+/// by a later call; refused while a call is outstanding.
+pub(crate) async fn an_unsent_failure_is_durable_until_a_later_call(
+    ledger: &impl LedgerUnderTest,
+    executions: &dyn ExecutionStore,
+    seed: u8,
+) {
+    use nebula_storage_port::dto::{InvocationDisposition, UnsentFailureCode};
+    let scope = scope();
+    let (execution, slot, fence) = prepare_fresh(ledger, executions, seed).await;
+    let code = |code: &str| UnsentFailureCode::new(code).unwrap();
+    let failure = |record: &nebula_storage_port::dto::OperationRecord| {
+        record.protocol().unwrap().unsent_failure().cloned()
+    };
+    let record_failure = |failure: &str| OperationCommand::RecordUnsentFailure {
+        failure: code(failure),
+    };
+    assert_eq!(
+        failure(&ledger.read_exact(&scope, slot).await.unwrap()),
+        None
+    );
+    let OperationAdvance::Recorded(recorded) = ledger
+        .advance(&scope, slot, fence, &record_failure("exhausted@250"))
+        .await
+        .unwrap()
+    else {
+        panic!("recording an unsent failure grants nothing");
+    };
+    assert_eq!(failure(&recorded), Some(code("exhausted@250")));
+    assert_eq!(recorded.protocol().unwrap().revision(), 1);
+    assert_eq!(ledger.read_exact(&scope, slot).await.unwrap(), recorded);
+    let listed = ledger
+        .read_occurrences(&scope, &execution, "charge")
+        .await
+        .unwrap();
+    assert_eq!(failure(listed[0].record()), Some(code("exhausted@250")));
+
+    let OperationAdvance::Granted { call, record, .. } = ledger
+        .advance(
+            &scope,
+            slot,
+            fence,
+            &OperationCommand::GrantInvocation {
+                expected_revision: 1,
+            },
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("a never-crossed slot is granted again");
+    };
+    assert_eq!(failure(&record), None, "a later call clears it");
+    assert_eq!(
+        ledger
+            .advance(&scope, slot, fence, &record_failure("transient"))
+            .await
+            .map(|_| ()),
+        Err(OperationLedgerError::ProtocolConflict),
+        "refused while the call is outstanding"
+    );
+    ledger
+        .advance(
+            &scope,
+            slot,
+            fence,
+            &OperationCommand::RecordDisposition {
+                invocation: call,
+                disposition: InvocationDisposition::BeforeBoundary,
+            },
+        )
+        .await
+        .unwrap();
+    let OperationAdvance::Recorded(again) = ledger
+        .advance(&scope, slot, fence, &record_failure("backpressure"))
+        .await
+        .unwrap()
+    else {
+        panic!("recording an unsent failure grants nothing");
+    };
+    assert_eq!(failure(&again), Some(code("backpressure")));
+    assert_eq!(ledger.read_exact(&scope, slot).await.unwrap(), again);
 }
 
 /// A later attempt that finds its predecessor's call outstanding may explain

@@ -566,6 +566,10 @@ struct IterationScript {
     /// The delay each `Continue` asks for before the next iteration.
     #[serde(default)]
     delay_secs: u64,
+    /// After the iteration's units, for every swallowed error, submit a
+    /// write `after-{kind}`: the program branches on the error's kind.
+    #[serde(default)]
+    branch_on_kind: bool,
 }
 
 /// The stateful action's state: the next iteration and every receipt so
@@ -674,15 +678,32 @@ impl StatefulAction for StatefulCharge {
             }
             settled
         };
+        let mut branches = Vec::new();
         for result in settled {
             match result {
                 Ok(receipt) => state.receipts.push(json!(receipt)),
-                Err(error) if script.swallow => state.receipts.push(json!({
-                    "kind": error.kind().to_string(),
-                    "sent": error.sent().as_str(),
-                    "detail": error.detail(),
-                })),
+                Err(error) if script.swallow => {
+                    branches.push(error.kind().to_string());
+                    state.receipts.push(json!({
+                        "kind": error.kind().to_string(),
+                        "sent": error.sent().as_str(),
+                        "detail": error.detail(),
+                    }));
+                },
                 Err(error) => return Err(error.into()),
+            }
+        }
+        if script.branch_on_kind {
+            for kind in branches {
+                let receipt = handle
+                    .submit(Charge::<false>(UnitSpec {
+                        idempotent: false,
+                        request: format!("after-{kind}"),
+                        key: None,
+                        budget: 1,
+                    }))
+                    .await?;
+                state.receipts.push(json!(receipt));
             }
         }
         state.next += 1;

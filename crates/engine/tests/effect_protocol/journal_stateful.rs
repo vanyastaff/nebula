@@ -473,11 +473,12 @@ async fn a_prepare_whose_answer_was_lost_is_recovered_in_order(#[case] backend: 
 }
 
 /// A lower effect changed nothing (throttled, its error swallowed) while a
-/// higher one applied; the process dies. A recovery reaching the lower one
-/// again would apply it after the higher one: it is refused unsent as
-/// superseded — the same failure the program already swallowed — the higher
-/// one replays its recorded outcome, and the node goes on to its next
-/// iteration and completes.
+/// higher one applied, and the program branched on the throttle's kind;
+/// the process dies. A recovery reaching the lower one again would apply it
+/// after the higher one: it is refused unsent as superseded — with the very
+/// kind the program saw, recorded when the unit settled — so the program
+/// takes the same branch, every recorded effect replays, and the node goes
+/// on to its next iteration and completes.
 #[rstest::rstest]
 #[case::memory(Backend::Memory)]
 #[case::sqlite(Backend::Sqlite)]
@@ -491,33 +492,59 @@ async fn a_recovery_never_applies_a_lower_effect_after_a_higher_applied_one(
     let mut fixture = stateful(database.ports()).await;
     let units = [write("lower:1"), write("higher:2"), write("next:3")];
     let execution = fixture
-        .start_iterations(&[&units[0..2], &units[2..3]], json!({ "swallow": true }))
+        .start_iterations(
+            &[&units[0..2], &units[2..3]],
+            json!({ "swallow": true, "branch_on_kind": true }),
+        )
         .await;
     *fixture.gateway.iterations.throttle_at.lock() = Some(0);
     crash_at_iteration(&mut fixture, &mut database, execution, 1).await;
     let recorded = fixture.slots(execution).await;
-    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded.len(), 3);
     assert_eq!(phase(&recorded[1]), EffectPhase::Resolved);
-    assert_eq!(fixture.gateway.call_count(), 2, "throttled, then applied");
+    assert_eq!(
+        recorded[0]
+            .record()
+            .protocol()
+            .unwrap()
+            .unsent_failure()
+            .map(nebula_storage_port::dto::UnsentFailureCode::as_str),
+        Some("exhausted"),
+        "the throttle, recorded as the unit settled"
+    );
+    let requests = |fixture: &JournalFixture| -> Vec<String> {
+        fixture
+            .gateway
+            .calls
+            .lock()
+            .iter()
+            .map(|call| call.request.clone())
+            .collect()
+    };
+    let crashed = requests(&fixture);
+    assert_eq!(crashed.len(), 3, "throttled, applied, then the branch");
+    assert!(
+        crashed[2].starts_with("after-") && crashed[2] != "after-permanent",
+        "{crashed:?}"
+    );
 
     let result = fixture.run(execution).await.unwrap();
     assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
-    let requests: Vec<String> = fixture
-        .gateway
-        .calls
-        .lock()
-        .iter()
-        .map(|call| call.request.clone())
-        .collect();
+    let mut expected = crashed.clone();
+    expected.push("next:3".to_owned());
     assert_eq!(
-        requests,
-        ["lower:1", "higher:2", "next:3"],
-        "the lower one never resent, the higher one replayed"
+        requests(&fixture),
+        expected,
+        "the lower one never resent; the higher one and the branch replayed"
     );
     let receipts = receipts(&result);
     assert_eq!(receipts[0]["sent"], json!("not_sent"), "{receipts}");
-    assert_eq!(&receipts.as_array().unwrap()[1..], [json!(1), json!(2)]);
-    assert_eq!(fixture.slots(execution).await[..2], recorded[..]);
+    assert_eq!(
+        format!("after-{}", receipts[0]["kind"].as_str().unwrap()),
+        crashed[2],
+        "the same kind as the program saw: {receipts}"
+    );
+    assert_eq!(fixture.slots(execution).await[..3], recorded[..]);
 }
 
 // 7d ────────────────────────────────────────────────────────────────────────
@@ -563,7 +590,7 @@ async fn concurrent_writes_recover_after_a_crash_with_one_applied(#[case] backen
     if applied.occurrence() == "it0/unit/v1/#000001" {
         assert_eq!(
             applied.record().protocol().unwrap().concurrent_with(),
-            Some(&[0][..]),
+            Some(&[nebula_storage_port::dto::PositionRange::new(0, 0).unwrap()][..]),
             "the other write was open when it was prepared"
         );
     }

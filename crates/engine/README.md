@@ -221,18 +221,27 @@ configuration, and process lifecycle.
   and orders nothing) — at a higher position of its family that the program ran after
   it: in a later iteration, or one that does not list it as **concurrent**. A lower
   slot that changed nothing (only prepared, or every call explained not crossed)
-  failed unsent before the program moved on: it is refused `superseded` (`Permanent`
-  / `NotSent`, no failure of the journal's own), so a deterministic program that
-  handled that failure handles it again and replays on (the replayed kind is
-  permanent whatever the original was). A lower stable-key slot whose call crossed
+  failed unsent before the program moved on: it is refused `superseded` (`NotSent`, no
+  failure of the journal's own) with the failure the earlier run saw — its kind and
+  payload (an `Exhausted` retry hint, a `CredentialUnavailable` reason), recorded when
+  the unit settled (`EffectJournal::record_unsent_failure`, ledger command
+  `RecordUnsentFailure`, kept in the protocol record) — so a deterministic program that
+  branched on that failure takes the same branch and replays on. A slot recorded
+  without it (an older journal, or a best-effort recording that did not land) fails
+  `Permanent`; the static detail and sent state are not replayed. A lower stable-key slot whose call crossed
   without an outcome may have applied before or after: its outcome is recorded
   unknown and the node halts `ENGINE:EFFECT_OUTCOME_UNKNOWN`. With nothing ordered
   after it, an unsettled slot is granted again on retry. Every fresh slot records, at its
   first prepare (`EffectSlotBinding::concurrent_with`, kept in the protocol record),
   the exact lower positions of its iteration whose unit was still open — handed out
   and not yet settled (`EffectJournal::finish_occurrence`, signalled when the unit
-  settles, whoever keeps its handle) — at most 64, the nearest kept (the rest read as
-  settled before it). Units awaited together (`join!`, `FuturesUnordered`) are
+  settles, whoever keeps its handle) — as canonical runs of positions (`PositionRange`,
+  persisted `[[first, last], …]`): any number of open units, never truncated. A fresh
+  effect whose open lower units would need more than 64 separate runs
+  (`OperationProtocolRecord::MAX_CONCURRENT_RANGES`: open units interleaved with
+  settled ones beyond that) is refused unsent (`concurrency_limit`, `Permanent` /
+  `NotSent`, "too many interleaved concurrent effects") and the node fails
+  `ENGINE:EFFECT_JOURNAL_CONCURRENCY_LIMIT`. Units awaited together (`join!`, `FuturesUnordered`) are
   concurrent: a recovery replays the unsettled one under its recorded provider key (at
   least once) instead of halting, while a lower slot that settled before the later
   one began — even inside a run of concurrent units — stays refused. Every fresh slot
@@ -277,7 +286,9 @@ configuration, and process lifecycle.
   reads the node's occurrences within what is left of it (at least 5 s; a read that
   does not answer defers the turn like an unavailable ledger); its
   verdict overrides the node's result: a lost lease or unknown acknowledgement
-  releases the lease without finalizing, any slot whose call may have crossed without
+  releases the lease without finalizing — unless that read, still made within the same
+  bound, finds an unknown outcome another unit recorded, which halts instead (a read
+  that cannot run keeps the deferral) — any slot whose call may have crossed without
   a recorded outcome (unknown, outstanding, ambiguous, or held past the limit by a
   stuck unit) fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even if the action
   swallowed the unit's error), and a changed request, key part, credential binding,
@@ -295,9 +306,11 @@ configuration, and process lifecycle.
   halt (a detached unit refused between iterations). **Invariants** (module docs of
   `effect_driver::journal`): S1 no effect sent twice under different keys; S2 no
   recorded effect re-sent after divergence; S3 a lower effect never applied after a
-  higher one the program ran after it; S4 concurrent units replay at least once under
-  their recorded keys; S5 every wait bounded; S6 legacy records order nothing; S7 a
-  cancelled node stays cancelled; S8 an unknown outcome is never masked. A correct
+  higher one the program ran after it (a superseded one fails as the program saw it
+  fail); S4 concurrent units replay at least once under their recorded keys (recorded
+  exactly, or the fresh effect is refused unsent); S5 every wait bounded; S6 legacy
+  records order nothing; S7 a cancelled node stays cancelled; S8 an unknown outcome is
+  never masked, not even by a deferral. A correct
   deterministic program is stranded only by a crossed call with no recorded outcome
   that is opaque, or that a later applied effect is ordered after. Counters:
   `nebula_effect_journal_prepares_total{phase}`,
