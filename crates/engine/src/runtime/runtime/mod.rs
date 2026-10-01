@@ -393,14 +393,17 @@ impl ActionRuntime {
 
     /// Execute a journaled action under its node's effect journal.
     ///
-    /// The dispatch path of a stateless action whose admitted contract is
+    /// The dispatch path of a stateless or control action whose admitted
+    /// contract is
     /// [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled)
     /// on a durable turn: `admission` proves the engine built the node
     /// attempt's
     /// [`NodeEffectJournal`](crate::effect_driver::NodeEffectJournal) and
-    /// handed it to the action's resource handles through `context`. Only stateless actions with no
-    /// remote capability are admitted; public entry points keep refusing the
-    /// contract.
+    /// handed it to the action's resource handles through `context`. Only
+    /// actions of a journaled
+    /// [`JournalShape`](crate::effect_driver::JournalShape) — stateless and
+    /// control — with no remote capability are admitted; public entry
+    /// points keep refusing the contract.
     pub(crate) async fn execute_journaled_action(
         &self,
         factory: Arc<dyn ActionFactory>,
@@ -414,7 +417,7 @@ impl ActionRuntime {
             metadata.effect_contract(),
             nebula_action::effect::ActionEffectContract::Journaled(_)
         ) || factory.remote_effect_factory().is_some()
-            || metadata.kind() != nebula_action::ActionKind::Stateless
+            || !crate::effect_driver::JournalShape::of(metadata.kind()).is_journaled()
         {
             self.observe_rejected("effect_requires_owner");
             return Err(RuntimeError::EffectRequiresOwner);
@@ -874,7 +877,9 @@ impl ActionRuntime {
     /// dispatch as one-shot evaluators and never run through the runner —
     /// they produce flow-control [`ActionResult`] variants but no I/O. The
     /// handle surface is intentionally identical to stateless from the
-    /// runtime's POV.
+    /// runtime's POV — including resource effects: a journaled control
+    /// action's handles in `context` record through its node's effect
+    /// journal exactly as a stateless action's do.
     async fn execute_control_handle(
         &self,
         metadata: &ActionMetadata,

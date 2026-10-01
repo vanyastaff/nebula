@@ -1633,6 +1633,77 @@ mod resource_handle {
         );
     }
 
+    /// A default-contract (`Journaled`) agent action: one turn that reads,
+    /// then tries a write.
+    #[derive(nebula_action::Action)]
+    #[action(
+        key = "test.resource_handle.journaled_agent",
+        name = "Journaled agent",
+        description = "default-contract agent integration action",
+        input = serde_json::Value,
+        output = serde_json::Value
+    )]
+    struct JournaledAgent {
+        #[resource]
+        svc: ResourceHandle<Svc>,
+    }
+
+    impl nebula_action::AgentAction for JournaledAgent {
+        type Turn = u32;
+
+        fn init_turn(&self, _input: &serde_json::Value) -> u32 {
+            0
+        }
+
+        async fn step(
+            &self,
+            _turn: &mut u32,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let calls = self.svc.submit(Call { cost: Cost::ONE }).await?;
+            let refused = self
+                .svc
+                .submit(LostWrite)
+                .await
+                .expect_err("an agent action has no effect journal");
+            Ok(ActionResult::break_completed(serde_json::json!({
+                "calls": calls,
+                "write_kind": refused.kind().to_string(),
+                "write_sent": refused.sent().as_str(),
+                "write_detail": refused.detail(),
+            })))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_journaled_agent_action_reads_but_its_writes_are_refused_saying_why() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_agent_factory::<JournaledAgent>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            node_of("test.resource_handle.journaled_agent", "svc", &Svc::key()),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(result.is_success(), "{result:?}");
+        assert_eq!(output(&result)["calls"], 1, "the read ran");
+        assert_eq!(output(&result)["write_kind"], "permanent");
+        assert_eq!(output(&result)["write_sent"], "not_sent");
+        assert_eq!(
+            output(&result)["write_detail"],
+            "agent effects are not journaled; the agent profile is planned",
+            "the refusal says why an agent's write has no journal"
+        );
+        assert_eq!(calls.count(), 1, "the write made zero provider calls");
+    }
+
     /// A `read_only` action that reads, then tries a write: since 0.27.0
     /// it has no raw-lease route around its read-only handle.
     #[derive(nebula_action::Action)]

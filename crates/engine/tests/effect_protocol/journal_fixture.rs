@@ -1,6 +1,6 @@
 //! A journaled action through real activation, start admission and durable
-//! turns: a default-contract (`Journaled`) stateless action submits effect
-//! units on the resource handle of a fake payment gateway that counts every
+//! turns: a default-contract (`Journaled`) action — stateless by default,
+//! or of another [`Kind`] — submits effect units on the resource handle of a fake payment gateway that counts every
 //! provider call and deduplicates by the idempotency key it receives.
 
 use std::{
@@ -10,8 +10,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionContext, ActionContextExt, ActionError, GenericStatefulFactory, InstanceFactory,
-    StatefulAction, StatelessAction,
+    ActionContext, ActionContextExt, ActionError, ControlAction, ControlOutcome,
+    GenericControlFactory, GenericStatefulFactory, InstanceFactory, StatefulAction,
+    StatelessAction,
 };
 use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_resource::{
@@ -439,11 +440,68 @@ impl StatefulAction for StatefulCharge {
     }
 }
 
-/// Which action kind the fixture's node runs.
+/// The controls of the control actions, which the generic control factory
+/// builds per dispatch.
+static CONTROL_CONTROLS: OnceLock<Arc<Controls>> = OnceLock::new();
+
+/// The journaled control action: it passes the script's receipts on.
+#[derive(nebula_action::Action)]
+#[action(
+    key = "journal.charge",
+    name = "Charge",
+    description = "Journaled control test action",
+    input = Value,
+    output = Value
+)]
+struct ControlCharge;
+
+impl ControlAction for ControlCharge {
+    async fn evaluate(
+        &self,
+        input: Value,
+        ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ControlOutcome<Value>, ActionError> {
+        let script: Script = serde_json::from_value(input)
+            .map_err(|error| ActionError::fatal(format!("bad script: {error}")))?;
+        let controls = CONTROL_CONTROLS.get_or_init(Arc::default);
+        let output = run_script(controls, script, ctx).await?;
+        Ok(ControlOutcome::Pass { output })
+    }
+}
+
+/// The control action of a read-only contract, like the built-in control
+/// actions (If, Switch, Filter).
+#[derive(nebula_action::Action)]
+#[action(
+    key = "journal.charge",
+    name = "Charge",
+    description = "Read-only control test action",
+    input = Value,
+    output = Value,
+    read_only
+)]
+struct ReadOnlyControlCharge;
+
+impl ControlAction for ReadOnlyControlCharge {
+    async fn evaluate(
+        &self,
+        input: Value,
+        ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ControlOutcome<Value>, ActionError> {
+        ControlCharge.evaluate(input, ctx).await
+    }
+}
+
+/// Which action kind the fixture's node runs. (An agent action cannot be
+/// compiled into a durable plan; `resource_integration` covers its handles.)
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Kind {
     Stateless,
     Stateful,
+    /// A control action of the default (`Journaled`) contract.
+    Control,
+    /// A control action of the `ReadOnly` contract.
+    ReadOnlyControl,
 }
 
 /// A frozen plugin of the fixture's action.
@@ -460,6 +518,10 @@ fn frozen_plugin(kind: Kind, controls: &Arc<Controls>) -> Arc<FrozenPluginRegist
         ),
         Kind::Stateful => {
             Arc::new(GenericStatefulFactory::<StatefulCharge>::new().expect("admitted"))
+        },
+        Kind::Control => Arc::new(GenericControlFactory::<ControlCharge>::new().expect("admitted")),
+        Kind::ReadOnlyControl => {
+            Arc::new(GenericControlFactory::<ReadOnlyControlCharge>::new().expect("admitted"))
         },
     };
     let mut plugins = PluginRegistry::new();
@@ -538,6 +600,9 @@ impl JournalFixture {
         let controls = match kind {
             Kind::Stateless => Arc::new(Controls::default()),
             Kind::Stateful => Arc::clone(STATEFUL_CONTROLS.get_or_init(Arc::default)),
+            Kind::Control | Kind::ReadOnlyControl => {
+                Arc::clone(CONTROL_CONTROLS.get_or_init(Arc::default))
+            },
         };
         let manager = Arc::new(Manager::new());
         for identity in [

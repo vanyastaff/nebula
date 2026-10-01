@@ -72,24 +72,6 @@ async fn the_journal_waits_for_a_unit_its_action_did_not_await() {
 }
 
 #[tokio::test]
-async fn a_stateful_journaled_action_keeps_read_only_handles() {
-    let fixture = JournalFixture::build(Ports::memory(), Kind::Stateful, None).await;
-    let execution = fixture
-        .start(&[write("order-11:7")], json!({ "swallow": true }))
-        .await;
-    let result = fixture.run(execution).await.unwrap();
-    assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
-    let refused = &receipts(&result)[0];
-    assert_eq!(refused["sent"], "not_sent", "{refused}");
-    assert_eq!(
-        refused["detail"], "managed row effect requires execution-owner authority",
-        "{refused}"
-    );
-    assert_eq!(fixture.gateway.call_count(), 0);
-    assert!(fixture.slots(execution).await.is_empty(), "no journal");
-}
-
-#[tokio::test]
 async fn generic_dispatch_refuses_a_journaled_action() {
     let fixture = JournalFixture::new(Ports::memory()).await;
     let factory = fixture

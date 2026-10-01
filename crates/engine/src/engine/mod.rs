@@ -3100,11 +3100,12 @@ impl NodeResourceLayers {
 const JOURNAL_NEEDS_STORES: &str = "journaled effects need execution stores";
 
 impl NodeTask {
-    /// The effect journal of this node attempt: built only for a frozen,
-    /// stateless journaled action with no remote capability, under this
+    /// The effect journal of this node attempt: built only for a frozen
+    /// journaled action of a [`Flat`](crate::effect_driver::JournalShape::Flat)
+    /// shape (stateless or control) with no remote capability, under this
     /// turn's operation ledger and execution lease. Building it costs
-    /// nothing durable. Stateful, control and agent actions keep read-only
-    /// handles until their iterations are journaled.
+    /// nothing durable. Stateful actions keep read-only handles until their
+    /// iterations are journaled; agent, stream and other actions keep them.
     fn effect_journal(&self) -> Option<crate::effect_driver::NodeEffectJournal> {
         let NodeFactoryDispatch::Frozen {
             factory,
@@ -3114,7 +3115,7 @@ impl NodeTask {
         else {
             return None;
         };
-        if factory.metadata().kind() != nebula_action::ActionKind::Stateless
+        if !crate::effect_driver::JournalShape::of(factory.metadata().kind()).is_journaled()
             || factory.remote_effect_factory().is_some()
         {
             return None;
@@ -3139,24 +3140,28 @@ impl NodeTask {
     }
 
     /// The resource accessor of a journaled action: resource handles under
-    /// `journal` — or read-only without one, saying why when the run has no
-    /// execution stores. The node's scoped layer stays in front: a key a
-    /// branch scope holds is never served by a global row.
+    /// `journal` — or read-only without one, saying why when the action's
+    /// kind is not journaled ([`JournalShape`](crate::effect_driver::JournalShape))
+    /// or the run has no execution stores. The node's scoped layer stays in
+    /// front: a key a branch scope holds is never served by a global row.
     fn journaled_resources(
         &self,
         journal: Option<&crate::effect_driver::NodeEffectJournal>,
     ) -> Arc<dyn ResourceAccessor> {
         let storeless = self.operation_ledger.is_none() || self.fencing.is_none();
-        match (&self.engine_resources, journal) {
-            (Some(layers), Some(journal)) => {
+        // The kind's reason comes first: a run with stores would not
+        // journal the action either.
+        let read_only_detail = crate::effect_driver::JournalShape::read_only_detail(
+            self.factory_dispatch.factory().metadata().kind(),
+        )
+        .or_else(|| storeless.then_some(JOURNAL_NEEDS_STORES));
+        match (&self.engine_resources, journal, read_only_detail) {
+            (Some(layers), Some(journal), _) => {
                 layers.layered(layers.rows.clone().with_journal(Arc::new(journal.clone())))
             },
-            (Some(layers), None) if storeless => layers.layered(
-                layers
-                    .rows
-                    .clone()
-                    .with_read_only_detail(JOURNAL_NEEDS_STORES),
-            ),
+            (Some(layers), None, Some(detail)) => {
+                layers.layered(layers.rows.clone().with_read_only_detail(detail))
+            },
             _ => self.resources.clone(),
         }
     }
@@ -3164,8 +3169,8 @@ impl NodeTask {
     /// The resource accessor the action of `contract` is dispatched with.
     ///
     /// Every action reaches resources through resource handles only — the
-    /// accessor has no raw-lease route. A stateless journaled one on a
-    /// durable turn gets handles under this node attempt's effect journal;
+    /// accessor has no raw-lease route. A stateless or control journaled
+    /// one on a durable turn gets handles under this node attempt's effect journal;
     /// every other node (a journaled one without a journal, a `ReadOnly` or
     /// `Remote` one) gets read-only handles, whose `Idempotent` and `Write`
     /// units are refused before any provider call.
@@ -3416,7 +3421,8 @@ impl NodeTask {
                             .await
                             .map_err(EngineError::Runtime)
                     },
-                    // A stateless journaled action on a durable turn runs
+                    // A stateless or control journaled action on a durable
+                    // turn runs
                     // under its node attempt's effect journal, whose verdict
                     // `run` lays over the result.
                     ActionEffectContract::Journaled(_)
@@ -3434,12 +3440,13 @@ impl NodeTask {
                                 )
                                 .await
                                 .map_err(EngineError::Runtime),
-                            // No journal (no execution stores, or a stateful,
-                            // control or agent action until its iterations
-                            // are journaled): the context's accessor hands
-                            // out read-only handles, so reads run and
-                            // writes through handles are refused as
-                            // NotSent before any provider call.
+                            // No journal (no execution stores, a stateful
+                            // action until its iterations are journaled, or
+                            // an agent, stream or other unjournaled kind):
+                            // the context's accessor hands out read-only
+                            // handles saying why, so reads run and writes
+                            // through handles are refused as NotSent before
+                            // any provider call.
                             None => self
                                 .runtime
                                 .execute_resolved_action(factory, &self.node, input, &action_ctx)

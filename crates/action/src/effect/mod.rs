@@ -17,13 +17,13 @@ pub use adapter::{
 /// The default is [`Journaled`](Self::Journaled) at [`JournalProtocol::V1`]:
 /// an action that declares nothing may perform effects, but only through
 /// resource handles. Only handle-routed effects are journaled; a side channel
-/// the action opens itself is invisible to the engine. A stateless journaled
-/// action on a turn with execution stores gets handles under its node's
-/// effect journal (writes are prepared, granted and recorded by the engine);
-/// otherwise — no execution stores, or a stateful, control or agent action
-/// until its iterations are journaled — it runs with read-only handle
-/// authority: reads run and writes through handles are refused before any
-/// provider call. No contract reaches a raw lease: since 0.27.0 the action
+/// the action opens itself is invisible to the engine. A stateless or
+/// control journaled action on a turn with execution stores gets handles
+/// under its node's effect journal (writes are prepared, granted and
+/// recorded by the engine); otherwise — no execution stores, a stateful
+/// action until its iterations are journaled, or an agent or stream action
+/// — it runs with read-only handle authority: reads run and writes through
+/// handles are refused before any provider call, with a detail saying why. No contract reaches a raw lease: since 0.27.0 the action
 /// surface serves resource handles only, since a lease would bypass the
 /// journal. Only the engine's node dispatch runs a journaled action: the
 /// generic runtime entry points cannot vouch for a caller-supplied resource

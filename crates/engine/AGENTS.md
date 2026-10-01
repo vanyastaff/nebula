@@ -28,7 +28,7 @@
 - `src/engine/frontier.rs`, `src/engine/checkpoint.rs`, `src/engine/persistence.rs` — dispatch, routing checkpoints, and fenced persistence.
 - `src/engine/control_turn.rs` — atomic Control Start acceptance and accepted-turn recovery; `src/engine/resume/` — exact recorded resume and lease handling.
 - `src/workflow_activation/`, `src/start_materialization/`, `src/revision_catalog.rs` — compile/install, atomic start admission, and exact revision loading.
-- `src/effect_driver/` — execution-owned effects: the remote-effect driver and the per-node-attempt `NodeEffectJournal` (`journal.rs`) of stateless `Journaled` actions, both over the shared `LedgerSlot` core (`slot.rs`); generic action dispatch must not bypass their ledger grants, and a journal verdict always overrides the action result.
+- `src/effect_driver/` — execution-owned effects: the remote-effect driver and the per-node-attempt `NodeEffectJournal` (`journal.rs`) of stateless and control `Journaled` actions (`JournalShape` maps kinds), both over the shared `LedgerSlot` core (`slot.rs`); generic action dispatch must not bypass their ledger grants, and a journal verdict always overrides the action result.
 - `src/control_consumer.rs` / `src/control_dispatch.rs` — durable `execution_control_queue` consumer + `EngineControlDispatch` (Start/Resume/Restart/Cancel/Terminate; canon §12.2, ADR-0008).
 - `src/credential_accessor.rs` / `src/resource_accessor.rs` — scoped accessors injected into action contexts (cross-layer bridges).
 - `src/scoped_resources.rs` — per-branch resource storage, layered lookup, RAII cleanup (M6.1/M6.2).

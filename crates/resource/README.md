@@ -784,12 +784,12 @@ removed, and the derive refuses a lease slot with a migration hint. A
 of the manager, the engine and tests. A derived action without `read_only` gets the default
 `Journaled(JournalProtocol::V1)` effect contract: only effects routed through
 resource handles are journaled; a lease-facade unit or raw egress the action
-opens itself is outside the journal. A stateless journaled action on a
-durable engine turn gets handles under its node attempt's effect journal
-(below): its `Idempotent` and `Write` units are prepared, granted and
+opens itself is outside the journal. A stateless or control journaled
+action on a durable engine turn gets handles under its node attempt's effect
+journal (below): its `Idempotent` and `Write` units are prepared, granted and
 recorded by the engine. Every other journaled action — a run without
-execution stores, a stateful, control or agent action until its iterations
-are journaled — runs with read-only handle authority: reads run, and a
+execution stores, a stateful action until its iterations are journaled, an
+agent or stream action — runs with read-only handle authority: reads run, and a
 `Write` through a handle is refused as `NotSent` before any provider call
 (`Manager::handle_any_read_only_because` lets the engine say why, e.g.
 "journaled effects need execution stores"). No action reaches a raw lease,

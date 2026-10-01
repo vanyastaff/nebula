@@ -1519,6 +1519,21 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Changed
 
+- **Control `Journaled` actions get journaled resource effects too.** A
+  frozen control action of the default `Journaled` contract on a durable turn
+  now runs under its node attempt's `NodeEffectJournal` exactly like a
+  stateless one: the same flat `unit/v1/#n` occurrences, admission witness
+  and verdict, so a write through a resource handle is recorded once and a
+  node retry or crash resume replays it without a second provider call.
+  `ReadOnly` control actions (the built-in If, Switch, Filter) are unchanged.
+  The other kinds keep read-only handles, and a refused write now says why:
+  "stateful effects are journaled per iteration in a later release", "agent
+  effects are not journaled; the agent profile is planned", or "effects of
+  this action kind are not journaled" (stream and others) — taking
+  precedence over "journaled effects need execution stores", which a
+  stateless or control action without execution stores still reports. A
+  crate-private `JournalShape` (`Flat` / `Iterated` / `None`) maps each kind
+  to how it is journaled. Additive: no version bump.
 - **Stateless `Journaled` actions get journaled resource effects.** On a
   durable turn (operation ledger and execution fence present), the engine
   runs a frozen, stateless `Journaled` action under one `NodeEffectJournal`
