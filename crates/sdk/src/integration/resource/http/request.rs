@@ -160,9 +160,10 @@ pub(super) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempote
 ///
 /// A request is its own journaled intent: it serializes as
 /// `{path, query, headers: [[name, value]], body?: base64, accept,
-/// max_bytes, idempotency_key?}` — the cost and the attempt budget are
-/// policy, not intent, and are not serialized (a deserialized request has
-/// the defaults).
+/// max_bytes, idempotency_key?}`, its headers sorted by name (a repeated
+/// name's values in order) — the cost and the attempt budget are policy,
+/// not intent, and are not serialized (a deserialized request has the
+/// defaults).
 ///
 /// ```
 /// # fn build() -> Result<(), nebula_sdk::integration::resource::OperationError> {
@@ -230,10 +231,16 @@ pub(super) fn header_map<E: de::Error>(pairs: Vec<(String, String)>) -> Result<H
 
 impl<M: Method> Serialize for Request<M> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // A header map iterates its names in insertion order, so the same
+        // request built from an unordered source would journal a different
+        // intent: the names are sorted. The sort is stable, so a repeated
+        // name keeps its values in order.
+        let mut headers = header_pairs(&self.headers)?;
+        headers.sort_by(|(left, _), (right, _)| left.cmp(right));
         RequestWire {
             path: self.path.clone(),
             query: self.query.clone(),
-            headers: header_pairs(&self.headers)?,
+            headers,
             body: self.body.as_ref().map(|body| STANDARD.encode(body)),
             accept: self.accept.iter().map(StatusCode::as_u16).collect(),
             max_bytes: self.max_bytes,
@@ -753,6 +760,42 @@ mod tests {
         assert!(back.accepts(StatusCode::CONFLICT));
         assert_eq!(back.cost_value(), &Cost::ONE, "the default policy");
         assert_eq!(back.attempts(), NonZeroU32::MIN);
+    }
+
+    #[test]
+    fn request_headers_serialize_sorted_by_name_whatever_the_build_order() {
+        let build = |headers: &[(&'static str, &'static str)]| {
+            headers
+                .iter()
+                .try_fold(
+                    Request::post("/charges").expect("path"),
+                    |request, (name, value)| request.header(name, *value),
+                )
+                .expect("headers")
+        };
+        let forward = build(&[("x-b", "2"), ("x-a", "1"), ("accept", "*/*")]);
+        let backward = build(&[("accept", "*/*"), ("x-a", "1"), ("x-b", "2")]);
+        let forward = serde_json::to_vec(&forward).expect("serializes");
+        assert_eq!(forward, serde_json::to_vec(&backward).expect("serializes"));
+        let json: serde_json::Value = serde_json::from_slice(&forward).expect("json");
+        assert_eq!(
+            json["headers"],
+            serde_json::json!([["accept", "*/*"], ["x-a", "1"], ["x-b", "2"]])
+        );
+
+        // A repeated name keeps its values' order; distinct names sort.
+        let interleaved: Request<Post> = serde_json::from_value(serde_json::json!({
+            "path": "/charges",
+            "query": [],
+            "headers": [["x-b", "2"], ["x-a", "1"], ["x-b", "1"], ["x-a", "0"]],
+            "accept": [],
+            "max_bytes": null,
+        }))
+        .expect("deserializes");
+        assert_eq!(
+            serde_json::to_value(&interleaved).expect("serializes")["headers"],
+            serde_json::json!([["x-a", "1"], ["x-a", "0"], ["x-b", "2"], ["x-b", "1"]])
+        );
     }
 
     #[test]
