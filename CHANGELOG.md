@@ -1429,7 +1429,15 @@ let admitted = recorded.readmit_against(fresh)?;
   between a unit's submit and its grant refuses the attempt unsent.
   Occurrences are positional, `unit/v1/{resource}/{op|session}/#{n:06}`
   counted per resource and unit kind (`EffectJournal::next_ordinal(key,
-  kind)` drops its `name` parameter): the operation key and version are
+  kind)` drops its `name` parameter) in the order units start preparing:
+  the ordinal is taken by a unit's first poll, not at submit, so a
+  submission dropped unpolled takes no position and cannot shift later
+  effects onto unrecorded ones. Units prepared in another order, or an
+  effect added or removed before recorded ones, meet other intents' slots
+  and fail as a mismatch (identical intents are interchangeable); before
+  its first prepare the journal reads the node's earlier occurrences once
+  and refuses a fresh slot at a position an earlier attempt left empty
+  below one it recorded. The operation key and version are
   bound by the contract identity, not the occurrence, so a redeploy that
   changes the operation at a recorded position without an action version
   bump fails `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent instead of

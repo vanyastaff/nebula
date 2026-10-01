@@ -146,16 +146,23 @@ configuration, and process lifecycle.
   recommit). Building the journal costs nothing durable: no ledger write happens until
   the first effect is prepared, and reads are never prepared; `conclude` always reads
   the node's occurrences once (a crash before an attempt was recorded leaves the next
-  attempt at the same generation). Each grant carries what is left of the ledger's
+  attempt at the same generation), and a node that prepares an effect reads them once
+  more before its first prepare. Each grant carries what is left of the ledger's
   window for the call, and the resource runtime stops the unit there; a grant with
   nothing left is withheld. A slot's contract identity binds the destination (resource
   key, credential slot identity, configuration fingerprint) and `RECORD_OUTPUT`, so a
   reload to another endpoint or a changed recording policy is a mismatch. Occurrences are the
   resource runtime's positional `unit/v1/{resource}/{op|session}/#{ordinal:06}`, with
-  ordinals per resource and unit kind restarting per node attempt in submit order; the
+  ordinals per resource and unit kind restarting per node attempt, taken when a unit
+  starts preparing (its first poll — a submission dropped unpolled takes none); the
   operation (or session) name and version belong to the contract identity, so a redeploy
   that changes the operation at a recorded position is a mismatch with nothing sent, not
-  a fresh slot. An engine retry reuses the occurrences:
+  a fresh slot. A run that reaches its effects in another order or adds/removes one
+  before recorded ones meets other intents' slots: a mismatch (identical intents are
+  interchangeable). Before its first prepare the journal reads the node's earlier
+  occurrences once and refuses a fresh slot at a position an earlier attempt left empty
+  below one it recorded (a mismatch, nothing written), since the effect may be one
+  recorded further on. An engine retry reuses the occurrences:
   a settled effect replays its recorded output with no provider call, an opaque
   ambiguous one is unknown, a retryable failure may be granted again within the
   slot's budget (`Operation::max_attempts`). The `it{n}/` prefix is reserved for the

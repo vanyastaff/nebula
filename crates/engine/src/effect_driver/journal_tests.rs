@@ -847,6 +847,60 @@ fn ordinals_count_per_resource_and_kind_from_zero() {
     );
 }
 
+#[test]
+fn a_gap_is_an_unrecorded_position_below_a_recorded_one() {
+    let prior = PriorOccurrences::new([
+        "unit/v1/billing.gateway/op/#000001",
+        "unit/v1/billing.gateway/op/#000002",
+        "unit/v1/billing.gateway/session/#000000",
+    ]);
+    // Position 0 was left empty while 1 and 2 were recorded.
+    assert!(prior.leaves_gap_at("unit/v1/billing.gateway/op/#000000"));
+    // Recorded positions are revisited; later ones extend the program.
+    assert!(!prior.leaves_gap_at("unit/v1/billing.gateway/op/#000001"));
+    assert!(!prior.leaves_gap_at("unit/v1/billing.gateway/op/#000003"));
+    // Each resource and unit kind is its own namespace.
+    assert!(!prior.leaves_gap_at("unit/v1/billing.gateway/session/#000001"));
+    assert!(!prior.leaves_gap_at("unit/v1/billing.other/op/#000000"));
+    assert!(!PriorOccurrences::default().leaves_gap_at("unit/v1/billing.gateway/op/#000000"));
+}
+
+#[tokio::test]
+async fn an_effect_prepared_into_an_earlier_attempts_gap_is_a_mismatch() {
+    let harness = Harness::new().await;
+    // The first attempt reached the first position without recording it (a
+    // unit whose prepare never became durable) and settled the charge at
+    // the second.
+    let first = harness.journal(1);
+    assert_eq!(first.next_ordinal(&Gateway::key(), UnitKind::Operation), 0);
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 3 })
+        .await
+        .expect("applied");
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+    let before = harness.slots().await;
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].occurrence(), OCCURRENCE_1);
+
+    // The retry reaches the charge first: it would land on the empty first
+    // position under a new provider key. Refused, nothing sent.
+    let retry = harness.journal(2);
+    let refused = harness
+        .handle(&retry)
+        .submit(Charge::<false> { order: 3 })
+        .await
+        .expect_err("the gap is refused");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(refused.detail(), "effect occurrence mismatch");
+    assert_eq!(
+        retry.conclude(DRAIN).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
+    );
+    assert_eq!(harness.desk.keys().len(), 1, "one provider call");
+    assert_eq!(harness.slots().await, before, "nothing prepared");
+}
+
 #[tokio::test]
 async fn a_read_only_in_practice_node_writes_nothing_and_reads_once() {
     let harness = Harness::new().await;

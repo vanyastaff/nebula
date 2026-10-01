@@ -19,22 +19,43 @@
 //! | explain | `RecordDisposition` (`BeforeBoundary` / `Ambiguous`) |
 //! | settle | `RecordOutcome` (exact recommit on a lost acknowledgement) |
 //!
-//! **Lazy writes, one read.** Building a journal costs nothing durable: no
+//! **Lazy writes, few reads.** Building a journal costs nothing durable: no
 //! ledger write happens until the first `Idempotent` or `Write` unit is
 //! prepared, and a `Read` unit is never prepared. Concluding always reads
 //! the node's occurrences once — even for a node that only read: a process
 //! that died during an earlier dispatch of the node, before that attempt
 //! was recorded, leaves the next attempt at the same generation, and only
-//! the ledger knows the call it may have made.
+//! the ledger knows the call it may have made. A node that prepares an
+//! effect also reads them once before its first prepare (see
+//! **Positions**).
 //!
 //! **Occurrences.** A unit's occurrence is the label the resource runtime
 //! builds, `unit/v1/{resource}/{op|session}/#{ordinal:06}`: positional, with
 //! ordinals per `(resource, kind)` restarting at zero in every journal, in
-//! submit order. The operation (or session) name and version are not part
+//! the order units start preparing (a submission dropped unpolled takes
+//! none). The operation (or session) name and version are not part
 //! of it but of the slot's contract identity, so a redeploy that changes
 //! the operation at a recorded position is an occurrence mismatch with
 //! nothing sent — never a fresh slot that sends the effect again under
-//! another provider key. An engine retry of the node therefore reuses
+//! another provider key.
+//!
+//! **Positions.** A run whose program takes another path than an earlier
+//! attempt meets that attempt's slots at other positions, and every such
+//! case fails safe:
+//!
+//! - units prepared in another order (concurrent units polled differently)
+//!   meet each other's slots: a different intent is a mismatch, an
+//!   identical one is interchangeable;
+//! - an effect added or removed before recorded ones moves the later ones
+//!   onto recorded positions of other intents: a mismatch;
+//! - a position an earlier attempt left empty below one it recorded (a
+//!   unit whose prepare never became durable, then later effects) would let
+//!   a later effect land on it fresh — under a new provider key while its
+//!   settled slot stays further on. Before its first prepare the journal
+//!   reads what earlier attempts recorded, and refuses a fresh slot at such
+//!   a gap as a mismatch, with nothing written or sent.
+//!
+//! An engine retry of the node therefore reuses
 //! the occurrences of its earlier attempts: a settled slot replays its
 //! recorded outcome without a provider call, an opaque ambiguous one is
 //! unknown, and a retryable failure — never recorded as a rejection — may
@@ -78,7 +99,7 @@
 //! node as unknown.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     num::NonZeroU32,
     sync::{
@@ -161,6 +182,9 @@ struct JournalInner {
     authority: JournalAuthority,
     /// The execution id as the ledger addresses it.
     execution: String,
+    /// The node's occurrences as earlier attempts left them, read once
+    /// before this attempt's first prepare.
+    prior: tokio::sync::OnceCell<PriorOccurrences>,
     state: Mutex<JournalState>,
     in_flight: AtomicUsize,
     drained: tokio::sync::Notify,
@@ -179,6 +203,53 @@ struct JournalState {
     /// The failure that decides the node's verdict (a deferring one
     /// replaces a non-deferring one).
     failure: Option<EffectExecutionError>,
+}
+
+/// The occurrences earlier attempts of the node recorded, read before this
+/// attempt prepared anything.
+#[derive(Debug, Default)]
+struct PriorOccurrences {
+    /// Every recorded label.
+    labels: HashSet<String>,
+    /// The highest recorded ordinal per position namespace — the label
+    /// before its `/#{ordinal}` (resource and unit kind).
+    highest: HashMap<String, u32>,
+}
+
+impl PriorOccurrences {
+    fn new<'a>(labels: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut prior = Self::default();
+        for label in labels {
+            if let Some((namespace, ordinal)) = position(label) {
+                let highest = prior.highest.entry(namespace.to_owned()).or_insert(ordinal);
+                *highest = (*highest).max(ordinal);
+            }
+            prior.labels.insert(label.to_owned());
+        }
+        prior
+    }
+
+    /// Whether `occurrence` is an unrecorded position below one an earlier
+    /// attempt recorded: that attempt left it empty, so the program reached
+    /// its later effects by another path, and an effect prepared here may
+    /// be one already recorded further on.
+    fn leaves_gap_at(&self, occurrence: &str) -> bool {
+        if self.labels.contains(occurrence) {
+            return false;
+        }
+        position(occurrence).is_some_and(|(namespace, ordinal)| {
+            self.highest
+                .get(namespace)
+                .is_some_and(|&highest| highest > ordinal)
+        })
+    }
+}
+
+/// The position namespace and ordinal of a positional occurrence label
+/// (`…/{kind}/#{ordinal}`).
+fn position(occurrence: &str) -> Option<(&str, u32)> {
+    let (namespace, ordinal) = occurrence.rsplit_once("/#")?;
+    Some((namespace, ordinal.parse().ok()?))
 }
 
 /// A unit's slot binding as the journal derives it from its intent.
@@ -220,6 +291,7 @@ impl NodeEffectJournal {
             inner: Arc::new(JournalInner {
                 authority,
                 execution,
+                prior: tokio::sync::OnceCell::new(),
                 state: Mutex::new(JournalState::default()),
                 in_flight: AtomicUsize::new(0),
                 drained: tokio::sync::Notify::new(),
@@ -668,6 +740,32 @@ impl EffectJournal for NodeEffectJournal {
         let derived = self
             .derive(intent)
             .map_err(|error| self.refuse(STEP, error))?;
+        // Every prepare waits for the one read of what earlier attempts
+        // recorded, taken before this attempt writes anything.
+        let prior = self
+            .inner
+            .prior
+            .get_or_try_init(|| async {
+                let slots = authority
+                    .ledger
+                    .read_occurrences(
+                        &authority.scope,
+                        &self.inner.execution,
+                        authority.node_key.as_str(),
+                    )
+                    .await?;
+                Ok::<_, EffectExecutionError>(PriorOccurrences::new(
+                    slots.iter().map(EffectOccurrenceRecord::occurrence),
+                ))
+            })
+            .await
+            .map_err(|error| self.refuse(STEP, error))?;
+        if prior.leaves_gap_at(intent.occurrence) {
+            // An earlier attempt reached a later position of this resource
+            // and kind without recording this one: the effect may be one it
+            // recorded further on, and a fresh slot here would send it again.
+            return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
+        }
         let binding = EffectSlotBinding {
             scope: &authority.scope,
             execution_id: &self.inner.execution,
