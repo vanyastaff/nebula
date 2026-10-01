@@ -112,6 +112,8 @@ struct FakeState {
     /// The run prefix the owner labels its occurrences with, when set (as
     /// a stateful owner labels an iteration's).
     run_prefix: Option<String>,
+    /// Occurrences units released, in order.
+    released: Vec<String>,
     slots: HashMap<String, FakeSlot>,
     next_id: u8,
     log: Vec<Step>,
@@ -259,6 +261,10 @@ impl EffectJournal for FakeOwner {
             Some(prefix) => format!("{prefix}/unit/v1/#{ordinal:06}"),
             None => occurrence(ordinal),
         }
+    }
+
+    fn release_occurrence(&self, occurrence: &str) {
+        self.state().released.push(occurrence.to_owned());
     }
 
     async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
@@ -1136,6 +1142,35 @@ async fn an_owner_labels_each_run_and_a_slot_cap_refusal_sends_nothing() {
         "effect journal slot cap reached; unit refused"
     );
     assert_eq!(calls.made(), 2, "nothing sent past the cap");
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_position_handed_out_is_released_even_when_the_unit_gives_up() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Polled only past its deadline: the unit takes a position and gives up
+    // before reaching the owner.
+    let late = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
+    tokio::time::advance(crate::call::OPERATION_DEADLINE_CAP + Duration::from_secs(1)).await;
+    let gave_up = late.await.expect_err("past its deadline");
+    assert_unsent(&gave_up, &ErrorKind::Backpressure);
+    assert!(
+        fixture.owner.intents().is_empty(),
+        "never reached the owner"
+    );
+    assert_eq!(fixture.owner.state().released, [pay(0)]);
+
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]))
+        .await
+        .expect("prepared and run");
+    assert_eq!(
+        fixture.owner.state().released,
+        [pay(0), pay(1)],
+        "released once its prepare returned"
+    );
+    assert_eq!(calls.made(), 1);
 }
 
 #[tokio::test(start_paused = true)]

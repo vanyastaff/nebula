@@ -42,8 +42,9 @@ use crate::{dedup::SlotIdentity, error::ErrorKind};
 /// (`Arc<dyn EffectJournal>`).
 ///
 /// Every method but [`next_ordinal`](Self::next_ordinal),
-/// [`next_occurrence`](Self::next_occurrence), [`track`](Self::track) and
-/// [`is_closed`](Self::is_closed) is a durable step. A refusal
+/// [`next_occurrence`](Self::next_occurrence),
+/// [`release_occurrence`](Self::release_occurrence), [`track`](Self::track)
+/// and [`is_closed`](Self::is_closed) is a durable step. A refusal
 /// ([`JournalRefusal`]) never means a provider call happened.
 #[async_trait::async_trait]
 pub trait EffectJournal: Send + Sync + fmt::Debug {
@@ -79,6 +80,17 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
     /// [`next_ordinal`](Self::next_ordinal)).
     fn next_occurrence(&self) -> String {
         format!("unit/v1/#{:06}", self.next_ordinal())
+    }
+
+    /// The unit labelled `occurrence` stopped preparing: its
+    /// [`prepare`](Self::prepare) returned, or it gave up before reaching
+    /// the owner or while the owner prepared (cancelled, past its deadline,
+    /// dropped). Called once per [`next_occurrence`](Self::next_occurrence),
+    /// whatever happened. An owner that refuses a fresh effect above a
+    /// position its run never met waits for this before deciding; defaults
+    /// to nothing.
+    fn release_occurrence(&self, occurrence: &str) {
+        let _ = occurrence;
     }
 
     /// Durably prepares the effect `intent` describes (recovering an

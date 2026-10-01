@@ -478,6 +478,19 @@ pub(super) enum Prepared<T> {
     Refused(OperationError, SentState),
 }
 
+/// Tells the owner, when dropped, that the unit labelled `occurrence`
+/// stopped preparing ([`EffectJournal::release_occurrence`]).
+struct ReleaseOccurrence<'a> {
+    owner: &'a dyn EffectJournal,
+    occurrence: &'a str,
+}
+
+impl Drop for ReleaseOccurrence<'_> {
+    fn drop(&mut self) {
+        self.owner.release_occurrence(self.occurrence);
+    }
+}
+
 /// The first poll of an owned unit: the owner's prepare, raced against the
 /// unit's cancel and `deadline`.
 pub(super) async fn prepare<T>(
@@ -507,6 +520,13 @@ pub(super) async fn prepare<T>(
     // first poll consumes no ordinal, so a branch that builds and drops one
     // cannot shift the effects after it onto unrecorded positions.
     let occurrence = effect.assign_occurrence();
+    // However this first poll ends — prepared, refused, cancelled, past the
+    // deadline before the owner was reached, or dropped — the owner learns
+    // the position stopped preparing.
+    let _released = ReleaseOccurrence {
+        owner: effect.owner.as_ref(),
+        occurrence,
+    };
     let declaration = &effect.declaration;
     let intent = JournalIntent {
         resource_key: &effect.resource_key,

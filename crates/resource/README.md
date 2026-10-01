@@ -833,7 +833,11 @@ preparing (`#000003`). An owner whose units run in several positional runs
 prefixes the run and restarts the ordinal in each (the engine labels a
 stateful action's iteration `n` as `it{n}/unit/v1/#{ordinal:06}`); an owner
 may also refuse a prepare past its cap (`JournalRefusal::SlotCapExceeded`,
-`Permanent` / `NotSent`). It is taken by the unit's first poll, not at submit:
+`Permanent` / `NotSent`). However the first poll ends — prepared, refused,
+cancelled, past the deadline before the owner was reached, or dropped — the
+runtime releases the position (`EffectJournal::release_occurrence`), so an
+owner can tell a position given up from one still being prepared. It is
+taken by the unit's first poll, not at submit:
 a submission dropped before it is polled takes no position, so a branch
 that builds and drops one cannot shift later effects onto unrecorded
 positions. The resource key, unit kind, operation key and version belong to
