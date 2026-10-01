@@ -12,15 +12,23 @@ changes are expected between minor releases — call them out here.
 ### Breaking
 
 - **`nebula-storage-port`: `EffectSlotBinding` gains `concurrent_with:
-  Option<&[u32]>`; development packages advance to 0.29.0 in lockstep.** The
-  lower positions of an occurrence's run whose unit was still open when it
-  was first prepared — the exact set, strictly ascending, at most
-  `OperationProtocolRecord::MAX_CONCURRENT_WITH` (64; an owner with more
-  keeps the nearest, and the rest read as settled before it) — are
+  Option<&[PositionRange]>`; development packages advance to 0.29.0 in
+  lockstep.** The lower positions of an occurrence's run whose unit was
+  still open when it was first prepared — the exact set, never truncated,
+  as canonical runs (`PositionRange`: `first..=last`, persisted
+  `[first, last]`; ascending, disjoint, not adjacent; `coalesce` builds them
+  from ascending positions, `any_contains` tests one), at most
+  `OperationProtocolRecord::MAX_CONCURRENT_RANGES` (64) runs — are
   persisted with the first preparation inside the protocol record
-  (`OperationProtocolRecord::concurrent_with() -> Option<&[u32]>`, builder
-  `concurrent_with`; an unordered or oversized list is an invalid record),
-  never part of the natural key or the prepare identity. `Some([])`
+  (`OperationProtocolRecord::concurrent_with() -> Option<&[PositionRange]>`,
+  builder `concurrent_with`; a non-canonical list or one of more runs is an
+  invalid record), never part of the natural key or the prepare identity.
+  The engine refuses a fresh effect whose open lower units would need more
+  runs, unsent: `JournalRefusal::ConcurrencyLimit` (`concurrency_limit`,
+  `Permanent` / `NotSent`, "too many interleaved concurrent effects") and
+  the verdict `EffectExecutionError::JournalConcurrencyLimit`
+  (`ENGINE:EFFECT_JOURNAL_CONCURRENCY_LIMIT`; metric labels
+  `refusal="concurrency_limit"` and `code="concurrency_limit"`). `Some([])`
   ("nothing ran concurrently") is persisted as an explicit `[]`; `None`
   ("unknown": an owner that records no concurrency, or a record written
   before the field existed) leaves it out. No schema migration: the
@@ -33,6 +41,26 @@ changes are expected between minor releases — call them out here.
   `finish_occurrence(&str)`, called by the unit runtime when a unit
   settles (whether or not its caller keeps the handle), and when its owned
   state is dropped as a fallback — once.
+- **Unsent failures are recorded, and a superseded effect replays them.**
+  `nebula-storage-port`: `OperationCommand::RecordUnsentFailure { failure:
+  UnsentFailureCode }` (new; `UnsentFailureCode` is an owner's secret-free
+  token, 1 to 64 bytes of `[a-z0-9_@.]`) keeps how a slot's unit failed
+  while sending nothing, in the protocol record
+  (`OperationProtocolRecord::unsent_failure()`, builder `unsent_failure`;
+  absent unless recorded, so older records read back unchanged). Permitted
+  only while the slot is `Prepared` or `BeforeBoundary` (`ProtocolConflict`
+  otherwise); a later classification replaces it and any later call or
+  outcome clears it; a record carrying one in another phase is invalid.
+  All adapters share the transition (in-memory, SQLite, Postgres; no
+  migration). `nebula-resource`: `JournalRefusal::Superseded` now carries
+  `Option<UnsentFailure>`; `UnsentFailure` (new: an `ErrorKind` with its
+  payload — `of`, `kind`, `code`, `parse`), `ErrorKindCode::parse`, and a
+  defaulted `EffectJournal::record_unsent_failure(slot, failure)` the unit
+  runtime calls, best effort, when a prepared unit settles failing with
+  nothing crossed. A superseded effect then fails with the recorded kind
+  (e.g. `Exhausted { retry_after }` for a throttle) instead of
+  `Permanent`, so a program that branched on it replays the same branch; a
+  slot without a recorded failure still fails `Permanent`.
 
 - **A stable resource configuration fingerprint advances development packages
   to 0.28.0 in lockstep.** `ResourceConfig::fingerprint` is durable: the effect
@@ -1037,11 +1065,14 @@ let admitted = recorded.readmit_against(fresh)?;
   model.** A recorded journaled effect that changed nothing (only prepared,
   or every call explained not crossed) and that a later applied effect of
   the node is ordered after (a later iteration, or not recorded as
-  concurrent with it) is refused `superseded` (`Permanent` / `NotSent`,
-  `nebula_effect_journal_refusals_total{step="prepare",
+  concurrent with it) is refused `superseded` (`NotSent`, with the failure
+  recorded when its unit settled — see the Breaking entry — or `Permanent`
+  without one; `nebula_effect_journal_refusals_total{step="prepare",
   refusal="superseded"}`) with no failure of the journal's own, instead of
   halting the node as an occurrence mismatch: a deterministic program that
-  handled that failure before replays on. A lower stable-key effect whose
+  handled that failure before replays on. A deferring failure no longer
+  masks an unknown outcome: the verdict reads the node's occurrences first
+  (bounded) and halts on one. A lower stable-key effect whose
   call crossed without an outcome is recorded unknown instead of being
   granted again after the later one. A position a unit gave up on before its
   ledger prepare answered defers the next fresh effect above it (and the
@@ -1051,8 +1082,9 @@ let admitted = recorded.readmit_against(fresh)?;
   effect be routed. A cancellation during an iteration barrier's drain
   cancels the iteration at once. The engine README and the
   `effect_driver::journal` module docs state the invariants (S1–S8). The
-  metric's refusal label set grows to nine values. Additive: no version
-  bump.
+  metric's refusal label set grows to ten values (`superseded`,
+  `concurrency_limit`), its verdict set to ten (`concurrency_limit`).
+  Additive: no version bump.
 - **Execution-owned managed-row effects (resource side; engine wiring
   pending).** `nebula_resource::call` gains the author surface
   `EffectOperation` (an `Operation` declaring an `EffectContract`, an
