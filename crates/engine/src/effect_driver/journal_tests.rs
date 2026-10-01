@@ -747,6 +747,8 @@ enum Reply {
     Held,
     /// Throttled: the provider applied nothing.
     Throttled,
+    /// Definitively rejected: the provider applied nothing.
+    Rejected,
 }
 
 /// The fake gateway: every call it received, with the key it carried.
@@ -793,6 +795,7 @@ impl Desk {
                 Ok(receipt)
             },
             Reply::Throttled => Err(OperationError::throttled(None)),
+            Reply::Rejected => Err(OperationError::rejected("declined")),
         }
     }
 }
@@ -1453,11 +1456,12 @@ async fn a_recorded_effect_below_an_applied_one_is_never_run_after_it() {
 
 #[test]
 fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
+    use SlotWeight::{Applied, Inert, Unsettled};
     let lower = "unit/v1/#000000";
     let with_higher = |concurrent: &'static [u32]| {
         PriorOccurrences::from_records([
-            (lower, false, &[][..]),
-            ("unit/v1/#000001", true, concurrent),
+            (lower, Unsettled, &[][..]),
+            ("unit/v1/#000001", Applied, concurrent),
         ])
     };
     // The higher effect was prepared while the lower unit was open: they
@@ -1468,35 +1472,79 @@ fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     assert!(with_higher(&[]).reorders_at(lower));
     // A settled lower slot replays its outcome: no reordering.
     assert!(
-        !PriorOccurrences::from_records([(lower, true, &[][..]), ("unit/v1/#000001", true, &[])])
-            .reorders_at(lower)
+        !PriorOccurrences::from_records([
+            (lower, Applied, &[][..]),
+            ("unit/v1/#000001", Applied, &[])
+        ])
+        .reorders_at(lower)
+    );
+    // A higher definitive rejection applied nothing: no reordering.
+    assert!(
+        !PriorOccurrences::from_records([
+            (lower, Unsettled, &[][..]),
+            ("unit/v1/#000001", Inert, &[])
+        ])
+        .reorders_at(lower)
     );
 
     // A hole: 0 open, 1 settled, 2 applied — 2 ran concurrently with 0
     // only, so 0 replays and 1 is refused.
     let hole = PriorOccurrences::from_records([
-        ("unit/v1/#000000", false, &[][..]),
-        ("unit/v1/#000001", false, &[]),
-        ("unit/v1/#000002", true, &[0]),
+        ("unit/v1/#000000", Unsettled, &[][..]),
+        ("unit/v1/#000001", Unsettled, &[]),
+        ("unit/v1/#000002", Applied, &[0]),
     ]);
     assert!(!hole.reorders_at("unit/v1/#000000"));
     assert!(hole.reorders_at("unit/v1/#000001"));
 
     // Iterations are always ordered: the barrier drains one before the next.
     let across = PriorOccurrences::from_records([
-        ("it0/unit/v1/#000000", false, &[][..]),
-        ("it1/unit/v1/#000000", true, &[0]),
+        ("it0/unit/v1/#000000", Unsettled, &[][..]),
+        ("it1/unit/v1/#000000", Applied, &[0]),
     ]);
     assert!(across.reorders_at("it0/unit/v1/#000000"));
     // Within an iteration, positions count from the iteration's ordinals.
     let within = |concurrent: &'static [u32]| {
         PriorOccurrences::from_records([
-            ("it1/unit/v1/#000001", false, &[][..]),
-            ("it1/unit/v1/#000002", true, concurrent),
+            ("it1/unit/v1/#000001", Unsettled, &[][..]),
+            ("it1/unit/v1/#000002", Applied, concurrent),
         ])
     };
     assert!(!within(&[1]).reorders_at("it1/unit/v1/#000001"));
     assert!(within(&[0]).reorders_at("it1/unit/v1/#000001"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_conclusion_admits_no_unit_and_drains_a_fixed_set() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Held]);
+    let journal = harness.journal(1);
+    let handle = harness.handle(&journal);
+    // A unit the action did not await is mid-call when the action returns.
+    let admitted = tokio::spawn(handle.submit(Charge::<false> { order: 90 }));
+    tokio::time::timeout(Duration::from_secs(5), harness.desk.entered.notified())
+        .await
+        .expect("the call reached the provider");
+    let concluding = tokio::spawn({
+        let journal = journal.clone();
+        async move { journal.conclude(Duration::from_mins(1)).await }
+    });
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    // A detached task submits after the result: refused unsent.
+    let refused = handle
+        .submit(Charge::<false> { order: 91 })
+        .await
+        .expect_err("after the node's result");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(refused.detail(), "effect owner closed; unit refused");
+    // The admitted unit still settles, and the verdict covers it alone.
+    harness.desk.release.notify_one();
+    admitted.await.expect("task").expect("applied");
+    assert_eq!(concluding.await.expect("task"), Ok(()));
+    assert_eq!(harness.desk.keys().len(), 1, "only the admitted call");
+    assert_eq!(harness.slots().await.len(), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1563,6 +1611,45 @@ async fn the_barrier_reports_whether_the_replay_reached_its_frontier() {
         "iterations 0..=2 recorded"
     );
     assert_eq!(harness.desk.keys().len(), 3, "the replay sent nothing");
+}
+
+#[tokio::test]
+async fn a_rejected_later_effect_does_not_order_an_unsent_earlier_one() {
+    let harness = Harness::new().await;
+    // 0 throttled (nothing applied), then 1 definitively rejected (nothing
+    // applied either); the process dies.
+    harness
+        .desk
+        .script(&[Reply::Throttled, Reply::Rejected, Reply::Applied]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    handle
+        .submit(Charge::<false> { order: 80 })
+        .await
+        .expect_err("throttled");
+    handle
+        .submit(Charge::<false> { order: 81 })
+        .await
+        .expect_err("rejected");
+
+    // The recovery sends 0: the rejection after it changed nothing, so the
+    // order cannot be reversed. 1 replays its recorded rejection.
+    let recovery = harness.journal(2);
+    let handle = harness.handle(&recovery);
+    handle
+        .submit(Charge::<false> { order: 80 })
+        .await
+        .expect("0 is sent");
+    let replayed = handle
+        .submit(Charge::<false> { order: 81 })
+        .await
+        .expect_err("the recorded rejection");
+    assert_eq!(replayed.sent(), SentState::Sent, "{replayed}");
+    assert_eq!(harness.desk.keys().len(), 3, "0, 1, and 0 again");
+    assert_eq!(
+        recovery.conclude_node(DRAIN, false).await,
+        Ok(Concluded::Clean)
+    );
 }
 
 #[tokio::test]

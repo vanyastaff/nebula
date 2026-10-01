@@ -207,7 +207,9 @@
 //! contradicts: on every exit of the node — after the action returns, and
 //! before it runs when the node is cancelled or its input, credential
 //! refresh or rate limit fails —
-//! [`conclude_node`](NodeEffectJournal::conclude_node) drains the in-flight units,
+//! [`conclude_node`](NodeEffectJournal::conclude_node) first closes
+//! admission (a detached task's later submission is refused unsent, so the
+//! drain waits for a fixed set), drains the in-flight units,
 //! closes the journal, records every granted-but-unexplained call as
 //! ambiguous (within the drain limit) and reports a verdict that overrides
 //! the node's result. Any slot whose call may have crossed without a
@@ -555,9 +557,11 @@ struct JournalState {
     /// [`begin_iteration`](NodeEffectJournal::begin_iteration) an iterated
     /// journal admits no unit.
     run_open: bool,
-    /// The node was cancelled mid-iteration: every later submission is
-    /// refused as closed, with no failure of its own.
-    admission_cancelled: bool,
+    /// No unit is admitted any more — the node was cancelled mid-iteration,
+    /// or its conclusion began: every later submission is refused as
+    /// closed, with no failure of its own, while units already admitted
+    /// settle.
+    admission_closed: bool,
     /// The slots prepared in the open iteration, inspected at its end.
     iteration_slots: Vec<EffectSlotId>,
     /// Fresh slots (at no recorded position) the node attempt started to
@@ -658,42 +662,72 @@ struct PriorOccurrences {
     /// by a prepare whose acknowledgement was lost) or with every call
     /// explained not crossed — no outcome, no call that may have crossed.
     unsettled: HashSet<String>,
-    /// The recorded slots that may have changed the provider (a recorded
-    /// outcome, or a call that crossed), per family and iteration: their
-    /// ordinal and the lower ordinals that ran concurrently with them.
+    /// The recorded slots whose effect may have been applied (a recorded
+    /// success, or a call that may have crossed with no recorded outcome),
+    /// per family and iteration: their ordinal and the lower ordinals that
+    /// ran concurrently with them.
     consequential: HashMap<(Family, u32), Vec<ConsequentialSlot>>,
     /// The latest iteration per family holding such a slot.
     last_consequential_iteration: HashMap<Family, u32>,
 }
 
-/// A consequential recorded slot's ordinal and the lower ordinals of its
+/// An applied recorded slot's ordinal and the lower ordinals of its
 /// iteration still open when it was first prepared.
 type ConsequentialSlot = (u32, Vec<u32>);
 
-/// One recorded occurrence as the journal weighs it: its label, whether its
-/// slot may have changed the provider ([`is_consequential`]) and the lower
-/// positions recorded as concurrent with it.
-type RecordedOccurrence<'a> = (&'a str, bool, &'a [u32]);
+/// What a recorded slot means for the order of a recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotWeight {
+    /// It changed nothing yet and records no outcome: only prepared, or
+    /// every call explained not crossed. A recovery may still send it.
+    Unsettled,
+    /// Its effect may have been applied ([`may_have_applied`]): a later
+    /// effect of the program, it orders the unsettled ones before it.
+    Applied,
+    /// It is settled without having applied anything: a recorded definitive
+    /// rejection. It replays, and orders nothing.
+    Inert,
+}
+
+impl SlotWeight {
+    /// The weight of a recorded slot.
+    fn of(record: &OperationRecord) -> Self {
+        if may_have_applied(record) {
+            Self::Applied
+        } else if is_consequential(record) {
+            Self::Inert
+        } else {
+            Self::Unsettled
+        }
+    }
+}
+
+/// One recorded occurrence as the journal weighs it: its label, its
+/// [`SlotWeight`] and the lower positions recorded as concurrent with it.
+type RecordedOccurrence<'a> = (&'a str, SlotWeight, &'a [u32]);
 
 impl PriorOccurrences {
-    /// Every label as consequential (a recorded outcome), with nothing
-    /// concurrent.
+    /// Every label as applied (a recorded success), with nothing concurrent.
     #[cfg(test)]
     fn new<'a>(labels: impl IntoIterator<Item = &'a str>) -> Self {
-        Self::from_records(labels.into_iter().map(|label| (label, true, &[][..])))
+        Self::from_records(
+            labels
+                .into_iter()
+                .map(|label| (label, SlotWeight::Applied, &[][..])),
+        )
     }
 
     /// The recorded occurrences.
     fn from_records<'a>(records: impl IntoIterator<Item = RecordedOccurrence<'a>>) -> Self {
         let mut prior = Self::default();
-        for (label, consequential, concurrent_with) in records {
+        for (label, weight, concurrent_with) in records {
             if let Some(position) = Position::parse(label) {
                 prior
                     .positions
                     .entry(position.family)
                     .or_default()
                     .push((position.order(), label.to_owned()));
-                if consequential {
+                if weight == SlotWeight::Applied {
                     // A slot recorded without the list (or a lower position
                     // the list left out) reads as ordered before it.
                     prior
@@ -708,7 +742,7 @@ impl PriorOccurrences {
                     *last = (*last).max(position.iteration);
                 }
             }
-            if !consequential {
+            if weight == SlotWeight::Unsettled {
                 prior.unsettled.insert(label.to_owned());
             }
             prior.labels.insert(label.to_owned());
@@ -957,7 +991,7 @@ impl NodeEffectJournal {
                     |slot| {
                         (
                             slot.occurrence(),
-                            is_consequential(slot.record()),
+                            SlotWeight::of(slot.record()),
                             slot.record()
                                 .protocol()
                                 .map_or(&[][..], |protocol| protocol.concurrent_with()),
@@ -1239,7 +1273,7 @@ impl NodeEffectJournal {
     pub(crate) fn cancel_iteration(&self) {
         let mut state = self.state();
         state.run_open = false;
-        state.admission_cancelled = true;
+        state.admission_closed = true;
     }
 
     /// Checks that this attempt met every effect an earlier attempt recorded
@@ -1549,6 +1583,12 @@ impl NodeEffectJournal {
         node_succeeded: bool,
     ) -> Result<Concluded, EffectExecutionError> {
         let authority = &self.inner.authority;
+        // The node's result is in: no unit is admitted from now on (a
+        // detached task's later submission is refused unsent), so the drain
+        // below waits for a fixed set — the units already admitted, which
+        // may still settle. Under the state lock, like every admission, so
+        // none slips in between.
+        self.state().admission_closed = true;
         let drain_started = tokio::time::Instant::now();
         // A failed iteration barrier already waited the drain limit out for
         // the units still in flight: the cleanup gets its own floor instead.
@@ -2174,7 +2214,7 @@ impl EffectJournal for NodeEffectJournal {
         const STEP: &str = effect_journal_step::SUBMIT;
         let (refusal, failure) = {
             let state = self.state();
-            if self.is_closed() || state.admission_cancelled {
+            if self.is_closed() || state.admission_closed {
                 (JournalRefusal::Closed, None)
             } else if self.inner.authority.shape == JournalShape::Iterated && !state.run_open {
                 let iteration = state.iteration.unwrap_or(0);
@@ -2277,6 +2317,24 @@ fn is_consequential(record: &OperationRecord) -> bool {
     record.protocol().is_none_or(|protocol| {
         protocol.phase() == EffectPhase::Resolved || protocol.crossed_invocations() > 0
     })
+}
+
+/// Whether a slot's effect may have been applied by the provider: a
+/// recorded success, or a call that may have crossed with no recorded
+/// outcome (outstanding, ambiguous, unknown). A recorded definitive
+/// rejection applied nothing, even though its call reached the provider;
+/// a slot only prepared, or whose calls all stayed before the boundary,
+/// applied nothing either. A record without a protocol is read
+/// conservatively as applied.
+fn may_have_applied(record: &OperationRecord) -> bool {
+    record
+        .protocol()
+        .is_none_or(|protocol| match protocol.phase() {
+            EffectPhase::Resolved => protocol
+                .evidence()
+                .is_none_or(|evidence| evidence.outcome() == KnownOutcome::Succeeded),
+            _ => protocol.crossed_invocations() > 0,
+        })
 }
 
 /// The phase a unit sees for a prepared `slot` with no outstanding call.

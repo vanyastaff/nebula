@@ -213,7 +213,9 @@ configuration, and process lifecycle.
   deferring `AcknowledgementUnknown`, nothing is sent, and the node defers so the next
   attempt replays in order. Across attempts, a recorded slot that changed nothing yet
   (only prepared, or every call explained not crossed) is refused as an occurrence
-  mismatch when an earlier attempt recorded an outcome, or a call that crossed, at a
+  mismatch when an earlier attempt recorded an effect that may have been applied — a
+  recorded success, or a call that may have crossed with no recorded outcome (a
+  definitive rejection applied nothing and orders nothing) — at a
   higher position of its family that the program ran after it: in a later iteration,
   or one that does not list it as **concurrent**. Every fresh slot records, at its
   first prepare (`EffectSlotBinding::concurrent_with`, kept in the protocol record),

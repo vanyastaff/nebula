@@ -1645,7 +1645,10 @@ let admitted = recorded.readmit_against(fresh)?;
   call as ambiguous and the node fails `ENGINE:EFFECT_OUTCOME_UNKNOWN`
   instead). Units are admitted only while an iteration is open, in one
   transition with the rollover; one submitted between iterations is refused
-  unsent and recorded the same way; a node cancelled mid-iteration or during
+  unsent and recorded the same way; every journaled node (stateless too)
+  closes admission when its conclusion begins, so a detached task's later
+  submission is refused unsent and the drain waits for a fixed set; a node
+  cancelled mid-iteration or during
   the delay between iterations ends the iteration at once, so a later
   detached submission is refused closed (the node stays cancelled) and
   the conclusion does not wait for it. Effects keep their order within a
@@ -1654,7 +1657,9 @@ let admitted = recorded.readmit_against(fresh)?;
   acknowledgement lost — its row may exist) is refused as a deferring
   `AcknowledgementUnknown` with nothing sent, and a recorded slot that
   changed nothing yet is refused as an occurrence mismatch when an earlier
-  attempt recorded an outcome, or a crossed call, at a higher position of
+  attempt recorded an effect that may have been applied (a success, or a
+  call that may have crossed with no recorded outcome — a definitive
+  rejection applied nothing and orders nothing) at a higher position of
   its family that the program ran after it — in a later iteration, or one
   that does not list it as concurrent. Each fresh slot records, at its
   first prepare, the exact lower positions of its iteration whose unit was
