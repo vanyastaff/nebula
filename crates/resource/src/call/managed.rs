@@ -626,6 +626,11 @@ pub(super) struct UnitShared {
     /// The local idempotency key of a plain unit that declared a
     /// developer key part.
     local_key: Option<IdempotencyKey>,
+    /// The throttle of a finished attempt while it is reported to the rate
+    /// limit: a unit deadline that cuts the report off settles the unit
+    /// with it, not as ended abnormally. Cleared by the report's end and by
+    /// the next grant.
+    reporting: Mutex<Option<OperationError>>,
 }
 
 impl UnitShared {
@@ -651,6 +656,7 @@ impl UnitShared {
             last: AtomicU8::new(SentState::NotSent.rank()),
             effect: None,
             local_key: None,
+            reporting: Mutex::new(None),
         }
     }
 
@@ -727,6 +733,7 @@ impl UnitShared {
             .compare_exchange(PENDING, GRANTED, Ordering::AcqRel, Ordering::Acquire)
         {
             Ok(_) | Err(GRANTED) => {
+                self.set_reporting(None);
                 self.granted.fetch_add(1, Ordering::AcqRel);
                 Ok(())
             },
@@ -759,6 +766,22 @@ impl UnitShared {
 
     pub(super) fn attempts(&self) -> u32 {
         self.granted.load(Ordering::Acquire)
+    }
+
+    fn set_reporting(&self, throttle: Option<OperationError>) {
+        *self
+            .reporting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = throttle;
+    }
+
+    /// The throttle of a finished attempt whose report the unit deadline
+    /// cut off, if that is where the unit was.
+    fn take_reporting(&self) -> Option<OperationError> {
+        self.reporting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     /// The unit's sent state: `NotSent` when no attempt was granted, however
@@ -1004,13 +1027,18 @@ where
     };
     let (result, abnormal) = match outcome {
         Ok(Ok(result)) => (result, false),
-        Ok(Err(_elapsed)) => (
-            Err(OperationError::new(
-                ErrorKind::Transient,
-                "unit deadline elapsed",
-            )),
-            true,
-        ),
+        // The deadline cut off the report of a finished throttle: the
+        // provider applied nothing, and the unit settles as the throttle.
+        Ok(Err(_elapsed)) => match shared.take_reporting() {
+            Some(throttle) => (Err(throttle), false),
+            None => (
+                Err(OperationError::new(
+                    ErrorKind::Transient,
+                    "unit deadline elapsed",
+                )),
+                true,
+            ),
+        },
         Err(_panic) => {
             let kind = if shared.attempts() == 0 {
                 ErrorKind::Permanent
@@ -1604,15 +1632,22 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
             },
         };
         // Recorded before the verdict's bounded wait: the attempt is over
-        // even when its future is dropped mid-report.
+        // even when its future is dropped mid-report, and a throttle whose
+        // report the unit deadline cuts off still settles the unit as one.
         attempt.shared.record(sent, note);
         attempt.settled = true;
         if let Some(verdict) = verdict {
+            let throttle = result
+                .as_ref()
+                .err()
+                .filter(|_| note == CallNote::Throttled);
+            attempt.shared.set_reporting(throttle.cloned());
             attempt
                 .managed
                 .rate_limiter
                 .report(verdict, attempt.cost.key())
                 .await;
+            attempt.shared.set_reporting(None);
         }
     }
 
