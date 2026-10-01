@@ -491,10 +491,11 @@ pub struct OperationProtocolRecord {
     /// serializes byte-identically to one written before keys existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_key: Option<ProviderIdempotencyKey>,
-    /// Absent (not `null`) when none was recorded, so such a record
-    /// serializes byte-identically to one written before the floor existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    concurrent_floor: Option<u32>,
+    /// Absent (not `[]`) when empty, so such a record serializes
+    /// byte-identically to one written before the list existed — which
+    /// reads the same: nothing ran concurrently with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    concurrent_with: Vec<u32>,
 }
 
 #[derive(Deserialize)]
@@ -519,7 +520,7 @@ struct OperationProtocolRecordWire {
     #[serde(default)]
     provider_key: Option<ProviderIdempotencyKey>,
     #[serde(default)]
-    concurrent_floor: Option<u32>,
+    concurrent_with: Vec<u32>,
 }
 
 /// The not-crossed count of a record that does not carry the counter.
@@ -542,6 +543,12 @@ impl OperationProtocolRecord {
     /// refused locally from being granted forever.
     pub const GRANT_CEILING: u32 = 10_000;
 
+    /// Most lower positions one record may list as concurrent with it
+    /// ([`concurrent_with`](Self::concurrent_with)). An owner with more open
+    /// keeps the ones nearest the record; the others read as ordered before
+    /// it — the strict reading.
+    pub const MAX_CONCURRENT_WITH: usize = 64;
+
     /// Begin a validated record with no issued permits.
     pub fn prepared(
         contract: PreparedEffectContract,
@@ -563,7 +570,7 @@ impl OperationProtocolRecord {
                 evidence: None,
                 adjudication_audit_digest: None,
                 provider_key: None,
-                concurrent_floor: None,
+                concurrent_with: Vec::new(),
             },
         }
     }
@@ -591,6 +598,14 @@ impl OperationProtocolRecord {
         self.contract.validate()?;
         if self.version != 1 {
             return Err(violation(OperationProtocolViolation::UnsupportedVersion));
+        }
+        if self.concurrent_with.len() > Self::MAX_CONCURRENT_WITH
+            || self
+                .concurrent_with
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(violation(OperationProtocolViolation::InconsistentState));
         }
         if self.not_crossed > self.invocations
             || self.invocations > Self::GRANT_CEILING
@@ -728,11 +743,13 @@ impl OperationProtocolRecord {
     pub const fn provider_key(&self) -> Option<ProviderIdempotencyKey> {
         self.provider_key
     }
-    /// The owner's concurrency floor recorded at preparation
-    /// ([`EffectSlotBinding::concurrent_floor`](super::EffectSlotBinding::concurrent_floor));
-    /// immutable afterwards, `None` for a record written without one.
-    pub const fn concurrent_floor(&self) -> Option<u32> {
-        self.concurrent_floor
+    /// The lower positions of the owner's run still open when this record
+    /// was first prepared
+    /// ([`EffectSlotBinding::concurrent_with`](super::EffectSlotBinding::concurrent_with)),
+    /// ascending; immutable afterwards, empty for a record written without
+    /// them.
+    pub fn concurrent_with(&self) -> &[u32] {
+        &self.concurrent_with
     }
 }
 
@@ -757,7 +774,7 @@ impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
             evidence: wire.evidence,
             adjudication_audit_digest: wire.adjudication_audit_digest,
             provider_key: wire.provider_key,
-            concurrent_floor: wire.concurrent_floor,
+            concurrent_with: wire.concurrent_with,
         };
         record.validate()?;
         Ok(record)
@@ -832,12 +849,14 @@ impl OperationProtocolRecordBuilder {
         self.record.provider_key = provider_key;
         self
     }
-    /// Set the owner's concurrency floor recorded at preparation.
+    /// Set the lower positions still open when the record was first
+    /// prepared: strictly ascending, at most
+    /// [`OperationProtocolRecord::MAX_CONCURRENT_WITH`].
     ///
     /// Adapters set it only when the record is first prepared; every later
     /// transition rebuilds from the stored record and so retains it.
-    pub const fn concurrent_floor(mut self, concurrent_floor: Option<u32>) -> Self {
-        self.record.concurrent_floor = concurrent_floor;
+    pub fn concurrent_with(mut self, concurrent_with: &[u32]) -> Self {
+        self.record.concurrent_with = concurrent_with.to_vec();
         self
     }
     /// Finish construction only when the complete record is coherent.

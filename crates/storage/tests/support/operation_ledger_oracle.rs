@@ -207,7 +207,7 @@ fn binding<'a>(
         destination,
         contract: contract(destination),
         provider_key: None,
-        concurrent_floor: None,
+        concurrent_with: &[],
     }
 }
 
@@ -736,7 +736,7 @@ macro_rules! operation_ledger_conformance_suite {
             $ledger
         );
         $crate::operation_ledger_case!(
-            the_concurrent_floor_is_durable_and_outside_the_prepare_identity,
+            the_concurrent_positions_are_durable_and_outside_the_prepare_identity,
             0x49,
             $ledger
         );
@@ -2117,11 +2117,11 @@ pub(crate) async fn the_provider_key_is_durable_and_part_of_the_prepare_identity
     assert_eq!(keyed_listing.record().operation().provider_key(), Some(key));
 }
 
-/// The owner's concurrency floor is recorded at the first preparation, read
-/// back by every read and listing, kept across protocol transitions, and
-/// never part of the prepare identity: a later prepare with another floor
-/// replays the slot unchanged.
-pub(crate) async fn the_concurrent_floor_is_durable_and_outside_the_prepare_identity(
+/// The lower positions still open when a slot was first prepared are
+/// recorded with it, read back by every read and listing, kept across
+/// protocol transitions, and never part of the prepare identity: a later
+/// prepare with other positions replays the slot unchanged.
+pub(crate) async fn the_concurrent_positions_are_durable_and_outside_the_prepare_identity(
     ledger: &impl LedgerUnderTest,
     executions: &dyn ExecutionStore,
     seed: u8,
@@ -2129,8 +2129,8 @@ pub(crate) async fn the_concurrent_floor_is_durable_and_outside_the_prepare_iden
     let scope = scope();
     let execution = execution_id(seed);
     let fence = create_leased_execution(executions, &scope, &execution).await;
-    let floored = |occurrence: &'static str, concurrent_floor: Option<u32>| EffectSlotBinding {
-        concurrent_floor,
+    let listing = |occurrence: &'static str, concurrent_with: &'static [u32]| EffectSlotBinding {
+        concurrent_with,
         ..binding(
             &scope,
             &execution,
@@ -2140,21 +2140,21 @@ pub(crate) async fn the_concurrent_floor_is_durable_and_outside_the_prepare_iden
             DestinationCapability::StableKey,
         )
     };
-    let floor = |record: &nebula_storage_port::dto::OperationRecord| {
-        record.protocol().unwrap().concurrent_floor()
+    let positions = |record: &nebula_storage_port::dto::OperationRecord| {
+        record.protocol().unwrap().concurrent_with().to_vec()
     };
 
     let prepared = ledger
-        .prepare(&floored("floored", Some(3)), fence)
+        .prepare(&listing("listed", &[0, 3]), fence)
         .await
         .unwrap();
     let slot = prepared.operation().slot_id();
     let before = ledger.read_exact(&scope, slot).await.unwrap();
-    assert_eq!(floor(&before), Some(3));
+    assert_eq!(positions(&before), [0, 3]);
 
-    for other in [Some(0), None] {
+    for other in [&[1][..], &[]] {
         assert_eq!(
-            ledger.prepare(&floored("floored", other), fence).await,
+            ledger.prepare(&listing("listed", other), fence).await,
             Ok(PrepareOutcome::Replayed(prepared.operation())),
             "{other:?}: not part of the prepare identity"
         );
@@ -2175,10 +2175,10 @@ pub(crate) async fn the_concurrent_floor_is_durable_and_outside_the_prepare_iden
     let OperationAdvance::Granted { record, .. } = granted else {
         panic!("a fresh slot grants its first permit");
     };
-    assert_eq!(floor(&record), Some(3), "transitions keep the floor");
+    assert_eq!(positions(&record), [0, 3], "transitions keep the positions");
 
-    let unfloored = ledger
-        .prepare(&floored("unfloored", None), fence)
+    let alone = ledger
+        .prepare(&listing("alone", &[]), fence)
         .await
         .unwrap()
         .operation()
@@ -2187,18 +2187,15 @@ pub(crate) async fn the_concurrent_floor_is_durable_and_outside_the_prepare_iden
         .read_occurrences(&scope, &execution, "charge")
         .await
         .unwrap();
-    let listed_floor = |label: &str| {
+    let listed_positions = |label: &str| {
         listed
             .iter()
             .find(|occurrence| occurrence.occurrence() == label)
-            .map(|occurrence| floor(occurrence.record()))
+            .map(|occurrence| positions(occurrence.record()))
     };
-    assert_eq!(listed_floor("floored"), Some(Some(3)));
-    assert_eq!(listed_floor("unfloored"), Some(None));
-    assert_eq!(
-        floor(&ledger.read_exact(&scope, unfloored).await.unwrap()),
-        None
-    );
+    assert_eq!(listed_positions("listed"), Some(vec![0, 3]));
+    assert_eq!(listed_positions("alone"), Some(Vec::new()));
+    assert!(positions(&ledger.read_exact(&scope, alone).await.unwrap()).is_empty());
 }
 
 /// A later attempt that finds its predecessor's call outstanding may explain

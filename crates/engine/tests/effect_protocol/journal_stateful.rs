@@ -512,7 +512,7 @@ async fn a_recovery_never_applies_a_lower_effect_after_a_higher_applied_one(
 /// Two writes awaited together (`join_all`): one is prepared and its grant
 /// never answers, the other applies, and the process dies. The program
 /// never ordered them — the applied one was prepared while the other was
-/// still open, its recorded concurrency floor says so — so the recovery
+/// still open, and records it as concurrent — so the recovery
 /// sends the unsent one under its recorded key, once, and the node
 /// completes.
 #[rstest::rstest]
@@ -547,11 +547,13 @@ async fn concurrent_writes_recover_after_a_crash_with_one_applied(#[case] backen
         .iter()
         .find(|slot| phase(slot) == EffectPhase::Resolved)
         .unwrap();
-    assert_eq!(
-        applied.record().protocol().unwrap().concurrent_floor(),
-        Some(0),
-        "the other write was open when it was prepared"
-    );
+    if applied.occurrence() == "it0/unit/v1/#000001" {
+        assert_eq!(
+            applied.record().protocol().unwrap().concurrent_with(),
+            [0],
+            "the other write was open when it was prepared"
+        );
+    }
     let unsent = crashed
         .iter()
         .find(|slot| phase(slot) == EffectPhase::Prepared)
@@ -569,6 +571,58 @@ async fn concurrent_writes_recover_after_a_crash_with_one_applied(#[case] backen
         fixture.gateway.call_keys()[1].as_deref(),
         Some(unsent_key.as_str()),
         "under its recorded key"
+    );
+}
+
+// 7e ────────────────────────────────────────────────────────────────────────
+
+/// An hourly poller dies as its fourth iteration starts. The recovery
+/// replays the three settled iterations without waiting their delays again
+/// — those iterations already ran, an hour apart — and waits only the delay
+/// at its frontier, before the fresh iteration. (Paused time; no hang guard,
+/// since virtual hours pass.)
+#[tokio::test(start_paused = true)]
+async fn a_recovery_does_not_wait_again_for_delays_it_already_waited() {
+    let Some(mut database) = Database::open(Backend::Memory).await else {
+        return;
+    };
+    let mut fixture = stateful(database.ports()).await;
+    let units: Vec<Value> = (0..4).map(|n| write(&format!("hourly:{n}"))).collect();
+    let execution = fixture
+        .start_iterations(
+            &[&units[0..1], &units[1..2], &units[2..3], &units[3..4]],
+            json!({ "delay_secs": 3600 }),
+        )
+        .await;
+    *fixture.gateway.iterations.hold_at.lock() = Some(3);
+    let engine = fixture.engine();
+    let scope = fixture.scope.clone();
+    let started = tokio::time::Instant::now();
+    let turn = tokio::spawn(async move { engine.resume_execution(&scope, execution).await });
+    fixture.gateway.iterations.held.notified().await;
+    assert!(
+        started.elapsed() >= std::time::Duration::from_hours(3),
+        "the first run waited between its iterations"
+    );
+    turn.abort();
+    let _ = turn.await;
+    assert_eq!(fixture.gateway.call_count(), 3);
+
+    fixture.ports = database.reconnect().await;
+    database.expire_abandoned_leases().await;
+    let started = tokio::time::Instant::now();
+    let result = fixture
+        .engine()
+        .resume_execution(&fixture.scope, execution)
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
+    assert_eq!(fixture.gateway.call_count(), 4, "the replay sent nothing");
+    assert!(
+        elapsed >= std::time::Duration::from_hours(1)
+            && elapsed < std::time::Duration::from_hours(2),
+        "only the frontier's delay was waited: {elapsed:?}"
     );
 }
 

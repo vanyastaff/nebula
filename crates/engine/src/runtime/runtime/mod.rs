@@ -776,7 +776,9 @@ impl ActionRuntime {
     /// [`RuntimeError::EffectJournal`], which the engine replaces with the
     /// journal's verdict. Such a run replays from the first iteration, so it
     /// takes no checkpoint sink: both together are refused before the
-    /// action runs.
+    /// action runs. While the replay has not reached the frontier
+    /// ([`IterationProgress::replayed_past`](crate::effect_driver::IterationProgress)),
+    /// a `Continue` delay is skipped: the next iteration already ran once.
     async fn execute_stateful_handle(
         &self,
         metadata: &ActionMetadata,
@@ -873,11 +875,13 @@ impl ActionRuntime {
 
             // The iteration's units drain before its result counts — a
             // failing iteration's too: nothing of it may cross into the next.
-            if let Some(gate) = iteration_gate {
-                gate.end_iteration(iteration_result.is_ok())
+            let progress = match iteration_gate {
+                Some(gate) => gate
+                    .end_iteration(iteration_result.is_ok())
                     .await
-                    .map_err(RuntimeError::EffectJournal)?;
-            }
+                    .map_err(RuntimeError::EffectJournal)?,
+                None => crate::effect_driver::IterationProgress::default(),
+            };
 
             let result = iteration_result?;
             iteration = iteration.saturating_add(1);
@@ -898,7 +902,9 @@ impl ActionRuntime {
                         sink.save(&cp).await?;
                     }
 
-                    if let Some(d) = delay {
+                    // A replay that has not reached the frontier skips the
+                    // delay: the next iteration already ran once, after it.
+                    if let Some(d) = delay.filter(|_| !progress.replayed_past) {
                         tokio::select! {
                             () = tokio::time::sleep(d) => {}
                             () = context.cancellation().cancelled() => {

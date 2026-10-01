@@ -126,7 +126,7 @@ pub(crate) fn initial_protocol(
         .ok_or(OperationLedgerError::InvalidProtocol)?;
     OperationProtocolRecord::prepared(binding.contract.clone(), now_ms)
         .provider_key(binding.provider_key)
-        .concurrent_floor(binding.concurrent_floor)
+        .concurrent_with(binding.concurrent_with)
         .build()
 }
 
@@ -858,7 +858,7 @@ mod tests {
             destination: DestinationCapability::Opaque,
             contract: &contract(),
             provider_key: None,
-            concurrent_floor: None,
+            concurrent_with: &[],
         };
 
         let outcome = decide_prepare(slot(), &stored, &binding)
@@ -889,7 +889,7 @@ mod tests {
             destination: DestinationCapability::StableKey,
             contract: &contract(),
             provider_key: None,
-            concurrent_floor: None,
+            concurrent_with: &[],
         };
 
         assert_eq!(
@@ -913,7 +913,7 @@ mod tests {
             destination: DestinationCapability::StableKey,
             contract: &stable,
             provider_key,
-            concurrent_floor: None,
+            concurrent_with: &[],
         };
         let protocol = initial_protocol(&binding(key("original")), 0).unwrap();
         let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
@@ -936,10 +936,10 @@ mod tests {
     }
 
     #[test]
-    fn the_concurrent_floor_is_recorded_once_and_not_part_of_the_identity() {
+    fn the_concurrent_positions_are_recorded_once_and_not_part_of_the_identity() {
         let stable = contract();
         let scope = nebula_storage_port::Scope::new("ws", "org");
-        let binding = |concurrent_floor| EffectSlotBinding {
+        let binding = |concurrent_with| EffectSlotBinding {
             scope: &scope,
             execution_id: "exe",
             node_key: "node",
@@ -949,14 +949,14 @@ mod tests {
             destination: DestinationCapability::StableKey,
             contract: &stable,
             provider_key: None,
-            concurrent_floor,
+            concurrent_with,
         };
-        let protocol = initial_protocol(&binding(Some(2)), 0).unwrap();
-        assert_eq!(protocol.concurrent_floor(), Some(2));
+        let protocol = initial_protocol(&binding(&[0, 2]), 0).unwrap();
+        assert_eq!(protocol.concurrent_with(), [0, 2]);
         let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
-        // A later prepare with another (or no) floor replays the record,
-        // which keeps the floor it was first prepared with.
-        for other in [Some(0), None] {
+        // A later prepare with other (or no) positions replays the record,
+        // which keeps the ones it was first prepared with.
+        for other in [&[1][..], &[]] {
             assert!(
                 decide_prepare(slot(), &stored, &binding(other)).is_ok(),
                 "{other:?}"
@@ -965,16 +965,20 @@ mod tests {
         assert_eq!(
             stored
                 .protocol()
-                .and_then(OperationProtocolRecord::concurrent_floor),
-            Some(2)
+                .map(OperationProtocolRecord::concurrent_with),
+            Some(&[0, 2][..])
         );
-        // A record without a floor serializes as before the floor existed.
-        let unfloored = initial_protocol(&binding(None), 0).unwrap();
-        let encoded = serde_json::to_value(&unfloored).unwrap();
-        assert!(encoded.get("concurrent_floor").is_none());
-        let floored =
-            serde_json::to_value(initial_protocol(&binding(Some(2)), 0).unwrap()).unwrap();
-        assert_eq!(floored["concurrent_floor"], serde_json::json!(2));
+        // None recorded serializes as before the list existed.
+        let alone = initial_protocol(&binding(&[]), 0).unwrap();
+        let encoded = serde_json::to_value(&alone).unwrap();
+        assert!(encoded.get("concurrent_with").is_none());
+        let listed = serde_json::to_value(initial_protocol(&binding(&[0, 2]), 0).unwrap()).unwrap();
+        assert_eq!(listed["concurrent_with"], serde_json::json!([0, 2]));
+        // Unordered or oversized lists are refused.
+        assert!(initial_protocol(&binding(&[2, 0]), 0).is_err());
+        assert!(initial_protocol(&binding(&[1, 1]), 0).is_err());
+        let oversized: Vec<u32> = (0..=64).collect();
+        assert!(initial_protocol(&binding(&oversized), 0).is_err());
     }
 
     #[test]

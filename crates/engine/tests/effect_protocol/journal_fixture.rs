@@ -563,6 +563,9 @@ struct IterationScript {
     /// (`join_all`), instead of one after the other.
     #[serde(default)]
     concurrent: bool,
+    /// The delay each `Continue` asks for before the next iteration.
+    #[serde(default)]
+    delay_secs: u64,
 }
 
 /// The stateful action's state: the next iteration and every receipt so
@@ -702,7 +705,8 @@ impl StatefulAction for StatefulCharge {
         Ok(ActionResult::Continue {
             output,
             progress: None,
-            delay: None,
+            delay: (script.delay_secs > 0)
+                .then(|| std::time::Duration::from_secs(script.delay_secs)),
         })
     }
 }

@@ -11,20 +11,25 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
-- **`nebula-storage-port`: `EffectSlotBinding` gains `concurrent_floor:
-  Option<u32>`; development packages advance to 0.29.0 in lockstep.** The owner's
-  concurrency floor for an occurrence — the lowest position of its run
-  whose unit was still open when it was first prepared — is persisted with
-  the first preparation inside the protocol record
-  (`OperationProtocolRecord::concurrent_floor`, builder
-  `concurrent_floor`), never part of the natural key or the prepare
-  identity. No schema migration: the protocol is a JSON payload, and the
-  field is omitted when absent, so records written without it read back
-  unchanged (`None`). A struct literal must name the field (`None` for a
-  binding without positional runs). The engine's effect journal uses it to
-  replay concurrent units after a crash instead of halting;
+- **`nebula-storage-port`: `EffectSlotBinding` gains `concurrent_with:
+  &[u32]`; development packages advance to 0.29.0 in lockstep.** The lower
+  positions of an occurrence's run whose unit was still open when it was
+  first prepared — the exact set, strictly ascending, at most
+  `OperationProtocolRecord::MAX_CONCURRENT_WITH` (64; an owner with more
+  keeps the nearest, and the rest read as settled before it, the strict
+  reading) — are persisted with the first preparation inside the protocol
+  record (`OperationProtocolRecord::concurrent_with`, builder
+  `concurrent_with`; an unordered or oversized list is an invalid record),
+  never part of the natural key or the prepare identity. No schema
+  migration: the protocol is a JSON payload, and the field is omitted when
+  empty, so records written without it read back unchanged (empty). A
+  struct literal must name the field (`&[]` for a binding without
+  positional runs). The engine's effect journal uses it to replay
+  concurrent units after a crash instead of halting;
   `nebula_resource::call::journal::EffectJournal` gains a defaulted
-  `finish_occurrence(&str)`, called when a unit's owned state is dropped.
+  `finish_occurrence(&str)`, called by the unit runtime when a unit
+  settles (whether or not its caller keeps the handle), and when its owned
+  state is dropped as a fallback — once.
 
 - **A stable resource configuration fingerprint advances development packages
   to 0.28.0 in lockstep.** `ResourceConfig::fingerprint` is durable: the effect
@@ -1650,13 +1655,17 @@ let admitted = recorded.readmit_against(fresh)?;
   `AcknowledgementUnknown` with nothing sent, and a recorded slot that
   changed nothing yet is refused as an occurrence mismatch when an earlier
   attempt recorded an outcome, or a crossed call, at a higher position of
-  its family that the program ran after it — in a later iteration, or with
-  a concurrency floor above it. Each fresh slot records that floor at its
-  first prepare: the lowest position of its iteration whose unit was still
-  open (handed out and not yet gone), its own when none was. Units awaited
-  together are concurrent, so a recovery replays the unsettled one under its
-  recorded provider key (at least once) instead of halting; a slot recorded
-  without a floor is read strictly. A barrier that reads the node's
+  its family that the program ran after it — in a later iteration, or one
+  that does not list it as concurrent. Each fresh slot records, at its
+  first prepare, the exact lower positions of its iteration whose unit was
+  still open (handed out and not yet settled). Units awaited together are
+  concurrent, so a recovery replays the unsettled one under its recorded
+  provider key (at least once) instead of halting; a slot recorded without
+  the list is read strictly. A replay that has not reached its frontier —
+  an earlier attempt recorded an effect in a later iteration — skips the
+  `Continue` delays it already waited once; from the frontier on every
+  delay is honoured (an iteration that recorded no effect cannot tell, so
+  the delay before it is waited again). A barrier that reads the node's
   occurrences does so within what is left of the drain limit (at least
   5 s) and defers the node when the ledger does not answer. One verdict per
   node attempt still decides the node. Positions

@@ -215,13 +215,20 @@ configuration, and process lifecycle.
   (only prepared, or every call explained not crossed) is refused as an occurrence
   mismatch when an earlier attempt recorded an outcome, or a call that crossed, at a
   higher position of its family that the program ran after it: in a later iteration,
-  or with a **concurrency floor** above it. Every fresh slot records its floor at its
-  first prepare (`EffectSlotBinding::concurrent_floor`, kept in the protocol record):
-  the lowest position of its iteration whose unit was still open (handed out and not
-  yet gone, `EffectJournal::finish_occurrence`), its own when none was. Units awaited
-  together (`join!`, `FuturesUnordered`) are concurrent: a recovery replays the
-  unsettled one under its recorded provider key (at least once) instead of halting. A
-  slot recorded without a floor is read strictly. A node cancelled mid-iteration, or
+  or one that does not list it as **concurrent**. Every fresh slot records, at its
+  first prepare (`EffectSlotBinding::concurrent_with`, kept in the protocol record),
+  the exact lower positions of its iteration whose unit was still open — handed out
+  and not yet settled (`EffectJournal::finish_occurrence`, signalled when the unit
+  settles, whoever keeps its handle) — at most 64, the nearest kept (the rest read as
+  settled before it). Units awaited together (`join!`, `FuturesUnordered`) are
+  concurrent: a recovery replays the unsettled one under its recorded provider key (at
+  least once) instead of halting, while a lower slot that settled before the later
+  one began — even inside a run of concurrent units — stays refused. A slot recorded
+  without the list is read strictly. **Replay delays**: a replay that has not reached
+  its frontier (an earlier attempt recorded an effect in a later iteration) skips the
+  `Continue` delay — that iteration already ran, after it; from the frontier on every
+  delay is honoured (an iteration that recorded no effect cannot tell). A node
+  cancelled mid-iteration, or
   during the delay between iterations, ends the iteration at once: a
   later detached submission is refused closed, with no failure of its own, so the
   conclusion drains only the units already in flight. A stateful node's journal admits a unit only while an iteration is open:

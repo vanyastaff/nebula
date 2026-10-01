@@ -1454,64 +1454,121 @@ async fn a_recorded_effect_below_an_applied_one_is_never_run_after_it() {
 #[test]
 fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     let lower = "unit/v1/#000000";
-    let with_higher = |floor: Option<u32>| {
-        PriorOccurrences::from_records([(lower, false, None), ("unit/v1/#000001", true, floor)])
+    let with_higher = |concurrent: &'static [u32]| {
+        PriorOccurrences::from_records([
+            (lower, false, &[][..]),
+            ("unit/v1/#000001", true, concurrent),
+        ])
     };
     // The higher effect was prepared while the lower unit was open: they
     // ran concurrently, and the lower one replays.
-    assert!(!with_higher(Some(0)).reorders_at(lower));
-    // The lower unit was gone first: replaying it now would reverse them.
-    assert!(with_higher(Some(1)).reorders_at(lower));
-    // A legacy row without a floor is read strictly.
-    assert!(with_higher(None).reorders_at(lower));
+    assert!(!with_higher(&[0]).reorders_at(lower));
+    // The lower unit settled first (or a record without the list, read
+    // strictly): replaying it now would reverse them.
+    assert!(with_higher(&[]).reorders_at(lower));
     // A settled lower slot replays its outcome: no reordering.
     assert!(
-        !PriorOccurrences::from_records([(lower, true, None), ("unit/v1/#000001", true, Some(1))])
+        !PriorOccurrences::from_records([(lower, true, &[][..]), ("unit/v1/#000001", true, &[])])
             .reorders_at(lower)
     );
 
+    // A hole: 0 open, 1 settled, 2 applied — 2 ran concurrently with 0
+    // only, so 0 replays and 1 is refused.
+    let hole = PriorOccurrences::from_records([
+        ("unit/v1/#000000", false, &[][..]),
+        ("unit/v1/#000001", false, &[]),
+        ("unit/v1/#000002", true, &[0]),
+    ]);
+    assert!(!hole.reorders_at("unit/v1/#000000"));
+    assert!(hole.reorders_at("unit/v1/#000001"));
+
     // Iterations are always ordered: the barrier drains one before the next.
     let across = PriorOccurrences::from_records([
-        ("it0/unit/v1/#000000", false, None),
-        ("it1/unit/v1/#000000", true, Some(0)),
+        ("it0/unit/v1/#000000", false, &[][..]),
+        ("it1/unit/v1/#000000", true, &[0]),
     ]);
     assert!(across.reorders_at("it0/unit/v1/#000000"));
-    // Within an iteration, the floor counts from the iteration's ordinals.
-    let within = |floor| {
+    // Within an iteration, positions count from the iteration's ordinals.
+    let within = |concurrent: &'static [u32]| {
         PriorOccurrences::from_records([
-            ("it1/unit/v1/#000001", false, None),
-            ("it1/unit/v1/#000002", true, Some(floor)),
+            ("it1/unit/v1/#000001", false, &[][..]),
+            ("it1/unit/v1/#000002", true, concurrent),
         ])
     };
-    assert!(!within(1).reorders_at("it1/unit/v1/#000001"));
-    assert!(within(2).reorders_at("it1/unit/v1/#000001"));
+    assert!(!within(&[1]).reorders_at("it1/unit/v1/#000001"));
+    assert!(within(&[0]).reorders_at("it1/unit/v1/#000001"));
 }
 
 #[tokio::test]
-async fn a_fresh_slot_records_the_lowest_unit_still_open_as_its_floor() {
+async fn the_barrier_reports_whether_the_replay_reached_its_frontier() {
     let harness = Harness::new().await;
-    harness
-        .desk
-        .script(&[Reply::Held, Reply::Applied, Reply::Applied]);
-    let journal = harness.journal(1);
-    let handle = harness.handle(&journal);
-    // The first unit is mid-call: open past its prepare.
-    let first = tokio::spawn(handle.submit(Charge::<false> { order: 50 }));
+    let first = harness.stateful_journal(1);
+    for iteration in 0..3 {
+        first.begin_iteration(iteration).expect("begin");
+        harness
+            .handle(&first)
+            .submit(Charge::<false> {
+                order: 60 + u64::from(iteration),
+            })
+            .await
+            .expect("applied");
+        first.end_iteration(DRAIN, true).await.expect("end");
+    }
+    assert!(
+        !first.recorded_after_open_iteration(),
+        "the first attempt is always at its frontier"
+    );
+
+    let replay = harness.stateful_journal(2);
+    let mut past = Vec::new();
+    for iteration in 0..4 {
+        replay.begin_iteration(iteration).expect("begin");
+        if iteration < 3 {
+            harness
+                .handle(&replay)
+                .submit(Charge::<false> {
+                    order: 60 + u64::from(iteration),
+                })
+                .await
+                .expect("replayed");
+        }
+        replay.end_iteration(DRAIN, true).await.expect("end");
+        past.push(replay.recorded_after_open_iteration());
+    }
+    assert_eq!(
+        past,
+        [true, true, false, false],
+        "iterations 0..=2 recorded"
+    );
+    assert_eq!(harness.desk.keys().len(), 3, "the replay sent nothing");
+}
+
+#[tokio::test]
+async fn a_fresh_slot_records_exactly_the_lower_units_still_open() {
+    let harness = Harness::new().await;
+    // 0: stable key, mid-call; 1: throttled (settled, applied nothing);
+    // 2: applied while only 0 is open.
+    harness.desk.script(&[
+        Reply::Held,
+        Reply::Throttled,
+        Reply::Applied,
+        Reply::Applied,
+    ]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    let open = tokio::spawn(handle.submit(Charge::<true> { order: 50 }));
     tokio::time::timeout(Duration::from_secs(5), harness.desk.entered.notified())
         .await
         .expect("the first call reached the provider");
     handle
         .submit(Charge::<false> { order: 51 })
         .await
-        .expect("applied while the first is open");
-    harness.desk.release.notify_one();
-    first.await.expect("task").expect("applied");
-    // Every unit is gone: the next one is ordered after both.
+        .expect_err("throttled");
     handle
         .submit(Charge::<false> { order: 52 })
         .await
-        .expect("applied");
-    let floors: Vec<Option<u32>> = harness
+        .expect("applied while 0 is open and 1 settled");
+    let recorded: Vec<Vec<u32>> = harness
         .slots()
         .await
         .iter()
@@ -1519,11 +1576,37 @@ async fn a_fresh_slot_records_the_lowest_unit_still_open_as_its_floor() {
             slot.record()
                 .protocol()
                 .expect("protocol")
-                .concurrent_floor()
+                .concurrent_with()
+                .to_vec()
         })
         .collect();
-    assert_eq!(floors, [Some(0), Some(0), Some(2)]);
-    assert_eq!(journal.conclude(DRAIN).await, Ok(()));
+    assert_eq!(
+        recorded,
+        [vec![], vec![0], vec![0]],
+        "1 settled: not listed"
+    );
+    // The process dies with 0 mid-call.
+    open.abort();
+    let _ = open.await;
+
+    // The recovery re-sends 0 under its key (it ran alongside 2), and
+    // refuses 1 (it settled before 2 began: running it now would reverse
+    // them).
+    let recovery = harness.journal(2);
+    let handle = harness.handle(&recovery);
+    handle
+        .submit(Charge::<true> { order: 50 })
+        .await
+        .expect("0 replays under its recorded key");
+    let refused = handle
+        .submit(Charge::<false> { order: 51 })
+        .await
+        .expect_err("1 is ordered before the applied 2");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(refused.detail(), "effect occurrence mismatch");
+    let keys = harness.desk.keys();
+    assert_eq!(keys.len(), 4, "0, 1 throttled, 2, 0 again");
+    assert_eq!(keys[0], keys[3], "0 again under its recorded key");
 }
 
 #[tokio::test]

@@ -2162,6 +2162,8 @@ struct ScriptedGate {
     open: AtomicU32,
     fail_begin_at: Option<u32>,
     fail_end_at: Option<u32>,
+    /// Iterations before this one report the replay not at its frontier.
+    replayed_through: Option<u32>,
 }
 
 impl ScriptedGate {
@@ -2181,7 +2183,10 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
         Ok(())
     }
 
-    async fn end_iteration(&self, succeeded: bool) -> Result<(), crate::EffectExecutionError> {
+    async fn end_iteration(
+        &self,
+        succeeded: bool,
+    ) -> Result<crate::effect_driver::IterationProgress, crate::EffectExecutionError> {
         let iteration = self.open.load(AtomicOrdering::SeqCst);
         let outcome = if succeeded { "ok" } else { "err" };
         self.log
@@ -2191,7 +2196,11 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
         if self.fail_end_at == Some(iteration) {
             return Err(crate::EffectExecutionError::OccurrenceMismatch);
         }
-        Ok(())
+        Ok(crate::effect_driver::IterationProgress {
+            replayed_past: self
+                .replayed_through
+                .is_some_and(|through| iteration < through),
+        })
     }
 
     fn cancel_iteration(&self) {
@@ -2250,6 +2259,105 @@ impl FromWorkflowNode for DelayedStateful {
     ) -> Result<Self, Self::Error> {
         Ok(DelayedStateful)
     }
+}
+
+/// Counts to 4, continuing after each iteration with a one-hour delay.
+struct DelayedCountingTo4;
+
+impl Action for DelayedCountingTo4 {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        pure_metadata(
+            action_key!("test.delayed_count"),
+            "DelayedCountingTo4",
+            "counts to 4, an hour apart",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+impl StatefulAction for DelayedCountingTo4 {
+    type State = JsonValue;
+    fn init_state(&self) -> Self::State {
+        serde_json::json!({ "count": 0u32 })
+    }
+    async fn execute(
+        &self,
+        _input: &Self::Input,
+        state: &mut Self::State,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        Ok(match counting_step(state, 4) {
+            ActionResult::Continue {
+                output, progress, ..
+            } => ActionResult::Continue {
+                output,
+                progress,
+                delay: Some(std::time::Duration::from_hours(1)),
+            },
+            done => done,
+        })
+    }
+}
+impl FromWorkflowNode for DelayedCountingTo4 {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(DelayedCountingTo4)
+    }
+}
+
+/// Runs [`DelayedCountingTo4`] under `gate` and returns the virtual time it
+/// took.
+async fn count_to_4_an_hour_apart(gate: &ScriptedGate) -> std::time::Duration {
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<DelayedCountingTo4>::new()
+            .expect("valid test catalog definition"),
+    );
+    let node = NodeDefinition::new(node_key!("test"), "Count", "test", "delayed_count").unwrap();
+    let started = tokio::time::Instant::now();
+    let result = make_runtime(Arc::new(ActionRegistry::new()))
+        .run_factory(
+            "test.delayed_count",
+            factory,
+            &node,
+            nebula_action::ActionInput::Raw(serde_json::Value::Null),
+            &test_context(),
+            None,
+            ResourceAuthority::CallerSupplied,
+            Some(gate),
+        )
+        .await;
+    assert!(
+        matches!(result, Ok(ActionResult::Break { .. })),
+        "{result:?}"
+    );
+    started.elapsed()
+}
+
+/// A replay skips the delays before iterations an earlier attempt already
+/// ran, and honours them from its frontier on.
+#[tokio::test(start_paused = true)]
+async fn a_replay_skips_the_delays_it_already_waited() {
+    let hour = std::time::Duration::from_hours(1);
+    // Fresh: three delays between four iterations.
+    assert_eq!(
+        count_to_4_an_hour_apart(&ScriptedGate::default()).await,
+        3 * hour
+    );
+    // Replaying iterations 0 and 1 (an earlier attempt recorded effects up
+    // to iteration 2): only the delay at the frontier, before iteration 3.
+    let gate = ScriptedGate {
+        replayed_through: Some(2),
+        ..ScriptedGate::default()
+    };
+    assert_eq!(count_to_4_an_hour_apart(&gate).await, hour);
 }
 
 /// A cancellation during the delay between two iterations closes admission
