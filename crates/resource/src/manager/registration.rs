@@ -340,7 +340,10 @@ impl Manager {
         let managed = Arc::new(ManagedResource {
             pending_projection_hooks: Default::default(),
             resource,
-            config: arc_swap::ArcSwap::from_pointee(config),
+            // The fingerprint is computed here, once, with the admission.
+            config: arc_swap::ArcSwap::from_pointee(crate::runtime::managed::AdmittedConfig::new(
+                config,
+            )),
             topology,
             // Framework-owned idle store the acquire loop runs checkout / return
             // / evict against — the real idle queue, not a throwaway sentinel.
@@ -1091,9 +1094,12 @@ impl Manager {
 
         let managed = self.lookup::<R>(scope)?;
 
-        // Fingerprint comparison — bail early if nothing changed.
+        // Fingerprint comparison — bail early if nothing changed. The new
+        // fingerprint is computed once, here, and stored with the config;
+        // the old one was stored at its own admission.
+        let new_config = crate::runtime::managed::AdmittedConfig::new(new_config);
         let new_fp = new_config.fingerprint();
-        let old_fp = managed.config.load().fingerprint();
+        let old_fp = managed.config_fingerprint();
         if new_fp == old_fp {
             return Ok(ReloadOutcome::NoChange);
         }

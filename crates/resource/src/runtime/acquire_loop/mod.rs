@@ -38,7 +38,7 @@ use crate::{
     topology::{Topology, store::ReturnOutcome},
 };
 
-use super::managed::EntryOf;
+use super::managed::{AdmittedConfig, EntryOf};
 
 mod credential_hook;
 
@@ -168,9 +168,11 @@ where
         metrics: Option<ResourceOpsMetrics>,
     ) -> Result<ResourceGuard<R>, Error> {
         let _ = options;
-        // Every author hook below sees the row's limit through the context.
-        let ctx = &ctx.with_limits(&self.rate_limiter);
-        let config = self.config();
+        // Every author hook below sees the row's limit through the context,
+        // and the topology the fingerprint stored with this config snapshot.
+        let admitted = self.admitted_config();
+        let ctx = &ctx.for_row(&self.rate_limiter, admitted.fingerprint());
+        let config = Arc::clone(admitted.config());
         let generation = self.generation();
 
         // 1. Sync concurrency gate. The permit (if any) is held by the guard
@@ -487,7 +489,7 @@ where
     async fn create_and_deposit_one(
         self: &Arc<Self>,
         ctx: &ResourceContext,
-        config: &R::Config,
+        admitted: &AdmittedConfig<R::Config>,
     ) -> Result<bool, Error> {
         if self.store.is_closed() {
             return Ok(false);
@@ -495,11 +497,12 @@ where
         let created_epoch = self.store.stamp_epoch();
         let _retirement = RetiredEntriesGuard(Arc::clone(self));
         // Warmup and refill create through here: the instance gets the
-        // row's limit exactly as one created on acquire does.
-        let ctx = ctx.with_limits(&self.rate_limiter);
+        // row's limit (and the topology the stored config fingerprint)
+        // exactly as one created on acquire does.
+        let ctx = ctx.for_row(&self.rate_limiter, admitted.fingerprint());
         let created = self
             .topology
-            .create_entry(&self.resource, config, &ctx, &self.retained)
+            .create_entry(&self.resource, admitted.config(), &ctx, &self.retained)
             .await?;
         // Cancel-safety: arm the guard before the idle-lock await below — a
         // cancellation landing there must destroy the just-created instance,
@@ -596,8 +599,8 @@ where
 
         use crate::topology::pooled::config::WarmupStrategy;
 
-        let config = self.config();
-        let mut target = self.topology.warmup_target(&config);
+        let admitted = self.admitted_config();
+        let mut target = self.topology.warmup_target(admitted.config());
         if let Some(capacity) = self.store.capacity() {
             target = target.min(capacity);
         }
@@ -617,7 +620,7 @@ where
         let failed = std::sync::atomic::AtomicBool::new(false);
         let attempt = |pause: Option<std::time::Duration>| {
             let (running, deciding, failed, config, admit) =
-                (&running, &deciding, &failed, &config, &admit);
+                (&running, &deciding, &failed, &*admitted, &admit);
             async move {
                 if let Some(pause) = pause {
                     self.pause_warmup(pause).await;
@@ -814,8 +817,8 @@ where
         {
             return 0;
         }
-        let config = self.config();
-        let target = self.topology.warmup_target(&config);
+        let admitted = self.admitted_config();
+        let target = self.topology.warmup_target(admitted.config());
         if target == 0 {
             return 0;
         }
@@ -846,7 +849,7 @@ where
             if !self.credentials_admit_creation().await {
                 break;
             }
-            match self.create_and_deposit_one(ctx, &config).await {
+            match self.create_and_deposit_one(ctx, &admitted).await {
                 Ok(true) => created += 1,
                 Ok(false) => {}, // deposit-time eviction (revoke race) — this attempt is spent
                 Err(e) => {
