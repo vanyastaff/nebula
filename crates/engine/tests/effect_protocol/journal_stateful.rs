@@ -353,6 +353,84 @@ async fn a_replay_that_ends_before_a_settled_iteration(#[case] backend: Backend)
     }
 }
 
+// 7b ────────────────────────────────────────────────────────────────────────
+
+/// The replay of a poller: an unjournaled read now answers otherwise, so the
+/// iteration that recorded a write sends nothing and a later one would send
+/// the same write at a fresh position, under another provider key. The
+/// barrier of the iteration that passed the recorded write by stops the
+/// loop: no second provider call.
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[tokio::test]
+async fn a_replay_that_passes_a_recorded_iteration_by_never_sends_it_again(
+    #[case] backend: Backend,
+) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = stateful(database.ports()).await;
+    let charge = write("poll-charge:1");
+    let execution = fixture
+        .start_iterations(
+            &[
+                &[],
+                std::slice::from_ref(&charge),
+                std::slice::from_ref(&charge),
+            ],
+            json!({}),
+        )
+        .await;
+    // Iteration 1 records the charge; the process dies as iteration 2
+    // starts.
+    crash_at_iteration(&mut fixture, &mut database, execution, 2).await;
+    let settled = fixture.slots(execution).await;
+    assert_eq!(labels(&settled), ["it1/unit/v1/#000000"]);
+
+    // The replay's iteration 1 sends nothing.
+    *fixture.gateway.iterations.skip_at.lock() = Some(1);
+    let result = fixture.run(execution).await.unwrap();
+    assert_node_error(&result, "ENGINE:EFFECT_OCCURRENCE_MISMATCH");
+    assert_eq!(fixture.gateway.call_count(), 1, "no second provider call");
+    assert_eq!(
+        fixture.gateway.started(),
+        [0, 1, 2, 0, 1],
+        "iteration 2 never ran again"
+    );
+    assert_eq!(fixture.slots(execution).await, settled, "nothing prepared");
+}
+
+/// Within one iteration: the replay submits fewer of the iteration's writes
+/// than the earlier attempt recorded. Its barrier stops the loop.
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[tokio::test]
+async fn a_replay_that_skips_a_recorded_effect_within_an_iteration_stops(#[case] backend: Backend) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = stateful(database.ports()).await;
+    let units = [write("in-it0:1"), write("in-it0:2"), write("in-it1:3")];
+    let execution = fixture
+        .start_iterations(&[&units[0..2], &units[2..3]], json!({}))
+        .await;
+    crash_at_iteration(&mut fixture, &mut database, execution, 1).await;
+    let settled = fixture.slots(execution).await;
+    assert_eq!(
+        labels(&settled),
+        ["it0/unit/v1/#000000", "it0/unit/v1/#000001"]
+    );
+
+    *fixture.gateway.iterations.keep_at.lock() = Some((0, 1));
+    let result = fixture.run(execution).await.unwrap();
+    assert_node_error(&result, "ENGINE:EFFECT_OCCURRENCE_MISMATCH");
+    assert_eq!(fixture.gateway.call_count(), 2, "nothing sent again");
+    assert_eq!(fixture.gateway.started(), [0, 1, 0], "it1 never ran again");
+    assert_eq!(fixture.slots(execution).await, settled);
+}
+
 // 8 ─────────────────────────────────────────────────────────────────────────
 
 #[rstest::rstest]
@@ -381,8 +459,10 @@ async fn an_unknown_outcome_the_action_swallowed_stops_the_iterations(#[case] ba
 
 /// A unit an iteration detached holds the next iteration back until it
 /// settles: nothing of one iteration crosses into the next. (A unit still in
-/// flight past the drain limit fails the barrier and the node unknown; the
-/// journal's unit tests cover it, as the limit is minutes long here.)
+/// flight past the drain limit fails the barrier
+/// `ENGINE:EFFECT_ITERATION_BARRIER`, or the node unknown when the unit had
+/// been granted a call; the journal's unit tests cover it, as the limit is
+/// minutes long here.)
 #[rstest::rstest]
 #[case::memory(Backend::Memory)]
 #[case::sqlite(Backend::Sqlite)]

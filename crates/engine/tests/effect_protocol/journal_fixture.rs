@@ -99,6 +99,8 @@ pub(super) struct IterationControls {
     pub extra_at: parking_lot::Mutex<Option<u32>>,
     /// The iteration skips its units.
     pub skip_at: parking_lot::Mutex<Option<u32>>,
+    /// The iteration submits only its first so many units.
+    pub keep_at: parking_lot::Mutex<Option<(u32, usize)>>,
     /// The action completes at the iteration, before its units.
     pub break_at: parking_lot::Mutex<Option<u32>>,
     /// The action fails (not retryable) at the iteration, before its units.
@@ -116,6 +118,7 @@ struct IterationPlan {
     request_override: Option<String>,
     extra: bool,
     skip: bool,
+    keep: Option<usize>,
     stop: bool,
     fail: bool,
     leak: bool,
@@ -165,6 +168,11 @@ impl Gateway {
                 .map(|(_, request)| request.clone()),
             extra: applies(&controls.extra_at, iteration),
             skip: applies(&controls.skip_at, iteration),
+            keep: controls
+                .keep_at
+                .lock()
+                .filter(|(at, _)| *at == iteration)
+                .map(|(_, keep)| keep),
             stop: applies(&controls.break_at, iteration),
             fail: applies(&controls.fail_at, iteration),
             leak: applies(&controls.leak_at, iteration),
@@ -610,6 +618,9 @@ impl StatefulAction for StatefulCharge {
                 .cloned()
                 .unwrap_or_default()
         };
+        if let Some(keep) = plan.keep {
+            units.truncate(keep);
+        }
         if iteration == 0 {
             let fill = (0..script.fill).map(|n| UnitSpec {
                 idempotent: false,

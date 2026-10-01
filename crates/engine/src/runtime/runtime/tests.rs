@@ -2181,9 +2181,13 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
         Ok(())
     }
 
-    async fn end_iteration(&self) -> Result<(), crate::EffectExecutionError> {
+    async fn end_iteration(&self, succeeded: bool) -> Result<(), crate::EffectExecutionError> {
         let iteration = self.open.load(AtomicOrdering::SeqCst);
-        self.log.lock().unwrap().push(format!("end {iteration}"));
+        let outcome = if succeeded { "ok" } else { "err" };
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("end {iteration} {outcome}"));
         if self.fail_end_at == Some(iteration) {
             return Err(crate::EffectExecutionError::OccurrenceMismatch);
         }
@@ -2226,7 +2230,9 @@ async fn a_journaled_stateful_loop_brackets_every_iteration_with_the_barrier() {
     );
     assert_eq!(
         gate.log(),
-        ["begin 0", "end 0", "begin 1", "end 1", "begin 2", "end 2"],
+        [
+            "begin 0", "end 0 ok", "begin 1", "end 1 ok", "begin 2", "end 2 ok"
+        ],
         "each iteration opens before and closes after its one dispatch"
     );
 }
@@ -2249,7 +2255,7 @@ async fn a_failed_barrier_stops_the_journaled_stateful_loop() {
     );
     assert_eq!(
         gate.log(),
-        ["begin 0", "end 0", "begin 1", "end 1"],
+        ["begin 0", "end 0 ok", "begin 1", "end 1 ok"],
         "no iteration starts after the journal stopped the loop"
     );
 
@@ -2269,7 +2275,7 @@ async fn a_failed_barrier_stops_the_journaled_stateful_loop() {
     );
     assert_eq!(
         gate.log(),
-        ["begin 0", "end 0", "begin 1", "end 1", "begin 2"],
+        ["begin 0", "end 0 ok", "begin 1", "end 1 ok", "begin 2"],
         "a refused iteration never dispatches"
     );
 }

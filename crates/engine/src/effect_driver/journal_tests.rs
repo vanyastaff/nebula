@@ -403,6 +403,9 @@ struct CountingLedger {
     hang_outcomes: AtomicBool,
     /// Every later occurrence listing never returns.
     hang_reads: AtomicBool,
+    /// Every prepare yields to the scheduler first, so units joined in one
+    /// task interleave.
+    yield_prepares: AtomicBool,
     /// Notified when an outcome write hangs.
     hung: tokio::sync::Notify,
 }
@@ -453,6 +456,11 @@ impl OperationLedger for CountingLedger {
         fencing: FencingToken,
     ) -> Result<PrepareOutcome, OperationLedgerError> {
         self.count();
+        if self.yield_prepares.load(Ordering::SeqCst) {
+            for _ in 0..4 {
+                tokio::task::yield_now().await;
+            }
+        }
         self.inner.prepare(binding, fencing).await
     }
 
@@ -532,6 +540,7 @@ impl Harness {
             calls: AtomicUsize::new(0),
             hang_outcomes: AtomicBool::new(false),
             hang_reads: AtomicBool::new(false),
+            yield_prepares: AtomicBool::new(false),
             hung: tokio::sync::Notify::new(),
         });
         let scope = Scope::new("workspace-a", "org-a");
@@ -693,6 +702,8 @@ enum Reply {
     Lost,
     /// Applied, and the call never returns.
     Hang,
+    /// Applied, and the call returns once the desk is released.
+    Held,
 }
 
 /// The fake gateway: every call it received, with the key it carried.
@@ -701,6 +712,8 @@ struct Desk {
     keys: Mutex<Vec<Option<String>>>,
     replies: Mutex<VecDeque<Reply>>,
     entered: tokio::sync::Notify,
+    /// Releases a [`Reply::Held`] call.
+    release: tokio::sync::Notify,
 }
 
 impl Desk {
@@ -732,6 +745,10 @@ impl Desk {
             Reply::Applied => Ok(receipt),
             Reply::Lost => Err(OperationError::interrupted("connection reset")),
             Reply::Hang => std::future::pending().await,
+            Reply::Held => {
+                self.release.notified().await;
+                Ok(receipt)
+            },
         }
     }
 }
@@ -918,7 +935,7 @@ async fn iteration_labels_restart_their_ordinal_per_iteration() {
     assert_eq!(journal.next_occurrence(), "it0/unit/v1/#000000");
     assert_eq!(journal.next_occurrence(), "it0/unit/v1/#000001");
     journal
-        .end_iteration(DRAIN)
+        .end_iteration(DRAIN, true)
         .await
         .expect("nothing in flight");
     journal.begin_iteration(1).expect("the second iteration");
@@ -928,15 +945,20 @@ async fn iteration_labels_restart_their_ordinal_per_iteration() {
         "the ordinal restarts"
     );
     journal
-        .end_iteration(DRAIN)
+        .end_iteration(DRAIN, true)
         .await
         .expect("nothing in flight");
     journal.begin_iteration(9_999).expect("the last iteration");
     assert_eq!(journal.next_occurrence(), "it9999/unit/v1/#000000");
     journal
-        .end_iteration(DRAIN)
+        .end_iteration(DRAIN, true)
         .await
         .expect("nothing in flight");
+    assert_eq!(
+        harness.ledger.calls(),
+        1,
+        "labels write nothing; the barriers share the node's one read"
+    );
 
     // An iteration past the last, or not after the open one, is refused.
     assert_eq!(
@@ -949,34 +971,56 @@ async fn iteration_labels_restart_their_ordinal_per_iteration() {
         backwards.begin_iteration(3),
         Err(EffectExecutionError::InvalidContract)
     );
-    assert_eq!(harness.ledger.calls(), 0, "labels write nothing");
 }
 
 #[tokio::test(start_paused = true)]
 async fn an_iteration_begins_only_with_no_unit_in_flight() {
     let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Held]);
     let journal = harness.journal(1);
-    let leaked = journal.track();
-    assert_eq!(
-        journal.begin_iteration(0),
-        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 })
+    journal.begin_iteration(0).expect("the first iteration");
+    // A unit of iteration 0 is mid-call as iteration 1 would begin.
+    let unit = tokio::spawn(
+        harness
+            .handle(&journal)
+            .submit(Charge::<false> { order: 40 }),
     );
-    assert!(journal.is_closed(), "the unit records nothing more");
-    drop(leaked);
+    tokio::time::timeout(Duration::from_secs(5), harness.desk.entered.notified())
+        .await
+        .expect("the call reached the provider");
     assert_eq!(
         journal.begin_iteration(1),
-        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 }),
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 1 })
+    );
+    assert!(
+        !journal.is_closed(),
+        "nothing was waited for: the journal stays open"
+    );
+    assert_eq!(
+        journal.begin_iteration(2),
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 1 }),
         "no later iteration runs"
     );
+
+    // The node's conclusion drains the unit within its full limit: its call
+    // settles and is no unknown outcome.
+    let desk = Arc::clone(&harness.desk);
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        desk.release.notify_one();
+    });
     let started = tokio::time::Instant::now();
     assert_eq!(
         journal.conclude(Duration::from_mins(1)).await,
-        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 })
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 1 })
     );
-    assert!(
-        started.elapsed() < Duration::from_mins(1),
-        "the verdict does not wait for the units again"
+    assert_eq!(started.elapsed(), Duration::from_secs(10), "it waited");
+    assert_eq!(unit.await.expect("the unit ran").expect("it settled"), 1);
+    assert_eq!(
+        Harness::phase(&harness.slots().await[0]),
+        EffectPhase::Resolved
     );
+    release.await.expect("released");
 }
 
 #[tokio::test(start_paused = true)]
@@ -995,7 +1039,7 @@ async fn a_unit_outliving_its_iteration_fails_the_barrier_and_the_node_unknown()
         .expect("the call reached the provider");
     let started = tokio::time::Instant::now();
     assert_eq!(
-        journal.end_iteration(Duration::from_secs(5)).await,
+        journal.end_iteration(Duration::from_secs(5), true).await,
         Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 })
     );
     assert_eq!(started.elapsed(), Duration::from_secs(5), "bounded drain");
@@ -1035,7 +1079,7 @@ async fn an_unknown_outcome_the_action_swallowed_stops_the_next_iteration() {
         .expect_err("the answer was lost");
     assert_eq!(lost.sent(), SentState::MaybeSent, "{lost}");
     // The action swallows the error; the barrier does not.
-    let stopped = journal.end_iteration(DRAIN).await;
+    let stopped = journal.end_iteration(DRAIN, true).await;
     assert!(
         matches!(
             stopped,
@@ -1226,6 +1270,158 @@ async fn an_effect_prepared_into_an_earlier_attempts_gap_is_a_mismatch() {
     );
     assert_eq!(harness.desk.keys().len(), 1, "one provider call");
     assert_eq!(harness.slots().await, before, "nothing prepared");
+}
+
+/// A unit's deadline passes before its first poll: it takes a position and
+/// gives up before reaching the journal.
+const PAST_THE_UNIT_DEADLINE: Duration = Duration::from_mins(6);
+
+#[tokio::test(start_paused = true)]
+async fn a_position_a_unit_gave_up_leaves_the_next_fresh_effect_refused() {
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 5 })
+        .await
+        .expect("applied at the first position");
+
+    // The retry's first unit is polled only past its deadline: it takes the
+    // first position and never reaches the journal.
+    let retry = harness.journal(2);
+    let late = harness.handle(&retry).submit(Charge::<false> { order: 6 });
+    tokio::time::advance(PAST_THE_UNIT_DEADLINE).await;
+    let gave_up = late.await.expect_err("past its deadline");
+    assert_eq!(gave_up.sent(), SentState::NotSent, "{gave_up}");
+    // The recorded charge, now at the second position, would be a fresh
+    // slot under another provider key: refused, nothing sent.
+    let refused = harness
+        .handle(&retry)
+        .submit(Charge::<false> { order: 5 })
+        .await
+        .expect_err("above a recorded position the retry never met");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(refused.detail(), "effect occurrence mismatch");
+    assert_eq!(harness.desk.keys().len(), 1, "sent once");
+    assert_eq!(harness.slots().await.len(), 1, "nothing prepared");
+    assert_eq!(
+        retry.conclude(DRAIN).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_iteration_that_skips_a_recorded_effect_refuses_the_next_fresh_one() {
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    first.begin_iteration(0).expect("it0");
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 7 })
+        .await
+        .expect("applied at it0/#0");
+    first.end_iteration(DRAIN, true).await.expect("it0 ends");
+
+    // Within an iteration: the retry's first unit of iteration 0 gives up
+    // before reaching the journal; the charge lands one position higher.
+    let retry = harness.journal(2);
+    retry.begin_iteration(0).expect("it0");
+    let late = harness.handle(&retry).submit(Charge::<false> { order: 8 });
+    tokio::time::advance(PAST_THE_UNIT_DEADLINE).await;
+    late.await.expect_err("past its deadline");
+    let refused = harness
+        .handle(&retry)
+        .submit(Charge::<false> { order: 7 })
+        .await
+        .expect_err("above it0/#0, which the retry never met");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(
+        retry.end_iteration(DRAIN, true).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
+    );
+    assert_eq!(harness.desk.keys().len(), 1, "sent once");
+    assert_eq!(harness.slots().await.len(), 1);
+}
+
+#[tokio::test]
+async fn an_iteration_that_passes_a_recorded_effect_by_stops_at_its_barrier() {
+    let harness = Harness::new().await;
+    // The first attempt: iteration 0 sends nothing, iteration 1 a charge;
+    // then the process dies.
+    let first = harness.journal(1);
+    first.begin_iteration(0).expect("it0");
+    first.end_iteration(DRAIN, true).await.expect("it0 ends");
+    first.begin_iteration(1).expect("it1");
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 9 })
+        .await
+        .expect("applied at it1/#0");
+
+    // The replay's iteration 1 sends nothing (an unjournaled read changed):
+    // its barrier stops the loop before iteration 2 could send the charge
+    // again at a fresh position.
+    let replay = harness.journal(2);
+    replay.begin_iteration(0).expect("it0");
+    replay.end_iteration(DRAIN, true).await.expect("it0 ends");
+    replay.begin_iteration(1).expect("it1");
+    assert_eq!(
+        replay.end_iteration(DRAIN, true).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
+    );
+    assert_eq!(
+        replay.begin_iteration(2),
+        Err(EffectExecutionError::OccurrenceMismatch),
+        "no next iteration"
+    );
+
+    // Even an owner that went on would refuse the fresh slot above it.
+    let stubborn = harness.journal(3);
+    stubborn.begin_iteration(2).expect("it2");
+    let refused = harness
+        .handle(&stubborn)
+        .submit(Charge::<false> { order: 9 })
+        .await
+        .expect_err("above it1/#0, which this attempt never met");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(harness.desk.keys().len(), 1, "sent once");
+
+    // A failing iteration keeps its own failure: its conclusion decides.
+    let failing = harness.journal(4);
+    failing.begin_iteration(0).expect("it0");
+    failing.end_iteration(DRAIN, true).await.expect("it0 ends");
+    failing.begin_iteration(1).expect("it1");
+    assert_eq!(failing.end_iteration(DRAIN, false).await, Ok(()));
+    assert_eq!(
+        failing.conclude_node(DRAIN, false).await,
+        Ok(Concluded::SkippedRecordedEffect)
+    );
+}
+
+#[tokio::test]
+async fn a_fresh_effect_waits_for_a_lower_recorded_position_still_preparing() {
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 10 })
+        .await
+        .expect("applied at the first position");
+
+    // The retry submits the recorded charge and a new one together; the
+    // new one's fresh slot is decided only once the recorded one met its
+    // position.
+    harness.ledger.yield_prepares.store(true, Ordering::SeqCst);
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    let (replayed, fresh) = tokio::join!(
+        handle.submit(Charge::<false> { order: 10 }),
+        handle.submit(Charge::<false> { order: 11 }),
+    );
+    assert_eq!(replayed.expect("replayed"), 1, "the recorded receipt");
+    assert_eq!(fresh.expect("a new effect"), 2);
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 2, "each charge sent once");
 }
 
 #[tokio::test(start_paused = true)]

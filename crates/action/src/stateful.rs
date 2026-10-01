@@ -53,7 +53,12 @@ use crate::{
 /// key part) in the same order. Inputs a replay does not reproduce —
 /// clocks, randomness, reads whose answers changed — diverge from the
 /// recorded effects, and the divergence halts the node as an occurrence
-/// mismatch with nothing sent. Keep such inputs out of the effects, or
+/// mismatch before a recorded effect is sent again: a changed effect at a
+/// recorded position is refused unsent, a fresh effect below a recorded
+/// one, or above one the replay passed by, is refused unsent, and an
+/// iteration that ends without meeting every effect recorded in it stops
+/// the iterations. Only effects past everything recorded — new work — are
+/// sent. Keep such inputs out of the effects, or
 /// derive them from the state and the recorded outputs. An iteration that
 /// leaves an effect's outcome unknown — even one whose error it swallows —
 /// stops the iterations: no later iteration runs.

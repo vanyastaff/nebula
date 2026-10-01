@@ -177,23 +177,35 @@ configuration, and process lifecycle.
   iterations run inside one node attempt and every attempt replays them from
   iteration 0 — a journaled stateful action takes no checkpoint sink (the runtime
   refuses both together). The runtime brackets each iteration with the journal's
-  barrier (`IterationGate`): `begin_iteration(n)` requires no unit in flight and
-  opens the label namespace; `end_iteration` — after the iteration returned, `Ok` or
-  `Err` — drains its units within the node drain limit and stops the loop
-  (`RuntimeError::EffectJournal`, replaced by the verdict) when the journal holds a
-  failure: an unknown outcome in the iteration (even one the action swallowed), a
-  mismatch, a deferring ledger or lease failure. A unit still in flight at the
-  barrier fails it (`ENGINE:EFFECT_ITERATION_BARRIER`): the journal closes, and the
-  node's one verdict records a call the unit was granted as ambiguous, so the node
-  fails unknown. Positions order by `(iteration, ordinal)` for the gap check: a fresh
-  position is a gap when a higher one of its family is recorded (a later ordinal of
-  its iteration, or any slot of a later iteration), and labels of the other family
-  (flat versus `it{n}/`) recorded by an earlier attempt are refused as a changed
-  action kind; labels are parsed strictly (no leading zeros). **Determinism
-  contract**: a replayed iteration must submit the same effects in the same order —
-  inputs a replay does not reproduce (clocks, randomness, unrecorded reads) diverge,
-  and the divergence halts the node `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing
-  sent. One node attempt prepares at most `MAX_NODE_SLOTS` (10 000) journaled effects:
+  barrier (`IterationGate`): `begin_iteration(n)` requires no unit in flight (else
+  `ENGINE:EFFECT_ITERATION_BARRIER`, with nothing waited for: the node's conclusion
+  still drains the unit within its full limit) and opens the label namespace;
+  `end_iteration` — after the iteration returned, `Ok` or `Err` — drains its units
+  within the node drain limit and stops the loop (`RuntimeError::EffectJournal`,
+  replaced by the verdict) when the journal holds a failure: an unknown outcome in
+  the iteration (even one the action swallowed), a mismatch, a deferring ledger or
+  lease failure, or — for an iteration that returned `Ok` — an effect an earlier
+  attempt recorded in it (or before it) that this attempt never met (a mismatch; a
+  failing iteration keeps its own failure for the conclusion to judge). A unit still
+  in flight past the drain limit fails the barrier
+  (`ENGINE:EFFECT_ITERATION_BARRIER`): the journal closes and the node's conclusion
+  does not wait for it again; if the unit had been granted a call, the verdict
+  records the call as ambiguous and the node fails `ENGINE:EFFECT_OUTCOME_UNKNOWN`
+  instead. Positions order by `(iteration, ordinal)` (a flat label is iteration 0)
+  and a fresh slot is prepared only when it is consistent with what earlier attempts
+  recorded: it must not lie below a recorded position of its family (a gap), nor
+  above a recorded one this attempt has not met — a position passed by on another
+  path, or one a unit took and gave up before reaching the journal (past its
+  deadline, cancelled, dropped; the resource runtime releases every position with
+  `EffectJournal::release_occurrence`, and a fresh slot above a recorded position
+  another unit is still preparing waits for it). Labels of the other family (flat
+  versus `it{n}/`) recorded by an earlier attempt are refused as a changed action
+  kind; labels are parsed strictly (no leading zeros). The first barrier reads the
+  node's occurrences, if no prepare did. **Determinism contract**: a replayed
+  iteration must submit the same effects in the same order — inputs a replay does
+  not reproduce (clocks, randomness, unrecorded reads) diverge, and the divergence
+  halts the node `ENGINE:EFFECT_OCCURRENCE_MISMATCH` before any recorded effect is
+  sent again; only effects past everything recorded are sent. One node attempt prepares at most `MAX_NODE_SLOTS` (10 000) journaled effects:
   a further prepare is refused `slot_cap_exceeded`, nothing is sent, and the node
   fails `ENGINE:EFFECT_JOURNAL_SLOT_CAP`. Every slot records the provider idempotency key
   `base64url(SHA-256(frame("nebula.idempotency-key.v1") ‖ frame(frame(org) ‖

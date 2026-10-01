@@ -865,7 +865,7 @@ impl ActionRuntime {
             // The iteration's units drain before its result counts — a
             // failing iteration's too: nothing of it may cross into the next.
             if let Some(gate) = iteration_gate {
-                gate.end_iteration()
+                gate.end_iteration(iteration_result.is_ok())
                     .await
                     .map_err(RuntimeError::EffectJournal)?;
             }

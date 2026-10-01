@@ -977,7 +977,11 @@ let admitted = recorded.readmit_against(fresh)?;
   `next_occurrence()` (`unit/v1/#{next_ordinal:06}`), which the resource
   runtime now takes a unit's occurrence label from; an owner whose units run
   in several positional runs overrides it (the engine labels a stateful
-  iteration's units `it{n}/…`). `JournalRefusal::SlotCapExceeded` (new;
+  iteration's units `it{n}/…`). A defaulted `release_occurrence(&str)`
+  tells the owner a unit stopped preparing — prepared, refused, or given
+  up before reaching it — which the resource runtime now calls once per
+  occurrence; the engine waits for it before deciding whether a recorded
+  position below a fresh effect was met. `JournalRefusal::SlotCapExceeded` (new;
   `slot_cap_exceeded`) refuses a unit `Permanent` / `NotSent`: one node
   attempt prepares at most 10 000 journaled effects, and the node then
   fails `EffectExecutionError::JournalSlotCapExceeded`
@@ -1591,19 +1595,26 @@ let admitted = recorded.readmit_against(fresh)?;
   (`RuntimeError::EffectJournal`, new, which the engine replaces with the
   journal's verdict) when the journal holds a failure — an unknown outcome
   of the iteration (even one the action swallowed), an occurrence mismatch,
-  a deferring ledger or lease failure — or a unit outlived the drain
+  a deferring ledger or lease failure, an effect an earlier attempt recorded
+  in a succeeding iteration (or before it) that this attempt never met — or
+  a unit is in flight at the barrier
   (`EffectExecutionError::IterationUnitsOutstanding`, new,
-  `ENGINE:EFFECT_ITERATION_BARRIER`: the journal closes and the verdict
-  records the unit's granted call as ambiguous). One verdict per node
-  attempt still decides the node. The gap check orders positions by
-  `(iteration, ordinal)`: a fresh position below a recorded one of its
-  family (a later ordinal of its iteration, or any slot of a later
-  iteration) is refused as a mismatch with nothing written or sent, and so
-  is a label of the other family (flat versus `it{n}/`) recorded by an
-  earlier attempt; labels are parsed strictly. **Determinism contract**
+  `ENGINE:EFFECT_ITERATION_BARRIER`; when the unit outlived the drain the
+  journal closes, and if it had been granted a call the verdict records the
+  call as ambiguous and the node fails `ENGINE:EFFECT_OUTCOME_UNKNOWN`
+  instead). One verdict per node attempt still decides the node. Positions
+  order by `(iteration, ordinal)`, and a fresh slot — stateless or
+  stateful — is refused as a mismatch with nothing written or sent when it
+  lies below a recorded position of its family, above a recorded one the
+  attempt has not met (passed by on another path, or taken by a unit that
+  gave up before reaching the journal — previously such a slot was
+  prepared under a new provider key and the effect could be sent twice),
+  or when an earlier attempt recorded labels of the other family (flat
+  versus `it{n}/`); labels are parsed strictly. **Determinism contract**
   (documented on `StatefulAction`): a replayed iteration must submit the
   same effects in the same order; inputs a replay does not reproduce
-  diverge and halt the node `ENGINE:EFFECT_OCCURRENCE_MISMATCH`.
+  diverge and halt the node `ENGINE:EFFECT_OCCURRENCE_MISMATCH` before any
+  recorded effect is sent again.
   `JournalProtocol::V1` is unchanged. Additive: no version bump.
 - **A refused write through a non-journaled action's resource handle says
   why.** Only stateless `Journaled` actions run under a node effect journal.

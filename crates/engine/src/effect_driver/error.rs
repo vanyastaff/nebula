@@ -71,11 +71,12 @@ pub enum EffectExecutionError {
         /// The cap: journaled effects one node attempt may prepare.
         cap: u32,
     },
-    /// A stateful action's iteration ended — or the next one began — with
-    /// effect units of the node still in flight past the drain limit: the
-    /// iterations stop and the journal closes, so a unit that outlived its
-    /// iteration records nothing more. A call it was granted is recorded
-    /// ambiguous by the node's verdict.
+    /// A stateful action's iteration ended with effect units of the node
+    /// still in flight past the drain limit — or the next one was about to
+    /// begin with one in flight: the iterations stop. After a drain that
+    /// ran out the journal closes, so the unit records nothing more, and a
+    /// call it was granted is recorded ambiguous by the node's verdict
+    /// (which then fails the node unknown instead).
     #[error("effect units of stateful iteration {iteration} were still in flight at its barrier")]
     IterationUnitsOutstanding {
         /// The iteration whose barrier failed.
