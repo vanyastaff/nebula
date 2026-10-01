@@ -72,13 +72,12 @@
 //! only runs Drop; neither path promises cleanup after a process crash.
 //!
 //! Engine-side registration uses deployment/runtime APIs rather than an SDK
-//! re-export of implementation crates. For provider calls, prefer a
-//! `#[resource]` field of type `ResourceHandle<R>`
+//! re-export of implementation crates. An action reaches a resource only
+//! through a `#[resource]` field of type `ResourceHandle<R>`
 //! (`nebula_sdk::integration::resource::ResourceHandle`, not in the prelude while
 //! the facade is unfrozen): each unit checks out an instance per attempt,
-//! after its quota wait. A [`ResourceGuard`] field derefs to
-//! `Provider::Instance` and holds its lease for the whole action — the raw
-//! escape hatch.
+//! after its quota wait. Raw leases (`ResourceGuard`, `Lease`) are host-only
+//! and not exported since 0.27.0 — a lease bypasses the effect journal.
 
 // Core traits and types
 // DX trait families: stateful, trigger
@@ -154,12 +153,13 @@ pub use nebula_plugin::{
 // derive *macro* — different namespaces, so both live in the glob.
 //
 // Engine-only types (`Manager`, `Registry`, `ReleaseQueue`,
-// `credential_fanout`) are deliberately absent from the supported SDK.
+// `credential_fanout`) and host-only raw leases (`ResourceGuard`,
+// `ReleaseOutcome`, `Lease`) are deliberately absent from the supported SDK.
 pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind, HasCredentialSlots,
-    PoolConfig, PoolProvider, Pooled, Provider, ReleaseOutcome, ReloadOutcome, Resident,
-    ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceGuard,
-    ResourceMetadataDraft, SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    PoolConfig, PoolProvider, Pooled, Provider, ReloadOutcome, Resident, ResidentConfig,
+    ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceMetadataDraft, SlotCell,
+    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };
 // Derive names are re-exported from their respective domain crates. Generated
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's

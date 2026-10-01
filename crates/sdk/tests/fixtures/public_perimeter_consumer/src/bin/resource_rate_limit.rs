@@ -6,8 +6,8 @@
 use std::{num::NonZeroU32, time::Duration};
 
 use nebula_sdk::integration::resource::{
-    Cost, Error, ErrorKind, Lease, Operation, OperationCx, OperationError, Provider, Rate, Resident,
-    ResidentProvider, ResiliencePolicy, ResourceContext, ResourceKey, TeardownCx,
+    Cost, Error, ErrorKind, Operation, OperationCx, OperationError, Provider, Rate, Resident,
+    ResidentProvider, ResiliencePolicy, ResourceContext, ResourceHandle, ResourceKey, TeardownCx,
     no_credential_slots, resource_key, retry_after_from_header,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize};
@@ -96,8 +96,8 @@ impl Operation<ChatProvider> for SendMessage {
     }
 }
 
-/// What action code does with a managed lease of the chat resource.
-async fn send(chat: &Lease<ChatProvider>, chat_id: i64, text: &str) -> Result<u64, Error> {
+/// What action code does with the chat resource's handle.
+async fn send(chat: &ResourceHandle<ChatProvider>, chat_id: i64, text: &str) -> Result<u64, Error> {
     Ok(chat
         .submit(SendMessage {
             chat_id,

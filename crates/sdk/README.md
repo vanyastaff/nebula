@@ -231,15 +231,14 @@ Resource authoring types, traits, and derives are in the prelude and the explici
 
 | Surface | What you use |
 |--------|----------------|
-| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `ResourceMetadataDraft`, `ResourceContext`, `ResourceGuard`, `ReleaseOutcome`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
+| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `ResourceMetadataDraft`, `ResourceContext`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
 | **Derives** | `Resource` and `ResourceConfig` are covered by the SDK-only derive compile contract. Manual `Provider` authoring, including a consuming `destroy` over a non-Clone instance using `TeardownCx` and `TeardownReason`, is separately compile-checked through the prelude plus the general-purpose `async-trait` crate. |
 
 **Managed call facade:** `nebula_sdk::integration::resource` (not the prelude —
-the facade is not frozen) re-exports `Lease`, `Operation`, `OperationCx`,
+the facade is not frozen) re-exports `ResourceHandle`, `Operation`, `OperationCx`,
 `Attempt`, `Submission`, `Cost`, `Effect`, `SentState`, `OperationError` and
 `PinSlots` (hidden from the rendered docs; the derive emits it).
-`ResourceGuard::into_lease()` turns a lease into a `Lease` facade without
-`Deref`; provider calls are `Operation`s that call the provider through
+A `ResourceHandle` has no `Deref`; provider calls are `Operation`s that call the provider through
 `OperationCx::call(cost, async move |client, credentials| ..)`, each attempt
 admitted and booked per `Cost`. The closure classifies its answer once with
 an `OperationError` constructor (`throttled`, `throttled_key`, `unreachable`,
@@ -253,12 +252,26 @@ with the SDK alone). An `Operation` declares a `KEY` (unique within the resource
 alone, `#[derive(Serialize, Deserialize)]` from the prelude plus
 `#[serde(crate = "nebula_sdk::serde")]` — so an execution journal can record
 and replay it. The SDK-only fixture compiles a logger authored against it
-(`resource_managed_logger`) and proves `Lease` does not deref
-(`lease_no_deref`); runtime behaviour is tested in the resource crate. See
-the resource README, "Managed call facade". Streaming units (`StreamOperation`,
-`StreamSink`, `Streaming`, `ConsumerGone`) run through the same facade with
-`Lease::submit_streaming`, or per-attempt checkout with
-`ResourceHandle::submit_streaming`.
+(`resource_managed_logger`); runtime behaviour is tested in the resource
+crate. See the resource README, "Managed call facade". Streaming units
+(`StreamOperation`, `StreamSink`, `Streaming`, `ConsumerGone`) run through
+the same facade with `ResourceHandle::submit_streaming`.
+
+**Raw leases are not exported (0.27.0):** `ResourceGuard`, `ReleaseOutcome`
+and the `Lease` facade are gone from the prelude and from
+`integration::resource` — a lease bypasses the effect journal, so it stays a
+host-only capability of the engine. An action names a resource only as a
+`#[resource]` field of type `ResourceHandle<R>`; `http::open_stream` /
+`open_stream_until` take `&ResourceHandle<R>`. The negative fixtures
+`removed_resource_guard` and `removed_lease` and the snapshot test
+`raw_leases_are_not_exported` pin the absence.
+
+| Before (≤ 0.26) | Now |
+|---|---|
+| `#[resource] db: ResourceGuard<Db>` | `#[resource] db: ResourceHandle<Db>` |
+| `lease.submit(op)` / `guard.into_lease().submit(op)` | `handle.submit(op)` |
+| `open_stream(&lease, request)` | `open_stream(&handle, request)` |
+| `*guard` (direct client calls) | an `Operation` calling the client through `OperationCx::call` |
 
 **Credentialed resources:** `integration::resource` re-exports `CredentialSlot`
 and `CredentialGuard`, and `integration::credential` (and the prelude)
@@ -298,7 +311,7 @@ next-page URLs, query-parameter keys, mTLS, a generic `Http<C>` resource,
 streaming request bodies and a `401` / `403` credential signal.
 
 **Resource handle and sessions:** the same persona re-exports
-`ResourceHandle` — the facade without a lease, checking out an instance per
+`ResourceHandle` — the facade checking out an instance per
 attempt after its quota and row-gate waits — and the session vocabulary
 `SessionProvider`, `SessionSpec`, `SessionCx`, `SessionEnd`, `SessionClosed`,
 `SessionBinding` and `SessionFuture`. `ResourceHandle::session` runs several
@@ -313,13 +326,6 @@ provider and the action-side call (`resource_session`), proves a
 cannot keep its borrowed session (`session_escape`); the runtime is tested in
 the resource crate and on real PostgreSQL in the engine. See the resource
 README, "Resource handle and sessions".
-
-**Release migration:** `ResourceGuard::release()` now returns
-`Result<ReleaseOutcome, Error>` instead of `Result<(), Error>`. Match
-`ReleaseOutcome::Completed`, `ReleaseOutcome::Deferred`, and `_` because the
-enum is non-exhaustive. A deferred release has consumed the guard and
-transferred ownership to bounded, best-effort queue cleanup; never retry it,
-and do not interpret it as proof that the provider hook will run.
 
 **Custom topology authoring:** `nebula_sdk::integration::resource` curates the open
 `Topology` contract, built-in provider hooks, terminal context, and store vocabulary.

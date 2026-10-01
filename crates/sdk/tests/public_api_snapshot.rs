@@ -148,17 +148,14 @@ fn sdk_resource_signatures() {
 }
 
 /// The managed call facade reaches the instance only through a granted
-/// attempt: neither the lease facade nor a submission derefs.
+/// attempt: a submission does not deref.
 #[test]
-fn lease_and_submission_have_no_deref() {
+fn submission_has_no_deref() {
     let text = resource_signatures(&workspace());
-    for (item, method) in [
-        ("nebula_resource::call::managed::Lease", "pub fn submit<"),
-        (
-            "nebula_resource::call::managed::Submission",
-            "pub fn cancel(",
-        ),
-    ] {
+    for (item, method) in [(
+        "nebula_resource::call::managed::Submission",
+        "pub fn cancel(",
+    )] {
         let lines = section(&text, item);
         assert!(
             lines.iter().any(|line| line.contains(method)),
@@ -221,6 +218,44 @@ fn the_http_adapter_leaks_no_client_type() {
         methods,
         [&"    pub fn new(config: &HttpConfig) -> Result<Self, Error>;"]
     );
+}
+
+/// Raw leases are host-only since 0.27.0: neither `ResourceGuard` (nor its
+/// `ReleaseOutcome`) nor the `Lease` facade is exported, and no exported
+/// signature names one — the streamed HTTP exchange takes a resource handle.
+#[test]
+fn raw_leases_are_not_exported() {
+    let workspace = workspace();
+    let exported = export_map(&workspace);
+    for module in ["integration::resource", "prelude"] {
+        for removed in ["ResourceGuard", "ReleaseOutcome", "Lease"] {
+            let path = format!("nebula_sdk::{module}::{removed} ");
+            assert!(
+                !exported.lines().any(|line| line.starts_with(&path)),
+                "`{module}::{removed}` must no longer be exported"
+            );
+        }
+    }
+    let text = resource_signatures(&workspace);
+    for removed in ["ResourceGuard<", "Lease<"] {
+        // A whole identifier only: `RetainedLease<` is a topology type.
+        let named = text
+            .match_indices(removed)
+            .any(|(at, _)| at == 0 || !text.as_bytes()[at - 1].is_ascii_alphanumeric());
+        assert!(!named, "no exported signature may name `{removed}`");
+    }
+    for item in [
+        "nebula_sdk::integration::resource::http::stream::open_stream",
+        "nebula_sdk::integration::resource::http::stream::open_stream_until",
+    ] {
+        let lines = section(&text, item);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("handle: &ResourceHandle<R>")),
+            "{item} must take a resource handle: {lines:#?}"
+        );
+    }
 }
 
 /// The `Limited` closure family is removed (MIGRATION P10): nothing of it is

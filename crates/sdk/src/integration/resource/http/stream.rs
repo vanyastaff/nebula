@@ -7,8 +7,8 @@ use http::{HeaderMap, HeaderName, StatusCode};
 use nebula_resource::{
     ErrorKind,
     call::{
-        Effect, Lease, OperationCx, OperationError, SentState, StreamOperation, StreamSink,
-        Streaming,
+        Effect, OperationCx, OperationError, ResourceHandle, SentState, StreamOperation,
+        StreamSink, Streaming,
     },
 };
 use tracing::Instrument as _;
@@ -227,15 +227,18 @@ impl fmt::Debug for ResponseStream {
 /// classifies them. A body over the transport's stream budget (or the
 /// request's [`max_bytes`](Request::max_bytes)) fails `Permanent`; a body
 /// read failure `Transient`; the unit's deadline mid-body `MaybeSent` (a
-/// `Write` then has an unknown outcome). The lease closing stops the body
-/// (`Cancelled`), and so does dropping or cancelling the stream. At most 8
-/// chunks are buffered; past them the exchange stops reading.
+/// `Write` then has an unknown outcome). The checked-out instance closing
+/// stops the body (`Cancelled`), and so does dropping or cancelling the
+/// stream. At most 8 chunks are buffered; past them the exchange stops
+/// reading. The unit runs under `handle`'s effect authority: a streamed
+/// effect on a read-only or journaled handle is refused before its first
+/// provider attempt.
 ///
 /// # Errors
 ///
 /// The unit's error when it failed before the head.
 pub async fn open_stream<R, M>(
-    lease: &Lease<R>,
+    handle: &ResourceHandle<R>,
     request: Request<M>,
 ) -> Result<ResponseStream, OperationError>
 where
@@ -243,7 +246,7 @@ where
     R::Instance: AsRef<HttpTransport>,
     M: Method,
 {
-    first_frame(lease.submit_streaming(StreamExchange { request }, STREAM_CAPACITY)).await
+    first_frame(handle.submit_streaming(StreamExchange { request }, STREAM_CAPACITY)).await
 }
 
 /// [`open_stream`] with the unit's deadline shortened to `deadline`.
@@ -252,7 +255,7 @@ where
 ///
 /// As [`open_stream`].
 pub async fn open_stream_until<R, M>(
-    lease: &Lease<R>,
+    handle: &ResourceHandle<R>,
     request: Request<M>,
     deadline: Instant,
 ) -> Result<ResponseStream, OperationError>
@@ -261,7 +264,7 @@ where
     R::Instance: AsRef<HttpTransport>,
     M: Method,
 {
-    let frames = lease
+    let frames = handle
         .submit_streaming(StreamExchange { request }, STREAM_CAPACITY)
         .with_deadline(deadline);
     first_frame(frames).await

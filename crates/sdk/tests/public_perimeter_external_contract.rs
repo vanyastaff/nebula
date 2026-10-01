@@ -9,8 +9,8 @@
 //! authoring, a third the rate-limit declaration paced through the managed
 //! call facade (with `resource_call_classify`: a call classified with the
 //! `OperationError` constructors, whose attempt cannot be settled by hand,
-//! `attempt_settle_private`), and a fourth a logger authored against the facade, whose
-//! `Lease` must not deref (`lease_no_deref`), a fifth a derived
+//! `attempt_settle_private`), and a fourth a logger authored against the facade,
+//! a fifth a derived
 //! credentialed resource (`resource_credentialed`:
 //! `CredentialSlot<BearerTokenCredential>` read through pinned slots), a
 //! sixth an HTTP API resource over the `resource-http` adapter
@@ -21,7 +21,9 @@
 //! borrowed session (`session_escape`), and an eighth derives an action whose
 //! `#[resource]` fields are resource handles (`action_resource_handle`); the
 //! removed `Limited` closure family cannot wrap a client
-//! (`removed_limited_wrap`).
+//! (`removed_limited_wrap`), and the host-only raw leases are not exported
+//! (`removed_resource_guard`, `removed_lease`): every positive binary reaches
+//! its resource through a `ResourceHandle`.
 //! Each negative binary targets one distinct authority or persistence
 //! escape hatch that must stay unavailable, including paths below `__private`:
 //! Rust documentation hiding is not access control. Procedural derives have a
@@ -47,7 +49,8 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/resource_credentialed.rs",
     "src/bin/resource_http.rs",
     "src/bin/http_no_raw_client.rs",
-    "src/bin/lease_no_deref.rs",
+    "src/bin/removed_resource_guard.rs",
+    "src/bin/removed_lease.rs",
     "src/bin/resource_session.rs",
     "src/bin/resource_handle_no_deref.rs",
     "src/bin/session_escape.rs",
@@ -114,6 +117,8 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("resource_manager", "Manager"),
     ("resource_registry", "Registry"),
     ("resource_release_queue", "ReleaseQueue"),
+    ("removed_resource_guard", "ResourceGuard"),
+    ("removed_lease", "Lease"),
     ("authority_constructor", "Principal"),
     ("owner_selector", "CredentialOwner"),
     ("raw_writer", "CredentialPersistence"),
@@ -314,19 +319,6 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
                 .eq([3, 4]),
         "credential constructor must reject four arguments when it takes three: {}",
         render_output(&arity)
-    );
-
-    let no_deref = cargo_probe(temp.path(), "check", "lease_no_deref");
-    assert!(
-        !no_deref.status.success(),
-        "a lease facade unexpectedly dereferenced to its instance"
-    );
-    let diagnostics = compiler_errors(&no_deref);
-    std::assert_matches!(
-        diagnostics.as_slice(),
-        [error] if error.code.as_deref() == Some("E0614") && error.message.contains("Lease"),
-        "the lease facade must fail only for its missing `Deref`: {}",
-        render_output(&no_deref)
     );
 
     let row_no_deref = cargo_probe(temp.path(), "check", "resource_handle_no_deref");

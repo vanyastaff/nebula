@@ -6,8 +6,8 @@
 use std::{num::NonZeroU32, time::Duration};
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ErrorKind, Lease, Operation, OperationCx, OperationError, Provider,
-    Resident, ResidentProvider, ResourceContext, ResourceKey, ResourceMetadataDraft,
+    Cost, Effect, Error, ErrorKind, Operation, OperationCx, OperationError, Provider, Resident,
+    ResidentProvider, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft,
     no_credential_slots, resource_key,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize, metadata_name};
@@ -106,8 +106,8 @@ impl Operation<Inventory> for Reserve {
     }
 }
 
-/// What action code does with a managed lease of the inventory.
-async fn reserve(inventory: &Lease<Inventory>, item: &str, quantity: u32) -> Result<u64, Error> {
+/// What action code does with the inventory's resource handle.
+async fn reserve(inventory: &ResourceHandle<Inventory>, item: &str, quantity: u32) -> Result<u64, Error> {
     Ok(inventory
         .submit(Reserve {
             item: item.to_owned(),

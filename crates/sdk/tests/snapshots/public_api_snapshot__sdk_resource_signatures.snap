@@ -98,16 +98,6 @@ pub enum ErrorKind {
 }
 impl fmt::Display for ErrorKind
 
-## enum nebula_resource::guard::ReleaseOutcome
-exported as nebula_sdk::integration::resource::ReleaseOutcome
-exported as nebula_sdk::prelude::ReleaseOutcome
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum ReleaseOutcome {
-    Completed,
-    Deferred,
-}
-
 ## enum nebula_resource::rate_limit::LimitScope
 exported as nebula_sdk::integration::resource::LimitScope
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -302,11 +292,11 @@ pub async fn send<R, M>(attempt: Attempt<'_, R>, request: &Request<M>) -> Result
 
 ## fn nebula_sdk::integration::resource::http::stream::open_stream [cfg(feature = "resource-http")]
 exported as nebula_sdk::integration::resource::http::open_stream
-pub async fn open_stream<R, M>(lease: &Lease<R>, request: Request<M>) -> Result<ResponseStream, OperationError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
+pub async fn open_stream<R, M>(handle: &ResourceHandle<R>, request: Request<M>) -> Result<ResponseStream, OperationError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
 
 ## fn nebula_sdk::integration::resource::http::stream::open_stream_until [cfg(feature = "resource-http")]
 exported as nebula_sdk::integration::resource::http::open_stream_until
-pub async fn open_stream_until<R, M>(lease: &Lease<R>, request: Request<M>, deadline: Instant) -> Result<ResponseStream, OperationError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
+pub async fn open_stream_until<R, M>(handle: &ResourceHandle<R>, request: Request<M>, deadline: Instant) -> Result<ResponseStream, OperationError> where R: HttpApi, R::Instance: AsRef<HttpTransport>, M: Method;
 
 ## macro-generated nebula_core::keys::ResourceKey
 exported as nebula_sdk::integration::resource::ResourceKey
@@ -465,26 +455,6 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
 }
 impl<R: Provider + PinSlots> Drop for Attempt<'_, R>
 impl<R: Provider + PinSlots> fmt::Debug for Attempt<'_, R>
-
-## struct nebula_resource::call::managed::Lease
-exported as nebula_sdk::integration::resource::Lease
-pub struct Lease<R: Provider> {
-    /* private fields */
-}
-impl<R: Provider> Lease<R> {
-    pub fn resource_key(&self) -> &ResourceKey;
-    pub fn closing(&self) -> LeaseClosing;
-    pub fn is_closing(&self) -> bool;
-}
-impl<R: Provider + PinSlots> Lease<R> {
-    pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output>;
-}
-impl<R: Provider + PinSlots> Lease<R> {
-    pub fn submit_streaming<O: StreamOperation<R>>(&self, operation: O, capacity: NonZeroUsize) -> Streaming<O::Item, O::Output>;
-}
-impl<R: Provider + PinSlots> From<ResourceGuard<R>> for Lease<R>
-impl<R: Provider> Clone for Lease<R>
-impl<R: Provider> fmt::Debug for Lease<R>
 
 ## struct nebula_resource::call::managed::OperationCx
 exported as nebula_sdk::integration::resource::OperationCx
@@ -659,30 +629,6 @@ impl LeaseClosing {
     pub fn closed(&self) -> impl Future<Output = ()> + Send + '_;
     pub fn into_closed(self) -> impl Future<Output = ()> + Send + 'static;
 }
-
-## struct nebula_resource::guard::ResourceGuard
-exported as nebula_sdk::integration::resource::ResourceGuard
-exported as nebula_sdk::prelude::ResourceGuard
-pub struct ResourceGuard<R: Provider> {
-    /* private fields */
-}
-impl<R: Provider> ResourceGuard<R> {
-    pub fn into_lease(self) -> Lease<R> where R: PinSlots;
-    pub fn taint(&mut self);
-    pub fn hold_duration(&self) -> Duration;
-    pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter>;
-    pub fn resource_key(&self) -> &ResourceKey;
-    pub fn topology_tag(&self) -> TopologyTag;
-    pub fn generation(&self) -> u64;
-    pub fn closing(&self) -> LeaseClosing;
-    pub fn is_closing(&self) -> bool;
-    pub async fn release(mut self) -> Result<ReleaseOutcome, crate::Error>;
-}
-impl<R: Provider> Deref for ResourceGuard<R>
-impl<R: Provider> Drop for ResourceGuard<R>
-impl<R: Provider> nebula_core::Guard for ResourceGuard<R>
-impl<R: Provider> nebula_core::TypedGuard for ResourceGuard<R>
-impl<R: Provider> std::fmt::Debug for ResourceGuard<R>
 
 ## struct nebula_resource::rate_limit::RateLimitSettings
 exported as nebula_sdk::integration::resource::RateLimitSettings
