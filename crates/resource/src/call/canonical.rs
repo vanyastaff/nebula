@@ -5,9 +5,11 @@
 //! Nothing is materialized as a [`Value`] first, so an object that writes
 //! one key twice — a `#[serde(flatten)]` collision, a hand-written impl —
 //! is refused instead of keeping its last member, and output past the cap
-//! stops the serialization as soon as it is written. Scalars and map keys
-//! go through `serde_json` itself, so the bytes are exactly those of the
-//! request's JSON value re-emitted with sorted keys.
+//! stops the serialization as soon as it is written — a string or a map key
+//! included, refused before it is copied or as it is formatted. Scalars,
+//! scalar map keys and string escapes go through `serde_json` itself, so
+//! the bytes are exactly those of the request's JSON value re-emitted with
+//! sorted keys.
 
 use std::{cell::Cell, fmt};
 
@@ -124,9 +126,9 @@ fn push_scalar<T: Serialize>(
     budget.charge(out.len().saturating_sub(start))
 }
 
-/// A map key as `serde_json` stringifies it (a string, a number, a bool, a
-/// unit variant), read back from a one-member object.
-fn map_key<T: Serialize + ?Sized>(key: &T) -> Result<String, CanonicalError> {
+/// A scalar map key (a number, a bool, a char) as `serde_json` stringifies
+/// it, read back from a one-member object. Its text is a few bytes.
+fn scalar_key<T: Serialize>(key: T) -> Result<String, CanonicalError> {
     match serde_json::value::Serializer.collect_map(std::iter::once((key, ()))) {
         Ok(Value::Object(map)) => map
             .into_iter()
@@ -134,6 +136,200 @@ fn map_key<T: Serialize + ?Sized>(key: &T) -> Result<String, CanonicalError> {
             .map(|(key, _)| key)
             .ok_or(CanonicalError::Unserializable),
         _ => Err(CanonicalError::Unserializable),
+    }
+}
+
+/// Refuses `text` when it cannot fit as a JSON string: escaping only
+/// lengthens it, and the quotes count.
+fn check_text(budget: &Budget, len: usize) -> Result<(), CanonicalError> {
+    budget.check(len.saturating_add(2))
+}
+
+/// The `Display` text of `value`, collected only while it can still fit
+/// as a JSON string: a longer one is refused as it is written.
+fn bounded_display<T: fmt::Display + ?Sized>(
+    budget: &Budget,
+    value: &T,
+) -> Result<String, CanonicalError> {
+    struct Bounded<'a> {
+        text: String,
+        budget: &'a Budget,
+        over: bool,
+    }
+
+    impl fmt::Write for Bounded<'_> {
+        fn write_str(&mut self, part: &str) -> fmt::Result {
+            if check_text(self.budget, self.text.len().saturating_add(part.len())).is_err() {
+                self.over = true;
+                return Err(fmt::Error);
+            }
+            self.text.push_str(part);
+            Ok(())
+        }
+    }
+
+    let mut bounded = Bounded {
+        text: String::new(),
+        budget,
+        over: false,
+    };
+    match fmt::write(&mut bounded, format_args!("{value}")) {
+        Ok(()) => Ok(bounded.text),
+        Err(_) if bounded.over => Err(CanonicalError::TooLarge),
+        Err(_) => Err(CanonicalError::Unserializable),
+    }
+}
+
+/// A map key, stringified as `serde_json` stringifies it — a string, a
+/// number, a bool, a char, a unit variant, a newtype of one — and refused
+/// before it is copied, or as it is formatted, once it cannot fit.
+struct MapKey<'a> {
+    budget: &'a Budget,
+}
+
+/// Stringifies a scalar key as `serde_json` does.
+macro_rules! scalar_keys {
+    ($($method:ident($scalar:ty);)*) => {
+        $(
+            fn $method(self, key: $scalar) -> Result<String, CanonicalError> {
+                scalar_key(key)
+            }
+        )*
+    };
+}
+
+/// Refuses a key that is not a string, a scalar or a newtype of one.
+macro_rules! non_keys {
+    ($($method:ident($($arg:ty),*);)*) => {
+        $(
+            fn $method(self, $(_: $arg),*) -> Result<String, CanonicalError> {
+                Err(CanonicalError::Unserializable)
+            }
+        )*
+    };
+}
+
+impl Serializer for MapKey<'_> {
+    type Ok = String;
+    type Error = CanonicalError;
+    type SerializeSeq = ser::Impossible<String, CanonicalError>;
+    type SerializeTuple = ser::Impossible<String, CanonicalError>;
+    type SerializeTupleStruct = ser::Impossible<String, CanonicalError>;
+    type SerializeTupleVariant = ser::Impossible<String, CanonicalError>;
+    type SerializeMap = ser::Impossible<String, CanonicalError>;
+    type SerializeStruct = ser::Impossible<String, CanonicalError>;
+    type SerializeStructVariant = ser::Impossible<String, CanonicalError>;
+
+    scalar_keys! {
+        serialize_bool(bool);
+        serialize_i8(i8);
+        serialize_i16(i16);
+        serialize_i32(i32);
+        serialize_i64(i64);
+        serialize_i128(i128);
+        serialize_u8(u8);
+        serialize_u16(u16);
+        serialize_u32(u32);
+        serialize_u64(u64);
+        serialize_u128(u128);
+        serialize_f32(f32);
+        serialize_f64(f64);
+        serialize_char(char);
+    }
+
+    non_keys! {
+        serialize_bytes(&[u8]);
+        serialize_none();
+        serialize_unit();
+        serialize_unit_struct(&'static str);
+    }
+
+    fn serialize_str(self, key: &str) -> Result<String, CanonicalError> {
+        check_text(self.budget, key.len())?;
+        Ok(key.to_owned())
+    }
+
+    fn collect_str<T: fmt::Display + ?Sized>(self, key: &T) -> Result<String, CanonicalError> {
+        bounded_display(self.budget, key)
+    }
+
+    fn serialize_unit_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        variant: &'static str,
+    ) -> Result<String, CanonicalError> {
+        self.serialize_str(variant)
+    }
+
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(
+        self,
+        _name: &'static str,
+        key: &T,
+    ) -> Result<String, CanonicalError> {
+        key.serialize(self)
+    }
+
+    fn serialize_some<T: Serialize + ?Sized>(self, _key: &T) -> Result<String, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_newtype_variant<T: Serialize + ?Sized>(
+        self,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
+        _key: &T,
+    ) -> Result<String, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStruct, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant, CanonicalError> {
+        Err(CanonicalError::Unserializable)
     }
 }
 
@@ -245,6 +441,11 @@ impl<'a> Serializer for Canonical<'a> {
 
     fn serialize_str(self, value: &str) -> Result<(), CanonicalError> {
         push_str(self.out, self.budget, value)
+    }
+
+    fn collect_str<T: fmt::Display + ?Sized>(self, value: &T) -> Result<(), CanonicalError> {
+        let text = bounded_display(self.budget, value)?;
+        push_str(self.out, self.budget, &text)
     }
 
     fn serialize_bytes(self, value: &[u8]) -> Result<(), CanonicalError> {
@@ -515,7 +716,9 @@ impl SerializeMap for Object<'_> {
     type Error = CanonicalError;
 
     fn serialize_key<T: Serialize + ?Sized>(&mut self, key: &T) -> Result<(), Self::Error> {
-        self.key = Some(map_key(key)?);
+        self.key = Some(key.serialize(MapKey {
+            budget: self.budget,
+        })?);
         Ok(())
     }
 
