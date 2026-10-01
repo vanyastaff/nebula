@@ -232,8 +232,11 @@ configuration, and process lifecycle.
   the unit settled (`EffectJournal::record_unsent_failure`, ledger command
   `RecordUnsentFailure`, kept in the protocol record) — so a deterministic program that
   branched on that failure takes the same branch and replays on. A slot recorded
-  without it (an older journal, or a best-effort recording that did not land) fails
-  `Permanent`; the static detail and sent state are not replayed. A lower stable-key slot whose call crossed
+  without it (an older journal) fails `Permanent`; the static detail and sent state are
+  not replayed. The unit records it before its failure reaches the program; a
+  recording that does not land fails closed — the position turns uncertain, no fresh
+  effect above it is prepared in that attempt, and the node defers so a retry meets
+  the slot again and records it. A lower stable-key slot whose call crossed
   without an outcome may have applied before or after: its outcome is recorded
   unknown and the node halts `ENGINE:EFFECT_OUTCOME_UNKNOWN`. With nothing ordered
   after it, an unsettled slot is granted again on retry. Every fresh slot records, at its

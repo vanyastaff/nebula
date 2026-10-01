@@ -161,8 +161,12 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
     /// [`NotCrossed`](Crossing::NotCrossed), or it failed before a call was
     /// granted. An owner keeps it to fail the effect the same way when a
     /// later run must not send it again
-    /// ([`JournalRefusal::Superseded`]). Best effort — a refusal changes
-    /// nothing about the unit's result; defaults to nothing.
+    /// ([`JournalRefusal::Superseded`]). The unit runtime awaits it before
+    /// the unit's failure reaches its caller, so nothing the program runs
+    /// after that failure precedes the record. A refusal changes nothing
+    /// about the unit's result; an owner that could not record it must fail
+    /// closed (hold later effects of its run and defer), never let a later
+    /// run replay the effect without it. Defaults to nothing.
     ///
     /// # Errors
     ///

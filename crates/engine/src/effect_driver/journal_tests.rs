@@ -412,6 +412,8 @@ struct CountingLedger {
     stall_next_prepare: AtomicBool,
     /// Notified when a prepare stalls.
     prepare_stalled: tokio::sync::Notify,
+    /// The next unsent-failure record is refused, unwritten.
+    fail_next_unsent_failure: AtomicBool,
     /// Notified when an outcome write hangs.
     hung: tokio::sync::Notify,
 }
@@ -503,6 +505,11 @@ impl OperationLedger for CountingLedger {
             self.hung.notify_one();
             return std::future::pending().await;
         }
+        if matches!(command, OperationCommand::RecordUnsentFailure { .. })
+            && self.fail_next_unsent_failure.swap(false, Ordering::SeqCst)
+        {
+            return Err(OperationLedgerError::Unavailable);
+        }
         self.inner.advance(scope, slot_id, fencing, command).await
     }
 }
@@ -560,6 +567,7 @@ impl Harness {
             lose_next_prepare_answer: AtomicBool::new(false),
             stall_next_prepare: AtomicBool::new(false),
             prepare_stalled: tokio::sync::Notify::new(),
+            fail_next_unsent_failure: AtomicBool::new(false),
             hung: tokio::sync::Notify::new(),
         });
         let scope = Scope::new("workspace-a", "org-a");
@@ -2881,6 +2889,83 @@ async fn a_succeeding_node_that_skips_a_prepared_only_effect_is_a_mismatch() {
         Err(EffectExecutionError::OccurrenceMismatch)
     );
     assert!(harness.desk.keys().is_empty(), "nothing sent");
+}
+
+/// A throttled unit whose classification the ledger does not take fails
+/// closed: the action catches the throttle and submits a later effect,
+/// which is not prepared or sent, and the node defers. The retry meets the
+/// slot again, records the classification and completes the same branch; a
+/// recovery past the later applied effect then replays the throttle.
+#[tokio::test]
+async fn an_unrecorded_unsent_failure_holds_later_effects_and_defers() {
+    let harness = Harness::new().await;
+    // The program: charge 60; throttled → charge 61.
+    let program = async |journal: &NodeEffectJournal| {
+        let handle = harness.handle(journal);
+        let first = handle.submit(Charge::<false> { order: 60 }).await;
+        let throttled = first.as_ref().err().map(|error| error.kind().clone());
+        let then = handle.submit(Charge::<false> { order: 61 }).await;
+        (throttled, then)
+    };
+
+    harness.desk.script(&[Reply::Throttled]);
+    harness
+        .ledger
+        .fail_next_unsent_failure
+        .store(true, Ordering::SeqCst);
+    let first = harness.journal(1);
+    let (throttled, then) = program(&first).await;
+    assert_eq!(
+        throttled,
+        Some(nebula_resource::error::ErrorKind::Exhausted { retry_after: None })
+    );
+    let held = then.expect_err("held above the unrecorded position");
+    assert_eq!(held.sent(), SentState::NotSent);
+    assert_eq!(harness.desk.keys().len(), 1, "only the throttled call");
+    let verdict = first.conclude(DRAIN).await;
+    assert!(
+        verdict.is_err_and(EffectExecutionError::is_deferred),
+        "{verdict:?}"
+    );
+    assert_eq!(harness.slots().await.len(), 1, "nothing prepared above it");
+    assert_eq!(
+        harness.slots().await[0]
+            .record()
+            .protocol()
+            .expect("protocol")
+            .unsent_failure(),
+        None
+    );
+
+    // The retry: throttled again, recorded this time; the branch runs.
+    harness.desk.script(&[Reply::Throttled]);
+    let retry = harness.journal(2);
+    let (throttled, then) = program(&retry).await;
+    assert!(throttled.is_some());
+    then.expect("the later effect applies");
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+    assert_eq!(
+        harness.slots().await[0]
+            .record()
+            .protocol()
+            .expect("protocol")
+            .unsent_failure()
+            .map(UnsentFailureCode::as_str),
+        Some("exhausted")
+    );
+
+    // A recovery: the lower one is superseded with the recorded throttle,
+    // the same branch replays the later one, nothing is sent.
+    let sent = harness.desk.keys().len();
+    let recovery = harness.journal(3);
+    let (throttled, then) = program(&recovery).await;
+    assert_eq!(
+        throttled,
+        Some(nebula_resource::error::ErrorKind::Exhausted { retry_after: None })
+    );
+    then.expect("replayed");
+    assert_eq!(recovery.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), sent, "nothing sent on recovery");
 }
 
 #[tokio::test]

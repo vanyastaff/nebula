@@ -442,8 +442,9 @@ impl OwnedEffect {
     }
 
     /// Tells the owner how the unit failed while sending nothing
-    /// ([`EffectJournal::record_unsent_failure`]): best effort, the unit's
-    /// result stands either way.
+    /// ([`EffectJournal::record_unsent_failure`]), before the failure is
+    /// returned: the unit's result stands either way, and an owner that
+    /// could not record it fails closed on its side.
     pub(super) async fn record_unsent(&self, slot: &JournalSlot, kind: &ErrorKind) {
         if let Err(refusal) = self
             .owner

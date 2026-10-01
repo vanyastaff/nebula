@@ -159,9 +159,12 @@
 //!     ([`EffectJournal::record_unsent_failure`], kept in the slot's
 //!     protocol record) — so a deterministic program that branched on that
 //!     failure takes the same branch and replays on. The same ledger always
-//!     answers the same way. A slot recorded before failures were (or whose
-//!     best-effort recording did not land) fails `Permanent`; the unit's
-//!     static detail and sent state are not replayed;
+//!     answers the same way. A slot recorded before failures were fails
+//!     `Permanent`; the unit's static detail and sent state are not
+//!     replayed. A recording that does not land fails closed: the position
+//!     turns uncertain — no fresh effect above it is prepared in that
+//!     attempt — and the node defers, so a retry meets the slot again and
+//!     records it;
 //!   - an `L` whose call crossed without a recorded outcome (a stable-key
 //!     effect left ambiguous or outstanding) may or may not have applied
 //!     before `H`: granting it again could apply it after `H`, so its
@@ -685,8 +688,10 @@ struct JournalState {
     /// journal's conclusion. The sync lock around the map is never held
     /// across an await.
     slots: HashMap<EffectSlotId, Arc<tokio::sync::Mutex<LedgerSlot>>>,
-    /// The failure that decides the node's verdict (a deferring one
-    /// replaces a non-deferring one).
+    /// The occurrence label of each slot this journal prepared.
+    occurrences: HashMap<EffectSlotId, String>,
+    /// The failure that decides the node's verdict (the first one, unless
+    /// a halting one replaces it; see `note_failure`).
     failure: Option<EffectExecutionError>,
 }
 
@@ -1122,9 +1127,18 @@ impl Drop for PrepareInFlight<'_> {
         if self.answered {
             return;
         }
-        if let Some(position) = Position::parse(self.occurrence) {
+        self.journal.mark_uncertain(self.occurrence);
+    }
+}
+
+impl NodeEffectJournal {
+    /// Marks `occurrence` uncertain: what its slot holds is not known in
+    /// this attempt, so no fresh slot above it is prepared (the node
+    /// defers, and the next attempt reads and meets it first).
+    fn mark_uncertain(&self, occurrence: &str) {
+        if let Some(position) = Position::parse(occurrence) {
             let order = position.order();
-            let mut state = self.journal.state();
+            let mut state = self.state();
             let lowest = state
                 .positions
                 .uncertain
@@ -1133,7 +1147,7 @@ impl Drop for PrepareInFlight<'_> {
             *lowest = (*lowest).min(order);
         }
         // A higher prepare waiting on this one decides now.
-        self.journal.inner.claims_settled.notify_waiters();
+        self.inner.claims_settled.notify_waiters();
     }
 }
 
@@ -2528,6 +2542,9 @@ impl EffectJournal for NodeEffectJournal {
                 return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
             }
             state.slots.insert(slot_id, Arc::clone(&entry));
+            state
+                .occurrences
+                .insert(slot_id, intent.occurrence.to_owned());
             if state.iteration.is_some() {
                 state.iteration_slots.push(slot_id);
             }
@@ -2699,9 +2716,12 @@ impl EffectJournal for NodeEffectJournal {
             .map_err(|error| self.refuse(STEP, error))
     }
 
-    /// Best effort, and never a failure of the node: the unit's result
-    /// stands, and a slot whose failure was not recorded replays a
-    /// superseded refusal as `Permanent`. The ledger keeps it only while
+    /// Fails closed: the unit's result stands either way, but a
+    /// classification the ledger did not take leaves the position
+    /// uncertain — no fresh effect above it is prepared in this attempt —
+    /// and defers the node, so a retry meets the slot again and records
+    /// it. (Only a slot written before classifications existed replays a
+    /// superseded refusal as `Permanent`.) The ledger keeps it only while
     /// nothing of the slot is in flight or settled.
     async fn record_unsent_failure(
         &self,
@@ -2725,13 +2745,54 @@ impl EffectJournal for NodeEffectJournal {
         if self.is_closed() {
             return Err(JournalRefusal::Closed);
         }
-        slot.advance(
-            self.access(),
-            &OperationCommand::RecordUnsentFailure { failure: code },
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| classify_failure(error).0)
+        // Only a slot nothing of which crossed keeps a classification: any
+        // other is never superseded, so there is nothing to record.
+        let eligible = slot.protocol().is_ok_and(|protocol| {
+            matches!(
+                protocol.phase(),
+                EffectPhase::Prepared | EffectPhase::BeforeBoundary
+            )
+        });
+        if !eligible {
+            return Ok(());
+        }
+        let recorded = slot
+            .advance(
+                self.access(),
+                &OperationCommand::RecordUnsentFailure { failure: code },
+            )
+            .await;
+        drop(slot);
+        let Err(error) = recorded else {
+            return Ok(());
+        };
+        // Fail closed: without its classification, a later run that
+        // supersedes the slot would fail it differently from what the
+        // program saw. The unit is still settling — its failure reaches
+        // the program only after this returns — so marking the position
+        // uncertain now keeps every fresh effect above it from being
+        // prepared in this attempt, and the deferral lets a retry meet
+        // the slot again and record it.
+        let occurrence = self
+            .state()
+            .occurrences
+            .get(&EffectSlotId::from_storage_bytes(*unit.id()))
+            .cloned();
+        if let Some(occurrence) = occurrence {
+            self.mark_uncertain(&occurrence);
+        }
+        tracing::warn!(
+            execution_id = %self.inner.authority.execution_id,
+            node_key = %self.inner.authority.node_key,
+            code = error.code(),
+            "an unsent failure could not be recorded; deferring the node"
+        );
+        let deferred = if error.is_deferred() {
+            error
+        } else {
+            EffectExecutionError::Ledger(OperationLedgerError::AcknowledgementUnknown)
+        };
+        Err(self.refuse(effect_journal_step::SETTLE, deferred))
     }
 
     /// A ticket raised under the state lock, like every admission.
