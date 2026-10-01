@@ -618,7 +618,8 @@ pub(super) struct UnitShared {
     /// Worst settled [`SentState`] rank across granted attempts, a
     /// throttled attempt's aside: the provider applied nothing.
     worst: AtomicU8,
-    /// The latest settled attempt's [`SentState`] rank, throttled or not.
+    /// The latest settled attempt's [`SentState`] rank, throttled or not;
+    /// `NotSent` once an execution owner refused an attempt after it.
     last: AtomicU8,
     /// The unit's owned effect, for an `Idempotent` or `Write` unit on a
     /// journaled row facade.
@@ -768,6 +769,15 @@ impl UnitShared {
         self.granted.load(Ordering::Acquire)
     }
 
+    /// An execution owner refused the attempt after the latest settled one:
+    /// its refusal, not that attempt, is now the unit's last word, so a
+    /// throttle it followed no longer counts — the provider applied nothing.
+    /// An attempt that may have crossed still counts through `worst`.
+    fn owner_refused_next(&self) {
+        self.last
+            .store(SentState::NotSent.rank(), Ordering::Release);
+    }
+
     fn set_reporting(&self, throttle: Option<OperationError>) {
         *self
             .reporting
@@ -786,9 +796,10 @@ impl UnitShared {
 
     /// The unit's sent state: `NotSent` when no attempt was granted, however
     /// the author settled; otherwise the worst settled attempt — a throttled
-    /// attempt only counts when it was the last, as the provider applied
-    /// nothing — raised to `MaybeSent` when the unit ended abnormally
-    /// (deadline, panic).
+    /// attempt only counts when it was the last and no execution owner
+    /// refused an attempt after it, as the provider applied nothing —
+    /// raised to `MaybeSent` when the unit ended abnormally (deadline,
+    /// panic).
     fn fold(&self, abnormal: bool) -> SentState {
         if self.attempts() == 0 {
             return SentState::NotSent;
@@ -1142,6 +1153,11 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
         let (host, shared) = (self.host, self.shared);
         let admitted = self.admit(&cost).await;
         host.record_attempt(admitted.is_ok());
+        if let Err(refusal) = &admitted
+            && refusal.supersedes_retried()
+        {
+            shared.owner_refused_next();
+        }
         let (target, pin) = admitted?;
         Ok(Attempt {
             target,
