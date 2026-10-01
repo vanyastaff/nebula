@@ -140,7 +140,7 @@ configuration, and process lifecycle.
   scope violation instead of reaching a global row. Plans recorded without an effect
   field stay refused.
 - **Node effect journal** (`effect_driver::journal`, crate-private). A frozen,
-  stateless or control `Journaled` action on a durable turn (operation ledger and execution fence
+  stateless `Journaled` action on a durable turn (operation ledger and execution fence
   present) runs under one `NodeEffectJournal` per node attempt, through
   `ActionRuntime::execute_journaled_action` and an engine-private admission witness.
   Its resource handles (`Manager::handle_any_journaled`) drive every `Idempotent` /
@@ -207,13 +207,14 @@ configuration, and process lifecycle.
   `nebula_effect_journal_refusals_total{step,refusal}`,
   `nebula_effect_journal_verdicts_total{code}`. Every other `Journaled` node keeps
   read-only handles (reads run, writes are refused `NotSent`), and the refusal says
-  why: a stateful action ("stateful effects are journaled per iteration in a later
-  release"), an agent action ("agent effects are not journaled; the agent profile is
-  planned"), a stream or other kind ("effects of this action kind are not
-  journaled"), or a stateless or control one without execution stores ("journaled
-  effects need execution stores"). The crate-private `JournalShape` maps a kind to
-  how it is journaled: `Flat` (stateless, control), `Iterated` (stateful — not yet),
-  `None` (agent, stream and the rest).
+  why: a control action ("control actions decide flow and must not cause effects;
+  move effects to a stateless action"), a stateful action ("stateful effects are
+  journaled per iteration in a later release"), an agent action ("agent effects are
+  not journaled; the agent profile is planned"), a stream or other kind ("effects of
+  this action kind are not journaled"), or a stateless one without execution stores
+  ("journaled effects need execution stores"). The crate-private `JournalShape` maps
+  a kind to how it is journaled: `Flat` (stateless), `Iterated` (stateful — not
+  yet), `None` (control, agent, stream and the rest).
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.

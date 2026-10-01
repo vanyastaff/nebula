@@ -393,16 +393,15 @@ impl ActionRuntime {
 
     /// Execute a journaled action under its node's effect journal.
     ///
-    /// The dispatch path of a stateless or control action whose admitted
-    /// contract is
+    /// The dispatch path of a stateless action whose admitted contract is
     /// [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled)
     /// on a durable turn: `admission` proves the engine built the node
     /// attempt's
     /// [`NodeEffectJournal`](crate::effect_driver::NodeEffectJournal) and
     /// handed it to the action's resource handles through `context`. Only
     /// actions of a journaled
-    /// [`JournalShape`](crate::effect_driver::JournalShape) — stateless and
-    /// control — with no remote capability are admitted; public entry
+    /// [`JournalShape`](crate::effect_driver::JournalShape) — stateless
+    /// only — with no remote capability are admitted; public entry
     /// points keep refusing the contract.
     pub(crate) async fn execute_journaled_action(
         &self,
@@ -877,9 +876,9 @@ impl ActionRuntime {
     /// dispatch as one-shot evaluators and never run through the runner —
     /// they produce flow-control [`ActionResult`] variants but no I/O. The
     /// handle surface is intentionally identical to stateless from the
-    /// runtime's POV — including resource effects: a journaled control
-    /// action's handles in `context` record through its node's effect
-    /// journal exactly as a stateless action's do.
+    /// runtime's POV. A control action is never journaled: its resource
+    /// handles are read-only, so a write through one is refused before any
+    /// provider call.
     async fn execute_control_handle(
         &self,
         metadata: &ActionMetadata,
