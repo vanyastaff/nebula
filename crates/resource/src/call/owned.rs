@@ -13,7 +13,9 @@
 //! - **each attempt** — the previous attempt's call is explained when the
 //!   attempt starts ([`OwnedEffect::flush_previous`]); after the checkout
 //!   and the credential reads, before the registration, the owner grants
-//!   the call ([`OwnedEffect::grant`]); a registration that then refuses
+//!   the call ([`OwnedEffect::grant`]) — unless a reload changed the row's
+//!   configuration since the unit was submitted — and the unit's deadline
+//!   shrinks to the grant's budget; a registration that then refuses
 //!   explains it `NotCrossed` ([`OwnedEffect::release_refused`]);
 //! - **settle** ([`OwnedEffect::finish`]) — the last call is settled or
 //!   explained from the unit's result.
@@ -90,6 +92,8 @@ pub(super) struct OwnedEffect {
     owner: Arc<dyn EffectJournal>,
     resource_key: ResourceKey,
     binding: SlotIdentity,
+    /// The row's configuration fingerprint when the unit was submitted.
+    config_fingerprint: u64,
     declaration: JournalDeclaration,
     occurrence: String,
     /// Set by a `Runnable` prepare.
@@ -133,14 +137,16 @@ impl fmt::Debug for OwnedEffect {
 }
 
 impl OwnedEffect {
-    /// The owned state of a unit of `declaration` on `key`: refused
-    /// `Cancelled` when `owner` closed; otherwise with its occurrence label
+    /// The owned state of a unit of `declaration` on `key`, whose row is at
+    /// `config_fingerprint`: refused `Cancelled` when `owner` closed;
+    /// otherwise with its occurrence label
     /// `unit/v1/{key}/{kind}/{name}/v{version}/#{ordinal:06}` and an
     /// in-flight ticket.
     pub(super) fn submit(
         owner: &Arc<dyn EffectJournal>,
         binding: &SlotIdentity,
         key: &ResourceKey,
+        config_fingerprint: u64,
         declaration: JournalDeclaration,
     ) -> Result<Self, OperationError> {
         if owner.is_closed() {
@@ -166,6 +172,7 @@ impl OwnedEffect {
             owner: Arc::clone(owner),
             resource_key: key.clone(),
             binding: binding.clone(),
+            config_fingerprint,
             declaration,
             occurrence,
             slot: OnceLock::new(),
@@ -222,25 +229,60 @@ impl OwnedEffect {
     }
 
     /// Asks the owner for the current attempt's call; on a grant the call
-    /// is pending until the attempt is explained or settled.
-    pub(super) async fn grant(&self) -> Result<(), OperationError> {
+    /// is pending until the attempt is explained or settled, and the
+    /// grant's deadline (when it has a budget) is returned: the unit must
+    /// not run past it.
+    ///
+    /// Refused, with nothing asked of the owner, when the row's
+    /// configuration (`config_fingerprint`, read now) is no longer the one
+    /// the effect was prepared against: a reload may have pointed the row
+    /// at another destination. A grant whose budget is already spent is
+    /// explained `NotCrossed` and refused.
+    pub(super) async fn grant(
+        &self,
+        config_fingerprint: u64,
+    ) -> Result<Option<tokio::time::Instant>, OperationError> {
         let Some(slot) = self.slot() else {
             return Err(OperationError::new(
                 ErrorKind::Permanent,
                 "effect slot missing at the grant",
             ));
         };
+        if config_fingerprint != self.config_fingerprint {
+            tracing::warn!(
+                target: "nebula.resource",
+                occurrence = %self.occurrence,
+                "resource configuration changed since the effect was prepared; attempt refused"
+            );
+            return Err(OperationError::new(
+                ErrorKind::Permanent,
+                "resource configuration changed since the effect was prepared",
+            ));
+        }
         let call = self
             .owner
             .grant(slot)
             .await
             .map_err(|refusal| self.refused("grant", refusal))?;
+        let deadline = match call.budget() {
+            None => None,
+            Some(budget) if budget.is_zero() => {
+                if let Err(refusal) = self.owner.explain(slot, call, Crossing::NotCrossed).await {
+                    let _ = self.refused("explain", refusal);
+                }
+                return Err(OperationError::new(
+                    ErrorKind::Backpressure,
+                    "effect grant expired before the call; attempt refused",
+                ));
+            },
+            Some(budget) => tokio::time::Instant::now().checked_add(budget),
+        };
         *self.pending() = Some(PendingCall {
             call,
             sent: SentState::MaybeSent,
             note: CallNote::Plain,
         });
-        Ok(())
+        Ok(deadline)
     }
 
     /// The attempt's registration refused after the owner granted its
@@ -434,6 +476,7 @@ pub(super) async fn prepare<T>(
     let intent = JournalIntent {
         resource_key: &effect.resource_key,
         binding: &effect.binding,
+        config_fingerprint: effect.config_fingerprint,
         kind: declaration.kind,
         operation: declaration.name,
         version: declaration.version,

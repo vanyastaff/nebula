@@ -469,7 +469,12 @@ impl UnitScope {
     ///
     /// A plain unit that declared a developer key part presents a local
     /// idempotency key; every refusal is unsent.
-    fn admit<R, W>(&self, key: &ResourceKey, work: &W) -> Result<Route, OperationError>
+    fn admit<R, W>(
+        &self,
+        key: &ResourceKey,
+        managed: &ManagedResource<R>,
+        work: &W,
+    ) -> Result<Route, OperationError>
     where
         R: Provider + PinSlots,
         W: UnitWork<R>,
@@ -526,7 +531,8 @@ impl UnitScope {
             canonical_request: work.canonical_request()?,
             key_part,
         };
-        OwnedEffect::submit(owner, binding, key, declaration)
+        let config_fingerprint = managed.config_fingerprint();
+        OwnedEffect::submit(owner, binding, key, config_fingerprint, declaration)
             .map(|owned| Route::Owned(Box::new(owned)))
     }
 }
@@ -564,7 +570,7 @@ where
         sent = tracing::field::Empty,
         outcome = tracing::field::Empty,
     );
-    let (shared, refused) = match scope.admit(&key, &work) {
+    let (shared, refused) = match scope.admit(&key, host.managed(), &work) {
         Ok(Route::Owned(owned)) => {
             span.record("occurrence", owned.occurrence());
             (UnitShared::new(scope).with_effect(*owned), None)
@@ -623,6 +629,8 @@ pub(super) struct UnitShared {
     /// latter is honoured only until the first grant.
     cancel: CancellationToken,
     deadline: Mutex<tokio::time::Instant>,
+    /// Woken when an owner's grant shrinks the deadline of a running unit.
+    deadline_shrunk: tokio::sync::Notify,
     /// Attempts granted so far.
     granted: AtomicU32,
     /// Worst settled [`SentState`] rank across granted attempts, a
@@ -656,6 +664,7 @@ impl UnitShared {
                 .as_ref()
                 .map_or_else(CancellationToken::new, CancellationToken::child_token),
             deadline: Mutex::new(tokio::time::Instant::from_std(deadline)),
+            deadline_shrunk: tokio::sync::Notify::new(),
             granted: AtomicU32::new(0),
             worst: AtomicU8::new(SentState::NotSent.rank()),
             last: AtomicU8::new(SentState::NotSent.rank()),
@@ -698,6 +707,40 @@ impl UnitShared {
 
     fn deadline(&self) -> tokio::time::Instant {
         *self.deadline.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Shrinks the deadline of the running unit to `deadline` (never
+    /// extends it): the unit is stopped there, as at its own deadline.
+    pub(super) fn shrink_deadline(&self, deadline: tokio::time::Instant) {
+        {
+            let mut current = self.deadline.lock().unwrap_or_else(PoisonError::into_inner);
+            if deadline >= *current {
+                return;
+            }
+            *current = deadline;
+        }
+        // One watcher per unit: a stored permit wakes it even when it is
+        // not waiting yet.
+        self.deadline_shrunk.notify_one();
+    }
+
+    /// Runs `run` until the unit's deadline — re-read whenever a grant
+    /// shrinks it; `None` when the deadline elapsed first.
+    async fn run_until_deadline<F: Future>(&self, run: F) -> Option<F::Output> {
+        let mut run = std::pin::pin!(run);
+        loop {
+            let deadline = self.deadline();
+            tokio::select! {
+                biased;
+                output = &mut run => return Some(output),
+                () = tokio::time::sleep_until(deadline) => {
+                    if self.deadline() <= tokio::time::Instant::now() {
+                        return None;
+                    }
+                },
+                () = self.deadline_shrunk.notified() => {},
+            }
+        }
     }
 
     fn is_granted(&self) -> bool {
@@ -1009,12 +1052,14 @@ where
             max_attempts,
             effect,
         };
-        let run = tokio::time::timeout_at(deadline, work.run(&mut cx));
+        // Bounded by the unit's deadline, which an owner's grant may shrink
+        // while the operation runs.
+        let run = shared.run_until_deadline(work.run(&mut cx));
         AssertUnwindSafe(run).catch_unwind().await
     };
     let (result, abnormal) = match outcome {
-        Ok(Ok(result)) => (result, false),
-        Ok(Err(_elapsed)) => (
+        Ok(Some(result)) => (result, false),
+        Ok(None) => (
             Err(OperationError::new(
                 ErrorKind::Transient,
                 "unit deadline elapsed",

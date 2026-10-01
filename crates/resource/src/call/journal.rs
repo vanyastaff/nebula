@@ -18,7 +18,8 @@
 //!    refuses an unknown one, or lets the unit run.
 //! 3. **Grant** — each attempt, after its checkout and credential reads and
 //!    before its registration, asks for a [`CallGrant`]: the only authority
-//!    for one provider call.
+//!    for one provider call, within the grant's budget (the unit's deadline
+//!    shrinks to it).
 //! 4. **Explain / settle** — every granted call is either explained
 //!    ([`Crossing`]) or settled ([`CallOutcome`]) exactly once.
 //!
@@ -55,7 +56,8 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
     async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal>;
 
     /// Grants one provider call on `slot`. `Ok` is the only authority for a
-    /// provider call.
+    /// provider call, and only within the grant's
+    /// [`budget`](CallGrant::budget), when it has one.
     ///
     /// # Errors
     ///
@@ -169,6 +171,13 @@ pub struct JournalIntent<'a> {
     pub resource_key: &'a ResourceKey,
     /// The row's credential slot identity.
     pub binding: &'a SlotIdentity,
+    /// The row's configuration as the unit found it when it was prepared:
+    /// its [`ResourceConfig::fingerprint`](crate::ResourceConfig::fingerprint)
+    /// (a configuration holds no secrets; credentials are bound separately,
+    /// by `binding`). An owner binds it into the effect's destination, so an
+    /// effect recorded against one configuration (one endpoint) is never
+    /// granted again after a reload points the row elsewhere.
+    pub config_fingerprint: u64,
     /// Whether an operation or a session.
     pub kind: UnitKind,
     /// The operation key or the session name: unique within the resource.
@@ -203,6 +212,7 @@ impl fmt::Debug for JournalIntent<'_> {
         formatter
             .debug_struct("JournalIntent")
             .field("resource_key", self.resource_key)
+            .field("config_fingerprint", &self.config_fingerprint)
             .field("kind", &self.kind)
             .field("operation", &self.operation)
             .field("version", &self.version)
@@ -298,21 +308,43 @@ impl JournalSlot {
     }
 }
 
-/// One granted provider call, as its owner identifies it.
+/// One granted provider call, as its owner identifies it, and how long the
+/// owner's guarantees cover it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallGrant([u8; 16]);
+pub struct CallGrant {
+    id: [u8; 16],
+    budget: Option<Duration>,
+}
 
 impl CallGrant {
-    /// The call `id`.
+    /// The call `id`, bounded only by the unit's deadline.
     #[must_use]
     pub const fn from_bytes(id: [u8; 16]) -> Self {
-        Self(id)
+        Self { id, budget: None }
+    }
+
+    /// The same call, which must start and finish within `budget` of the
+    /// moment the owner hands it out: past it the owner can no longer
+    /// vouch for the call (a stable key's deduplication window ends). The
+    /// runtime bounds the unit by the earlier of its deadline and the
+    /// budget, and refuses a call whose budget is zero.
+    #[must_use]
+    pub const fn with_budget(mut self, budget: Duration) -> Self {
+        self.budget = Some(budget);
+        self
     }
 
     /// The call id.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
+        &self.id
+    }
+
+    /// How long the call may run from the moment it was handed out; `None`
+    /// when only the unit's deadline bounds it.
+    #[must_use]
+    pub const fn budget(&self) -> Option<Duration> {
+        self.budget
     }
 }
 

@@ -100,10 +100,13 @@ struct SeenIntent {
     key_part: Option<String>,
     max_invocations: u32,
     binding: SlotIdentity,
+    config_fingerprint: u64,
 }
 
 #[derive(Default)]
 struct FakeState {
+    /// The budget every grant carries, when set.
+    grant_budget: Option<Duration>,
     ordinals: HashMap<(ResourceKey, UnitKind, String), u32>,
     slots: HashMap<String, FakeSlot>,
     next_id: u8,
@@ -168,6 +171,10 @@ impl FakeOwner {
 
     fn fail_next_settle(&self, refusal: JournalRefusal) {
         self.state().fail_settle = Some(refusal);
+    }
+
+    fn grant_with_budget(&self, budget: Duration) {
+        self.state().grant_budget = Some(budget);
     }
 
     fn on_next_grant(&self, hook: impl FnOnce() + Send + 'static) {
@@ -238,6 +245,7 @@ impl EffectJournal for FakeOwner {
             key_part: intent.key_part.map(str::to_owned),
             max_invocations: intent.max_invocations.get(),
             binding: intent.binding.clone(),
+            config_fingerprint: intent.config_fingerprint,
         });
         let fingerprint = (
             intent.operation.to_owned(),
@@ -292,6 +300,7 @@ impl EffectJournal for FakeOwner {
             let now = Instant::now();
             let call_id = state.next_id.wrapping_add(100);
             state.next_id += 1;
+            let budget = state.grant_budget;
             let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
             let grantable = match (&fake.phase, fake.recovery) {
                 (Phase::Prepared | Phase::BeforeBoundary, _) => true,
@@ -306,6 +315,10 @@ impl EffectJournal for FakeOwner {
             }
             fake.invocations += 1;
             let call = CallGrant::from_bytes([call_id; 16]);
+            let call = match budget {
+                Some(budget) => call.with_budget(budget),
+                None => call,
+            };
             fake.phase = Phase::Outstanding(call);
             state.log.push(Step::Grant);
             (state.on_grant.take(), call)
@@ -675,6 +688,29 @@ impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Called<IDEM> {
     }
 }
 
+/// An `Idempotent` call the provider never answers.
+#[derive(Serialize, Deserialize)]
+struct Stall {
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for Stall {
+    type Output = u64;
+    const KEY: &'static str = "billing.stall";
+    const EFFECT: Effect = Effect::Idempotent;
+    const KEY_WINDOW: Duration = WINDOW;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            std::future::pending::<Result<u64, OperationError>>().await
+        })
+        .await
+    }
+}
+
 /// A read.
 #[derive(Serialize, Deserialize)]
 struct Look {
@@ -912,6 +948,7 @@ async fn the_intent_carries_the_derived_declaration() {
     assert_eq!(keyed.key_part.as_deref(), Some("order-123"));
     assert_eq!(keyed.max_invocations, 1);
     assert_eq!(keyed.binding, tenant());
+    assert_eq!(keyed.config_fingerprint, config(1).fingerprint());
 
     let unkeyed = &intents[1];
     assert_eq!(unkeyed.occurrence, pay(1));
@@ -931,6 +968,87 @@ async fn the_intent_carries_the_derived_declaration() {
         fixture.owner.log().last(),
         Some(&Step::Settle("applied_without_output"))
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_grant_budget_bounds_the_unit_and_a_spent_one_sends_nothing() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Nearly expired: the call is cut at the grant's budget, long before
+    // the unit's own deadline.
+    fixture.owner.grant_with_budget(Duration::from_secs(2));
+    let started = Instant::now();
+    let cut = row
+        .submit(Stall {
+            calls: Arc::clone(&calls),
+        })
+        .await
+        .expect_err("cut at the budget");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(2) && elapsed < Duration::from_secs(3),
+        "{elapsed:?}"
+    );
+    assert_eq!(cut.sent(), SentState::MaybeSent, "{cut}");
+    assert_eq!(calls.made(), 1);
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Explain(Crossing::Ambiguous))
+    );
+
+    // Spent: the grant is explained not crossed and no call is made.
+    fixture.owner.grant_with_budget(Duration::ZERO);
+    let refused = row
+        .submit(Called::<true>::new(&calls, vec![Ok(1)]))
+        .await
+        .expect_err("no budget left");
+    assert_unsent(&refused, &ErrorKind::Backpressure);
+    assert_eq!(calls.made(), 1, "no second call");
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Explain(Crossing::NotCrossed))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_after_submit_refuses_the_grant_and_sends_nothing() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    let unit = row.submit(Called::<true>::new(&calls, vec![Ok(1)]));
+    assert_eq!(
+        fixture
+            .manager
+            .reload_config::<StrictPooled>(config(2), &nebula_core::ScopeLevel::Global)
+            .expect("reloaded"),
+        crate::reload::ReloadOutcome::SwappedImmediately
+    );
+    let refused = unit.await.expect_err("the row points elsewhere now");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(calls.made(), 0);
+    let called = |ordinal| occurrence(UnitKind::Operation, "billing.called", ordinal);
+    assert_eq!(
+        fixture.owner.log(),
+        vec![Step::Prepare(called(0))],
+        "prepared against the old configuration, never granted"
+    );
+    assert_eq!(
+        fixture.owner.intents()[0].config_fingerprint,
+        config(1).fingerprint()
+    );
+
+    // A unit submitted after the reload binds the new configuration.
+    row.submit(Called::<true>::new(&calls, vec![Ok(2)]))
+        .await
+        .expect("runs");
+    assert_eq!(
+        fixture.owner.intents()[1].config_fingerprint,
+        config(2).fingerprint()
+    );
+    assert_eq!(calls.made(), 1);
 }
 
 #[tokio::test(start_paused = true)]

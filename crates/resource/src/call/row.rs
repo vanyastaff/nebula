@@ -500,11 +500,14 @@ impl<'u, R: Provider + PinSlots> OperationCx<'u, R> {
         };
 
         // 9. An owned effect's call is granted by its owner — the only
-        //    provider-call authority — before the attempt registers.
+        //    provider-call authority — before the attempt registers, unless
+        //    a reload changed the row's configuration since the unit was
+        //    submitted.
         let owned = self.shared.effect();
-        if let Some(effect) = owned {
-            effect.grant().await?;
-        }
+        let grant_deadline = match owned {
+            Some(effect) => effect.grant(managed.config_fingerprint()).await?,
+            None => None,
+        };
 
         // 10. Lock #2 (strict rows) and the grant. A refusal drops the
         //     checkout untainted: the instance goes back to the pool, and an
@@ -532,6 +535,12 @@ impl<'u, R: Provider + PinSlots> OperationCx<'u, R> {
                 return Err(refusal);
             },
         };
+        // The owner vouches for the call only within its grant's budget: the
+        // unit — this attempt and every later wait — stops there.
+        if let Some(grant_deadline) = grant_deadline {
+            self.deadline = self.deadline.min(grant_deadline);
+            self.shared.shrink_deadline(grant_deadline);
+        }
         if let Some(metrics) = row.link.metrics() {
             metrics.record_row_checkout(guard.created());
         }

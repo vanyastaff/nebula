@@ -267,6 +267,14 @@ impl<R: Provider> std::fmt::Debug for ManagedResource<R> {
 }
 
 impl<R: Provider> ManagedResource<R> {
+    /// The fingerprint of the row's current configuration: what a reload
+    /// compares, and what an execution journal binds an effect's
+    /// destination to.
+    pub(crate) fn config_fingerprint(&self) -> u64 {
+        use crate::resource::ResourceConfig as _;
+        self.config.load().fingerprint()
+    }
+
     /// Publishes the terminal admission fence before any cleanup suspension.
     pub(crate) fn begin_close(&self) {
         self.store.begin_close();
