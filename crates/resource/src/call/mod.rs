@@ -176,12 +176,18 @@
 //!    developer key part), the canonical request computed (the operation's
 //!    JSON with sorted keys, 1 byte to 1 MiB), the recovery derived
 //!    (`Idempotent`: a stable key within [`Operation::KEY_WINDOW`]; `Write`:
-//!    opaque), the occurrence label
-//!    `unit/v1/{resource_key}/{op|session}/{name}/v{version}/#{ordinal:06}`
-//!    fixed from the unit's submit ordinal per resource, kind and name, so
-//!    labels sort in program order, and an in-flight ticket is taken. A
-//!    closed owner refuses `Cancelled`.
-//! 2. **First poll** — the owner prepares the effect from the canonical
+//!    opaque), and an in-flight ticket is taken. A closed owner refuses
+//!    `Cancelled`. The submission is lazy: dropped before its first poll,
+//!    it never reaches the owner and takes no position.
+//! 2. **First poll** — the occurrence label
+//!    `unit/v1/#{ordinal:06}` is fixed from the unit's positional ordinal
+//!    in the owner's one sequence for all its effect units, in the order
+//!    they start preparing. The resource, kind, operation key and version
+//!    are bound by the contract, not the label: changing them under a
+//!    recorded occurrence is a mismatch, never a fresh effect; units polled
+//!    in another order than an earlier run — across resources and between
+//!    operations and sessions — meet each other's positions and fail the
+//!    same way unless their intents are identical. The owner then prepares the effect from the canonical
 //!    request and the optional developer key part before anything is
 //!    booked, read or checked out: a recorded success replays its output
 //!    without a provider call; a recorded rejection, a digest-only success

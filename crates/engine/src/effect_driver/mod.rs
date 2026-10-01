@@ -1,11 +1,15 @@
-//! Execution-owned driver for one explicit remote effect occurrence.
+//! Execution-owned effects: the driver of one explicit remote effect
+//! occurrence, and the effect journal of a journaled action's resource
+//! handles ([`NodeEffectJournal`]). Both record through the ledger slot core.
 
 mod error;
 mod evidence;
+mod journal;
 mod recovery;
 mod slot;
 
 pub use error::EffectExecutionError;
+pub(crate) use journal::{Concluded, JournalAdmission, JournalAuthority, NodeEffectJournal};
 use slot::{CallPurpose, GrantedCall, LedgerAccess, LedgerSlot};
 
 use std::panic::AssertUnwindSafe;

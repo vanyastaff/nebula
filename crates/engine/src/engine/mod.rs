@@ -3058,35 +3058,244 @@ struct NodeTask {
     clock: Arc<dyn Clock>,
     /// Attempt provenance; never part of the logical effect occurrence address.
     attempt_generation: u64,
+    /// The layers of the node's manager-backed resource accessor, from
+    /// which a journaled action's accessor is derived; `None` without a
+    /// resource manager.
+    engine_resources: Option<NodeResourceLayers>,
+    /// The execution's wall-clock deadline; it bounds how long a journaled
+    /// node waits for its units after the action returns.
+    execution_deadline: Option<Instant>,
+    /// Where the node's effect journal records its counters.
+    metrics: MetricsRegistry,
 }
 
+/// The layers of a node's manager-backed resource accessor
+/// ([`LayeredResourceAccessor`](crate::scoped_resources::LayeredResourceAccessor)):
+/// a journaled action's accessor keeps the branch-scoped layer — and its
+/// fail-closed refusal of a managed row a scope shadows — and changes only
+/// the authority of the global rows.
+#[derive(Clone)]
+struct NodeResourceLayers {
+    /// The branch-scoped layer the node's accessor consults first.
+    scoped: Arc<dyn crate::scoped_resources::ScopedResourceMap>,
+    /// The global, manager-backed rows.
+    rows: crate::resource_accessor::EngineResourceAccessor,
+}
+
+impl NodeResourceLayers {
+    /// The node's accessor: the scoped layer over `rows`.
+    fn layered(
+        &self,
+        rows: crate::resource_accessor::EngineResourceAccessor,
+    ) -> Arc<dyn ResourceAccessor> {
+        Arc::new(crate::scoped_resources::LayeredResourceAccessor::new(
+            Arc::clone(&self.scoped),
+            Arc::new(rows),
+        ))
+    }
+}
+
+/// Why a journaled action on a run without execution stores has read-only
+/// resource handles.
+const JOURNAL_NEEDS_STORES: &str = "journaled effects need execution stores";
+
 impl NodeTask {
+    /// The effect journal of this node attempt: built only for a frozen,
+    /// stateless journaled action with no remote capability, under this
+    /// turn's operation ledger and execution lease. Building it costs
+    /// nothing durable. Stateful, control and agent actions keep read-only
+    /// handles until their iterations are journaled.
+    fn effect_journal(&self) -> Option<crate::effect_driver::NodeEffectJournal> {
+        let NodeFactoryDispatch::Frozen {
+            factory,
+            effect_contract: nebula_action::effect::ActionEffectContract::Journaled(_),
+            action_version,
+        } = &self.factory_dispatch
+        else {
+            return None;
+        };
+        if factory.metadata().kind() != nebula_action::ActionKind::Stateless
+            || factory.remote_effect_factory().is_some()
+        {
+            return None;
+        }
+        let (Some(ledger), Some(fencing)) = (&self.operation_ledger, self.fencing) else {
+            return None;
+        };
+        Some(crate::effect_driver::NodeEffectJournal::new(
+            crate::effect_driver::JournalAuthority {
+                ledger: Arc::clone(ledger),
+                scope: self.scope.clone(),
+                fencing,
+                execution_id: self.execution_id,
+                node_key: self.node_key.clone(),
+                action_key: self.action_key.clone(),
+                action_version: action_version.clone(),
+                attempt_generation: self.attempt_generation,
+                clock: Arc::clone(&self.clock),
+                metrics: self.metrics.clone(),
+            },
+        ))
+    }
+
+    /// The resource accessor of a journaled action: raw leases refused, and
+    /// resource handles under `journal` — or read-only without one, saying
+    /// why when the run has no execution stores. The node's scoped layer
+    /// stays in front: a key a branch scope holds is never served by a
+    /// global row.
+    fn journaled_resources(
+        &self,
+        journal: Option<&crate::effect_driver::NodeEffectJournal>,
+    ) -> Arc<dyn ResourceAccessor> {
+        let storeless = self.operation_ledger.is_none() || self.fencing.is_none();
+        let inner = match (&self.engine_resources, journal) {
+            (Some(layers), Some(journal)) => {
+                layers.layered(layers.rows.clone().with_journal(Arc::new(journal.clone())))
+            },
+            (Some(layers), None) if storeless => layers.layered(
+                layers
+                    .rows
+                    .clone()
+                    .with_read_only_detail(JOURNAL_NEEDS_STORES),
+            ),
+            _ => self.resources.clone(),
+        };
+        Arc::new(crate::resource_accessor::JournaledResourceAccessor::new(
+            inner,
+        ))
+    }
+
+    /// How long a journaled node waits for its units after the action
+    /// returned: the unit deadline cap, or less when the execution's
+    /// wall-clock budget ends sooner.
+    fn journal_drain_limit(execution_deadline: Option<Instant>) -> Duration {
+        execution_deadline.map_or(nebula_resource::call::OPERATION_DEADLINE_CAP, |deadline| {
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(nebula_resource::call::OPERATION_DEADLINE_CAP)
+        })
+    }
+
+    /// The node's result under its effect journal's verdict, which
+    /// overrides it: a node never finishes on a result its ledger
+    /// contradicts — whether the action ran or the node exited before
+    /// dispatching it.
+    async fn under_journal_verdict(
+        journal: &crate::effect_driver::NodeEffectJournal,
+        execution_id: ExecutionId,
+        node_key: &NodeKey,
+        execution_deadline: Option<Instant>,
+        result: Result<ActionResult<serde_json::Value>, EngineError>,
+    ) -> Result<ActionResult<serde_json::Value>, EngineError> {
+        match journal
+            .conclude_node(
+                Self::journal_drain_limit(execution_deadline),
+                result.is_ok(),
+            )
+            .await
+        {
+            Ok(crate::effect_driver::Concluded::Clean) => result,
+            // The node is failing past an effect an earlier attempt
+            // recorded: its failure may be retried, never recovered or
+            // routed past by an error strategy.
+            Ok(crate::effect_driver::Concluded::SkippedRecordedEffect) => {
+                result.map_err(|error| EngineError::SkippedJournaledEffect(Box::new(error)))
+            },
+            Err(verdict) => {
+                tracing::warn!(
+                    execution_id = %execution_id,
+                    node_key = %node_key,
+                    code = verdict.code(),
+                    deferred = verdict.is_deferred(),
+                    node_succeeded = result.is_ok(),
+                    "effect journal verdict overrides the node result"
+                );
+                Err(EngineError::Effect(verdict))
+            },
+        }
+    }
+
     /// Execute this node: acquire semaphore, check cancellation, run action.
+    ///
+    /// A node with an effect journal concludes it on every exit — after the
+    /// action returned and on each early one (cancellation, input
+    /// resolution, credential refresh, rate limit, contract checks) — so a
+    /// call an earlier dispatch of the node may have made, whose outcome the
+    /// ledger does not know, fails the node unknown instead of a failure an
+    /// error strategy could retry or continue past.
     async fn run(
         self,
     ) -> (
         NodeKey,
         Result<ActionResult<serde_json::Value>, EngineError>,
     ) {
-        let _permit = match self.sem.acquire().await {
-            Ok(permit) => permit,
-            Err(_) => return (self.node_key, Err(EngineError::Cancelled)),
+        let node_key = self.node_key.clone();
+        let outputs = Arc::clone(&self.outputs);
+        let execution_id = self.execution_id;
+        let execution_deadline = self.execution_deadline;
+        // Building the journal writes nothing durable.
+        let journal = self.effect_journal();
+        let sem = Arc::clone(&self.sem);
+        // The permit is held until the journal concluded: units its action
+        // left running count against the node concurrency.
+        let permit = sem.acquire().await;
+        let result = match &permit {
+            Ok(_) => self.dispatch(journal.as_ref()).await,
+            Err(_) => Err(EngineError::Cancelled),
         };
-
-        if self.cancel.is_cancelled() {
-            return (self.node_key, Err(EngineError::Cancelled));
+        let result = match &journal {
+            Some(journal) => {
+                Self::under_journal_verdict(
+                    journal,
+                    execution_id,
+                    &node_key,
+                    execution_deadline,
+                    result,
+                )
+                .await
+            },
+            None => result,
+        };
+        drop(permit);
+        if let Ok(action_result) = &result
+            && let Some(output) = extract_primary_output(action_result)
+        {
+            // The primary output feeds downstream node input resolution.
+            outputs.insert(node_key.clone(), output);
         }
+        (node_key, result)
+    }
+
+    /// Checks cancellation, resolves the input, refreshes credentials,
+    /// takes a rate-limit permit and dispatches the action. Every exit
+    /// returns to [`run`](Self::run), which concludes the node's journal.
+    async fn dispatch(
+        self,
+        journal: Option<&crate::effect_driver::NodeEffectJournal>,
+    ) -> Result<ActionResult<serde_json::Value>, EngineError> {
+        if self.cancel.is_cancelled() {
+            return Err(EngineError::Cancelled);
+        }
+
+        // A journaled action reaches resources through resource handles
+        // only — raw leases, which would bypass the journal, are refused
+        // before any lookup. A stateless one on a durable turn gets handles
+        // under this node attempt's effect journal; every other journaled
+        // node gets read-only handles.
+        let resources = match self.factory_dispatch.factory().metadata().effect_contract() {
+            nebula_action::effect::ActionEffectContract::Journaled(_) => {
+                self.journaled_resources(journal)
+            },
+            _ => self.resources.clone(),
+        };
 
         let input = tokio::select! {
             biased;
-            () = self.cancel.cancelled() => return (self.node_key, Err(EngineError::Cancelled)),
-            result = self.input.resolve() => match result {
-                Ok(input) => input,
-                Err(error) => return (self.node_key, Err(error)),
-            },
+            () = self.cancel.cancelled() => return Err(EngineError::Cancelled),
+            result = self.input.resolve() => result?,
         };
         if self.cancel.is_cancelled() {
-            return (self.node_key, Err(EngineError::Cancelled));
+            return Err(EngineError::Cancelled);
         }
 
         // Proactive credential refresh: call the hook before the action runs
@@ -3109,7 +3318,7 @@ impl NodeTask {
             let refresh_result = tokio::select! {
                 biased;
                 () = self.cancel.cancelled() => {
-                    return (self.node_key, Err(EngineError::Cancelled));
+                    return Err(EngineError::Cancelled);
                 }
                 res = &mut refresh_fut => res,
             };
@@ -3119,7 +3328,7 @@ impl NodeTask {
                 Err(source) => {
                     let action_err =
                         ActionError::credential_refresh_failed(self.action_key.clone(), source);
-                    return (self.node_key, Err(EngineError::Action(action_err)));
+                    return Err(EngineError::Action(action_err));
                 },
             }
         }
@@ -3134,23 +3343,7 @@ impl NodeTask {
         .build()
         {
             Ok(ctx) => Arc::new(ctx),
-            Err(e) => {
-                return (
-                    self.node_key,
-                    Err(EngineError::PlanningFailed(e.to_string())),
-                );
-            },
-        };
-        // A journaled action reaches resources through managed row facades
-        // only: until the engine effect journal lands, the engine accessor
-        // serves them read-only, and raw leases — which would bypass the
-        // journal — are refused before any lookup.
-        let resources = match self.factory_dispatch.factory().metadata().effect_contract() {
-            nebula_action::effect::ActionEffectContract::Journaled(_) => Arc::new(
-                crate::resource_accessor::JournaledResourceAccessor::new(self.resources.clone()),
-            )
-                as Arc<dyn ResourceAccessor>,
-            _ => self.resources.clone(),
+            Err(e) => return Err(EngineError::PlanningFailed(e.to_string())),
         };
         let action_ctx = nebula_action::ActionRuntimeContext::new(
             base,
@@ -3177,12 +3370,9 @@ impl NodeTask {
                     format!("rate limit exceeded: {e:?}"),
                     nebula_action::error::RetryHintCode::RateLimited,
                 );
-                return (
-                    self.node_key.clone(),
-                    Err(EngineError::Runtime(
-                        crate::runtime::RuntimeError::ActionError(action_err),
-                    )),
-                );
+                return Err(EngineError::Runtime(
+                    crate::runtime::RuntimeError::ActionError(action_err),
+                ));
             }
         }
 
@@ -3191,7 +3381,7 @@ impl NodeTask {
         // action, then dispatches the matching variant. The factory
         // spine is the sole dispatch path as of ADR-0098 D0 PR3.
 
-        let result = match self.factory_dispatch {
+        match self.factory_dispatch {
             NodeFactoryDispatch::DirectRegistry { factory } => self
                 .runtime
                 .execute_resolved_action(factory, &self.node, input, &action_ctx)
@@ -3207,10 +3397,7 @@ impl NodeTask {
                 if metadata.effect_contract() != &effect_contract
                     || metadata.base().version() != &action_version
                 {
-                    return (
-                        self.node_key,
-                        Err(crate::EffectExecutionError::InvalidContract.into()),
-                    );
+                    return Err(crate::EffectExecutionError::InvalidContract.into());
                 }
                 match &effect_contract {
                     ActionEffectContract::ReadOnly if factory.remote_effect_factory().is_none() => {
@@ -3219,39 +3406,48 @@ impl NodeTask {
                             .await
                             .map_err(EngineError::Runtime)
                     },
-                    // Interim: read-only handle authority until the engine
-                    // effect journal (PR-5b). The context's accessor hands
-                    // out read-only handles and refuses raw leases, so reads
-                    // run and writes through handles are refused as NotSent
-                    // before any provider call.
+                    // A stateless journaled action on a durable turn runs
+                    // under its node attempt's effect journal, whose verdict
+                    // `run` lays over the result.
                     ActionEffectContract::Journaled(_)
                         if factory.remote_effect_factory().is_none() =>
                     {
-                        self.runtime
-                            .execute_resolved_action(factory, &self.node, input, &action_ctx)
-                            .await
-                            .map_err(EngineError::Runtime)
+                        match journal {
+                            Some(journal) => self
+                                .runtime
+                                .execute_journaled_action(
+                                    factory,
+                                    &self.node,
+                                    input,
+                                    &action_ctx,
+                                    journal.admission(),
+                                )
+                                .await
+                                .map_err(EngineError::Runtime),
+                            // No journal (no execution stores, or a stateful,
+                            // control or agent action until its iterations
+                            // are journaled): the context's accessor hands
+                            // out read-only handles and refuses raw leases,
+                            // so reads run and writes through handles are
+                            // refused as NotSent before any provider call.
+                            None => self
+                                .runtime
+                                .execute_resolved_action(factory, &self.node, input, &action_ctx)
+                                .await
+                                .map_err(EngineError::Runtime),
+                        }
                     },
                     ActionEffectContract::Remote(descriptor) => {
                         let Some(remote) = factory.remote_effect_factory() else {
-                            return (
-                                self.node_key,
-                                Err(crate::EffectExecutionError::MissingAuthority.into()),
-                            );
+                            return Err(crate::EffectExecutionError::MissingAuthority.into());
                         };
                         if metadata.kind() != nebula_action::ActionKind::Stateless {
-                            return (
-                                self.node_key,
-                                Err(crate::EffectExecutionError::InvalidContract.into()),
-                            );
+                            return Err(crate::EffectExecutionError::InvalidContract.into());
                         }
                         let (Some(ledger), Some(fencing)) =
                             (self.operation_ledger.as_ref(), self.fencing)
                         else {
-                            return (
-                                self.node_key,
-                                Err(crate::EffectExecutionError::MissingAuthority.into()),
-                            );
+                            return Err(crate::EffectExecutionError::MissingAuthority.into());
                         };
                         let turn = crate::effect_driver::EffectTurn {
                             ledger: ledger.as_ref(),
@@ -3267,17 +3463,11 @@ impl NodeTask {
                             cancellation: &self.cancel,
                         };
                         if !Arc::ptr_eq(factory.metadata(), remote.metadata()) {
-                            return (
-                                self.node_key,
-                                Err(crate::EffectExecutionError::InvalidContract.into()),
-                            );
+                            return Err(crate::EffectExecutionError::InvalidContract.into());
                         }
-                        let input = match remote
+                        let input = remote
                             .prepare_input(nebula_action::ActionInput::Resolved(input))
-                        {
-                            Ok(input) => input,
-                            Err(error) => return (self.node_key, Err(EngineError::Action(error))),
-                        };
+                            .map_err(EngineError::Action)?;
                         turn.execute(remote, descriptor, input)
                             .await
                             .map_err(|error| {
@@ -3291,17 +3481,6 @@ impl NodeTask {
                     _ => Err(crate::EffectExecutionError::MissingAuthority.into()),
                 }
             },
-        };
-
-        match result {
-            Ok(action_result) => {
-                // Extract the primary output for downstream node input resolution.
-                if let Some(output) = extract_primary_output(&action_result) {
-                    self.outputs.insert(self.node_key.clone(), output);
-                }
-                (self.node_key, Ok(action_result))
-            },
-            Err(e) => (self.node_key, Err(e)),
         }
     }
 }

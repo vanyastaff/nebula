@@ -1628,6 +1628,9 @@ mod checkpoint_tests;
 #[path = "input_proof_tests.rs"]
 mod input_proof_tests;
 
+#[path = "journal_exit_tests.rs"]
+mod journal_exit_tests;
+
 struct QualifiedFixturePlugin {
     manifest: nebula_plugin::PluginManifest,
     factories: Vec<Arc<dyn nebula_action::ActionFactory>>,

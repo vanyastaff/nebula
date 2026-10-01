@@ -39,7 +39,8 @@ changes are expected between minor releases — call them out here.
     `PlanActionEffectContract::LegacyUndeclared` and is still refused — it is
     never reinterpreted as `Journaled`.
   - Only handle-routed effects are journaled; a side channel an action opens
-    itself is invisible to the engine. Until the engine effect journal lands,
+    itself is invisible to the engine. Until the engine effect journal lands
+    (it now has, for stateless actions — see "Changed"),
     a `Journaled` action of any kind runs with read-only handle authority:
     reads run, and a write through a handle is refused as `NotSent` before
     any provider call. A `Journaled` action cannot take a raw lease: a
@@ -115,9 +116,9 @@ changes are expected between minor releases — call them out here.
   - The journal seam: `EffectRecovery` → `call::journal::Recovery`;
     `JournalIntent` carries `kind` (`UnitKind`), `operation`, `version`,
     `record_output` and a `&str` key part instead of the contract, recovery
-    declaration and `Recorded`; `EffectJournal::next_ordinal(key, kind, name)`;
-    occurrences are `unit/v1/{resource}/{op|session}/{name}/v{version}/#{n:06}`
-    from the key-sorted JSON of the operation as canonical request. An output
+    declaration and `Recorded`; `EffectJournal::next_ordinal()`;
+    occurrences are one node-wide positional sequence, `unit/v1/#{n:06}`
+    (see "Changed"), with the key-sorted JSON of the operation as canonical request. An output
     over 1 MiB is recorded digest-only.
   - `OperationCx::idempotency_key()` (and the new
     `Attempt::idempotency_key()`) also returns a local key — base64url
@@ -1436,6 +1437,91 @@ let admitted = recorded.readmit_against(fresh)?;
   classifications map to wire code `other`.
 
 ### Changed
+
+- **Stateless `Journaled` actions get journaled resource effects.** On a
+  durable turn (operation ledger and execution fence present), the engine
+  runs a frozen, stateless `Journaled` action under one `NodeEffectJournal`
+  per node attempt, and its resource handles drive every `Idempotent` /
+  `Write` unit through it: each effect is one operation-ledger slot under the
+  natural key `(scope, execution, node, occurrence)`, prepared lazily (no
+  ledger write until the first effect; reads are never prepared; concluding
+  always reads the node's occurrences once, since a crash before an attempt
+  was recorded leaves the next one at the same generation), granted per
+  provider call and settled or explained. A grant carries what is left of the
+  ledger's window for the call (`CallGrant::with_budget` / `budget`, new):
+  the resource runtime shrinks the unit's deadline to it, so no call starts
+  after a stable key's deduplication window, and a grant with nothing left is
+  withheld. A slot's contract identity binds the destination — resource key,
+  credential slot identity and the row's configuration fingerprint
+  (`JournalIntent::config_fingerprint`, new) — and `RECORD_OUTPUT`; a reload
+  between a unit's submit and its grant refuses the attempt unsent.
+  Occurrences are positional, `unit/v1/#{n:06}`, one sequence for all of
+  a node attempt's effect units — every resource, operations and sessions
+  (`EffectJournal::next_ordinal()` takes no arguments; the resource key and
+  unit kind join the operation in the contract identity, so effects of
+  different resources or kinds reordered also fail as a mismatch) — in
+  the order units start preparing:
+  the ordinal is taken by a unit's first poll, not at submit, so a
+  submission dropped unpolled takes no position and cannot shift later
+  effects onto unrecorded ones. Units prepared in another order, or an
+  effect added or removed before recorded ones, meet other intents' slots
+  and fail as a mismatch (identical intents are interchangeable); before
+  its first prepare the journal reads the node's earlier occurrences once
+  and refuses a fresh slot at a position an earlier attempt left empty
+  below one it recorded. The operation key and version are
+  bound by the contract identity, not the occurrence, so a redeploy that
+  changes the operation at a recorded position without an action version
+  bump fails `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent instead of
+  preparing a fresh slot that would send the effect again under another
+  provider key (the run-part provider keys, which frame the occurrence,
+  differ from the earlier unreleased format). Occurrences restart per node
+  attempt, so a retry or resume replays a settled effect's recorded output
+  with no provider call, refuses an unknown one and re-grants a retryable
+  failure within `Operation::max_attempts`; the `it{n}/` occurrence prefix is
+  reserved for stateful iterations. The provider receives the key recorded at
+  prepare, `base64url(SHA-256(...))` over the tenant, resource, operation,
+  version and the developer key part (or execution, node and occurrence) —
+  never an attempt number. The journal's verdict overrides the node's
+  result on every exit — after the action returns and on each exit before
+  it runs (cancellation, input resolution, credential refresh, rate limit),
+  so an earlier dispatch's unknown call is never reported as a retryable
+  failure: any slot whose call may have crossed without a recorded outcome
+  (unknown, outstanding, ambiguous, or held past the drain limit by a stuck
+  unit) fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even when the action
+  swallowed the unit's error), a changed request, binding, configuration or
+  recording policy under a recorded occurrence fails it with the new
+  `ENGINE:EFFECT_OCCURRENCE_MISMATCH` (`EffectExecutionError::OccurrenceMismatch`,
+  plus `JournalOutcomeUnknown`) — as does a node about to succeed although
+  an earlier attempt recorded an effect (settled, or a call that crossed)
+  this attempt never met again —; these verdicts, a remote effect's
+  unknown outcome and unreadable effect evidence
+  (`EffectExecutionError::halts_execution`, new) take no error strategy:
+  the node fails and the execution stops even under `IgnoreErrors` or
+  `ContinueOnError`, and no OnError edge is routed. A node that fails before
+  meeting such an earlier effect again keeps its own error, wrapped in the
+  new `EngineError::SkippedJournaledEffect`: its retry policy may
+  re-dispatch it (the retry replays the effect), but a final failure halts
+  the execution the same way; and a lost lease (or a final occurrence
+  read that does not answer within the verdict budget, at least 5 s)
+  releases the turn without
+  finalizing. Raw leases stay refused; only handle-routed effects are
+  journaled (lease-facade units and raw egress are outside the journal).
+  A journaled node's accessor keeps the node's branch-scoped layer in front
+  of its journaled rows, so a key a scope shadows is refused as a scope
+  violation rather than served by the global row.
+  Without execution stores a journaled node keeps read-only handles whose
+  refused writes say "journaled effects need execution stores"
+  (`Manager::handle_any_read_only_because` is new); stateful, control and
+  agent `Journaled` actions stay read-only until their iterations are
+  journaled. A unit that fails locally (non-retryable) after its call
+  succeeded — or a session the provider committed although its body
+  failed — records the effect applied without output, never a provider
+  rejection; only a call classified `rejected` records one. A grant whose
+  budget the attempt's registration (the strict admission lock and
+  reading) spent is explained not crossed and the attempt refused unsent;
+  an expired unit deadline wins before the operation is polled again. New counters: `nebula_effect_journal_prepares_total{phase}`,
+  `nebula_effect_journal_refusals_total{step,refusal}`,
+  `nebula_effect_journal_verdicts_total{code}`.
 
 - **`OperationProtocolRecord` counts not-crossed calls.** The record gains
   `not_crossed` (with `not_crossed()`, `crossed_invocations()`, the builder

@@ -73,6 +73,14 @@ pub enum EngineError {
     /// Durable remote-effect protocol failure, with no provider payload in diagnostics.
     #[error(transparent)]
     Effect(#[from] crate::EffectExecutionError),
+    /// A journaled node's failure — the wrapped error, which classifies the
+    /// node — after an earlier attempt recorded an effect (settled, or a
+    /// call that crossed) this attempt never met again. The node may be
+    /// retried under its policy (the retry meets the effect and replays
+    /// it), but no error strategy may recover it or route past it: when it
+    /// is final, the execution stops.
+    #[error(transparent)]
+    SkippedJournaledEffect(Box<EngineError>),
     /// A durable turn lacks a paired catalog and frozen factory snapshot.
     #[error("exact durable runtime is not configured")]
     MissingExactRuntime,
@@ -449,6 +457,7 @@ impl EngineError {
         match self {
             Self::Action(e) => Some(e),
             Self::Runtime(e) => e.as_action_error(),
+            Self::SkippedJournaledEffect(e) => e.as_action_error(),
             _ => None,
         }
     }
@@ -515,6 +524,7 @@ impl nebula_error::Classify for EngineError {
             Self::Runtime(e) => nebula_error::Classify::category(e),
             Self::Execution(e) => nebula_error::Classify::category(e),
             Self::Action(e) => nebula_error::Classify::category(e),
+            Self::SkippedJournaledEffect(e) => nebula_error::Classify::category(e.as_ref()),
         }
     }
 
@@ -565,6 +575,7 @@ impl nebula_error::Classify for EngineError {
             Self::Runtime(e) => return nebula_error::Classify::code(e),
             Self::Execution(e) => return nebula_error::Classify::code(e),
             Self::Action(e) => return nebula_error::Classify::code(e),
+            Self::SkippedJournaledEffect(e) => return nebula_error::Classify::code(e.as_ref()),
             Self::TaskPanicked(_) => "ENGINE:TASK_PANICKED",
             Self::FrontierIntegrity { .. } => codes::FRONTIER_INTEGRITY,
             Self::CheckpointFailed { .. } => "ENGINE:CHECKPOINT_FAILED",
@@ -581,6 +592,7 @@ impl nebula_error::Classify for EngineError {
             Self::Runtime(e) => nebula_error::Classify::is_retryable(e),
             Self::Execution(e) => nebula_error::Classify::is_retryable(e),
             Self::Action(e) => nebula_error::Classify::is_retryable(e),
+            Self::SkippedJournaledEffect(e) => nebula_error::Classify::is_retryable(e.as_ref()),
             _ => self.category().is_default_retryable(),
         }
     }

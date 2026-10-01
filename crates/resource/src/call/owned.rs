@@ -6,14 +6,18 @@
 //! Per unit, in order:
 //!
 //! - **submit** ([`OwnedEffect::submit`]) — refused when the owner closed;
-//!   otherwise the occurrence label is fixed from the next ordinal of the
-//!   unit's kind and name, and an in-flight ticket taken;
+//!   otherwise an in-flight ticket is taken. Nothing is positioned yet: a
+//!   submission dropped unpolled leaves no trace;
 //! - **first poll** ([`prepare`]) — before anything is spawned, checked out,
-//!   booked or read: replay, refusal, or run;
+//!   booked or read: the occurrence label is fixed from the owner's next
+//!   positional ordinal (one sequence for all its effect units, whatever
+//!   their resource or kind), then replay, refusal, or run;
 //! - **each attempt** — the previous attempt's call is explained when the
 //!   attempt starts ([`OwnedEffect::flush_previous`]); after the checkout
 //!   and the credential reads, before the registration, the owner grants
-//!   the call ([`OwnedEffect::grant`]); a registration that then refuses
+//!   the call ([`OwnedEffect::grant`]) — unless a reload changed the row's
+//!   configuration since the unit was submitted — and the unit's deadline
+//!   shrinks to the grant's budget; a registration that then refuses
 //!   explains it `NotCrossed` ([`OwnedEffect::release_refused`]);
 //! - **settle** ([`OwnedEffect::finish`]) — the last call is settled or
 //!   explained from the unit's result.
@@ -44,9 +48,6 @@ use super::{
     managed::{UnitShared, cancelled_before_grant},
 };
 use crate::{dedup::SlotIdentity, error::ErrorKind};
-
-/// Longest occurrence label the owner's ledger accepts, in bytes.
-const MAX_OCCURRENCE_LABEL_LEN: usize = 512;
 
 /// How a unit's output is recorded and replayed: JSON.
 pub(super) struct OutputCodec<T> {
@@ -90,8 +91,12 @@ pub(super) struct OwnedEffect {
     owner: Arc<dyn EffectJournal>,
     resource_key: ResourceKey,
     binding: SlotIdentity,
+    /// The row's configuration fingerprint when the unit was submitted.
+    config_fingerprint: u64,
     declaration: JournalDeclaration,
-    occurrence: String,
+    /// Assigned when the unit's first poll starts its prepare — never at
+    /// submit — so only a unit that reaches its owner takes a position.
+    occurrence: OnceLock<String>,
     /// Set by a `Runnable` prepare.
     slot: OnceLock<JournalSlot>,
     /// The unit's latest granted call not yet explained or settled.
@@ -113,8 +118,11 @@ struct PendingCall {
 /// its sent state ([`Attempt::finish`](super::Attempt::finish)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CallNote {
-    /// Nothing more: a success, an unclassified or unsettled attempt.
+    /// Nothing more: an unclassified or unsettled attempt.
     Plain,
+    /// The call succeeded: the provider applied it, whatever the unit
+    /// does afterwards.
+    Applied,
     /// The provider throttled the call and applied nothing.
     Throttled,
     /// The provider definitively rejected the call with this kind.
@@ -125,7 +133,7 @@ impl fmt::Debug for OwnedEffect {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("OwnedEffect")
-            .field("occurrence", &self.occurrence)
+            .field("occurrence", &self.occurrence.get())
             .field("recovery", &self.declaration.recovery)
             .field("prepared", &self.slot.get().is_some())
             .finish_non_exhaustive()
@@ -133,14 +141,17 @@ impl fmt::Debug for OwnedEffect {
 }
 
 impl OwnedEffect {
-    /// The owned state of a unit of `declaration` on `key`: refused
-    /// `Cancelled` when `owner` closed; otherwise with its occurrence label
-    /// `unit/v1/{key}/{kind}/{name}/v{version}/#{ordinal:06}` and an
-    /// in-flight ticket.
+    /// The owned state of a unit of `declaration` on `key`, whose row is at
+    /// `config_fingerprint`: refused `Cancelled` when `owner` closed;
+    /// otherwise with an in-flight ticket. Its occurrence is assigned later,
+    /// when its first poll starts the prepare
+    /// ([`assign_occurrence`](Self::assign_occurrence)): a submission
+    /// dropped before it is polled takes no position.
     pub(super) fn submit(
         owner: &Arc<dyn EffectJournal>,
         binding: &SlotIdentity,
         key: &ResourceKey,
+        config_fingerprint: u64,
         declaration: JournalDeclaration,
     ) -> Result<Self, OperationError> {
         if owner.is_closed() {
@@ -149,34 +160,39 @@ impl OwnedEffect {
                 "effect owner closed; unit refused",
             ));
         }
-        let ordinal = owner.next_ordinal(key, declaration.kind, declaration.name);
-        let occurrence = format!(
-            "unit/v1/{key}/{}/{}/v{}/#{ordinal:06}",
-            declaration.kind, declaration.name, declaration.version
-        );
-        let fits = occurrence.len() <= MAX_OCCURRENCE_LABEL_LEN
-            && occurrence.bytes().all(|byte| (0x21..=0x7E).contains(&byte));
-        if !fits {
-            return Err(OperationError::new(
-                ErrorKind::Permanent,
-                "effect occurrence label must be at most 512 bytes of visible ASCII",
-            ));
-        }
         Ok(Self {
             owner: Arc::clone(owner),
             resource_key: key.clone(),
             binding: binding.clone(),
+            config_fingerprint,
             declaration,
-            occurrence,
+            occurrence: OnceLock::new(),
             slot: OnceLock::new(),
             pending: Mutex::new(None),
             _ticket: owner.track(),
         })
     }
 
-    /// The occurrence label the owner records the effect under.
+    /// Assigns the unit's positional occurrence label `unit/v1/#{ordinal:06}`
+    /// from the owner's next ordinal — one sequence for all its effect
+    /// units — once; later calls return the same label.
+    ///
+    /// The resource, kind (operation or session), name and version are not
+    /// in the label: they are bound by the effect's contract, so a changed
+    /// effect under a recorded occurrence — including effects of different
+    /// resources or kinds reordered — is a mismatch rather than a fresh
+    /// effect.
+    fn assign_occurrence(&self) -> &str {
+        self.occurrence.get_or_init(|| {
+            let ordinal = self.owner.next_ordinal();
+            format!("unit/v1/#{ordinal:06}")
+        })
+    }
+
+    /// The occurrence label the owner records the effect under; empty
+    /// until the unit's first poll assigned it.
     pub(super) fn occurrence(&self) -> &str {
-        &self.occurrence
+        self.occurrence.get().map_or("", String::as_str)
     }
 
     /// The prepared slot, once the first poll prepared a runnable one.
@@ -222,25 +238,60 @@ impl OwnedEffect {
     }
 
     /// Asks the owner for the current attempt's call; on a grant the call
-    /// is pending until the attempt is explained or settled.
-    pub(super) async fn grant(&self) -> Result<(), OperationError> {
+    /// is pending until the attempt is explained or settled, and the
+    /// grant's deadline (when it has a budget) is returned: the unit must
+    /// not run past it.
+    ///
+    /// Refused, with nothing asked of the owner, when the row's
+    /// configuration (`config_fingerprint`, read now) is no longer the one
+    /// the effect was prepared against: a reload may have pointed the row
+    /// at another destination. A grant whose budget is already spent is
+    /// explained `NotCrossed` and refused.
+    pub(super) async fn grant(
+        &self,
+        config_fingerprint: u64,
+    ) -> Result<Option<tokio::time::Instant>, OperationError> {
         let Some(slot) = self.slot() else {
             return Err(OperationError::new(
                 ErrorKind::Permanent,
                 "effect slot missing at the grant",
             ));
         };
+        if config_fingerprint != self.config_fingerprint {
+            tracing::warn!(
+                target: "nebula.resource",
+                occurrence = self.occurrence(),
+                "resource configuration changed since the effect was prepared; attempt refused"
+            );
+            return Err(OperationError::new(
+                ErrorKind::Permanent,
+                "resource configuration changed since the effect was prepared",
+            ));
+        }
         let call = self
             .owner
             .grant(slot)
             .await
             .map_err(|refusal| self.refused("grant", refusal))?;
+        let deadline = match call.budget() {
+            None => None,
+            Some(budget) if budget.is_zero() => {
+                if let Err(refusal) = self.owner.explain(slot, call, Crossing::NotCrossed).await {
+                    let _ = self.refused("explain", refusal);
+                }
+                return Err(OperationError::new(
+                    ErrorKind::Backpressure,
+                    "effect grant expired before the call; attempt refused",
+                ));
+            },
+            Some(budget) => tokio::time::Instant::now().checked_add(budget),
+        };
         *self.pending() = Some(PendingCall {
             call,
             sent: SentState::MaybeSent,
             note: CallNote::Plain,
         });
-        Ok(())
+        Ok(deadline)
     }
 
     /// The attempt's registration refused after the owner granted its
@@ -268,8 +319,14 @@ impl OwnedEffect {
     /// | `Ok` | any | settle `Applied` (`AppliedWithoutOutput` without `record_output`, or for an output over the 1 MiB cap) |
     /// | `Err` | `NotSent`, or throttled | explain `NotCrossed` |
     /// | `Err` | rejected | settle `Rejected` with the rejection's kind |
-    /// | `Err` | `MaybeSent`, or `Sent` (a success the unit then failed) and a retryable kind | explain `Ambiguous` |
-    /// | `Err` | `Sent` and a non-retryable kind | settle `Rejected` |
+    /// | `Err` | `MaybeSent`, or applied (a success the unit then failed) and a retryable kind | explain `Ambiguous` |
+    /// | `Err` | applied and a non-retryable kind | settle `AppliedWithoutOutput` |
+    ///
+    /// A local failure after a successful call never records a provider
+    /// rejection: the provider applied the effect, so the ledger says so
+    /// (without an output, which the unit never produced) and a resume
+    /// fails `Permanent` "recorded without output" — never sending it
+    /// again. Only a call the provider rejected records a rejection.
     pub(super) async fn finish<T>(
         &self,
         result: Result<T, OperationError>,
@@ -306,18 +363,16 @@ impl OwnedEffect {
                     (SentState::NotSent, _) | (SentState::Sent, CallNote::Throttled) => {
                         Err(Crossing::NotCrossed)
                     },
-                    (SentState::Sent, CallNote::Rejected(code)) => Ok(code),
-                    (SentState::Sent, CallNote::Plain) if !kind.is_default_retryable() => {
-                        Ok(ErrorKindCode::of(kind))
+                    (SentState::Sent, CallNote::Rejected(code)) => Ok(CallOutcome::Rejected(code)),
+                    (SentState::Sent, CallNote::Applied) if !kind.is_default_retryable() => {
+                        Ok(CallOutcome::AppliedWithoutOutput)
                     },
                     _ => Err(Crossing::Ambiguous),
                 };
                 let (step, written) = match recorded {
-                    Ok(code) => (
+                    Ok(outcome) => (
                         "settle",
-                        self.owner
-                            .settle(slot, pending.call, CallOutcome::Rejected(code))
-                            .await,
+                        self.owner.settle(slot, pending.call, outcome).await,
                     ),
                     Err(crossing) => (
                         "explain",
@@ -343,7 +398,7 @@ impl OwnedEffect {
         let Ok(encoded) = (codec.encode)(output) else {
             tracing::warn!(
                 target: "nebula.resource",
-                occurrence = %self.occurrence,
+                occurrence = self.occurrence(),
                 "effect output could not be serialized; recorded without output"
             );
             return None;
@@ -351,7 +406,7 @@ impl OwnedEffect {
         if encoded.len() > MAX_RECORDED_OUTPUT_LEN {
             tracing::warn!(
                 target: "nebula.resource",
-                occurrence = %self.occurrence,
+                occurrence = self.occurrence(),
                 output_len = encoded.len(),
                 "effect output is over the recording cap; recorded without output"
             );
@@ -364,7 +419,7 @@ impl OwnedEffect {
     fn refused(&self, step: &'static str, refusal: JournalRefusal) -> OperationError {
         tracing::warn!(
             target: "nebula.resource",
-            occurrence = %self.occurrence,
+            occurrence = self.occurrence(),
             step,
             refusal = refusal.as_str(),
             "effect owner refused a step"
@@ -377,7 +432,7 @@ impl OwnedEffect {
     fn unrecorded(&self, step: &'static str, refusal: JournalRefusal) -> OperationError {
         tracing::warn!(
             target: "nebula.resource",
-            occurrence = %self.occurrence,
+            occurrence = self.occurrence(),
             step,
             refusal = refusal.as_str(),
             "effect owner could not record a call that may have crossed; outcome unknown"
@@ -430,10 +485,31 @@ pub(super) async fn prepare<T>(
     codec: OutputCodec<T>,
     deadline: tokio::time::Instant,
 ) -> Prepared<T> {
+    // A unit already cancelled, or whose owner closed, never reaches the
+    // owner: it takes no position.
+    if shared.cancel_token().is_cancelled() {
+        let cancelled = shared
+            .refuse_if_cancelled()
+            .err()
+            .unwrap_or_else(cancelled_before_grant);
+        return Prepared::Refused(cancelled, SentState::NotSent);
+    }
+    if effect.owner.is_closed() {
+        return Prepared::Refused(
+            effect.refused("prepare", JournalRefusal::Closed),
+            SentState::NotSent,
+        );
+    }
+    // The position is taken here, when preparing begins, in the order units
+    // reach their owner — never at submit: a submission dropped before its
+    // first poll consumes no ordinal, so a branch that builds and drops one
+    // cannot shift the effects after it onto unrecorded positions.
+    let occurrence = effect.assign_occurrence();
     let declaration = &effect.declaration;
     let intent = JournalIntent {
         resource_key: &effect.resource_key,
         binding: &effect.binding,
+        config_fingerprint: effect.config_fingerprint,
         kind: declaration.kind,
         operation: declaration.name,
         version: declaration.version,
@@ -441,7 +517,7 @@ pub(super) async fn prepare<T>(
         recovery: declaration.recovery,
         record_output: declaration.record_output,
         max_invocations,
-        occurrence: &effect.occurrence,
+        occurrence,
         canonical_request: &declaration.canonical_request,
         key_part: declaration.key_part.as_deref(),
     };

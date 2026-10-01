@@ -10,15 +10,19 @@
 //! through it (a `Read` never is):
 //!
 //! 1. **Submit** — the unit takes an in-flight [`InFlight`]
-//!    ([`track`](EffectJournal::track)) and its ordinal per resource, unit
-//!    kind and name ([`next_ordinal`](EffectJournal::next_ordinal)); a
-//!    [closed](EffectJournal::is_closed) owner refuses it.
-//! 2. **Prepare** — the first poll hands the owner a [`JournalIntent`]; the
-//!    returned [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome,
-//!    refuses an unknown one, or lets the unit run.
+//!    ([`track`](EffectJournal::track)); a
+//!    [closed](EffectJournal::is_closed) owner refuses it. A submission is
+//!    lazy: one dropped before its first poll never reaches the owner.
+//! 2. **Prepare** — the first poll takes the unit's positional ordinal in
+//!    the owner's one sequence for all its effect units, whatever their
+//!    resource or kind ([`next_ordinal`](EffectJournal::next_ordinal)),
+//!    and hands the owner a [`JournalIntent`]; the returned
+//!    [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome, refuses an
+//!    unknown one, or lets the unit run.
 //! 3. **Grant** — each attempt, after its checkout and credential reads and
 //!    before its registration, asks for a [`CallGrant`]: the only authority
-//!    for one provider call.
+//!    for one provider call, within the grant's budget (the unit's deadline
+//!    shrinks to it).
 //! 4. **Explain / settle** — every granted call is either explained
 //!    ([`Crossing`]) or settled ([`CallOutcome`]) exactly once.
 //!
@@ -41,10 +45,23 @@ use crate::{dedup::SlotIdentity, error::ErrorKind};
 /// step. A refusal ([`JournalRefusal`]) never means a provider call happened.
 #[async_trait::async_trait]
 pub trait EffectJournal: Send + Sync + fmt::Debug {
-    /// The next ordinal of a unit of `kind` named `name` (an operation key
-    /// or a session name) on `key`, in program (submit) order. Synchronous:
-    /// it is taken when the unit is submitted.
-    fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind, name: &str) -> u32;
+    /// The next ordinal in the owner's one sequence for all its effect
+    /// units, in the order units start preparing: positional, whatever the
+    /// unit's resource, kind (operation or session), name and version.
+    /// Synchronous: it is taken by the unit's first poll, right before
+    /// [`prepare`](Self::prepare) — never at submit, so a submission dropped
+    /// unpolled takes no position.
+    ///
+    /// Everything but the position stays out of the occurrence on purpose:
+    /// the resource, kind, name and version are part of the effect's
+    /// contract, so a changed effect under a recorded occurrence — another
+    /// `KEY` or `VERSION`, another resource, a session where an operation
+    /// was — is a mismatch the owner refuses with nothing sent, never a
+    /// fresh occurrence that sends the effect again. Units polled in another
+    /// order than an earlier run polled them meet each other's recorded
+    /// positions the same way, across resources and kinds: a different
+    /// intent is a mismatch, an identical one is interchangeable.
+    fn next_ordinal(&self) -> u32;
 
     /// Durably prepares the effect `intent` describes (recovering an
     /// unacknowledged earlier prepare) and returns its slot.
@@ -55,7 +72,8 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
     async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal>;
 
     /// Grants one provider call on `slot`. `Ok` is the only authority for a
-    /// provider call.
+    /// provider call, and only within the grant's
+    /// [`budget`](CallGrant::budget), when it has one.
     ///
     /// # Errors
     ///
@@ -169,6 +187,13 @@ pub struct JournalIntent<'a> {
     pub resource_key: &'a ResourceKey,
     /// The row's credential slot identity.
     pub binding: &'a SlotIdentity,
+    /// The row's configuration as the unit found it when it was prepared:
+    /// its [`ResourceConfig::fingerprint`](crate::ResourceConfig::fingerprint)
+    /// (a configuration holds no secrets; credentials are bound separately,
+    /// by `binding`). An owner binds it into the effect's destination, so an
+    /// effect recorded against one configuration (one endpoint) is never
+    /// granted again after a reload points the row elsewhere.
+    pub config_fingerprint: u64,
     /// Whether an operation or a session.
     pub kind: UnitKind,
     /// The operation key or the session name: unique within the resource.
@@ -186,9 +211,10 @@ pub struct JournalIntent<'a> {
     /// Attempts the unit may be granted
     /// ([`Operation::max_attempts`](super::Operation::max_attempts)).
     pub max_invocations: NonZeroU32,
-    /// The occurrence label,
-    /// `unit/v1/{resource_key}/{kind}/{operation}/v{version}/#{ordinal:06}`:
-    /// visible ASCII, at most 512 bytes.
+    /// The occurrence label, `unit/v1/#{ordinal:06}`: visible ASCII, at most
+    /// 512 bytes. Positional in the owner's one sequence — the resource,
+    /// `kind`, `operation` and `version` are not part of it, so a changed
+    /// effect under a recorded occurrence is a mismatch.
     pub occurrence: &'a str,
     /// The canonical request (canonicalization version 1: key-sorted
     /// compact JSON), 1 byte to 1 MiB; digest it, never store it.
@@ -203,6 +229,7 @@ impl fmt::Debug for JournalIntent<'_> {
         formatter
             .debug_struct("JournalIntent")
             .field("resource_key", self.resource_key)
+            .field("config_fingerprint", &self.config_fingerprint)
             .field("kind", &self.kind)
             .field("operation", &self.operation)
             .field("version", &self.version)
@@ -298,21 +325,43 @@ impl JournalSlot {
     }
 }
 
-/// One granted provider call, as its owner identifies it.
+/// One granted provider call, as its owner identifies it, and how long the
+/// owner's guarantees cover it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallGrant([u8; 16]);
+pub struct CallGrant {
+    id: [u8; 16],
+    budget: Option<Duration>,
+}
 
 impl CallGrant {
-    /// The call `id`.
+    /// The call `id`, bounded only by the unit's deadline.
     #[must_use]
     pub const fn from_bytes(id: [u8; 16]) -> Self {
-        Self(id)
+        Self { id, budget: None }
+    }
+
+    /// The same call, which must start and finish within `budget` of the
+    /// moment the owner hands it out: past it the owner can no longer
+    /// vouch for the call (a stable key's deduplication window ends). The
+    /// runtime bounds the unit by the earlier of its deadline and the
+    /// budget, and refuses a call whose budget is zero.
+    #[must_use]
+    pub const fn with_budget(mut self, budget: Duration) -> Self {
+        self.budget = Some(budget);
+        self
     }
 
     /// The call id.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
+        &self.id
+    }
+
+    /// How long the call may run from the moment it was handed out; `None`
+    /// when only the unit's deadline bounds it.
+    #[must_use]
+    pub const fn budget(&self) -> Option<Duration> {
+        self.budget
     }
 }
 

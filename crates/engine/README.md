@@ -131,12 +131,80 @@ configuration, and process lifecycle.
   accepts only explicitly declared `ReadOnly` factories: a caller-supplied context may
   carry any resource accessor, so its public entry points refuse `Journaled` actions
   (`EffectRequiresOwner`). The engine's own node dispatch admits `Journaled` factories
-  without a remote-effect capability. Only handle-routed effects are journaled. Until
-  the engine effect journal lands, `Journaled` actions (every kind, including stateful)
-  run with read-only handle authority: reads run, writes through handles are refused
-  as `NotSent` before any provider call, and raw leases (`ResourceGuard<R>` slots,
-  `acquire_resource_by_id`) are refused because they would bypass the journal. Plans
-  recorded without an effect field stay refused.
+  without a remote-effect capability. Only handle-routed effects are journaled: a
+  lease-facade unit or raw egress the action opens itself is outside the journal, so
+  raw leases (`ResourceGuard<R>` slots, `acquire_resource_by_id`) are refused for every
+  `Journaled` action. Plans recorded without an effect field stay refused.
+- **Node effect journal** (`effect_driver::journal`, crate-private). A frozen,
+  stateless `Journaled` action on a durable turn (operation ledger and execution fence
+  present) runs under one `NodeEffectJournal` per node attempt, through
+  `ActionRuntime::execute_journaled_action` and an engine-private admission witness.
+  Its resource handles (`Manager::handle_any_journaled`) drive every `Idempotent` /
+  `Write` unit through the journal, which records it as one operation-ledger slot via
+  the shared `LedgerSlot` core: prepare (natural key `(scope, execution, node,
+  occurrence)`), grant, explain (not crossed / ambiguous), settle (exact evidence
+  recommit). Building the journal costs nothing durable: no ledger write happens until
+  the first effect is prepared, and reads are never prepared; `conclude` always reads
+  the node's occurrences once (a crash before an attempt was recorded leaves the next
+  attempt at the same generation), and a node that prepares an effect reads them once
+  more before its first prepare. Each grant carries what is left of the ledger's
+  window for the call, and the resource runtime stops the unit there; a grant with
+  nothing left is withheld. A slot's contract identity binds the destination (resource
+  key, credential slot identity, configuration fingerprint) and `RECORD_OUTPUT`, so a
+  reload to another endpoint or a changed recording policy is a mismatch. Occurrences are the
+  resource runtime's positional `unit/v1/#{ordinal:06}`, one sequence for all the node
+  attempt's effect units (every resource, operations and sessions) restarting per node
+  attempt, taken when a unit starts preparing (its first poll — a submission dropped
+  unpolled takes none); the resource, unit kind, operation (or session) name and version
+  belong to the contract identity, so a redeploy that changes the effect at a recorded
+  position is a mismatch with nothing sent, not a fresh slot. A run that reaches its
+  effects in another order (across resources, or a session before an operation) or adds/removes one
+  before recorded ones meets other intents' slots: a mismatch (identical intents are
+  interchangeable). Before its first prepare the journal reads the node's earlier
+  occurrences once and refuses a fresh slot at a position an earlier attempt left empty
+  below one it recorded (a mismatch, nothing written), since the effect may be one
+  recorded further on. An engine retry reuses the occurrences:
+  a settled effect replays its recorded output with no provider call, an opaque
+  ambiguous one is unknown, a retryable failure may be granted again within the
+  slot's budget (`Operation::max_attempts`). The `it{n}/` prefix is reserved for the
+  iterations of stateful actions. Every slot records the provider idempotency key
+  `base64url(SHA-256(frame("nebula.idempotency-key.v1") ‖ frame(frame(org) ‖
+  frame(workspace)) ‖ frame(resource) ‖ frame(operation) ‖ u32_be(version) ‖
+  frame(developer part | frame(execution) ‖ frame(node) ‖ frame(occurrence)))))` — no
+  attempt number, no execution id with a developer part — and a unit presents the key
+  read back from the prepared record. A call granted and never explained (a crash, a
+  unit that outlived its node) is recorded as an ambiguous crossing on the next
+  prepare, never from `Drop`. On every exit of the node — after the action returns,
+  and on each exit before it runs (cancellation, input resolution, credential
+  refresh, rate limit, contract checks), so an earlier dispatch's unknown call is
+  never reported as a failure an error strategy could retry or continue past —
+  `conclude` drains the units
+  for at most `min(OPERATION_DEADLINE_CAP, execution deadline left)`, closes the
+  journal and records every unexplained call as ambiguous within the same limit, then
+  reads the node's occurrences within what is left of it (at least 5 s; a read that
+  does not answer defers the turn like an unavailable ledger); its
+  verdict overrides the node's result: a lost lease or unknown acknowledgement
+  releases the lease without finalizing, any slot whose call may have crossed without
+  a recorded outcome (unknown, outstanding, ambiguous, or held past the limit by a
+  stuck unit) fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even if the action
+  swallowed the unit's error), and a changed request, key part, credential binding,
+  configuration or recording policy under a recorded occurrence fails it
+  `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent — as does a node about to
+  succeed although an earlier attempt recorded an effect (settled, or a call that
+  crossed) this attempt never met again. Such a verdict — like a remote effect's unknown
+  outcome or unreadable evidence (`EffectExecutionError::halts_execution`) — takes no
+  error strategy: `IgnoreErrors`, `ContinueOnError` and OnError edges never recover or
+  route past it; the node fails and the execution stops. A node that fails before
+  meeting such an earlier effect again keeps its own error
+  (`EngineError::SkippedJournaledEffect`): its retry policy may re-dispatch it (the
+  retry replays the effect), but a final failure halts the execution instead of being
+  ignored or routed. Counters:
+  `nebula_effect_journal_prepares_total{phase}`,
+  `nebula_effect_journal_refusals_total{step,refusal}`,
+  `nebula_effect_journal_verdicts_total{code}`. Every other `Journaled` node keeps
+  read-only handles (reads run, writes are refused `NotSent`): without execution
+  stores the refusal says "journaled effects need execution stores"; stateful,
+  control and agent actions stay read-only until their iterations are journaled.
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.

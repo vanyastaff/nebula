@@ -29,13 +29,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::credential_accessor::EngineCredentialAccessor;
 use crate::engine::{
-    FactoryDispatch, NodeFactoryDispatch, NodeTask, WorkflowEngine, durable_error_envelope,
-    resolve_node_input_with_support, setup_refusal,
+    FactoryDispatch, NodeFactoryDispatch, NodeResourceLayers, NodeTask, WorkflowEngine,
+    durable_error_envelope, resolve_node_input_with_support, setup_refusal,
 };
 use crate::error::EngineError;
 use crate::resolver::NodeInputRequest;
 use crate::resource_accessor::EngineResourceAccessor;
-use crate::scoped_resources::LayeredResourceAccessor;
+use crate::scoped_resources::EmptyScopedResourceMap;
 
 impl WorkflowEngine {
     /// Spawn a single node into the JoinSet.
@@ -343,6 +343,7 @@ impl WorkflowEngine {
         // (`ctx.acquire_resource_by_id`, `ctx.resource::<R>()`) consult the
         // layered accessor transparently — `scoped → global`, closest
         // ancestor wins.
+        let mut engine_resources = None;
         let resources: Arc<dyn ResourceAccessor> = if let Some(manager) = &self.resource_manager {
             let extra = self
                 .execution_acquire_scopes
@@ -372,12 +373,20 @@ impl WorkflowEngine {
             }
             // Resource handle units are cancelled with the node until their
             // first grant and bounded by the execution's wall-clock budget.
-            let global: Arc<dyn ResourceAccessor> = Arc::new(
+            let accessor =
                 EngineResourceAccessor::new(Arc::clone(manager), scope, cancel_token.clone())
                     .with_slot_identities_arc(slot_identities)
-                    .with_deadline(execution_deadline),
-            );
-            Arc::new(LayeredResourceAccessor::global_only(global))
+                    .with_deadline(execution_deadline);
+            // A journaled node derives its handles from the same layers,
+            // adding its effect journal (or its refusal detail) to the
+            // global rows only.
+            let layers = NodeResourceLayers {
+                scoped: Arc::new(EmptyScopedResourceMap),
+                rows: accessor,
+            };
+            let resources = layers.layered(layers.rows.clone());
+            engine_resources = Some(layers);
+            resources
         } else {
             default_resource_accessor()
         };
@@ -430,6 +439,9 @@ impl WorkflowEngine {
                 support_inputs,
                 credentials,
                 resources,
+                engine_resources,
+                execution_deadline,
+                metrics: self.metrics.clone(),
                 credential_refresh,
                 rate_limiter,
                 operation_ledger: self

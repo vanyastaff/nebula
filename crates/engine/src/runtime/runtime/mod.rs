@@ -36,8 +36,9 @@ enum ResourceAuthority {
     /// A public entry point: the caller's context may carry any accessor,
     /// including one that hands out write-enabled row facades or raw leases.
     CallerSupplied,
-    /// The engine's node dispatch: a journaled action's accessor serves
-    /// read-only row facades and refuses raw leases.
+    /// The engine's node dispatch: a journaled action's accessor refuses raw
+    /// leases and serves resource handles under the node's effect journal,
+    /// or read-only ones when the node has no journal.
     EngineJournaled,
 }
 
@@ -367,9 +368,10 @@ impl ActionRuntime {
     /// This path never consults the mutable action registry.
     ///
     /// The engine built `context`: its resource accessor is the engine's,
-    /// restricted for a journaled action to read-only row facades with raw
-    /// leases refused, so a journaled action is admitted here — and only
-    /// here.
+    /// restricted for a journaled action to read-only resource handles with
+    /// raw leases refused (a node without an effect journal), so a journaled
+    /// action is admitted here — and, with a journal, only through
+    /// [`execute_journaled_action`](Self::execute_journaled_action).
     pub(crate) async fn execute_resolved_action(
         &self,
         factory: Arc<dyn ActionFactory>,
@@ -377,6 +379,47 @@ impl ActionRuntime {
         input: nebula_schema::ResolvedValues,
         context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        self.run_factory(
+            node.action_key.as_str(),
+            factory,
+            node,
+            nebula_action::ActionInput::Resolved(input),
+            context,
+            None,
+            ResourceAuthority::EngineJournaled,
+        )
+        .await
+    }
+
+    /// Execute a journaled action under its node's effect journal.
+    ///
+    /// The dispatch path of a stateless action whose admitted contract is
+    /// [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled)
+    /// on a durable turn: `admission` proves the engine built the node
+    /// attempt's
+    /// [`NodeEffectJournal`](crate::effect_driver::NodeEffectJournal) and
+    /// handed it to the action's resource handles through `context` (whose
+    /// accessor still refuses raw leases). Only stateless actions with no
+    /// remote capability are admitted; public entry points keep refusing the
+    /// contract.
+    pub(crate) async fn execute_journaled_action(
+        &self,
+        factory: Arc<dyn ActionFactory>,
+        node: &NodeDefinition,
+        input: nebula_schema::ResolvedValues,
+        context: &dyn ActionContext,
+        _admission: crate::effect_driver::JournalAdmission,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        let metadata = factory.metadata();
+        if !matches!(
+            metadata.effect_contract(),
+            nebula_action::effect::ActionEffectContract::Journaled(_)
+        ) || factory.remote_effect_factory().is_some()
+            || metadata.kind() != nebula_action::ActionKind::Stateless
+        {
+            self.observe_rejected("effect_requires_owner");
+            return Err(RuntimeError::EffectRequiresOwner);
+        }
         self.run_factory(
             node.action_key.as_str(),
             factory,
@@ -429,7 +472,7 @@ impl ActionRuntime {
     /// [`ActionHandle`] for the supplied workflow node and dispatch it.
     /// The factory's admitted metadata must explicitly declare no external
     /// effects — or, on the engine's own node dispatch only, a journaled
-    /// contract served read-only resource authority — and the factory must
+    /// contract served engine-built resource authority — and the factory must
     /// expose no remote capability. This check precedes construction;
     /// generic dispatch cannot issue an execution-owner grant.
     ///
@@ -509,8 +552,8 @@ impl ActionRuntime {
             });
         }
         // A journaled action runs only under engine-built resource authority:
-        // read-only row facades and no raw leases, until the engine effect
-        // journal lands. A caller-supplied context may carry any accessor, so
+        // no raw leases, and resource handles under the node's effect journal
+        // or read-only. A caller-supplied context may carry any accessor, so
         // generic dispatch refuses it. Remote effects need their owner.
         let admitted = match metadata.effect_contract() {
             nebula_action::effect::ActionEffectContract::ReadOnly => true,

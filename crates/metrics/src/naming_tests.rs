@@ -871,3 +871,95 @@ fn webhook_rate_limit_tier_labels_are_closed_set() {
         );
     }
 }
+
+#[test]
+fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
+    use super::{
+        NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL, NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+        NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL, effect_journal_prepare_phase, effect_journal_refusal,
+        effect_journal_step, effect_journal_verdict,
+    };
+
+    let registry = MetricsRegistry::new();
+    let names = [
+        NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL,
+        NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+        NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL,
+    ];
+    let mut unique = HashSet::new();
+    for name in names {
+        assert!(name.starts_with("nebula_effect_journal_") && name.ends_with("_total"));
+        assert!(unique.insert(name));
+    }
+
+    // Closed label sets: adding a value permanently inflates cardinality;
+    // this test is the gate.
+    let phases = [
+        effect_journal_prepare_phase::RUNNABLE,
+        effect_journal_prepare_phase::REPLAY,
+        effect_journal_prepare_phase::UNKNOWN,
+    ];
+    let steps = [
+        effect_journal_step::PREPARE,
+        effect_journal_step::GRANT,
+        effect_journal_step::EXPLAIN,
+        effect_journal_step::SETTLE,
+        effect_journal_step::RECORD_LEAKED_CALL,
+    ];
+    let refusals = [
+        effect_journal_refusal::UNAVAILABLE,
+        effect_journal_refusal::ACKNOWLEDGEMENT_UNKNOWN,
+        effect_journal_refusal::MISMATCH,
+        effect_journal_refusal::CLOSED,
+        effect_journal_refusal::LEASE_LOST,
+        effect_journal_refusal::UNKNOWN,
+    ];
+    let verdicts = [
+        effect_journal_verdict::OK,
+        effect_journal_verdict::DEFERRED,
+        effect_journal_verdict::OUTCOME_UNKNOWN,
+        effect_journal_verdict::OCCURRENCE_MISMATCH,
+        effect_journal_verdict::INVALID_CONTRACT,
+        effect_journal_verdict::INVALID_EVIDENCE,
+        effect_journal_verdict::LEDGER,
+    ];
+    for (set, expected) in [
+        (&phases[..], 3),
+        (&steps[..], 5),
+        (&refusals[..], 6),
+        (&verdicts[..], 7),
+    ] {
+        let unique: HashSet<_> = set.iter().collect();
+        assert_eq!(unique.len(), expected);
+        assert!(
+            set.iter()
+                .all(|label| label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'))
+        );
+    }
+
+    let labels = registry
+        .interner()
+        .single("phase", effect_journal_prepare_phase::REPLAY);
+    let prepares = registry
+        .counter_labeled(NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL, &labels)
+        .unwrap();
+    prepares.inc();
+    assert_eq!(prepares.get(), 1);
+    let labels = registry.interner().label_set(&[
+        ("step", effect_journal_step::GRANT),
+        ("refusal", effect_journal_refusal::LEASE_LOST),
+    ]);
+    let refused = registry
+        .counter_labeled(NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL, &labels)
+        .unwrap();
+    refused.inc();
+    assert_eq!(refused.get(), 1);
+    let labels = registry
+        .interner()
+        .single("code", effect_journal_verdict::OUTCOME_UNKNOWN);
+    let verdict = registry
+        .counter_labeled(NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL, &labels)
+        .unwrap();
+    verdict.inc();
+    assert_eq!(verdict.get(), 1);
+}

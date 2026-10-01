@@ -41,8 +41,9 @@ mod field_slots;
 /// - `read_only` - Explicit author attestation that the action performs no external business
 ///   effects (`ActionEffectContract::ReadOnly`). Without it the effect contract is the
 ///   default `Journaled(JournalProtocol::V1)`: effects routed through resource handles are
-///   journaled by the engine (until the engine journal lands, writes through handles are
-///   refused before any provider call).
+///   journaled by the engine (a stateless action on a turn with execution stores; other
+///   journaled actions get read-only handles, whose writes are refused before any
+///   provider call).
 ///
 /// # Example
 ///

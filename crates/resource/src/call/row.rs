@@ -211,11 +211,13 @@ impl<R: Provider + PinSlots> ResourceHandle<R> {
     /// | journaled action ([`handle_any_journaled`](crate::Manager::handle_any_journaled)) | runs, never recorded | runs through the row's execution owner |
     ///
     /// On a journaled row an effect's first poll asks the owner to prepare
-    /// it under its occurrence label
-    /// (`unit/v1/{resource_key}/op/{KEY}/v{VERSION}/#{ordinal:06}`, the
-    /// ordinal counting units of the operation key on the resource in
-    /// submit order), from the operation's canonical request (its JSON with
-    /// sorted keys) and [`Operation::idempotency_key`], before anything is
+    /// it under its positional occurrence label
+    /// (`unit/v1/#{ordinal:06}`, the ordinal counting all the owner's effect
+    /// units — every resource, operations and sessions — in the order they
+    /// start preparing; a submission dropped unpolled takes none), from the
+    /// row's key and the operation's
+    /// `KEY`, `VERSION`, canonical request (its JSON with sorted keys) and
+    /// [`Operation::idempotency_key`], before anything is
     /// booked, read or checked out:
     ///
     /// | Owner says | Unit |
@@ -284,8 +286,9 @@ where
     /// A session routes as [`submit`](Self::submit) does, by `spec`'s
     /// effect and the row's authority. On a journaled row an `Idempotent`
     /// or `Write` session is prepared, granted and recorded by the row's
-    /// owner under `unit/v1/{resource_key}/session/{name}/v{version}/#{ordinal:06}`
-    /// from `spec`'s canonical request and key part; its output is recorded
+    /// owner under `unit/v1/#{ordinal:06}` (positional among all the owner's
+    /// effect units) from the row's key and `spec`'s name, version, canonical
+    /// request and key part; its output is recorded
     /// and replayed without opening a session. How it closed is recorded
     /// as:
     ///
@@ -500,11 +503,14 @@ impl<'u, R: Provider + PinSlots> OperationCx<'u, R> {
         };
 
         // 9. An owned effect's call is granted by its owner — the only
-        //    provider-call authority — before the attempt registers.
+        //    provider-call authority — before the attempt registers, unless
+        //    a reload changed the row's configuration since the unit was
+        //    submitted.
         let owned = self.shared.effect();
-        if let Some(effect) = owned {
-            effect.grant().await?;
-        }
+        let grant_deadline = match owned {
+            Some(effect) => effect.grant(managed.config_fingerprint()).await?,
+            None => None,
+        };
 
         // 10. Lock #2 (strict rows) and the grant. A refusal drops the
         //     checkout untainted: the instance goes back to the pool, and an
@@ -532,6 +538,25 @@ impl<'u, R: Provider + PinSlots> OperationCx<'u, R> {
                 return Err(refusal);
             },
         };
+        // The owner vouches for the call only within its grant's budget: the
+        // unit — this attempt and every later wait — stops there. The
+        // registration (lock #2, the strict reading) may have spent what was
+        // left: the provider call would start right after this returns, in
+        // the same poll and before any timer is seen, so an expired grant is
+        // explained not crossed and the attempt refused, unsent.
+        if let Some(grant_deadline) = grant_deadline {
+            if grant_deadline <= tokio::time::Instant::now() {
+                if let Some(effect) = owned {
+                    effect.release_refused().await;
+                }
+                return Err(OperationError::new(
+                    ErrorKind::Backpressure,
+                    "effect grant expired during registration; attempt refused",
+                ));
+            }
+            self.deadline = self.deadline.min(grant_deadline);
+            self.shared.shrink_deadline(grant_deadline);
+        }
         if let Some(metrics) = row.link.metrics() {
             metrics.record_row_checkout(guard.created());
         }

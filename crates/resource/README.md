@@ -802,29 +802,34 @@ raw-escape profile; prefer a `ResourceHandle<R>` field for provider calls (its
 deprecation is scheduled with the `Limited` family's removal, MIGRATION
 P10). A derived action without `read_only` gets the default
 `Journaled(JournalProtocol::V1)` effect contract: only effects routed through
-resource handles are journaled. Until the engine effect journal lands, a
-journaled action runs with read-only handle authority — reads run, and a
-`Write` through a handle is refused as `NotSent` before any provider call. A
-journaled action cannot take a raw lease at all: a `ResourceGuard<R>` field or
-`acquire_resource_by_id` is refused, since a lease would bypass the journal.
-Mutating row operations require the engine-owned remote-effect protocol; the
-current action-row surface does not turn a resource-local retry declaration
-into durable effect authority. A public ad-hoc accessor for actions and an SDK
-testing hook that builds rows are follow-ups too.
+resource handles are journaled; a lease-facade unit or raw egress the action
+opens itself is outside the journal. A stateless journaled action on a
+durable engine turn gets handles under its node attempt's effect journal
+(below): its `Idempotent` and `Write` units are prepared, granted and
+recorded by the engine. Every other journaled action — a run without
+execution stores, a stateful, control or agent action until its iterations
+are journaled — runs with read-only handle authority: reads run, and a
+`Write` through a handle is refused as `NotSent` before any provider call
+(`Manager::handle_any_read_only_because` lets the engine say why, e.g.
+"journaled effects need execution stores"). A journaled action cannot take a
+raw lease at all: a `ResourceGuard<R>` field or `acquire_resource_by_id` is
+refused, since a lease would bypass the journal. An action declaring
+`read_only` keeps read-only handles. A public ad-hoc accessor for actions and
+an SDK testing hook that builds rows are follow-ups.
 
-#### Execution-owned effects (interim: engine wiring pending)
+#### Execution-owned effects
 
-The resource side of that protocol is in place; the engine does not hand
-out owned rows yet. `Manager::handle_any_journaled` builds a row that
-carries the execution's `call::journal::EffectJournal` — the port the engine
-implements over its operation ledger; this crate never writes effect state.
+`Manager::handle_any_journaled` builds a row that carries the execution's
+`call::journal::EffectJournal` — the port the engine implements over its
+operation ledger (`NodeEffectJournal`, one per node attempt); this crate
+never writes effect state.
 There is one `submit` and one `session`; the runtime routes each unit by its
 effect and the row's authority:
 
 | Row | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
 |---|---|---|---|
 | library (`handle`, `handle_any`), `Lease` | runs | runs | runs |
-| read-only (`handle_any_read_only`) | runs | refused `Permanent` / `NotSent` | refused |
+| read-only (`handle_any_read_only`, `handle_any_read_only_because`) | runs | refused `Permanent` / `NotSent` | refused |
 | journaled (`handle_any_journaled`) | runs, never prepared | through the owner | refused ("streaming effects are not journaled in v1") |
 
 For a journaled effect the runtime derives the whole journal declaration
@@ -837,10 +842,20 @@ ledger's 1 MiB evidence cap is recorded digest-only, so a resume fails
 (`idempotency_key()`, 1–256 bytes of visible ASCII, built deterministically
 from input or state — never random, never a retry number).
 
-The unit's occurrence is
-`unit/v1/{resource_key}/{op|session}/{name}/v{version}/#{ordinal:06}`, the
-ordinal counting units of that kind and name on the resource in submit order
-(`#000003`). Its first poll asks the owner to prepare
+The unit's occurrence is positional, `unit/v1/#{ordinal:06}`, the ordinal
+counting all of the owner's (the node attempt's) effect units — every
+resource, operations and sessions alike — in the order they start
+preparing (`#000003`). It is taken by the unit's first poll, not at submit:
+a submission dropped before it is polled takes no position, so a branch
+that builds and drops one cannot shift later effects onto unrecorded
+positions. The resource key, unit kind, operation key and version belong to
+the effect's contract instead: a redeploy that changes the `KEY` or
+`VERSION` of the operation at a recorded position fails as an occurrence
+mismatch with nothing sent, rather than preparing a fresh effect that would
+send it again under a new key. Units polled in another order than an
+earlier run — across resources, or a session before an operation — meet
+each other's positions the same way: a mismatch unless their intents are
+identical. Its first poll asks the owner to prepare
 the effect before any quota, checkout or credential read: a recorded success
 replays its output with no provider call, a recorded rejection or digest and
 an unknown outcome fail without one. Every attempt's call is granted by the

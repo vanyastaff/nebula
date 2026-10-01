@@ -46,6 +46,24 @@ pub enum EffectExecutionError {
     /// Persisted evidence cannot be interpreted without guessing.
     #[error("remote effect evidence is invalid")]
     InvalidEvidence,
+    /// A journaled effect differs from the one recorded under its
+    /// occurrence: its operation, version, request, key part or credential
+    /// binding changed between node attempts, or one occurrence was
+    /// submitted twice in one node attempt. Nothing was sent.
+    #[error("journaled effect differs from the effect recorded under its occurrence")]
+    OccurrenceMismatch,
+    /// At least one journaled effect of the node has an unknown outcome.
+    /// The node fails even when its action returned a result (or swallowed
+    /// the unit's error): only reconciliation can establish what happened.
+    #[error(
+        "journaled effect outcome is unknown for {unresolved} slot(s) of the node, first {slot_id}"
+    )]
+    JournalOutcomeUnknown {
+        /// The first slot whose outcome is unknown (all are logged).
+        slot_id: nebula_storage_port::dto::EffectSlotId,
+        /// How many slots of the node have an unknown outcome.
+        unresolved: u32,
+    },
 }
 
 impl EffectExecutionError {
@@ -58,12 +76,31 @@ impl EffectExecutionError {
             Self::InvalidContract => "ENGINE:EFFECT_INVALID_CONTRACT",
             Self::Preparation(_) => "ENGINE:EFFECT_PREPARATION",
             Self::Ledger(_) => "ENGINE:EFFECT_LEDGER",
-            Self::OutcomeUnknown { .. } => "ENGINE:EFFECT_OUTCOME_UNKNOWN",
+            Self::OutcomeUnknown { .. } | Self::JournalOutcomeUnknown { .. } => {
+                "ENGINE:EFFECT_OUTCOME_UNKNOWN"
+            },
+            Self::OccurrenceMismatch => "ENGINE:EFFECT_OCCURRENCE_MISMATCH",
             Self::OutputUnavailable { .. } => "ENGINE:EFFECT_OUTPUT_UNAVAILABLE",
             Self::Rejected { .. } => "ENGINE:EFFECT_REJECTED",
             Self::InvalidEvidence => "ENGINE:EFFECT_INVALID_EVIDENCE",
         }
     }
+    /// Whether the failure leaves the effect's durable state unknown or
+    /// contradicting the node — an unknown outcome, an occurrence mismatch,
+    /// evidence that cannot be read. No error strategy may recover the node
+    /// or route past it: the node fails and the execution stops, for
+    /// reconciliation.
+    #[must_use]
+    pub const fn halts_execution(self) -> bool {
+        matches!(
+            self,
+            Self::OutcomeUnknown { .. }
+                | Self::JournalOutcomeUnknown { .. }
+                | Self::OccurrenceMismatch
+                | Self::InvalidEvidence
+        )
+    }
+
     /// Whether the turn must relinquish its lease without finalizing the node.
     ///
     /// Recovery may read the ledger again; this is not provider retry authority.

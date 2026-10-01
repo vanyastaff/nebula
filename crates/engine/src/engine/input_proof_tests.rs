@@ -129,6 +129,9 @@ async fn cancellation_during_program_resolution_never_refreshes_or_executes() {
         operation_ledger: None,
         clock: Arc::new(SystemClock),
         attempt_generation: 1,
+        engine_resources: None,
+        execution_deadline: None,
+        metrics: MetricsRegistry::new(),
     };
     let (_, result) = task.run().await;
     let _ = CANCEL

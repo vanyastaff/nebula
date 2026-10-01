@@ -134,6 +134,99 @@ pub mod dispatch_reject_reason {
 }
 
 // ---------------------------------------------------------------------------
+// Effect journal (engine)
+// ---------------------------------------------------------------------------
+
+/// Counter: effects a node's effect journal prepared.
+///
+/// Labeled by `phase` (see [`effect_journal_prepare_phase`]): what the
+/// prepared slot let the unit do. A steady `replay` rate is resumed or
+/// retried nodes answered from the journal; any `unknown` is an effect an
+/// operator must reconcile.
+pub const NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL: &str = "nebula_effect_journal_prepares_total";
+
+/// Phase labels for [`NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL`].
+///
+/// Closed set of three values: every successful prepare resolves to one.
+pub mod effect_journal_prepare_phase {
+    /// No outcome is recorded: the unit runs.
+    pub const RUNNABLE: &str = "runnable";
+    /// An outcome is recorded: the unit replays it without a provider call.
+    pub const REPLAY: &str = "replay";
+    /// The outcome is unknown: the unit is refused without a provider call.
+    pub const UNKNOWN: &str = "unknown";
+}
+
+/// Counter: unit steps an effect journal refused.
+///
+/// Labeled by `step` (see [`effect_journal_step`]) and `refusal` (see
+/// [`effect_journal_refusal`]). A refusal never means a provider call
+/// happened. `refusal=lease_lost` is a takeover while units were in flight;
+/// `refusal=mismatch` is a non-deterministic action.
+pub const NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL: &str = "nebula_effect_journal_refusals_total";
+
+/// Step labels for [`NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL`].
+///
+/// Closed set of five values: the journal's durable steps.
+pub mod effect_journal_step {
+    /// Preparing an effect's slot.
+    pub const PREPARE: &str = "prepare";
+    /// Granting a provider call.
+    pub const GRANT: &str = "grant";
+    /// Recording how a call crossed without settling.
+    pub const EXPLAIN: &str = "explain";
+    /// Recording a call's outcome.
+    pub const SETTLE: &str = "settle";
+    /// Recording a granted call its unit never explained, at the node's end.
+    pub const RECORD_LEAKED_CALL: &str = "record_leaked_call";
+}
+
+/// Refusal labels for [`NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL`].
+///
+/// Closed set of six values, one per journal refusal.
+pub mod effect_journal_refusal {
+    /// The journal's store is unavailable.
+    pub const UNAVAILABLE: &str = "unavailable";
+    /// The journal could not learn whether its write was acknowledged.
+    pub const ACKNOWLEDGEMENT_UNKNOWN: &str = "acknowledgement_unknown";
+    /// The effect differs from the one recorded under its occurrence.
+    pub const MISMATCH: &str = "mismatch";
+    /// The journal closed: its node finished.
+    pub const CLOSED: &str = "closed";
+    /// The journal lost the execution lease that authorizes its writes.
+    pub const LEASE_LOST: &str = "lease_lost";
+    /// The effect's outcome is unknown: no call is granted.
+    pub const UNKNOWN: &str = "unknown";
+}
+
+/// Counter: node verdicts of effect journals.
+///
+/// Labeled by `code` (see [`effect_journal_verdict`]). Every journaled node
+/// that ran records one verdict; any value but `ok` overrides the action's
+/// own result.
+pub const NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL: &str = "nebula_effect_journal_verdicts_total";
+
+/// Code labels for [`NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL`].
+///
+/// Closed set of seven values.
+pub mod effect_journal_verdict {
+    /// The journal agrees with the action's result.
+    pub const OK: &str = "ok";
+    /// The turn must release its lease without finalizing the node.
+    pub const DEFERRED: &str = "deferred";
+    /// An effect of the node has an unknown outcome.
+    pub const OUTCOME_UNKNOWN: &str = "outcome_unknown";
+    /// An effect differs from the one recorded under its occurrence.
+    pub const OCCURRENCE_MISMATCH: &str = "occurrence_mismatch";
+    /// An effect's declaration projects to no ledger contract.
+    pub const INVALID_CONTRACT: &str = "invalid_contract";
+    /// A durable record could not be interpreted.
+    pub const INVALID_EVIDENCE: &str = "invalid_evidence";
+    /// The ledger refused a step for another reason.
+    pub const LEDGER: &str = "ledger";
+}
+
+// ---------------------------------------------------------------------------
 // API: idempotency middleware (M3.4
 // ---------------------------------------------------------------------------
 

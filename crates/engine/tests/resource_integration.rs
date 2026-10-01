@@ -1530,10 +1530,11 @@ mod resource_handle {
                 .svc
                 .submit(LostWrite)
                 .await
-                .expect_err("a journaled write needs the engine journal");
+                .expect_err("a storeless run has no effect journal");
             Ok(ActionResult::success(serde_json::json!({
                 "calls": calls,
                 "write_sent": refused.sent().as_str(),
+                "write_detail": refused.detail(),
             })))
         }
     }
@@ -1587,7 +1588,7 @@ mod resource_handle {
     // ── (a) a unit runs on the row ───────────────────────────────────────
 
     #[tokio::test]
-    async fn a_journaled_action_reads_but_its_writes_are_refused_before_the_provider() {
+    async fn a_storeless_journaled_action_reads_but_its_writes_are_refused_before_the_provider() {
         let manager = Arc::new(Manager::new());
         let calls = register_svc(&manager, None);
         let engine = engine(manager, |registry| {
@@ -1606,6 +1607,11 @@ mod resource_handle {
         assert!(result.is_success(), "{result:?}");
         assert_eq!(output(&result)["calls"], 1, "the read ran");
         assert_eq!(output(&result)["write_sent"], "not_sent");
+        assert_eq!(
+            output(&result)["write_detail"],
+            "journaled effects need execution stores",
+            "the refusal says why the write has no journal"
+        );
         assert_eq!(
             calls.count(),
             1,

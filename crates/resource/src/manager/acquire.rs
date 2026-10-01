@@ -426,6 +426,32 @@ impl Manager {
         )
     }
 
+    /// The type-erased managed row restricted to read-only operations, like
+    /// [`handle_any_read_only`](Self::handle_any_read_only), whose refused
+    /// effects carry `detail` — why this caller has no effect authority
+    /// (the engine says a journaled action without execution stores, for
+    /// example). The refusal stays `Permanent` / `NotSent`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same lookup and lifecycle errors as
+    /// [`handle_any`](Self::handle_any).
+    pub fn handle_any_read_only_because(
+        &self,
+        key: &ResourceKey,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+        detail: &'static str,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+        self.handle_any_with_scope(
+            key,
+            ctx,
+            slot_identity,
+            crate::call::UnitScope::from_parts(ctx, options).read_only_because(detail),
+        )
+    }
+
     /// The type-erased managed row of an action with effect-owner
     /// authority: reads run as on any row, and every `Idempotent` or
     /// `Write` unit — an operation through

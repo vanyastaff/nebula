@@ -1,9 +1,9 @@
 //! The ledger mechanics of one durable effect slot.
 //!
 //! [`LedgerSlot`] is the shared core of every execution-owned effect: the
-//! remote-effect [`Driver`] prepares, advances and records its slot through
-//! it, and other execution-owned effect owners reuse the same mechanics. It
-//! owns no policy of its own — which
+//! remote-effect [`Driver`] and the node effect journal
+//! ([`NodeEffectJournal`]) both prepare, advance and record a slot through
+//! it. It owns no policy of its own — which
 //! command to issue and what a phase means is the caller's — only the
 //! protocol checks that make a durable answer trustworthy:
 //!
@@ -91,6 +91,17 @@ impl LedgerSlot {
         };
         slot.validate_record(&slot.record)?;
         Ok(slot)
+    }
+
+    /// The storage-minted slot identity.
+    pub(super) fn slot_id(&self) -> nebula_storage_port::dto::EffectSlotId {
+        self.record.operation().slot_id()
+    }
+
+    /// The provider idempotency key recorded when the slot was first
+    /// prepared: the durable value, never a recomputation.
+    pub(super) fn provider_key(&self) -> Option<nebula_storage_port::dto::ProviderIdempotencyKey> {
+        self.record.operation().provider_key()
     }
 
     /// The operation identity the provider receives.

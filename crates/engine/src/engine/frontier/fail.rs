@@ -80,6 +80,13 @@ impl WorkflowEngine {
         err: &EngineError,
     ) -> Result<Option<(NodeKey, String)>, EngineError> {
         ctx.task_nodes.remove(&task_id);
+        // A failure past an effect an earlier attempt recorded: its own
+        // error drives cancellation, retry and the durable record; only the
+        // finalize path below changes — no strategy recovers or routes it.
+        let (err, skipped_recorded_effect) = match err {
+            EngineError::SkippedJournaledEffect(inner) => (inner.as_ref(), true),
+            other => (other, false),
+        };
         if let EngineError::Effect(effect) = err
             && effect.is_deferred()
         {
@@ -313,7 +320,22 @@ impl WorkflowEngine {
         }
 
         // ── Finalize path (no retry / retry exhausted) ──
-        let outcome = classify_failure(error_strategy);
+        //
+        // An effect failure whose durable state is unknown or contradicts
+        // the node (an unknown outcome, an occurrence mismatch) takes no
+        // error strategy: `IgnoreErrors` would complete the node and
+        // `ContinueOnError` / OnError edges would route past a mutation
+        // nobody can vouch for. The node fails and the execution stops.
+        // A failure past an earlier attempt's recorded effect that no retry
+        // takes up halts the same way: recovering or routing past the node
+        // would continue past an applied mutation its result does not show.
+        let halts = skipped_recorded_effect
+            || matches!(err, EngineError::Effect(effect) if effect.halts_execution());
+        let outcome = if halts {
+            FailureOutcome::Fail
+        } else {
+            classify_failure(error_strategy)
+        };
         if let Err(e) =
             apply_failure_recovery(outcome, node_key.clone(), ctx.exec_state, ctx.outputs)
         {
@@ -321,19 +343,31 @@ impl WorkflowEngine {
             return Err(e);
         }
 
-        let abort = route_failure_edges(
-            outcome,
-            node_key.clone(),
-            &err_str,
-            error_strategy,
-            graph,
-            ctx.outputs,
-            &mut ctx.activated_edges,
-            &mut ctx.resolved_edges,
-            &ctx.required_count,
-            &mut ctx.ready_queue,
-            ctx.exec_state,
-        );
+        let abort = if halts {
+            ctx.outputs.remove(&node_key);
+            tracing::error!(
+                target = "engine::frontier",
+                %execution_id,
+                %node_key,
+                error = %err_str,
+                "effect state unknown or contradicting the node; stopping the execution"
+            );
+            Some(err_str.clone())
+        } else {
+            route_failure_edges(
+                outcome,
+                node_key.clone(),
+                &err_str,
+                error_strategy,
+                graph,
+                ctx.outputs,
+                &mut ctx.activated_edges,
+                &mut ctx.resolved_edges,
+                &ctx.required_count,
+                &mut ctx.ready_queue,
+                ctx.exec_state,
+            )
+        };
 
         if let Err(e) = self
             .checkpoint_node(

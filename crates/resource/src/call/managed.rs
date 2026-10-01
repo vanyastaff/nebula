@@ -376,14 +376,21 @@ pub(super) fn assert_declaration<R: Provider + PinSlots, O: Operation<R>>() {
     }
 }
 
+/// The refusal detail of an effect on a read-only row facade.
+const NO_EFFECT_AUTHORITY: &str = "managed row effect requires execution-owner authority";
+
 /// Which effects the caller that built a row facade may submit.
 #[derive(Debug, Clone, Default)]
 pub(crate) enum EffectAuthority {
     /// Library callers run every effect unjournaled.
     #[default]
     Unjournaled,
-    /// Action execution without effect-owner authority may perform reads only.
-    ReadOnly,
+    /// Action execution without effect-owner authority may perform reads
+    /// only; an effect is refused with `detail`.
+    ReadOnly {
+        /// Why the caller has no effect authority.
+        detail: &'static str,
+    },
     /// Action execution with effect-owner authority: reads as usual,
     /// `Idempotent` and `Write` units driven through `owner`.
     Journaled {
@@ -428,8 +435,14 @@ impl UnitScope {
     }
 
     /// Restricts the facade to operations that declare [`Effect::Read`].
-    pub(crate) fn read_only(mut self) -> Self {
-        self.effect_authority = EffectAuthority::ReadOnly;
+    pub(crate) fn read_only(self) -> Self {
+        self.read_only_because(NO_EFFECT_AUTHORITY)
+    }
+
+    /// Restricts the facade to operations that declare [`Effect::Read`],
+    /// refusing an effect with `detail`.
+    pub(crate) fn read_only_because(mut self, detail: &'static str) -> Self {
+        self.effect_authority = EffectAuthority::ReadOnly { detail };
         self
     }
 
@@ -456,7 +469,12 @@ impl UnitScope {
     ///
     /// A plain unit that declared a developer key part presents a local
     /// idempotency key; every refusal is unsent.
-    fn admit<R, W>(&self, key: &ResourceKey, work: &W) -> Result<Route, OperationError>
+    fn admit<R, W>(
+        &self,
+        key: &ResourceKey,
+        managed: &ManagedResource<R>,
+        work: &W,
+    ) -> Result<Route, OperationError>
     where
         R: Provider + PinSlots,
         W: UnitWork<R>,
@@ -486,11 +504,8 @@ impl UnitScope {
         }
         let (owner, binding) = match &self.effect_authority {
             EffectAuthority::Unjournaled => return plain(key_part),
-            EffectAuthority::ReadOnly => {
-                return Err(OperationError::new(
-                    ErrorKind::Permanent,
-                    "managed row effect requires execution-owner authority",
-                ));
+            EffectAuthority::ReadOnly { detail } => {
+                return Err(OperationError::new(ErrorKind::Permanent, detail));
             },
             EffectAuthority::Journaled { owner, binding } => (owner, binding),
         };
@@ -516,7 +531,8 @@ impl UnitScope {
             canonical_request: work.canonical_request()?,
             key_part,
         };
-        OwnedEffect::submit(owner, binding, key, declaration)
+        let config_fingerprint = managed.config_fingerprint();
+        OwnedEffect::submit(owner, binding, key, config_fingerprint, declaration)
             .map(|owned| Route::Owned(Box::new(owned)))
     }
 }
@@ -554,11 +570,8 @@ where
         sent = tracing::field::Empty,
         outcome = tracing::field::Empty,
     );
-    let (shared, refused) = match scope.admit(&key, &work) {
-        Ok(Route::Owned(owned)) => {
-            span.record("occurrence", owned.occurrence());
-            (UnitShared::new(scope).with_effect(*owned), None)
-        },
+    let (shared, refused) = match scope.admit(&key, host.managed(), &work) {
+        Ok(Route::Owned(owned)) => (UnitShared::new(scope).with_effect(*owned), None),
         Ok(Route::Plain { local_key }) => (UnitShared::new(scope).with_local_key(local_key), None),
         Err(refusal) => (UnitShared::new(scope), Some(refusal)),
     };
@@ -613,6 +626,8 @@ pub(super) struct UnitShared {
     /// latter is honoured only until the first grant.
     cancel: CancellationToken,
     deadline: Mutex<tokio::time::Instant>,
+    /// Woken when an owner's grant shrinks the deadline of a running unit.
+    deadline_shrunk: tokio::sync::Notify,
     /// Attempts granted so far.
     granted: AtomicU32,
     /// Worst settled [`SentState`] rank across granted attempts, a
@@ -652,6 +667,7 @@ impl UnitShared {
                 .as_ref()
                 .map_or_else(CancellationToken::new, CancellationToken::child_token),
             deadline: Mutex::new(tokio::time::Instant::from_std(deadline)),
+            deadline_shrunk: tokio::sync::Notify::new(),
             granted: AtomicU32::new(0),
             worst: AtomicU8::new(SentState::NotSent.rank()),
             last: AtomicU8::new(SentState::NotSent.rank()),
@@ -695,6 +711,50 @@ impl UnitShared {
 
     fn deadline(&self) -> tokio::time::Instant {
         *self.deadline.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Shrinks the deadline of the running unit to `deadline` (never
+    /// extends it): the unit is stopped there, as at its own deadline.
+    pub(super) fn shrink_deadline(&self, deadline: tokio::time::Instant) {
+        {
+            let mut current = self.deadline.lock().unwrap_or_else(PoisonError::into_inner);
+            if deadline >= *current {
+                return;
+            }
+            *current = deadline;
+        }
+        // One watcher per unit: a stored permit wakes it even when it is
+        // not waiting yet.
+        self.deadline_shrunk.notify_one();
+    }
+
+    /// Runs `run` until the unit's deadline — re-read whenever a grant
+    /// shrinks it; `None` when the deadline elapsed first.
+    ///
+    /// Takes the operation pinned by the caller: an `async fn` that moved
+    /// its argument into a pinned local would hold the whole operation
+    /// future twice (argument and local), doubling the unit task
+    /// (<https://github.com/rust-lang/rust/issues/62958>).
+    async fn run_until_deadline<F: Future>(&self, mut run: Pin<&mut F>) -> Option<F::Output> {
+        loop {
+            let deadline = self.deadline();
+            // An already-expired deadline wins before the operation is
+            // polled again: a grant that shrank it must not let the
+            // operation run on past it for one more poll.
+            if deadline <= tokio::time::Instant::now() {
+                return None;
+            }
+            tokio::select! {
+                biased;
+                output = &mut run => return Some(output),
+                () = tokio::time::sleep_until(deadline) => {
+                    if self.deadline() <= tokio::time::Instant::now() {
+                        return None;
+                    }
+                },
+                () = self.deadline_shrunk.notified() => {},
+            }
+        }
     }
 
     fn is_granted(&self) -> bool {
@@ -958,6 +1018,8 @@ where
         (Some(codec), Some(owned)) => {
             let max_invocations = work.max_attempts();
             let prepared = owned::prepare(&shared, owned, max_invocations, codec, deadline).await;
+            // The position is assigned when preparing begins.
+            span.record("occurrence", owned.occurrence());
             match prepared {
                 Prepared::Run => Some(codec),
                 Prepared::Replayed(output) => {
@@ -1033,14 +1095,28 @@ where
             max_attempts,
             effect,
         };
-        let run = tokio::time::timeout_at(deadline, work.run(&mut cx));
+        // Bounded by the unit's deadline. Only an owner's grant shrinks it
+        // while the operation runs, so an unowned unit keeps the plain timer.
+        // The operation future is pinned once here and both arms borrow it,
+        // so the unit task holds it once: passing it by value into an
+        // `async fn` that pins it again stores it twice in the state machine
+        // (https://github.com/rust-lang/rust/issues/62958), doubling the
+        // task and the bytes copied when it is spawned.
+        let run = async {
+            let operation = std::pin::pin!(work.run(&mut cx));
+            if shared.effect().is_some() {
+                shared.run_until_deadline(operation).await
+            } else {
+                tokio::time::timeout_at(deadline, operation).await.ok()
+            }
+        };
         AssertUnwindSafe(run).catch_unwind().await
     };
     let (result, abnormal) = match outcome {
-        Ok(Ok(result)) => (result, false),
+        Ok(Some(result)) => (result, false),
         // The deadline cut off the report of a finished throttle: the
         // provider applied nothing, and the unit settles as the throttle.
-        Ok(Err(_elapsed)) => match shared.take_reporting() {
+        Ok(None) => match shared.take_reporting() {
             Some(throttle) => (Err(throttle), false),
             None => (
                 Err(OperationError::new(
@@ -1620,7 +1696,7 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
     pub async fn finish<T>(self, result: &Result<T, OperationError>) {
         let mut attempt = self;
         let (sent, note, verdict) = match result {
-            Ok(_) => (SentState::Sent, CallNote::Plain, Some(Verdict::Pass)),
+            Ok(_) => (SentState::Sent, CallNote::Applied, Some(Verdict::Pass)),
             Err(error) => {
                 let sent = error.attempt_sent();
                 match error.signal() {
@@ -1671,7 +1747,14 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
     /// rate limit nothing: a session's single attempt.
     pub(crate) fn settle(self, sent: SentState) {
         let mut attempt = self;
-        attempt.shared.record(sent, CallNote::Plain);
+        // A session settled `Sent` committed: the provider applied it,
+        // whatever the body returned.
+        let note = if sent == SentState::Sent {
+            CallNote::Applied
+        } else {
+            CallNote::Plain
+        };
+        attempt.shared.record(sent, note);
         attempt.settled = true;
     }
 }
