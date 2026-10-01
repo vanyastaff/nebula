@@ -10,7 +10,8 @@
 //! Field-level attributes recognised:
 //!
 //! - `#[resource]` / `#[resource(key = "...")]` — declares a resource slot. Field type must be
-//!   `ResourceGuard<R>` (optionally wrapped in `Option<...>` and/or `Lazy<...>`).
+//!   `ResourceHandle<R>` (optionally wrapped in `Option<...>`); a `ResourceGuard<R>` lease is
+//!   refused since 0.27.0.
 //! - `#[credential]` / `#[credential(key = "...")]` — declares a credential slot. Field type must
 //!   be `CredentialGuard<C>` (optionally wrapped in `Option<...>` and/or `Lazy<...>`).
 

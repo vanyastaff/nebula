@@ -90,20 +90,6 @@ async fn a_stateful_journaled_action_keeps_read_only_handles() {
 }
 
 #[tokio::test]
-async fn a_journaled_action_under_its_journal_still_cannot_take_a_raw_lease() {
-    let fixture = JournalFixture::new(Ports::memory()).await;
-    let execution = fixture
-        .start(&[write("order-12:7")], json!({ "raw_lease": true }))
-        .await;
-    let result = fixture.run(execution).await.unwrap();
-    assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
-    let output = &result.node_outputs[&node_key!("charge")];
-    assert_eq!(output["raw_lease_refused"], true, "{output}");
-    assert_eq!(receipts(&result), json!([1]), "the handle's write ran");
-    assert_eq!(fixture.gateway.call_count(), 1);
-}
-
-#[tokio::test]
 async fn generic_dispatch_refuses_a_journaled_action() {
     let fixture = JournalFixture::new(Ports::memory()).await;
     let factory = fixture

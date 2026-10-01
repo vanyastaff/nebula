@@ -1478,8 +1478,8 @@ impl WorkflowEngine {
     ///
     /// Callers should prefer this over
     /// [`ResourceActivatorRegistry::register`](crate::ResourceActivatorRegistry::register)
-    /// alone so action-time `acquire_any` uses the same `slot_identity` as the
-    /// manager registry row.
+    /// alone so action-time resource handles address the same
+    /// `slot_identity` as the manager registry row.
     ///
     /// # Errors
     ///
@@ -3138,17 +3138,16 @@ impl NodeTask {
         ))
     }
 
-    /// The resource accessor of a journaled action: raw leases refused, and
-    /// resource handles under `journal` — or read-only without one, saying
-    /// why when the run has no execution stores. The node's scoped layer
-    /// stays in front: a key a branch scope holds is never served by a
-    /// global row.
+    /// The resource accessor of a journaled action: resource handles under
+    /// `journal` — or read-only without one, saying why when the run has no
+    /// execution stores. The node's scoped layer stays in front: a key a
+    /// branch scope holds is never served by a global row.
     fn journaled_resources(
         &self,
         journal: Option<&crate::effect_driver::NodeEffectJournal>,
     ) -> Arc<dyn ResourceAccessor> {
         let storeless = self.operation_ledger.is_none() || self.fencing.is_none();
-        let inner = match (&self.engine_resources, journal) {
+        match (&self.engine_resources, journal) {
             (Some(layers), Some(journal)) => {
                 layers.layered(layers.rows.clone().with_journal(Arc::new(journal.clone())))
             },
@@ -3159,10 +3158,28 @@ impl NodeTask {
                     .with_read_only_detail(JOURNAL_NEEDS_STORES),
             ),
             _ => self.resources.clone(),
-        };
-        Arc::new(crate::resource_accessor::JournaledResourceAccessor::new(
-            inner,
-        ))
+        }
+    }
+
+    /// The resource accessor the action of `contract` is dispatched with.
+    ///
+    /// Every action reaches resources through resource handles only — the
+    /// accessor has no raw-lease route. A stateless journaled one on a
+    /// durable turn gets handles under this node attempt's effect journal;
+    /// every other node (a journaled one without a journal, a `ReadOnly` or
+    /// `Remote` one) gets read-only handles, whose `Idempotent` and `Write`
+    /// units are refused before any provider call.
+    fn dispatch_resources(
+        &self,
+        contract: &nebula_action::effect::ActionEffectContract,
+        journal: Option<&crate::effect_driver::NodeEffectJournal>,
+    ) -> Arc<dyn ResourceAccessor> {
+        match contract {
+            nebula_action::effect::ActionEffectContract::Journaled(_) => {
+                self.journaled_resources(journal)
+            },
+            _ => self.resources.clone(),
+        }
     }
 
     /// How long a journaled node waits for its units after the action
@@ -3277,17 +3294,10 @@ impl NodeTask {
             return Err(EngineError::Cancelled);
         }
 
-        // A journaled action reaches resources through resource handles
-        // only — raw leases, which would bypass the journal, are refused
-        // before any lookup. A stateless one on a durable turn gets handles
-        // under this node attempt's effect journal; every other journaled
-        // node gets read-only handles.
-        let resources = match self.factory_dispatch.factory().metadata().effect_contract() {
-            nebula_action::effect::ActionEffectContract::Journaled(_) => {
-                self.journaled_resources(journal)
-            },
-            _ => self.resources.clone(),
-        };
+        let resources = self.dispatch_resources(
+            self.factory_dispatch.factory().metadata().effect_contract(),
+            journal,
+        );
 
         let input = tokio::select! {
             biased;
@@ -3427,9 +3437,9 @@ impl NodeTask {
                             // No journal (no execution stores, or a stateful,
                             // control or agent action until its iterations
                             // are journaled): the context's accessor hands
-                            // out read-only handles and refuses raw leases,
-                            // so reads run and writes through handles are
-                            // refused as NotSent before any provider call.
+                            // out read-only handles, so reads run and
+                            // writes through handles are refused as
+                            // NotSent before any provider call.
                             None => self
                                 .runtime
                                 .execute_resolved_action(factory, &self.node, input, &action_ctx)

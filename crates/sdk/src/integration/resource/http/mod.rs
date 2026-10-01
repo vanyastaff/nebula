@@ -17,7 +17,7 @@
 //!   ([`Get`], [`Post`], [`Keyed`], [`AsWrite`], …) fixes the
 //!   [`Effect`](nebula_resource::call::Effect), and so whether an unknown
 //!   outcome may be retried. Submit it with
-//!   [`Lease::submit`](nebula_resource::call::Lease::submit) — or call
+//!   [`ResourceHandle::submit`](nebula_resource::call::ResourceHandle::submit) — or call
 //!   [`send`] on an attempt of a custom operation.
 //! - **Answers.** Each exchange classifies its answer once with an
 //!   [`OperationError`](nebula_resource::call::OperationError) constructor

@@ -17,6 +17,7 @@ use nebula_core::{
     scope::{Principal, Scope},
 };
 use nebula_credential::CredentialSnapshot;
+use nebula_resource::{AcquireOptions, ErrorKind, Manager, ResourceContext, SlotIdentity};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -27,7 +28,6 @@ use crate::{
     trigger::TriggerAction,
 };
 
-type ResourceFactory = Arc<dyn Fn() -> Box<dyn Any + Send + Sync> + Send + Sync>;
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // Test contexts are type aliases over the concrete runtime contexts so action
@@ -38,10 +38,30 @@ type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type TestActionContext = crate::context::ActionRuntimeContext;
 pub type TestTriggerContext = crate::context::TriggerRuntimeContext;
 
+/// Builds a test [`ActionRuntimeContext`](crate::context::ActionRuntimeContext)
+/// (or a trigger context) with in-memory capabilities.
+///
+/// # Resources
+///
+/// An action reaches a resource only through a
+/// [`ResourceHandle<R>`](nebula_resource::call::ResourceHandle) slot, so the
+/// harness serves handles from a real [`Manager`]: register the rows the
+/// action needs on a manager and pass it to
+/// [`with_resource_manager`](Self::with_resource_manager). The built context
+/// then resolves `#[resource]` fields (and
+/// [`resource_handle_by_id`](crate::ActionContextExt::resource_handle_by_id))
+/// by key, under the unbound slot identity, bound to the context's
+/// cancellation token. Without a manager every lookup fails closed and an
+/// optional slot reads as absent.
+///
+/// The test handles carry library effect semantics: every unit runs, with
+/// no effect journal. The engine is stricter — it journals the `Idempotent`
+/// and `Write` units of a `Journaled` action and refuses them on a
+/// `ReadOnly` or `Remote` one — so assert effect routing in an engine test.
 pub struct TestContextBuilder {
     credentials: HashMap<String, CredentialSnapshot>,
     typed_credentials: HashMap<TypeId, CredentialSnapshot>,
-    resources: HashMap<String, ResourceFactory>,
+    resource_manager: Option<Arc<Manager>>,
     input: Option<serde_json::Value>,
     support_inputs: HashMap<nebula_core::PortKey, Vec<serde_json::Value>>,
     logs: Arc<SpyLogger>,
@@ -53,7 +73,7 @@ impl TestContextBuilder {
         Self {
             credentials: HashMap::new(),
             typed_credentials: HashMap::new(),
-            resources: HashMap::new(),
+            resource_manager: None,
             input: None,
             support_inputs: HashMap::new(),
             logs: Arc::new(SpyLogger::new()),
@@ -90,14 +110,12 @@ impl TestContextBuilder {
         self
     }
 
+    /// Serves [`ResourceHandle<R>`](nebula_resource::call::ResourceHandle)s
+    /// for the rows registered on `manager` (see the
+    /// [type docs](Self#resources)).
     #[must_use]
-    pub fn with_resource<R>(mut self, key: impl Into<String>, resource: R) -> Self
-    where
-        R: Clone + Send + Sync + 'static,
-    {
-        let factory: ResourceFactory =
-            Arc::new(move || Box::new(resource.clone()) as Box<dyn Any + Send + Sync>);
-        self.resources.insert(key.into(), factory);
+    pub fn with_resource_manager(mut self, manager: Arc<Manager>) -> Self {
+        self.resource_manager = Some(manager);
         self
     }
 
@@ -130,10 +148,11 @@ impl TestContextBuilder {
     #[must_use]
     pub fn build(self) -> crate::context::ActionRuntimeContext {
         use nebula_core::id::{ExecutionId, WorkflowId};
+        let cancel = CancellationToken::new();
         let base = Arc::new(
             nebula_core::BaseContext::builder(Scope::default())
                 .principal(Principal::System)
-                .cancellation(CancellationToken::new())
+                .cancellation(cancel.clone())
                 .build()
                 .expect("scope + principal must produce a valid BaseContext"),
         );
@@ -144,7 +163,8 @@ impl TestContextBuilder {
             WorkflowId::new(),
         )
         .with_resources(Arc::new(TestResourceAccessor {
-            resources: Arc::new(parking_lot::Mutex::new(self.resources)),
+            manager: self.resource_manager,
+            cancel,
         }))
         .with_credentials(Arc::new(TestCredentialAccessor {
             credentials: self.credentials,
@@ -165,17 +185,19 @@ impl TestContextBuilder {
         use nebula_core::id::WorkflowId;
         let emitter = Arc::new(SpyEmitter::new());
         let scheduler = Arc::new(SpyScheduler::new());
+        let cancel = CancellationToken::new();
         let base = Arc::new(
             nebula_core::BaseContext::builder(Scope::default())
                 .principal(Principal::System)
-                .cancellation(CancellationToken::new())
+                .cancellation(cancel.clone())
                 .build()
                 .expect("scope + principal must produce a valid BaseContext"),
         );
         let ctx =
             crate::context::TriggerRuntimeContext::new(base, WorkflowId::new(), node_key!("test"))
                 .with_resources(Arc::new(TestResourceAccessor {
-                    resources: Arc::new(parking_lot::Mutex::new(self.resources)),
+                    manager: self.resource_manager,
+                    cancel,
                 }))
                 .with_credentials(Arc::new(TestCredentialAccessor {
                     credentials: self.credentials,
@@ -332,36 +354,67 @@ impl CredentialAccessor for TestCredentialAccessor {
     }
 }
 
+/// Serves the handles of a test [`Manager`]'s rows (see
+/// [`TestContextBuilder#resources`]).
 struct TestResourceAccessor {
-    resources: Arc<parking_lot::Mutex<HashMap<String, ResourceFactory>>>,
+    manager: Option<Arc<Manager>>,
+    cancel: CancellationToken,
+}
+
+impl TestResourceAccessor {
+    fn handle(
+        &self,
+        manager: &Manager,
+        key: &ResourceKey,
+    ) -> Result<Box<dyn Any + Send + Sync>, nebula_resource::Error> {
+        manager.handle_any(
+            key,
+            &ResourceContext::minimal(Scope::default(), self.cancel.clone()),
+            &AcquireOptions::default(),
+            &SlotIdentity::Unbound,
+        )
+    }
 }
 
 impl ResourceAccessor for TestResourceAccessor {
     fn has(&self, key: &ResourceKey) -> bool {
-        self.resources.lock().contains_key(key.as_str())
+        self.manager.as_ref().is_some_and(|manager| {
+            manager.has_registered_for_scope_identity(
+                key,
+                &Scope::default(),
+                &SlotIdentity::Unbound,
+            )
+        })
     }
 
-    fn acquire_any(
+    fn resource_handle_any(
         &self,
         key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-        let Some(factory) = self.resources.lock().get(key.as_str()).cloned() else {
-            let missing = key.as_str().to_owned();
-            return Box::pin(async move {
-                Err(CoreError::CredentialNotConfigured(format!(
-                    "resource `{missing}` not found in TestResourceAccessor"
-                )))
-            });
+    ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
+        let Some(manager) = &self.manager else {
+            return Err(CoreError::resource_unavailable(
+                key.as_str(),
+                "the test context has no resource manager; use TestContextBuilder::with_resource_manager",
+                false,
+                None,
+            ));
         };
-        Box::pin(async move { Ok(factory()) })
+        self.handle(manager, key)
+            .map_err(|error| error.to_core_error())
     }
 
-    fn try_acquire_any(
+    fn try_resource_handle_any(
         &self,
         key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-        let maybe_factory = self.resources.lock().get(key.as_str()).cloned();
-        Box::pin(async move { Ok(maybe_factory.map(|factory| factory())) })
+    ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
+        let Some(manager) = &self.manager else {
+            return Ok(None);
+        };
+        match self.handle(manager, key) {
+            Ok(handle) => Ok(Some(handle)),
+            Err(error) if matches!(error.kind(), ErrorKind::NotFound) => Ok(None),
+            Err(error) => Err(error.to_core_error()),
+        }
     }
 }
 

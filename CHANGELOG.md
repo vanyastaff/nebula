@@ -11,6 +11,57 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **A single action route to resources advances development packages to
+  0.27.0 in lockstep.** `ResourceHandle<R>` is now the only resource
+  capability an action context can name; a raw lease (`ResourceGuard<R>`,
+  `call::Lease<R>`, `Manager::acquire*`) stays a host-only capability of
+  `nebula-resource` and the engine, because a lease bypasses the effect
+  journal:
+  - `nebula-core`: `ResourceAccessor::acquire_any` and `try_acquire_any` are
+    removed; the accessor serves `resource_handle_any` /
+    `try_resource_handle_any` (and `has`) only.
+  - `nebula-action`: `ActionContextExt::acquire_resource_by_id`,
+    `ActionRuntimeContext::resource` (keep `has_resource`), the
+    `pub use nebula_resource::ResourceRef` re-export and the raw
+    `TestContextBuilder::with_resource(key, value)` are removed.
+    `TestContextBuilder::with_resource_manager(Arc<Manager>)` replaces the
+    test path: it serves `ResourceHandle<R>`s for the rows registered on a
+    real manager (unbound slot identity, the context's cancellation; library
+    effect semantics, no journal).
+  - `#[derive(Action)]`: a `#[resource]` field must be `ResourceHandle<R>` or
+    `Option<ResourceHandle<R>>`. `ResourceGuard<R>` in any wrapper (`Option`,
+    `Lazy`, `Option<Lazy<..>>`) fails with "`ResourceGuard<T>` slots were
+    removed in 0.27.0; hold `ResourceHandle<T>` — a lease bypasses the
+    effect journal". `Lazy` stays credential-only.
+  - `nebula-resource`: `HasResourcesExt` (`ctx.resource::<R>()`,
+    `try_resource`) and `ResourceRef<R>` are deleted. `ResourceGuard` and
+    `call::Lease` are documented host-only (`Lease` is removed in a later
+    release).
+  - `nebula-engine`: the raw `acquire_any` routes of `EngineResourceAccessor`
+    and `LayeredResourceAccessor` and the `JournaledResourceAccessor`
+    refusal wrapper are gone. A key a branch scope holds still fails closed
+    for a handle (`CoreError::ScopeViolation`), so a branch-scoped payload is
+    no longer reachable from an action context at all.
+  - `nebula-sdk`: `ResourceGuard`, `ReleaseOutcome` and `Lease` are no longer
+    exported from the prelude or `integration::resource`;
+    `http::open_stream` / `open_stream_until` take `&ResourceHandle<R>`.
+  - **Behaviour change:** `ReadOnly` and `Remote` actions used to be able to
+    check out a raw lease; they now reach a resource only through a
+    read-only handle — a `Read` unit runs, an `Idempotent` / `Write` unit is
+    refused `Permanent` / `NotSent` before any provider call.
+  - Migration:
+
+    | Before (≤ 0.26) | 0.27.0 |
+    |---|---|
+    | `#[resource] db: ResourceGuard<Db>` (or `Option` / `Lazy`) | `#[resource] db: ResourceHandle<Db>` (or `Option<..>`); move provider calls into an `Operation` and `self.db.submit(op)` |
+    | `ctx.acquire_resource_by_id::<R>(id).await` | `ctx.resource_handle_by_id::<R>(id)` (`try_resource_handle_by_id` for an optional one) |
+    | `ctx.resource(key).await` / `ctx.resources().acquire_any(&key)` | `ActionContextExt::resource_handle_by_id::<R>`, or `resource_handle_any` on the accessor |
+    | `ctx.resource::<R>()` / `try_resource::<R>()` (`HasResourcesExt`), `ResourceRef<R>::resolve` | a `#[resource]` `ResourceHandle<R>` field |
+    | `impl ResourceAccessor { fn acquire_any / try_acquire_any }` | delete both; implement `resource_handle_any` / `try_resource_handle_any` if the accessor serves rows |
+    | `TestContextBuilder::with_resource(key, value)` | register the row on a `Manager`, `TestContextBuilder::with_resource_manager(manager)` |
+    | `nebula_sdk::…::{ResourceGuard, ReleaseOutcome, Lease}` | `ResourceHandle` (host code that truly needs a lease depends on `nebula-resource` directly) |
+    | `open_stream(&lease, request)` | `open_stream(&handle, request)` |
+
 - **The removal of the `Limited` closure family advances development
   packages to 0.26.0 in lockstep** (MIGRATION P10):
   - Removed from `nebula_resource::rate_limit` and the SDK's
@@ -74,7 +125,8 @@ changes are expected between minor releases — call them out here.
     any provider call. A `Journaled` action cannot take a raw lease: a
     `ResourceGuard<R>` slot, `acquire_resource_by_id` or a raw
     `acquire_any` / `try_acquire_any` fails with a non-retryable
-    `CoreError::ResourceUnavailable` pointing at `ResourceHandle<R>`.
+    `CoreError::ResourceUnavailable` pointing at `ResourceHandle<R>`
+    (superseded in 0.27.0: those routes no longer exist for any action).
   - The public `ActionRuntime` entry points (`execute_action*`,
     `execute_action_with_node`) still run only explicitly `ReadOnly`
     actions and refuse a `Journaled` one with `EffectRequiresOwner`, as they

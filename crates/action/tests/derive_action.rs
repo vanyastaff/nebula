@@ -206,7 +206,7 @@ fn macro_and_manual_metadata_preserve_the_exact_full_semver() {
 // -- Resource handle fields -------------------------------------------------
 
 mod resource_handle_fields {
-    use std::{any::Any, future::Future, pin::Pin, sync::Arc};
+    use std::{any::Any, sync::Arc};
 
     use nebula_action::{FromWorkflowNode, testing::TestContextBuilder};
     use nebula_core::{
@@ -319,29 +319,9 @@ mod resource_handle_fields {
     /// scope.
     struct RowsOf(Arc<Manager>);
 
-    type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
     impl ResourceAccessor for RowsOf {
         fn has(&self, _key: &ResourceKey) -> bool {
             true
-        }
-
-        fn acquire_any(
-            &self,
-            _key: &ResourceKey,
-        ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-            Box::pin(async {
-                Err(CoreError::resource_unavailable(
-                    "lease", "unused", false, None,
-                ))
-            })
-        }
-
-        fn try_acquire_any(
-            &self,
-            _key: &ResourceKey,
-        ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-            Box::pin(async { Ok(None) })
         }
 
         fn resource_handle_any(
@@ -385,24 +365,6 @@ mod resource_handle_fields {
     impl ResourceAccessor for RetryingRows {
         fn has(&self, _key: &ResourceKey) -> bool {
             true
-        }
-
-        fn acquire_any(
-            &self,
-            _key: &ResourceKey,
-        ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-            Box::pin(async {
-                Err(CoreError::resource_unavailable(
-                    "lease", "unused", false, None,
-                ))
-            })
-        }
-
-        fn try_acquire_any(
-            &self,
-            _key: &ResourceKey,
-        ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-            Box::pin(async { Ok(None) })
         }
 
         fn resource_handle_any(
@@ -488,9 +450,12 @@ mod resource_handle_fields {
         let manager = Arc::new(Manager::new());
         register(&manager, Db);
         register(&manager, Cache);
+        // The plugin-author harness: a real manager serves the handles.
         let context = TestContextBuilder::new()
-            .build()
-            .with_resources(Arc::new(RowsOf(Arc::clone(&manager))));
+            .with_resource_manager(Arc::clone(&manager))
+            .build();
+        assert!(context.has_resource("derive.row.db").await);
+        assert!(!context.has_resource("derive.row.missing").await);
 
         let node = node().with_resource_binding("cache", "derive.row.cache");
         let action = RowAction::from_workflow_node(&node, &context)
@@ -535,8 +500,8 @@ mod resource_handle_fields {
         let manager = Arc::new(Manager::new());
         register(&manager, Db);
         let context = TestContextBuilder::new()
-            .build()
-            .with_resources(Arc::new(RowsOf(Arc::clone(&manager))));
+            .with_resource_manager(Arc::clone(&manager))
+            .build();
 
         let action = RowAction::from_workflow_node(&node(), &context)
             .await

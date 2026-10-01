@@ -131,10 +131,14 @@ configuration, and process lifecycle.
   accepts only explicitly declared `ReadOnly` factories: a caller-supplied context may
   carry any resource accessor, so its public entry points refuse `Journaled` actions
   (`EffectRequiresOwner`). The engine's own node dispatch admits `Journaled` factories
-  without a remote-effect capability. Only handle-routed effects are journaled: a
-  lease-facade unit or raw egress the action opens itself is outside the journal, so
-  raw leases (`ResourceGuard<R>` slots, `acquire_resource_by_id`) are refused for every
-  `Journaled` action. Plans recorded without an effect field stay refused.
+  without a remote-effect capability. Only handle-routed effects are journaled: raw
+  egress the action opens itself is outside the journal. Since 0.27.0 the engine's
+  `ResourceAccessor` serves resource handles only — there is no raw-lease route
+  (`ResourceGuard<R>` slots, `acquire_resource_by_id` and `ResourceAccessor::acquire_any`
+  are removed) — so `ReadOnly` and `Remote` actions get read-only handles, as does a
+  `Journaled` one without a node journal. A key a branch scope holds fails closed with a
+  scope violation instead of reaching a global row. Plans recorded without an effect
+  field stay refused.
 - **Node effect journal** (`effect_driver::journal`, crate-private). A frozen,
   stateless `Journaled` action on a durable turn (operation ledger and execution fence
   present) runs under one `NodeEffectJournal` per node attempt, through

@@ -1,0 +1,11 @@
+error: `ResourceGuard<T>` slots were removed in 0.27.0; hold `ResourceHandle<T>` — a lease bypasses the effect journal
+  --> tests/probes/derive_removed_resource_guard.rs:19:9
+   |
+19 |     db: ResourceGuard<R>,
+   |         ^^^^^^^^^^^^^^^^
+
+error: `ResourceGuard<T>` slots were removed in 0.27.0; hold `ResourceHandle<T>` — a lease bypasses the effect journal
+  --> tests/probes/derive_removed_resource_guard.rs:30:9
+   |
+30 |     db: Option<Lazy<nebula_resource::ResourceGuard<R>>>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

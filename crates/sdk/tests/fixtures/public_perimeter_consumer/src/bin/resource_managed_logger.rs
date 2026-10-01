@@ -8,9 +8,8 @@ use std::{
 };
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ErrorKind, Lease, Operation, OperationCx, OperationError, PinSlots,
-    Provider,
-    Resident, ResidentProvider, ResourceContext, ResourceKey, ResourceMetadataDraft, SentState,
+    Cost, Effect, Error, ErrorKind, Operation, OperationCx, OperationError, PinSlots, Provider,
+    Resident, ResidentProvider, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft, SentState,
     TeardownCx, no_credential_slots, resource_key,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize};
@@ -120,8 +119,8 @@ impl Operation<Logger> for Flush {
     }
 }
 
-/// What action code does with a managed lease.
-async fn log_and_flush(logger: &Lease<Logger>) -> Result<usize, Error> {
+/// What action code does with its resource handle.
+async fn log_and_flush(logger: &ResourceHandle<Logger>) -> Result<usize, Error> {
     let Enqueued(_seq) = logger
         .submit(Write {
             line: "hello".to_owned(),

@@ -476,3 +476,129 @@ async fn a_scope_that_shadows_a_global_row_refuses_the_journaled_handle() {
     }
     assert_eq!(node.slots().await, 0, "nothing was prepared or sent");
 }
+
+// ── the resource authority of a non-journaled contract ──────────────────
+
+use nebula_resource::call::{
+    Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle, SentState,
+};
+
+/// Reads the payments counter in one free attempt.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ReadPayments;
+
+impl Operation<Payments> for ReadPayments {
+    type Output = u32;
+    const KEY: &'static str = "payments.read";
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<u32, OperationError> {
+        cx.call(Cost::FREE, async |counter, ()| {
+            Ok(*counter.lock().expect("payments lock"))
+        })
+        .await
+    }
+}
+
+/// Charges the payments counter: a write the provider would apply.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChargePayments;
+
+impl Operation<Payments> for ChargePayments {
+    type Output = ();
+    const KEY: &'static str = "payments.charge";
+    const EFFECT: Effect = Effect::Write;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<(), OperationError> {
+        cx.call(Cost::FREE, async |counter, ()| {
+            *counter.lock().expect("payments lock") += 1;
+            Ok(())
+        })
+        .await
+    }
+}
+
+/// A `Remote` contract over an opaque destination.
+fn remote_contract() -> nebula_action::effect::ActionEffectContract {
+    use nebula_action::effect::{
+        RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectPolicy,
+    };
+    let policy = RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
+        .maximum_invocations(1)
+        .maximum_queries(0)
+        .recovery_window(Duration::from_mins(1))
+        .build()
+        .expect("valid remote policy");
+    let descriptor =
+        RemoteEffectDescriptor::new("test.payments/v1", 1, policy).expect("valid descriptor");
+    nebula_action::effect::ActionEffectContract::Remote(Box::new(descriptor))
+}
+
+/// Since 0.27.0 the action surface has no raw-lease route, so a `ReadOnly`
+/// or `Remote` action — which never gets an effect journal — reaches a
+/// resource only through a read-only handle: a read runs, a write is
+/// refused `Permanent` / `NotSent` before any provider call, whether or not
+/// the node attempt has a journal.
+#[tokio::test]
+async fn read_only_and_remote_contracts_get_read_only_handles_only() {
+    let node = JournaledNode::new().await;
+    let manager = Arc::new(Manager::new());
+    manager
+        .register(RegistrationSpec {
+            resource: Payments,
+            config: (),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::<Payments>::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register the global row");
+    let rows = crate::resource_accessor::EngineResourceAccessor::new(
+        manager,
+        nebula_core::scope::Scope::default(),
+        CancellationToken::new(),
+    );
+
+    for contract in [
+        nebula_action::effect::ActionEffectContract::ReadOnly,
+        remote_contract(),
+    ] {
+        // As the frontier spawns a node: the layered engine accessor.
+        let mut task = node.task(Input::Valid, CancellationToken::new(), None, None);
+        let layers = NodeResourceLayers {
+            scoped: Arc::new(EmptyScopedResourceMap),
+            rows: rows.clone(),
+        };
+        task.resources = layers.layered(layers.rows.clone());
+        task.engine_resources = Some(layers);
+        let journal = task.effect_journal().expect("a journal on a durable turn");
+
+        for journal in [None, Some(&journal)] {
+            let resources = task.dispatch_resources(&contract, journal);
+            let handle = resources
+                .resource_handle_any(&Payments::key())
+                .expect("the global row is served")
+                .downcast::<ResourceHandle<Payments>>()
+                .expect("a ResourceHandle<Payments>");
+
+            assert_eq!(handle.submit(ReadPayments).await.expect("a read runs"), 0);
+            let refused = handle
+                .submit(ChargePayments)
+                .await
+                .expect_err("a write needs effect authority");
+            assert_eq!(
+                *refused.kind(),
+                nebula_resource::ErrorKind::Permanent,
+                "{contract:?}"
+            );
+            assert_eq!(refused.sent(), SentState::NotSent, "{contract:?}");
+            assert_eq!(
+                handle.submit(ReadPayments).await.expect("a read runs"),
+                0,
+                "the refused write made no provider call ({contract:?})"
+            );
+        }
+    }
+    assert_eq!(node.slots().await, 0, "nothing was prepared or sent");
+}

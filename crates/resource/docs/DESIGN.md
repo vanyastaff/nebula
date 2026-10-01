@@ -11,7 +11,7 @@
 
 ## 1. Назначение и границы
 
-`nebula-resource` владеет **engine-owned жизненным циклом внешних ресурсов** — пулы БД, HTTP-клиенты, SDK-клиенты. Это реализация паттерна Bulkhead (Release It!): изоляция истощения по топологиям, чтобы одна выбранная-до-дна группа не каскадила на несвязанные пути. Action-код получает `ResourceGuard<R>`, который дерефится в `R::Instance` и освобождается на drop; framework гарантирует здоровье инстанса до выдачи гварда (`src/resource.rs`, `src/guard.rs`).
+`nebula-resource` владеет **engine-owned жизненным циклом внешних ресурсов** — пулы БД, HTTP-клиенты, SDK-клиенты. Это реализация паттерна Bulkhead (Release It!): изоляция истощения по топологиям, чтобы одна выбранная-до-дна группа не каскадила на несвязанные пути. Action-код получает `ResourceHandle<R>` и сабмитит на нём units: каждая попытка чекаутит здоровый инстанс, эффекты журналируются engine (`src/call/row.rs`). `ResourceGuard<R>`, который дерефится в `R::Instance` и освобождается на drop, — host-only лиза (manager/engine/tests), с 0.27.0 не action route (`src/guard.rs`).
 
 **Владеет:** acquire-петлёй (framework-owned, не у топологии), health-check / hot-reload / scope-bounded release, fenced idle-queue (`InstanceStore`), двухфазным credential-revoke (taint→drain), structural dedup/resolution key (`SlotIdentity`), generation-stamped слот-ячейками (`SlotCell`), per-slot ротационным fan-out (под feature `rotation`), типизированной ошибкой с retry-классификацией. Tenant authentication/authorization остаётся обязанностью host admission и не выводится из `SlotIdentity`.
 
@@ -31,7 +31,7 @@
 | `RegistrationSpec<R>` — plain struct (без builder): resource/config/scope/slot_identity/topology/recovery_gate | `src/manager/options.rs` |
 | `SlotIdentity` (`Unbound`/`Structural`) — структурный ключ dedup/resolution, не tenant authority; `DedupKey` | `src/dedup.rs` |
 | `SlotCell<S>` — публичная generation-stamped lock-free ячейка слота | `src/slot.rs` |
-| `ResourceGuard<R>` — выданная `Manager` RAII-лиза topology entry; `ResourceRef<R>` (lazy-ссылка) | `src/guard.rs`; `src/resource_ref.rs` |
+| `ResourceGuard<R>` — выданная `Manager` RAII-лиза topology entry; host-only (manager/engine/tests), с 0.27.0 не action route и не экспортируется SDK. Action держит `ResourceHandle<R>` (`ResourceRef<R>` и `HasResourcesExt` удалены) | `src/guard.rs`; `src/call/row.rs` |
 | `Registry`, `LookupOutcome`, `ManagedResourceView` — type-erased хранилище, scope-aware read-only lookup; operational handle остаётся crate-private | `src/registry.rs` |
 | `ReleaseQueue` — best-effort async drain (§11.4); `RecoveryGate`+`RecoveryTicket`/`RecoveryWaiter`/`GateState` — thundering-herd | `src/release_queue/mod.rs`; `src/recovery/gate.rs` |
 | `Error`/`ErrorKind`; `ResourceEvent`; `ResourceOpsMetrics`/`ResourceOpsSnapshot` | `src/error.rs`; `src/events.rs`; `src/metrics.rs` |
@@ -57,7 +57,7 @@
 - `credential_fanout/` `[feature rotation]` — driver + index ротационного fan-out.
 - `guard.rs` / `hook_guard.rs` — RAII guard / внутренний hook-guard.
 - `recovery/` — `RecoveryGate`; `release_queue/` — drain; `reload.rs` — `ReloadOutcome`.
-- Прочие однотипные модули: `context.rs`, `options.rs`, `dedup.rs`, `error.rs`, `events.rs`, `ext.rs`, `metrics.rs`, `state.rs`, `resource_ref.rs`, `topology_tag.rs`.
+- Прочие однотипные модули: `context.rs`, `options.rs`, `dedup.rs`, `error.rs`, `events.rs`, `metrics.rs`, `state.rs`, `topology_tag.rs`.
 - `macros/` — subcrate `nebula-resource-macros` (`config.rs`, `field_slots.rs`, `slots.rs`).
 
 **Поток данных (acquire):** `Manager::register(RegistrationSpec)` → дедуп по `(key, scope, slot_identity)` в `Registry` → framework-owned acquire loop в `ManagedResource` дёргает `Topology<R>` за тонкие хуки, тянет инстанс из fenced `InstanceStore` либо создаёт через `Provider::create` (со здоровьем по `Provider::check`) → выдаётся `ResourceGuard<R>` → drop возвращает инстанс в idle-queue или ставит в `ReleaseQueue` (best-effort §11.4). **Revoke:** двухфазный `TaintedSlot`→`RevokeTail` (taint→drain), закрывающий TOCTOU между выдачей гварда и инвалидацией credential.

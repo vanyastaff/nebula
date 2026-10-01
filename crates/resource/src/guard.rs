@@ -1,7 +1,14 @@
-//! Resource guard — the value callers hold while using a resource.
+//! Resource guard — the host-side lease over a checked-out instance.
 //!
 //! A manager-owned lease borrows its topology entry through `Deref`.
 //! Explicit release and Drop both transfer that same entry to the cleanup queue.
+//!
+//! A guard is a host-only capability (the manager, the engine, and tests).
+//! It is never an action route: no action context serves one, the
+//! `#[derive(Action)]` macro refuses `ResourceGuard<R>` slots, and
+//! `nebula-sdk` does not export it. Actions hold
+//! [`ResourceHandle<R>`](crate::call::ResourceHandle) instead, whose units are
+//! journaled — a lease bypasses the effect journal.
 
 use std::{
     ops::Deref,
@@ -67,6 +74,10 @@ pub(crate) type DrainTracker = Arc<(AtomicU64, Notify)>;
 pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 
 /// A manager-owned lease over a resource instance.
+///
+/// Host-only: action code reaches a resource through
+/// [`ResourceHandle<R>`](crate::call::ResourceHandle), never a guard (see the
+/// [module docs](self)).
 ///
 /// Dereferences to the instance inside the actual topology entry; the framework
 /// never clones that instance or transfers it outside lifecycle cleanup. Both explicit

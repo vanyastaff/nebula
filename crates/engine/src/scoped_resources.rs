@@ -3,8 +3,11 @@
 //! ## Architecture (Phase 7 — M6.2)
 //!
 //! Phase 6 landed the **resolution precedence** layer (`scoped → global`)
-//! used by `nebula_action::ActionContextExt::acquire_resource_by_id`
-//! and `nebula_resource::HasResourcesExt::resource`.
+//! applied by [`LayeredResourceAccessor`]. Since 0.27.0 an action context
+//! reaches resources through `ResourceHandle<R>` slots only, so a
+//! branch-scoped payload is never served to an action: the layer refuses a
+//! handle for a key a branch scope holds (fail closed) and otherwise defers
+//! to the global rows.
 //!
 //! Phase 7 supplies the concrete `DashMap`-backed [`DashScopedResourceMap`]
 //! that stores per-branch entries plus parent-pointer ancestry, the
@@ -229,7 +232,7 @@ impl ScopedResourceMap for EmptyScopedResourceMap {
 /// The trait-level [`Self::lookup_in_ancestors`] / [`Self::has_in_ancestors`]
 /// reflect lookups from the **current branch** set via
 /// [`Self::set_current_branch`] — used by the
-/// [`LayeredResourceAccessor`] when actions call `ctx.resource::<R>()`
+/// [`LayeredResourceAccessor`] when an action resolves a resource handle
 /// without an explicit branch parameter. Engine wiring is responsible for
 /// stamping `current_branch` per-task.
 ///
@@ -671,14 +674,18 @@ impl fmt::Debug for ScopedResourceGuard<'_> {
 ///
 /// # Lookup order
 ///
-/// 1. `scoped.lookup_in_ancestors(key)` — closest-ancestor walk.
-/// 2. On miss (`Ok(None)`), `global.acquire_any(key)`.
+/// 1. `scoped.has_in_ancestors(key)` — closest-ancestor walk. A key a branch scope holds is
+///    served by that scope's payload, which is no managed row, so a resource handle lookup
+///    fails closed with a scope violation rather than bypass the closest scope for a global
+///    row.
+/// 2. Otherwise the global accessor serves the row's resource handle.
 ///
 /// This is the accessor injected into
 /// `nebula_action::ActionRuntimeContext` from Phase 6 onwards. Action
-/// authors do not see the layering — they call `ctx.resource::<R>()` /
-/// `ctx.acquire_resource_by_id::<R>(id)` and the precedence is applied
-/// transparently.
+/// authors do not see the layering — their `#[resource]` slots
+/// (`ResourceHandle<R>`) resolve through it and the precedence is applied
+/// transparently. Since 0.27.0 the accessor serves no raw lease, so a
+/// branch-scoped payload is not reachable from an action context.
 ///
 /// # Examples
 ///
@@ -743,29 +750,6 @@ impl fmt::Debug for LayeredResourceAccessor {
 impl ResourceAccessor for LayeredResourceAccessor {
     fn has(&self, key: &ResourceKey) -> bool {
         self.scoped.has_in_ancestors(key) || self.global.has(key)
-    }
-
-    fn acquire_any(&self, key: &ResourceKey) -> BoxFut<'_, Result<ScopedLookup, CoreError>> {
-        let key_owned = key.clone();
-        Box::pin(async move {
-            match self.scoped.lookup_in_ancestors(&key_owned).await? {
-                Some(payload) => Ok(payload),
-                None => self.global.acquire_any(&key_owned).await,
-            }
-        })
-    }
-
-    fn try_acquire_any(
-        &self,
-        key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Option<ScopedLookup>, CoreError>> {
-        let key_owned = key.clone();
-        Box::pin(async move {
-            match self.scoped.lookup_in_ancestors(&key_owned).await? {
-                Some(payload) => Ok(Some(payload)),
-                None => self.global.try_acquire_any(&key_owned).await,
-            }
-        })
     }
 
     /// A key a branch scope holds is served by that scope's payload, which

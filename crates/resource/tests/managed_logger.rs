@@ -334,15 +334,6 @@ impl ResourceAccessor for NoResources {
     fn has(&self, _: &ResourceKey) -> bool {
         false
     }
-
-    fn acquire_any(&self, key: &ResourceKey) -> Lookup<'_, Box<dyn Any + Send + Sync>> {
-        let key = key.as_str().to_owned();
-        Box::pin(async move { Err(CoreError::resource_unavailable(key, "none", false, None)) })
-    }
-
-    fn try_acquire_any(&self, _: &ResourceKey) -> Lookup<'_, Option<Box<dyn Any + Send + Sync>>> {
-        Box::pin(async { Ok(None) })
-    }
 }
 
 /// Counts availability reads of a strict manager; the logger must cause

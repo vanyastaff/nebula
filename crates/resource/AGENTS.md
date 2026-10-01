@@ -2,7 +2,7 @@
 > Local guide for `crates/resource/`. Read [root AGENTS.md](../../AGENTS.md) first;
 > this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
-**Purpose:** Engine-owned resource lifecycle (acquire / health-check / hot-reload / scope-bounded release) for pool & SDK-client integrations, handed to actions as a drop-releasing `ResourceGuard`.
+**Purpose:** Engine-owned resource lifecycle (acquire / health-check / hot-reload / scope-bounded release) for pool & SDK-client integrations, handed to actions as a `ResourceHandle<R>` (units check out per attempt). A drop-releasing `ResourceGuard` (and the `Lease` facade) is host-only — manager, engine, tests — never an action route and not SDK-exported since 0.27.0.
 **Layer:** Business — depends only downward (root AGENTS.md → Layered Dependency Map).
 
 ## Commands

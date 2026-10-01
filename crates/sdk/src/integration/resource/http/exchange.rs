@@ -258,7 +258,7 @@ where
 /// ([`Attempt::finish`]): the building block for an operation that makes
 /// several different calls in one unit. Inside
 /// [`OperationCx::call`](nebula_resource::call::OperationCx::call) use
-/// [`Lease::submit`](nebula_resource::call::Lease::submit) of the
+/// [`ResourceHandle::submit`](nebula_resource::call::ResourceHandle::submit) of the
 /// [`Request`] instead: its [`Operation`] impl is that call.
 ///
 /// The request is built for the attempt's transport, the unit's pinned

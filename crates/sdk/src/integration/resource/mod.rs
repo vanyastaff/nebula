@@ -9,13 +9,13 @@
 //! entrusted to the adapter, not global registry or tenant authority, and Rust
 //! cannot prevent a trusted adapter from hiding aliases of a retained lease.
 //!
-//! Provider calls go through the managed call facade: a lease becomes a
-//! [`Lease`] with [`ResourceGuard::into_lease`], and each provider call is
+//! Provider calls go through the managed call facade, a [`ResourceHandle`] —
+//! the only resource capability an action can name. Each provider call is
 //! an [`Operation`] submitted as a [`Submission`]: serializable intent under a
 //! [`KEY`](Operation::KEY), which an execution journal records and replays
 //! (derive serde with `#[serde(crate = "nebula_sdk::serde")]` when the SDK
 //! is the only dependency). Inside it, [`OperationCx::attempt`]
-//! admits one provider [`Attempt`] against the lease, books its [`Cost`] and
+//! admits one provider [`Attempt`], books its [`Cost`] and
 //! hands out the instance and the unit's pinned credential slots
 //! ([`PinSlots`]). Each attempt is settled with a [`SentState`], and a failed
 //! unit's [`OperationError`] says from that and the operation's [`Effect`] whether a
@@ -24,9 +24,12 @@
 //! `PerAttempt` (`per_attempt`) rate-limit profile. The facade is not frozen
 //! yet, so it is not in the prelude.
 //!
-//! A [`ResourceHandle`] is the same facade without a lease: each attempt checks
+//! Each attempt checks
 //! out an instance of its own only after its quota and row-gate waits, so a
-//! unit waiting for its rate limit holds no connection. On a pooled
+//! unit waiting for its rate limit holds no connection. A raw lease over a
+//! checked-out instance (`ResourceGuard`, `Lease`) is a host-only capability
+//! of the engine and is not exported here: it bypasses the effect journal.
+//! On a pooled
 //! [`SessionProvider`] it also runs sessions — several native calls on one
 //! connection as one unit: [`ResourceHandle::session`] books the
 //! [`SessionSpec`]'s cost once (the spec also names the session and
@@ -47,7 +50,7 @@
 //! (or [`OperationError::throttled_key`]) passes the provider's "slow down"
 //! on. Without the facade a declared rate books one permit per acquire.
 //!
-//! A [`StreamOperation`] submitted with [`Lease::submit_streaming`] or
+//! A [`StreamOperation`] submitted with
 //! [`ResourceHandle::submit_streaming`] runs as one unit that also sends items through a bounded [`StreamSink`]; the
 //! caller reads them from [`Streaming`], then the unit's error, if any, once.
 //!
@@ -65,7 +68,7 @@ pub mod http;
 pub use nebula_core::{ResourceKey, resource_key};
 pub use nebula_credential::CredentialGuard;
 pub use nebula_resource::call::{
-    Attempt, ConsumerGone, Cost, Effect, Lease, Operation, OperationCx, OperationError, PinSlots,
+    Attempt, ConsumerGone, Cost, Effect, Operation, OperationCx, OperationError, PinSlots,
     ResourceHandle, SentState, SessionBinding, SessionClosed, SessionCx, SessionEnd, SessionFuture,
     SessionProvider, SessionSpec, StreamOperation, StreamSink, Streaming, Submission,
 };
@@ -82,7 +85,7 @@ pub use nebula_resource::topology::{
 pub use nebula_resource::{
     Bounded, BoundedMode, BoundedProvider, CheckCost, ClassifyError, CredentialSlot,
     CredentialUnavailableReason, Error, ErrorKind, HasCredentialSlots, LeaseClosing, PoolConfig,
-    PoolProvider, Pooled, Provider, ReleaseOutcome, Resident, ResidentConfig, ResidentProvider,
-    Resource, ResourceConfig, ResourceContext, ResourceGuard, ResourceMetadataDraft, SlotCell,
-    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    PoolProvider, Pooled, Provider, Resident, ResidentConfig, ResidentProvider, Resource,
+    ResourceConfig, ResourceContext, ResourceMetadataDraft, SlotCell, TeardownCx, TeardownReason,
+    TopologyTag, no_credential_slots,
 };

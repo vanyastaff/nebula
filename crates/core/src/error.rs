@@ -78,7 +78,8 @@ pub enum CoreError {
         action_id: String,
     },
 
-    /// Resource lease/acquire failed (surfaced through the shared accessor seam).
+    /// Resource handle lookup or a unit's checkout failed (surfaced through
+    /// the shared accessor seam).
     ///
     /// Actions reach this via [`ResourceAccessor`](crate::accessor::ResourceAccessor);
     /// retryable variants are converted to retryable action errors at the action boundary.

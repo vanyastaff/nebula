@@ -11,7 +11,7 @@ related: [nebula-core, nebula-schema, nebula-error, nebula-resilience, nebula-cr
 
 ## Purpose
 
-External connections — database pools, HTTP clients, message brokers — are a primary failure surface in workflow engines. When an action creates its own client on demand and never releases it, pool exhaustion and orphaned handles accumulate silently. `nebula-resource` solves this by making the engine the owner of the resource lifecycle: acquire, health-check, hot-reload, and scope-bounded release are engine concerns, not per-action boilerplate. Actions receive a `ResourceGuard` that derefs to `R::Instance` and releases on drop; the engine ensures the backing instance is healthy before granting the guard.
+External connections — database pools, HTTP clients, message brokers — are a primary failure surface in workflow engines. When an action creates its own client on demand and never releases it, pool exhaustion and orphaned handles accumulate silently. `nebula-resource` solves this by making the engine the owner of the resource lifecycle: acquire, health-check, hot-reload, and scope-bounded release are engine concerns, not per-action boilerplate. Actions receive a `ResourceHandle<R>` and submit units on it; each attempt checks out a healthy instance and releases it, and the engine journals the unit's effects. A `ResourceGuard` that derefs to `R::Instance` and releases on drop is the host-side lease (manager, engine, tests) — never an action route.
 
 ## Role
 
@@ -464,9 +464,12 @@ follow from the same generation:
 
 ### Managed call facade
 
-`guard.into_lease()` turns a lease into `call::Lease<R>` (requires
-`R: PinSlots`, emitted by `#[derive(Resource)]` and `no_credential_slots!`).
-It has no `Deref`: every provider call is an `Operation` submitted as a
+Actions submit units on a `call::ResourceHandle<R>` (a `#[resource]`
+field). Host code may also turn a lease into `call::Lease<R>` with
+`guard.into_lease()` — host-only, never an action route, not SDK-exported,
+and scheduled for removal. Both require
+`R: PinSlots`, emitted by `#[derive(Resource)]` and `no_credential_slots!`.
+Neither has a `Deref`: every provider call is an `Operation` submitted as a
 `Submission`, and the instance is reached only inside a granted `Attempt`.
 
 ```rust,ignore
@@ -494,8 +497,8 @@ impl Operation<Bot> for Send {
     }
 }
 
-let lease = guard.into_lease();
-let id = lease.submit(Send { chat, text }).await?;
+// In an action: `#[resource] bot: ResourceHandle<Bot>`.
+let id = self.bot.submit(Send { chat, text }).await?;
 ```
 
 The call's result is classified once, and the runtime derives everything else
@@ -773,11 +776,12 @@ surface. The action facade is bound to the execution:
   node-level deadline yet.
 
 The typed `Manager::handle(_for_identity)` links the context's
-cancellation token the same way. A `ResourceGuard<R>` field (or
-`acquire_resource_by_id`) still takes a lease for the whole action — the
-raw-escape profile; prefer a `ResourceHandle<R>` field for provider calls (its
-deprecation is scheduled with the `Limited` family's removal, MIGRATION
-P10). A derived action without `read_only` gets the default
+cancellation token the same way. Since 0.27.0 a `ResourceHandle<R>` is the
+only resource capability an action can name: `ResourceGuard<R>` slots,
+`acquire_resource_by_id` and the erased `ResourceAccessor::acquire_any` are
+removed, and the derive refuses a lease slot with a migration hint. A
+`ResourceGuard` (and the `Lease` facade over it) stays a host-only capability
+of the manager, the engine and tests. A derived action without `read_only` gets the default
 `Journaled(JournalProtocol::V1)` effect contract: only effects routed through
 resource handles are journaled; a lease-facade unit or raw egress the action
 opens itself is outside the journal. A stateless journaled action on a
@@ -788,11 +792,13 @@ execution stores, a stateful, control or agent action until its iterations
 are journaled — runs with read-only handle authority: reads run, and a
 `Write` through a handle is refused as `NotSent` before any provider call
 (`Manager::handle_any_read_only_because` lets the engine say why, e.g.
-"journaled effects need execution stores"). A journaled action cannot take a
-raw lease at all: a `ResourceGuard<R>` field or `acquire_resource_by_id` is
-refused, since a lease would bypass the journal. An action declaring
-`read_only` keeps read-only handles. A public ad-hoc accessor for actions and
-an SDK testing hook that builds rows are follow-ups.
+"journaled effects need execution stores"). No action reaches a raw lease,
+since a lease would bypass the journal. An action declaring `read_only`, and
+a `Remote` one, keeps read-only handles. To unit-test an action, register its
+rows on a `Manager` and pass it to
+`nebula_action::testing::TestContextBuilder::with_resource_manager`, which
+serves handles (library effect semantics, no journal). A public ad-hoc
+accessor for actions is a follow-up.
 
 #### Execution-owned effects
 
@@ -848,9 +854,8 @@ is not SDK-exported.
 
 ### Other public API
 
-- `ResourceGuard` — manager-owned topology entry; borrows `R::Instance` through `Deref`, queues release on Drop, or awaits that same queued job through `release()`. `closing()` / `is_closing()` expose its lease closing notice (above). No fabricated guards or detachable entries.
+- `ResourceGuard` — host-only (manager, engine, tests; never an action route, not SDK-exported) manager-owned topology entry; borrows `R::Instance` through `Deref`, queues release on Drop, or awaits that same queued job through `release()`. `closing()` / `is_closing()` expose its lease closing notice (above). No fabricated guards or detachable entries.
 - `LeaseClosing` — observe-only closing notice of a lease's admission generation.
-- `ResourceRef<R>` — lazy reference type holding a `ResourceId` string + `PhantomData<R>`. Resolves to a `ResourceGuard<R>` via `.resolve(ctx).await`.
 - `RegistrationSpec` — the single registration param aggregate (see above).
 - `AcquireOptions` — per-call acquire knobs (`deadline`, `acquire_slow_threshold`); every `acquire_*` takes one.
 - `SlotIdentity`, `DedupKey` — structural resolved-credential identity (`Unbound` / `Structural`) and the `(key, scope, slot_identity)` registry dedup key; neither is tenant authority.
@@ -884,7 +889,6 @@ is not SDK-exported.
   `Load`, `MaintenanceSchedule`, `AdmissionPhase`, `AdmissionStatus`,
   `PoolStrategy`, and `NoTopology`.
 - `HasCredentialSlots` — per-resource credential epoch fold; emitted by `#[derive(Resource)]`, or by `no_credential_slots!(R)` for a slot-less resource.
-- `HasResourcesExt` — the `ctx.resource::<R>().await?` access surface for action code.
 - Sealed `ResourceFactory`, typed `KindActivator`, `ResourceActivatorRegistry`, `ResourceConfigInput`, `RegisterRequest`, `RegistrarError`, `ResourceRegistrationOutcome`, `SlotBinding`, `BoxFut` — the crate-issued erased plugin-registration bridge.
 - `CheckCost` — relative `check` probe cost driving the maintenance reaper's health-probe cadence.
 - Re-exports so consumers need no direct sibling dep: `Subscriber` (`nebula-eventbus`), `Credential` / `CredentialContext` / `CredentialId` (`nebula-credential`), `HasSchema` / `Schema` / `ValidSchema` / `impl_empty_has_schema!` (`nebula-schema`).

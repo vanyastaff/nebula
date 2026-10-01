@@ -7,8 +7,8 @@ use std::sync::Arc;
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
     Cost, CredentialGuard, CredentialSlot, CredentialUnavailableReason, Effect, Error, ErrorKind,
-    Lease, Operation, OperationCx, OperationError, PinSlots, Provider, Resident, ResidentProvider,
-    Resource, ResourceContext, ResourceKey, ResourceMetadataDraft, resource_key,
+    Operation, OperationCx, OperationError, PinSlots, Provider, Resident, ResidentProvider,
+    Resource, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft, resource_key,
 };
 use nebula_sdk::prelude::{Deserialize, SecretString, SecretToken, Serialize};
 
@@ -73,7 +73,7 @@ impl Operation<GitHub> for TokenLength {
     }
 }
 
-async fn action_code(github: &Lease<GitHub>) -> Result<usize, Error> {
+async fn action_code(github: &ResourceHandle<GitHub>) -> Result<usize, Error> {
     Ok(github.submit(TokenLength).await?)
 }
 

@@ -1,7 +1,7 @@
-//! Compile-fail probe: `#[resource]` on a non-`ResourceGuard` field type.
+//! Compile-fail probe: `#[resource]` on a non-`ResourceHandle` field type.
 //!
-//! Variant A requires resource-marked fields to be `ResourceGuard<R>`
-//! (optionally wrapped in `Option<...>` and/or `Lazy<...>`).
+//! Variant A requires resource-marked fields to be `ResourceHandle<R>`
+//! (optionally wrapped in `Option<...>`).
 
 use nebula_action::Action;
 

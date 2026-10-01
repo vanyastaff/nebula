@@ -447,29 +447,6 @@ impl Error {
     }
 }
 
-/// Builds the typed error for a downcast failure when a resolved resource
-/// row's erased `Box<dyn Any>` does not match the caller's requested
-/// `ResourceGuard<R>`.
-///
-/// Shared by every acquire-then-downcast call site
-/// ([`HasResourcesExt::resource`](crate::ext::HasResourcesExt::resource),
-/// [`HasResourcesExt::try_resource`](crate::ext::HasResourcesExt::try_resource),
-/// [`ResourceRef::resolve`](crate::resource_ref::ResourceRef::resolve)) so the
-/// message stays identical across all three instead of drifting site-by-site.
-/// A mismatch here means two distinct `Provider` types registered the same
-/// `ResourceKey` — a caller/wiring fault, never a transient condition, hence
-/// [`ErrorKind::Permanent`].
-pub(crate) fn guard_type_mismatch<R>(key: ResourceKey) -> Error {
-    Error::new(
-        ErrorKind::Permanent,
-        format!(
-            "resource type mismatch: expected ResourceGuard<{}> for key `{key}`",
-            std::any::type_name::<R>(),
-        ),
-    )
-    .with_resource_key(key)
-}
-
 impl From<nebula_core::CoreError> for Error {
     /// Maps an accessor-seam [`CoreError`](nebula_core::CoreError) back into a
     /// resource [`Error`], preserving the retryable / `retry_after`

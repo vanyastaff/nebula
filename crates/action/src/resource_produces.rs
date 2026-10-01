@@ -3,7 +3,7 @@
 //! For the base [`Action`](crate::Action)
 //! trait has `type Output` for *what this action produces*. For
 //! `ResourceAction`, the produced thing is a scoped resource binding that
-//! downstream nodes consume via `ctx.resource::<R>()`. There is no flowing
+//! downstream nodes consume through their `#[resource]` slots. There is no flowing
 //! payload, so the Output is a type-marker — `ResourceProduces<R>` carries
 //! the resource type identity, the topology tag, and a static schema marker
 //! that catalog / UI code consumes to draw scoped-binding edges in workflow
@@ -84,7 +84,7 @@ impl<R: Provider> ResourceProduces<R> {
     /// Returns the registered resource key for the produced resource type.
     ///
     /// Read at catalog-construction time to label workflow-graph edges with
-    /// the resource that downstream nodes will bind via `ctx.resource::<R>()`.
+    /// the resource that downstream nodes will bind through their `#[resource]` slots.
     #[must_use]
     pub fn resource_key() -> ResourceKey {
         R::key()

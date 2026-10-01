@@ -4,8 +4,8 @@
 
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
-    CredentialSlot, Effect, Error, Lease, Operation, OperationError, Provider, Resident,
-    ResidentProvider, Resource, ResourceContext, ResourceKey, ResourceMetadataDraft,
+    CredentialSlot, Effect, Error, Operation, OperationError, Provider, Resident,
+    ResidentProvider, Resource, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft,
     http::{
         AsWrite, Authorize, Delete, Get, HttpApi, HttpConfig, HttpTransport, Keyed, Patch, Post,
         Put, Request, open_stream,
@@ -55,8 +55,8 @@ impl HttpApi for GitHub {
     }
 }
 
-/// What action code does with a managed lease.
-async fn action_code(github: &Lease<GitHub>) -> Result<(Value, usize), OperationError> {
+/// What action code does with its resource handle.
+async fn action_code(github: &ResourceHandle<GitHub>) -> Result<(Value, usize), OperationError> {
     let user: Value = github.submit(Request::get("/user")?).await?.json()?;
     let mut events = open_stream(github, Request::get("/events")?).await?;
     let mut streamed = 0;
