@@ -280,6 +280,9 @@ pub(super) struct Controls {
     /// Replaces every unit's operation (a redeploy without an action
     /// version bump).
     pub drift: parking_lot::Mutex<Option<Drift>>,
+    /// On the next dispatch only, the action first builds a write
+    /// submission and drops it unpolled (a branch taken once).
+    pub drop_unpolled_once: AtomicBool,
     /// Retryable failures the action returns after its units.
     pub fail_after_units: AtomicU32,
     /// Dispatches of the action.
@@ -303,6 +306,14 @@ async fn run_script(
         None
     };
     let handle = ctx.resource_handle_by_id::<Payments>(Payments::key().as_str())?;
+    if controls.drop_unpolled_once.swap(false, Ordering::SeqCst) {
+        drop(handle.submit(Charge::<false>(UnitSpec {
+            idempotent: false,
+            request: "never-polled".to_owned(),
+            key: None,
+            budget: 1,
+        })));
+    }
     let mut receipts = Vec::new();
     for mut spec in script.units {
         if let Some(request) = controls.request_override.lock().clone() {

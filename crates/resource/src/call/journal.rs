@@ -10,12 +10,14 @@
 //! through it (a `Read` never is):
 //!
 //! 1. **Submit** — the unit takes an in-flight [`InFlight`]
-//!    ([`track`](EffectJournal::track)) and its positional ordinal per
-//!    resource and unit kind ([`next_ordinal`](EffectJournal::next_ordinal)); a
-//!    [closed](EffectJournal::is_closed) owner refuses it.
-//! 2. **Prepare** — the first poll hands the owner a [`JournalIntent`]; the
-//!    returned [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome,
-//!    refuses an unknown one, or lets the unit run.
+//!    ([`track`](EffectJournal::track)); a
+//!    [closed](EffectJournal::is_closed) owner refuses it. A submission is
+//!    lazy: one dropped before its first poll never reaches the owner.
+//! 2. **Prepare** — the first poll takes the unit's positional ordinal per
+//!    resource and unit kind ([`next_ordinal`](EffectJournal::next_ordinal))
+//!    and hands the owner a [`JournalIntent`]; the returned
+//!    [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome, refuses an
+//!    unknown one, or lets the unit run.
 //! 3. **Grant** — each attempt, after its checkout and credential reads and
 //!    before its registration, asks for a [`CallGrant`]: the only authority
 //!    for one provider call, within the grant's budget (the unit's deadline
@@ -42,15 +44,19 @@ use crate::{dedup::SlotIdentity, error::ErrorKind};
 /// step. A refusal ([`JournalRefusal`]) never means a provider call happened.
 #[async_trait::async_trait]
 pub trait EffectJournal: Send + Sync + fmt::Debug {
-    /// The next ordinal of a unit of `kind` on `key`, in program (submit)
-    /// order: positional, whatever the unit's operation or session name and
-    /// version. Synchronous: it is taken when the unit is submitted.
+    /// The next ordinal of a unit of `kind` on `key`, in the order units
+    /// start preparing: positional, whatever the unit's operation or session
+    /// name and version. Synchronous: it is taken by the unit's first poll,
+    /// right before [`prepare`](Self::prepare) — never at submit, so a
+    /// submission dropped unpolled takes no position.
     ///
     /// The name and version stay out of the occurrence on purpose: they are
     /// part of the effect's contract, so an operation whose `KEY` or
     /// `VERSION` changed under a recorded occurrence is a mismatch the owner
     /// refuses with nothing sent, never a fresh occurrence that sends the
-    /// effect again.
+    /// effect again. Units polled in another order than an earlier run
+    /// polled them meet each other's recorded positions the same way: a
+    /// different intent is a mismatch, an identical one is interchangeable.
     fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind) -> u32;
 
     /// Durably prepares the effect `intent` describes (recovering an

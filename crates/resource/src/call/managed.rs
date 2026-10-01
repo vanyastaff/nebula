@@ -571,10 +571,7 @@ where
         outcome = tracing::field::Empty,
     );
     let (shared, refused) = match scope.admit(&key, host.managed(), &work) {
-        Ok(Route::Owned(owned)) => {
-            span.record("occurrence", owned.occurrence());
-            (UnitShared::new(scope).with_effect(*owned), None)
-        },
+        Ok(Route::Owned(owned)) => (UnitShared::new(scope).with_effect(*owned), None),
         Ok(Route::Plain { local_key }) => (UnitShared::new(scope).with_local_key(local_key), None),
         Err(refusal) => (UnitShared::new(scope), Some(refusal)),
     };
@@ -981,6 +978,8 @@ where
         (Some(codec), Some(owned)) => {
             let max_invocations = work.max_attempts();
             let prepared = owned::prepare(&shared, owned, max_invocations, codec, deadline).await;
+            // The position is assigned when preparing begins.
+            span.record("occurrence", owned.occurrence());
             match prepared {
                 Prepared::Run => Some(codec),
                 Prepared::Replayed(output) => {

@@ -211,11 +211,12 @@ impl<R: Provider + PinSlots> ResourceHandle<R> {
     /// | journaled action ([`handle_any_journaled`](crate::Manager::handle_any_journaled)) | runs, never recorded | runs through the row's execution owner |
     ///
     /// On a journaled row an effect's first poll asks the owner to prepare
-    /// it under its occurrence label
-    /// (`unit/v1/{resource_key}/op/{KEY}/v{VERSION}/#{ordinal:06}`, the
-    /// ordinal counting units of the operation key on the resource in
-    /// submit order), from the operation's canonical request (its JSON with
-    /// sorted keys) and [`Operation::idempotency_key`], before anything is
+    /// it under its positional occurrence label
+    /// (`unit/v1/{resource_key}/op/#{ordinal:06}`, the ordinal counting the
+    /// operation units on the resource in the order they start preparing;
+    /// a submission dropped unpolled takes none), from the operation's
+    /// `KEY`, `VERSION`, canonical request (its JSON with sorted keys) and
+    /// [`Operation::idempotency_key`], before anything is
     /// booked, read or checked out:
     ///
     /// | Owner says | Unit |

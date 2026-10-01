@@ -1095,6 +1095,93 @@ async fn ordinals_count_per_resource_and_kind_in_submit_order() {
     assert_eq!(seen, expected);
 }
 
+/// A `Pay` of `request`.
+fn pay_of(calls: &Arc<Calls>, request: &str) -> Pay<false> {
+    Pay {
+        request: request.to_owned(),
+        ..Pay::new(calls, vec![Reply::Ok(1)])
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_submission_dropped_before_its_first_poll_takes_no_position() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    // An earlier run settled `B` at the first position — the run in which
+    // a branch built another submission and dropped it unpolled.
+    fixture.owner.seed(
+        &pay(0),
+        PAY,
+        &pay_request("pay:B"),
+        Phase::Resolved(RecordedOutcome::Succeeded(b"7".to_vec())),
+    );
+    fixture.owner.resume();
+
+    drop(row.submit(pay_of(&calls, "pay:dropped")));
+    let replayed = row
+        .submit(pay_of(&calls, "pay:B"))
+        .await
+        .expect("replayed at the first position");
+
+    assert_eq!(replayed, 7, "the recorded output");
+    assert_eq!(calls.made(), 0, "no second provider call");
+    assert_eq!(
+        fixture.owner.log(),
+        vec![Step::Prepare(pay(0))],
+        "the dropped submission never reached the owner"
+    );
+    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn units_prepared_in_another_order_fail_safe() {
+    // An earlier run settled `A` at #0 and `B` at #1; a resumed run polls
+    // `B` first. Positions follow the prepare order, so `B` meets `A`'s
+    // slot: a mismatch with nothing sent, never a fresh effect.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    for (ordinal, request) in [(0, "pay:A"), (1, "pay:B")] {
+        fixture.owner.seed(
+            &pay(ordinal),
+            PAY,
+            &pay_request(request),
+            Phase::Resolved(RecordedOutcome::Succeeded(b"1".to_vec())),
+        );
+    }
+    fixture.owner.resume();
+    let a = row.submit(pay_of(&calls, "pay:A"));
+    let b = row.submit(pay_of(&calls, "pay:B"));
+    let b = b.await.expect_err("B prepared at A's position");
+    let a = a.await.expect_err("A prepared at B's position");
+    for error in [&a, &b] {
+        assert_unsent(error, &ErrorKind::Permanent);
+        assert_eq!(error.detail(), "effect occurrence mismatch");
+    }
+    assert_eq!(calls.made(), 0, "nothing sent");
+
+    // Identical intents are interchangeable: either order replays both.
+    let fixture = Fixture::new(None);
+    let row = fixture.owned();
+    for ordinal in [0, 1] {
+        fixture.owner.seed(
+            &pay(ordinal),
+            PAY,
+            &pay_request("pay:same"),
+            Phase::Resolved(RecordedOutcome::Succeeded(
+                format!("{}", ordinal + 10).into_bytes(),
+            )),
+        );
+    }
+    fixture.owner.resume();
+    let first = row.submit(pay_of(&calls, "pay:same"));
+    let second = row.submit(pay_of(&calls, "pay:same"));
+    assert_eq!(second.await.expect("replayed"), 10);
+    assert_eq!(first.await.expect("replayed"), 11);
+    assert_eq!(calls.made(), 0, "nothing sent");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_changed_operation_at_a_recorded_position_is_a_mismatch() {
     // A settled `Pay` v1 at the row's first position; a redeploy (with no

@@ -147,6 +147,52 @@ async fn a_takeover_after_the_effects_settled_replays_without_provider_calls(
 #[case::sqlite(Backend::Sqlite)]
 #[case::postgres(Backend::Postgres)]
 #[tokio::test]
+async fn a_submission_dropped_unpolled_before_a_crash_shifts_nothing(#[case] backend: Backend) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = JournalFixture::new(database.ports()).await;
+    let execution = fixture.start(&[write("order-8:7")], json!({})).await;
+    // The first dispatch builds a submission it drops unpolled, settles the
+    // write and dies before the node is recorded; the resumed dispatch
+    // takes the other branch.
+    fixture
+        .controls
+        .drop_unpolled_once
+        .store(true, Ordering::SeqCst);
+    fixture
+        .controls
+        .hold_after_units
+        .store(true, Ordering::SeqCst);
+    fixture
+        .crash_at(execution, &fixture.controls.after_units)
+        .await;
+    let slots = fixture.slots(execution).await;
+    assert_eq!(slots.len(), 1);
+    assert_eq!(
+        slots[0].occurrence(),
+        "unit/v1/test.journal.payments/op/#000000",
+        "the dropped submission took no position"
+    );
+
+    fixture
+        .controls
+        .hold_after_units
+        .store(false, Ordering::SeqCst);
+    fixture.ports = database.reconnect().await;
+    database.expire_abandoned_leases().await;
+    let result = fixture.run(execution).await.unwrap();
+    assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
+    assert_eq!(receipts(&result), json!([1]), "the recorded output");
+    assert_eq!(fixture.gateway.call_count(), 1, "no second provider call");
+    assert_eq!(fixture.slots(execution).await, slots);
+}
+
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[case::postgres(Backend::Postgres)]
+#[tokio::test]
 async fn an_interrupted_write_fails_the_node_unknown_and_a_resume_sends_nothing(
     #[case] backend: Backend,
 ) {
