@@ -109,6 +109,11 @@ impl LedgerSlot {
         self.record.operation().operation_id()
     }
 
+    /// The acknowledged operation record.
+    pub(super) fn record(&self) -> &OperationRecord {
+        &self.record
+    }
+
     /// The acknowledged protocol projection.
     pub(super) fn protocol(
         &self,

@@ -233,6 +233,7 @@ async fn dispatch_counted_contract(
             &test_context(),
             None,
             authority,
+            None,
         )
         .await;
     (result, executions.load(Ordering::Relaxed), metrics)
@@ -2150,4 +2151,143 @@ fn stateful_state_digest_is_cross_instance_deterministic() {
     // Different values must produce different digests.
     let other = serde_json::json!({ "node_a": "failed" });
     assert_ne!(stateful_state_digest(&state), stateful_state_digest(&other));
+}
+
+// ── journaled stateful iterations: the effect journal's barrier ──────────
+
+/// An iteration barrier that logs every call and fails where scripted.
+#[derive(Default)]
+struct ScriptedGate {
+    log: std::sync::Mutex<Vec<String>>,
+    open: AtomicU32,
+    fail_begin_at: Option<u32>,
+    fail_end_at: Option<u32>,
+}
+
+impl ScriptedGate {
+    fn log(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::effect_driver::IterationGate for ScriptedGate {
+    fn begin_iteration(&self, iteration: u32) -> Result<(), crate::EffectExecutionError> {
+        self.log.lock().unwrap().push(format!("begin {iteration}"));
+        self.open.store(iteration, AtomicOrdering::SeqCst);
+        if self.fail_begin_at == Some(iteration) {
+            return Err(crate::EffectExecutionError::IterationUnitsOutstanding { iteration });
+        }
+        Ok(())
+    }
+
+    async fn end_iteration(&self) -> Result<(), crate::EffectExecutionError> {
+        let iteration = self.open.load(AtomicOrdering::SeqCst);
+        self.log.lock().unwrap().push(format!("end {iteration}"));
+        if self.fail_end_at == Some(iteration) {
+            return Err(crate::EffectExecutionError::OccurrenceMismatch);
+        }
+        Ok(())
+    }
+}
+
+/// Runs [`CountingTo3`] through the dispatch core under `gate`, with
+/// `checkpoint`.
+async fn count_to_3_under(
+    gate: &ScriptedGate,
+    checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<CountingTo3>::new()
+            .expect("valid test catalog definition"),
+    );
+    let node = NodeDefinition::new(node_key!("test"), "Count", "test", "count").unwrap();
+    make_runtime(Arc::new(ActionRegistry::new()))
+        .run_factory(
+            "test.count",
+            factory,
+            &node,
+            nebula_action::ActionInput::Raw(serde_json::Value::Null),
+            &test_context(),
+            checkpoint,
+            ResourceAuthority::CallerSupplied,
+            Some(gate),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_journaled_stateful_loop_brackets_every_iteration_with_the_barrier() {
+    let gate = ScriptedGate::default();
+    let result = count_to_3_under(&gate, None).await;
+    assert!(
+        matches!(result, Ok(ActionResult::Break { .. })),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0", "begin 1", "end 1", "begin 2", "end 2"],
+        "each iteration opens before and closes after its one dispatch"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_barrier_stops_the_journaled_stateful_loop() {
+    let gate = ScriptedGate {
+        fail_end_at: Some(1),
+        ..ScriptedGate::default()
+    };
+    let result = count_to_3_under(&gate, None).await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::EffectJournal(
+                crate::EffectExecutionError::OccurrenceMismatch
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0", "begin 1", "end 1"],
+        "no iteration starts after the journal stopped the loop"
+    );
+
+    let gate = ScriptedGate {
+        fail_begin_at: Some(2),
+        ..ScriptedGate::default()
+    };
+    let result = count_to_3_under(&gate, None).await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::EffectJournal(
+                crate::EffectExecutionError::IterationUnitsOutstanding { iteration: 2 }
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0", "begin 1", "end 1", "begin 2"],
+        "a refused iteration never dispatches"
+    );
+}
+
+#[tokio::test]
+async fn a_journaled_stateful_loop_refuses_a_checkpoint_sink() {
+    let gate = ScriptedGate::default();
+    let sink = Arc::new(RecordingSink::new());
+    let result = count_to_3_under(
+        &gate,
+        Some(Arc::clone(&sink) as Arc<dyn StatefulCheckpointSink>),
+    )
+    .await;
+    assert!(
+        matches!(&result, Err(RuntimeError::Internal(reason)) if reason.contains("takes no checkpoint sink")),
+        "{result:?}"
+    );
+    assert!(gate.log().is_empty(), "the action never ran");
+    assert!(sink.saves.lock().await.is_empty());
+    assert_eq!(sink.clears.load(AtomicOrdering::Relaxed), 0);
 }

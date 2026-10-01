@@ -19,7 +19,7 @@ use super::*;
 // ── the journal shape of each action kind ────────────────────────────────
 
 #[test]
-fn only_stateless_actions_are_journaled_and_the_rest_say_why_not() {
+fn stateless_and_stateful_actions_are_journaled_and_the_rest_say_why_not() {
     use nebula_action::ActionKind;
     assert_eq!(JournalShape::of(ActionKind::Stateless), JournalShape::Flat);
     assert!(JournalShape::Flat.is_journaled());
@@ -35,11 +35,8 @@ fn only_stateless_actions_are_journaled_and_the_rest_say_why_not() {
         JournalShape::of(ActionKind::Stateful),
         JournalShape::Iterated
     );
-    assert!(!JournalShape::Iterated.is_journaled());
-    assert_eq!(
-        JournalShape::read_only_detail(ActionKind::Stateful),
-        Some("stateful effects are journaled per iteration in a later release")
-    );
+    assert!(JournalShape::Iterated.is_journaled());
+    assert_eq!(JournalShape::read_only_detail(ActionKind::Stateful), None);
     assert_eq!(
         JournalShape::read_only_detail(ActionKind::Agent),
         Some("agent effects are not journaled; the agent profile is planned")
@@ -908,17 +905,291 @@ fn ordinals_are_one_node_wide_sequence_from_zero() {
     assert_eq!(journal.next_ordinal(), 2);
 }
 
+#[tokio::test]
+async fn iteration_labels_restart_their_ordinal_per_iteration() {
+    let harness = Harness::new().await;
+    let journal = harness.journal(1);
+    assert_eq!(
+        journal.next_occurrence(),
+        "unit/v1/#000000",
+        "a stateless node's flat label"
+    );
+    journal.begin_iteration(0).expect("the first iteration");
+    assert_eq!(journal.next_occurrence(), "it0/unit/v1/#000000");
+    assert_eq!(journal.next_occurrence(), "it0/unit/v1/#000001");
+    journal
+        .end_iteration(DRAIN)
+        .await
+        .expect("nothing in flight");
+    journal.begin_iteration(1).expect("the second iteration");
+    assert_eq!(
+        journal.next_occurrence(),
+        "it1/unit/v1/#000000",
+        "the ordinal restarts"
+    );
+    journal
+        .end_iteration(DRAIN)
+        .await
+        .expect("nothing in flight");
+    journal.begin_iteration(9_999).expect("the last iteration");
+    assert_eq!(journal.next_occurrence(), "it9999/unit/v1/#000000");
+    journal
+        .end_iteration(DRAIN)
+        .await
+        .expect("nothing in flight");
+
+    // An iteration past the last, or not after the open one, is refused.
+    assert_eq!(
+        harness.journal(1).begin_iteration(10_000),
+        Err(EffectExecutionError::InvalidContract)
+    );
+    let backwards = harness.journal(1);
+    backwards.begin_iteration(3).expect("iteration 3");
+    assert_eq!(
+        backwards.begin_iteration(3),
+        Err(EffectExecutionError::InvalidContract)
+    );
+    assert_eq!(harness.ledger.calls(), 0, "labels write nothing");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_iteration_begins_only_with_no_unit_in_flight() {
+    let harness = Harness::new().await;
+    let journal = harness.journal(1);
+    let leaked = journal.track();
+    assert_eq!(
+        journal.begin_iteration(0),
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 })
+    );
+    assert!(journal.is_closed(), "the unit records nothing more");
+    drop(leaked);
+    assert_eq!(
+        journal.begin_iteration(1),
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 }),
+        "no later iteration runs"
+    );
+    let started = tokio::time::Instant::now();
+    assert_eq!(
+        journal.conclude(Duration::from_mins(1)).await,
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 })
+    );
+    assert!(
+        started.elapsed() < Duration::from_mins(1),
+        "the verdict does not wait for the units again"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_unit_outliving_its_iteration_fails_the_barrier_and_the_node_unknown() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Hang]);
+    let journal = harness.journal(1);
+    journal.begin_iteration(0).expect("the first iteration");
+    let unit = tokio::spawn(
+        harness
+            .handle(&journal)
+            .submit(Charge::<false> { order: 41 }),
+    );
+    tokio::time::timeout(Duration::from_secs(5), harness.desk.entered.notified())
+        .await
+        .expect("the call reached the provider");
+    let started = tokio::time::Instant::now();
+    assert_eq!(
+        journal.end_iteration(Duration::from_secs(5)).await,
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 })
+    );
+    assert_eq!(started.elapsed(), Duration::from_secs(5), "bounded drain");
+    assert!(journal.is_closed());
+    assert!(journal.begin_iteration(1).is_err(), "no next iteration");
+
+    // The node's verdict records the leaked call as ambiguous: an opaque
+    // write's outcome is unknown. It does not wait out the drain again.
+    let started = tokio::time::Instant::now();
+    let verdict = journal.conclude(Duration::from_mins(1)).await;
+    assert!(
+        matches!(
+            verdict,
+            Err(EffectExecutionError::JournalOutcomeUnknown { unresolved: 1, .. })
+        ),
+        "{verdict:?}"
+    );
+    assert!(started.elapsed() < Duration::from_mins(1));
+    assert_eq!(
+        Harness::phase(&harness.slots().await[0]),
+        EffectPhase::OutcomeUnknown
+    );
+    assert_eq!(harness.desk.keys().len(), 1);
+    unit.abort();
+}
+
+#[tokio::test]
+async fn an_unknown_outcome_the_action_swallowed_stops_the_next_iteration() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Lost]);
+    let journal = harness.journal(1);
+    journal.begin_iteration(0).expect("the first iteration");
+    let lost = harness
+        .handle(&journal)
+        .submit(Charge::<false> { order: 42 })
+        .await
+        .expect_err("the answer was lost");
+    assert_eq!(lost.sent(), SentState::MaybeSent, "{lost}");
+    // The action swallows the error; the barrier does not.
+    let stopped = journal.end_iteration(DRAIN).await;
+    assert!(
+        matches!(
+            stopped,
+            Err(EffectExecutionError::JournalOutcomeUnknown { unresolved: 1, .. })
+        ),
+        "{stopped:?}"
+    );
+    assert_eq!(journal.begin_iteration(1), stopped, "no next iteration");
+    assert!(matches!(
+        journal.conclude(DRAIN).await,
+        Err(EffectExecutionError::JournalOutcomeUnknown { .. })
+    ));
+    assert_eq!(harness.desk.keys().len(), 1);
+}
+
+#[tokio::test]
+async fn the_node_slot_cap_refuses_further_prepares_and_sends_nothing() {
+    let harness = Harness::new().await;
+    let journal = harness.journal(1);
+    // As if the node attempt had already prepared all but one.
+    journal.state().reserved = MAX_NODE_SLOTS - 1;
+    harness
+        .handle(&journal)
+        .submit(Charge::<false> { order: 43 })
+        .await
+        .expect("the last slot under the cap");
+    let refused = harness
+        .handle(&journal)
+        .submit(Charge::<false> { order: 44 })
+        .await
+        .expect_err("over the cap");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(
+        refused.detail(),
+        "effect journal slot cap reached; unit refused"
+    );
+    assert_eq!(harness.desk.keys().len(), 1, "nothing sent past the cap");
+    assert_eq!(harness.slots().await.len(), 1, "nothing prepared past it");
+    assert_eq!(
+        journal.conclude(DRAIN).await,
+        Err(EffectExecutionError::JournalSlotCapExceeded {
+            cap: MAX_NODE_SLOTS
+        })
+    );
+    assert_eq!(
+        harness.counter(
+            NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+            &[("step", "prepare"), ("refusal", "slot_cap_exceeded")]
+        ),
+        1
+    );
+    assert_eq!(
+        harness.counter(
+            NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL,
+            &[("code", "slot_cap_exceeded")]
+        ),
+        1
+    );
+}
+
 #[test]
 fn a_gap_is_an_unrecorded_position_below_a_recorded_one() {
     let prior = PriorOccurrences::new(["unit/v1/#000001", "unit/v1/#000002"]);
     // Position 0 was left empty while 1 and 2 were recorded.
     assert!(prior.leaves_gap_at("unit/v1/#000000"));
+    assert!(prior.refuses("unit/v1/#000000"));
     // Recorded positions are revisited; later ones extend the program.
-    assert!(!prior.leaves_gap_at("unit/v1/#000001"));
-    assert!(!prior.leaves_gap_at("unit/v1/#000003"));
-    // Another namespace (a stateful iteration's) is its own sequence.
+    assert!(!prior.refuses("unit/v1/#000001"));
+    assert!(!prior.refuses("unit/v1/#000003"));
+    // A stateful iteration's label is no gap of the flat sequence, but a
+    // node whose earlier attempt recorded flat labels changed kind.
     assert!(!prior.leaves_gap_at("it1/unit/v1/#000000"));
-    assert!(!PriorOccurrences::default().leaves_gap_at("unit/v1/#000000"));
+    assert!(prior.mixes_family_at("it1/unit/v1/#000000"));
+    assert!(prior.refuses("it1/unit/v1/#000000"));
+    assert!(!PriorOccurrences::default().refuses("unit/v1/#000000"));
+    assert!(!PriorOccurrences::default().refuses("it0/unit/v1/#000000"));
+}
+
+#[test]
+fn iteration_positions_order_by_iteration_then_ordinal() {
+    let prior = PriorOccurrences::new([
+        "it0/unit/v1/#000000",
+        "it0/unit/v1/#000001",
+        "it1/unit/v1/#000000",
+    ]);
+    // Recorded positions replay; a later ordinal of the last iteration and
+    // any later iteration extend the program.
+    for fresh in [
+        "it0/unit/v1/#000001",
+        "it1/unit/v1/#000001",
+        "it2/unit/v1/#000000",
+        "it9999/unit/v1/#000000",
+    ] {
+        assert!(!prior.refuses(fresh), "{fresh}");
+    }
+    // A new effect in an iteration the earlier attempt finished — at its
+    // end too — sits below the recorded iteration 1: a gap.
+    assert!(prior.leaves_gap_at("it0/unit/v1/#000002"));
+    // Flat labels after recorded iterations: the action changed kind.
+    assert!(prior.mixes_family_at("unit/v1/#000000"));
+    assert!(prior.refuses("unit/v1/#000005"));
+
+    // An iteration the earlier attempt reached without recording anything
+    // in it is a gap below a later recorded iteration.
+    let skipped = PriorOccurrences::new(["it0/unit/v1/#000000", "it2/unit/v1/#000000"]);
+    assert!(skipped.leaves_gap_at("it1/unit/v1/#000000"));
+    assert!(!skipped.refuses("it2/unit/v1/#000001"));
+}
+
+#[test]
+fn positions_parse_only_labels_the_journal_builds() {
+    assert_eq!(
+        Position::parse("unit/v1/#000007"),
+        Some(Position {
+            family: Family::Flat,
+            iteration: 0,
+            ordinal: 7
+        })
+    );
+    assert_eq!(
+        Position::parse("it12/unit/v1/#1234567"),
+        Some(Position {
+            family: Family::Iterated,
+            iteration: 12,
+            ordinal: 1_234_567
+        })
+    );
+    assert_eq!(
+        Position::parse("it0/unit/v1/#000000").map(Position::order),
+        Some((0, 0))
+    );
+    for label in [
+        // Leading zeros in the iteration, or an empty or signed one.
+        "it01/unit/v1/#000000",
+        "it00/unit/v1/#000000",
+        "it/unit/v1/#000000",
+        "it+1/unit/v1/#000000",
+        // Past the last iteration.
+        "it10000/unit/v1/#000000",
+        // A short, unpadded or over-padded ordinal.
+        "unit/v1/#7",
+        "unit/v1/#0000007",
+        "unit/v1/#",
+        "unit/v1/#-00001",
+        // Another namespace or version.
+        "unit/v2/#000000",
+        "it1/unit/v1/x/#000000",
+        "op/v1/#000000",
+    ] {
+        assert_eq!(Position::parse(label), None, "{label}");
+    }
+    // A label with no position is never a gap, whatever is recorded.
+    let prior = PriorOccurrences::new(["it01/unit/v1/#000005"]);
+    assert!(!prior.refuses("it1/unit/v1/#000000"));
 }
 
 #[tokio::test]

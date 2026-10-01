@@ -387,29 +387,32 @@ impl ActionRuntime {
             context,
             None,
             ResourceAuthority::EngineJournaled,
+            None,
         )
         .await
     }
 
     /// Execute a journaled action under its node's effect journal.
     ///
-    /// The dispatch path of a stateless action whose admitted contract is
+    /// The dispatch path of an action whose admitted contract is
     /// [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled)
     /// on a durable turn: `admission` proves the engine built the node
     /// attempt's
     /// [`NodeEffectJournal`](crate::effect_driver::NodeEffectJournal) and
     /// handed it to the action's resource handles through `context`. Only
     /// actions of a journaled
-    /// [`JournalShape`](crate::effect_driver::JournalShape) — stateless
-    /// only — with no remote capability are admitted; public entry
-    /// points keep refusing the contract.
+    /// [`JournalShape`](crate::effect_driver::JournalShape) — stateless, or
+    /// stateful under the admission's iteration barrier — with no remote
+    /// capability are admitted; public entry points keep refusing the
+    /// contract. A stateful action takes no checkpoint sink here: every
+    /// attempt replays its iterations from the first.
     pub(crate) async fn execute_journaled_action(
         &self,
         factory: Arc<dyn ActionFactory>,
         node: &NodeDefinition,
         input: nebula_schema::ResolvedValues,
         context: &dyn ActionContext,
-        _admission: crate::effect_driver::JournalAdmission,
+        admission: crate::effect_driver::JournalAdmission,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let metadata = factory.metadata();
         if !matches!(
@@ -429,6 +432,7 @@ impl ActionRuntime {
             context,
             None,
             ResourceAuthority::EngineJournaled,
+            Some(admission.iteration_gate()),
         )
         .await
     }
@@ -465,6 +469,7 @@ impl ActionRuntime {
             context,
             checkpoint,
             ResourceAuthority::CallerSupplied,
+            None,
         )
         .await
     }
@@ -537,6 +542,7 @@ impl ActionRuntime {
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
         authority: ResourceAuthority,
+        iteration_gate: Option<&dyn crate::effect_driver::IterationGate>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = &self.action_failures_total;
         let metadata = factory.metadata();
@@ -605,7 +611,14 @@ impl ActionRuntime {
             },
             ActionHandle::Stateful(inner) => {
                 let r = self
-                    .execute_stateful_handle(metadata, inner, input, context, checkpoint)
+                    .execute_stateful_handle(
+                        metadata,
+                        inner,
+                        input,
+                        context,
+                        checkpoint,
+                        iteration_gate,
+                    )
                     .await;
                 self.observe_dispatched(started, &r);
                 r
@@ -753,6 +766,17 @@ impl ActionRuntime {
     /// The handle works on `Value` state while retaining one prepared typed
     /// input across every iteration. Cancellation, checkpoint persistence,
     /// iteration limits, and stuck-state detection remain runtime-owned.
+    ///
+    /// A journaled action runs under its node effect journal's
+    /// `iteration_gate`: each iteration opens with
+    /// [`begin_iteration`](crate::effect_driver::IterationGate::begin_iteration)
+    /// and, once its dispatch returned — successfully or not — closes with
+    /// [`end_iteration`](crate::effect_driver::IterationGate::end_iteration);
+    /// either refusing stops the loop with
+    /// [`RuntimeError::EffectJournal`], which the engine replaces with the
+    /// journal's verdict. Such a run replays from the first iteration, so it
+    /// takes no checkpoint sink: both together are refused before the
+    /// action runs.
     async fn execute_stateful_handle(
         &self,
         metadata: &ActionMetadata,
@@ -760,12 +784,22 @@ impl ActionRuntime {
         input: nebula_action::ActionInput,
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+        iteration_gate: Option<&dyn crate::effect_driver::IterationGate>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         if !matches!(metadata.isolation_level(), IsolationLevel::None) {
             return Err(ActionError::fatal(
                 "capability-gated stateful execution is not yet supported",
             )
             .into());
+        }
+
+        if checkpoint.is_some() && iteration_gate.is_some() {
+            // A journaled run replays its effects from the first iteration;
+            // resuming from a checkpoint would skip recorded positions.
+            return Err(RuntimeError::Internal(format!(
+                "journaled stateful action '{}' takes no checkpoint sink",
+                metadata.base().key().as_str()
+            )));
         }
 
         if context.cancellation().is_cancelled() {
@@ -810,6 +844,11 @@ impl ActionRuntime {
 
             let state_digest_before = stateful_state_digest(&state);
 
+            if let Some(gate) = iteration_gate {
+                gate.begin_iteration(iteration)
+                    .map_err(RuntimeError::EffectJournal)?;
+            }
+
             let iteration_result = {
                 let exec_fut = handle.dispatch(&input, &mut state, context);
                 tokio::pin!(exec_fut);
@@ -822,6 +861,14 @@ impl ActionRuntime {
                     res = &mut exec_fut => res,
                 }
             };
+
+            // The iteration's units drain before its result counts — a
+            // failing iteration's too: nothing of it may cross into the next.
+            if let Some(gate) = iteration_gate {
+                gate.end_iteration()
+                    .await
+                    .map_err(RuntimeError::EffectJournal)?;
+            }
 
             let result = iteration_result?;
             iteration = iteration.saturating_add(1);

@@ -64,6 +64,23 @@ pub enum EffectExecutionError {
         /// How many slots of the node have an unknown outcome.
         unresolved: u32,
     },
+    /// The node attempt already prepared as many journaled effects as one
+    /// attempt may: no further effect was prepared or sent.
+    #[error("the node attempt reached its cap of {cap} journaled effects")]
+    JournalSlotCapExceeded {
+        /// The cap: journaled effects one node attempt may prepare.
+        cap: u32,
+    },
+    /// A stateful action's iteration ended — or the next one began — with
+    /// effect units of the node still in flight past the drain limit: the
+    /// iterations stop and the journal closes, so a unit that outlived its
+    /// iteration records nothing more. A call it was granted is recorded
+    /// ambiguous by the node's verdict.
+    #[error("effect units of stateful iteration {iteration} were still in flight at its barrier")]
+    IterationUnitsOutstanding {
+        /// The iteration whose barrier failed.
+        iteration: u32,
+    },
 }
 
 impl EffectExecutionError {
@@ -83,6 +100,8 @@ impl EffectExecutionError {
             Self::OutputUnavailable { .. } => "ENGINE:EFFECT_OUTPUT_UNAVAILABLE",
             Self::Rejected { .. } => "ENGINE:EFFECT_REJECTED",
             Self::InvalidEvidence => "ENGINE:EFFECT_INVALID_EVIDENCE",
+            Self::JournalSlotCapExceeded { .. } => "ENGINE:EFFECT_JOURNAL_SLOT_CAP",
+            Self::IterationUnitsOutstanding { .. } => "ENGINE:EFFECT_ITERATION_BARRIER",
         }
     }
     /// Whether the failure leaves the effect's durable state unknown or

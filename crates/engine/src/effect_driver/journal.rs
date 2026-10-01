@@ -4,7 +4,7 @@
 //! [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled)
 //! submits its effects as units on resource handles
 //! ([`ResourceHandle`](nebula_resource::call::ResourceHandle)). For a
-//! stateless action on a durable turn the engine builds one
+//! stateless or stateful action on a durable turn the engine builds one
 //! [`NodeEffectJournal`] per node attempt and hands it to the node's handles
 //! ([`Manager::handle_any_journaled`](nebula_resource::Manager::handle_any_journaled));
 //! the resource runtime drives every `Idempotent` or `Write` unit through
@@ -29,11 +29,15 @@
 //! effect also reads them once before its first prepare (see
 //! **Positions**).
 //!
-//! **Occurrences.** A unit's occurrence is the label the resource runtime
-//! builds, `unit/v1/#{ordinal:06}`: positional, with one sequence for all
-//! the node attempt's effect units — every resource, operations and
-//! sessions — restarting at zero in every journal, in the order units
-//! start preparing (a submission dropped unpolled takes none). The
+//! **Occurrences.** A unit's occurrence is the label the journal hands the
+//! resource runtime ([`EffectJournal::next_occurrence`]),
+//! `unit/v1/#{ordinal:06}` for a stateless action: positional, with one
+//! sequence for all the node attempt's effect units — every resource,
+//! operations and sessions — restarting at zero in every journal, in the
+//! order units start preparing (a submission dropped unpolled takes none).
+//! A stateful action's units are labelled per iteration,
+//! `it{n}/unit/v1/#{ordinal:06}` (`n` in decimal without leading zeros, at
+//! most 9999), the ordinal restarting at zero in every iteration. The
 //! resource, unit kind, operation (or session) name and version are not
 //! part of it but of the slot's contract identity, so a redeploy that
 //! changes the effect at a recorded position is an occurrence mismatch
@@ -55,21 +59,51 @@
 //!   a later effect land on it fresh — under a new provider key while its
 //!   settled slot stays further on. Before its first prepare the journal
 //!   reads what earlier attempts recorded, and refuses a fresh slot at such
-//!   a gap as a mismatch, with nothing written or sent.
+//!   a gap as a mismatch, with nothing written or sent. Positions order by
+//!   `(iteration, ordinal)` (a flat label is iteration 0): an unrecorded
+//!   position is a gap when a higher one of the same family — a later
+//!   ordinal of its iteration, or any slot of a later iteration — is
+//!   recorded;
+//! - labels of the other family (flat for a stateful node, `it{n}/` for a
+//!   stateless one) recorded by an earlier attempt mean the node's action
+//!   changed kind: a fresh slot is refused as a mismatch.
 //!
 //! An engine retry of the node therefore reuses
 //! the occurrences of its earlier attempts: a settled slot replays its
 //! recorded outcome without a provider call, an opaque ambiguous one is
 //! unknown, and a retryable failure — never recorded as a rejection — may
-//! be granted again within the slot's budget. The `it{n}/` prefix is
-//! reserved for the iterations of a stateful action, which a later stage
-//! journals.
+//! be granted again within the slot's budget.
 //!
-//! **Kinds** ([`JournalShape`]). Only stateless actions are journaled: one
-//! flat occurrence sequence per node attempt. A control action decides flow
-//! and must not cause effects; a stateful action keeps read-only handles
-//! until its iterations are journaled; agent, stream and other actions keep
-//! read-only handles. Each says why in the refusal of a write.
+//! **Kinds** ([`JournalShape`]). Stateless actions are journaled with one
+//! flat occurrence sequence per node attempt; stateful actions per
+//! iteration. A control action decides flow and must not cause effects;
+//! agent, stream and other actions keep read-only handles. Each says why in
+//! the refusal of a write.
+//!
+//! **Iterations.** A stateful action runs all its iterations inside one
+//! node attempt, and every attempt replays them from iteration 0 (no
+//! iteration checkpoint is kept for a journaled action: the runtime refuses
+//! a checkpoint sink on that path). The runtime brackets each iteration
+//! with the journal's barrier ([`IterationGate`]):
+//! [`begin_iteration`](NodeEffectJournal::begin_iteration) requires no unit
+//! in flight and starts the iteration's label namespace;
+//! [`end_iteration`](NodeEffectJournal::end_iteration) — after the
+//! iteration returned, successfully or not — drains its units within the
+//! node's drain limit and stops the loop when the journal holds a failure
+//! (an unknown outcome, a mismatch, a deferring ledger or lease failure):
+//! no later iteration sends anything past it. A unit still in flight at the
+//! barrier fails it: the journal closes, and the node's one verdict records
+//! a call the unit was granted as ambiguous. Replaying requires a
+//! deterministic action — an iteration fed inputs a replay does not
+//! reproduce (clocks, randomness, unrecorded reads) diverges, and the
+//! divergence halts the node as an occurrence mismatch.
+//!
+//! **Cap.** One node attempt prepares at most [`MAX_NODE_SLOTS`] journaled
+//! effects (a stateful action at its iteration cap with one effect per
+//! iteration fits): a further prepare is refused
+//! [`SlotCapExceeded`](JournalRefusal::SlotCapExceeded), nothing is sent,
+//! and the node fails
+//! [`JournalSlotCapExceeded`](EffectExecutionError::JournalSlotCapExceeded).
 //!
 //! **Provider key.** Every slot records the idempotency key the provider
 //! receives ([`provider_idempotency_key`]); a unit always presents the key
@@ -166,17 +200,113 @@ const FINAL_READ_FLOOR: Duration = Duration::from_secs(5);
 /// Most provider calls one slot may be granted.
 const MAX_SLOT_INVOCATIONS: u32 = 10_000;
 
+/// Most journaled effects one node attempt may prepare.
+///
+/// Bounds the ledger rows a node attempt writes and the occurrences its
+/// verdict reads. It matches the stateful runtime's iteration cap: a
+/// stateful action that prepares one effect per iteration fits at its last
+/// iteration. A further prepare is refused, nothing is sent, and the node
+/// fails [`JournalSlotCapExceeded`](EffectExecutionError::JournalSlotCapExceeded).
+pub(crate) const MAX_NODE_SLOTS: u32 = 10_000;
+
+/// Highest stateful iteration the journal labels (`it9999/`): the stateful
+/// runtime runs iterations `0..10_000`.
+const MAX_ITERATION: u32 = 9_999;
+
+/// The positional part of every occurrence label, before its ordinal.
+const UNIT_POSITION: &str = "unit/v1/#";
+
+/// How long a journaled node waits for its units — after its action
+/// returned, or at a stateful iteration's barrier: the unit deadline cap,
+/// or less when the execution's wall-clock budget (`execution_deadline`)
+/// ends sooner.
+pub(crate) fn journal_drain_limit(execution_deadline: Option<Instant>) -> Duration {
+    execution_deadline.map_or(OPERATION_DEADLINE_CAP, |deadline| {
+        deadline
+            .saturating_duration_since(Instant::now())
+            .min(OPERATION_DEADLINE_CAP)
+    })
+}
+
+/// The barrier the stateful runtime keeps around each iteration of a
+/// journaled stateful action
+/// ([`execute_stateful_handle`](crate::runtime::ActionRuntime)).
+///
+/// Implemented over the node attempt's [`NodeEffectJournal`]
+/// ([`JournalIterationGate`]); object safe so the runtime's tests can drive
+/// the loop with a scripted gate.
+#[async_trait::async_trait]
+pub(crate) trait IterationGate: Send + Sync {
+    /// Opens `iteration`: its effect units are labelled `it{iteration}/`.
+    ///
+    /// # Errors
+    ///
+    /// The failure the journal already holds, or
+    /// [`IterationUnitsOutstanding`](EffectExecutionError::IterationUnitsOutstanding)
+    /// when a unit is still in flight. The runtime does not run the
+    /// iteration.
+    fn begin_iteration(&self, iteration: u32) -> Result<(), EffectExecutionError>;
+
+    /// Closes the open iteration after its dispatch returned — successfully
+    /// or not — once its units drained.
+    ///
+    /// # Errors
+    ///
+    /// The failure the journal holds (an unknown outcome, a mismatch, a
+    /// deferring ledger or lease failure), or
+    /// [`IterationUnitsOutstanding`](EffectExecutionError::IterationUnitsOutstanding)
+    /// when a unit outlived the drain limit. The runtime starts no further
+    /// iteration.
+    async fn end_iteration(&self) -> Result<(), EffectExecutionError>;
+}
+
+/// The [`IterationGate`] of a journaled stateful node attempt: its journal,
+/// drained at each barrier within the node's drain limit.
+pub(crate) struct JournalIterationGate {
+    journal: NodeEffectJournal,
+    execution_deadline: Option<Instant>,
+}
+
+#[async_trait::async_trait]
+impl IterationGate for JournalIterationGate {
+    fn begin_iteration(&self, iteration: u32) -> Result<(), EffectExecutionError> {
+        self.journal.begin_iteration(iteration)
+    }
+
+    async fn end_iteration(&self) -> Result<(), EffectExecutionError> {
+        self.journal
+            .end_iteration(journal_drain_limit(self.execution_deadline))
+            .await
+    }
+}
+
+impl fmt::Debug for JournalIterationGate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("JournalIterationGate")
+            .field("journal", &self.journal)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Engine-private proof that a dispatch runs under a [`NodeEffectJournal`]:
 /// only this module can mint it, so generic dispatch cannot run a journaled
-/// action with write authority.
-pub(crate) struct JournalAdmission(());
+/// action with write authority. It carries the journal's iteration barrier,
+/// which a stateful action's loop keeps.
+pub(crate) struct JournalAdmission {
+    gate: JournalIterationGate,
+}
+
+impl JournalAdmission {
+    /// The iteration barrier of the admitted node attempt.
+    pub(crate) fn iteration_gate(&self) -> &dyn IterationGate {
+        &self.gate
+    }
+}
 
 /// Why a journaled control action has read-only resource handles.
 const CONTROL_NOT_JOURNALED: &str =
     "control actions decide flow and must not cause effects; move effects to a stateless action";
-/// Why a journaled stateful action has read-only resource handles.
-const STATEFUL_NOT_JOURNALED: &str =
-    "stateful effects are journaled per iteration in a later release";
 /// Why a journaled agent action has read-only resource handles.
 const AGENT_NOT_JOURNALED: &str = "agent effects are not journaled; the agent profile is planned";
 /// Why a journaled action of any other kind has read-only resource handles.
@@ -189,9 +319,9 @@ pub(crate) enum JournalShape {
     /// One run per node attempt: one flat occurrence sequence
     /// (`unit/v1/#n`). Stateless actions.
     Flat,
-    /// One run per iteration: a stateful action, whose occurrences the
-    /// `it{n}/` prefix is reserved for. Not journaled yet — read-only
-    /// handles.
+    /// One run per iteration: a stateful action, whose occurrences carry
+    /// the iteration (`it{n}/unit/v1/#n`), its runtime loop keeping the
+    /// journal's [`IterationGate`].
     Iterated,
     /// No journal: a control action (which decides flow and must not cause
     /// effects), an agent action (whose profile is planned), a stream
@@ -212,15 +342,14 @@ impl JournalShape {
     /// Whether a journaled action of this shape runs under a node effect
     /// journal in this version.
     pub(crate) const fn is_journaled(self) -> bool {
-        matches!(self, Self::Flat)
+        matches!(self, Self::Flat | Self::Iterated)
     }
 
     /// Why a journaled action of `kind` has read-only handles although its
     /// turn has execution stores, or `None` when its kind is journaled.
     pub(crate) const fn read_only_detail(kind: nebula_action::ActionKind) -> Option<&'static str> {
         match (Self::of(kind), kind) {
-            (Self::Flat, _) => None,
-            (Self::Iterated, _) => Some(STATEFUL_NOT_JOURNALED),
+            (Self::Flat | Self::Iterated, _) => None,
             (Self::None, nebula_action::ActionKind::Control) => Some(CONTROL_NOT_JOURNALED),
             (Self::None, nebula_action::ActionKind::Agent) => Some(AGENT_NOT_JOURNALED),
             (Self::None, _) => Some(KIND_NOT_JOURNALED),
@@ -275,13 +404,23 @@ struct JournalInner {
     in_flight: AtomicUsize,
     drained: tokio::sync::Notify,
     closed: AtomicBool,
+    /// An iteration barrier already waited the drain limit out: the
+    /// verdict does not wait for the leaked units again.
+    barrier_failed: AtomicBool,
 }
 
 #[derive(Default)]
 struct JournalState {
-    /// The next position of the node attempt's one sequence of effect
-    /// units.
+    /// The next position of the node attempt's sequence of effect units
+    /// (of the open iteration, for a stateful action).
     next_ordinal: u32,
+    /// The open iteration of a stateful action; `None` for a stateless one
+    /// (flat labels).
+    iteration: Option<u32>,
+    /// The slots prepared in the open iteration, inspected at its end.
+    iteration_slots: Vec<EffectSlotId>,
+    /// Prepares the node attempt started, bounded by [`MAX_NODE_SLOTS`].
+    reserved: u32,
     /// The slots this journal prepared. A slot is used by one unit at a
     /// time; its async lock serializes that unit's ledger steps with the
     /// journal's conclusion. The sync lock around the map is never held
@@ -292,51 +431,129 @@ struct JournalState {
     failure: Option<EffectExecutionError>,
 }
 
+/// The positional family of an occurrence label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Family {
+    /// `unit/v1/#{ordinal:06}`: a stateless action's one sequence.
+    Flat,
+    /// `it{n}/unit/v1/#{ordinal:06}`: a stateful action's iterations.
+    Iterated,
+}
+
+/// Where an occurrence label sits: its family and `(iteration, ordinal)`
+/// (a flat label is iteration 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Position {
+    family: Family,
+    iteration: u32,
+    ordinal: u32,
+}
+
+impl Position {
+    /// The position of a label the journal builds, read strictly: the
+    /// iteration in decimal without leading zeros (at most
+    /// [`MAX_ITERATION`]), the ordinal zero-padded to six digits. Any other
+    /// label has no position.
+    fn parse(label: &str) -> Option<Self> {
+        let (family, iteration, rest) = match label.strip_prefix("it") {
+            Some(tail) => {
+                let (iteration, rest) = tail.split_once('/')?;
+                let iteration = canonical_number(iteration, 1)?;
+                if iteration > MAX_ITERATION {
+                    return None;
+                }
+                (Family::Iterated, iteration, rest)
+            },
+            None => (Family::Flat, 0, label),
+        };
+        let ordinal = canonical_number(rest.strip_prefix(UNIT_POSITION)?, 6)?;
+        Some(Self {
+            family,
+            iteration,
+            ordinal,
+        })
+    }
+
+    const fn order(self) -> (u32, u32) {
+        (self.iteration, self.ordinal)
+    }
+}
+
+/// `digits` as a number when they are exactly its rendering zero-padded to
+/// `width`: no sign, no extra leading zero.
+fn canonical_number(digits: &str, width: usize) -> Option<u32> {
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number: u32 = digits.parse().ok()?;
+    (format!("{number:0width$}") == digits).then_some(number)
+}
+
+/// The label of position `ordinal` of `iteration` (`None`: a flat label).
+fn occurrence_label(iteration: Option<u32>, ordinal: u32) -> String {
+    match iteration {
+        Some(iteration) => format!("it{iteration}/{UNIT_POSITION}{ordinal:06}"),
+        None => format!("{UNIT_POSITION}{ordinal:06}"),
+    }
+}
+
 /// The occurrences earlier attempts of the node recorded, read before this
 /// attempt prepared anything.
 #[derive(Debug, Default)]
 struct PriorOccurrences {
     /// Every recorded label.
     labels: HashSet<String>,
-    /// The highest recorded ordinal per position namespace — the label
-    /// before its `/#{ordinal}` (`unit/v1` for a node's effect units).
-    highest: HashMap<String, u32>,
+    /// The highest recorded `(iteration, ordinal)` per family.
+    highest: HashMap<Family, (u32, u32)>,
 }
 
 impl PriorOccurrences {
     fn new<'a>(labels: impl IntoIterator<Item = &'a str>) -> Self {
         let mut prior = Self::default();
         for label in labels {
-            if let Some((namespace, ordinal)) = position(label) {
-                let highest = prior.highest.entry(namespace.to_owned()).or_insert(ordinal);
-                *highest = (*highest).max(ordinal);
+            if let Some(position) = Position::parse(label) {
+                let order = position.order();
+                let highest = prior.highest.entry(position.family).or_insert(order);
+                *highest = (*highest).max(order);
             }
             prior.labels.insert(label.to_owned());
         }
         prior
     }
 
+    /// Whether a fresh slot at `occurrence` is refused: it
+    /// [leaves a gap](Self::leaves_gap_at) or
+    /// [mixes families](Self::mixes_family_at).
+    fn refuses(&self, occurrence: &str) -> bool {
+        self.leaves_gap_at(occurrence) || self.mixes_family_at(occurrence)
+    }
+
     /// Whether `occurrence` is an unrecorded position below one an earlier
-    /// attempt recorded: that attempt left it empty, so the program reached
-    /// its later effects by another path, and an effect prepared here may
-    /// be one already recorded further on.
+    /// attempt recorded in its family — a later ordinal of its iteration,
+    /// or any slot of a later iteration: that attempt left it empty, so the
+    /// program reached its later effects by another path, and an effect
+    /// prepared here may be one already recorded further on.
     fn leaves_gap_at(&self, occurrence: &str) -> bool {
         if self.labels.contains(occurrence) {
             return false;
         }
-        position(occurrence).is_some_and(|(namespace, ordinal)| {
+        Position::parse(occurrence).is_some_and(|position| {
             self.highest
-                .get(namespace)
-                .is_some_and(|&highest| highest > ordinal)
+                .get(&position.family)
+                .is_some_and(|&highest| highest > position.order())
         })
     }
-}
 
-/// The position namespace and ordinal of a positional occurrence label
-/// (`{namespace}/#{ordinal}`).
-fn position(occurrence: &str) -> Option<(&str, u32)> {
-    let (namespace, ordinal) = occurrence.rsplit_once("/#")?;
-    Some((namespace, ordinal.parse().ok()?))
+    /// Whether `occurrence` is unrecorded and an earlier attempt recorded
+    /// positions of the other family: the node's action changed kind
+    /// (stateless and stateful), and its effects cannot be matched.
+    fn mixes_family_at(&self, occurrence: &str) -> bool {
+        if self.labels.contains(occurrence) {
+            return false;
+        }
+        Position::parse(occurrence)
+            .is_some_and(|position| self.highest.keys().any(|&family| family != position.family))
+    }
 }
 
 /// A unit's slot binding as the journal derives it from its intent.
@@ -383,13 +600,142 @@ impl NodeEffectJournal {
                 in_flight: AtomicUsize::new(0),
                 drained: tokio::sync::Notify::new(),
                 closed: AtomicBool::new(false),
+                barrier_failed: AtomicBool::new(false),
             }),
         }
     }
 
-    /// The admission witness for dispatching the journal's action.
-    pub(crate) fn admission(&self) -> JournalAdmission {
-        JournalAdmission(())
+    /// The admission witness for dispatching the journal's action, whose
+    /// iteration barrier drains within the drain limit left before
+    /// `execution_deadline`.
+    pub(crate) fn admission(&self, execution_deadline: Option<Instant>) -> JournalAdmission {
+        JournalAdmission {
+            gate: JournalIterationGate {
+                journal: self.clone(),
+                execution_deadline,
+            },
+        }
+    }
+
+    /// Opens stateful `iteration`: its units are labelled
+    /// `it{iteration}/unit/v1/#{ordinal:06}`, the ordinal restarting at
+    /// zero.
+    ///
+    /// # Errors
+    ///
+    /// - the failure the journal already holds;
+    /// - [`IterationUnitsOutstanding`](EffectExecutionError::IterationUnitsOutstanding)
+    ///   when a unit of the node is still in flight (or the journal closed):
+    ///   its position would cross into this iteration's namespace. The
+    ///   journal closes;
+    /// - [`InvalidContract`](EffectExecutionError::InvalidContract) for an
+    ///   iteration past [`MAX_ITERATION`] or not after the open one.
+    pub(crate) fn begin_iteration(&self, iteration: u32) -> Result<(), EffectExecutionError> {
+        if let Some(failure) = self.state().failure {
+            return Err(failure);
+        }
+        let in_flight = self.inner.in_flight.load(Ordering::SeqCst);
+        if in_flight > 0 || self.is_closed() {
+            return Err(self.fail_barrier(iteration, in_flight));
+        }
+        let mut state = self.state();
+        if iteration > MAX_ITERATION || state.iteration.is_some_and(|open| iteration <= open) {
+            drop(state);
+            self.note_failure(EffectExecutionError::InvalidContract);
+            return Err(EffectExecutionError::InvalidContract);
+        }
+        state.iteration = Some(iteration);
+        state.next_ordinal = 0;
+        state.iteration_slots.clear();
+        Ok(())
+    }
+
+    /// Closes the open stateful iteration after its dispatch returned:
+    /// drains its units for at most `drain_limit`, then reports whether the
+    /// next iteration may start.
+    ///
+    /// # Errors
+    ///
+    /// - [`IterationUnitsOutstanding`](EffectExecutionError::IterationUnitsOutstanding)
+    ///   when a unit outlived `drain_limit`: the journal closes, so the unit
+    ///   records nothing more, and the node's verdict records a call it was
+    ///   granted as ambiguous;
+    /// - the failure the journal holds — a mismatch, an invalid record, a
+    ///   deferring ledger or lease failure;
+    /// - [`JournalOutcomeUnknown`](EffectExecutionError::JournalOutcomeUnknown)
+    ///   when a slot of the iteration has an unknown outcome — recorded
+    ///   unknown, a call never explained, or one that may have crossed with
+    ///   no recorded outcome — even if the action swallowed the unit's
+    ///   error.
+    pub(crate) async fn end_iteration(
+        &self,
+        drain_limit: Duration,
+    ) -> Result<(), EffectExecutionError> {
+        let iteration = self.state().iteration.unwrap_or(0);
+        if !self.drain(drain_limit).await {
+            let in_flight = self.inner.in_flight.load(Ordering::SeqCst);
+            return Err(self.fail_barrier(iteration, in_flight));
+        }
+        if let Some(failure) = self.state().failure {
+            return Err(failure);
+        }
+        let slots: Vec<_> = {
+            let state = self.state();
+            state
+                .iteration_slots
+                .iter()
+                .filter_map(|slot_id| {
+                    state
+                        .slots
+                        .get(slot_id)
+                        .map(|entry| (*slot_id, Arc::clone(entry)))
+                })
+                .collect()
+        };
+        // Every unit is gone: no slot lock is held. A slot still locked
+        // could be mid-step and is never counted as resolved.
+        let unresolved: Vec<EffectSlotId> = slots
+            .iter()
+            .filter(|(_, entry)| {
+                entry
+                    .try_lock()
+                    .map_or(true, |slot| is_unresolved(slot.record()))
+            })
+            .map(|(slot_id, _)| *slot_id)
+            .collect();
+        let Some(first) = unresolved.first() else {
+            return Ok(());
+        };
+        tracing::warn!(
+            execution_id = %self.inner.authority.execution_id,
+            node_key = %self.inner.authority.node_key,
+            iteration,
+            unresolved = unresolved.len(),
+            "a stateful iteration left an effect outcome unknown; no further iteration runs"
+        );
+        let unknown = EffectExecutionError::JournalOutcomeUnknown {
+            slot_id: *first,
+            unresolved: u32::try_from(unresolved.len()).unwrap_or(u32::MAX),
+        };
+        self.note_failure(unknown);
+        Err(self.state().failure.unwrap_or(unknown))
+    }
+
+    /// Fails the barrier of `iteration` with `in_flight` units left: closes
+    /// the journal and records the failure in the node's verdict.
+    fn fail_barrier(&self, iteration: u32, in_flight: usize) -> EffectExecutionError {
+        tracing::warn!(
+            execution_id = %self.inner.authority.execution_id,
+            node_key = %self.inner.authority.node_key,
+            iteration,
+            in_flight,
+            "effect units outlived their stateful iteration; closing the effect journal"
+        );
+        self.inner.barrier_failed.store(true, Ordering::SeqCst);
+        self.close();
+        let failure = EffectExecutionError::IterationUnitsOutstanding { iteration };
+        self.note_failure(failure);
+        self.state().failure.unwrap_or(failure)
     }
 
     fn access(&self) -> LedgerAccess<'_> {
@@ -621,6 +967,13 @@ impl NodeEffectJournal {
     ) -> Result<Concluded, EffectExecutionError> {
         let authority = &self.inner.authority;
         let drain_started = tokio::time::Instant::now();
+        // A failed iteration barrier already waited the drain limit out for
+        // the units still in flight: the cleanup gets its own floor instead.
+        let (drain_limit, cleanup_budget) = if self.inner.barrier_failed.load(Ordering::SeqCst) {
+            (Duration::ZERO, FINAL_READ_FLOOR)
+        } else {
+            (drain_limit, drain_limit)
+        };
         if !self.drain(drain_limit).await {
             tracing::warn!(
                 execution_id = %authority.execution_id,
@@ -633,7 +986,7 @@ impl NodeEffectJournal {
         // The cleanup shares the drain's limit: a unit stuck in a ledger
         // call keeps its slot locked, and the node must still conclude.
         let cleanup_deadline = drain_started
-            .checked_add(drain_limit)
+            .checked_add(cleanup_budget)
             .unwrap_or_else(tokio::time::Instant::now);
         let uninspected = self.record_leaked_calls(cleanup_deadline).await;
         let failure = self.state().failure;
@@ -896,10 +1249,37 @@ impl EffectJournal for NodeEffectJournal {
         ordinal
     }
 
+    /// `unit/v1/#{ordinal:06}` for a stateless action;
+    /// `it{n}/unit/v1/#{ordinal:06}` within stateful iteration `n`.
+    fn next_occurrence(&self) -> String {
+        let mut state = self.state();
+        let ordinal = state.next_ordinal;
+        state.next_ordinal = ordinal.saturating_add(1);
+        occurrence_label(state.iteration, ordinal)
+    }
+
     async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
         const STEP: &str = effect_journal_step::PREPARE;
         if self.is_closed() {
             return Err(self.refused(STEP, JournalRefusal::Closed));
+        }
+        // The cap is taken before anything durable: a refused prepare
+        // writes and sends nothing.
+        let capped = {
+            let mut state = self.state();
+            let capped = state.reserved >= MAX_NODE_SLOTS;
+            if !capped {
+                state.reserved += 1;
+            }
+            capped
+        };
+        if capped {
+            return Err(self.refuse(
+                STEP,
+                EffectExecutionError::JournalSlotCapExceeded {
+                    cap: MAX_NODE_SLOTS,
+                },
+            ));
         }
         let authority = &self.inner.authority;
         let derived = self
@@ -925,10 +1305,11 @@ impl EffectJournal for NodeEffectJournal {
             })
             .await
             .map_err(|error| self.refuse(STEP, error))?;
-        if prior.leaves_gap_at(intent.occurrence) {
-            // An earlier attempt reached a later position of this resource
-            // and kind without recording this one: the effect may be one it
-            // recorded further on, and a fresh slot here would send it again.
+        if prior.refuses(intent.occurrence) {
+            // An earlier attempt reached a later position without recording
+            // this one — the effect may be one it recorded further on, and a
+            // fresh slot here would send it again — or recorded positions of
+            // the other family (the node's action changed kind).
             return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
         }
         let binding = EffectSlotBinding {
@@ -962,6 +1343,9 @@ impl EffectJournal for NodeEffectJournal {
                 return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
             }
             state.slots.insert(slot_id, Arc::clone(&entry));
+            if state.iteration.is_some() {
+                state.iteration_slots.push(slot_id);
+            }
         }
         let mut slot = entry.lock().await;
         let phase = self
@@ -1148,6 +1532,9 @@ fn classify_failure(error: EffectExecutionError) -> (JournalRefusal, EffectExecu
         EffectExecutionError::Ledger(OperationLedgerError::ExecutionLeaseRejected) => {
             (JournalRefusal::LeaseLost, error)
         },
+        EffectExecutionError::JournalSlotCapExceeded { .. } => {
+            (JournalRefusal::SlotCapExceeded, error)
+        },
         error => (JournalRefusal::Unavailable, error),
     }
 }
@@ -1165,6 +1552,12 @@ fn verdict_label(failure: Option<&EffectExecutionError>) -> &'static str {
         },
         Some(EffectExecutionError::InvalidContract) => effect_journal_verdict::INVALID_CONTRACT,
         Some(EffectExecutionError::InvalidEvidence) => effect_journal_verdict::INVALID_EVIDENCE,
+        Some(EffectExecutionError::JournalSlotCapExceeded { .. }) => {
+            effect_journal_verdict::SLOT_CAP_EXCEEDED
+        },
+        Some(EffectExecutionError::IterationUnitsOutstanding { .. }) => {
+            effect_journal_verdict::ITERATION_BARRIER
+        },
         Some(_) => effect_journal_verdict::LEDGER,
     }
 }

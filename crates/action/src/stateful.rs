@@ -34,6 +34,29 @@ use crate::{
 ///
 /// Cancellation is enforced by the runtime (same as
 /// [`StatelessAction`](crate::stateless::StatelessAction)).
+///
+/// # Journaled effects and determinism
+///
+/// Under the default
+/// [`Journaled`](crate::effect::ActionEffectContract::Journaled) contract, on
+/// a durable engine turn, every `Idempotent` or `Write` unit an iteration
+/// submits through a resource handle is recorded in the node's effect
+/// journal under its iteration and position (`it{n}/unit/v1/#{k:06}`). All
+/// iterations run inside one node attempt, and a resumed or retried attempt
+/// replays them from the first: a recorded effect replays its outcome
+/// without a provider call, and the next iteration starts only once the
+/// previous one's units finished.
+///
+/// That makes a journaled stateful action subject to a **determinism
+/// contract**: replayed from [`init_state`](Self::init_state), each
+/// iteration must submit the same effects (operation, version, request,
+/// key part) in the same order. Inputs a replay does not reproduce —
+/// clocks, randomness, reads whose answers changed — diverge from the
+/// recorded effects, and the divergence halts the node as an occurrence
+/// mismatch with nothing sent. Keep such inputs out of the effects, or
+/// derive them from the state and the recorded outputs. An iteration that
+/// leaves an effect's outcome unknown — even one whose error it swallows —
+/// stops the iterations: no later iteration runs.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement StatefulAction",
     note = "implement `init_state` and `execute` methods with matching Input/Output/State types"

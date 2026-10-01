@@ -42,6 +42,8 @@ pub(super) struct FaultLedger {
     pub boundary: Boundary,
     pub fault: Fault,
     fired: AtomicBool,
+    /// Commands at the boundary that pass before the fault fires.
+    skip: std::sync::atomic::AtomicU32,
     pub natural_reads: std::sync::atomic::AtomicUsize,
     pub outcome_attempts: parking_lot::Mutex<Vec<nebula_storage_port::dto::FrozenOutcomeEvidence>>,
     pub outcome_gate: Option<Arc<OutcomeGate>>,
@@ -54,13 +56,32 @@ impl FaultLedger {
             boundary,
             fault,
             fired: AtomicBool::new(false),
+            skip: std::sync::atomic::AtomicU32::new(0),
             natural_reads: std::sync::atomic::AtomicUsize::new(0),
             outcome_attempts: parking_lot::Mutex::new(Vec::new()),
             outcome_gate: None,
         }
     }
+    /// The same fault, fired at the boundary's command after the first
+    /// `skip` pass.
+    pub(super) fn skipping(self, skip: u32) -> Self {
+        self.skip.store(skip, Ordering::SeqCst);
+        self
+    }
     fn fires(&self, boundary: Boundary) -> bool {
-        self.boundary == boundary && !self.fired.swap(true, Ordering::SeqCst)
+        if self.boundary != boundary {
+            return false;
+        }
+        if self
+            .skip
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return false;
+        }
+        !self.fired.swap(true, Ordering::SeqCst)
     }
 }
 

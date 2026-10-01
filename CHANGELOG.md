@@ -963,6 +963,19 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **`EffectJournal::next_occurrence()` and a node slot cap.**
+  `nebula_resource::call::journal::EffectJournal` gains a defaulted
+  `next_occurrence()` (`unit/v1/#{next_ordinal:06}`), which the resource
+  runtime now takes a unit's occurrence label from; an owner whose units run
+  in several positional runs overrides it (the engine labels a stateful
+  iteration's units `it{n}/…`). `JournalRefusal::SlotCapExceeded` (new;
+  `slot_cap_exceeded`) refuses a unit `Permanent` / `NotSent`: one node
+  attempt prepares at most 10 000 journaled effects, and the node then
+  fails `EffectExecutionError::JournalSlotCapExceeded`
+  (`ENGINE:EFFECT_JOURNAL_SLOT_CAP`). New metric labels:
+  `nebula_effect_journal_refusals_total{refusal="slot_cap_exceeded"}` and
+  `nebula_effect_journal_verdicts_total{code="slot_cap_exceeded" |
+  "iteration_barrier"}`. Additive: no version bump.
 - **Execution-owned managed-row effects (resource side; engine wiring
   pending).** `nebula_resource::call` gains the author surface
   `EffectOperation` (an `Operation` declaring an `EffectContract`, an
@@ -1552,6 +1565,37 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Changed
 
+- **Stateful `Journaled` actions get journaled resource effects, per
+  iteration.** On a durable turn the engine now runs a frozen stateful
+  `Journaled` action under its node attempt's `NodeEffectJournal` too
+  (`JournalShape::Iterated` is journaled; the "stateful effects are
+  journaled per iteration in a later release" refusal is gone — a stateful
+  action without execution stores still reports "journaled effects need
+  execution stores"). Its effects are labelled `it{n}/unit/v1/#{k:06}` (`n`
+  the iteration in decimal without leading zeros, 0 to 9999; `k` restarting
+  per iteration; stateless labels stay `unit/v1/#{k:06}`). Every node
+  attempt replays the iterations from iteration 0: a journaled stateful
+  action takes no checkpoint sink (the runtime refuses both together). The
+  runtime keeps a barrier around every iteration: it starts only with no
+  unit of the node in flight, and after it returned (`Ok` or `Err`) its
+  units drain within the node drain limit; the loop stops
+  (`RuntimeError::EffectJournal`, new, which the engine replaces with the
+  journal's verdict) when the journal holds a failure — an unknown outcome
+  of the iteration (even one the action swallowed), an occurrence mismatch,
+  a deferring ledger or lease failure — or a unit outlived the drain
+  (`EffectExecutionError::IterationUnitsOutstanding`, new,
+  `ENGINE:EFFECT_ITERATION_BARRIER`: the journal closes and the verdict
+  records the unit's granted call as ambiguous). One verdict per node
+  attempt still decides the node. The gap check orders positions by
+  `(iteration, ordinal)`: a fresh position below a recorded one of its
+  family (a later ordinal of its iteration, or any slot of a later
+  iteration) is refused as a mismatch with nothing written or sent, and so
+  is a label of the other family (flat versus `it{n}/`) recorded by an
+  earlier attempt; labels are parsed strictly. **Determinism contract**
+  (documented on `StatefulAction`): a replayed iteration must submit the
+  same effects in the same order; inputs a replay does not reproduce
+  diverge and halt the node `ENGINE:EFFECT_OCCURRENCE_MISMATCH`.
+  `JournalProtocol::V1` is unchanged. Additive: no version bump.
 - **A refused write through a non-journaled action's resource handle says
   why.** Only stateless `Journaled` actions run under a node effect journal.
   A `Journaled` action of another kind keeps read-only handles (reads run,

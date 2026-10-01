@@ -1,8 +1,8 @@
-//! Which action kinds the node effect journal records: only stateless
-//! actions. A control or stateful action of the default (`Journaled`)
-//! contract keeps read-only handles on a durable turn, and a refused write
-//! says why. (An agent action cannot be compiled into a durable plan;
-//! `resource_integration` covers its refusal.)
+//! Which action kinds the node effect journal records: stateless actions,
+//! and stateful ones per iteration (`journal_stateful`). A control action of
+//! the default (`Journaled`) contract keeps read-only handles on a durable
+//! turn, and a refused write says why. (An agent action cannot be compiled
+//! into a durable plan; `resource_integration` covers its refusal.)
 
 use super::{
     journal_fixture::*,
@@ -59,22 +59,6 @@ async fn a_read_only_control_action_keeps_read_only_handles() {
         Ports::memory(),
         Kind::ReadOnlyControl,
         "managed row effect requires execution-owner authority",
-    )
-    .await;
-}
-
-#[rstest::rstest]
-#[case::memory(Backend::Memory)]
-#[case::sqlite(Backend::Sqlite)]
-#[tokio::test]
-async fn a_journaled_stateful_action_keeps_read_only_handles_saying_why(#[case] backend: Backend) {
-    let Some(database) = Database::open(backend).await else {
-        return;
-    };
-    assert_write_refused(
-        database.ports(),
-        Kind::Stateful,
-        "stateful effects are journaled per iteration in a later release",
     )
     .await;
 }

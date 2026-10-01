@@ -140,8 +140,8 @@ configuration, and process lifecycle.
   scope violation instead of reaching a global row. Plans recorded without an effect
   field stay refused.
 - **Node effect journal** (`effect_driver::journal`, crate-private). A frozen,
-  stateless `Journaled` action on a durable turn (operation ledger and execution fence
-  present) runs under one `NodeEffectJournal` per node attempt, through
+  stateless or stateful `Journaled` action on a durable turn (operation ledger and
+  execution fence present) runs under one `NodeEffectJournal` per node attempt, through
   `ActionRuntime::execute_journaled_action` and an engine-private admission witness.
   Its resource handles (`Manager::handle_any_journaled`) drive every `Idempotent` /
   `Write` unit through the journal, which records it as one operation-ledger slot via
@@ -170,8 +170,32 @@ configuration, and process lifecycle.
   recorded further on. An engine retry reuses the occurrences:
   a settled effect replays its recorded output with no provider call, an opaque
   ambiguous one is unknown, a retryable failure may be granted again within the
-  slot's budget (`Operation::max_attempts`). The `it{n}/` prefix is reserved for the
-  iterations of stateful actions. Every slot records the provider idempotency key
+  slot's budget (`Operation::max_attempts`). **Stateful actions** are journaled per
+  iteration: the journal hands the resource runtime its labels
+  (`EffectJournal::next_occurrence`), `it{n}/unit/v1/#{k:06}` with `n` the iteration in
+  decimal without leading zeros (0 to 9999) and `k` restarting per iteration. All
+  iterations run inside one node attempt and every attempt replays them from
+  iteration 0 — a journaled stateful action takes no checkpoint sink (the runtime
+  refuses both together). The runtime brackets each iteration with the journal's
+  barrier (`IterationGate`): `begin_iteration(n)` requires no unit in flight and
+  opens the label namespace; `end_iteration` — after the iteration returned, `Ok` or
+  `Err` — drains its units within the node drain limit and stops the loop
+  (`RuntimeError::EffectJournal`, replaced by the verdict) when the journal holds a
+  failure: an unknown outcome in the iteration (even one the action swallowed), a
+  mismatch, a deferring ledger or lease failure. A unit still in flight at the
+  barrier fails it (`ENGINE:EFFECT_ITERATION_BARRIER`): the journal closes, and the
+  node's one verdict records a call the unit was granted as ambiguous, so the node
+  fails unknown. Positions order by `(iteration, ordinal)` for the gap check: a fresh
+  position is a gap when a higher one of its family is recorded (a later ordinal of
+  its iteration, or any slot of a later iteration), and labels of the other family
+  (flat versus `it{n}/`) recorded by an earlier attempt are refused as a changed
+  action kind; labels are parsed strictly (no leading zeros). **Determinism
+  contract**: a replayed iteration must submit the same effects in the same order —
+  inputs a replay does not reproduce (clocks, randomness, unrecorded reads) diverge,
+  and the divergence halts the node `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing
+  sent. One node attempt prepares at most `MAX_NODE_SLOTS` (10 000) journaled effects:
+  a further prepare is refused `slot_cap_exceeded`, nothing is sent, and the node
+  fails `ENGINE:EFFECT_JOURNAL_SLOT_CAP`. Every slot records the provider idempotency key
   `base64url(SHA-256(frame("nebula.idempotency-key.v1") ‖ frame(frame(org) ‖
   frame(workspace)) ‖ frame(resource) ‖ frame(operation) ‖ u32_be(version) ‖
   frame(developer part | frame(execution) ‖ frame(node) ‖ frame(occurrence)))))` — no
@@ -208,13 +232,12 @@ configuration, and process lifecycle.
   `nebula_effect_journal_verdicts_total{code}`. Every other `Journaled` node keeps
   read-only handles (reads run, writes are refused `NotSent`), and the refusal says
   why: a control action ("control actions decide flow and must not cause effects;
-  move effects to a stateless action"), a stateful action ("stateful effects are
-  journaled per iteration in a later release"), an agent action ("agent effects are
+  move effects to a stateless action"), an agent action ("agent effects are
   not journaled; the agent profile is planned"), a stream or other kind ("effects of
-  this action kind are not journaled"), or a stateless one without execution stores
-  ("journaled effects need execution stores"). The crate-private `JournalShape` maps
-  a kind to how it is journaled: `Flat` (stateless), `Iterated` (stateful — not
-  yet), `None` (control, agent, stream and the rest).
+  this action kind are not journaled"), or a stateless or stateful one without
+  execution stores ("journaled effects need execution stores"). The crate-private
+  `JournalShape` maps a kind to how it is journaled: `Flat` (stateless), `Iterated`
+  (stateful, per iteration), `None` (control, agent, stream and the rest).
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.

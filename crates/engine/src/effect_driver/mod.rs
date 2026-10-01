@@ -10,7 +10,8 @@ mod slot;
 
 pub use error::EffectExecutionError;
 pub(crate) use journal::{
-    Concluded, JournalAdmission, JournalAuthority, JournalShape, NodeEffectJournal,
+    Concluded, IterationGate, JournalAdmission, JournalAuthority, JournalShape, NodeEffectJournal,
+    journal_drain_limit,
 };
 use slot::{CallPurpose, GrantedCall, LedgerAccess, LedgerSlot};
 
