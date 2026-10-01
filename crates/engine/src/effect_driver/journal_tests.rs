@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use nebula_core::ResourceKey;
+
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
     call::{Cost, Operation, OperationCx, OperationError, ResourceHandle, SentState},
@@ -61,8 +63,8 @@ fn derived_key(parts: &ProviderKeyParts<'_>) -> String {
         .to_owned()
 }
 
-const OCCURRENCE_0: &str = "unit/v1/billing.gateway/op/#000000";
-const OCCURRENCE_1: &str = "unit/v1/billing.gateway/op/#000001";
+const OCCURRENCE_0: &str = "unit/v1/#000000";
+const OCCURRENCE_1: &str = "unit/v1/#000001";
 
 #[test]
 fn provider_key_golden_vectors() {
@@ -72,10 +74,11 @@ fn provider_key_golden_vectors() {
     assert_eq!(developer, "rT-cFUezYGxWViT9yxc08nun9dXX-uC5FWXmLEN4PWI");
     assert_eq!(developer, expected_key(1, b"order-123"));
 
-    // Re-pinned (unreleased) when occurrences became positional
-    // (`unit/v1/{resource}/op/#n`): the run part frames the occurrence.
+    // Re-pinned (unreleased) when occurrences became one node-wide
+    // positional sequence (`unit/v1/#n`): the run part frames the
+    // occurrence.
     let run = derived_key(&key_parts(None, "exec-1", OCCURRENCE_0));
-    assert_eq!(run, "pz25xNO-bZfbF4P7WSSkNgfRa5IX_Avv3by_HclmDZo");
+    assert_eq!(run, "EMMjio7V0v7X92ICkDncX5KjpQg9MmQb_bCcDSt3kFg");
     let run_part = [
         frame_of(b"exec-1"),
         frame_of(b"charge"),
@@ -816,7 +819,7 @@ impl Operation<Gateway> for Balance {
 const DRAIN: Duration = Duration::from_secs(5);
 
 #[test]
-fn ordinals_count_per_resource_and_kind_from_zero() {
+fn ordinals_are_one_node_wide_sequence_from_zero() {
     let executions = nebula_storage::InMemoryExecutionStore::new();
     let journal = NodeEffectJournal::new(JournalAuthority {
         ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
@@ -832,43 +835,23 @@ fn ordinals_count_per_resource_and_kind_from_zero() {
         clock: Arc::new(nebula_core::accessor::SystemClock),
         metrics: MetricsRegistry::new(),
     });
-    let key = Gateway::key();
-    let other = ResourceKey::new("billing.other").expect("resource key");
-    assert_eq!(journal.next_ordinal(&key, UnitKind::Operation), 0);
-    assert_eq!(journal.next_ordinal(&key, UnitKind::Operation), 1);
-    assert_eq!(
-        journal.next_ordinal(&other, UnitKind::Operation),
-        0,
-        "per resource"
-    );
-    assert_eq!(
-        journal.next_ordinal(&key, UnitKind::Session),
-        0,
-        "sessions and operations are separate namespaces"
-    );
-    assert_eq!(
-        journal.next_ordinal(&key, UnitKind::Operation),
-        2,
-        "positional: every operation on the resource shares the sequence"
-    );
+    // Every resource and unit kind shares the node attempt's sequence.
+    assert_eq!(journal.next_ordinal(), 0);
+    assert_eq!(journal.next_ordinal(), 1);
+    assert_eq!(journal.next_ordinal(), 2);
 }
 
 #[test]
 fn a_gap_is_an_unrecorded_position_below_a_recorded_one() {
-    let prior = PriorOccurrences::new([
-        "unit/v1/billing.gateway/op/#000001",
-        "unit/v1/billing.gateway/op/#000002",
-        "unit/v1/billing.gateway/session/#000000",
-    ]);
+    let prior = PriorOccurrences::new(["unit/v1/#000001", "unit/v1/#000002"]);
     // Position 0 was left empty while 1 and 2 were recorded.
-    assert!(prior.leaves_gap_at("unit/v1/billing.gateway/op/#000000"));
+    assert!(prior.leaves_gap_at("unit/v1/#000000"));
     // Recorded positions are revisited; later ones extend the program.
-    assert!(!prior.leaves_gap_at("unit/v1/billing.gateway/op/#000001"));
-    assert!(!prior.leaves_gap_at("unit/v1/billing.gateway/op/#000003"));
-    // Each resource and unit kind is its own namespace.
-    assert!(!prior.leaves_gap_at("unit/v1/billing.gateway/session/#000001"));
-    assert!(!prior.leaves_gap_at("unit/v1/billing.other/op/#000000"));
-    assert!(!PriorOccurrences::default().leaves_gap_at("unit/v1/billing.gateway/op/#000000"));
+    assert!(!prior.leaves_gap_at("unit/v1/#000001"));
+    assert!(!prior.leaves_gap_at("unit/v1/#000003"));
+    // Another namespace (a stateful iteration's) is its own sequence.
+    assert!(!prior.leaves_gap_at("it1/unit/v1/#000000"));
+    assert!(!PriorOccurrences::default().leaves_gap_at("unit/v1/#000000"));
 }
 
 #[tokio::test]
@@ -878,7 +861,7 @@ async fn an_effect_prepared_into_an_earlier_attempts_gap_is_a_mismatch() {
     // unit whose prepare never became durable) and settled the charge at
     // the second.
     let first = harness.journal(1);
-    assert_eq!(first.next_ordinal(&Gateway::key(), UnitKind::Operation), 0);
+    assert_eq!(first.next_ordinal(), 0);
     harness
         .handle(&first)
         .submit(Charge::<false> { order: 3 })

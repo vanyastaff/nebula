@@ -26,10 +26,7 @@ async fn a_write_settles_once_and_the_provider_sees_the_recorded_key(#[case] bac
         let slots = fixture.slots(execution).await;
         assert_eq!(slots.len(), 1, "one slot per effect");
         assert_eq!(phase(&slots[0]), EffectPhase::Resolved);
-        assert_eq!(
-            slots[0].occurrence(),
-            "unit/v1/test.journal.payments/op/#000000"
-        );
+        assert_eq!(slots[0].occurrence(), "unit/v1/#000000");
         keys.push(recorded_key(&slots[0]));
     }
     let received = fixture.gateway.call_keys();
@@ -171,7 +168,7 @@ async fn a_submission_dropped_unpolled_before_a_crash_shifts_nothing(#[case] bac
     assert_eq!(slots.len(), 1);
     assert_eq!(
         slots[0].occurrence(),
-        "unit/v1/test.journal.payments/op/#000000",
+        "unit/v1/#000000",
         "the dropped submission took no position"
     );
 

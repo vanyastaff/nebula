@@ -9,9 +9,9 @@
 //!   otherwise an in-flight ticket is taken. Nothing is positioned yet: a
 //!   submission dropped unpolled leaves no trace;
 //! - **first poll** ([`prepare`]) — before anything is spawned, checked out,
-//!   booked or read: the occurrence label is fixed from the next positional
-//!   ordinal of the unit's kind on its resource, then replay, refusal, or
-//!   run;
+//!   booked or read: the occurrence label is fixed from the owner's next
+//!   positional ordinal (one sequence for all its effect units, whatever
+//!   their resource or kind), then replay, refusal, or run;
 //! - **each attempt** — the previous attempt's call is explained when the
 //!   attempt starts ([`OwnedEffect::flush_previous`]); after the checkout
 //!   and the credential reads, before the registration, the owner grants
@@ -48,9 +48,6 @@ use super::{
     managed::{UnitShared, cancelled_before_grant},
 };
 use crate::{dedup::SlotIdentity, error::ErrorKind};
-
-/// Longest occurrence label the owner's ledger accepts, in bytes.
-const MAX_OCCURRENCE_LABEL_LEN: usize = 512;
 
 /// How a unit's output is recorded and replayed: JSON.
 pub(super) struct OutputCodec<T> {
@@ -176,33 +173,20 @@ impl OwnedEffect {
         })
     }
 
-    /// Assigns the unit's positional occurrence label
-    /// `unit/v1/{key}/{kind}/#{ordinal:06}` from the owner's next ordinal of
-    /// its kind on its resource, once; later calls return the same label.
+    /// Assigns the unit's positional occurrence label `unit/v1/#{ordinal:06}`
+    /// from the owner's next ordinal — one sequence for all its effect
+    /// units — once; later calls return the same label.
     ///
-    /// The operation (or session) name and version are not in the label:
-    /// they are bound by the effect's contract, so a changed one under a
-    /// recorded occurrence is a mismatch rather than a fresh effect.
-    fn assign_occurrence(&self) -> Result<&str, OperationError> {
-        if let Some(occurrence) = self.occurrence.get() {
-            return Ok(occurrence);
-        }
-        let ordinal = self
-            .owner
-            .next_ordinal(&self.resource_key, self.declaration.kind);
-        let occurrence = format!(
-            "unit/v1/{}/{}/#{ordinal:06}",
-            self.resource_key, self.declaration.kind
-        );
-        let fits = occurrence.len() <= MAX_OCCURRENCE_LABEL_LEN
-            && occurrence.bytes().all(|byte| (0x21..=0x7E).contains(&byte));
-        if !fits {
-            return Err(OperationError::new(
-                ErrorKind::Permanent,
-                "effect occurrence label must be at most 512 bytes of visible ASCII",
-            ));
-        }
-        Ok(self.occurrence.get_or_init(|| occurrence))
+    /// The resource, kind (operation or session), name and version are not
+    /// in the label: they are bound by the effect's contract, so a changed
+    /// effect under a recorded occurrence — including effects of different
+    /// resources or kinds reordered — is a mismatch rather than a fresh
+    /// effect.
+    fn assign_occurrence(&self) -> &str {
+        self.occurrence.get_or_init(|| {
+            let ordinal = self.owner.next_ordinal();
+            format!("unit/v1/#{ordinal:06}")
+        })
     }
 
     /// The occurrence label the owner records the effect under; empty
@@ -520,10 +504,7 @@ pub(super) async fn prepare<T>(
     // reach their owner — never at submit: a submission dropped before its
     // first poll consumes no ordinal, so a branch that builds and drops one
     // cannot shift the effects after it onto unrecorded positions.
-    let occurrence = match effect.assign_occurrence() {
-        Ok(occurrence) => occurrence,
-        Err(error) => return Prepared::Refused(error, SentState::NotSent),
-    };
+    let occurrence = effect.assign_occurrence();
     let declaration = &effect.declaration;
     let intent = JournalIntent {
         resource_key: &effect.resource_key,

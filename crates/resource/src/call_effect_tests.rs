@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{ResourceKey, Scope};
+use nebula_core::Scope;
 use nebula_credential::CredentialAvailability;
 use nebula_metrics::MetricsRegistry;
 use serde::{Deserialize, Serialize};
@@ -70,9 +70,9 @@ enum Phase {
     Unknown,
 }
 
-/// Operation, version, canonical request and key part: what a resumed
-/// effect must present again.
-type Fingerprint = (String, u32, Vec<u8>, Option<String>);
+/// Resource, unit kind, operation, version, canonical request and key part:
+/// what a resumed effect must present again (the contract the engine binds).
+type Fingerprint = (String, UnitKind, String, u32, Vec<u8>, Option<String>);
 
 #[derive(Debug)]
 struct FakeSlot {
@@ -107,7 +107,8 @@ struct SeenIntent {
 struct FakeState {
     /// The budget every grant carries, when set.
     grant_budget: Option<Duration>,
-    ordinals: HashMap<(ResourceKey, UnitKind), u32>,
+    /// The next position of the owner's one sequence.
+    next_ordinal: u32,
     slots: HashMap<String, FakeSlot>,
     next_id: u8,
     log: Vec<Step>,
@@ -163,7 +164,7 @@ impl FakeOwner {
     /// Restarts the ordinals, as the owner of a resumed execution does: its
     /// effects meet the slots the earlier run recorded.
     fn resume(&self) {
-        self.state().ordinals.clear();
+        self.state().next_ordinal = 0;
     }
 
     fn fail_next_prepare(&self, refusal: JournalRefusal) {
@@ -187,8 +188,25 @@ impl FakeOwner {
     }
 
     /// Records `phase` under `occurrence` as a finished earlier run of
-    /// `operation` v1 with `request` did.
+    /// `operation` v1 with `request` on the fixture row did.
     fn seed(&self, occurrence: &str, operation: &str, request: &[u8], phase: Phase) {
+        self.seed_unit(
+            occurrence,
+            (
+                StrictPooled::key().to_string(),
+                UnitKind::Operation,
+                operation.to_owned(),
+                1,
+                request.to_vec(),
+                None,
+            ),
+            phase,
+        );
+    }
+
+    /// Records `phase` under `occurrence` for an earlier run's effect of
+    /// `fingerprint`.
+    fn seed_unit(&self, occurrence: &str, fingerprint: Fingerprint, phase: Phase) {
         let mut state = self.state();
         state.next_id += 1;
         let id = state.next_id;
@@ -197,7 +215,7 @@ impl FakeOwner {
             FakeSlot {
                 id: [id; 16],
                 key: IdempotencyKey::new(&format!("key-{id}")).expect("key"),
-                fingerprint: (operation.to_owned(), 1, request.to_vec(), None),
+                fingerprint,
                 recovery: Recovery::Opaque,
                 max_invocations: 1,
                 invocations: 1,
@@ -218,11 +236,10 @@ impl FakeOwner {
 
 #[async_trait::async_trait]
 impl EffectJournal for FakeOwner {
-    fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind) -> u32 {
+    fn next_ordinal(&self) -> u32 {
         let mut state = self.state();
-        let ordinal = state.ordinals.entry((key.clone(), kind)).or_insert(0);
-        let next = *ordinal;
-        *ordinal += 1;
+        let next = state.next_ordinal;
+        state.next_ordinal += 1;
         next
     }
 
@@ -250,6 +267,8 @@ impl EffectJournal for FakeOwner {
             config_fingerprint: intent.config_fingerprint,
         });
         let fingerprint = (
+            intent.resource_key.to_string(),
+            intent.kind,
             intent.operation.to_owned(),
             intent.version,
             intent.canonical_request.to_vec(),
@@ -925,16 +944,15 @@ impl Fixture {
     }
 }
 
-/// The occurrence label of the `ordinal`th unit of `kind` on the fixture
-/// row, whatever its operation.
-fn occurrence(kind: UnitKind, ordinal: u32) -> String {
-    format!("unit/v1/{}/{kind}/#{ordinal:06}", StrictPooled::key())
+/// The occurrence label of the owner's `ordinal`th effect unit, whatever
+/// its resource, kind or operation.
+fn occurrence(ordinal: u32) -> String {
+    format!("unit/v1/#{ordinal:06}")
 }
 
-/// The occurrence label of the `ordinal`th operation unit, such as a
-/// [`Pay`].
+/// The occurrence label of the `ordinal`th effect unit, such as a [`Pay`].
 fn pay(ordinal: u32) -> String {
-    occurrence(UnitKind::Operation, ordinal)
+    occurrence(ordinal)
 }
 
 fn assert_unsent(error: &OperationError, kind: &ErrorKind) {
@@ -1131,20 +1149,20 @@ async fn a_reload_after_submit_refuses_the_grant_and_sends_nothing() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn ordinals_count_per_resource_and_kind_in_submit_order() {
+async fn ordinals_are_one_sequence_in_prepare_order() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
     let row = fixture.owned();
 
-    // Ordinals are taken at submit, in program order, and are positional:
-    // different operations — and versions — on one row share one sequence.
+    // Ordinals are taken when a unit starts preparing and are positional:
+    // operations, versions and sessions share the owner's one sequence.
     let first = row.submit(Pay::<true>::new(&calls, vec![Reply::Ok(1)]));
     let second = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]));
     let refund = row.submit(Refund::new(&calls));
     let v2 = row.submit(PayV2 {
         request: "pay:42".to_owned(),
     });
-    // A session named like an operation lives in its own namespace.
+    // A session takes the next position too.
     let session = row.session(
         SessionSpec::write(PAY, &"pay:42").cost(Cost::FREE),
         |tx, _cx| {
@@ -1172,7 +1190,7 @@ async fn ordinals_count_per_resource_and_kind_in_submit_order() {
         (pay(1), PAY.to_owned(), 1),
         (pay(2), REFUND.to_owned(), 1),
         (pay(3), PAY.to_owned(), 2),
-        (occurrence(UnitKind::Session, 0), PAY.to_owned(), 1),
+        (occurrence(4), PAY.to_owned(), 1),
     ];
     expected.sort();
     assert_eq!(seen, expected);
@@ -1262,6 +1280,81 @@ async fn units_prepared_in_another_order_fail_safe() {
     let second = row.submit(pay_of(&calls, "pay:same"));
     assert_eq!(second.await.expect("replayed"), 10);
     assert_eq!(first.await.expect("replayed"), 11);
+    assert_eq!(calls.made(), 0, "nothing sent");
+}
+
+#[tokio::test(start_paused = true)]
+async fn effects_of_other_kinds_or_resources_reordered_fail_safe() {
+    // An earlier run settled an operation first; the resumed path opens a
+    // session first. One node-wide sequence: the session meets the
+    // operation's slot — a mismatch, its body never runs.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    fixture.owner.seed(
+        &occurrence(0),
+        PAY,
+        &pay_request("pay:A"),
+        Phase::Resolved(RecordedOutcome::Succeeded(b"1".to_vec())),
+    );
+    fixture.owner.resume();
+    let opened = Arc::new(AtomicBool::new(false));
+    let body_opened = Arc::clone(&opened);
+    let refused = row
+        .session(
+            SessionSpec::write(PAY, &"pay:A").cost(Cost::FREE),
+            move |tx, _cx| {
+                body_opened.store(true, Ordering::SeqCst);
+                Box::pin(async move {
+                    tx.pending += 1;
+                    Ok(0_u64)
+                })
+            },
+        )
+        .await
+        .expect_err("a session where an operation was recorded");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(refused.detail(), "effect occurrence mismatch");
+    assert!(!opened.load(Ordering::SeqCst), "no session opened");
+
+    // An earlier run's first effect was on another resource; the resumed
+    // path reaches this row first: a mismatch, nothing sent.
+    let fixture = Fixture::new(None);
+    let row = fixture.owned();
+    fixture.owner.seed_unit(
+        &occurrence(0),
+        (
+            "billing.other".to_owned(),
+            UnitKind::Operation,
+            PAY.to_owned(),
+            1,
+            pay_request("pay:A"),
+            None,
+        ),
+        Phase::Resolved(RecordedOutcome::Succeeded(b"1".to_vec())),
+    );
+    fixture.owner.resume();
+    let refused = row
+        .submit(pay_of(&calls, "pay:A"))
+        .await
+        .expect_err("an effect recorded for another resource");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(refused.detail(), "effect occurrence mismatch");
+
+    // The same order replays.
+    let fixture = Fixture::new(None);
+    let row = fixture.owned();
+    fixture.owner.seed(
+        &occurrence(0),
+        PAY,
+        &pay_request("pay:A"),
+        Phase::Resolved(RecordedOutcome::Succeeded(b"1".to_vec())),
+    );
+    fixture.owner.resume();
+    assert_eq!(
+        row.submit(pay_of(&calls, "pay:A")).await.expect("replayed"),
+        1
+    );
     assert_eq!(calls.made(), 0, "nothing sent");
 }
 
@@ -2376,7 +2469,7 @@ async fn session_outcomes_are_recorded_by_how_the_session_closed() {
     assert_eq!(committed.expect("committed"), 11);
     assert_eq!(last(&fixture), Some(Step::Settle("applied")));
     let intent = &fixture.owner.intents()[0];
-    assert_eq!(intent.occurrence, occurrence(UnitKind::Session, 0));
+    assert_eq!(intent.occurrence, occurrence(0));
     assert_eq!(intent.operation, SESSION);
     assert_eq!(intent.kind, UnitKind::Session);
     assert_eq!(intent.canonical_request, br#""committed""#);
@@ -2453,7 +2546,7 @@ async fn sessions_route_by_their_spec() {
     .await
     .expect("an idempotent session");
     let intent = &fixture.owner.intents()[0];
-    assert_eq!(intent.occurrence, occurrence(UnitKind::Session, 0));
+    assert_eq!(intent.occurrence, occurrence(0));
     assert_eq!(intent.operation, "billing.transfer");
     assert_eq!(intent.version, 3);
     assert_eq!(

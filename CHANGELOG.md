@@ -116,8 +116,8 @@ changes are expected between minor releases — call them out here.
   - The journal seam: `EffectRecovery` → `call::journal::Recovery`;
     `JournalIntent` carries `kind` (`UnitKind`), `operation`, `version`,
     `record_output` and a `&str` key part instead of the contract, recovery
-    declaration and `Recorded`; `EffectJournal::next_ordinal(key, kind)`;
-    occurrences are positional, `unit/v1/{resource}/{op|session}/#{n:06}`
+    declaration and `Recorded`; `EffectJournal::next_ordinal()`;
+    occurrences are one node-wide positional sequence, `unit/v1/#{n:06}`
     (see "Changed"), with the key-sorted JSON of the operation as canonical request. An output
     over 1 MiB is recorded digest-only.
   - `OperationCx::idempotency_key()` (and the new
@@ -1455,9 +1455,12 @@ let admitted = recorded.readmit_against(fresh)?;
   credential slot identity and the row's configuration fingerprint
   (`JournalIntent::config_fingerprint`, new) — and `RECORD_OUTPUT`; a reload
   between a unit's submit and its grant refuses the attempt unsent.
-  Occurrences are positional, `unit/v1/{resource}/{op|session}/#{n:06}`
-  counted per resource and unit kind (`EffectJournal::next_ordinal(key,
-  kind)` drops its `name` parameter) in the order units start preparing:
+  Occurrences are positional, `unit/v1/#{n:06}`, one sequence for all of
+  a node attempt's effect units — every resource, operations and sessions
+  (`EffectJournal::next_ordinal()` takes no arguments; the resource key and
+  unit kind join the operation in the contract identity, so effects of
+  different resources or kinds reordered also fail as a mismatch) — in
+  the order units start preparing:
   the ordinal is taken by a unit's first poll, not at submit, so a
   submission dropped unpolled takes no position and cannot shift later
   effects onto unrecorded ones. Units prepared in another order, or an

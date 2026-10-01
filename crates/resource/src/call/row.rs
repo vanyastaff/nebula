@@ -212,9 +212,10 @@ impl<R: Provider + PinSlots> ResourceHandle<R> {
     ///
     /// On a journaled row an effect's first poll asks the owner to prepare
     /// it under its positional occurrence label
-    /// (`unit/v1/{resource_key}/op/#{ordinal:06}`, the ordinal counting the
-    /// operation units on the resource in the order they start preparing;
-    /// a submission dropped unpolled takes none), from the operation's
+    /// (`unit/v1/#{ordinal:06}`, the ordinal counting all the owner's effect
+    /// units — every resource, operations and sessions — in the order they
+    /// start preparing; a submission dropped unpolled takes none), from the
+    /// row's key and the operation's
     /// `KEY`, `VERSION`, canonical request (its JSON with sorted keys) and
     /// [`Operation::idempotency_key`], before anything is
     /// booked, read or checked out:
@@ -285,8 +286,8 @@ where
     /// A session routes as [`submit`](Self::submit) does, by `spec`'s
     /// effect and the row's authority. On a journaled row an `Idempotent`
     /// or `Write` session is prepared, granted and recorded by the row's
-    /// owner under `unit/v1/{resource_key}/session/#{ordinal:06}` (positional
-    /// among the row's sessions) from `spec`'s name, version, canonical
+    /// owner under `unit/v1/#{ordinal:06}` (positional among all the owner's
+    /// effect units) from the row's key and `spec`'s name, version, canonical
     /// request and key part; its output is recorded
     /// and replayed without opening a session. How it closed is recorded
     /// as:

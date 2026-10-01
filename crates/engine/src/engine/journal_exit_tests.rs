@@ -159,7 +159,7 @@ impl JournaledNode {
                     scope: &self.scope,
                     execution_id: &execution,
                     node_key: "charge",
-                    occurrence: "unit/v1/test.payments/op/#000000",
+                    occurrence: "unit/v1/#000000",
                     attempt_generation: AttemptGeneration::new(1),
                     fingerprint: RequestFingerprint::new(1, [2; 32]),
                     destination: DestinationCapability::Opaque,

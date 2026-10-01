@@ -13,8 +13,9 @@
 //!    ([`track`](EffectJournal::track)); a
 //!    [closed](EffectJournal::is_closed) owner refuses it. A submission is
 //!    lazy: one dropped before its first poll never reaches the owner.
-//! 2. **Prepare** — the first poll takes the unit's positional ordinal per
-//!    resource and unit kind ([`next_ordinal`](EffectJournal::next_ordinal))
+//! 2. **Prepare** — the first poll takes the unit's positional ordinal in
+//!    the owner's one sequence for all its effect units, whatever their
+//!    resource or kind ([`next_ordinal`](EffectJournal::next_ordinal)),
 //!    and hands the owner a [`JournalIntent`]; the returned
 //!    [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome, refuses an
 //!    unknown one, or lets the unit run.
@@ -44,20 +45,23 @@ use crate::{dedup::SlotIdentity, error::ErrorKind};
 /// step. A refusal ([`JournalRefusal`]) never means a provider call happened.
 #[async_trait::async_trait]
 pub trait EffectJournal: Send + Sync + fmt::Debug {
-    /// The next ordinal of a unit of `kind` on `key`, in the order units
-    /// start preparing: positional, whatever the unit's operation or session
-    /// name and version. Synchronous: it is taken by the unit's first poll,
-    /// right before [`prepare`](Self::prepare) — never at submit, so a
-    /// submission dropped unpolled takes no position.
+    /// The next ordinal in the owner's one sequence for all its effect
+    /// units, in the order units start preparing: positional, whatever the
+    /// unit's resource, kind (operation or session), name and version.
+    /// Synchronous: it is taken by the unit's first poll, right before
+    /// [`prepare`](Self::prepare) — never at submit, so a submission dropped
+    /// unpolled takes no position.
     ///
-    /// The name and version stay out of the occurrence on purpose: they are
-    /// part of the effect's contract, so an operation whose `KEY` or
-    /// `VERSION` changed under a recorded occurrence is a mismatch the owner
-    /// refuses with nothing sent, never a fresh occurrence that sends the
-    /// effect again. Units polled in another order than an earlier run
-    /// polled them meet each other's recorded positions the same way: a
-    /// different intent is a mismatch, an identical one is interchangeable.
-    fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind) -> u32;
+    /// Everything but the position stays out of the occurrence on purpose:
+    /// the resource, kind, name and version are part of the effect's
+    /// contract, so a changed effect under a recorded occurrence — another
+    /// `KEY` or `VERSION`, another resource, a session where an operation
+    /// was — is a mismatch the owner refuses with nothing sent, never a
+    /// fresh occurrence that sends the effect again. Units polled in another
+    /// order than an earlier run polled them meet each other's recorded
+    /// positions the same way, across resources and kinds: a different
+    /// intent is a mismatch, an identical one is interchangeable.
+    fn next_ordinal(&self) -> u32;
 
     /// Durably prepares the effect `intent` describes (recovering an
     /// unacknowledged earlier prepare) and returns its slot.
@@ -207,10 +211,10 @@ pub struct JournalIntent<'a> {
     /// Attempts the unit may be granted
     /// ([`Operation::max_attempts`](super::Operation::max_attempts)).
     pub max_invocations: NonZeroU32,
-    /// The occurrence label, `unit/v1/{resource_key}/{kind}/#{ordinal:06}`:
-    /// visible ASCII, at most 512 bytes. Positional — `operation` and
-    /// `version` are not part of it, so a changed operation under a recorded
-    /// occurrence is a mismatch.
+    /// The occurrence label, `unit/v1/#{ordinal:06}`: visible ASCII, at most
+    /// 512 bytes. Positional in the owner's one sequence — the resource,
+    /// `kind`, `operation` and `version` are not part of it, so a changed
+    /// effect under a recorded occurrence is a mismatch.
     pub occurrence: &'a str,
     /// The canonical request (canonicalization version 1: key-sorted
     /// compact JSON), 1 byte to 1 MiB; digest it, never store it.

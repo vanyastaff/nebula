@@ -152,12 +152,13 @@ configuration, and process lifecycle.
   nothing left is withheld. A slot's contract identity binds the destination (resource
   key, credential slot identity, configuration fingerprint) and `RECORD_OUTPUT`, so a
   reload to another endpoint or a changed recording policy is a mismatch. Occurrences are the
-  resource runtime's positional `unit/v1/{resource}/{op|session}/#{ordinal:06}`, with
-  ordinals per resource and unit kind restarting per node attempt, taken when a unit
-  starts preparing (its first poll — a submission dropped unpolled takes none); the
-  operation (or session) name and version belong to the contract identity, so a redeploy
-  that changes the operation at a recorded position is a mismatch with nothing sent, not
-  a fresh slot. A run that reaches its effects in another order or adds/removes one
+  resource runtime's positional `unit/v1/#{ordinal:06}`, one sequence for all the node
+  attempt's effect units (every resource, operations and sessions) restarting per node
+  attempt, taken when a unit starts preparing (its first poll — a submission dropped
+  unpolled takes none); the resource, unit kind, operation (or session) name and version
+  belong to the contract identity, so a redeploy that changes the effect at a recorded
+  position is a mismatch with nothing sent, not a fresh slot. A run that reaches its
+  effects in another order (across resources, or a session before an operation) or adds/removes one
   before recorded ones meets other intents' slots: a mismatch (identical intents are
   interchangeable). Before its first prepare the journal reads the node's earlier
   occurrences once and refuses a fresh slot at a position an earlier attempt left empty

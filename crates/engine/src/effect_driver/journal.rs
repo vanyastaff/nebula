@@ -30,22 +30,24 @@
 //! **Positions**).
 //!
 //! **Occurrences.** A unit's occurrence is the label the resource runtime
-//! builds, `unit/v1/{resource}/{op|session}/#{ordinal:06}`: positional, with
-//! ordinals per `(resource, kind)` restarting at zero in every journal, in
-//! the order units start preparing (a submission dropped unpolled takes
-//! none). The operation (or session) name and version are not part
-//! of it but of the slot's contract identity, so a redeploy that changes
-//! the operation at a recorded position is an occurrence mismatch with
-//! nothing sent — never a fresh slot that sends the effect again under
-//! another provider key.
+//! builds, `unit/v1/#{ordinal:06}`: positional, with one sequence for all
+//! the node attempt's effect units — every resource, operations and
+//! sessions — restarting at zero in every journal, in the order units
+//! start preparing (a submission dropped unpolled takes none). The
+//! resource, unit kind, operation (or session) name and version are not
+//! part of it but of the slot's contract identity, so a redeploy that
+//! changes the effect at a recorded position is an occurrence mismatch
+//! with nothing sent — never a fresh slot that sends the effect again
+//! under another provider key.
 //!
 //! **Positions.** A run whose program takes another path than an earlier
 //! attempt meets that attempt's slots at other positions, and every such
 //! case fails safe:
 //!
-//! - units prepared in another order (concurrent units polled differently)
-//!   meet each other's slots: a different intent is a mismatch, an
-//!   identical one is interchangeable;
+//! - units prepared in another order (concurrent units polled differently,
+//!   effects of different resources reordered, a session before an
+//!   operation) meet each other's slots: a different intent is a mismatch,
+//!   an identical one is interchangeable;
 //! - an effect added or removed before recorded ones moves the later ones
 //!   onto recorded positions of other intents: a mismatch;
 //! - a position an earlier attempt left empty below one it recorded (a
@@ -114,7 +116,6 @@ use std::{
 };
 
 use base64::Engine as _;
-use nebula_core::ResourceKey;
 use nebula_metrics::{
     MetricsRegistry,
     naming::{
@@ -130,7 +131,6 @@ use nebula_resource::{
         journal::{
             CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight,
             JournalIntent, JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase,
-            UnitKind,
         },
     },
 };
@@ -202,8 +202,9 @@ struct JournalInner {
 
 #[derive(Default)]
 struct JournalState {
-    /// The next positional ordinal per `(resource, kind)`.
-    ordinals: HashMap<(ResourceKey, UnitKind), u32>,
+    /// The next position of the node attempt's one sequence of effect
+    /// units.
+    next_ordinal: u32,
     /// The slots this journal prepared. A slot is used by one unit at a
     /// time; its async lock serializes that unit's ledger steps with the
     /// journal's conclusion. The sync lock around the map is never held
@@ -221,7 +222,7 @@ struct PriorOccurrences {
     /// Every recorded label.
     labels: HashSet<String>,
     /// The highest recorded ordinal per position namespace — the label
-    /// before its `/#{ordinal}` (resource and unit kind).
+    /// before its `/#{ordinal}` (`unit/v1` for a node's effect units).
     highest: HashMap<String, u32>,
 }
 
@@ -255,7 +256,7 @@ impl PriorOccurrences {
 }
 
 /// The position namespace and ordinal of a positional occurrence label
-/// (`…/{kind}/#{ordinal}`).
+/// (`{namespace}/#{ordinal}`).
 fn position(occurrence: &str) -> Option<(&str, u32)> {
     let (namespace, ordinal) = occurrence.rsplit_once("/#")?;
     Some((namespace, ordinal.parse().ok()?))
@@ -798,11 +799,10 @@ impl fmt::Debug for NodeEffectJournal {
 
 #[async_trait::async_trait]
 impl EffectJournal for NodeEffectJournal {
-    fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind) -> u32 {
+    fn next_ordinal(&self) -> u32 {
         let mut state = self.state();
-        let next = state.ordinals.entry((key.clone(), kind)).or_insert(0);
-        let ordinal = *next;
-        *next = next.saturating_add(1);
+        let ordinal = state.next_ordinal;
+        state.next_ordinal = ordinal.saturating_add(1);
         ordinal
     }
 
