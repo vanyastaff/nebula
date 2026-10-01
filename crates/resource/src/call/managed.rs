@@ -1013,6 +1013,11 @@ where
     let permit = match permit {
         Ok(permit) => permit,
         Err(refusal) => {
+            // Settled before its first poll reached the owner: nothing was
+            // prepared or sent, and the unit's ticket goes now.
+            if let Some(owned) = shared.effect() {
+                owned.conclude();
+            }
             let result = Err(refusal.settled(SentState::NotSent, effect, host.key()));
             host.record_settled(&span, &result, SentState::NotSent, 0);
             return result;
@@ -1058,12 +1063,19 @@ where
     );
     match runtime.await {
         Ok(outcome) => outcome,
-        // Only a runtime shutdown aborts the task; the unit never settled.
-        Err(_aborted) => Err(OperationError::new(
-            ErrorKind::Cancelled,
-            "the runtime stopped before the unit settled",
-        )
-        .settled(shared.fold(true), effect, &key)),
+        // Only a runtime shutdown aborts the task; the unit never settled,
+        // but its task is gone and can no longer reach the provider: a call
+        // it was granted stays outstanding for its owner to explain.
+        Err(_aborted) => {
+            if let Some(owned) = shared.effect() {
+                owned.conclude();
+            }
+            Err(OperationError::new(
+                ErrorKind::Cancelled,
+                "the runtime stopped before the unit settled",
+            )
+            .settled(shared.fold(true), effect, &key))
+        },
     }
 }
 

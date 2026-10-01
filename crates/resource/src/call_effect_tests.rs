@@ -1254,6 +1254,26 @@ async fn a_position_is_finished_when_its_unit_settles_even_if_its_handle_is_kept
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_unit_refused_before_its_first_poll_releases_its_ticket() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    // Cancelled before its first poll: refused before reaching the owner.
+    let mut cancelled = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
+    cancelled.cancel();
+    let refused = (&mut cancelled).await.expect_err("cancelled");
+    assert_unsent(&refused, &ErrorKind::Cancelled);
+    // The handle is kept: the settled unit holds no in-flight ticket.
+    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
+    assert!(
+        fixture.owner.intents().is_empty(),
+        "never reached the owner"
+    );
+    assert_eq!(calls.made(), 0);
+    drop(cancelled);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_position_is_finished_only_once_its_unit_is_gone() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
