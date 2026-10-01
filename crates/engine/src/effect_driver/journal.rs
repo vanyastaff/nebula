@@ -2270,12 +2270,19 @@ impl EffectJournal for NodeEffectJournal {
             let capped = {
                 let mut state = self.state();
                 let capped = state.reserved >= cap;
-                if !capped {
+                if capped {
+                    // A definitive refusal, like the concurrency limit: the
+                    // position counts as met, so a later submission neither
+                    // waits on it nor reads it as abandoned and defers in
+                    // place of this terminal cap verdict.
+                    state.positions.met.insert(intent.occurrence.to_owned());
+                } else {
                     state.reserved += 1;
                 }
                 capped
             };
             if capped {
+                self.inner.claims_settled.notify_waiters();
                 return Err(self.refuse(STEP, EffectExecutionError::JournalSlotCapExceeded { cap }));
             }
         }

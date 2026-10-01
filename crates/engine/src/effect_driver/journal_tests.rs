@@ -1289,6 +1289,17 @@ async fn the_slot_cap_counts_fresh_slots_and_replays_any_number_recorded() {
         refused.detail(),
         "effect journal slot cap reached; unit refused"
     );
+    // The action catches the refusal and submits again: the refused
+    // position is met, not abandoned, so the next one is refused by the cap
+    // too instead of deferring in place of the terminal cap verdict.
+    let again = handle
+        .submit(Charge::<false> { order: 6 })
+        .await
+        .expect_err("still over the cap");
+    assert_eq!(
+        again.detail(),
+        "effect journal slot cap reached; unit refused"
+    );
     assert_eq!(harness.desk.keys().len(), 4, "the replays called nothing");
     assert_eq!(
         retry.conclude(DRAIN).await,
