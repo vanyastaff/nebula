@@ -406,6 +406,8 @@ struct CountingLedger {
     /// Every prepare yields to the scheduler first, so units joined in one
     /// task interleave.
     yield_prepares: AtomicBool,
+    /// The next prepare commits and never answers.
+    lose_next_prepare_answer: AtomicBool,
     /// Notified when an outcome write hangs.
     hung: tokio::sync::Notify,
 }
@@ -461,7 +463,12 @@ impl OperationLedger for CountingLedger {
                 tokio::task::yield_now().await;
             }
         }
-        self.inner.prepare(binding, fencing).await
+        let prepared = self.inner.prepare(binding, fencing).await;
+        if self.lose_next_prepare_answer.swap(false, Ordering::SeqCst) {
+            // Committed; the answer never comes back.
+            return std::future::pending().await;
+        }
+        prepared
     }
 
     async fn read_exact(
@@ -541,6 +548,7 @@ impl Harness {
             hang_outcomes: AtomicBool::new(false),
             hang_reads: AtomicBool::new(false),
             yield_prepares: AtomicBool::new(false),
+            lose_next_prepare_answer: AtomicBool::new(false),
             hung: tokio::sync::Notify::new(),
         });
         let scope = Scope::new("workspace-a", "org-a");
@@ -737,6 +745,8 @@ enum Reply {
     Hang,
     /// Applied, and the call returns once the desk is released.
     Held,
+    /// Throttled: the provider applied nothing.
+    Throttled,
 }
 
 /// The fake gateway: every call it received, with the key it carried.
@@ -782,6 +792,7 @@ impl Desk {
                 self.release.notified().await;
                 Ok(receipt)
             },
+            Reply::Throttled => Err(OperationError::throttled(None)),
         }
     }
 }
@@ -1305,6 +1316,122 @@ async fn a_barrier_read_that_never_answers_defers_within_the_budget() {
     let started = tokio::time::Instant::now();
     assert!(spent.end_iteration(Duration::ZERO, true).await.is_err());
     assert_eq!(started.elapsed(), FINAL_READ_FLOOR);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_submission_after_a_cancelled_iteration_is_refused_and_not_waited_for() {
+    let harness = Harness::new().await;
+    let journal = harness.stateful_journal(1);
+    journal.begin_iteration(0).expect("it0");
+    // The node is cancelled mid-iteration; a detached task submits later.
+    journal.cancel_iteration();
+    let refused = harness
+        .handle(&journal)
+        .submit(Charge::<false> { order: 19 })
+        .await
+        .expect_err("the iteration was cancelled");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(refused.detail(), "effect owner closed; unit refused");
+    // Nothing is in flight: the conclusion does not wait, and the
+    // cancellation stays the node's own outcome.
+    let started = tokio::time::Instant::now();
+    assert_eq!(journal.conclude(Duration::from_mins(1)).await, Ok(()));
+    assert!(started.elapsed() < Duration::from_mins(1));
+    assert_eq!(harness.desk.keys().len(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_prepare_that_never_answered_blocks_every_fresh_slot_above_it() {
+    let harness = Harness::new().await;
+    // The lower effect's prepare commits; its answer is lost and the unit
+    // runs past its deadline.
+    harness
+        .ledger
+        .lose_next_prepare_answer
+        .store(true, Ordering::SeqCst);
+    let first = harness.journal(1);
+    let lower = harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 20 })
+        .await
+        .expect_err("no answer before the deadline");
+    assert_eq!(lower.sent(), SentState::NotSent, "{lower}");
+    assert_eq!(harness.slots().await.len(), 1, "yet the row was written");
+    // The higher fresh effect is not sent in this attempt: a recovery would
+    // otherwise run the lower one after it.
+    let higher = harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 21 })
+        .await
+        .expect_err("above an uncertain position");
+    assert_eq!(higher.sent(), SentState::NotSent, "{higher}");
+    assert_eq!(harness.desk.keys().len(), 0, "nothing sent");
+    let verdict = first.conclude(DRAIN).await;
+    assert_eq!(
+        verdict,
+        Err(EffectExecutionError::Ledger(
+            OperationLedgerError::AcknowledgementUnknown
+        ))
+    );
+    assert!(verdict.is_err_and(EffectExecutionError::is_deferred));
+
+    // The next attempt replays in order: the lower effect first.
+    let recovery = harness.journal(2);
+    let handle = harness.handle(&recovery);
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 20 })
+            .await
+            .expect("lower"),
+        1
+    );
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 21 })
+            .await
+            .expect("higher"),
+        2
+    );
+    assert_eq!(recovery.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 2, "each sent once, in order");
+}
+
+#[tokio::test]
+async fn a_recorded_effect_below_an_applied_one_is_never_run_after_it() {
+    let harness = Harness::new().await;
+    // The lower charge is throttled (nothing applied, its slot changed
+    // nothing); the action goes on and the higher one applies.
+    harness.desk.script(&[Reply::Throttled, Reply::Applied]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    handle
+        .submit(Charge::<false> { order: 22 })
+        .await
+        .expect_err("throttled");
+    handle
+        .submit(Charge::<false> { order: 23 })
+        .await
+        .expect("applied");
+    assert_eq!(
+        first.conclude_node(DRAIN, false).await,
+        Ok(Concluded::Clean)
+    );
+
+    // A recovery reaching the lower charge again would apply it after the
+    // higher one: refused, nothing sent.
+    let recovery = harness.journal(2);
+    let refused = harness
+        .handle(&recovery)
+        .submit(Charge::<false> { order: 22 })
+        .await
+        .expect_err("out of order");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(refused.detail(), "effect occurrence mismatch");
+    assert_eq!(harness.desk.keys().len(), 2, "no further call");
+    assert_eq!(
+        recovery.conclude(DRAIN).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
+    );
 }
 
 #[tokio::test]

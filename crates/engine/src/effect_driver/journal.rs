@@ -113,6 +113,30 @@
 //! diverges, and the divergence halts the node as an occurrence mismatch
 //! before any recorded effect is sent again.
 //!
+//! **Order.** Within a family, an effect at a lower position is never
+//! applied after one at a higher position:
+//!
+//! - in one attempt, a unit whose ledger prepare began and never answered
+//!   (cancelled or past its deadline mid-call, or the acknowledgement lost)
+//!   leaves its position *uncertain*: its row may exist. No fresh slot above
+//!   an uncertain position is prepared in that attempt — the prepare is
+//!   refused as a deferring
+//!   [`AcknowledgementUnknown`](OperationLedgerError::AcknowledgementUnknown),
+//!   nothing is written or sent, and the node defers, so the next attempt
+//!   reads what was written and replays in order;
+//! - across attempts, a recorded slot that changed nothing yet (only
+//!   prepared, or every call explained not crossed) is refused as an
+//!   occurrence mismatch, with nothing sent, when an earlier attempt
+//!   recorded a slot that may have changed the provider (an outcome, or a
+//!   call that crossed) at a higher position of its family. This also
+//!   halts a recovery of concurrent units that applied out of order: the
+//!   journal cannot tell their order apart from the program's.
+//!
+//! **Cancellation.** A node cancelled mid-iteration ends the iteration at
+//! once ([`IterationGate::cancel_iteration`]): a later submission (a
+//! detached task's) is refused closed with no failure of its own, so the
+//! conclusion drains only the units already in flight.
+//!
 //! **Admission.** A stateful node's journal admits a submitted unit only
 //! while an iteration is open
 //! ([`EffectJournal::admit`]): admission raises the in-flight count under
@@ -303,6 +327,13 @@ pub(crate) trait IterationGate: Send + Sync {
     /// when a unit outlived the drain limit. The runtime starts no further
     /// iteration.
     async fn end_iteration(&self, succeeded: bool) -> Result<(), EffectExecutionError>;
+
+    /// Ends the open iteration because the node was cancelled while it
+    /// ran: no unit is admitted afterwards (a later submission is refused
+    /// [`Closed`](JournalRefusal::Closed), `Cancelled`, and recorded as no
+    /// failure). Units already in flight are left to the node's conclusion,
+    /// which drains them; nothing is waited for here.
+    fn cancel_iteration(&self);
 }
 
 /// The [`IterationGate`] of a journaled stateful node attempt: its journal,
@@ -322,6 +353,10 @@ impl IterationGate for JournalIterationGate {
         self.journal
             .end_iteration(journal_drain_limit(self.execution_deadline), succeeded)
             .await
+    }
+
+    fn cancel_iteration(&self) {
+        self.journal.cancel_iteration();
     }
 }
 
@@ -478,6 +513,9 @@ struct JournalState {
     /// [`begin_iteration`](NodeEffectJournal::begin_iteration) an iterated
     /// journal admits no unit.
     run_open: bool,
+    /// The node was cancelled mid-iteration: every later submission is
+    /// refused as closed, with no failure of its own.
+    admission_cancelled: bool,
     /// The slots prepared in the open iteration, inspected at its end.
     iteration_slots: Vec<EffectSlotId>,
     /// Fresh slots (at no recorded position) the node attempt started to
@@ -574,18 +612,44 @@ struct PriorOccurrences {
     /// The recorded positions of each family, in `(iteration, ordinal)`
     /// order.
     positions: HashMap<Family, Vec<RecordedPosition>>,
+    /// Recorded labels whose slot changed nothing yet: prepared (perhaps
+    /// by a prepare whose acknowledgement was lost) or with every call
+    /// explained not crossed — no outcome, no call that may have crossed.
+    unsettled: HashSet<String>,
+    /// The highest recorded position per family whose slot may have changed
+    /// the provider: a recorded outcome, or a call that crossed.
+    highest_consequential: HashMap<Family, (u32, u32)>,
 }
 
 impl PriorOccurrences {
+    /// Every label as consequential (a recorded outcome).
+    #[cfg(test)]
     fn new<'a>(labels: impl IntoIterator<Item = &'a str>) -> Self {
+        Self::from_records(labels.into_iter().map(|label| (label, true)))
+    }
+
+    /// The recorded `(label, consequential)` pairs: whether each slot may
+    /// have changed the provider ([`is_consequential`]).
+    fn from_records<'a>(records: impl IntoIterator<Item = (&'a str, bool)>) -> Self {
         let mut prior = Self::default();
-        for label in labels {
+        for (label, consequential) in records {
             if let Some(position) = Position::parse(label) {
                 prior
                     .positions
                     .entry(position.family)
                     .or_default()
                     .push((position.order(), label.to_owned()));
+                if consequential {
+                    let order = position.order();
+                    let highest = prior
+                        .highest_consequential
+                        .entry(position.family)
+                        .or_insert(order);
+                    *highest = (*highest).max(order);
+                }
+            }
+            if !consequential {
+                prior.unsettled.insert(label.to_owned());
             }
             prior.labels.insert(label.to_owned());
         }
@@ -593,6 +657,21 @@ impl PriorOccurrences {
             positions.sort_unstable();
         }
         prior
+    }
+
+    /// Whether `occurrence` is recorded but changed nothing yet, while an
+    /// earlier attempt applied (or may have applied) an effect at a higher
+    /// position of its family: running it now would apply it after that
+    /// later effect, reversing the program's order.
+    fn reorders_at(&self, occurrence: &str) -> bool {
+        if !self.unsettled.contains(occurrence) {
+            return false;
+        }
+        Position::parse(occurrence).is_some_and(|position| {
+            self.highest_consequential
+                .get(&position.family)
+                .is_some_and(|&highest| highest > position.order())
+        })
     }
 
     /// The highest recorded `(iteration, ordinal)` of `family`.
@@ -657,6 +736,37 @@ struct MetPositions {
     /// in order — this attempt is known to have met: every position before
     /// it was.
     frontier: HashMap<Family, usize>,
+    /// Per family, the lowest position whose ledger prepare began and never
+    /// answered (its unit was cancelled or ran past its deadline mid-call,
+    /// or the ledger lost the acknowledgement): its row may exist. No fresh
+    /// slot above it is prepared in this attempt.
+    uncertain: HashMap<Family, (u32, u32)>,
+}
+
+/// Marks a position uncertain when its ledger prepare is dropped before it
+/// answered, or answered without saying whether the row was written.
+struct PrepareInFlight<'a> {
+    journal: &'a NodeEffectJournal,
+    occurrence: &'a str,
+    answered: bool,
+}
+
+impl Drop for PrepareInFlight<'_> {
+    fn drop(&mut self) {
+        if self.answered {
+            return;
+        }
+        if let Some(position) = Position::parse(self.occurrence) {
+            let order = position.order();
+            let mut state = self.journal.state();
+            let lowest = state
+                .positions
+                .uncertain
+                .entry(position.family)
+                .or_insert(order);
+            *lowest = (*lowest).min(order);
+        }
+    }
 }
 
 /// Where the first recorded position below a candidate that this attempt
@@ -758,8 +868,10 @@ impl NodeEffectJournal {
                         authority.node_key.as_str(),
                     )
                     .await?;
-                Ok::<_, EffectExecutionError>(PriorOccurrences::new(
-                    slots.iter().map(EffectOccurrenceRecord::occurrence),
+                Ok::<_, EffectExecutionError>(PriorOccurrences::from_records(
+                    slots
+                        .iter()
+                        .map(|slot| (slot.occurrence(), is_consequential(slot.record()))),
                 ))
             })
             .await
@@ -975,6 +1087,28 @@ impl NodeEffectJournal {
         };
         self.note_failure(unknown);
         Err(self.state().failure.unwrap_or(unknown))
+    }
+
+    /// Whether a position of `occurrence`'s family below it was left
+    /// uncertain by a prepare that never answered in this attempt.
+    fn uncertain_below(&self, occurrence: &str) -> bool {
+        Position::parse(occurrence).is_some_and(|position| {
+            self.state()
+                .positions
+                .uncertain
+                .get(&position.family)
+                .is_some_and(|&lowest| lowest < position.order())
+        })
+    }
+
+    /// Ends the open iteration of a cancelled node: no unit is admitted
+    /// afterwards. A later submission (a detached task's) is refused closed
+    /// with no failure of its own — the node is cancelled — and units in
+    /// flight are left for the conclusion to drain.
+    pub(crate) fn cancel_iteration(&self) {
+        let mut state = self.state();
+        state.run_open = false;
+        state.admission_cancelled = true;
     }
 
     /// Checks that this attempt met every effect an earlier attempt recorded
@@ -1610,9 +1744,35 @@ impl EffectJournal for NodeEffectJournal {
             // the other family (the node's action changed kind).
             return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
         }
-        if !prior.labels.contains(intent.occurrence)
-            && let Some(skipped) = self.skipped_below(prior, intent.occurrence).await
-        {
+        if prior.reorders_at(intent.occurrence) {
+            // A recorded effect that changed nothing yet below one an
+            // earlier attempt applied (or may have): running it now would
+            // apply it after that later effect.
+            tracing::warn!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                occurrence = intent.occurrence,
+                "a recorded effect below an applied later one would run out of order; refused"
+            );
+            return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
+        }
+        let fresh = !prior.labels.contains(intent.occurrence);
+        if fresh && self.uncertain_below(intent.occurrence) {
+            // A lower position's prepare never answered: its row may exist,
+            // and a recovery would run that effect after this one. Defer:
+            // the next attempt reads what was written and replays in order.
+            tracing::warn!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                occurrence = intent.occurrence,
+                "a fresh effect above a position whose prepare never answered; deferring"
+            );
+            return Err(self.refuse(
+                STEP,
+                EffectExecutionError::Ledger(OperationLedgerError::AcknowledgementUnknown),
+            ));
+        }
+        if fresh && let Some(skipped) = self.skipped_below(prior, intent.occurrence).await {
             // This attempt passed a recorded effect by (another path, or a
             // unit that gave up before reaching the journal): the fresh
             // effect here may be that one, and its slot would send it again
@@ -1626,7 +1786,7 @@ impl EffectJournal for NodeEffectJournal {
             );
             return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
         }
-        if !prior.labels.contains(intent.occurrence) {
+        if fresh {
             // Only a fresh slot counts against the cap — a recorded one
             // replays however many there are — and the cap is taken before
             // anything durable: a refused prepare writes and sends nothing.
@@ -1654,9 +1814,23 @@ impl EffectJournal for NodeEffectJournal {
             contract: &derived.contract,
             provider_key: Some(derived.provider_key),
         };
-        let slot = LedgerSlot::prepare(self.access(), &binding)
-            .await
-            .map_err(|error| self.refuse(STEP, error))?;
+        // From here until the ledger answers, the row may be written without
+        // this unit learning it: a prepare dropped mid-call (the unit
+        // cancelled or past its deadline) or one that cannot tell whether
+        // it was acknowledged leaves the position uncertain.
+        let mut in_flight = PrepareInFlight {
+            journal: self,
+            occurrence: intent.occurrence,
+            answered: false,
+        };
+        let prepared = LedgerSlot::prepare(self.access(), &binding).await;
+        in_flight.answered = match &prepared {
+            Ok(_) => true,
+            // A definite refusal wrote nothing; a deferring one may have.
+            Err(error) => !error.is_deferred(),
+        };
+        drop(in_flight);
+        let slot = prepared.map_err(|error| self.refuse(STEP, error))?;
         // The position is met: the slot recorded here is this unit's.
         self.state()
             .positions
@@ -1850,7 +2024,7 @@ impl EffectJournal for NodeEffectJournal {
         const STEP: &str = effect_journal_step::SUBMIT;
         let (refusal, failure) = {
             let state = self.state();
-            if self.is_closed() {
+            if self.is_closed() || state.admission_cancelled {
                 (JournalRefusal::Closed, None)
             } else if self.inner.authority.shape == JournalShape::Iterated && !state.run_open {
                 let iteration = state.iteration.unwrap_or(0);

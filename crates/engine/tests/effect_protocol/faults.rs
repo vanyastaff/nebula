@@ -27,6 +27,8 @@ pub(super) enum Fault {
     After,
     AfterReadUnavailable,
     PreparedWithoutPersistence,
+    /// The command commits and its answer never comes back.
+    AnswerLost,
 }
 
 #[derive(Debug, Default)]
@@ -47,6 +49,8 @@ pub(super) struct FaultLedger {
     pub natural_reads: std::sync::atomic::AtomicUsize,
     pub outcome_attempts: parking_lot::Mutex<Vec<nebula_storage_port::dto::FrozenOutcomeEvidence>>,
     pub outcome_gate: Option<Arc<OutcomeGate>>,
+    /// Fired when a command whose answer is lost committed.
+    pub answer_lost: tokio::sync::Notify,
 }
 
 impl FaultLedger {
@@ -60,6 +64,7 @@ impl FaultLedger {
             natural_reads: std::sync::atomic::AtomicUsize::new(0),
             outcome_attempts: parking_lot::Mutex::new(Vec::new()),
             outcome_gate: None,
+            answer_lost: tokio::sync::Notify::new(),
         }
     }
     /// The same fault, fired at the boundary's command after the first
@@ -135,6 +140,10 @@ impl OperationLedger for FaultLedger {
             return Err(OperationLedgerError::AcknowledgementUnknown);
         }
         let outcome = self.inner.prepare(binding, fencing).await?;
+        if fire && matches!(self.fault, Fault::AnswerLost) {
+            self.answer_lost.notify_one();
+            return std::future::pending().await;
+        }
         if fire {
             return Err(OperationLedgerError::AcknowledgementUnknown);
         }

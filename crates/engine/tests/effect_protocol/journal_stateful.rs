@@ -431,6 +431,82 @@ async fn a_replay_that_skips_a_recorded_effect_within_an_iteration_stops(#[case]
     assert_eq!(fixture.slots(execution).await, settled);
 }
 
+// 7c ────────────────────────────────────────────────────────────────────────
+
+/// A lower effect's prepare commits but its answer never comes back, and the
+/// process dies: the higher effect was never sent, and the recovery runs
+/// both in the program's order, each once.
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[tokio::test]
+async fn a_prepare_whose_answer_was_lost_is_recovered_in_order(#[case] backend: Backend) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = stateful(database.ports()).await;
+    let units = [write("lower:1"), write("higher:2")];
+    let execution = fixture.start_iterations(&[&units[..]], json!({})).await;
+    let ledger = Arc::new(FaultLedger::new(
+        fixture.ports.ledger.clone(),
+        Boundary::Prepare,
+        Fault::AnswerLost,
+    ));
+    fixture.ports.stores.operation_ledger = ledger.clone();
+    fixture.crash_at(execution, &ledger.answer_lost).await;
+    assert_eq!(fixture.slots(execution).await.len(), 1, "the row committed");
+    assert_eq!(fixture.gateway.call_count(), 0, "nothing sent");
+
+    fixture.ports = database.reconnect().await;
+    database.expire_abandoned_leases().await;
+    let result = fixture.run(execution).await.unwrap();
+    assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
+    assert_eq!(receipts(&result), json!([1, 2]));
+    let requests: Vec<String> = fixture
+        .gateway
+        .calls
+        .lock()
+        .iter()
+        .map(|call| call.request.clone())
+        .collect();
+    assert_eq!(requests, ["lower:1", "higher:2"], "in order, each once");
+}
+
+/// A lower effect changed nothing (throttled, its error swallowed) while a
+/// higher one applied; the process dies. A recovery reaching the lower one
+/// again would apply it after the higher one: refused, nothing sent.
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[tokio::test]
+async fn a_recovery_never_applies_a_lower_effect_after_a_higher_applied_one(
+    #[case] backend: Backend,
+) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = stateful(database.ports()).await;
+    let units = [write("lower:1"), write("higher:2"), write("next:3")];
+    let execution = fixture
+        .start_iterations(&[&units[0..2], &units[2..3]], json!({ "swallow": true }))
+        .await;
+    *fixture.gateway.iterations.throttle_at.lock() = Some(0);
+    crash_at_iteration(&mut fixture, &mut database, execution, 1).await;
+    let recorded = fixture.slots(execution).await;
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(phase(&recorded[1]), EffectPhase::Resolved);
+    assert_eq!(fixture.gateway.call_count(), 2, "throttled, then applied");
+
+    let result = fixture.run(execution).await.unwrap();
+    assert_node_error(&result, "ENGINE:EFFECT_OCCURRENCE_MISMATCH");
+    assert_eq!(
+        fixture.gateway.call_count(),
+        2,
+        "the lower one never resent"
+    );
+    assert_eq!(fixture.slots(execution).await, recorded);
+}
+
 // 8 ─────────────────────────────────────────────────────────────────────────
 
 #[rstest::rstest]

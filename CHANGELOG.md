@@ -1625,7 +1625,16 @@ let admitted = recorded.readmit_against(fresh)?;
   call as ambiguous and the node fails `ENGINE:EFFECT_OUTCOME_UNKNOWN`
   instead). Units are admitted only while an iteration is open, in one
   transition with the rollover; one submitted between iterations is refused
-  unsent and recorded the same way. A barrier that reads the node's
+  unsent and recorded the same way; a node cancelled mid-iteration ends the
+  iteration at once, so a later detached submission is refused closed and
+  the conclusion does not wait for it. Effects keep their order within a
+  family: a fresh slot above a position whose ledger prepare never answered
+  in the same attempt (cancelled or past its deadline mid-call, or the
+  acknowledgement lost — its row may exist) is refused as a deferring
+  `AcknowledgementUnknown` with nothing sent, and a recorded slot that
+  changed nothing yet is refused as an occurrence mismatch when an earlier
+  attempt recorded an outcome, or a crossed call, at a higher position of
+  its family. A barrier that reads the node's
   occurrences does so within what is left of the drain limit (at least
   5 s) and defers the node when the ledger does not answer. One verdict per
   node attempt still decides the node. Positions

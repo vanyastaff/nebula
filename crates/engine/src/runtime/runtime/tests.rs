@@ -2193,6 +2193,56 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
         }
         Ok(())
     }
+
+    fn cancel_iteration(&self) {
+        let iteration = self.open.load(AtomicOrdering::SeqCst);
+        self.log.lock().unwrap().push(format!("cancel {iteration}"));
+    }
+}
+
+/// A cancellation during an iteration's dispatch ends the iteration at the
+/// barrier — no later submission is admitted — instead of leaving it open.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_iteration_closes_admission_at_the_barrier() {
+    let gate = Arc::new(ScriptedGate::default());
+    let ctx = test_context();
+    let cancel = ctx.cancellation().clone();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<SleepyStateful>::new()
+            .expect("valid test catalog definition"),
+    );
+    let run = tokio::spawn({
+        let gate = Arc::clone(&gate);
+        async move {
+            let node = NodeDefinition::new(node_key!("test"), "Sleepy", "test", "sleepy").unwrap();
+            make_runtime(Arc::new(ActionRegistry::new()))
+                .run_factory(
+                    "test.sleepy",
+                    factory,
+                    &node,
+                    nebula_action::ActionInput::Raw(serde_json::Value::Null),
+                    &ctx,
+                    None,
+                    ResourceAuthority::CallerSupplied,
+                    Some(gate.as_ref()),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+        .await
+        .expect("cancellation is observed")
+        .expect("task");
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["begin 0", "cancel 0"]);
 }
 
 /// Runs [`CountingTo3`] through the dispatch core under `gate`, with

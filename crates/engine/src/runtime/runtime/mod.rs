@@ -856,6 +856,12 @@ impl ActionRuntime {
                 tokio::select! {
                     biased;
                     () = context.cancellation().cancelled() => {
+                        // The iteration ends here: no unit a detached task
+                        // submits from now on is admitted, so the node's
+                        // conclusion drains only what was already in flight.
+                        if let Some(gate) = iteration_gate {
+                            gate.cancel_iteration();
+                        }
                         return Err(ActionError::Cancelled.into());
                     }
                     res = &mut exec_fut => res,

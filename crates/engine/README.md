@@ -205,7 +205,19 @@ configuration, and process lifecycle.
   iteration must submit the same effects in the same order — inputs a replay does
   not reproduce (clocks, randomness, unrecorded reads) diverge, and the divergence
   halts the node `ENGINE:EFFECT_OCCURRENCE_MISMATCH` before any recorded effect is
-  sent again; only effects past everything recorded are sent. A stateful node's journal admits a unit only while an iteration is open:
+  sent again; only effects past everything recorded are sent. **Order**: within a
+  family a lower effect is never applied after a higher one. In one attempt, a unit
+  whose ledger prepare began and never answered (cancelled or past its deadline
+  mid-call, or the acknowledgement lost) leaves its position uncertain — its row may
+  exist — and no fresh slot above it is prepared: the prepare is refused as a
+  deferring `AcknowledgementUnknown`, nothing is sent, and the node defers so the next
+  attempt replays in order. Across attempts, a recorded slot that changed nothing yet
+  (only prepared, or every call explained not crossed) is refused as an occurrence
+  mismatch when an earlier attempt recorded an outcome, or a call that crossed, at a
+  higher position of its family (this also halts a recovery of concurrent units that
+  applied out of order). A node cancelled mid-iteration ends the iteration at once: a
+  later detached submission is refused closed, with no failure of its own, so the
+  conclusion drains only the units already in flight. A stateful node's journal admits a unit only while an iteration is open:
   admission and the iteration rollover are one transition under the journal's lock,
   and a unit a detached task submits between iterations is refused `between_runs`
   (`Permanent` / `NotSent`) while the verdict records
