@@ -726,8 +726,12 @@ impl UnitShared {
 
     /// Runs `run` until the unit's deadline — re-read whenever a grant
     /// shrinks it; `None` when the deadline elapsed first.
-    async fn run_until_deadline<F: Future>(&self, run: F) -> Option<F::Output> {
-        let mut run = std::pin::pin!(run);
+    ///
+    /// Takes the operation pinned by the caller: an `async fn` that moved
+    /// its argument into a pinned local would hold the whole operation
+    /// future twice (argument and local), doubling the unit task
+    /// (<https://github.com/rust-lang/rust/issues/62958>).
+    async fn run_until_deadline<F: Future>(&self, mut run: Pin<&mut F>) -> Option<F::Output> {
         loop {
             let deadline = self.deadline();
             tokio::select! {
@@ -1054,13 +1058,17 @@ where
         };
         // Bounded by the unit's deadline. Only an owner's grant shrinks it
         // while the operation runs, so an unowned unit keeps the plain timer.
+        // The operation future is pinned once here and both arms borrow it,
+        // so the unit task holds it once: passing it by value into an
+        // `async fn` that pins it again stores it twice in the state machine
+        // (https://github.com/rust-lang/rust/issues/62958), doubling the
+        // task and the bytes copied when it is spawned.
         let run = async {
+            let operation = std::pin::pin!(work.run(&mut cx));
             if shared.effect().is_some() {
-                shared.run_until_deadline(work.run(&mut cx)).await
+                shared.run_until_deadline(operation).await
             } else {
-                tokio::time::timeout_at(deadline, work.run(&mut cx))
-                    .await
-                    .ok()
+                tokio::time::timeout_at(deadline, operation).await.ok()
             }
         };
         AssertUnwindSafe(run).catch_unwind().await
