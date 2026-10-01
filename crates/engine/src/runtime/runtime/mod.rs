@@ -592,8 +592,24 @@ impl ActionRuntime {
         }
 
         // Instantiate the action via the factory. Slot-binding resolution
-        // (and any FromWorkflowNode user code) runs here.
-        let handle = match factory.instantiate(node, context).await {
+        // (and any FromWorkflowNode user code) runs here. A gated run races
+        // it against cancellation: a cancellation while the factory builds
+        // the handle closes admission at once, so work the factory detached
+        // cannot submit and turn the cancellation into a barrier failure.
+        let instantiated = match iteration_gate {
+            Some(gate) => {
+                tokio::select! {
+                    biased;
+                    () = context.cancellation().cancelled() => {
+                        gate.cancel_iteration();
+                        return Err(ActionError::Cancelled.into());
+                    },
+                    instantiated = factory.instantiate(node, context) => instantiated,
+                }
+            },
+            None => factory.instantiate(node, context).await,
+        };
+        let handle = match instantiated {
             Ok(e) => e,
             Err(e) => {
                 let result: Result<ActionResult<serde_json::Value>, RuntimeError> =
