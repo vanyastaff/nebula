@@ -185,7 +185,7 @@ pub mod effect_journal_step {
 
 /// Refusal labels for [`NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL`].
 ///
-/// Closed set of eight values, one per journal refusal.
+/// Closed set of nine values, one per journal refusal.
 pub mod effect_journal_refusal {
     /// The journal's store is unavailable.
     pub const UNAVAILABLE: &str = "unavailable";
@@ -204,6 +204,9 @@ pub mod effect_journal_refusal {
     pub const SLOT_CAP_EXCEEDED: &str = "slot_cap_exceeded";
     /// A unit was submitted while no stateful iteration was open.
     pub const BETWEEN_RUNS: &str = "between_runs";
+    /// A recorded, never-sent effect below a later applied one was not
+    /// sent again.
+    pub const SUPERSEDED: &str = "superseded";
 }
 
 /// Counter: node verdicts of effect journals.

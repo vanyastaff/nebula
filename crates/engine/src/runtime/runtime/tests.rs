@@ -2162,6 +2162,8 @@ struct ScriptedGate {
     open: AtomicU32,
     fail_begin_at: Option<u32>,
     fail_end_at: Option<u32>,
+    /// The iteration whose barrier never answers (a drain stuck on a unit).
+    hang_end_at: Option<u32>,
     /// Iterations before this one report the replay not at its frontier.
     replayed_through: Option<u32>,
 }
@@ -2193,6 +2195,9 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
             .lock()
             .unwrap()
             .push(format!("end {iteration} {outcome}"));
+        if self.hang_end_at == Some(iteration) {
+            std::future::pending::<()>().await;
+        }
         if self.fail_end_at == Some(iteration) {
             return Err(crate::EffectExecutionError::OccurrenceMismatch);
         }
@@ -2450,6 +2455,62 @@ async fn a_cancelled_iteration_closes_admission_at_the_barrier() {
         "{result:?}"
     );
     assert_eq!(gate.log(), ["begin 0", "cancel 0"]);
+}
+
+/// A cancellation while the barrier drains an iteration's units cancels the
+/// iteration and answers `Cancelled` at once instead of waiting the drain out.
+#[tokio::test(start_paused = true)]
+async fn a_cancellation_during_the_barrier_drain_cancels_the_iteration() {
+    let gate = Arc::new(ScriptedGate {
+        hang_end_at: Some(1),
+        ..ScriptedGate::default()
+    });
+    let ctx = test_context();
+    let cancel = ctx.cancellation().clone();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<CountingTo3>::new()
+            .expect("valid test catalog definition"),
+    );
+    let run = tokio::spawn({
+        let gate = Arc::clone(&gate);
+        async move {
+            let node = NodeDefinition::new(node_key!("test"), "Count", "test", "count").unwrap();
+            make_runtime(Arc::new(ActionRegistry::new()))
+                .run_factory(
+                    "test.count",
+                    factory,
+                    &node,
+                    nebula_action::ActionInput::Raw(serde_json::Value::Null),
+                    &ctx,
+                    None,
+                    ResourceAuthority::CallerSupplied,
+                    Some(gate.as_ref()),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0 ok", "begin 1", "end 1 ok"],
+        "the barrier of iteration 1 is draining"
+    );
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+        .await
+        .expect("cancellation is observed during the drain")
+        .expect("task");
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0 ok", "begin 1", "end 1 ok", "cancel 1"]
+    );
 }
 
 /// Runs [`CountingTo3`] through the dispatch core under `gate`, with

@@ -1449,20 +1449,144 @@ async fn a_recorded_effect_below_an_applied_one_is_never_run_after_it() {
     );
 
     // A recovery reaching the lower charge again would apply it after the
-    // higher one: refused, nothing sent.
+    // higher one: not sent — it fails unsent again, as the program saw it
+    // fail and moved past it — and the run goes on: the higher charge
+    // replays, and the node is not stranded.
     let recovery = harness.journal(2);
-    let refused = harness
-        .handle(&recovery)
+    let handle = harness.handle(&recovery);
+    let superseded = handle
         .submit(Charge::<false> { order: 22 })
         .await
-        .expect_err("out of order");
-    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
-    assert_eq!(refused.detail(), "effect occurrence mismatch");
-    assert_eq!(harness.desk.keys().len(), 2, "no further call");
+        .expect_err("not sent again");
+    assert_eq!(superseded.sent(), SentState::NotSent, "{superseded}");
     assert_eq!(
-        recovery.conclude(DRAIN).await,
+        superseded.detail(),
+        "effect failed unsent in an earlier run that moved past it; not sent again"
+    );
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 23 })
+            .await
+            .expect("replayed"),
+        2
+    );
+    assert_eq!(harness.desk.keys().len(), 2, "no further call");
+    assert_eq!(recovery.conclude(DRAIN).await, Ok(()));
+}
+
+#[tokio::test]
+async fn a_noted_failure_never_lets_a_skipped_recorded_effect_be_routed_past() {
+    let harness = Harness::new().await;
+    let first = harness.stateful_journal(1);
+    first.begin_iteration(0).expect("it0");
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 26 })
+        .await
+        .expect("applied at it0/#0");
+
+    // A retry whose iteration 0 fails before its effect, while a detached
+    // task submits between iterations: a routable barrier failure is noted.
+    let between_runs = |journal: &NodeEffectJournal| {
+        assert_eq!(
+            journal.admit().map(|_| ()),
+            Err(JournalRefusal::BetweenRuns)
+        );
+    };
+    let failing = harness.stateful_journal(2);
+    failing.begin_iteration(0).expect("it0");
+    failing
+        .end_iteration(DRAIN, false)
+        .await
+        .expect("a failing iteration keeps its own failure");
+    between_runs(&failing);
+    // The node skipped the applied effect: retried, never routed past.
+    assert_eq!(
+        failing.conclude_node(DRAIN, false).await,
+        Ok(Concluded::SkippedRecordedEffect)
+    );
+
+    // A detached unit admitted and never prepared outlives its iteration.
+    let detached = harness.stateful_journal(3);
+    detached.begin_iteration(0).expect("it0");
+    let ticket = detached.admit().expect("admitted in it0");
+    assert_eq!(
+        detached.begin_iteration(1),
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 1 })
+    );
+    drop(ticket);
+    assert_eq!(
+        detached.conclude_node(DRAIN, false).await,
+        Ok(Concluded::SkippedRecordedEffect)
+    );
+
+    // About to succeed past the skipped effect: a mismatch, whatever was
+    // noted.
+    let succeeding = harness.stateful_journal(4);
+    succeeding.begin_iteration(0).expect("it0");
+    succeeding
+        .end_iteration(DRAIN, false)
+        .await
+        .expect("it0 ends");
+    between_runs(&succeeding);
+    assert_eq!(
+        succeeding.conclude_node(DRAIN, true).await,
         Err(EffectExecutionError::OccurrenceMismatch)
     );
+    assert_eq!(harness.desk.keys().len(), 1);
+}
+
+#[tokio::test]
+async fn a_crossed_stable_key_effect_below_a_later_applied_one_is_not_granted_again() {
+    let harness = Harness::new().await;
+    // The lower charge (stable key, two attempts) is mid-call when the
+    // process dies; the higher one, awaited after it settled... here: the
+    // higher one is prepared after the lower unit was gone (the action
+    // dropped it), and applies.
+    harness.desk.script(&[Reply::Hang, Reply::Applied]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    let lower = tokio::spawn(handle.submit(Charge::<true> { order: 24 }));
+    tokio::time::timeout(Duration::from_secs(5), harness.desk.entered.notified())
+        .await
+        .expect("the lower call reached the provider");
+    lower.abort();
+    let _ = lower.await;
+    // The lower unit's runtime task still holds its position until the
+    // call ends; the test retires it as the dead process would.
+    first.finish_occurrence("unit/v1/#000000");
+    handle
+        .submit(Charge::<false> { order: 25 })
+        .await
+        .expect("applied after the lower one");
+    let recorded = harness.slots().await;
+    assert_eq!(
+        recorded[1]
+            .record()
+            .protocol()
+            .expect("protocol")
+            .concurrent_with(),
+        Some(&[][..]),
+        "the lower unit was gone when the higher one began"
+    );
+
+    // The recovery would grant the lower charge again under its key — after
+    // the higher one applied. Its outcome is unknown instead: no call.
+    let recovery = harness.journal(2);
+    let unknown = harness
+        .handle(&recovery)
+        .submit(Charge::<true> { order: 24 })
+        .await
+        .expect_err("not granted again");
+    assert_eq!(
+        *unknown.kind(),
+        nebula_resource::error::ErrorKind::OutcomeUnknown
+    );
+    assert_eq!(harness.desk.keys().len(), 2, "no further call");
+    assert!(matches!(
+        recovery.conclude(DRAIN).await,
+        Err(EffectExecutionError::JournalOutcomeUnknown { .. })
+    ));
 }
 
 #[test]
@@ -1777,9 +1901,9 @@ async fn a_fresh_slot_records_exactly_the_lower_units_still_open() {
     open.abort();
     let _ = open.await;
 
-    // The recovery re-sends 0 under its key (it ran alongside 2), and
-    // refuses 1 (it settled before 2 began: running it now would reverse
-    // them).
+    // The recovery re-sends 0 under its key (it ran alongside 2), and does
+    // not send 1 (it settled unsent before 2 began: sending it now would
+    // reverse them) — it fails unsent again, as the program saw.
     let recovery = harness.journal(2);
     let handle = harness.handle(&recovery);
     handle
@@ -1791,7 +1915,10 @@ async fn a_fresh_slot_records_exactly_the_lower_units_still_open() {
         .await
         .expect_err("1 is ordered before the applied 2");
     assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
-    assert_eq!(refused.detail(), "effect occurrence mismatch");
+    assert_eq!(
+        refused.detail(),
+        "effect failed unsent in an earlier run that moved past it; not sent again"
+    );
     let keys = harness.desk.keys();
     assert_eq!(keys.len(), 4, "0, 1 throttled, 2, 0 again");
     assert_eq!(keys[0], keys[3], "0 again under its recorded key");
@@ -1979,7 +2106,7 @@ async fn an_effect_prepared_into_an_earlier_attempts_gap_is_a_mismatch() {
 const PAST_THE_UNIT_DEADLINE: Duration = Duration::from_mins(6);
 
 #[tokio::test(start_paused = true)]
-async fn a_position_a_unit_gave_up_leaves_the_next_fresh_effect_refused() {
+async fn a_position_a_unit_gave_up_defers_the_next_fresh_effect() {
     let harness = Harness::new().await;
     let first = harness.journal(1);
     harness
@@ -1989,27 +2116,44 @@ async fn a_position_a_unit_gave_up_leaves_the_next_fresh_effect_refused() {
         .expect("applied at the first position");
 
     // The retry's first unit is polled only past its deadline: it takes the
-    // first position and never reaches the journal.
+    // first position and gives it up before reaching the journal.
     let retry = harness.journal(2);
     let late = harness.handle(&retry).submit(Charge::<false> { order: 6 });
     tokio::time::advance(PAST_THE_UNIT_DEADLINE).await;
     let gave_up = late.await.expect_err("past its deadline");
     assert_eq!(gave_up.sent(), SentState::NotSent, "{gave_up}");
     // The recorded charge, now at the second position, would be a fresh
-    // slot under another provider key: refused, nothing sent.
+    // slot under another provider key: refused, nothing sent. A position
+    // given up is no proof the program took another path, so the node
+    // defers rather than halting: the next attempt can meet it again.
     let refused = harness
         .handle(&retry)
         .submit(Charge::<false> { order: 5 })
         .await
-        .expect_err("above a recorded position the retry never met");
+        .expect_err("above a position this attempt gave up");
     assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
-    assert_eq!(refused.detail(), "effect occurrence mismatch");
+    assert_eq!(refused.detail(), "effect owner unavailable; unit refused");
     assert_eq!(harness.desk.keys().len(), 1, "sent once");
     assert_eq!(harness.slots().await.len(), 1, "nothing prepared");
-    assert_eq!(
-        retry.conclude(DRAIN).await,
-        Err(EffectExecutionError::OccurrenceMismatch)
+    assert!(
+        retry
+            .conclude(DRAIN)
+            .await
+            .is_err_and(EffectExecutionError::is_deferred)
     );
+
+    // The next attempt meets the recorded charge first and replays it.
+    let next = harness.journal(2);
+    assert_eq!(
+        harness
+            .handle(&next)
+            .submit(Charge::<false> { order: 5 })
+            .await
+            .expect("replayed"),
+        1
+    );
+    assert_eq!(next.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 1, "still sent once");
 }
 
 #[tokio::test(start_paused = true)]
@@ -2035,11 +2179,14 @@ async fn an_iteration_that_skips_a_recorded_effect_refuses_the_next_fresh_one() 
         .handle(&retry)
         .submit(Charge::<false> { order: 7 })
         .await
-        .expect_err("above it0/#0, which the retry never met");
+        .expect_err("above it0/#0, which the retry gave up");
     assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
-    assert_eq!(
-        retry.end_iteration(DRAIN, true).await,
-        Err(EffectExecutionError::OccurrenceMismatch)
+    assert!(
+        retry
+            .end_iteration(DRAIN, true)
+            .await
+            .is_err_and(EffectExecutionError::is_deferred),
+        "a position given up defers the node"
     );
     assert_eq!(harness.desk.keys().len(), 1, "sent once");
     assert_eq!(harness.slots().await.len(), 1);

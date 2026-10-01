@@ -474,7 +474,10 @@ async fn a_prepare_whose_answer_was_lost_is_recovered_in_order(#[case] backend: 
 
 /// A lower effect changed nothing (throttled, its error swallowed) while a
 /// higher one applied; the process dies. A recovery reaching the lower one
-/// again would apply it after the higher one: refused, nothing sent.
+/// again would apply it after the higher one: it is refused unsent as
+/// superseded — the same failure the program already swallowed — the higher
+/// one replays its recorded outcome, and the node goes on to its next
+/// iteration and completes.
 #[rstest::rstest]
 #[case::memory(Backend::Memory)]
 #[case::sqlite(Backend::Sqlite)]
@@ -498,13 +501,23 @@ async fn a_recovery_never_applies_a_lower_effect_after_a_higher_applied_one(
     assert_eq!(fixture.gateway.call_count(), 2, "throttled, then applied");
 
     let result = fixture.run(execution).await.unwrap();
-    assert_node_error(&result, "ENGINE:EFFECT_OCCURRENCE_MISMATCH");
+    assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
+    let requests: Vec<String> = fixture
+        .gateway
+        .calls
+        .lock()
+        .iter()
+        .map(|call| call.request.clone())
+        .collect();
     assert_eq!(
-        fixture.gateway.call_count(),
-        2,
-        "the lower one never resent"
+        requests,
+        ["lower:1", "higher:2", "next:3"],
+        "the lower one never resent, the higher one replayed"
     );
-    assert_eq!(fixture.slots(execution).await, recorded);
+    let receipts = receipts(&result);
+    assert_eq!(receipts[0]["sent"], json!("not_sent"), "{receipts}");
+    assert_eq!(&receipts.as_array().unwrap()[1..], [json!(1), json!(2)]);
+    assert_eq!(fixture.slots(execution).await[..2], recorded[..]);
 }
 
 // 7d ────────────────────────────────────────────────────────────────────────

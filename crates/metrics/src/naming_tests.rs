@@ -916,6 +916,7 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_refusal::UNKNOWN,
         effect_journal_refusal::SLOT_CAP_EXCEEDED,
         effect_journal_refusal::BETWEEN_RUNS,
+        effect_journal_refusal::SUPERSEDED,
     ];
     let verdicts = [
         effect_journal_verdict::OK,
@@ -931,7 +932,7 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
     for (set, expected) in [
         (&phases[..], 3),
         (&steps[..], 6),
-        (&refusals[..], 8),
+        (&refusals[..], 9),
         (&verdicts[..], 9),
     ] {
         let unique: HashSet<_> = set.iter().collect();

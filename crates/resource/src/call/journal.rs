@@ -478,6 +478,11 @@ pub enum JournalRefusal {
     /// iterations) and none is open: a unit submitted between two runs
     /// belongs to neither.
     BetweenRuns,
+    /// The effect was recorded and never sent, and a later effect of the
+    /// owner's run may since have been applied: sending it now would apply
+    /// it out of order. It is not sent; the unit fails as it did when the
+    /// run moved past it.
+    Superseded,
 }
 
 impl JournalRefusal {
@@ -493,6 +498,7 @@ impl JournalRefusal {
             Self::Unknown => "unknown",
             Self::SlotCapExceeded => "slot_cap_exceeded",
             Self::BetweenRuns => "between_runs",
+            Self::Superseded => "superseded",
         }
     }
 }

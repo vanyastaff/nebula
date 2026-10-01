@@ -876,10 +876,19 @@ impl ActionRuntime {
             // The iteration's units drain before its result counts — a
             // failing iteration's too: nothing of it may cross into the next.
             let progress = match iteration_gate {
-                Some(gate) => gate
-                    .end_iteration(iteration_result.is_ok())
-                    .await
-                    .map_err(RuntimeError::EffectJournal)?,
+                // The barrier's drain is raced against cancellation like the
+                // dispatch: a cancelled node stays cancelled, and units still
+                // in flight settle in its conclusion.
+                Some(gate) => tokio::select! {
+                    biased;
+                    () = context.cancellation().cancelled() => {
+                        gate.cancel_iteration();
+                        return Err(ActionError::Cancelled.into());
+                    }
+                    ended = gate.end_iteration(iteration_result.is_ok()) => {
+                        ended.map_err(RuntimeError::EffectJournal)?
+                    }
+                },
                 None => crate::effect_driver::IterationProgress::default(),
             };
 

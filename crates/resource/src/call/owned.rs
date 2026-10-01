@@ -496,6 +496,10 @@ fn refusal_error(refusal: JournalRefusal) -> OperationError {
             ErrorKind::Permanent,
             "effect journal slot cap reached; unit refused",
         ),
+        JournalRefusal::Superseded => OperationError::new(
+            ErrorKind::Permanent,
+            "effect failed unsent in an earlier run that moved past it; not sent again",
+        ),
         JournalRefusal::BetweenRuns => OperationError::new(
             ErrorKind::Permanent,
             "effect submitted while its owner has no open run (between stateful iterations); \
