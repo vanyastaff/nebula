@@ -47,13 +47,6 @@
 //! (or [`OperationError::throttled_key`]) passes the provider's "slow down"
 //! on. Without the facade a declared rate books one permit per acquire.
 //!
-//! The closure family — [`ResourceLimiter::wrap`], [`Limited`] and
-//! [`LimitedError`] — is deprecated since 0.21.0 and removed before the API
-//! freeze: `run` becomes `cx.call(Cost::ONE, ..)`, `run_for` becomes
-//! [`Cost::keyed`], `run_until` becomes [`Submission::with_deadline`], a
-//! [`Throttle`] becomes a call returning [`OperationError::throttled`], and
-//! `unlimited` has no replacement by design.
-//!
 //! A [`StreamOperation`] submitted with [`Lease::submit_streaming`] or
 //! [`ResourceHandle::submit_streaming`] runs as one unit that also sends items through a bounded [`StreamSink`]; the
 //! caller reads them from [`Streaming`], then the unit's error, if any, once.
@@ -77,14 +70,9 @@ pub use nebula_resource::call::{
     SessionProvider, SessionSpec, StreamOperation, StreamSink, Streaming, Submission,
 };
 pub use nebula_resource::rate_limit::{
-    DEFAULT_MAX_PENALTY, LimitScope, NoThrottle, OnError, Override, Rate, RateLimitSettings,
-    ResiliencePolicy, ResourceLimiter, Throttle, Verdict, on_error, retry_after_from_header,
+    DEFAULT_MAX_PENALTY, LimitScope, Override, Rate, RateLimitSettings, ResiliencePolicy,
+    ResourceLimiter, retry_after_from_header,
 };
-#[expect(
-    deprecated,
-    reason = "the deprecated closure family stays curated until its removal (MIGRATION P10)"
-)]
-pub use nebula_resource::rate_limit::{Limited, LimitedError};
 pub use nebula_resource::topology::{
     AdmissionPhase, BrokenCheck, CreatedEntry, HookFault, IdleRead, InstanceMetrics, Load,
     MaintenanceSchedule, NoTopology, PoolStrategy, RecycleDecision, ReplaceStatus, RetainStatus,

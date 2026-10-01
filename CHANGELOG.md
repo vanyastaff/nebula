@@ -11,6 +11,34 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **The removal of the `Limited` closure family advances development
+  packages to 0.26.0 in lockstep** (MIGRATION P10):
+  - Removed from `nebula_resource::rate_limit` and the SDK's
+    `integration::resource`: `Limited` (`run`, `run_until`, `run_for`,
+    `run_for_until`, `unlimited`, `limits`), `LimitedError`,
+    `ResourceLimiter::wrap`, the `Throttle` trait, `NoThrottle`, `OnError`
+    and `on_error`. `Verdict` is crate-private: the managed call facade
+    derives it from a call's `OperationError`, so it is no longer exported.
+  - `RateLimitProfile::InterimPerClosure` and `RateLimitProfile::is_interim`
+    are removed; a row reports `PausesOnly`, `PerAcquire` or `PerAttempt`
+    (`as_str`: `pauses_only`, `per_acquire`, `per_attempt`).
+  - `ResourceLimiter` keeps its pacing and pause API (`rate`, `profile`,
+    `ready`, `ready_for`, `penalize`, `penalize_for`), and
+    `ResourceContext::limits` / `ResourceGuard::limits` stay for a pause
+    signalled outside a call.
+  - Migration: return the client itself as the provider's instance and make
+    each provider call through the managed call facade — a
+    `Manager::handle` (or a derived `#[resource] ResourceHandle<R>` action
+    field) and `ResourceHandle::submit(op)`, with one
+    `OperationCx::call(cost, ..)` per provider call. `run` becomes
+    `cx.call(Cost::ONE, ..)`, `run_for` becomes `Cost::keyed(dimension,
+    value)`, `run_until` becomes `Submission::with_deadline`, a `Throttle`
+    becomes a call returning `OperationError::throttled` /
+    `throttled_key`, `LimitedError` becomes `OperationError`, and
+    `unlimited` has no replacement by design. A unit's quota wait ends unsent
+    when its row is revoked, suspended or shut down, as a `Limited` wait did,
+    and a reload still does not end it.
+
 - **The Journaled action effect default advances development packages to
   0.25.0 in lockstep.** An action that declares no effect contract is no
   longer refused; it may perform effects, but only through resource handles:
@@ -75,8 +103,9 @@ changes are expected between minor releases — call them out here.
   - `Attempt::finish(&result)` is the low-level path (a stream finished at
     its head, several steps on one attempt). Removed from the public API:
     `Attempt::settle(SentState)` and `Attempt::report(Verdict)`; `Verdict`,
-    `Throttle` and the deprecated `Limited` family stay in `rate_limit`, their
-    migration notes now pointing at `OperationError::throttled`.
+    `Throttle` and the deprecated `Limited` family stayed in `rate_limit`,
+    their migration notes pointing at `OperationError::throttled`, until
+    their removal in 0.26.0.
   - `unreachable` and `interrupted` never reset a backoff in progress; a
     unit's folded sent state ignores a throttled attempt that was not its
     last (the provider applied nothing).

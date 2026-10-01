@@ -1,8 +1,3 @@
-#![expect(
-    deprecated,
-    reason = "regression coverage of the deprecated closure family"
-)]
-
 use std::{num::NonZeroU32, time::Duration};
 
 use tokio::time::Instant;
@@ -53,22 +48,11 @@ fn chat_limiter(account: Rate) -> (Arc<ResourceLimiter>, Arc<MemoryLimitStore>) 
     (Arc::new(limiter), store)
 }
 
-/// A provider error in the shape libraries use (`teloxide::RequestError`).
-#[derive(Debug)]
-enum ProviderError {
-    RetryAfter(Duration),
-    Throttled,
-    Other,
-}
-
-fn provider_throttle() -> OnError<impl Fn(&ProviderError) -> Verdict + Send + Sync> {
-    on_error(|error: &ProviderError| match error {
-        ProviderError::RetryAfter(after) => Verdict::Throttled {
-            retry_after: Some(*after),
-        },
-        ProviderError::Throttled => Verdict::Throttled { retry_after: None },
-        ProviderError::Other => Verdict::Pass,
-    })
+/// A provider's "slow down" naming `retry_after`.
+const fn throttled(retry_after: Duration) -> Verdict {
+    Verdict::Throttled {
+        retry_after: Some(retry_after),
+    }
 }
 
 /// Time until `limits` admits the next call.
@@ -218,62 +202,59 @@ async fn penalty_is_capped_by_the_policy() {
 
 #[tokio::test(start_paused = true)]
 async fn a_throttled_call_pauses_the_quota_for_its_retry_after() {
-    let client = Arc::new(limiter(per_second(100, 1))).wrap("client", provider_throttle());
-    let error = client
-        .run(async |_| Err::<(), _>(ProviderError::RetryAfter(Duration::from_secs(30))))
-        .await
-        .expect_err("the client's own error comes back");
-    assert!(matches!(
-        error,
-        LimitedError::Call(ProviderError::RetryAfter(_))
-    ));
-    assert_eq!(
-        wait_for_slot(client.limits()).await,
-        Duration::from_secs(30)
-    );
+    let limits = limiter(per_second(100, 1));
+    limits.ready(None).await.expect("the call's permit");
+    limits
+        .report(throttled(Duration::from_secs(30)), None)
+        .await;
+    assert_eq!(wait_for_slot(&limits).await, Duration::from_secs(30));
 }
 
 #[tokio::test(start_paused = true)]
 async fn unsignalled_throttling_backs_off_exponentially_and_resets() {
-    let client = Arc::new(limiter(per_second(100, 1))).wrap((), provider_throttle());
-    let throttled = async |(): &()| Err::<(), _>(ProviderError::Throttled);
+    let limits = limiter(per_second(100, 1));
+    let unsignalled = Verdict::Throttled { retry_after: None };
     // Each step is jittered over its upper half: 0.5–1 s, 1–2 s, 2–4 s.
     // Waits include one 10 ms emission interval of the 100/s rate.
     let within = |wait: Duration, step: u64| {
         let step = Duration::from_secs(step);
         wait >= step / 2 && wait <= step + Duration::from_millis(10)
     };
+    limits.ready(None).await.expect("the first call's permit");
     for step in [1, 2, 4] {
-        let _ = client.run(throttled).await;
-        let wait = wait_for_slot(client.limits()).await;
+        limits.report(unsignalled, None).await;
+        let wait = wait_for_slot(&limits).await;
         assert!(within(wait, step), "step {step} s waited {wait:?}");
     }
     // Any other outcome, success or not, resets the backoff.
-    let _ = client
-        .run(async |()| Err::<(), _>(ProviderError::Other))
-        .await;
-    let _ = client.run(throttled).await;
-    let wait = wait_for_slot(client.limits()).await;
+    limits.report(Verdict::Pass, None).await;
+    limits.ready(None).await.expect("the next call's permit");
+    limits.report(unsignalled, None).await;
+    let wait = wait_for_slot(&limits).await;
     assert!(within(wait, 1), "after a reset waited {wait:?}");
 }
 
 #[tokio::test(start_paused = true)]
 async fn one_keys_refusals_do_not_escalate_another_keys_backoff() {
     let (limits, _) = chat_limiter(per_second(100, 100));
-    let client = limits.wrap((), |outcome: &Result<(), ProviderError>| match outcome {
-        Err(ProviderError::Throttled) => Verdict::KeyThrottled { retry_after: None },
-        _ => Verdict::Pass,
-    });
-    let refused = async |(): &()| Err::<(), _>(ProviderError::Throttled);
+    let refused = Verdict::KeyThrottled { retry_after: None };
     // Chat 1 is refused three times; its pauses escalate.
     for _ in 0..3 {
-        let _ = client.run_for("chat_id", 1, refused).await;
+        limits
+            .ready_for("chat_id", 1, None)
+            .await
+            .expect("chat 1 admitted");
+        limits.report(refused, Some(("chat_id", "1"))).await;
     }
     // Chat 2's first refusal starts from the first step, 0.5–1 s.
-    let _ = client.run_for("chat_id", 2, refused).await;
+    limits
+        .ready_for("chat_id", 2, None)
+        .await
+        .expect("chat 2 admitted");
+    limits.report(refused, Some(("chat_id", "2"))).await;
     let started = Instant::now();
-    client
-        .run_for("chat_id", 2, async |()| Ok::<_, ProviderError>(()))
+    limits
+        .ready_for("chat_id", 2, None)
         .await
         .expect("admitted after its own pause");
     assert!(
@@ -284,29 +265,14 @@ async fn one_keys_refusals_do_not_escalate_another_keys_backoff() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_limit_hit_elsewhere_inside_the_call_does_not_pause_this_quota() {
-    let client = Arc::new(limiter(per_second(100, 1))).wrap((), NoThrottle);
-    // A nested resource answered "exhausted": only this client's throttle
-    // decides what is a provider refusal, so this quota stays open.
-    let error = client
-        .run(async |()| -> Result<(), Error> {
-            Err(Error::exhausted("nested", Some(Duration::from_hours(1))))
-        })
-        .await;
-    assert!(matches!(error, Err(LimitedError::Call(_))));
-    assert!(wait_for_slot(client.limits()).await < Duration::from_secs(1));
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_limiter_without_a_rate_only_honours_pauses() {
     let limits = ResourceLimiter::detached();
     assert_eq!(limits.rate(), None);
     for _ in 0..1_000 {
         assert_eq!(wait_for_slot(&limits).await, Duration::ZERO);
     }
-    let client = limits.wrap((), provider_throttle());
-    let _ = client
-        .run(async |()| Err::<(), _>(ProviderError::RetryAfter(Duration::from_secs(20))))
+    limits
+        .report(throttled(Duration::from_secs(20)), None)
         .await;
     let error = limits
         .ready(Some(std::time::Instant::now()))
@@ -321,59 +287,25 @@ async fn a_limiter_without_a_rate_only_honours_pauses() {
 }
 
 #[test]
-fn a_detached_limiter_only_honours_pauses_until_wrapped() {
-    let limits = ResourceLimiter::detached();
-    assert_eq!(limits.profile(), RateLimitProfile::PausesOnly);
-    assert!(!limits.profile().is_interim());
-    let _client = limits.wrap((), NoThrottle);
-    assert_eq!(limits.profile(), RateLimitProfile::InterimPerClosure);
-}
-
-#[test]
-fn a_rate_is_booked_per_acquire_until_a_wrap_latches_per_closure() {
-    let limits = Arc::new(limiter(per_second(1, 1)));
-    assert_eq!(limits.profile(), RateLimitProfile::PerAcquire);
-    assert!(!limits.profile().is_interim());
-    let client = limits.wrap((), NoThrottle);
-    assert_eq!(limits.profile(), RateLimitProfile::InterimPerClosure);
-    assert!(limits.profile().is_interim());
-    // Dropping the wrapper does not unlatch: the row's calls still book
-    // their own permits through any clone of the client.
-    drop(client);
-    assert_eq!(limits.profile(), RateLimitProfile::InterimPerClosure);
-}
-
-#[test]
 fn profile_names_are_stable() {
     assert_eq!(RateLimitProfile::PausesOnly.as_str(), "pauses_only");
     assert_eq!(RateLimitProfile::PerAcquire.as_str(), "per_acquire");
-    assert_eq!(
-        RateLimitProfile::InterimPerClosure.as_str(),
-        "interim_per_closure"
-    );
     assert_eq!(RateLimitProfile::PerAttempt.as_str(), "per_attempt");
 }
 
 #[test]
-fn a_managed_facade_latches_per_attempt_and_a_wrap_still_wins() {
+fn a_managed_facade_latches_per_attempt_for_good() {
     let detached = ResourceLimiter::detached();
     assert_eq!(detached.profile(), RateLimitProfile::PausesOnly);
     detached.latch_per_attempt();
     assert_eq!(detached.profile(), RateLimitProfile::PerAttempt);
-    assert!(!detached.profile().is_interim());
 
-    let limits = Arc::new(limiter(per_second(1, 1)));
+    let limits = limiter(per_second(1, 1));
     assert_eq!(limits.profile(), RateLimitProfile::PerAcquire);
     limits.latch_per_attempt();
     assert_eq!(limits.profile(), RateLimitProfile::PerAttempt);
-    let _client = limits.wrap((), NoThrottle);
-    assert_eq!(
-        limits.profile(),
-        RateLimitProfile::InterimPerClosure,
-        "the closure family still books its own permits, so it is reported"
-    );
     limits.latch_per_attempt();
-    assert_eq!(limits.profile(), RateLimitProfile::InterimPerClosure);
+    assert_eq!(limits.profile(), RateLimitProfile::PerAttempt);
 }
 
 /// Once managed attempts book the quota, an acquire books nothing: the
@@ -532,25 +464,6 @@ async fn a_wait_under_a_generation_ends_when_it_closes_or_is_cancelled() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_refused_permit_never_reaches_the_client() {
-    let client = Arc::new(limiter(per_second(10, 1))).wrap((), NoThrottle);
-    client
-        .run(async |()| Ok::<_, ProviderError>(()))
-        .await
-        .unwrap();
-    let reached = AtomicBool::new(false);
-    let error = client
-        .run_until(Some(std::time::Instant::now()), async |()| {
-            reached.store(true, Ordering::Relaxed);
-            Ok::<_, ProviderError>(())
-        })
-        .await
-        .expect_err("next slot is past the deadline");
-    assert!(matches!(error, LimitedError::Limit(_)));
-    assert!(!reached.load(Ordering::Relaxed));
-}
-
-#[tokio::test(start_paused = true)]
 async fn each_chat_has_its_own_limit_under_the_account_limit() {
     let (limits, _) = chat_limiter(per_second(100, 100));
     limits.ready_for("chat_id", 42, None).await.expect("free");
@@ -596,25 +509,26 @@ async fn the_account_limit_still_binds_keyed_calls() {
 #[tokio::test(start_paused = true)]
 async fn a_key_throttle_pauses_only_that_key() {
     let (limits, _) = chat_limiter(per_second(100, 100));
-    let client = limits.wrap((), |outcome: &Result<(), ProviderError>| match outcome {
-        Err(ProviderError::RetryAfter(after)) => Verdict::KeyThrottled {
-            retry_after: Some(*after),
-        },
-        _ => Verdict::Pass,
-    });
-    let _ = client
-        .run_for("chat_id", 42, async |()| {
-            Err::<(), _>(ProviderError::RetryAfter(Duration::from_secs(20)))
-        })
+    limits
+        .ready_for("chat_id", 42, None)
+        .await
+        .expect("the refused call's permit");
+    limits
+        .report(
+            Verdict::KeyThrottled {
+                retry_after: Some(Duration::from_secs(20)),
+            },
+            Some(("chat_id", "42")),
+        )
         .await;
     let started = Instant::now();
-    client
-        .run_for("chat_id", 7, async |()| Ok::<_, ProviderError>(()))
+    limits
+        .ready_for("chat_id", 7, None)
         .await
         .expect("other chats and the account are not paused");
     assert_eq!(started.elapsed(), Duration::ZERO);
-    client
-        .run_for("chat_id", 42, async |()| Ok::<_, ProviderError>(()))
+    limits
+        .ready_for("chat_id", 42, None)
         .await
         .expect("the paused chat waits it out");
     assert_eq!(started.elapsed(), Duration::from_secs(20));
@@ -1287,82 +1201,58 @@ async fn background_refunds_are_bounded() {
     );
 }
 
-/// Once a client is wrapped, its calls book the quota and an acquire only
-/// honours pauses: one provider call uses one permit, not two.
+/// The permit an acquire books before the per-attempt latch is never
+/// reused: the first attempt after it books its own, however late it comes,
+/// so an attempt right after it keeps its spacing.
 #[tokio::test(start_paused = true)]
-async fn a_wrapped_limit_is_booked_per_call_not_per_acquire() {
-    let limits = Arc::new(limiter(per_second(1, 1)));
-    let client = limits.wrap((), NoThrottle);
-    let started = Instant::now();
-    for _ in 0..3 {
-        limits
-            .ready_to_acquire(None)
-            .await
-            .expect("acquire books nothing");
-    }
-    client
-        .run(async |()| Ok::<_, ProviderError>(()))
-        .await
-        .expect("the call books its own slot");
-    assert_eq!(
-        started.elapsed(),
-        Duration::ZERO,
-        "one permit, used by the call"
-    );
-}
-
-/// The permit a cold acquire books before its client exists is never
-/// reused: the first call through the client books its own, however late it
-/// comes, so a call right after it keeps its spacing.
-#[tokio::test(start_paused = true)]
-async fn a_late_first_call_after_a_cold_acquire_books_its_own_slot() {
-    let limits = Arc::new(limiter(per_second(1, 1)));
+async fn a_late_first_attempt_after_a_pre_latch_acquire_books_its_own_slot() {
+    let limits = limiter(per_second(1, 1));
     limits
         .ready_to_acquire(None)
         .await
-        .expect("the cold acquire books");
-    let client = limits.wrap((), NoThrottle);
-    // The action gets to the client well after the acquire's slot.
+        .expect("the pre-latch acquire books");
+    limits.latch_per_attempt();
+    // The unit gets to its first attempt well after the acquire's slot.
     tokio::time::sleep(Duration::from_secs(2)).await;
-    client
-        .run(async |()| Ok::<_, ProviderError>(()))
+    limits
+        .ready_weighted(1, None)
         .await
         .expect("books its own slot");
     let first_at = Instant::now();
-    client
-        .run(async |()| Ok::<_, ProviderError>(()))
+    limits
+        .ready_weighted(1, None)
         .await
         .expect("books the next slot");
     assert_eq!(
         first_at.elapsed(),
         Duration::from_secs(1),
-        "two calls never run in one slot"
+        "two attempts never run in one slot"
     );
 }
 
-/// On a cold start the acquire's permit is spent and the first call waits
-/// for its own: the limit errs on sending less.
+/// Right after a pre-latch acquire its permit is spent and the first
+/// attempt waits for its own: the limit errs on sending less.
 #[tokio::test(start_paused = true)]
-async fn a_cold_acquires_permit_is_not_reused_by_the_first_call() {
-    let limits = Arc::new(limiter(per_second(1, 1)));
+async fn a_pre_latch_acquires_permit_is_not_reused_by_the_first_attempt() {
+    let limits = limiter(per_second(1, 1));
     limits
         .ready_to_acquire(None)
         .await
-        .expect("the cold acquire books");
-    let client = limits.wrap((), NoThrottle);
+        .expect("the pre-latch acquire books");
+    limits.latch_per_attempt();
     let started = Instant::now();
-    client
-        .run(async |()| Ok::<_, ProviderError>(()))
+    limits
+        .ready_weighted(1, None)
         .await
         .expect("books its own slot");
     assert_eq!(started.elapsed(), Duration::from_secs(1));
 }
 
-/// Once a client is wrapped, an acquire still never passes its deadline.
+/// Once latched per attempt, an acquire still never passes its deadline.
 #[tokio::test(start_paused = true)]
-async fn a_wrapped_acquire_keeps_its_deadline() {
-    let limits = Arc::new(limiter(per_second(1, 1)));
-    let _client = limits.wrap((), NoThrottle);
+async fn a_latched_acquire_keeps_its_deadline() {
+    let limits = limiter(per_second(1, 1));
+    limits.latch_per_attempt();
     let expired = std::time::Instant::now()
         .checked_sub(Duration::from_millis(1))
         .expect("an instant a millisecond ago");
