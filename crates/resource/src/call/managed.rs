@@ -1215,7 +1215,9 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
     /// The first attempt's refusal (see [`attempt`](Self::attempt)); after
     /// that, the last attempt's error — a retry the runtime refused (the
     /// budget, the deadline, the lease closing) returns the error of the
-    /// attempt it would have retried.
+    /// attempt it would have retried, but a retry an execution owner refused
+    /// (an unknown outcome, a closed owner, a mismatch) returns that
+    /// refusal: it is authoritative.
     pub async fn call<T, F>(&mut self, cost: Cost, f: F) -> Result<T, OperationError>
     where
         F: AsyncFnMut(&R::Instance, &R::Pinned) -> Result<T, OperationError> + Send + 'static,
@@ -1229,7 +1231,14 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
             }
             let attempt = match self.attempt(cost.clone()).await {
                 Ok(attempt) => attempt,
-                Err(refusal) => return Err(previous.unwrap_or(refusal)),
+                // A local refusal says nothing new: the attempt it would have
+                // retried explains the call. An owner's refusal is final.
+                Err(refusal) => {
+                    return Err(match previous {
+                        Some(error) if !refusal.supersedes_retried() => error,
+                        _ => refusal,
+                    });
+                },
             };
             let result = f(attempt.instance(), attempt.credentials()).await;
             attempt.finish(&result).await;

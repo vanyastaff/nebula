@@ -62,6 +62,9 @@ pub struct OperationError {
     effect: Effect,
     resource_key: Option<ResourceKey>,
     signal: Signal,
+    /// An execution owner refused a step of the unit: authoritative, never
+    /// masked by an earlier attempt's error.
+    owner_refusal: bool,
 }
 
 /// What a provider call's error says about the call, as its constructor
@@ -100,6 +103,7 @@ impl OperationError {
             effect: Effect::Write,
             resource_key: None,
             signal: Signal::Unclassified,
+            owner_refusal: false,
         }
     }
 
@@ -213,6 +217,23 @@ impl OperationError {
         }
     }
 
+    /// Marks the error as an execution owner's refusal of a step.
+    pub(crate) fn from_owner(mut self) -> Self {
+        self.owner_refusal = true;
+        self
+    }
+
+    /// Whether a refused retry inside
+    /// [`OperationCx::call`](super::OperationCx::call) ends the call with
+    /// this refusal rather than the error of the attempt it would have
+    /// retried: an execution owner's refusal (the outcome is unknown, the
+    /// owner closed, the occurrence mismatched, …) or an unknown outcome is
+    /// authoritative; a local refusal (the attempt budget, the deadline, the
+    /// lease closing) says nothing new about the call.
+    pub(crate) fn supersedes_retried(&self) -> bool {
+        self.owner_refusal || self.kind == ErrorKind::OutcomeUnknown
+    }
+
     /// The error kind.
     #[must_use]
     pub fn kind(&self) -> &ErrorKind {
@@ -308,6 +329,7 @@ impl From<Error> for OperationError {
             effect: Effect::Write,
             resource_key: error.resource_key().cloned(),
             signal: Signal::Unclassified,
+            owner_refusal: false,
         }
     }
 }
