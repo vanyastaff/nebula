@@ -101,6 +101,8 @@ pub(super) struct OwnedEffect {
     slot: OnceLock<JournalSlot>,
     /// The unit's latest granted call not yet explained or settled.
     pending: Mutex<Option<PendingCall>>,
+    /// Set once the unit's position was finished for its owner.
+    concluded: std::sync::atomic::AtomicBool,
     _ticket: InFlight,
 }
 
@@ -141,16 +143,32 @@ impl fmt::Debug for OwnedEffect {
 }
 
 impl Drop for OwnedEffect {
-    /// The unit is gone: a position it took is finished for its owner
-    /// ([`EffectJournal::finish_occurrence`]).
+    /// Fallback for a unit that never settled through its runtime (its
+    /// waiter dropped before the first poll finished): the position is
+    /// finished for its owner when the owned state goes.
     fn drop(&mut self) {
-        if let Some(occurrence) = self.occurrence.get() {
-            self.owner.finish_occurrence(occurrence);
-        }
+        self.conclude();
     }
 }
 
 impl OwnedEffect {
+    /// The unit settled — its outcome is produced, it can no longer reach
+    /// the provider — so a position it took is finished for its owner
+    /// ([`EffectJournal::finish_occurrence`]), once. Called by the unit
+    /// runtime when the unit settles, not when the handle a caller may keep
+    /// is dropped.
+    pub(super) fn conclude(&self) {
+        if self
+            .concluded
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        if let Some(occurrence) = self.occurrence.get() {
+            self.owner.finish_occurrence(occurrence);
+        }
+    }
+
     /// The owned state of a unit of `declaration` on `key`, whose row is at
     /// `config_fingerprint`: refused when `owner` does not admit it
     /// ([`EffectJournal::admit`]: `Cancelled` when it closed, `Permanent`
@@ -176,6 +194,7 @@ impl OwnedEffect {
             occurrence: OnceLock::new(),
             slot: OnceLock::new(),
             pending: Mutex::new(None),
+            concluded: std::sync::atomic::AtomicBool::new(false),
             _ticket: ticket,
         })
     }

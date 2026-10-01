@@ -1232,6 +1232,26 @@ async fn every_position_handed_out_is_released_even_when_the_unit_gives_up() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_position_is_finished_when_its_unit_settles_even_if_its_handle_is_kept() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    let mut first = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
+    (&mut first).await.expect("applied");
+    // The action keeps the completed handle: the unit settled all the same.
+    assert_eq!(fixture.owner.state().finished, [pay(0)]);
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]))
+        .await
+        .expect("the next one");
+    drop(first);
+    assert_eq!(
+        fixture.owner.state().finished,
+        [pay(0), pay(1)],
+        "finished once each"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_position_is_finished_only_once_its_unit_is_gone() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
