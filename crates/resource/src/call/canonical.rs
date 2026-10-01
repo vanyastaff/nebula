@@ -125,17 +125,7 @@ fn push_scalar<T: Serialize>(
 /// A map key as `serde_json` stringifies it (a string, a number, a bool, a
 /// unit variant), read back from a one-member object.
 fn map_key<T: Serialize + ?Sized>(key: &T) -> Result<String, CanonicalError> {
-    struct OneMember<'a, K: ?Sized>(&'a K);
-
-    impl<K: Serialize + ?Sized> Serialize for OneMember<'_, K> {
-        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            let mut map = serializer.serialize_map(Some(1))?;
-            map.serialize_entry(self.0, &())?;
-            map.end()
-        }
-    }
-
-    match serde_json::to_value(OneMember(key)) {
+    match serde_json::value::Serializer.collect_map(std::iter::once((key, ()))) {
         Ok(Value::Object(map)) => map
             .into_iter()
             .next()
