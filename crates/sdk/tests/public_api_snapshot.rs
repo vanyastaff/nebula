@@ -223,45 +223,41 @@ fn the_http_adapter_leaks_no_client_type() {
     );
 }
 
-/// Pins the walker to the facts the snapshot exists to show.
+/// The `Limited` closure family is removed (MIGRATION P10): nothing of it is
+/// exported, and the limiter no longer wraps a client.
 #[test]
-fn limited_has_no_deref_and_marks_interim_calls() {
-    let text = resource_signatures(&workspace());
-    let limited = section(&text, "nebula_resource::rate_limit::Limited");
-    assert!(
-        limited
-            .iter()
-            .any(|line| line.contains("pub async fn run<")),
-        "Limited's inherent methods must be rendered: {limited:#?}"
-    );
-    for line in &limited {
-        assert!(
-            !(line.starts_with("impl") && line.contains("Deref")),
-            "Limited must not deref to its client: {line}"
-        );
-    }
-    assert!(
-        text.contains("\n## struct nebula_resource::rate_limit::Limited [interim]\n"),
-        "Limited itself is documented as interim surface"
-    );
-    assert!(
-        limited.iter().any(|line| line.starts_with("#[deprecated")),
-        "Limited is deprecated in favour of the managed call facade: {limited:#?}"
-    );
-    for method in [
-        "fn run<",
-        "fn run_until<",
-        "fn run_for<",
-        "fn run_for_until<",
-        "fn unlimited(",
+fn the_limited_closure_family_is_gone() {
+    let workspace = workspace();
+    let exported = export_map(&workspace);
+    for removed in [
+        "Limited",
+        "LimitedError",
+        "Throttle",
+        "NoThrottle",
+        "OnError",
+        "on_error",
+        "Verdict",
     ] {
-        let line = limited
-            .iter()
-            .find(|line| line.contains(method))
-            .unwrap_or_else(|| panic!("Limited has no `{method}`"));
+        let path = format!("nebula_sdk::integration::resource::{removed} ");
         assert!(
-            line.ends_with("[interim]"),
-            "{method} must be [interim]: {line}"
+            !exported.lines().any(|line| line.starts_with(&path)),
+            "`{removed}` must no longer be exported"
         );
     }
+    let text = resource_signatures(&workspace);
+    let limiter = section(&text, "nebula_resource::rate_limit::ResourceLimiter");
+    assert!(
+        limiter
+            .iter()
+            .any(|line| line.contains("pub async fn ready(")),
+        "ResourceLimiter's inherent methods must be rendered: {limiter:#?}"
+    );
+    assert!(
+        !limiter.iter().any(|line| line.contains("fn wrap")),
+        "ResourceLimiter must not wrap a client: {limiter:#?}"
+    );
+    assert!(
+        !text.contains("[interim]"),
+        "no resource surface is interim any more"
+    );
 }

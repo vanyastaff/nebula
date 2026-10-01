@@ -20,8 +20,8 @@
 //! deref either (`resource_handle_no_deref`) and whose body cannot keep the
 //! borrowed session (`session_escape`), and an eighth derives an action whose
 //! `#[resource]` fields are resource handles (`action_resource_handle`); the
-//! deprecated closure family fails under `deny(deprecated)`
-//! (`resource_limited_deprecated`).
+//! removed `Limited` closure family cannot wrap a client
+//! (`removed_limited_wrap`).
 //! Each negative binary targets one distinct authority or persistence
 //! escape hatch that must stay unavailable, including paths below `__private`:
 //! Rust documentation hiding is not access control. Procedural derives have a
@@ -42,7 +42,7 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/resource_rate_limit.rs",
     "src/bin/resource_call_classify.rs",
     "src/bin/attempt_settle_private.rs",
-    "src/bin/resource_limited_deprecated.rs",
+    "src/bin/removed_limited_wrap.rs",
     "src/bin/resource_managed_logger.rs",
     "src/bin/resource_credentialed.rs",
     "src/bin/resource_http.rs",
@@ -180,6 +180,7 @@ const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
         "pattern",
         "CredentialMetadataDraft",
     ),
+    ("removed_limited_wrap", "wrap", "ResourceLimiter"),
 ];
 
 #[test]
@@ -355,22 +356,6 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
                 && error.highlighted == "escaped = Some(tx)"),
         "the escape must fail as borrowed data escaping the session body: {}",
         render_output(&escape)
-    );
-
-    let deprecated = cargo_probe(temp.path(), "check", "resource_limited_deprecated");
-    assert!(
-        !deprecated.status.success(),
-        "the deprecated closure family compiled under `deny(deprecated)`"
-    );
-    let diagnostics = compiler_errors(&deprecated);
-    std::assert_matches!(
-        diagnostics.as_slice(),
-        [error] if error.highlighted == "wrap"
-            && error.message.contains("deprecated")
-            && error.message.contains("wrap")
-            && error.message.contains("into_lease"),
-        "`ResourceLimiter::wrap` must fail only as deprecated, pointing at the facade: {}",
-        render_output(&deprecated)
     );
 
     let hand_settled = cargo_probe(temp.path(), "check", "attempt_settle_private");

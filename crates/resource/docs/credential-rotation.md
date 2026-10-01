@@ -211,7 +211,7 @@ instead every row bound to the credential is **suspended**
 (`Manager::suspend_credential_row`, reason
 `CredentialUnavailableReason::{ReauthRequired, OperationBlocked}`):
 
-- New acquires, `Manager::until_accepting` and `Limited` waits end with
+- New acquires, `Manager::until_accepting` and managed units' quota waits end with
   `ErrorKind::CredentialUnavailable` (retryable; 30 s hint for
   reauthentication, 1 s for an operation block). It never trips the recovery
   gate.

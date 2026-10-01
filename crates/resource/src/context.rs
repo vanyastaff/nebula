@@ -128,11 +128,12 @@ impl ResourceContext {
 
     /// The rate limit of the resource row being created.
     ///
-    /// Wrap the client built in [`Provider::create`](crate::Provider::create)
-    /// with [`ResourceLimiter::wrap`] so every call through it is paced and a
-    /// provider's "slow down" pauses the whole quota. Outside a manager-driven
-    /// create (a hand-built context in a test) this is a detached limiter that
-    /// only honours the pauses it records itself.
+    /// Calls are paced by the managed call facade, not through this handle;
+    /// use it only to
+    /// [`penalize`](ResourceLimiter::penalize) on a signal that does not come
+    /// back from a call. Outside a manager-driven create (a hand-built
+    /// context in a test) this is a detached limiter that only honours the
+    /// pauses it records itself.
     #[must_use]
     pub fn limits(&self) -> Arc<ResourceLimiter> {
         self.limits

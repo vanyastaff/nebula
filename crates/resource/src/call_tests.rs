@@ -735,6 +735,290 @@ async fn a_suspension_during_the_quota_wait_ends_it_credential_unavailable() {
     );
 }
 
+// ── a row handle's limit waits ───────────────────────────────────────────
+//
+// The regression coverage of the removed closure family (MIGRATION P10),
+// on `Manager::handle`: a unit's quota wait ends when its row stops
+// admitting work but not on a reload, a provider's pause holds units already
+// waiting and the next acquire, and limit events mark transitions only.
+
+/// A provider pause long enough that only the row's admission ends a wait
+/// inside it.
+const PAUSE: Duration = Duration::from_mins(1);
+
+fn handle<R: Provider + PinSlots>(manager: &Manager) -> crate::call::ResourceHandle<R> {
+    manager.handle::<R>(&context()).expect("row handle")
+}
+
+type Parked = tokio::task::JoinHandle<Result<u32, OperationError>>;
+
+/// Registers an unrated `Api` row, records a [`PAUSE`] through a throttled
+/// unit on its handle — on `chat_id` 1 when `per_key`, else on the whole
+/// quota — and parks a second unit of that cost inside the pause's wait.
+async fn parked_behind_a_pause(
+    manager: &Manager,
+    per_key: bool,
+) -> (crate::call::ResourceHandle<Api>, Parked) {
+    resident(manager, None);
+    let handle = handle::<Api>(manager);
+    let (throttle, cost) = if per_key {
+        (
+            OperationError::throttled_key(Some(PAUSE)),
+            Cost::keyed("chat_id", 1),
+        )
+    } else {
+        (OperationError::throttled(Some(PAUSE)), Cost::ONE)
+    };
+    handle
+        .submit(Scripted::<READ>::new(vec![Err(throttle)]).cost(cost.clone()))
+        .await
+        .expect_err("the provider asked to slow down");
+    let parked = tokio::spawn(handle.submit(Once::sent(cost)));
+    // Let the unit book and park on the pause; the clock stays well inside it.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        !parked.is_finished(),
+        "the unit waits out the provider's pause"
+    );
+    (handle, parked)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_revoke_ends_a_handle_units_per_key_quota_wait() {
+    let manager = Manager::new();
+    let (_handle, parked) = parked_behind_a_pause(&manager, true).await;
+
+    let started = Instant::now();
+    let outcome = manager
+        .revoke_slot(&Api::key(), ScopeLevel::Global, "db")
+        .await
+        .expect("revoke");
+    assert!(
+        matches!(
+            outcome,
+            crate::SlotDispatchOutcome::Completed {
+                drain: crate::SlotDrainOutcome::Drained,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    let error = parked
+        .await
+        .expect("unit task")
+        .expect_err("the revoke ended the wait");
+    assert_eq!(*error.kind(), ErrorKind::Revoked, "{error}");
+    assert_eq!(error.sent(), SentState::NotSent);
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "the wait ended at the revoke, not with the pause: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_does_not_interrupt_a_handle_units_quota_wait() {
+    let manager = Manager::new();
+    let started = Instant::now();
+    let (_handle, parked) = parked_behind_a_pause(&manager, false).await;
+
+    manager
+        .reload_config::<Api>(Config { version: 2 }, &ScopeLevel::Global)
+        .expect("reload");
+    parked
+        .await
+        .expect("unit task")
+        .expect("a reload is benign: the unit runs once the pause ends");
+    assert!(started.elapsed() >= PAUSE);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_credential_suspension_ends_a_handle_units_pause_wait_as_credential_unavailable() {
+    let manager = Manager::new();
+    let (_handle, parked) = parked_behind_a_pause(&manager, false).await;
+
+    let started = Instant::now();
+    suspend::<Api>(&manager);
+    let error = parked
+        .await
+        .expect("unit task")
+        .expect_err("the suspension ended the wait");
+    assert!(
+        matches!(
+            error.kind(),
+            ErrorKind::CredentialUnavailable {
+                reason: CredentialUnavailableReason::ReauthRequired
+            }
+        ),
+        "{error}"
+    );
+    assert_eq!(error.sent(), SentState::NotSent);
+    assert!(
+        started.elapsed() < PAUSE,
+        "the wait ended at the suspension, not at the end of the pause"
+    );
+}
+
+/// A unit already sleeping on its booked slot when a provider's "slow down"
+/// arrives wakes no sooner than the pause ends.
+#[tokio::test(start_paused = true)]
+async fn a_pause_holds_handle_units_already_waiting_for_their_slot() {
+    let manager = Manager::new();
+    resident(&manager, Some(RowLimit::rate(per_second(1, 1))));
+    let handle = handle::<Api>(&manager);
+    handle
+        .submit(Once::sent(Cost::ONE))
+        .await
+        .expect("takes the permit");
+    let started = Instant::now();
+    let waiter = tokio::spawn(handle.submit(Once::sent(Cost::ONE)));
+    // The waiter has booked the next slot, one second out.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let throttle = OperationError::throttled(Some(Duration::from_secs(5)));
+    handle
+        .submit(Scripted::<READ>::new(vec![Err(throttle)]).cost(Cost::FREE))
+        .await
+        .expect_err("the provider asked to slow down");
+    waiter
+        .await
+        .expect("unit task")
+        .expect("admitted after the pause");
+    assert!(
+        started.elapsed() >= Duration::from_millis(5_100),
+        "woke {:?} after start, inside the pause",
+        started.elapsed()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_throttle_reported_through_a_handle_unit_holds_the_next_acquire() {
+    let manager = Manager::new();
+    resident(&manager, None);
+    let handle = handle::<Api>(&manager);
+    let throttle = OperationError::throttled(Some(Duration::from_secs(30)));
+    handle
+        .submit(Scripted::<READ>::new(vec![Err(throttle)]))
+        .await
+        .expect_err("the provider asked to slow down");
+
+    let error = manager
+        .acquire::<Api>(
+            &context(),
+            &AcquireOptions::default().with_deadline(in_one(Duration::from_secs(1))),
+        )
+        .await
+        .expect_err("paused for 30 s, past the 1 s deadline");
+    assert!(
+        matches!(
+            error.kind(),
+            ErrorKind::Exhausted { retry_after: Some(after) } if *after == Duration::from_secs(30)
+        ),
+        "{error}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_row_override_slows_a_handle_units_per_key_limit() {
+    let manager = Manager::new();
+    let every_three_seconds =
+        Rate::new(NonZeroU32::MIN, Duration::from_secs(3)).expect("valid rate");
+    resident(
+        &manager,
+        Some(RowLimit::default().with_keyed("chat_id", every_three_seconds)),
+    );
+    let handle = handle::<Api>(&manager);
+    handle
+        .submit(Once::sent(Cost::keyed("chat_id", 1)))
+        .await
+        .expect("free");
+    let started = Instant::now();
+    handle
+        .submit(Once::sent(Cost::keyed("chat_id", 1)))
+        .await
+        .expect("waits for the overridden slot");
+    assert_eq!(started.elapsed(), Duration::from_secs(3));
+
+    // Faster than declared is refused at registration, before any call.
+    let error = Manager::new()
+        .register(RegistrationSpec {
+            resource: Api::new(),
+            config: Config { version: 1 },
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: Some(RowLimit::default().with_keyed("chat_id", per_second(10, 1))),
+        })
+        .expect_err("tighten only");
+    assert_eq!(error.kind(), &ErrorKind::Permanent);
+}
+
+#[tokio::test(start_paused = true)]
+async fn handle_unit_limit_events_mark_transitions_and_penalties_only() {
+    let manager = Manager::new();
+    let mut events = manager.subscribe_events();
+    resident(&manager, Some(RowLimit::rate(per_second(10, 1))));
+    let handle = handle::<Api>(&manager);
+    let mut drain = || {
+        let mut seen = Vec::new();
+        while let Some(event) = events.try_recv() {
+            match event {
+                ResourceEvent::RateLimitEngaged { .. } => seen.push("engaged"),
+                ResourceEvent::RateLimitCleared { .. } => seen.push("cleared"),
+                ResourceEvent::RateLimitPenalized { .. } => seen.push("penalized"),
+                _ => {},
+            }
+        }
+        seen
+    };
+    let one = || handle.submit(Once::sent(Cost::ONE));
+
+    // Three units wait at once: the limit engages once. It stays engaged
+    // after they are admitted: it clears only when a unit passes without
+    // waiting, so units kept at saturation report nothing per attempt.
+    let (first, second, third) = tokio::join!(one(), one(), one());
+    first.and(second).and(third).expect("admitted in turn");
+    assert_eq!(
+        drain(),
+        ["engaged"],
+        "concurrent waits publish one transition, not one per unit"
+    );
+    for _ in 0..3 {
+        one().await.expect("admitted at saturation");
+    }
+    assert!(
+        drain().is_empty(),
+        "units kept waiting at saturation report nothing per attempt"
+    );
+
+    let throttle = OperationError::throttled(Some(Duration::from_secs(2)));
+    handle
+        .submit(Scripted::<READ>::new(vec![Err(throttle)]).cost(Cost::FREE))
+        .await
+        .expect_err("the provider asked to slow down");
+    let started = Instant::now();
+    one().await.expect("admitted after the pause");
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "a penalty blocks the next unit until the provider's Retry-After"
+    );
+    assert_eq!(drain(), ["penalized"]);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    one().await.expect("free");
+    assert_eq!(
+        drain(),
+        ["cleared"],
+        "the first unit that waits for nothing clears it"
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    one().await.expect("free");
+    assert!(
+        drain().is_empty(),
+        "a free unit on a clear limit says nothing"
+    );
+}
+
 // ── cancellation ─────────────────────────────────────────────────────────
 
 #[tokio::test(start_paused = true)]

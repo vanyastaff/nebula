@@ -425,13 +425,12 @@ impl<R: Provider> ResourceGuard<R> {
 
     /// The row's limit.
     ///
-    /// A resource that wraps its client in `create` with
-    /// [`wrap`](crate::rate_limit::ResourceLimiter::wrap) is paced per call:
-    /// each [`Limited`](crate::rate_limit::Limited) call books one permit,
-    /// and an acquire only honours pauses. Without a wrapped client, each
-    /// acquire books one permit. Use this handle only to
-    /// [`penalize`](crate::rate_limit::ResourceLimiter::penalize) on a signal
-    /// that does not come back from a call.
+    /// Until the managed call facade serves the row, each acquire books one
+    /// permit; from then on each granted attempt books its declared
+    /// [`Cost`](crate::call::Cost) and an acquire only honours pauses (see
+    /// [`RateLimitProfile`](crate::RateLimitProfile)). Use this handle only
+    /// to [`penalize`](crate::rate_limit::ResourceLimiter::penalize) on a
+    /// signal that does not come back from a call.
     pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter> {
         &self.managed.rate_limiter
     }

@@ -117,17 +117,6 @@ pub enum LimitScope {
     Process,
 }
 
-## enum nebula_resource::rate_limit::LimitedError
-exported as nebula_sdk::integration::resource::LimitedError
-#[derive(Debug)]
-#[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::call(Cost, ..)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, returning `OperationError::throttled` replaces `Throttle`)")]
-pub enum LimitedError<E> {
-    Limit(Error),
-    Call(E),
-}
-impl<E: fmt::Display> fmt::Display for LimitedError<E>
-impl<E: std::error::Error + 'static> std::error::Error for LimitedError<E>
-
 ## enum nebula_resource::rate_limit::Override
 exported as nebula_sdk::integration::resource::Override
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -136,16 +125,6 @@ pub enum Override {
     Fixed,
     #[default] TightenOnly,
     UpTo(Rate),
-}
-
-## enum nebula_resource::rate_limit::Verdict
-exported as nebula_sdk::integration::resource::Verdict
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Verdict {
-    Pass,
-    Throttled { retry_after: Option<Duration> },
-    KeyThrottled { retry_after: Option<Duration> },
 }
 
 ## enum nebula_resource::reload::ReloadOutcome
@@ -312,10 +291,6 @@ impl TopologyTag {
     pub fn as_str(self) -> &'static str;
 }
 impl fmt::Display for TopologyTag
-
-## fn nebula_resource::rate_limit::on_error
-exported as nebula_sdk::integration::resource::on_error
-pub const fn on_error<F>(classify: F) -> OnError<F>;
 
 ## fn nebula_resource::rate_limit::retry_after_from_header
 exported as nebula_sdk::integration::resource::retry_after_from_header
@@ -709,35 +684,6 @@ impl<R: Provider> nebula_core::Guard for ResourceGuard<R>
 impl<R: Provider> nebula_core::TypedGuard for ResourceGuard<R>
 impl<R: Provider> std::fmt::Debug for ResourceGuard<R>
 
-## struct nebula_resource::rate_limit::Limited [interim]
-exported as nebula_sdk::integration::resource::Limited
-#[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::call(Cost, ..)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, returning `OperationError::throttled` replaces `Throttle`)")]
-pub struct Limited<C, T = NoThrottle> {
-    /* private fields */
-}
-impl<C, T> Limited<C, T> {
-    pub async fn run<R, E>(&self, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>; [interim]
-    pub async fn run_until<R, E>(&self, deadline: Option<std::time::Instant>, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>; [interim]
-    pub async fn run_for<R, E>(&self, dimension: &str, value: impl fmt::Display, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>; [interim]
-    pub async fn run_for_until<R, E>(&self, dimension: &str, value: impl fmt::Display, deadline: Option<std::time::Instant>, call: impl AsyncFnOnce(&C) -> Result<R, E>) -> Result<R, LimitedError<E>> where T: Throttle<R, E>; [interim]
-    pub const fn unlimited(&self) -> &C; [interim]
-    pub const fn limits(&self) -> &Arc<ResourceLimiter>;
-}
-impl<C, T> fmt::Debug for Limited<C, T>
-impl<C: Clone, T: Clone> Clone for Limited<C, T>
-
-## struct nebula_resource::rate_limit::NoThrottle
-exported as nebula_sdk::integration::resource::NoThrottle
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoThrottle;
-impl<T, E> Throttle<T, E> for NoThrottle
-
-## struct nebula_resource::rate_limit::OnError
-exported as nebula_sdk::integration::resource::OnError
-#[derive(Debug, Clone, Copy)]
-pub struct OnError<F>(_);
-impl<T, E, F> Throttle<T, E> for OnError<F> where F: Fn(&E) -> Verdict + Send + Sync
-
 ## struct nebula_resource::rate_limit::RateLimitSettings
 exported as nebula_sdk::integration::resource::RateLimitSettings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Schema)]
@@ -785,7 +731,6 @@ pub struct ResourceLimiter {
 impl ResourceLimiter {
     pub fn rate(&self) -> Option<Rate>;
     pub fn profile(&self) -> RateLimitProfile;
-    #[deprecated(since = "0.21.0", note = "use the managed call facade: `ResourceGuard::into_lease` + `Operation`, one `OperationCx::call(Cost, ..)` per provider call (`Cost::keyed` replaces `run_for`, `Submission::with_deadline` replaces `run_until`, returning `OperationError::throttled` replaces `Throttle`)")] pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T>;
     pub async fn ready(&self, deadline: Option<std::time::Instant>) -> Result<(), Error>;
     pub async fn ready_for(&self, dimension: &str, value: impl fmt::Display, deadline: Option<std::time::Instant>) -> Result<(), Error>;
     pub async fn penalize(&self, retry_after: Duration) -> Result<(), Error>;
@@ -1232,12 +1177,6 @@ pub trait StreamOperation<R: Provider + PinSlots>: Send + 'static {
     fn idempotency_key(&self) -> Option<String> { .. }
     fn max_attempts(&self) -> NonZeroU32 { .. }
     fn run(self, cx: &mut OperationCx<'_, R>, sink: StreamSink<Self::Item>) -> impl Future<Output = Result<Self::Output, OperationError>> + Send;
-}
-
-## trait nebula_resource::rate_limit::Throttle
-exported as nebula_sdk::integration::resource::Throttle
-pub trait Throttle<T, E>: Send + Sync {
-    fn check(&self, outcome: &Result<T, E>) -> Verdict;
 }
 
 ## trait nebula_resource::resource::HasCredentialSlots

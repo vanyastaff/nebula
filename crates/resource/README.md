@@ -167,9 +167,8 @@ the call's own classification counts, so a limit hit on another resource
 inside the call never pauses this one, and a call that failed without an
 answer (`unreachable`, `interrupted`) never resets a backoff in progress. A
 resource that declares no rate pays nothing: its limiter paces nothing and
-only honours pauses, kept in-process. The closure family that wrapped a
-client instead (`ctx.limits().wrap(client, throttle)`, `Limited::run*`) is
-deprecated; see "Rate-limit profiles" for the migration.
+only honours pauses, kept in-process. (The `Limited` closure family that
+wrapped a client is removed since 0.26.0; see "Rate-limit profiles".)
 
 Limits per key — Telegram's one message per second per chat — are declared
 with `ResiliencePolicy::keyed("chat_id", rate)` on top of the account rate, and
@@ -193,35 +192,13 @@ row reports it as a `RateLimitProfile` (`as_str()` in parentheses):
 
 | Profile | When | A permit is booked per | Calls inside a lease | Support |
 |---|---|---|---|---|
-| `PausesOnly` (`pauses_only`) | no rate declared or set, no wrapped client | nothing | not paced; a provider pause holds acquires | supported |
-| `PerAcquire` (`per_acquire`) | a rate, no wrapped client | acquire | bounded interval: one permit per lease, however many calls it makes | supported |
-| `InterimPerClosure` (`interim_per_closure`) | `Provider::create` wrapped a client | `Limited::run*` closure | strict: each closure is one permit; acquires only honour pauses | **interim, deprecated** since 0.21.0 — replaced by the managed call facade |
-| `PerAttempt` (`per_attempt`) | a lease became a managed call facade (`ResourceGuard::into_lease`) | granted attempt, at its declared cost (`FREE` books nothing) | strict: each provider attempt books its cost; acquires only honour pauses | supported |
+| `PausesOnly` (`pauses_only`) | no rate declared or set, not served by the facade | nothing | not paced; a provider pause holds acquires | supported |
+| `PerAcquire` (`per_acquire`) | a rate, not served by the facade | acquire | bounded interval: one permit per lease, however many calls it makes | supported |
+| `PerAttempt` (`per_attempt`) | the managed call facade served the row (`Manager::handle`, or `ResourceGuard::into_lease`) | granted attempt, at its declared cost (`FREE` books nothing) | strict: each provider attempt books its cost; acquires only honour pauses | supported |
 
-Only `InterimPerClosure` is interim (`RateLimitProfile::is_interim`). Its
-closure family — `ResourceLimiter::wrap`, `Limited` (`run`, `run_until`,
-`run_for`, `run_for_until`, `unlimited`) and `LimitedError` — is deprecated
-since 0.21.0 and removed before the API freeze (MIGRATION P10). Migrate each
-call to the managed call facade: keep the client as the provider's instance,
-turn the lease into a facade with `ResourceGuard::into_lease`, and describe
-the call as an `Operation`:
-
-| Closure family | Managed call facade |
-|---|---|
-| `ctx.limits().wrap(client, throttle)` in `create` | return the client itself as the instance |
-| `client.run(call)` | `cx.call(Cost::ONE, async move \|client, creds\| ..)` |
-| `client.run_for("chat_id", id, call)` | `cx.call(Cost::keyed("chat_id", id), ..)` |
-| `client.run_until(deadline, call)` | `lease.submit(op).with_deadline(deadline)` |
-| `Throttle::check(&outcome)` | the call returns `OperationError::throttled` / `throttled_key` |
-| `client.unlimited()` | none, by design: every provider call is an attempt |
-| `LimitedError::{Limit, Call}` | `OperationError` (kind, sent state, effect, `is_retryable`) |
-
-The profile is observed, not declared: it latches to `InterimPerClosure` at the
-first `ResourceLimiter::wrap`, and to `PerAttempt` at the first
-`into_lease` on one of the row's leases, and keeps it for the row's life
-(`InterimPerClosure` wins when both latched). A row whose instance is created
-lazily reports its pre-wrap profile (`PausesOnly` or `PerAcquire`) until the
-first acquire creates it. In-process status carries it
+The profile is observed, not declared: it latches to `PerAttempt` the first
+time the managed call facade serves the row and keeps it for the row's life.
+In-process status carries it
 — `ResourceHealthSnapshot::rate_limit_profile` and
 `ManagedResourceView::rate_limit_profile()`; the cross-process resource status
 does not yet. `RateLimitProfile` is a status fact, not authoring surface, so
@@ -478,12 +455,12 @@ follow from the same generation:
   hand-out with `Revoked` (tainted), `CredentialUnavailable` (suspended) or
   `Cancelled`; the built entry goes back through ordinary release. None of these
   errors trips the recovery gate.
-- A wrapped client's wait (`Limited::run*`) ends with `LimitedError::Limit` of kind
-  `Cancelled` (`CredentialUnavailable` for a suspension) when the row's
-  generation closes, and a call started after it closed
-  is refused without waiting, so a lease parked on a long provider pause no longer
-  holds a revoke drain. The provider call itself is never interrupted. `run*` and
-  `unlimited` are interim until the managed call facade replaces them.
+- A managed unit's quota wait (including one parked on a long provider pause)
+  ends unsent when its generation closes — `Revoked` for a tainted row,
+  `CredentialUnavailable` for a suspension, `Cancelled` otherwise — and a
+  reload does not end it. A unit on a `Manager::handle` holds no lease while it
+  waits, so it never holds a revoke or shutdown drain. A granted provider call
+  is never interrupted.
 
 ### Managed call facade
 
