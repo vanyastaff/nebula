@@ -214,8 +214,15 @@ configuration, and process lifecycle.
   attempt replays in order. Across attempts, a recorded slot that changed nothing yet
   (only prepared, or every call explained not crossed) is refused as an occurrence
   mismatch when an earlier attempt recorded an outcome, or a call that crossed, at a
-  higher position of its family (this also halts a recovery of concurrent units that
-  applied out of order). A node cancelled mid-iteration ends the iteration at once: a
+  higher position of its family that the program ran after it: in a later iteration,
+  or with a **concurrency floor** above it. Every fresh slot records its floor at its
+  first prepare (`EffectSlotBinding::concurrent_floor`, kept in the protocol record):
+  the lowest position of its iteration whose unit was still open (handed out and not
+  yet gone, `EffectJournal::finish_occurrence`), its own when none was. Units awaited
+  together (`join!`, `FuturesUnordered`) are concurrent: a recovery replays the
+  unsettled one under its recorded provider key (at least once) instead of halting. A
+  slot recorded without a floor is read strictly. A node cancelled mid-iteration, or
+  during the delay between iterations, ends the iteration at once: a
   later detached submission is refused closed, with no failure of its own, so the
   conclusion drains only the units already in flight. A stateful node's journal admits a unit only while an iteration is open:
   admission and the iteration rollover are one transition under the journal's lock,

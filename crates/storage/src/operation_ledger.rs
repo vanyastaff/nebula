@@ -126,6 +126,7 @@ pub(crate) fn initial_protocol(
         .ok_or(OperationLedgerError::InvalidProtocol)?;
     OperationProtocolRecord::prepared(binding.contract.clone(), now_ms)
         .provider_key(binding.provider_key)
+        .concurrent_floor(binding.concurrent_floor)
         .build()
 }
 
@@ -857,6 +858,7 @@ mod tests {
             destination: DestinationCapability::Opaque,
             contract: &contract(),
             provider_key: None,
+            concurrent_floor: None,
         };
 
         let outcome = decide_prepare(slot(), &stored, &binding)
@@ -887,6 +889,7 @@ mod tests {
             destination: DestinationCapability::StableKey,
             contract: &contract(),
             provider_key: None,
+            concurrent_floor: None,
         };
 
         assert_eq!(
@@ -910,6 +913,7 @@ mod tests {
             destination: DestinationCapability::StableKey,
             contract: &stable,
             provider_key,
+            concurrent_floor: None,
         };
         let protocol = initial_protocol(&binding(key("original")), 0).unwrap();
         let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
@@ -929,6 +933,48 @@ mod tests {
             decide_prepare(slot(), &keyless, &binding(key("original"))),
             Err(OperationLedgerError::OperationMismatch { slot_id: slot() })
         );
+    }
+
+    #[test]
+    fn the_concurrent_floor_is_recorded_once_and_not_part_of_the_identity() {
+        let stable = contract();
+        let scope = nebula_storage_port::Scope::new("ws", "org");
+        let binding = |concurrent_floor| EffectSlotBinding {
+            scope: &scope,
+            execution_id: "exe",
+            node_key: "node",
+            occurrence: "once",
+            attempt_generation: AttemptGeneration::new(0),
+            fingerprint: RequestFingerprint::new(1, [0x33; 32]),
+            destination: DestinationCapability::StableKey,
+            contract: &stable,
+            provider_key: None,
+            concurrent_floor,
+        };
+        let protocol = initial_protocol(&binding(Some(2)), 0).unwrap();
+        assert_eq!(protocol.concurrent_floor(), Some(2));
+        let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
+        // A later prepare with another (or no) floor replays the record,
+        // which keeps the floor it was first prepared with.
+        for other in [Some(0), None] {
+            assert!(
+                decide_prepare(slot(), &stored, &binding(other)).is_ok(),
+                "{other:?}"
+            );
+        }
+        assert_eq!(
+            stored
+                .protocol()
+                .and_then(OperationProtocolRecord::concurrent_floor),
+            Some(2)
+        );
+        // A record without a floor serializes as before the floor existed.
+        let unfloored = initial_protocol(&binding(None), 0).unwrap();
+        let encoded = serde_json::to_value(&unfloored).unwrap();
+        assert!(encoded.get("concurrent_floor").is_none());
+        let floored =
+            serde_json::to_value(initial_protocol(&binding(Some(2)), 0).unwrap()).unwrap();
+        assert_eq!(floored["concurrent_floor"], serde_json::json!(2));
     }
 
     #[test]

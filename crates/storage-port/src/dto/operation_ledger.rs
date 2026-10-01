@@ -350,6 +350,17 @@ pub struct EffectSlotBinding<'a> {
     /// key back from [`PreparedOperation::provider_key`] instead of
     /// recomputing it.
     pub provider_key: Option<ProviderIdempotencyKey>,
+    /// The owner's concurrency floor for this occurrence, when it records
+    /// one: the lowest position of the occurrence's positional run whose
+    /// unit was still open when this one was first prepared (its own
+    /// position when none was). A slot recorded below the floor finished
+    /// before this one began; one at or above it ran concurrently with it.
+    ///
+    /// Persisted with the first preparation only, read back from
+    /// [`OperationProtocolRecord::concurrent_floor`](super::OperationProtocolRecord::concurrent_floor).
+    /// Never part of the natural key or of the prepare identity: re-preparing
+    /// with another floor replays the recorded slot unchanged.
+    pub concurrent_floor: Option<u32>,
 }
 
 impl EffectSlotBinding<'_> {

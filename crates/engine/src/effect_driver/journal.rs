@@ -124,13 +124,23 @@
 //!   [`AcknowledgementUnknown`](OperationLedgerError::AcknowledgementUnknown),
 //!   nothing is written or sent, and the node defers, so the next attempt
 //!   reads what was written and replays in order;
-//! - across attempts, a recorded slot that changed nothing yet (only
+//! - across attempts, a recorded slot `L` that changed nothing yet (only
 //!   prepared, or every call explained not crossed) is refused as an
 //!   occurrence mismatch, with nothing sent, when an earlier attempt
-//!   recorded a slot that may have changed the provider (an outcome, or a
-//!   call that crossed) at a higher position of its family. This also
-//!   halts a recovery of concurrent units that applied out of order: the
-//!   journal cannot tell their order apart from the program's.
+//!   recorded a slot `H` of its family that may have changed the provider
+//!   (an outcome, or a call that crossed) and that the program ran *after*
+//!   `L`: `H` is of a later iteration (the barrier drains one iteration
+//!   before the next begins), or `L` lies below `H`'s **concurrency
+//!   floor**. Every fresh slot records its floor with its first prepare
+//!   ([`EffectSlotBinding::concurrent_floor`]): the lowest position of its
+//!   iteration whose unit was still open — handed out and not yet gone
+//!   ([`EffectJournal::finish_occurrence`]) — its own when none was. A unit
+//!   below the floor was gone before `H` began; one at or above it ran
+//!   concurrently with `H` (units awaited together), the program did not
+//!   order them, and `L` replays under its recorded provider key — at
+//!   least once, as a durable-execution engine re-sends an unsettled
+//!   scheduled effect. A slot recorded without a floor (before floors
+//!   existed) is read strictly: as if every unit below it was gone.
 //!
 //! **Cancellation.** A node cancelled mid-iteration ends the iteration at
 //! once ([`IterationGate::cancel_iteration`]): a later submission (a
@@ -616,23 +626,31 @@ struct PriorOccurrences {
     /// by a prepare whose acknowledgement was lost) or with every call
     /// explained not crossed — no outcome, no call that may have crossed.
     unsettled: HashSet<String>,
-    /// The highest recorded position per family whose slot may have changed
-    /// the provider: a recorded outcome, or a call that crossed.
-    highest_consequential: HashMap<Family, (u32, u32)>,
+    /// The recorded slots that may have changed the provider (a recorded
+    /// outcome, or a call that crossed), per family and iteration: their
+    /// ordinal and concurrency floor (their own ordinal when none was
+    /// recorded).
+    consequential: HashMap<(Family, u32), Vec<(u32, u32)>>,
+    /// The latest iteration per family holding such a slot.
+    last_consequential_iteration: HashMap<Family, u32>,
 }
 
+/// One recorded occurrence as the journal weighs it: its label, whether its
+/// slot may have changed the provider ([`is_consequential`]) and the
+/// concurrency floor recorded with it.
+type RecordedOccurrence<'a> = (&'a str, bool, Option<u32>);
+
 impl PriorOccurrences {
-    /// Every label as consequential (a recorded outcome).
+    /// Every label as consequential (a recorded outcome), with no floor.
     #[cfg(test)]
     fn new<'a>(labels: impl IntoIterator<Item = &'a str>) -> Self {
-        Self::from_records(labels.into_iter().map(|label| (label, true)))
+        Self::from_records(labels.into_iter().map(|label| (label, true, None)))
     }
 
-    /// The recorded `(label, consequential)` pairs: whether each slot may
-    /// have changed the provider ([`is_consequential`]).
-    fn from_records<'a>(records: impl IntoIterator<Item = (&'a str, bool)>) -> Self {
+    /// The recorded occurrences.
+    fn from_records<'a>(records: impl IntoIterator<Item = RecordedOccurrence<'a>>) -> Self {
         let mut prior = Self::default();
-        for (label, consequential) in records {
+        for (label, consequential, floor) in records {
             if let Some(position) = Position::parse(label) {
                 prior
                     .positions
@@ -640,12 +658,19 @@ impl PriorOccurrences {
                     .or_default()
                     .push((position.order(), label.to_owned()));
                 if consequential {
-                    let order = position.order();
-                    let highest = prior
-                        .highest_consequential
+                    // A legacy row without a floor counts as having
+                    // started after everything below it finished.
+                    let floor = floor.map_or(position.ordinal, |floor| floor.min(position.ordinal));
+                    prior
+                        .consequential
+                        .entry((position.family, position.iteration))
+                        .or_default()
+                        .push((position.ordinal, floor));
+                    let last = prior
+                        .last_consequential_iteration
                         .entry(position.family)
-                        .or_insert(order);
-                    *highest = (*highest).max(order);
+                        .or_insert(position.iteration);
+                    *last = (*last).max(position.iteration);
                 }
             }
             if !consequential {
@@ -660,17 +685,35 @@ impl PriorOccurrences {
     }
 
     /// Whether `occurrence` is recorded but changed nothing yet, while an
-    /// earlier attempt applied (or may have applied) an effect at a higher
-    /// position of its family: running it now would apply it after that
+    /// earlier attempt applied (or may have applied) an effect that the
+    /// program ran *after* it: running it now would apply it after that
     /// later effect, reversing the program's order.
+    ///
+    /// A consequential slot `H` of the same family ran after the recorded
+    /// slot `L` when `H` is of a later iteration (an iteration's barrier
+    /// drains it before the next begins), or when `L` lies below `H`'s
+    /// concurrency floor — `L`'s unit was gone before `H` was first
+    /// prepared. A slot at or above the floor ran concurrently with `H`:
+    /// the program did not order them, and `L` replays under its recorded
+    /// provider key (at least once).
     fn reorders_at(&self, occurrence: &str) -> bool {
         if !self.unsettled.contains(occurrence) {
             return false;
         }
         Position::parse(occurrence).is_some_and(|position| {
-            self.highest_consequential
+            let later_iteration = self
+                .last_consequential_iteration
                 .get(&position.family)
-                .is_some_and(|&highest| highest > position.order())
+                .is_some_and(|&last| last > position.iteration);
+            let later_in_order = self
+                .consequential
+                .get(&(position.family, position.iteration))
+                .is_some_and(|slots| {
+                    slots.iter().any(|&(ordinal, floor)| {
+                        ordinal > position.ordinal && position.ordinal < floor
+                    })
+                });
+            later_iteration || later_in_order
         })
     }
 
@@ -741,6 +784,11 @@ struct MetPositions {
     /// or the ledger lost the acknowledgement): its row may exist. No fresh
     /// slot above it is prepared in this attempt.
     uncertain: HashMap<Family, (u32, u32)>,
+    /// Per family, the positions whose unit is open: handed out
+    /// ([`EffectJournal::next_occurrence`]) and not yet gone
+    /// ([`EffectJournal::finish_occurrence`]). A unit open when another's
+    /// fresh slot is prepared ran concurrently with it.
+    open: HashMap<Family, std::collections::BTreeSet<(u32, u32)>>,
 }
 
 /// Marks a position uncertain when its ledger prepare is dropped before it
@@ -868,11 +916,17 @@ impl NodeEffectJournal {
                         authority.node_key.as_str(),
                     )
                     .await?;
-                Ok::<_, EffectExecutionError>(PriorOccurrences::from_records(
-                    slots
-                        .iter()
-                        .map(|slot| (slot.occurrence(), is_consequential(slot.record()))),
-                ))
+                Ok::<_, EffectExecutionError>(PriorOccurrences::from_records(slots.iter().map(
+                    |slot| {
+                        (
+                            slot.occurrence(),
+                            is_consequential(slot.record()),
+                            slot.record().protocol().and_then(
+                                nebula_storage_port::dto::OperationProtocolRecord::concurrent_floor,
+                            ),
+                        )
+                    },
+                )))
             })
             .await
     }
@@ -1087,6 +1141,22 @@ impl NodeEffectJournal {
         };
         self.note_failure(unknown);
         Err(self.state().failure.unwrap_or(unknown))
+    }
+
+    /// The concurrency floor of `occurrence` now: the lowest ordinal of its
+    /// iteration (its family's one run, for a flat label) whose unit is
+    /// still open — at most its own, since its own unit is open while it
+    /// prepares. Every position below the floor finished before this one
+    /// began.
+    fn concurrent_floor(&self, occurrence: &str) -> Option<u32> {
+        let position = Position::parse(occurrence)?;
+        let state = self.state();
+        let lowest_open = state.positions.open.get(&position.family).and_then(|open| {
+            open.range((position.iteration, 0)..=position.order())
+                .next()
+                .copied()
+        });
+        Some(lowest_open.map_or(position.ordinal, |(_, ordinal)| ordinal))
     }
 
     /// Whether a position of `occurrence`'s family below it was left
@@ -1714,7 +1784,23 @@ impl EffectJournal for NodeEffectJournal {
         state.next_ordinal = ordinal.saturating_add(1);
         let label = occurrence_label(state.iteration, ordinal);
         state.positions.claimed.insert(label.clone());
+        if let Some(position) = Position::parse(&label) {
+            state
+                .positions
+                .open
+                .entry(position.family)
+                .or_default()
+                .insert(position.order());
+        }
         label
+    }
+
+    fn finish_occurrence(&self, occurrence: &str) {
+        if let Some(position) = Position::parse(occurrence)
+            && let Some(open) = self.state().positions.open.get_mut(&position.family)
+        {
+            open.remove(&position.order());
+        }
     }
 
     fn release_occurrence(&self, occurrence: &str) {
@@ -1813,6 +1899,8 @@ impl EffectJournal for NodeEffectJournal {
             destination: derived.contract.policy().capability(),
             contract: &derived.contract,
             provider_key: Some(derived.provider_key),
+            // Recorded with a fresh slot only; a recorded one keeps its own.
+            concurrent_floor: self.concurrent_floor(intent.occurrence),
         };
         // From here until the ledger answers, the row may be written without
         // this unit learning it: a prepare dropped mid-call (the unit

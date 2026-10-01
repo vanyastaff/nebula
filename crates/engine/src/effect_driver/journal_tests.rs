@@ -1338,6 +1338,23 @@ async fn a_submission_after_a_cancelled_iteration_is_refused_and_not_waited_for(
     assert_eq!(journal.conclude(Duration::from_mins(1)).await, Ok(()));
     assert!(started.elapsed() < Duration::from_mins(1));
     assert_eq!(harness.desk.keys().len(), 0);
+
+    // Cancelled between iterations (during a `Continue` delay): the same,
+    // not a barrier violation that would turn the cancellation into a
+    // failure.
+    let between = harness.stateful_journal(2);
+    between.begin_iteration(0).expect("it0");
+    between.end_iteration(DRAIN, true).await.expect("it0 ends");
+    between.cancel_iteration();
+    let refused = harness
+        .handle(&between)
+        .submit(Charge::<false> { order: 18 })
+        .await
+        .expect_err("the node was cancelled between iterations");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(refused.detail(), "effect owner closed; unit refused");
+    assert_eq!(between.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1432,6 +1449,81 @@ async fn a_recorded_effect_below_an_applied_one_is_never_run_after_it() {
         recovery.conclude(DRAIN).await,
         Err(EffectExecutionError::OccurrenceMismatch)
     );
+}
+
+#[test]
+fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
+    let lower = "unit/v1/#000000";
+    let with_higher = |floor: Option<u32>| {
+        PriorOccurrences::from_records([(lower, false, None), ("unit/v1/#000001", true, floor)])
+    };
+    // The higher effect was prepared while the lower unit was open: they
+    // ran concurrently, and the lower one replays.
+    assert!(!with_higher(Some(0)).reorders_at(lower));
+    // The lower unit was gone first: replaying it now would reverse them.
+    assert!(with_higher(Some(1)).reorders_at(lower));
+    // A legacy row without a floor is read strictly.
+    assert!(with_higher(None).reorders_at(lower));
+    // A settled lower slot replays its outcome: no reordering.
+    assert!(
+        !PriorOccurrences::from_records([(lower, true, None), ("unit/v1/#000001", true, Some(1))])
+            .reorders_at(lower)
+    );
+
+    // Iterations are always ordered: the barrier drains one before the next.
+    let across = PriorOccurrences::from_records([
+        ("it0/unit/v1/#000000", false, None),
+        ("it1/unit/v1/#000000", true, Some(0)),
+    ]);
+    assert!(across.reorders_at("it0/unit/v1/#000000"));
+    // Within an iteration, the floor counts from the iteration's ordinals.
+    let within = |floor| {
+        PriorOccurrences::from_records([
+            ("it1/unit/v1/#000001", false, None),
+            ("it1/unit/v1/#000002", true, Some(floor)),
+        ])
+    };
+    assert!(!within(1).reorders_at("it1/unit/v1/#000001"));
+    assert!(within(2).reorders_at("it1/unit/v1/#000001"));
+}
+
+#[tokio::test]
+async fn a_fresh_slot_records_the_lowest_unit_still_open_as_its_floor() {
+    let harness = Harness::new().await;
+    harness
+        .desk
+        .script(&[Reply::Held, Reply::Applied, Reply::Applied]);
+    let journal = harness.journal(1);
+    let handle = harness.handle(&journal);
+    // The first unit is mid-call: open past its prepare.
+    let first = tokio::spawn(handle.submit(Charge::<false> { order: 50 }));
+    tokio::time::timeout(Duration::from_secs(5), harness.desk.entered.notified())
+        .await
+        .expect("the first call reached the provider");
+    handle
+        .submit(Charge::<false> { order: 51 })
+        .await
+        .expect("applied while the first is open");
+    harness.desk.release.notify_one();
+    first.await.expect("task").expect("applied");
+    // Every unit is gone: the next one is ordered after both.
+    handle
+        .submit(Charge::<false> { order: 52 })
+        .await
+        .expect("applied");
+    let floors: Vec<Option<u32>> = harness
+        .slots()
+        .await
+        .iter()
+        .map(|slot| {
+            slot.record()
+                .protocol()
+                .expect("protocol")
+                .concurrent_floor()
+        })
+        .collect();
+    assert_eq!(floors, [Some(0), Some(0), Some(2)]);
+    assert_eq!(journal.conclude(DRAIN).await, Ok(()));
 }
 
 #[tokio::test]

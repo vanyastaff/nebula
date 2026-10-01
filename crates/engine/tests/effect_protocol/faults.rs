@@ -29,6 +29,8 @@ pub(super) enum Fault {
     PreparedWithoutPersistence,
     /// The command commits and its answer never comes back.
     AnswerLost,
+    /// The command never reaches the store and never answers.
+    Hang,
 }
 
 #[derive(Debug, Default)]
@@ -51,6 +53,8 @@ pub(super) struct FaultLedger {
     pub outcome_gate: Option<Arc<OutcomeGate>>,
     /// Fired when a command whose answer is lost committed.
     pub answer_lost: tokio::sync::Notify,
+    /// Fired whenever an outcome was recorded.
+    pub recorded: tokio::sync::Notify,
 }
 
 impl FaultLedger {
@@ -65,6 +69,7 @@ impl FaultLedger {
             outcome_attempts: parking_lot::Mutex::new(Vec::new()),
             outcome_gate: None,
             answer_lost: tokio::sync::Notify::new(),
+            recorded: tokio::sync::Notify::new(),
         }
     }
     /// The same fault, fired at the boundary's command after the first
@@ -174,7 +179,13 @@ impl OperationLedger for FaultLedger {
         if fire && matches!(self.fault, Fault::Before) {
             return Err(OperationLedgerError::AcknowledgementUnknown);
         }
+        if fire && matches!(self.fault, Fault::Hang) {
+            return std::future::pending().await;
+        }
         let outcome = self.inner.advance(scope, slot, fencing, command).await?;
+        if matches!(command, OperationCommand::RecordOutcome(_)) {
+            self.recorded.notify_one();
+        }
         if fire {
             return Err(OperationLedgerError::AcknowledgementUnknown);
         }

@@ -94,6 +94,17 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
         let _ = occurrence;
     }
 
+    /// The unit labelled `occurrence` is gone — settled, refused or given
+    /// up, and dropped — so nothing of it can still reach the provider.
+    /// Called once per [`next_occurrence`](Self::next_occurrence), after
+    /// [`release_occurrence`](Self::release_occurrence), when the unit's
+    /// owned state is dropped. An owner that records which units ran
+    /// concurrently uses it to tell a unit that finished before another
+    /// began from one still open; defaults to nothing.
+    fn finish_occurrence(&self, occurrence: &str) {
+        let _ = occurrence;
+    }
+
     /// Durably prepares the effect `intent` describes (recovering an
     /// unacknowledged earlier prepare) and returns its slot.
     ///

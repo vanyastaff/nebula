@@ -126,6 +126,8 @@ impl EffectTurn<'_> {
             // Remote effects identify themselves to the provider by the
             // ledger-minted operation id; they record no separate key.
             provider_key: None,
+            // One effect per node: no positional run to order.
+            concurrent_floor: None,
         };
         let slot = LedgerSlot::prepare(self.access(), &binding).await?;
         let mut driver = Driver {

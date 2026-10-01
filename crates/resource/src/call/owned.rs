@@ -140,6 +140,16 @@ impl fmt::Debug for OwnedEffect {
     }
 }
 
+impl Drop for OwnedEffect {
+    /// The unit is gone: a position it took is finished for its owner
+    /// ([`EffectJournal::finish_occurrence`]).
+    fn drop(&mut self) {
+        if let Some(occurrence) = self.occurrence.get() {
+            self.owner.finish_occurrence(occurrence);
+        }
+    }
+}
+
 impl OwnedEffect {
     /// The owned state of a unit of `declaration` on `key`, whose row is at
     /// `config_fingerprint`: refused when `owner` does not admit it

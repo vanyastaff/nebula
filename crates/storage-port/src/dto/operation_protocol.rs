@@ -491,6 +491,10 @@ pub struct OperationProtocolRecord {
     /// serializes byte-identically to one written before keys existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_key: Option<ProviderIdempotencyKey>,
+    /// Absent (not `null`) when none was recorded, so such a record
+    /// serializes byte-identically to one written before the floor existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    concurrent_floor: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -514,6 +518,8 @@ struct OperationProtocolRecordWire {
     adjudication_audit_digest: Option<[u8; 32]>,
     #[serde(default)]
     provider_key: Option<ProviderIdempotencyKey>,
+    #[serde(default)]
+    concurrent_floor: Option<u32>,
 }
 
 /// The not-crossed count of a record that does not carry the counter.
@@ -557,6 +563,7 @@ impl OperationProtocolRecord {
                 evidence: None,
                 adjudication_audit_digest: None,
                 provider_key: None,
+                concurrent_floor: None,
             },
         }
     }
@@ -721,6 +728,12 @@ impl OperationProtocolRecord {
     pub const fn provider_key(&self) -> Option<ProviderIdempotencyKey> {
         self.provider_key
     }
+    /// The owner's concurrency floor recorded at preparation
+    /// ([`EffectSlotBinding::concurrent_floor`](super::EffectSlotBinding::concurrent_floor));
+    /// immutable afterwards, `None` for a record written without one.
+    pub const fn concurrent_floor(&self) -> Option<u32> {
+        self.concurrent_floor
+    }
 }
 
 impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
@@ -744,6 +757,7 @@ impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
             evidence: wire.evidence,
             adjudication_audit_digest: wire.adjudication_audit_digest,
             provider_key: wire.provider_key,
+            concurrent_floor: wire.concurrent_floor,
         };
         record.validate()?;
         Ok(record)
@@ -816,6 +830,14 @@ impl OperationProtocolRecordBuilder {
     /// transition rebuilds from the stored record and so retains it.
     pub const fn provider_key(mut self, provider_key: Option<ProviderIdempotencyKey>) -> Self {
         self.record.provider_key = provider_key;
+        self
+    }
+    /// Set the owner's concurrency floor recorded at preparation.
+    ///
+    /// Adapters set it only when the record is first prepared; every later
+    /// transition rebuilds from the stored record and so retains it.
+    pub const fn concurrent_floor(mut self, concurrent_floor: Option<u32>) -> Self {
+        self.record.concurrent_floor = concurrent_floor;
         self
     }
     /// Finish construction only when the complete record is coherent.

@@ -503,6 +503,7 @@ mod tests {
             destination: DestinationCapability::Opaque,
             contract: &contract,
             provider_key: None,
+            concurrent_floor: None,
         };
         let slot = ledger
             .prepare(&binding, fencing)

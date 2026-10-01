@@ -507,6 +507,71 @@ async fn a_recovery_never_applies_a_lower_effect_after_a_higher_applied_one(
     assert_eq!(fixture.slots(execution).await, recorded);
 }
 
+// 7d ────────────────────────────────────────────────────────────────────────
+
+/// Two writes awaited together (`join_all`): one is prepared and its grant
+/// never answers, the other applies, and the process dies. The program
+/// never ordered them — the applied one was prepared while the other was
+/// still open, its recorded concurrency floor says so — so the recovery
+/// sends the unsent one under its recorded key, once, and the node
+/// completes.
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[tokio::test]
+async fn concurrent_writes_recover_after_a_crash_with_one_applied(#[case] backend: Backend) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = stateful(database.ports()).await;
+    let units = [write("joined-a:1"), write("joined-b:2")];
+    let execution = fixture
+        .start_iterations(&[&units[..]], json!({ "concurrent": true }))
+        .await;
+    // The first grant never answers; the other write applies.
+    let ledger = Arc::new(FaultLedger::new(
+        fixture.ports.ledger.clone(),
+        Boundary::Grant,
+        Fault::Hang,
+    ));
+    fixture.ports.stores.operation_ledger = ledger.clone();
+    fixture.crash_at(execution, &ledger.recorded).await;
+    let crashed = fixture.slots(execution).await;
+    assert_eq!(crashed.len(), 2, "both prepared");
+    let phases: Vec<EffectPhase> = crashed.iter().map(phase).collect();
+    assert!(
+        phases.contains(&EffectPhase::Prepared) && phases.contains(&EffectPhase::Resolved),
+        "{phases:?}"
+    );
+    let applied = crashed
+        .iter()
+        .find(|slot| phase(slot) == EffectPhase::Resolved)
+        .unwrap();
+    assert_eq!(
+        applied.record().protocol().unwrap().concurrent_floor(),
+        Some(0),
+        "the other write was open when it was prepared"
+    );
+    let unsent = crashed
+        .iter()
+        .find(|slot| phase(slot) == EffectPhase::Prepared)
+        .unwrap();
+    let unsent_key = recorded_key(unsent);
+    assert_eq!(fixture.gateway.call_count(), 1);
+
+    fixture.ports = database.reconnect().await;
+    database.expire_abandoned_leases().await;
+    let result = fixture.run(execution).await.unwrap();
+    assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
+    assert_eq!(fixture.gateway.call_count(), 2, "the unsent one, once");
+    assert_eq!(fixture.gateway.applied(), 2);
+    assert_eq!(
+        fixture.gateway.call_keys()[1].as_deref(),
+        Some(unsent_key.as_str()),
+        "under its recorded key"
+    );
+}
+
 // 8 ─────────────────────────────────────────────────────────────────────────
 
 #[rstest::rstest]

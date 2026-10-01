@@ -11,6 +11,21 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **`nebula-storage-port`: `EffectSlotBinding` gains `concurrent_floor:
+  Option<u32>`** (rides the 0.28.0 lockstep bump below). The owner's
+  concurrency floor for an occurrence — the lowest position of its run
+  whose unit was still open when it was first prepared — is persisted with
+  the first preparation inside the protocol record
+  (`OperationProtocolRecord::concurrent_floor`, builder
+  `concurrent_floor`), never part of the natural key or the prepare
+  identity. No schema migration: the protocol is a JSON payload, and the
+  field is omitted when absent, so records written without it read back
+  unchanged (`None`). A struct literal must name the field (`None` for a
+  binding without positional runs). The engine's effect journal uses it to
+  replay concurrent units after a crash instead of halting;
+  `nebula_resource::call::journal::EffectJournal` gains a defaulted
+  `finish_occurrence(&str)`, called when a unit's owned state is dropped.
+
 - **A stable resource configuration fingerprint advances development packages
   to 0.28.0 in lockstep.** `ResourceConfig::fingerprint` is durable: the effect
   journal binds every recorded effect's destination to it, yet the derive and
@@ -1625,8 +1640,9 @@ let admitted = recorded.readmit_against(fresh)?;
   call as ambiguous and the node fails `ENGINE:EFFECT_OUTCOME_UNKNOWN`
   instead). Units are admitted only while an iteration is open, in one
   transition with the rollover; one submitted between iterations is refused
-  unsent and recorded the same way; a node cancelled mid-iteration ends the
-  iteration at once, so a later detached submission is refused closed and
+  unsent and recorded the same way; a node cancelled mid-iteration or during
+  the delay between iterations ends the iteration at once, so a later
+  detached submission is refused closed (the node stays cancelled) and
   the conclusion does not wait for it. Effects keep their order within a
   family: a fresh slot above a position whose ledger prepare never answered
   in the same attempt (cancelled or past its deadline mid-call, or the
@@ -1634,7 +1650,13 @@ let admitted = recorded.readmit_against(fresh)?;
   `AcknowledgementUnknown` with nothing sent, and a recorded slot that
   changed nothing yet is refused as an occurrence mismatch when an earlier
   attempt recorded an outcome, or a crossed call, at a higher position of
-  its family. A barrier that reads the node's
+  its family that the program ran after it — in a later iteration, or with
+  a concurrency floor above it. Each fresh slot records that floor at its
+  first prepare: the lowest position of its iteration whose unit was still
+  open (handed out and not yet gone), its own when none was. Units awaited
+  together are concurrent, so a recovery replays the unsettled one under its
+  recorded provider key (at least once) instead of halting; a slot recorded
+  without a floor is read strictly. A barrier that reads the node's
   occurrences does so within what is left of the drain limit (at least
   5 s) and defers the node when the ledger does not answer. One verdict per
   node attempt still decides the node. Positions

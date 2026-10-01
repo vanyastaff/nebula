@@ -559,6 +559,10 @@ struct IterationScript {
     /// distinct requests (a node over its journaled slot cap).
     #[serde(default)]
     fill: u32,
+    /// Submit every unit of an iteration and await them together
+    /// (`join_all`), instead of one after the other.
+    #[serde(default)]
+    concurrent: bool,
 }
 
 /// The stateful action's state: the next iteration and every receipt so
@@ -638,20 +642,37 @@ impl StatefulAction for StatefulCharge {
                 budget: 1,
             });
         }
-        for mut spec in units {
+        let submit = |mut spec: UnitSpec| {
             if let Some(request) = &plan.request_override {
                 spec.request.clone_from(request);
             }
-            let unit = if spec.idempotent {
+            if spec.idempotent {
                 handle.submit(Charge::<true>(spec))
             } else {
                 handle.submit(Charge::<false>(spec))
-            };
-            if plan.leak {
-                drop(tokio::spawn(unit));
-                continue;
             }
-            match unit.await {
+        };
+        let settled = if script.concurrent {
+            futures::future::join_all(units.into_iter().map(submit)).await
+        } else {
+            let mut settled = Vec::new();
+            for spec in units {
+                let unit = submit(spec);
+                if plan.leak {
+                    drop(tokio::spawn(unit));
+                    continue;
+                }
+                let result = unit.await;
+                let failed = result.is_err();
+                settled.push(result);
+                if failed && !script.swallow {
+                    break;
+                }
+            }
+            settled
+        };
+        for result in settled {
+            match result {
                 Ok(receipt) => state.receipts.push(json!(receipt)),
                 Err(error) if script.swallow => state.receipts.push(json!({
                     "kind": error.kind().to_string(),

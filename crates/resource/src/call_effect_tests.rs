@@ -115,6 +115,8 @@ struct FakeState {
     run_prefix: Option<String>,
     /// Occurrences units released, in order.
     released: Vec<String>,
+    /// Occurrences whose units are gone, in order.
+    finished: Vec<String>,
     slots: HashMap<String, FakeSlot>,
     next_id: u8,
     log: Vec<Step>,
@@ -268,6 +270,10 @@ impl EffectJournal for FakeOwner {
 
     fn release_occurrence(&self, occurrence: &str) {
         self.state().released.push(occurrence.to_owned());
+    }
+
+    fn finish_occurrence(&self, occurrence: &str) {
+        self.state().finished.push(occurrence.to_owned());
     }
 
     async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
@@ -1203,15 +1209,51 @@ async fn every_position_handed_out_is_released_even_when_the_unit_gives_up() {
     );
     assert_eq!(fixture.owner.state().released, [pay(0)]);
 
-    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]))
-        .await
+    assert_eq!(
+        fixture.owner.state().finished,
+        [pay(0)],
+        "the unit that gave up is gone"
+    );
+
+    // A unit's position stays open from its first poll until the unit is
+    // gone, past its prepare.
+    let unit = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]));
+    let unit = tokio::spawn(unit);
+    unit.await
+        .expect("the unit task")
         .expect("prepared and run");
     assert_eq!(
         fixture.owner.state().released,
         [pay(0), pay(1)],
         "released once its prepare returned"
     );
+    assert_eq!(fixture.owner.state().finished, [pay(0), pay(1)]);
     assert_eq!(calls.made(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_position_is_finished_only_once_its_unit_is_gone() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    // The call stalls: the unit is prepared and released, not finished.
+    let unit = tokio::spawn(row.submit(Stall {
+        calls: Arc::clone(&calls),
+    }));
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.made(), 1, "the call is in flight");
+    assert_eq!(fixture.owner.state().released, [pay(0)]);
+    assert!(fixture.owner.state().finished.is_empty(), "still open");
+    // Dropping the waiter does not end a unit whose call is in flight: its
+    // position stays open while it may still reach the provider.
+    unit.abort();
+    let _ = unit.await;
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert!(fixture.owner.state().finished.is_empty(), "still in flight");
 }
 
 #[tokio::test(start_paused = true)]
