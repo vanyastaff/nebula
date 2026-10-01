@@ -56,11 +56,15 @@ changes are expected between minor releases — call them out here.
   `Option<UnsentFailure>`; `UnsentFailure` (new: an `ErrorKind` with its
   payload — `of`, `kind`, `code`, `parse`), `ErrorKindCode::parse`, and a
   defaulted `EffectJournal::record_unsent_failure(slot, failure)` the unit
-  runtime calls, best effort, when a prepared unit settles failing with
-  nothing crossed. A superseded effect then fails with the recorded kind
-  (e.g. `Exhausted { retry_after }` for a throttle) instead of
-  `Permanent`, so a program that branched on it replays the same branch; a
-  slot without a recorded failure still fails `Permanent`.
+  runtime awaits when a prepared unit settles failing with nothing
+  crossed, before the failure reaches the program. A superseded effect
+  then fails with the recorded kind (e.g. `Exhausted { retry_after }` for a
+  throttle) instead of `Permanent`, so a program that branched on it
+  replays the same branch; a slot written before classifications existed
+  still fails `Permanent`. The engine fails closed when the record does
+  not land: the position turns uncertain (no fresh effect above it is
+  prepared in that attempt) and the node defers, so a retry meets the slot
+  again and records it.
 
 - **A stable resource configuration fingerprint advances development packages
   to 0.28.0 in lockstep.** `ResourceConfig::fingerprint` is durable: the effect
