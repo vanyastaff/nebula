@@ -67,13 +67,20 @@
 //! - a recorded position this attempt passed by — another path that skips
 //!   it, or an iteration that ends without it — would let a later effect
 //!   land fresh above it, under a new provider key, although it may be the
-//!   very effect recorded there. A fresh slot is prepared only when every
-//!   recorded position of its family below it was met by this attempt (a
-//!   recorded slot that changed nothing, see **Order**, counts as met: it
-//!   is not consequential): a fresh slot above a recorded position another
-//!   unit is still preparing waits for that prepare to settle, and one
-//!   above a position nobody took is refused as a mismatch, with nothing
-//!   written or sent;
+//!   very effect recorded there. A fresh slot is prepared, and an iteration
+//!   that returned `Ok` passes its barrier, only when every recorded
+//!   position of its family below was met by this attempt — a slot only
+//!   prepared, or whose calls all stayed before the boundary, included: it
+//!   changed nothing outside, but it is an effect the program intended
+//!   there, and a deterministic replay meets every recorded position on its
+//!   way. A fresh slot above a recorded position another unit is still
+//!   preparing waits for that prepare to settle; one above a position
+//!   nobody took, and such a barrier, are refused as a mismatch, with
+//!   nothing written or sent;
+//! - a prepare the journal refuses definitively — a mismatch, the slot
+//!   cap, the concurrency limit, a contract it cannot record — resolves
+//!   its position as *refused*: nothing above it waits or defers on it, and
+//!   the refusal's own verdict stands;
 //! - a position a unit took and gave up on before its ledger prepare
 //!   answered (past its deadline, cancelled, dropped — the resource runtime
 //!   releases every position it hands out,
@@ -270,14 +277,20 @@
 //! the node's result. Any slot whose call may have crossed without a
 //! recorded outcome — this attempt's or an earlier dispatch's — fails the
 //! node as unknown. A node about to succeed although an earlier attempt
-//! recorded an effect (settled, or a call that crossed) this attempt never
-//! prepared took another path past an applied mutation: it fails as an
-//! occurrence mismatch. No error strategy recovers or routes past either
-//! verdict ([`EffectExecutionError::halts_execution`]): the execution
-//! stops. A node *failing* past such an effect keeps its own failure
+//! recorded an effect this attempt never met — settled, a call that
+//! crossed, or one only prepared (an effect the program intended) — took
+//! another path: it fails as an occurrence mismatch, and so does any node
+//! that met a later position of the family than the recorded effect it
+//! never met (it went past it; a unit of this attempt giving a position up
+//! at or below it defers instead). No error strategy recovers or routes
+//! past either verdict ([`EffectExecutionError::halts_execution`]): the
+//! execution stops. A node *failing* before an effect that may have
+//! changed the provider keeps its own failure
 //! ([`Concluded::SkippedRecordedEffect`]): the node's retry policy may take
 //! it up — the retry meets the effect and replays it — but a final failure
-//! halts the execution the same way instead of being ignored or routed.
+//! halts the execution the same way instead of being ignored or routed. A
+//! node failing before a slot only prepared never reached what changed
+//! nothing: its own failure stands.
 //! The skipped effects are checked before any failure the journal noted
 //! that would not halt on its own (a detached unit refused between
 //! iterations): with one, the verdict halts all the same. A noted
@@ -294,7 +307,9 @@
 //!   recorded position replays under its recorded key, and a fresh slot is
 //!   never prepared where an earlier attempt may have recorded it;
 //! - **S2** no recorded effect is sent again after the program diverged
-//!   from the run that recorded it (mismatch, nothing sent);
+//!   from the run that recorded it, and no divergence goes unnoticed: a
+//!   run that goes past a recorded slot it never met — one only prepared
+//!   included — or succeeds without meeting it is a mismatch, nothing sent;
 //! - **S3** a lower effect is never applied after a higher one the program
 //!   ran after it (refused superseded — with the failure the program saw —
 //!   or unknown);
@@ -304,7 +319,8 @@
 //! - **S5** every wait — drain, barrier read, prepare ordering — is bounded
 //!   by the node's drain limit or the unit's deadline;
 //! - **S6** a slot recorded without a concurrency list orders nothing, as
-//!   before that list existed;
+//!   before that list existed (it is still met in position like any
+//!   other: S2);
 //! - **S7** a cancelled node stays cancelled — at dispatch, between
 //!   iterations or in a barrier's drain: nothing is admitted after it, and
 //!   the refusals that follow add no failure of their own (only a halting
@@ -1015,6 +1031,72 @@ struct MetPositions {
     open: HashMap<Family, std::collections::BTreeSet<(u32, u32)>>,
 }
 
+/// What this attempt reached, as the verdict weighs a recorded slot it did
+/// not meet.
+struct Reached {
+    /// Slots this attempt prepared.
+    prepared: HashSet<EffectSlotId>,
+    /// Labels this attempt met (a superseded one included).
+    met: HashSet<String>,
+    /// Per family, the highest position this attempt met.
+    highest_met: HashMap<Family, (u32, u32)>,
+    /// Per family, the lowest position a unit of this attempt gave up
+    /// (abandoned) or left uncertain.
+    lowest_given_up: HashMap<Family, (u32, u32)>,
+}
+
+impl Reached {
+    fn of(state: &JournalState) -> Self {
+        let positions = &state.positions;
+        let mut highest_met: HashMap<Family, (u32, u32)> = HashMap::new();
+        for position in positions
+            .met
+            .iter()
+            .filter_map(|label| Position::parse(label))
+        {
+            let order = position.order();
+            let highest = highest_met.entry(position.family).or_insert(order);
+            *highest = (*highest).max(order);
+        }
+        let mut lowest_given_up = positions.abandoned.clone();
+        for (family, &order) in &positions.uncertain {
+            let lowest = lowest_given_up.entry(*family).or_insert(order);
+            *lowest = (*lowest).min(order);
+        }
+        Self {
+            prepared: state.slots.keys().copied().collect(),
+            met: positions.met.clone(),
+            highest_met,
+            lowest_given_up,
+        }
+    }
+
+    /// Whether this attempt met the slot `slot_id` at `label`.
+    fn met(&self, slot_id: EffectSlotId, label: &str) -> bool {
+        self.prepared.contains(&slot_id) || self.met.contains(label)
+    }
+
+    /// Whether this attempt met a position of `label`'s family above it:
+    /// it went past `label`.
+    fn passed_by(&self, label: &str) -> bool {
+        Position::parse(label).is_some_and(|position| {
+            self.highest_met
+                .get(&position.family)
+                .is_some_and(|&highest| highest > position.order())
+        })
+    }
+
+    /// Whether a unit of this attempt gave up (or left uncertain) a
+    /// position of `label`'s family at or below it.
+    fn gave_up_at_or_below(&self, label: &str) -> bool {
+        Position::parse(label).is_some_and(|position| {
+            self.lowest_given_up
+                .get(&position.family)
+                .is_some_and(|&lowest| lowest <= position.order())
+        })
+    }
+}
+
 /// Whether a position of `position`'s family below it was left uncertain or
 /// abandoned in this attempt.
 fn unsettled_below(positions: &MetPositions, position: Position) -> bool {
@@ -1184,12 +1266,15 @@ impl NodeEffectJournal {
         let mut state = self.state();
         let positions = &mut state.positions;
         let mut frontier = positions.frontier.get(&family).copied().unwrap_or(0);
-        // A recorded slot that was never sent (only prepared, or every call
-        // explained not crossed) cannot be sent twice by a fresh slot above
-        // it: passing it by is no hazard.
-        while recorded.get(frontier).is_some_and(|(_, label)| {
-            positions.met.contains(label) || prior.unsettled.contains(label)
-        }) {
+        // Only a position this attempt met is passed: a recorded slot that
+        // was never sent (only prepared, or every call explained not
+        // crossed) still holds an effect the program intended there, and a
+        // run that goes past it without meeting it diverged — a
+        // deterministic replay meets every recorded position on its way.
+        while recorded
+            .get(frontier)
+            .is_some_and(|(_, label)| positions.met.contains(label))
+        {
             frontier += 1;
         }
         positions.frontier.insert(family, frontier);
@@ -1305,7 +1390,8 @@ impl NodeEffectJournal {
     /// - [`OccurrenceMismatch`](EffectExecutionError::OccurrenceMismatch)
     ///   when the iteration succeeded although an earlier attempt recorded
     ///   an effect in it (or in an iteration before it) this attempt never
-    ///   met: the replay took another path past an applied mutation, and no
+    ///   met — one only prepared included: the replay took another path
+    ///   past an effect the program intended, and no
     ///   later iteration may run on it. Reading what earlier attempts
     ///   recorded takes the node's one occurrence read, if no prepare took
     ///   it yet. A failing iteration keeps its own failure: the node's
@@ -1547,17 +1633,14 @@ impl NodeEffectJournal {
             .unwrap_or(EffectExecutionError::OccurrenceMismatch))
     }
 
-    /// The first recorded iterated position that may have been sent and
-    /// this attempt has not met.
+    /// The first recorded iterated position this attempt has not met.
     fn first_unmet_label(&self, prior: &PriorOccurrences) -> Option<String> {
         let state = self.state();
         prior
             .positions
             .get(&Family::Iterated)?
             .iter()
-            .find(|(_, label)| {
-                !state.positions.met.contains(label) && !prior.unsettled.contains(label)
-            })
+            .find(|(_, label)| !state.positions.met.contains(label))
             .map(|(_, label)| label.clone())
     }
 
@@ -1935,17 +2018,69 @@ impl NodeEffectJournal {
         // failure this attempt noted, so a routable failure never lets an
         // error strategy continue past a node that skipped an effect an
         // earlier attempt applied.
-        let prepared = self.state().slots.keys().copied().collect::<HashSet<_>>();
+        let reached = Reached::of(&self.state());
+        // Skipped: a recorded slot this attempt did not meet that may have
+        // changed the provider, or — only prepared, or every call not
+        // crossed — one the program still intended: when the node is about
+        // to succeed, or when this attempt met a later position of its
+        // family (it went past it). A failing node that stopped before an
+        // unsettled slot it never reached changed nothing and diverged from
+        // nothing.
         let skipped: Vec<&str> = slots
             .iter()
             .filter(|slot| {
-                !prepared.contains(&slot.record().operation().slot_id())
-                    && is_consequential(slot.record())
+                let label = slot.occurrence();
+                !reached.met(slot.record().operation().slot_id(), label)
+                    && (is_consequential(slot.record())
+                        || (SlotWeight::of(slot.record()) == SlotWeight::Unsettled
+                            && (node_succeeded || reached.passed_by(label))))
             })
             .map(EffectOccurrenceRecord::occurrence)
             .collect();
         if skipped.is_empty() {
             return failure.map_or(Ok(Concluded::Clean), Err);
+        }
+        if let Some(failure) = failure
+            && failure.halts_execution()
+        {
+            return Err(failure);
+        }
+        // Went past a recorded effect below a position it met, and not
+        // because a unit of this attempt gave a position up: the program
+        // diverged from the run that recorded it, succeeding or failing.
+        if let Some(diverged) = skipped
+            .iter()
+            .find(|label| reached.passed_by(label) && !reached.gave_up_at_or_below(label))
+        {
+            tracing::error!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                occurrence = diverged,
+                occurrences = ?skipped,
+                "the node went past an earlier attempt's recorded effect; failing the node"
+            );
+            return Err(EffectExecutionError::OccurrenceMismatch);
+        }
+        // A unit of this attempt gave a position up at or below a skipped
+        // one: not another path — the retry can meet it again. A failing
+        // node keeps its own failure; one about to succeed defers (or keeps
+        // a terminal failure it noted).
+        if skipped
+            .iter()
+            .any(|label| reached.gave_up_at_or_below(label))
+        {
+            tracing::warn!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                occurrences = ?skipped,
+                "a node gave a recorded position up before meeting it"
+            );
+            if !node_succeeded {
+                return Ok(Concluded::SkippedRecordedEffect);
+            }
+            return Err(failure.unwrap_or(EffectExecutionError::Ledger(
+                OperationLedgerError::AcknowledgementUnknown,
+            )));
         }
         if let Some(failure) = failure
             && !node_succeeded

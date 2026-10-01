@@ -2842,6 +2842,47 @@ async fn a_later_deferral_never_displaces_a_terminal_verdict() {
     );
 }
 
+/// An earlier attempt durably prepared an effect and died before any call.
+/// A later attempt about to succeed without meeting it dropped an effect
+/// the program intended: a mismatch. One failing before it stopped short
+/// of it and keeps its own failure.
+#[tokio::test]
+async fn a_succeeding_node_that_skips_a_prepared_only_effect_is_a_mismatch() {
+    let harness = Harness::new().await;
+    harness
+        .ledger
+        .lose_next_prepare_answer
+        .store(true, Ordering::SeqCst);
+    let first = harness.journal(1);
+    let crashed = tokio::spawn(harness.handle(&first).submit(Charge::<false> { order: 45 }));
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while harness.slots().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the prepare committed");
+    crashed.abort();
+    let _ = crashed.await;
+    assert_eq!(
+        Harness::phase(&harness.slots().await[0]),
+        EffectPhase::Prepared
+    );
+
+    let failing = harness.journal(2);
+    assert_eq!(
+        failing.conclude_node(DRAIN, false).await,
+        Ok(Concluded::Clean),
+        "stopped short of it: its own failure stands"
+    );
+    let succeeding = harness.journal(3);
+    assert_eq!(
+        succeeding.conclude_node(DRAIN, true).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
+    );
+    assert!(harness.desk.keys().is_empty(), "nothing sent");
+}
+
 #[tokio::test]
 async fn a_changed_request_under_the_same_occurrence_is_a_mismatch_and_sends_nothing() {
     let harness = Harness::new().await;

@@ -194,9 +194,14 @@ configuration, and process lifecycle.
   instead. Positions order by `(iteration, ordinal)` (a flat label is iteration 0)
   and a fresh slot is prepared only when it is consistent with what earlier attempts
   recorded: it must not lie below a recorded position of its family (a gap), nor
-  above a recorded consequential one this attempt has not met, passed by on another
+  above a recorded one this attempt has not met — a slot only prepared included: it
+  changed nothing outside, but the program intended it there — passed by on another
   path (a mismatch; a fresh slot above a recorded position another unit is still
-  preparing waits for it). A position a unit took and gave up on before its ledger
+  preparing waits for it). An iteration that returns `Ok` passes its barrier on the
+  same rule. A prepare the journal refuses definitively (a mismatch, the slot cap, the
+  concurrency limit, an unrecordable contract) resolves its position as refused:
+  nothing above it waits or defers on it, and that refusal's verdict stands — a later
+  deferral never displaces it, and only a halting verdict displaces another. A position a unit took and gave up on before its ledger
   prepare answered (past its deadline, cancelled, dropped; the resource runtime
   releases every position with `EffectJournal::release_occurrence`) is *abandoned*:
   a fresh slot above it, and a barrier past a recorded effect above it, are refused
@@ -294,8 +299,11 @@ configuration, and process lifecycle.
   swallowed the unit's error), and a changed request, key part, credential binding,
   configuration or recording policy under a recorded occurrence fails it
   `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent — as does a node about to
-  succeed although an earlier attempt recorded an effect (settled, or a call that
-  crossed) this attempt never met again. Such a verdict — like a remote effect's unknown
+  succeed although an earlier attempt recorded an effect (settled, a call that
+  crossed, or one only prepared) this attempt never met again, and any node that met a
+  later position than a recorded effect it never met (it went past it; a unit giving a
+  position up at or below it defers instead). A failing node that stopped before a
+  slot only prepared keeps its own failure. Such a verdict — like a remote effect's unknown
   outcome or unreadable evidence (`EffectExecutionError::halts_execution`) — takes no
   error strategy: `IgnoreErrors`, `ContinueOnError` and OnError edges never recover or
   route past it; the node fails and the execution stops. A node that fails before
@@ -305,7 +313,8 @@ configuration, and process lifecycle.
   ignored or routed — also when the journal noted a failure of its own that would not
   halt (a detached unit refused between iterations). **Invariants** (module docs of
   `effect_driver::journal`): S1 no effect sent twice under different keys; S2 no
-  recorded effect re-sent after divergence; S3 a lower effect never applied after a
+  recorded effect re-sent after divergence, and no divergence unnoticed (going past or
+  succeeding without a recorded slot, one only prepared included, is a mismatch); S3 a lower effect never applied after a
   higher one the program ran after it (a superseded one fails as the program saw it
   fail); S4 concurrent units replay at least once under their recorded keys (recorded
   exactly, or the fresh effect is refused unsent); S5 every wait bounded; S6 legacy

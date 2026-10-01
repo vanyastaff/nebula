@@ -431,6 +431,92 @@ async fn a_replay_that_skips_a_recorded_effect_within_an_iteration_stops(#[case]
     assert_eq!(fixture.slots(execution).await, settled);
 }
 
+/// Runs `execution` until its first effect is durably prepared and the
+/// prepare's answer is lost, then kills the turn: the slot stays
+/// `Prepared`, nothing sent.
+async fn crash_with_a_prepared_effect(
+    fixture: &mut JournalFixture,
+    database: &mut Database,
+    execution: nebula_core::ExecutionId,
+) -> Vec<nebula_storage_port::EffectOccurrenceRecord> {
+    let ledger = Arc::new(FaultLedger::new(
+        fixture.ports.ledger.clone(),
+        Boundary::Prepare,
+        Fault::AnswerLost,
+    ));
+    fixture.ports.stores.operation_ledger = ledger.clone();
+    fixture.crash_at(execution, &ledger.answer_lost).await;
+    let prepared = fixture.slots(execution).await;
+    assert_eq!(labels(&prepared), ["it0/unit/v1/#000000"]);
+    assert_eq!(phase(&prepared[0]), EffectPhase::Prepared);
+    assert_eq!(fixture.gateway.call_count(), 0);
+    fixture.ports = database.reconnect().await;
+    database.expire_abandoned_leases().await;
+    prepared
+}
+
+/// An earlier attempt durably prepared an effect and died before any call.
+/// A recovery whose iteration ends without submitting it again went past an
+/// effect the program intended: a divergence, refused at the barrier with
+/// nothing sent — never a success that silently drops the effect.
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[tokio::test]
+async fn a_recovery_that_skips_a_prepared_only_effect_is_a_mismatch(#[case] backend: Backend) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = stateful(database.ports()).await;
+    let units = [write("intended:1"), write("next:2")];
+    let execution = fixture
+        .start_iterations(&[&units[0..1], &units[1..2]], json!({}))
+        .await;
+    let prepared = crash_with_a_prepared_effect(&mut fixture, &mut database, execution).await;
+
+    // The recovery's iteration 0 sends nothing and returns `Ok`.
+    *fixture.gateway.iterations.skip_at.lock() = Some(0);
+    let result = fixture.run(execution).await.unwrap();
+    assert_node_error(&result, "ENGINE:EFFECT_OCCURRENCE_MISMATCH");
+    assert_eq!(fixture.gateway.call_count(), 0, "nothing sent");
+    assert_eq!(
+        fixture.gateway.started().last(),
+        Some(&0),
+        "iteration 1 never ran"
+    );
+    assert_eq!(fixture.slots(execution).await, prepared, "nothing prepared");
+}
+
+/// The same prepared-only effect, and a recovery that fails before it
+/// reaches it: the node stopped short of the effect, it did not go past it
+/// — it keeps its own failure instead of a mismatch.
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[tokio::test]
+async fn a_recovery_failing_before_a_prepared_only_effect_keeps_its_failure(
+    #[case] backend: Backend,
+) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = stateful(database.ports()).await;
+    let units = [write("intended:1")];
+    let execution = fixture.start_iterations(&[&units[..]], json!({})).await;
+    let prepared = crash_with_a_prepared_effect(&mut fixture, &mut database, execution).await;
+
+    *fixture.gateway.iterations.fail_at.lock() = Some(0);
+    let result = fixture.run(execution).await.unwrap();
+    assert_eq!(result.status, ExecutionStatus::Failed, "{result:?}");
+    assert!(
+        !node_error(&result).starts_with("ENGINE:EFFECT_"),
+        "the action's own failure: {}",
+        node_error(&result)
+    );
+    assert_eq!(fixture.gateway.call_count(), 0);
+    assert_eq!(fixture.slots(execution).await, prepared);
+}
+
 // 7c ────────────────────────────────────────────────────────────────────────
 
 /// A lower effect's prepare commits but its answer never comes back, and the
