@@ -1084,7 +1084,19 @@ let admitted = recorded.readmit_against(fresh)?;
   `effect_driver::journal` module docs state the invariants (S1–S8). The
   metric's refusal label set grows to ten values (`superseded`,
   `concurrency_limit`), its verdict set to ten (`concurrency_limit`).
-  Additive: no version bump.
+  A recorded slot only prepared (or whose calls all stayed before the
+  boundary) now counts like any other recorded effect for divergence: a
+  fresh prepare above it, an iteration returning `Ok` past it, or a node
+  about to succeed without meeting it — and any node that met a later
+  position of the family — fails `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with
+  nothing sent, instead of silently dropping an effect the program
+  intended; a failing node that stopped before it keeps its own failure,
+  and a unit of the attempt giving a position up at or below it defers. A
+  prepare refused definitively (a mismatch, the slot cap, the concurrency
+  limit, an unrecordable contract) resolves its position instead of
+  leaving it abandoned, so a later submission is not deferred in place of
+  that verdict; a later deferral never displaces a noted terminal failure,
+  and a halting one displaces any other. Additive: no version bump.
 - **Execution-owned managed-row effects (resource side; engine wiring
   pending).** `nebula_resource::call` gains the author surface
   `EffectOperation` (an `Operation` declaring an `EffectContract`, an
