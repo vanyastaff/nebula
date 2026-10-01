@@ -1809,11 +1809,12 @@ impl NodeEffectJournal {
             .unwrap_or_else(tokio::time::Instant::now);
         let uninspected = self.record_leaked_calls(cleanup_deadline).await;
         let failure = self.state().failure;
-        if let Some(failure) = failure
-            && failure.is_deferred()
-        {
-            return Err(failure);
-        }
+        // A deferring failure (a lost lease, an unanswered or unavailable
+        // ledger) still reads the occurrences first: another unit of the node
+        // may have recorded an unknown outcome, which halts the execution and
+        // must never be masked by a deferral a retry could meet forever. A
+        // read that cannot run defers.
+        let deferred = failure.filter(|failure| failure.is_deferred());
         // Always read, even when this attempt prepared nothing: a process
         // that died during an earlier dispatch of the node — before the
         // attempt was recorded, so this attempt's generation may still be
@@ -1827,7 +1828,7 @@ impl NodeEffectJournal {
                 .checked_add(FINAL_READ_FLOOR)
                 .unwrap_or(cleanup_deadline),
         );
-        let slots = tokio::time::timeout_at(
+        let read = tokio::time::timeout_at(
             read_deadline,
             authority.ledger.read_occurrences(
                 &authority.scope,
@@ -1843,7 +1844,14 @@ impl NodeEffectJournal {
                 "the node's occurrences were not read within the verdict budget; deferring"
             );
             EffectExecutionError::Ledger(OperationLedgerError::Unavailable)
-        })??;
+        })
+        .and_then(|read| read.map_err(EffectExecutionError::from));
+        let slots = match (read, deferred) {
+            (Ok(slots), _) => slots,
+            // The read could not run: the noted deferral stands.
+            (Err(_), Some(deferred)) => return Err(deferred),
+            (Err(error), None) => return Err(error),
+        };
         let mut unresolved: Vec<EffectSlotId> = slots
             .iter()
             .map(EffectOccurrenceRecord::record)
@@ -1869,6 +1877,11 @@ impl NodeEffectJournal {
                 slot_id: *first,
                 unresolved: u32::try_from(unresolved.len()).unwrap_or(u32::MAX),
             });
+        }
+        // No unknown outcome: the deferral stands over every other verdict —
+        // the retry meets what this attempt could not.
+        if let Some(deferred) = deferred {
+            return Err(deferred);
         }
         // Every effect an earlier attempt recorded must have been met again:
         // the node's result stands for all of them. Decided before any

@@ -1318,11 +1318,13 @@ async fn a_barrier_read_that_never_answers_defers_within_the_budget() {
         Duration::from_mins(1),
         "bounded by the barrier budget"
     );
-    // The node defers instead of hanging.
+    // The node defers instead of hanging: the verdict still tries its own
+    // read for an unknown outcome a deferral must not mask, within the
+    // drain limit.
     let started = tokio::time::Instant::now();
     let verdict = journal.conclude(Duration::from_mins(1)).await;
     assert!(verdict.is_err_and(EffectExecutionError::is_deferred));
-    assert!(started.elapsed() < Duration::from_mins(1));
+    assert!(started.elapsed() <= Duration::from_mins(1));
 
     // A spent budget still gives the read its floor.
     let spent = harness.stateful_journal(1);
@@ -2643,6 +2645,78 @@ async fn a_lost_lease_defers_the_node_without_a_provider_call() {
     );
     assert!(verdict.is_err_and(EffectExecutionError::is_deferred));
     assert!(harness.desk.keys().is_empty());
+}
+
+/// A deferring failure of one unit never masks the unknown outcome another
+/// unit recorded: the verdict reads the occurrences first and halts.
+#[tokio::test]
+async fn a_deferral_never_masks_an_unknown_outcome_another_unit_recorded() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Lost]);
+    let journal = harness.journal(1);
+    let lost = harness
+        .handle(&journal)
+        .submit(Charge::<false> { order: 30 })
+        .await
+        .expect_err("the answer was lost");
+    assert_eq!(lost.sent(), SentState::MaybeSent);
+    assert!(
+        harness
+            .executions
+            .release_lease(
+                &harness.scope,
+                &harness.execution_id.to_string(),
+                harness.fencing
+            )
+            .await
+            .expect("released")
+    );
+    let refused = harness
+        .handle(&journal)
+        .submit(Charge::<false> { order: 31 })
+        .await
+        .expect_err("no lease, no prepare");
+    assert_eq!(refused.sent(), SentState::NotSent);
+    let verdict = journal.conclude(DRAIN).await;
+    assert!(
+        matches!(
+            verdict,
+            Err(EffectExecutionError::JournalOutcomeUnknown { unresolved: 1, .. })
+        ),
+        "{verdict:?}"
+    );
+    assert!(verdict.is_err_and(|error| error.halts_execution()));
+    assert_eq!(harness.desk.keys().len(), 1);
+}
+
+/// A deferral whose verdict read cannot run stands.
+#[tokio::test(start_paused = true)]
+async fn a_deferral_stands_when_the_verdict_read_cannot_run() {
+    let harness = Harness::new().await;
+    assert!(
+        harness
+            .executions
+            .release_lease(
+                &harness.scope,
+                &harness.execution_id.to_string(),
+                harness.fencing
+            )
+            .await
+            .expect("released")
+    );
+    let journal = harness.journal(1);
+    harness
+        .handle(&journal)
+        .submit(Charge::<false> { order: 32 })
+        .await
+        .expect_err("no lease, no prepare");
+    harness.ledger.hang_reads.store(true, Ordering::SeqCst);
+    assert_eq!(
+        journal.conclude(DRAIN).await,
+        Err(EffectExecutionError::Ledger(
+            OperationLedgerError::ExecutionLeaseRejected
+        ))
+    );
 }
 
 #[tokio::test(start_paused = true)]
