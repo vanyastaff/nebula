@@ -167,8 +167,10 @@ pub const NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL: &str = "nebula_effect_journal_re
 
 /// Step labels for [`NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL`].
 ///
-/// Closed set of five values: the journal's durable steps.
+/// Closed set of six values: the journal's admission and durable steps.
 pub mod effect_journal_step {
+    /// Admitting a submitted unit.
+    pub const SUBMIT: &str = "submit";
     /// Preparing an effect's slot.
     pub const PREPARE: &str = "prepare";
     /// Granting a provider call.
@@ -183,7 +185,7 @@ pub mod effect_journal_step {
 
 /// Refusal labels for [`NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL`].
 ///
-/// Closed set of seven values, one per journal refusal.
+/// Closed set of eight values, one per journal refusal.
 pub mod effect_journal_refusal {
     /// The journal's store is unavailable.
     pub const UNAVAILABLE: &str = "unavailable";
@@ -200,6 +202,8 @@ pub mod effect_journal_refusal {
     /// The node attempt reached its journaled slot cap: no further effect
     /// is prepared.
     pub const SLOT_CAP_EXCEEDED: &str = "slot_cap_exceeded";
+    /// A unit was submitted while no stateful iteration was open.
+    pub const BETWEEN_RUNS: &str = "between_runs";
 }
 
 /// Counter: node verdicts of effect journals.

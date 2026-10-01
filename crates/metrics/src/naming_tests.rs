@@ -900,6 +900,7 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_prepare_phase::UNKNOWN,
     ];
     let steps = [
+        effect_journal_step::SUBMIT,
         effect_journal_step::PREPARE,
         effect_journal_step::GRANT,
         effect_journal_step::EXPLAIN,
@@ -914,6 +915,7 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_refusal::LEASE_LOST,
         effect_journal_refusal::UNKNOWN,
         effect_journal_refusal::SLOT_CAP_EXCEEDED,
+        effect_journal_refusal::BETWEEN_RUNS,
     ];
     let verdicts = [
         effect_journal_verdict::OK,
@@ -928,8 +930,8 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
     ];
     for (set, expected) in [
         (&phases[..], 3),
-        (&steps[..], 5),
-        (&refusals[..], 7),
+        (&steps[..], 6),
+        (&refusals[..], 8),
         (&verdicts[..], 9),
     ] {
         let unique: HashSet<_> = set.iter().collect();

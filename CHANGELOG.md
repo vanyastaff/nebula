@@ -993,12 +993,21 @@ let admitted = recorded.readmit_against(fresh)?;
   tells the owner a unit stopped preparing — prepared, refused, or given
   up before reaching it — which the resource runtime now calls once per
   occurrence; the engine waits for it before deciding whether a recorded
-  position below a fresh effect was met. `JournalRefusal::SlotCapExceeded` (new;
+  position below a fresh effect was met. A defaulted `admit()` (the
+  in-flight ticket, or a refusal) is how the resource runtime now submits a
+  unit: the engine admits a stateful node's units only while an iteration
+  is open, in one transition with the iteration rollover, and refuses a
+  unit submitted between iterations `JournalRefusal::BetweenRuns` (new;
+  `between_runs`, `Permanent` / `NotSent`), recording
+  `ENGINE:EFFECT_ITERATION_BARRIER`. `JournalRefusal::SlotCapExceeded` (new;
   `slot_cap_exceeded`) refuses a unit `Permanent` / `NotSent`: one node
-  attempt prepares at most 10 000 journaled effects, and the node then
-  fails `EffectExecutionError::JournalSlotCapExceeded`
+  attempt prepares at most 10 000 fresh journaled effects — replays of
+  recorded positions do not count, so a node whose ledger already holds
+  more stays replayable — and the node then fails
+  `EffectExecutionError::JournalSlotCapExceeded`
   (`ENGINE:EFFECT_JOURNAL_SLOT_CAP`). New metric labels:
-  `nebula_effect_journal_refusals_total{refusal="slot_cap_exceeded"}` and
+  `nebula_effect_journal_refusals_total{refusal="slot_cap_exceeded"}` (at
+  `step="prepare"`), `{step="submit", refusal="between_runs"}` and
   `nebula_effect_journal_verdicts_total{code="slot_cap_exceeded" |
   "iteration_barrier"}`. Additive: no version bump.
 - **Execution-owned managed-row effects (resource side; engine wiring
@@ -1614,7 +1623,12 @@ let admitted = recorded.readmit_against(fresh)?;
   `ENGINE:EFFECT_ITERATION_BARRIER`; when the unit outlived the drain the
   journal closes, and if it had been granted a call the verdict records the
   call as ambiguous and the node fails `ENGINE:EFFECT_OUTCOME_UNKNOWN`
-  instead). One verdict per node attempt still decides the node. Positions
+  instead). Units are admitted only while an iteration is open, in one
+  transition with the rollover; one submitted between iterations is refused
+  unsent and recorded the same way. A barrier that reads the node's
+  occurrences does so within what is left of the drain limit (at least
+  5 s) and defers the node when the ledger does not answer. One verdict per
+  node attempt still decides the node. Positions
   order by `(iteration, ordinal)`, and a fresh slot — stateless or
   stateful — is refused as a mismatch with nothing written or sent when it
   lies below a recorded position of its family, above a recorded one the

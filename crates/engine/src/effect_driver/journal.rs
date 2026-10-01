@@ -113,9 +113,25 @@
 //! diverges, and the divergence halts the node as an occurrence mismatch
 //! before any recorded effect is sent again.
 //!
-//! **Cap.** One node attempt prepares at most [`MAX_NODE_SLOTS`] journaled
-//! effects (a stateful action at its iteration cap with one effect per
-//! iteration fits): a further prepare is refused
+//! **Admission.** A stateful node's journal admits a submitted unit only
+//! while an iteration is open
+//! ([`EffectJournal::admit`]): admission raises the in-flight count under
+//! the same lock as the rollover checks it, so no unit slips into an
+//! iteration it was not admitted in, and a unit a detached task submits
+//! between one iteration's end and the next one's begin is refused
+//! [`BetweenRuns`](JournalRefusal::BetweenRuns) unsent while the node's
+//! verdict records
+//! [`IterationUnitsOutstanding`](EffectExecutionError::IterationUnitsOutstanding).
+//!
+//! **Barrier read.** The first barrier reads what earlier attempts
+//! recorded, if no prepare did, within what is left of the drain limit (at
+//! least the verdict read's floor); a ledger that does not answer by then
+//! defers the node like an unavailable ledger.
+//!
+//! **Cap.** One node attempt prepares at most [`MAX_NODE_SLOTS`] fresh
+//! journaled effects (a stateful action at its iteration cap with one
+//! effect per iteration fits); replays of recorded positions are not
+//! counted. A further fresh prepare is refused
 //! [`SlotCapExceeded`](JournalRefusal::SlotCapExceeded), nothing is sent,
 //! and the node fails
 //! [`JournalSlotCapExceeded`](EffectExecutionError::JournalSlotCapExceeded).
@@ -212,16 +228,28 @@ const MAX_LEDGER_WINDOW: Duration = Duration::from_hours(365 * 24);
 /// drain spent the whole limit.
 const FINAL_READ_FLOOR: Duration = Duration::from_secs(5);
 
+/// When an occurrence read that shares a budget of `limit` from `started`
+/// must have answered: what is left of the budget, and at least
+/// [`FINAL_READ_FLOOR`] from now.
+fn read_deadline(started: tokio::time::Instant, limit: Duration) -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    let budget_end = started.checked_add(limit).unwrap_or(now);
+    budget_end.max(now.checked_add(FINAL_READ_FLOOR).unwrap_or(budget_end))
+}
+
 /// Most provider calls one slot may be granted.
 const MAX_SLOT_INVOCATIONS: u32 = 10_000;
 
-/// Most journaled effects one node attempt may prepare.
+/// Most fresh journaled effects — at no position an earlier attempt
+/// recorded — one node attempt may prepare.
 ///
-/// Bounds the ledger rows a node attempt writes and the occurrences its
-/// verdict reads. It matches the stateful runtime's iteration cap: a
-/// stateful action that prepares one effect per iteration fits at its last
-/// iteration. A further prepare is refused, nothing is sent, and the node
-/// fails [`JournalSlotCapExceeded`](EffectExecutionError::JournalSlotCapExceeded).
+/// Bounds the new ledger rows a node attempt writes. It matches the
+/// stateful runtime's iteration cap: a stateful action that prepares one
+/// effect per iteration fits at its last iteration. Replays of recorded
+/// positions are not counted, so a node whose ledger already holds more
+/// stays replayable. A further fresh prepare is refused, nothing is sent,
+/// and the node fails
+/// [`JournalSlotCapExceeded`](EffectExecutionError::JournalSlotCapExceeded).
 pub(crate) const MAX_NODE_SLOTS: u32 = 10_000;
 
 /// Highest stateful iteration the journal labels (`it9999/`): the stateful
@@ -399,6 +427,10 @@ pub(crate) struct JournalAuthority {
     pub attempt_generation: u64,
     pub clock: Arc<dyn Clock>,
     pub metrics: MetricsRegistry,
+    /// How the action's effects are journaled: an
+    /// [`Iterated`](JournalShape::Iterated) journal admits units only while
+    /// an iteration is open.
+    pub shape: JournalShape,
 }
 
 /// The per-node-attempt journal of a journaled action's effects: the
@@ -418,7 +450,12 @@ struct JournalInner {
     /// before this attempt's first prepare.
     prior: tokio::sync::OnceCell<PriorOccurrences>,
     state: Mutex<JournalState>,
+    /// Units admitted and not gone. Raised only under the `state` lock, in
+    /// the same transition that checks the open iteration, so an iteration
+    /// rolls over only with none in flight.
     in_flight: AtomicUsize,
+    /// Most fresh slots the node attempt may prepare.
+    slot_cap: u32,
     drained: tokio::sync::Notify,
     closed: AtomicBool,
     /// An iteration barrier already waited the drain limit out: the
@@ -433,12 +470,19 @@ struct JournalState {
     /// The next position of the node attempt's sequence of effect units
     /// (of the open iteration, for a stateful action).
     next_ordinal: u32,
-    /// The open iteration of a stateful action; `None` for a stateless one
-    /// (flat labels).
+    /// The last iteration a stateful action began; `None` for a stateless
+    /// one (flat labels).
     iteration: Option<u32>,
+    /// Whether that iteration is still open: between its
+    /// [`end_iteration`](NodeEffectJournal::end_iteration) and the next
+    /// [`begin_iteration`](NodeEffectJournal::begin_iteration) an iterated
+    /// journal admits no unit.
+    run_open: bool,
     /// The slots prepared in the open iteration, inspected at its end.
     iteration_slots: Vec<EffectSlotId>,
-    /// Prepares the node attempt started, bounded by [`MAX_NODE_SLOTS`].
+    /// Fresh slots (at no recorded position) the node attempt started to
+    /// prepare, bounded by the slot cap ([`MAX_NODE_SLOTS`]). Replays of
+    /// recorded positions are not counted.
     reserved: u32,
     /// The positions this attempt met, or is preparing.
     positions: MetPositions,
@@ -662,6 +706,13 @@ impl NodeEffectJournal {
     /// The journal of one node attempt, writing under `authority`. Builds
     /// nothing durable.
     pub(crate) fn new(authority: JournalAuthority) -> Self {
+        Self::with_slot_cap(authority, MAX_NODE_SLOTS)
+    }
+
+    /// [`new`](Self::new) with another cap on the fresh slots one node
+    /// attempt prepares (tests exercise the cap without ten thousand
+    /// effects).
+    fn with_slot_cap(authority: JournalAuthority, slot_cap: u32) -> Self {
         let execution = authority.execution_id.to_string();
         Self {
             inner: Arc::new(JournalInner {
@@ -670,12 +721,25 @@ impl NodeEffectJournal {
                 prior: tokio::sync::OnceCell::new(),
                 state: Mutex::new(JournalState::default()),
                 in_flight: AtomicUsize::new(0),
+                slot_cap,
                 drained: tokio::sync::Notify::new(),
                 closed: AtomicBool::new(false),
                 barrier_failed: AtomicBool::new(false),
                 claims_settled: tokio::sync::Notify::new(),
             }),
         }
+    }
+
+    /// An in-flight ticket. Callers hold the state lock, so the count rises
+    /// only in a transition that also sees the open iteration.
+    fn ticket(&self) -> InFlight {
+        self.inner.in_flight.fetch_add(1, Ordering::SeqCst);
+        let inner = Arc::clone(&self.inner);
+        InFlight::new(move || {
+            if inner.in_flight.fetch_sub(1, Ordering::SeqCst) == 1 {
+                inner.drained.notify_waiters();
+            }
+        })
     }
 
     /// The node's occurrences as earlier attempts recorded them, read once
@@ -781,11 +845,16 @@ impl NodeEffectJournal {
     /// - [`InvalidContract`](EffectExecutionError::InvalidContract) for an
     ///   iteration past [`MAX_ITERATION`] or not after the open one.
     pub(crate) fn begin_iteration(&self, iteration: u32) -> Result<(), EffectExecutionError> {
-        if let Some(failure) = self.state().failure {
+        // One transition under the state lock: admission raises the
+        // in-flight count under the same lock, so no unit is admitted
+        // between the check and the rollover.
+        let mut state = self.state();
+        if let Some(failure) = state.failure {
             return Err(failure);
         }
         let in_flight = self.inner.in_flight.load(Ordering::SeqCst);
         if in_flight > 0 || self.is_closed() {
+            drop(state);
             tracing::warn!(
                 execution_id = %self.inner.authority.execution_id,
                 node_key = %self.inner.authority.node_key,
@@ -797,13 +866,13 @@ impl NodeEffectJournal {
             self.note_failure(failure);
             return Err(self.state().failure.unwrap_or(failure));
         }
-        let mut state = self.state();
         if iteration > MAX_ITERATION || state.iteration.is_some_and(|open| iteration <= open) {
             drop(state);
             self.note_failure(EffectExecutionError::InvalidContract);
             return Err(EffectExecutionError::InvalidContract);
         }
         state.iteration = Some(iteration);
+        state.run_open = true;
         state.next_ordinal = 0;
         state.iteration_slots.clear();
         Ok(())
@@ -834,13 +903,26 @@ impl NodeEffectJournal {
     ///   later iteration may run on it. Reading what earlier attempts
     ///   recorded takes the node's one occurrence read, if no prepare took
     ///   it yet. A failing iteration keeps its own failure: the node's
-    ///   conclusion lets a retry meet the effect again.
+    ///   conclusion lets a retry meet the effect again;
+    /// - a deferring [`Unavailable`](OperationLedgerError::Unavailable)
+    ///   ledger failure when that read does not answer within what is left
+    ///   of `drain_limit` (at least [`FINAL_READ_FLOOR`]), as for the
+    ///   verdict's final read.
+    ///
+    /// The iteration closes first: until the next
+    /// [`begin_iteration`](Self::begin_iteration) an iterated journal admits
+    /// no unit.
     pub(crate) async fn end_iteration(
         &self,
         drain_limit: Duration,
         succeeded: bool,
     ) -> Result<(), EffectExecutionError> {
-        let iteration = self.state().iteration.unwrap_or(0);
+        let iteration = {
+            let mut state = self.state();
+            state.run_open = false;
+            state.iteration.unwrap_or(0)
+        };
+        let started = tokio::time::Instant::now();
         if !self.drain(drain_limit).await {
             let in_flight = self.inner.in_flight.load(Ordering::SeqCst);
             return Err(self.fail_barrier(iteration, in_flight));
@@ -849,7 +931,9 @@ impl NodeEffectJournal {
             return Err(failure);
         }
         if succeeded {
-            self.met_every_recorded_effect_through(iteration).await?;
+            let read_deadline = read_deadline(started, drain_limit);
+            self.met_every_recorded_effect_through(iteration, read_deadline)
+                .await?;
         }
         let slots: Vec<_> = {
             let state = self.state();
@@ -895,12 +979,28 @@ impl NodeEffectJournal {
 
     /// Checks that this attempt met every effect an earlier attempt recorded
     /// in iterations up to `iteration`; otherwise records an occurrence
-    /// mismatch in the node's verdict.
+    /// mismatch in the node's verdict. What earlier attempts recorded is
+    /// read by `read_deadline` at the latest: a ledger that does not answer
+    /// by then is a deferring `Unavailable` failure.
     async fn met_every_recorded_effect_through(
         &self,
         iteration: u32,
+        read_deadline: tokio::time::Instant,
     ) -> Result<(), EffectExecutionError> {
-        let prior = match self.prior().await {
+        let read = tokio::time::timeout_at(read_deadline, self.prior())
+            .await
+            .unwrap_or_else(|_elapsed| {
+                tracing::warn!(
+                    execution_id = %self.inner.authority.execution_id,
+                    node_key = %self.inner.authority.node_key,
+                    iteration,
+                    "the node's occurrences were not read within the barrier budget; deferring"
+                );
+                Err(EffectExecutionError::Ledger(
+                    OperationLedgerError::Unavailable,
+                ))
+            });
+        let prior = match read {
             Ok(prior) => prior,
             Err(error) => {
                 self.note_failure(error);
@@ -1493,24 +1593,6 @@ impl EffectJournal for NodeEffectJournal {
         if self.is_closed() {
             return Err(self.refused(STEP, JournalRefusal::Closed));
         }
-        // The cap is taken before anything durable: a refused prepare
-        // writes and sends nothing.
-        let capped = {
-            let mut state = self.state();
-            let capped = state.reserved >= MAX_NODE_SLOTS;
-            if !capped {
-                state.reserved += 1;
-            }
-            capped
-        };
-        if capped {
-            return Err(self.refuse(
-                STEP,
-                EffectExecutionError::JournalSlotCapExceeded {
-                    cap: MAX_NODE_SLOTS,
-                },
-            ));
-        }
         let authority = &self.inner.authority;
         let derived = self
             .derive(intent)
@@ -1543,6 +1625,23 @@ impl EffectJournal for NodeEffectJournal {
                 "a fresh effect above a recorded one this attempt never met; refused"
             );
             return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
+        }
+        if !prior.labels.contains(intent.occurrence) {
+            // Only a fresh slot counts against the cap — a recorded one
+            // replays however many there are — and the cap is taken before
+            // anything durable: a refused prepare writes and sends nothing.
+            let cap = self.inner.slot_cap;
+            let capped = {
+                let mut state = self.state();
+                let capped = state.reserved >= cap;
+                if !capped {
+                    state.reserved += 1;
+                }
+                capped
+            };
+            if capped {
+                return Err(self.refuse(STEP, EffectExecutionError::JournalSlotCapExceeded { cap }));
+            }
         }
         let binding = EffectSlotBinding {
             scope: &authority.scope,
@@ -1735,14 +1834,44 @@ impl EffectJournal for NodeEffectJournal {
             .map_err(|error| self.refuse(STEP, error))
     }
 
+    /// A ticket raised under the state lock, like every admission.
     fn track(&self) -> InFlight {
-        self.inner.in_flight.fetch_add(1, Ordering::SeqCst);
-        let inner = Arc::clone(&self.inner);
-        InFlight::new(move || {
-            if inner.in_flight.fetch_sub(1, Ordering::SeqCst) == 1 {
-                inner.drained.notify_waiters();
+        let _state = self.state();
+        self.ticket()
+    }
+
+    /// Admits a unit in one transition with the iteration rollover: under
+    /// the state lock, refused when the journal closed or — for a stateful
+    /// action — when no iteration is open (between an iteration's end and
+    /// the next one's begin, a unit belongs to neither). Such a unit is a
+    /// detached submission outliving its iteration: the node's verdict
+    /// records it.
+    fn admit(&self) -> Result<InFlight, JournalRefusal> {
+        const STEP: &str = effect_journal_step::SUBMIT;
+        let (refusal, failure) = {
+            let state = self.state();
+            if self.is_closed() {
+                (JournalRefusal::Closed, None)
+            } else if self.inner.authority.shape == JournalShape::Iterated && !state.run_open {
+                let iteration = state.iteration.unwrap_or(0);
+                (
+                    JournalRefusal::BetweenRuns,
+                    Some(EffectExecutionError::IterationUnitsOutstanding { iteration }),
+                )
+            } else {
+                return Ok(self.ticket());
             }
-        })
+        };
+        if let Some(failure) = failure {
+            tracing::warn!(
+                execution_id = %self.inner.authority.execution_id,
+                node_key = %self.inner.authority.node_key,
+                code = failure.code(),
+                "an effect unit was submitted between stateful iterations; refused"
+            );
+            self.note_failure(failure);
+        }
+        Err(self.refused(STEP, refusal))
     }
 
     fn is_closed(&self) -> bool {

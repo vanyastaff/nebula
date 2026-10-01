@@ -3136,6 +3136,7 @@ impl NodeTask {
                 attempt_generation: self.attempt_generation,
                 clock: Arc::clone(&self.clock),
                 metrics: self.metrics.clone(),
+                shape: crate::effect_driver::JournalShape::of(factory.metadata().kind()),
             },
         ))
     }

@@ -604,7 +604,39 @@ impl Harness {
         attempt_generation: u64,
         clock: Arc<dyn Clock>,
     ) -> NodeEffectJournal {
-        NodeEffectJournal::new(JournalAuthority {
+        NodeEffectJournal::new(self.authority(attempt_generation, clock, JournalShape::Flat))
+    }
+
+    /// The journal of attempt `attempt_generation` of a stateful node
+    /// `charge`: it admits units only while an iteration is open.
+    fn stateful_journal(&self, attempt_generation: u64) -> NodeEffectJournal {
+        NodeEffectJournal::new(self.authority(
+            attempt_generation,
+            Arc::new(nebula_core::accessor::SystemClock),
+            JournalShape::Iterated,
+        ))
+    }
+
+    /// The journal of attempt `attempt_generation` of a stateless node
+    /// `charge` that prepares at most `slot_cap` fresh slots.
+    fn capped_journal(&self, attempt_generation: u64, slot_cap: u32) -> NodeEffectJournal {
+        NodeEffectJournal::with_slot_cap(
+            self.authority(
+                attempt_generation,
+                Arc::new(nebula_core::accessor::SystemClock),
+                JournalShape::Flat,
+            ),
+            slot_cap,
+        )
+    }
+
+    fn authority(
+        &self,
+        attempt_generation: u64,
+        clock: Arc<dyn Clock>,
+        shape: JournalShape,
+    ) -> JournalAuthority {
+        JournalAuthority {
             ledger: Arc::clone(&self.ledger) as Arc<dyn OperationLedger>,
             scope: self.scope.clone(),
             fencing: self.fencing,
@@ -615,7 +647,8 @@ impl Harness {
             attempt_generation,
             clock,
             metrics: self.metrics.clone(),
-        })
+            shape,
+        }
     }
 
     /// Points the gateway row at another endpoint.
@@ -915,6 +948,7 @@ fn ordinals_are_one_node_wide_sequence_from_zero() {
         attempt_generation: 1,
         clock: Arc::new(nebula_core::accessor::SystemClock),
         metrics: MetricsRegistry::new(),
+        shape: JournalShape::Flat,
     });
     // Every resource and unit kind shares the node attempt's sequence.
     assert_eq!(journal.next_ordinal(), 0);
@@ -977,7 +1011,7 @@ async fn iteration_labels_restart_their_ordinal_per_iteration() {
 async fn an_iteration_begins_only_with_no_unit_in_flight() {
     let harness = Harness::new().await;
     harness.desk.script(&[Reply::Held]);
-    let journal = harness.journal(1);
+    let journal = harness.stateful_journal(1);
     journal.begin_iteration(0).expect("the first iteration");
     // A unit of iteration 0 is mid-call as iteration 1 would begin.
     let unit = tokio::spawn(
@@ -1027,7 +1061,7 @@ async fn an_iteration_begins_only_with_no_unit_in_flight() {
 async fn a_unit_outliving_its_iteration_fails_the_barrier_and_the_node_unknown() {
     let harness = Harness::new().await;
     harness.desk.script(&[Reply::Hang]);
-    let journal = harness.journal(1);
+    let journal = harness.stateful_journal(1);
     journal.begin_iteration(0).expect("the first iteration");
     let unit = tokio::spawn(
         harness
@@ -1070,7 +1104,7 @@ async fn a_unit_outliving_its_iteration_fails_the_barrier_and_the_node_unknown()
 async fn an_unknown_outcome_the_action_swallowed_stops_the_next_iteration() {
     let harness = Harness::new().await;
     harness.desk.script(&[Reply::Lost]);
-    let journal = harness.journal(1);
+    let journal = harness.stateful_journal(1);
     journal.begin_iteration(0).expect("the first iteration");
     let lost = harness
         .handle(&journal)
@@ -1093,6 +1127,184 @@ async fn an_unknown_outcome_the_action_swallowed_stops_the_next_iteration() {
         Err(EffectExecutionError::JournalOutcomeUnknown { .. })
     ));
     assert_eq!(harness.desk.keys().len(), 1);
+}
+
+#[tokio::test]
+async fn a_unit_submitted_between_iterations_is_refused_and_fails_the_node() {
+    let harness = Harness::new().await;
+    // Before the first iteration opens, nothing is admitted.
+    assert_eq!(
+        harness.stateful_journal(1).admit().map(|_| ()),
+        Err(JournalRefusal::BetweenRuns)
+    );
+
+    let journal = harness.stateful_journal(1);
+    journal.begin_iteration(0).expect("it0");
+    journal.end_iteration(DRAIN, true).await.expect("it0 ends");
+    // A detached task submits after iteration 0 ended, before iteration 1
+    // begins: the unit belongs to neither and is refused unsent.
+    let refused = harness
+        .handle(&journal)
+        .submit(Charge::<false> { order: 30 })
+        .await
+        .expect_err("between iterations");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(
+        *refused.kind(),
+        nebula_resource::error::ErrorKind::Permanent
+    );
+    assert_eq!(
+        refused.detail(),
+        "effect submitted while its owner has no open run (between stateful iterations); unit \
+         refused"
+    );
+    assert_eq!(
+        journal.begin_iteration(1),
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 }),
+        "the node's verdict records the violation"
+    );
+    assert_eq!(
+        journal.conclude(DRAIN).await,
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 0 })
+    );
+    assert_eq!(harness.desk.keys().len(), 0, "nothing sent");
+    assert_eq!(
+        harness.counter(
+            NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+            &[("step", "submit"), ("refusal", "between_runs")]
+        ),
+        2
+    );
+    // A stateless journal has no runs: it admits without an iteration.
+    assert!(harness.journal(1).admit().is_ok());
+}
+
+#[test]
+fn admission_waits_for_the_rollover_it_races() {
+    let executions = nebula_storage::InMemoryExecutionStore::new();
+    let journal = NodeEffectJournal::new(JournalAuthority {
+        ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &executions,
+        )),
+        scope: Scope::new("workspace-a", "org-a"),
+        fencing: FencingToken::from_generation(1),
+        execution_id: ExecutionId::new(),
+        node_key: NodeKey::new("charge").expect("node key"),
+        action_key: "billing.charge".to_owned(),
+        action_version: semver::Version::new(1, 0, 0),
+        attempt_generation: 1,
+        clock: Arc::new(nebula_core::accessor::SystemClock),
+        metrics: MetricsRegistry::new(),
+        shape: JournalShape::Iterated,
+    });
+    journal.begin_iteration(0).expect("it0");
+    // The rollover holds the journal's state: an admission racing it waits
+    // for the transition instead of slipping a ticket past its check.
+    let rollover = journal.state();
+    let admitting = std::thread::spawn({
+        let journal = journal.clone();
+        move || journal.admit().map(|ticket| (ticket, journal))
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!admitting.is_finished(), "admission waits for the rollover");
+    assert_eq!(journal.inner.in_flight.load(Ordering::SeqCst), 0);
+    drop(rollover);
+    let (ticket, _) = admitting
+        .join()
+        .expect("admitting thread")
+        .expect("admitted while iteration 0 is open");
+    // Once admitted, the ticket is seen by the next rollover.
+    assert_eq!(
+        journal.begin_iteration(1),
+        Err(EffectExecutionError::IterationUnitsOutstanding { iteration: 1 })
+    );
+    drop(ticket);
+}
+
+#[tokio::test]
+async fn the_slot_cap_counts_fresh_slots_and_replays_any_number_recorded() {
+    let harness = Harness::new().await;
+    let first = harness.capped_journal(1, 10);
+    for order in 1..=3 {
+        harness
+            .handle(&first)
+            .submit(Charge::<false> { order })
+            .await
+            .expect("applied");
+    }
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+
+    // A later attempt under a cap of one fresh slot replays all three
+    // recorded effects, prepares one fresh slot, and refuses the next.
+    let retry = harness.capped_journal(2, 1);
+    let handle = harness.handle(&retry);
+    for order in 1..=3 {
+        assert_eq!(
+            handle
+                .submit(Charge::<false> { order })
+                .await
+                .expect("replayed"),
+            order,
+            "the recorded receipt"
+        );
+    }
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 4 })
+            .await
+            .expect("the one fresh slot"),
+        4
+    );
+    let refused = handle
+        .submit(Charge::<false> { order: 5 })
+        .await
+        .expect_err("a second fresh slot is over the cap");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert_eq!(
+        refused.detail(),
+        "effect journal slot cap reached; unit refused"
+    );
+    assert_eq!(harness.desk.keys().len(), 4, "the replays called nothing");
+    assert_eq!(
+        retry.conclude(DRAIN).await,
+        Err(EffectExecutionError::JournalSlotCapExceeded { cap: 1 })
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_barrier_read_that_never_answers_defers_within_the_budget() {
+    let harness = Harness::new().await;
+    harness.ledger.hang_reads.store(true, Ordering::SeqCst);
+    // An iteration with no effect: its barrier is the first to read what
+    // earlier attempts recorded.
+    let journal = harness.stateful_journal(1);
+    journal.begin_iteration(0).expect("it0");
+    let started = tokio::time::Instant::now();
+    let stopped = journal.end_iteration(Duration::from_mins(1), true).await;
+    assert_eq!(
+        stopped,
+        Err(EffectExecutionError::Ledger(
+            OperationLedgerError::Unavailable
+        ))
+    );
+    assert!(stopped.is_err_and(EffectExecutionError::is_deferred));
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_mins(1),
+        "bounded by the barrier budget"
+    );
+    // The node defers instead of hanging.
+    let started = tokio::time::Instant::now();
+    let verdict = journal.conclude(Duration::from_mins(1)).await;
+    assert!(verdict.is_err_and(EffectExecutionError::is_deferred));
+    assert!(started.elapsed() < Duration::from_mins(1));
+
+    // A spent budget still gives the read its floor.
+    let spent = harness.stateful_journal(1);
+    spent.begin_iteration(0).expect("it0");
+    let started = tokio::time::Instant::now();
+    assert!(spent.end_iteration(Duration::ZERO, true).await.is_err());
+    assert_eq!(started.elapsed(), FINAL_READ_FLOOR);
 }
 
 #[tokio::test]
@@ -1313,7 +1525,7 @@ async fn a_position_a_unit_gave_up_leaves_the_next_fresh_effect_refused() {
 #[tokio::test(start_paused = true)]
 async fn an_iteration_that_skips_a_recorded_effect_refuses_the_next_fresh_one() {
     let harness = Harness::new().await;
-    let first = harness.journal(1);
+    let first = harness.stateful_journal(1);
     first.begin_iteration(0).expect("it0");
     harness
         .handle(&first)
@@ -1324,7 +1536,7 @@ async fn an_iteration_that_skips_a_recorded_effect_refuses_the_next_fresh_one() 
 
     // Within an iteration: the retry's first unit of iteration 0 gives up
     // before reaching the journal; the charge lands one position higher.
-    let retry = harness.journal(2);
+    let retry = harness.stateful_journal(2);
     retry.begin_iteration(0).expect("it0");
     let late = harness.handle(&retry).submit(Charge::<false> { order: 8 });
     tokio::time::advance(PAST_THE_UNIT_DEADLINE).await;
@@ -1348,7 +1560,7 @@ async fn an_iteration_that_passes_a_recorded_effect_by_stops_at_its_barrier() {
     let harness = Harness::new().await;
     // The first attempt: iteration 0 sends nothing, iteration 1 a charge;
     // then the process dies.
-    let first = harness.journal(1);
+    let first = harness.stateful_journal(1);
     first.begin_iteration(0).expect("it0");
     first.end_iteration(DRAIN, true).await.expect("it0 ends");
     first.begin_iteration(1).expect("it1");
@@ -1361,7 +1573,7 @@ async fn an_iteration_that_passes_a_recorded_effect_by_stops_at_its_barrier() {
     // The replay's iteration 1 sends nothing (an unjournaled read changed):
     // its barrier stops the loop before iteration 2 could send the charge
     // again at a fresh position.
-    let replay = harness.journal(2);
+    let replay = harness.stateful_journal(2);
     replay.begin_iteration(0).expect("it0");
     replay.end_iteration(DRAIN, true).await.expect("it0 ends");
     replay.begin_iteration(1).expect("it1");
@@ -1376,7 +1588,7 @@ async fn an_iteration_that_passes_a_recorded_effect_by_stops_at_its_barrier() {
     );
 
     // Even an owner that went on would refuse the fresh slot above it.
-    let stubborn = harness.journal(3);
+    let stubborn = harness.stateful_journal(3);
     stubborn.begin_iteration(2).expect("it2");
     let refused = harness
         .handle(&stubborn)
@@ -1387,7 +1599,7 @@ async fn an_iteration_that_passes_a_recorded_effect_by_stops_at_its_barrier() {
     assert_eq!(harness.desk.keys().len(), 1, "sent once");
 
     // A failing iteration keeps its own failure: its conclusion decides.
-    let failing = harness.journal(4);
+    let failing = harness.stateful_journal(4);
     failing.begin_iteration(0).expect("it0");
     failing.end_iteration(DRAIN, true).await.expect("it0 ends");
     failing.begin_iteration(1).expect("it1");

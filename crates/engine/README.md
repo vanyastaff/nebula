@@ -205,8 +205,15 @@ configuration, and process lifecycle.
   iteration must submit the same effects in the same order — inputs a replay does
   not reproduce (clocks, randomness, unrecorded reads) diverge, and the divergence
   halts the node `ENGINE:EFFECT_OCCURRENCE_MISMATCH` before any recorded effect is
-  sent again; only effects past everything recorded are sent. One node attempt prepares at most `MAX_NODE_SLOTS` (10 000) journaled effects:
-  a further prepare is refused `slot_cap_exceeded`, nothing is sent, and the node
+  sent again; only effects past everything recorded are sent. A stateful node's journal admits a unit only while an iteration is open:
+  admission and the iteration rollover are one transition under the journal's lock,
+  and a unit a detached task submits between iterations is refused `between_runs`
+  (`Permanent` / `NotSent`) while the verdict records
+  `ENGINE:EFFECT_ITERATION_BARRIER`. A barrier's occurrence read is bounded by what
+  is left of the drain limit (at least 5 s) and defers the node on timeout. One node
+  attempt prepares at most `MAX_NODE_SLOTS` (10 000) fresh journaled effects (replays of
+  recorded positions do not count):
+  a further fresh prepare is refused `slot_cap_exceeded`, nothing is sent, and the node
   fails `ENGINE:EFFECT_JOURNAL_SLOT_CAP`. Every slot records the provider idempotency key
   `base64url(SHA-256(frame("nebula.idempotency-key.v1") ‖ frame(frame(org) ‖
   frame(workspace)) ‖ frame(resource) ‖ frame(operation) ‖ u32_be(version) ‖
