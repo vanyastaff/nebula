@@ -4,14 +4,17 @@
 //!
 //! Nothing is materialized as a [`Value`] first, so an object that writes
 //! one key twice — a `#[serde(flatten)]` collision, a hand-written impl —
-//! is refused instead of keeping its last member, and output past the cap
-//! stops the serialization as soon as it is written — a string or a map key
-//! included, refused before it is copied or as it is formatted. Scalars,
+//! is refused instead of keeping its last member. Every output byte —
+//! punctuation, escaped strings, scalars, formatted text, a raw value's
+//! re-emitted JSON, an object member's buffer — goes through one
+//! budget-charging [`Sink`] that refuses a write past the cap before the
+//! buffer grows; the only text held apart, an object key kept unescaped to
+//! sort by, is checked against the budget before it is copied. Scalars,
 //! scalar map keys and string escapes go through `serde_json` itself, so
 //! the bytes are exactly those of the request's JSON value re-emitted with
 //! sorted keys.
 
-use std::{cell::Cell, fmt};
+use std::{cell::Cell, fmt, io};
 
 use serde::{
     Deserializer, Serialize, Serializer,
@@ -62,55 +65,109 @@ impl ser::Error for CanonicalError {
 
 /// The canonical JSON of `request`.
 pub(super) fn to_canonical<T: Serialize + ?Sized>(request: &T) -> Result<Vec<u8>, CanonicalError> {
-    let budget = Budget(Cell::new(0));
     let mut out = Vec::new();
-    request.serialize(Canonical {
-        out: &mut out,
-        budget: &budget,
-    })?;
+    write_canonical(request, &mut out)?;
     Ok(out)
+}
+
+/// Writes the canonical JSON of `request` into `out`; on a refusal, `out`
+/// holds what was written up to it, never more than the cap.
+fn write_canonical<T: Serialize + ?Sized>(
+    request: &T,
+    out: &mut Vec<u8>,
+) -> Result<(), CanonicalError> {
+    let budget = Budget::default();
+    request.serialize(Canonical {
+        out,
+        budget: &budget,
+    })
 }
 
 /// Bytes of canonical output written so far.
 ///
-/// Every byte is charged once, where it is first written — into the output
-/// or into an object member's buffer, later moved into place uncharged — so
-/// the charge never exceeds the final length and equals it at the end.
-struct Budget(Cell<usize>);
+/// Every byte of output goes through a [`Sink`], which charges it before
+/// it is written: into the output, or into an object member's buffer later
+/// moved into place uncharged. So the charge never exceeds the final length
+/// and equals it at the end, and nothing past the cap is ever written.
+#[derive(Default)]
+struct Budget {
+    used: Cell<usize>,
+    /// Set once a write or a copy was refused for the cap: whatever error
+    /// the refusal surfaces as — `serde_json`'s, a formatter's, a parser's —
+    /// it is [`CanonicalError::TooLarge`].
+    over: Cell<bool>,
+}
 
 impl Budget {
     /// Refuses when `len` more bytes would not fit.
     fn check(&self, len: usize) -> Result<(), CanonicalError> {
-        if self.0.get().saturating_add(len) > MAX_CANONICAL_REQUEST_LEN {
+        if self.used.get().saturating_add(len) > MAX_CANONICAL_REQUEST_LEN {
+            self.over.set(true);
             Err(CanonicalError::TooLarge)
         } else {
             Ok(())
         }
     }
 
-    /// Charges `len` bytes written.
+    /// Charges `len` bytes about to be written.
     fn charge(&self, len: usize) -> Result<(), CanonicalError> {
         self.check(len)?;
-        self.0.set(self.0.get().saturating_add(len));
+        self.used.set(self.used.get().saturating_add(len));
+        Ok(())
+    }
+
+    /// What a failed write surfaces as: the cap if it refused, otherwise
+    /// a request that does not serialize.
+    fn refusal(&self) -> CanonicalError {
+        if self.over.get() {
+            CanonicalError::TooLarge
+        } else {
+            CanonicalError::Unserializable
+        }
+    }
+}
+
+/// The one way bytes reach the output or a member's buffer: each write is
+/// charged to the budget before the buffer grows, and refused past the cap.
+struct Sink<'a> {
+    out: &'a mut Vec<u8>,
+    budget: &'a Budget,
+}
+
+impl io::Write for Sink<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.budget
+            .charge(bytes.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+        self.out.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
 
 /// Writes `bytes` of punctuation.
 fn push(out: &mut Vec<u8>, budget: &Budget, bytes: &[u8]) -> Result<(), CanonicalError> {
-    budget.charge(bytes.len())?;
-    out.extend_from_slice(bytes);
-    Ok(())
+    io::Write::write_all(&mut Sink { out, budget }, bytes).map_err(|_| budget.refusal())
 }
 
-/// Writes `text` as a JSON string, escaped as `serde_json` escapes it.
+/// Writes `text` as a JSON string, escaped as `serde_json` escapes it, each
+/// run and escape charged as it is written.
 fn push_str(out: &mut Vec<u8>, budget: &Budget, text: &str) -> Result<(), CanonicalError> {
-    // Escaping only lengthens a string: one that cannot fit is refused
-    // before it is copied.
-    budget.check(text.len().saturating_add(2))?;
-    let start = out.len();
-    serde_json::to_writer(&mut *out, text).map_err(|_| CanonicalError::Unserializable)?;
-    budget.charge(out.len().saturating_sub(start))
+    serde_json::to_writer(Sink { out, budget }, text).map_err(|_| budget.refusal())
+}
+
+/// Writes the `Display` text of `value` as a JSON string, escaped as it is
+/// formatted: formatting stops at the cap.
+fn push_display<T: fmt::Display + ?Sized>(
+    out: &mut Vec<u8>,
+    budget: &Budget,
+    value: &T,
+) -> Result<(), CanonicalError> {
+    let mut writer = serde_json::Serializer::new(Sink { out, budget });
+    Serializer::collect_str(&mut writer, value).map_err(|_| budget.refusal())
 }
 
 /// Writes a scalar as the JSON value `serde_json` makes of it: an `f32`
@@ -121,9 +178,7 @@ fn push_scalar<T: Serialize>(
     scalar: T,
 ) -> Result<(), CanonicalError> {
     let value = serde_json::to_value(scalar).map_err(|_| CanonicalError::Unserializable)?;
-    let start = out.len();
-    serde_json::to_writer(&mut *out, &value).map_err(|_| CanonicalError::Unserializable)?;
-    budget.charge(out.len().saturating_sub(start))
+    serde_json::to_writer(Sink { out, budget }, &value).map_err(|_| budget.refusal())
 }
 
 /// A scalar map key (a number, a bool, a char) as `serde_json` stringifies
@@ -139,30 +194,32 @@ fn scalar_key<T: Serialize>(key: T) -> Result<String, CanonicalError> {
     }
 }
 
-/// Refuses `text` when it cannot fit as a JSON string: escaping only
-/// lengthens it, and the quotes count.
-fn check_text(budget: &Budget, len: usize) -> Result<(), CanonicalError> {
+/// Refuses a key's unescaped text of `len` bytes when it cannot fit as a
+/// JSON string: escaping only lengthens it, and the quotes count.
+///
+/// A key is the one text kept apart from the output — unescaped, to sort
+/// its object's members — so it is checked here before it is copied; its
+/// escaped form is charged when the member is written. The keys held thus
+/// never outgrow the output they head, nor the cap.
+fn check_key(budget: &Budget, len: usize) -> Result<(), CanonicalError> {
     budget.check(len.saturating_add(2))
 }
 
-/// The `Display` text of `value`, collected only while it can still fit
-/// as a JSON string: a longer one is refused as it is written.
-fn bounded_display<T: fmt::Display + ?Sized>(
+/// The `Display` text of a key, collected only while it can still fit as
+/// a JSON string: a longer one is refused as it is formatted.
+fn display_key<T: fmt::Display + ?Sized>(
     budget: &Budget,
-    value: &T,
+    key: &T,
 ) -> Result<String, CanonicalError> {
     struct Bounded<'a> {
         text: String,
         budget: &'a Budget,
-        over: bool,
     }
 
     impl fmt::Write for Bounded<'_> {
         fn write_str(&mut self, part: &str) -> fmt::Result {
-            if check_text(self.budget, self.text.len().saturating_add(part.len())).is_err() {
-                self.over = true;
-                return Err(fmt::Error);
-            }
+            check_key(self.budget, self.text.len().saturating_add(part.len()))
+                .map_err(|_| fmt::Error)?;
             self.text.push_str(part);
             Ok(())
         }
@@ -171,13 +228,9 @@ fn bounded_display<T: fmt::Display + ?Sized>(
     let mut bounded = Bounded {
         text: String::new(),
         budget,
-        over: false,
     };
-    match fmt::write(&mut bounded, format_args!("{value}")) {
-        Ok(()) => Ok(bounded.text),
-        Err(_) if bounded.over => Err(CanonicalError::TooLarge),
-        Err(_) => Err(CanonicalError::Unserializable),
-    }
+    fmt::write(&mut bounded, format_args!("{key}")).map_err(|_| budget.refusal())?;
+    Ok(bounded.text)
 }
 
 /// A map key, stringified as `serde_json` stringifies it — a string, a
@@ -245,12 +298,12 @@ impl Serializer for MapKey<'_> {
     }
 
     fn serialize_str(self, key: &str) -> Result<String, CanonicalError> {
-        check_text(self.budget, key.len())?;
+        check_key(self.budget, key.len())?;
         Ok(key.to_owned())
     }
 
     fn collect_str<T: fmt::Display + ?Sized>(self, key: &T) -> Result<String, CanonicalError> {
-        bounded_display(self.budget, key)
+        display_key(self.budget, key)
     }
 
     fn serialize_unit_variant(
@@ -444,8 +497,7 @@ impl<'a> Serializer for Canonical<'a> {
     }
 
     fn collect_str<T: fmt::Display + ?Sized>(self, value: &T) -> Result<(), CanonicalError> {
-        let text = bounded_display(self.budget, value)?;
-        push_str(self.out, self.budget, &text)
+        push_display(self.out, self.budget, value)
     }
 
     fn serialize_bytes(self, value: &[u8]) -> Result<(), CanonicalError> {
@@ -917,8 +969,34 @@ fn transcode(out: &mut Vec<u8>, budget: &Budget, text: &str) -> Result<(), Canon
     .deserialize(&mut deserializer)
     .and_then(|()| deserializer.end());
     // The parser's own message may echo request text: only the writer's
-    // refusal survives, any other failure is unserializable.
-    written.map_err(|_| failure.take().unwrap_or(CanonicalError::Unserializable))
+    // refusal or the cap's survives, any other failure is unserializable.
+    written.map_err(|_| failure.take().unwrap_or_else(|| budget.refusal()))
+}
+
+/// A raw object's key, copied out of the parser only once it can fit.
+struct RawKey<'a> {
+    budget: &'a Budget,
+}
+
+impl<'de> DeserializeSeed<'de> for RawKey<'_> {
+    type Value = String;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<String, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl Visitor<'_> for RawKey<'_> {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an object key")
+    }
+
+    fn visit_str<E: de::Error>(self, key: &str) -> Result<String, E> {
+        check_key(self.budget, key.len()).map_err(E::custom)?;
+        Ok(key.to_owned())
+    }
 }
 
 /// One JSON value of a raw text, written canonicalized into `out` as the
@@ -1032,7 +1110,7 @@ impl<'de> Visitor<'de> for Transcode<'_> {
         let mut object = Canonical { out, budget }
             .object(b"}", false)
             .map_err(|error| refuse::<A::Error>(failure, error))?;
-        while let Some(key) = entries.next_key::<String>()? {
+        while let Some(key) = entries.next_key_seed(RawKey { budget })? {
             let mut member = object
                 .begin_member(&key)
                 .map_err(|error| refuse::<A::Error>(failure, error))?;
@@ -1046,5 +1124,110 @@ impl<'de> Visitor<'de> for Transcode<'_> {
         object
             .close()
             .map_err(|error| refuse::<A::Error>(failure, error))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, fmt};
+
+    use serde::Serialize;
+    use serde_json::value::RawValue;
+
+    use super::{CanonicalError, MAX_CANONICAL_REQUEST_LEN, RAW_VALUE_TOKEN, write_canonical};
+
+    /// Half the cap of NULs: within the cap as text, six times it escaped.
+    fn nuls() -> String {
+        "\u{0}".repeat(MAX_CANONICAL_REQUEST_LEN / 2)
+    }
+
+    /// Writes `request`, asserting it is refused for the cap with the
+    /// output never grown past it.
+    fn refused_within_the_cap<T: Serialize + ?Sized>(label: &str, request: &T) {
+        let mut out = Vec::new();
+        assert_eq!(
+            write_canonical(request, &mut out),
+            Err(CanonicalError::TooLarge),
+            "{label}"
+        );
+        assert!(
+            out.len() <= MAX_CANONICAL_REQUEST_LEN,
+            "{label}: {} bytes written",
+            out.len()
+        );
+        assert!(
+            out.capacity() <= 2 * MAX_CANONICAL_REQUEST_LEN,
+            "{label}: {} bytes reserved",
+            out.capacity()
+        );
+    }
+
+    /// `Display`s its text as many times as it says.
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    struct Repeated(&'static str, usize);
+
+    impl fmt::Display for Repeated {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            for _ in 0..self.1 {
+                formatter.write_str(self.0)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl Serialize for Repeated {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(self)
+        }
+    }
+
+    /// Serializes as `serde_json`'s `RawValue` does, unchecked.
+    struct UncheckedRaw(String);
+
+    impl Serialize for UncheckedRaw {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeStruct as _;
+            let mut state = serializer.serialize_struct(RAW_VALUE_TOKEN, 1)?;
+            state.serialize_field(RAW_VALUE_TOKEN, self.0.as_str())?;
+            state.end()
+        }
+    }
+
+    #[test]
+    fn escapes_are_charged_as_they_are_written() {
+        let nuls = nuls();
+        refused_within_the_cap("string", nuls.as_str());
+        refused_within_the_cap(
+            "displayed",
+            &Repeated("\u{0}", MAX_CANONICAL_REQUEST_LEN / 2),
+        );
+        let escaped = format!("\"{}\"", "\\u0000".repeat(MAX_CANONICAL_REQUEST_LEN / 2));
+        let raw = RawValue::from_string(escaped).expect("raw");
+        refused_within_the_cap("raw string", &raw);
+        // In a member's buffer, which the output never sees.
+        refused_within_the_cap("member", &BTreeMap::from([("k", nuls.as_str())]));
+        refused_within_the_cap("key", &BTreeMap::from([(nuls.as_str(), 1)]));
+        refused_within_the_cap(
+            "displayed key",
+            &BTreeMap::from([(Repeated("\u{0}", MAX_CANONICAL_REQUEST_LEN / 2), 1)]),
+        );
+    }
+
+    #[test]
+    fn a_raw_key_is_refused_before_its_value_is_read() {
+        let key = "k".repeat(MAX_CANONICAL_REQUEST_LEN);
+        let raw = RawValue::from_string(format!("{{\"{key}\":1}}")).expect("raw");
+        refused_within_the_cap("raw key", &raw);
+        // The value after the key is never parsed: its broken text is not
+        // what refuses the request.
+        refused_within_the_cap(
+            "raw key, broken value",
+            &UncheckedRaw(format!("{{\"{key}\": ]")),
+        );
+        // A key that fits is kept, in order.
+        let mut out = Vec::new();
+        let raw = RawValue::from_string(r#"{"b":1,"\u0000":2}"#.to_owned()).expect("raw");
+        write_canonical(&raw, &mut out).expect("fits");
+        assert_eq!(out, br#"{"\u0000":2,"b":1}"#);
     }
 }
