@@ -210,7 +210,7 @@ fn managed_with_workers(
         pending_projection_hooks: Default::default(),
         phase_changed: Default::default(),
         resource,
-        config: ArcSwap::from_pointee(RetainedConfig),
+        config: ArcSwap::from_pointee(crate::runtime::managed::AdmittedConfig::new(RetainedConfig)),
         topology,
         store: InstanceStore::with_abandonment_tracker(None, release_queue.abandonment_tracker()),
         retained: RetainedStore::new(release_queue.abandonment_tracker()),

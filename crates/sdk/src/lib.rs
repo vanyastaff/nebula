@@ -129,7 +129,8 @@ pub mod __private {
     #[doc(hidden)]
     pub mod resource {
         pub use nebula_resource::{
-            Error, HasCredentialSlots, PinSlots, ResourceConfig, SlotInstallError, SlotUpdate,
+            ConfigFingerprint, Error, HasCredentialSlots, PinSlots, ResourceConfig,
+            SlotInstallError, SlotUpdate,
         };
 
         /// Opaque resource contribution contracts used by SDK-only derives.

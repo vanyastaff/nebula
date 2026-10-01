@@ -62,6 +62,23 @@ pub enum SessionEnd {
     Rollback,
 }
 
+## enum nebula_resource::config_fingerprint::ConfigFingerprintError
+exported as nebula_sdk::integration::resource::ConfigFingerprintError
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ConfigFingerprintError {
+    Unserializable,
+    DuplicateKey,
+    TooLarge,
+    DuplicateField,
+    NonFiniteFloat,
+}
+impl ConfigFingerprintError {
+    pub const fn as_str(&self) -> &'static str;
+}
+impl fmt::Display for ConfigFingerprintError
+impl std::error::Error for ConfigFingerprintError
+
 ## enum nebula_resource::error::CredentialUnavailableReason
 exported as nebula_sdk::integration::resource::CredentialUnavailableReason
 #[non_exhaustive]
@@ -566,6 +583,20 @@ impl<T, O> Streaming<T, O> {
 }
 impl<T, O> fmt::Debug for Streaming<T, O>
 
+## struct nebula_resource::config_fingerprint::ConfigFingerprint
+exported as nebula_sdk::integration::resource::ConfigFingerprint
+pub struct ConfigFingerprint {
+    /* private fields */
+}
+impl ConfigFingerprint {
+    pub fn new() -> Self;
+    pub fn field<T: Serialize + ?Sized>(mut self, name: &str, value: &T) -> Self;
+    pub fn try_finish(self) -> Result<u64, ConfigFingerprintError>;
+    pub fn finish(self) -> u64;
+}
+impl Default for ConfigFingerprint
+impl fmt::Debug for ConfigFingerprint
+
 ## struct nebula_resource::context::ResourceContext
 exported as nebula_sdk::integration::resource::ResourceContext
 exported as nebula_sdk::prelude::ResourceContext
@@ -614,6 +645,7 @@ impl Error {
     pub fn unknown_credential_slot(key: ResourceKey, slot_name: &str) -> Self;
     pub fn to_core_error(&self) -> nebula_core::CoreError;
 }
+impl From<ConfigFingerprintError> for Error
 impl From<OperationError> for Error
 impl From<nebula_core::CoreError> for Error
 impl fmt::Display for Error
