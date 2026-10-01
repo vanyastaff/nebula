@@ -1,6 +1,40 @@
 //! The journal's verdict and the authority boundaries of journaled actions.
 
+use std::sync::atomic::Ordering;
+
 use super::{journal_fixture::*, *};
+
+#[tokio::test]
+async fn no_error_strategy_continues_past_a_journal_verdict() {
+    for strategy in [
+        nebula_workflow::ErrorStrategy::IgnoreErrors,
+        nebula_workflow::ErrorStrategy::ContinueOnError,
+    ] {
+        let fixture = JournalFixture::with_error_strategy(Ports::memory(), strategy).await;
+        // The write's answer is lost, and the action swallows the error and
+        // succeeds: the verdict is an unknown outcome.
+        fixture.gateway.lose_first.store(1, Ordering::SeqCst);
+        let execution = fixture
+            .start(&[write("order-11:7")], json!({ "swallow": true }))
+            .await;
+        let result = fixture.run(execution).await.unwrap();
+        assert_eq!(
+            result.status,
+            ExecutionStatus::Failed,
+            "{strategy:?}: {result:?}"
+        );
+        assert!(
+            node_error(&result).starts_with("ENGINE:EFFECT_OUTCOME_UNKNOWN"),
+            "{strategy:?}: {}",
+            node_error(&result)
+        );
+        assert!(
+            !result.node_outputs.contains_key(&node_key!("charge")),
+            "{strategy:?}: no output stands for the node"
+        );
+        assert_eq!(fixture.gateway.call_count(), 1);
+    }
+}
 
 #[tokio::test]
 async fn the_journal_waits_for_a_unit_its_action_did_not_await() {

@@ -1490,7 +1490,11 @@ let admitted = recorded.readmit_against(fresh)?;
   `ENGINE:EFFECT_OCCURRENCE_MISMATCH` (`EffectExecutionError::OccurrenceMismatch`,
   plus `JournalOutcomeUnknown`) — as does a node about to succeed although
   an earlier attempt recorded an effect (settled, or a call that crossed)
-  this attempt never met again —, and a lost lease (or a final occurrence
+  this attempt never met again —; these verdicts, a remote effect's
+  unknown outcome and unreadable effect evidence
+  (`EffectExecutionError::halts_execution`, new) take no error strategy:
+  the node fails and the execution stops even under `IgnoreErrors` or
+  `ContinueOnError`, and no OnError edge is routed; and a lost lease (or a final occurrence
   read that does not answer within the verdict budget, at least 5 s)
   releases the turn without
   finalizing. Raw leases stay refused; only handle-routed effects are

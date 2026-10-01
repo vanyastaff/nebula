@@ -190,7 +190,10 @@ configuration, and process lifecycle.
   configuration or recording policy under a recorded occurrence fails it
   `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent — as does a node about to
   succeed although an earlier attempt recorded an effect (settled, or a call that
-  crossed) this attempt never met again. Counters:
+  crossed) this attempt never met again. Such a verdict — like a remote effect's unknown
+  outcome or unreadable evidence (`EffectExecutionError::halts_execution`) — takes no
+  error strategy: `IgnoreErrors`, `ContinueOnError` and OnError edges never recover or
+  route past it; the node fails and the execution stops. Counters:
   `nebula_effect_journal_prepares_total{phase}`,
   `nebula_effect_journal_refusals_total{step,refusal}`,
   `nebula_effect_journal_verdicts_total{code}`. Every other `Journaled` node keeps

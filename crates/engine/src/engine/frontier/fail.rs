@@ -313,7 +313,18 @@ impl WorkflowEngine {
         }
 
         // ── Finalize path (no retry / retry exhausted) ──
-        let outcome = classify_failure(error_strategy);
+        //
+        // An effect failure whose durable state is unknown or contradicts
+        // the node (an unknown outcome, an occurrence mismatch) takes no
+        // error strategy: `IgnoreErrors` would complete the node and
+        // `ContinueOnError` / OnError edges would route past a mutation
+        // nobody can vouch for. The node fails and the execution stops.
+        let halts = matches!(err, EngineError::Effect(effect) if effect.halts_execution());
+        let outcome = if halts {
+            FailureOutcome::Fail
+        } else {
+            classify_failure(error_strategy)
+        };
         if let Err(e) =
             apply_failure_recovery(outcome, node_key.clone(), ctx.exec_state, ctx.outputs)
         {
@@ -321,19 +332,31 @@ impl WorkflowEngine {
             return Err(e);
         }
 
-        let abort = route_failure_edges(
-            outcome,
-            node_key.clone(),
-            &err_str,
-            error_strategy,
-            graph,
-            ctx.outputs,
-            &mut ctx.activated_edges,
-            &mut ctx.resolved_edges,
-            &ctx.required_count,
-            &mut ctx.ready_queue,
-            ctx.exec_state,
-        );
+        let abort = if halts {
+            ctx.outputs.remove(&node_key);
+            tracing::error!(
+                target = "engine::frontier",
+                %execution_id,
+                %node_key,
+                error = %err_str,
+                "effect state unknown or contradicting the node; stopping the execution"
+            );
+            Some(err_str.clone())
+        } else {
+            route_failure_edges(
+                outcome,
+                node_key.clone(),
+                &err_str,
+                error_strategy,
+                graph,
+                ctx.outputs,
+                &mut ctx.activated_edges,
+                &mut ctx.resolved_edges,
+                &ctx.required_count,
+                &mut ctx.ready_queue,
+                ctx.exec_state,
+            )
+        };
 
         if let Err(e) = self
             .checkpoint_node(

@@ -85,6 +85,22 @@ impl EffectExecutionError {
             Self::InvalidEvidence => "ENGINE:EFFECT_INVALID_EVIDENCE",
         }
     }
+    /// Whether the failure leaves the effect's durable state unknown or
+    /// contradicting the node — an unknown outcome, an occurrence mismatch,
+    /// evidence that cannot be read. No error strategy may recover the node
+    /// or route past it: the node fails and the execution stops, for
+    /// reconciliation.
+    #[must_use]
+    pub const fn halts_execution(self) -> bool {
+        matches!(
+            self,
+            Self::OutcomeUnknown { .. }
+                | Self::JournalOutcomeUnknown { .. }
+                | Self::OccurrenceMismatch
+                | Self::InvalidEvidence
+        )
+    }
+
     /// Whether the turn must relinquish its lease without finalizing the node.
     ///
     /// Recovery may read the ledger again; this is not provider retry authority.

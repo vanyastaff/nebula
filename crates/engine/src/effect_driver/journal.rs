@@ -99,7 +99,9 @@
 //! node as unknown. A node about to succeed although an earlier attempt
 //! recorded an effect (settled, or a call that crossed) this attempt never
 //! prepared took another path past an applied mutation: it fails as an
-//! occurrence mismatch.
+//! occurrence mismatch. No error strategy recovers or routes past either
+//! verdict ([`EffectExecutionError::halts_execution`]): the execution
+//! stops.
 
 use std::{
     collections::{HashMap, HashSet},

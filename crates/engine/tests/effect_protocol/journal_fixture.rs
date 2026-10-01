@@ -507,10 +507,33 @@ impl JournalFixture {
         Self::build(ports, Kind::Stateless, Some(retry)).await
     }
 
+    /// A fixture whose workflow fails nodes under `strategy`.
+    pub(super) async fn with_error_strategy(
+        ports: Ports,
+        strategy: nebula_workflow::ErrorStrategy,
+    ) -> Self {
+        Self::build_with(ports, Kind::Stateless, None, strategy).await
+    }
+
     pub(super) async fn build(
         ports: Ports,
         kind: Kind,
         retry: Option<nebula_workflow::RetryConfig>,
+    ) -> Self {
+        Self::build_with(
+            ports,
+            kind,
+            retry,
+            nebula_workflow::ErrorStrategy::default(),
+        )
+        .await
+    }
+
+    async fn build_with(
+        ports: Ports,
+        kind: Kind,
+        retry: Option<nebula_workflow::RetryConfig>,
+        strategy: nebula_workflow::ErrorStrategy,
     ) -> Self {
         let gateway = Arc::new(Gateway::default());
         let controls = match kind {
@@ -539,10 +562,11 @@ impl JournalFixture {
         let mut node =
             NodeDefinition::new(node_key!("charge"), "Charge", "journal", "charge").unwrap();
         node.retry_policy = retry;
-        let definition = WorkflowBuilder::new("Journaled effects")
+        let mut definition = WorkflowBuilder::new("Journaled effects")
             .add_node(node)
             .build()
             .unwrap();
+        definition.config.error_strategy = strategy;
         let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
         ports
             .workflows
