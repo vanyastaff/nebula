@@ -287,7 +287,10 @@ impl Manager {
         }
 
         let credential_reads = self.credential_reads_for::<R>(&resource)?;
-        config.validate()?;
+        // Validation events (e.g. a field without a stable fingerprint)
+        // carry the row's resource key.
+        tracing::info_span!("resource.config.validate", resource.key = %R::key(), op = "register")
+            .in_scope(|| config.validate())?;
         let rate_limiter = self.row_limiter::<R>(rate_limit, &scope, &slot_identity)?;
 
         // #390 (pool min/max sanity) is enforced at `Pooled` construction,
@@ -1083,7 +1086,8 @@ impl Manager {
     {
         use crate::resource::ResourceConfig as _;
 
-        new_config.validate()?;
+        tracing::info_span!("resource.config.validate", resource.key = %R::key(), op = "reload")
+            .in_scope(|| new_config.validate())?;
 
         let managed = self.lookup::<R>(scope)?;
 

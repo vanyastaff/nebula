@@ -71,6 +71,10 @@ pub enum ConfigFingerprintError {
     DuplicateKey,
     TooLarge,
     DuplicateField,
+    NonFiniteFloat,
+}
+impl ConfigFingerprintError {
+    pub const fn as_str(&self) -> &'static str;
 }
 impl fmt::Display for ConfigFingerprintError
 impl std::error::Error for ConfigFingerprintError

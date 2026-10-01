@@ -138,7 +138,11 @@ pub(super) fn canonical_json<T: Serialize + ?Sized>(
         Ok(canonical) if !canonical.is_empty() => return Ok(canonical),
         Ok(_) | Err(CanonicalError::TooLarge) => "canonical request must be 1 byte to 1 MiB",
         Err(CanonicalError::DuplicateKey) => "operation request has an object with a duplicate key",
-        Err(CanonicalError::Unserializable) => "operation request does not serialize to JSON",
+        // `to_canonical` writes a non-finite float `null`, as `serde_json`
+        // does for the request a provider receives: it never refuses one.
+        Err(CanonicalError::Unserializable | CanonicalError::NonFiniteFloat) => {
+            "operation request does not serialize to JSON"
+        },
     };
     Err(OperationError::new(ErrorKind::Permanent, detail))
 }

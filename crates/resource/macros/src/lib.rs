@@ -185,6 +185,12 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 /// Excludes the annotated field from the fingerprint. The field type is not
 /// required to implement `serde::Serialize` when skipped.
 ///
+/// A fingerprinted field must serialize identically for equal values in every
+/// process: a field whose type names a hash-ordered set (`HashSet` and its
+/// aliases such as `FxHashSet`) is a compile error — use `BTreeSet`, a sorted
+/// `Vec`, or skip it. `HashMap` is accepted: object keys are sorted. A NaN or
+/// infinite float is refused by the emitted `validate`.
+///
 /// ## Example
 ///
 /// For a compiling end-to-end example, see the runnable doctest on
