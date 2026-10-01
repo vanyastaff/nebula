@@ -584,6 +584,10 @@ impl ActionRuntime {
         let started = Instant::now();
 
         if context.cancellation().is_cancelled() {
+            // Admission closes on every cancellation exit of a gated run.
+            if let Some(gate) = iteration_gate {
+                gate.cancel_iteration();
+            }
             return Err(ActionError::Cancelled.into());
         }
 
@@ -805,6 +809,13 @@ impl ActionRuntime {
         }
 
         if context.cancellation().is_cancelled() {
+            // Cancelled before the first iteration (while the factory built
+            // the handle, say): admission closes like on every other
+            // cancellation exit, so a detached task holding a journaled
+            // handle cannot submit and turn the cancellation into a failure.
+            if let Some(gate) = iteration_gate {
+                gate.cancel_iteration();
+            }
             return Err(ActionError::Cancelled.into());
         }
 

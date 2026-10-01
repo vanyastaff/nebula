@@ -2513,6 +2513,42 @@ async fn a_cancellation_during_the_barrier_drain_cancels_the_iteration() {
     );
 }
 
+/// A node cancelled before its first iteration (while the factory built
+/// the handle) closes the journal's admission too: no iteration begins, and
+/// a detached task's later submission is refused instead of failing the
+/// cancelled node.
+#[tokio::test]
+async fn a_cancellation_before_the_first_iteration_closes_admission() {
+    let gate = ScriptedGate::default();
+    let ctx = test_context();
+    ctx.cancellation().cancel();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<CountingTo3>::new()
+            .expect("valid test catalog definition"),
+    );
+    let node = NodeDefinition::new(node_key!("test"), "Count", "test", "count").unwrap();
+    let result = make_runtime(Arc::new(ActionRegistry::new()))
+        .run_factory(
+            "test.count",
+            factory,
+            &node,
+            nebula_action::ActionInput::Raw(serde_json::Value::Null),
+            &ctx,
+            None,
+            ResourceAuthority::CallerSupplied,
+            Some(&gate),
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["cancel 0"], "closed before any iteration");
+}
+
 /// Runs [`CountingTo3`] through the dispatch core under `gate`, with
 /// `checkpoint`.
 async fn count_to_3_under(
