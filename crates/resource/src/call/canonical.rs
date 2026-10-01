@@ -12,7 +12,8 @@
 use std::{cell::Cell, fmt};
 
 use serde::{
-    Serialize, Serializer,
+    Deserializer, Serialize, Serializer,
+    de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
     ser::{
         self, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
         SerializeTupleStruct, SerializeTupleVariant,
@@ -23,7 +24,8 @@ use serde_json::Value;
 use super::declaration::MAX_CANONICAL_REQUEST_LEN;
 
 /// The serde name `serde_json`'s `RawValue` serializes under: its JSON text
-/// is parsed and canonicalized like any other value.
+/// is canonicalized as it is parsed, with the same duplicate-key refusal
+/// and cap as any other value.
 const RAW_VALUE_TOKEN: &str = "$serde_json::private::RawValue";
 
 /// Why a request has no canonical form.
@@ -449,14 +451,7 @@ impl Object<'_> {
         key: String,
         value: &T,
     ) -> Result<(), CanonicalError> {
-        if !self.members.is_empty() {
-            // The comma that separates this member from another, wherever
-            // the sort puts it.
-            self.budget.charge(1)?;
-        }
-        let mut member = Vec::new();
-        push_str(&mut member, self.budget, &key)?;
-        push(&mut member, self.budget, b":")?;
+        let mut member = self.begin_member(&key)?;
         value.serialize(Canonical {
             out: &mut member,
             budget: self.budget,
@@ -465,13 +460,21 @@ impl Object<'_> {
         Ok(())
     }
 
+    /// A member's buffer holding `"key":`, its value still to be written.
+    fn begin_member(&self, key: &str) -> Result<Vec<u8>, CanonicalError> {
+        if !self.members.is_empty() {
+            // The comma that separates this member from another, wherever
+            // the sort puts it.
+            self.budget.charge(1)?;
+        }
+        let mut member = Vec::new();
+        push_str(&mut member, self.budget, key)?;
+        push(&mut member, self.budget, b":")?;
+        Ok(member)
+    }
+
     fn raw_text<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), CanonicalError> {
-        let Ok(Value::String(text)) = serde_json::to_value(value) else {
-            return Err(CanonicalError::Unserializable);
-        };
-        let parsed: Value =
-            serde_json::from_str(&text).map_err(|_| CanonicalError::Unserializable)?;
-        parsed.serialize(Canonical {
+        value.serialize(RawText {
             out: &mut *self.out,
             budget: self.budget,
         })
@@ -566,5 +569,279 @@ impl SerializeStructVariant for Object<'_> {
 
     fn end(self) -> Result<(), CanonicalError> {
         self.close()
+    }
+}
+
+/// The JSON text of a `RawValue`, the one field it serializes: anything
+/// but a string is refused.
+struct RawText<'a> {
+    out: &'a mut Vec<u8>,
+    budget: &'a Budget,
+}
+
+/// Refuses every scalar but the raw text's string.
+macro_rules! refuse_non_text {
+    ($($method:ident($($arg:ty),*);)*) => {
+        $(
+            fn $method(self, $(_: $arg),*) -> Result<(), CanonicalError> {
+                Err(CanonicalError::Unserializable)
+            }
+        )*
+    };
+}
+
+impl Serializer for RawText<'_> {
+    type Ok = ();
+    type Error = CanonicalError;
+    type SerializeSeq = ser::Impossible<(), CanonicalError>;
+    type SerializeTuple = ser::Impossible<(), CanonicalError>;
+    type SerializeTupleStruct = ser::Impossible<(), CanonicalError>;
+    type SerializeTupleVariant = ser::Impossible<(), CanonicalError>;
+    type SerializeMap = ser::Impossible<(), CanonicalError>;
+    type SerializeStruct = ser::Impossible<(), CanonicalError>;
+    type SerializeStructVariant = ser::Impossible<(), CanonicalError>;
+
+    refuse_non_text! {
+        serialize_bool(bool);
+        serialize_i8(i8);
+        serialize_i16(i16);
+        serialize_i32(i32);
+        serialize_i64(i64);
+        serialize_u8(u8);
+        serialize_u16(u16);
+        serialize_u32(u32);
+        serialize_u64(u64);
+        serialize_f32(f32);
+        serialize_f64(f64);
+        serialize_char(char);
+        serialize_bytes(&[u8]);
+        serialize_none();
+        serialize_unit();
+        serialize_unit_struct(&'static str);
+        serialize_unit_variant(&'static str, u32, &'static str);
+    }
+
+    fn serialize_str(self, text: &str) -> Result<(), CanonicalError> {
+        transcode(self.out, self.budget, text)
+    }
+
+    fn serialize_some<T: Serialize + ?Sized>(self, _value: &T) -> Result<(), CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(
+        self,
+        _name: &'static str,
+        _value: &T,
+    ) -> Result<(), CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_newtype_variant<T: Serialize + ?Sized>(
+        self,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
+        _value: &T,
+    ) -> Result<(), CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_tuple_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleVariant, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStruct, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+
+    fn serialize_struct_variant(
+        self,
+        _name: &'static str,
+        _index: u32,
+        _variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant, CanonicalError> {
+        Err(CanonicalError::Unserializable)
+    }
+}
+
+/// Writes the JSON `text` canonicalized, as it is parsed.
+///
+/// Never materialized as a [`Value`]: an object with a duplicate key is
+/// refused rather than keeping its last member, and the parse stops as
+/// soon as the output crosses the cap. Scalars and strings reach the
+/// writers a serialized value does, so the bytes are those of the parsed
+/// value re-emitted with sorted keys.
+fn transcode(out: &mut Vec<u8>, budget: &Budget, text: &str) -> Result<(), CanonicalError> {
+    let failure = Cell::new(None);
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let written = Transcode {
+        out,
+        budget,
+        failure: &failure,
+    }
+    .deserialize(&mut deserializer)
+    .and_then(|()| deserializer.end());
+    // The parser's own message may echo request text: only the writer's
+    // refusal survives, any other failure is unserializable.
+    written.map_err(|_| failure.take().unwrap_or(CanonicalError::Unserializable))
+}
+
+/// One JSON value of a raw text, written canonicalized into `out` as the
+/// parser reads it.
+struct Transcode<'a> {
+    out: &'a mut Vec<u8>,
+    budget: &'a Budget,
+    /// The writer's refusal, carried past the parser's error type.
+    failure: &'a Cell<Option<CanonicalError>>,
+}
+
+/// Records the writer's refusal for [`transcode`] and stops the parse.
+fn refuse<E: de::Error>(failure: &Cell<Option<CanonicalError>>, error: CanonicalError) -> E {
+    failure.set(Some(error));
+    E::custom(error)
+}
+
+impl Transcode<'_> {
+    /// Writes with `write`, a refusal recorded for [`transcode`].
+    fn write<E: de::Error>(
+        &mut self,
+        write: impl FnOnce(&mut Vec<u8>, &Budget) -> Result<(), CanonicalError>,
+    ) -> Result<(), E> {
+        write(self.out, self.budget).map_err(|error| refuse(self.failure, error))
+    }
+}
+
+impl<'de> DeserializeSeed<'de> for Transcode<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_any(self)
+    }
+}
+
+/// An array element: its separating comma is written only once the parser
+/// has found the element.
+struct Element<'a> {
+    value: Transcode<'a>,
+    comma: bool,
+}
+
+impl<'de> DeserializeSeed<'de> for Element<'_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        let Element { mut value, comma } = self;
+        if comma {
+            value.write(|out, budget| push(out, budget, b","))?;
+        }
+        deserializer.deserialize_any(value)
+    }
+}
+
+impl<'de> Visitor<'de> for Transcode<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_bool<E: de::Error>(mut self, value: bool) -> Result<(), E> {
+        self.write(|out, budget| push_scalar(out, budget, value))
+    }
+
+    fn visit_i64<E: de::Error>(mut self, value: i64) -> Result<(), E> {
+        self.write(|out, budget| push_scalar(out, budget, value))
+    }
+
+    fn visit_u64<E: de::Error>(mut self, value: u64) -> Result<(), E> {
+        self.write(|out, budget| push_scalar(out, budget, value))
+    }
+
+    fn visit_f64<E: de::Error>(mut self, value: f64) -> Result<(), E> {
+        self.write(|out, budget| push_scalar(out, budget, value))
+    }
+
+    fn visit_str<E: de::Error>(mut self, value: &str) -> Result<(), E> {
+        self.write(|out, budget| push_str(out, budget, value))
+    }
+
+    fn visit_unit<E: de::Error>(mut self) -> Result<(), E> {
+        self.write(|out, budget| push(out, budget, b"null"))
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(mut self, mut items: A) -> Result<(), A::Error> {
+        self.write(|out, budget| push(out, budget, b"["))?;
+        let mut comma = false;
+        while items
+            .next_element_seed(Element {
+                value: Transcode {
+                    out: &mut *self.out,
+                    budget: self.budget,
+                    failure: self.failure,
+                },
+                comma,
+            })?
+            .is_some()
+        {
+            comma = true;
+        }
+        self.write(|out, budget| push(out, budget, b"]"))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut entries: A) -> Result<(), A::Error> {
+        let Transcode {
+            out,
+            budget,
+            failure,
+        } = self;
+        let mut object = Canonical { out, budget }
+            .object(b"}", false)
+            .map_err(|error| refuse::<A::Error>(failure, error))?;
+        while let Some(key) = entries.next_key::<String>()? {
+            let mut member = object
+                .begin_member(&key)
+                .map_err(|error| refuse::<A::Error>(failure, error))?;
+            entries.next_value_seed(Transcode {
+                out: &mut member,
+                budget,
+                failure,
+            })?;
+            object.members.push((key, member));
+        }
+        object
+            .close()
+            .map_err(|error| refuse::<A::Error>(failure, error))
     }
 }

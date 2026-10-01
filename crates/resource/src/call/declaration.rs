@@ -596,6 +596,35 @@ mod tests {
         same_as_legacy("tuple keys", &BTreeMap::from([((1, 2), "pair")]));
         same_as_legacy("option keys", &BTreeMap::from([(Some(1), "some")]));
         same_as_legacy("raw value", &raw);
+        for text in [
+            "null",
+            "true",
+            " false ",
+            "0",
+            "-0",
+            "-0.0",
+            "1e2",
+            "1E-2",
+            "-12345678901234567890",
+            "18446744073709551615",
+            "18446744073709551616",
+            "123456789012345678901234567890",
+            "0.1",
+            "5e-324",
+            "1.7976931348623157e308",
+            r#""""#,
+            r#""é\n\t\"\\\/😀\u0000\u001f\u007f""#,
+            "[]",
+            "{}",
+            " [ 1 , [ ] , { } , [ [ null ] ] ] ",
+            r#"{ "b" : [ { "d" : 1 , "c" : 2 } ] , "a" : { } , "" : "" , "é" : 1 , "Z" : 0 }"#,
+            r#"[{"k":1},{"k":1}]"#,
+        ] {
+            let raw: Box<RawValue> = RawValue::from_string(text.into()).expect("raw");
+            same_as_legacy(text, &raw);
+            same_as_legacy(text, &BTreeMap::from([("z", &raw), ("a", &raw)]));
+            same_as_legacy(text, &vec![raw.clone(), raw]);
+        }
         same_as_legacy(
             "flatten without collision",
             &Flattened {
@@ -663,6 +692,95 @@ mod tests {
             );
             assert!(!error.to_string().contains("secret"), "{error}");
         }
+    }
+
+    #[test]
+    fn a_duplicate_key_in_raw_json_is_refused_not_overwritten() {
+        let raw = |text: &str| RawValue::from_string(text.into()).expect("raw");
+        let collides = raw(r#"{"id":1,"id":2}"#);
+        assert_eq!(
+            legacy_canonical(&collides),
+            legacy_canonical(&raw(r#"{"id":2}"#)),
+            "the parsed value kept only the last member"
+        );
+        assert_eq!(
+            canonical_json(&raw(r#"{"id":2}"#)).expect("no duplicate"),
+            br#"{"id":2}"#
+        );
+        for refused in [
+            collides,
+            raw(r#"{"secret":1,"secret":1}"#),
+            raw(r#"[0,{"a":{"deep":[],"deep":{}}}]"#),
+            raw(r#"{"b":1,"a":2,"b":3}"#),
+        ] {
+            let error = canonical_json(&refused).expect_err("duplicate key");
+            assert_eq!(*error.kind(), ErrorKind::Permanent);
+            assert_eq!(
+                error.detail(),
+                "operation request has an object with a duplicate key"
+            );
+            assert!(!error.to_string().contains("secret"), "{error}");
+            let nested = BTreeMap::from([("outer", vec![refused])]);
+            assert_eq!(
+                canonical_json(&nested)
+                    .expect_err("nested duplicate")
+                    .detail(),
+                "operation request has an object with a duplicate key"
+            );
+        }
+    }
+
+    /// Serializes as `serde_json`'s `RawValue` does, without its check that
+    /// the text is JSON.
+    struct UncheckedRaw<T>(T);
+
+    impl<T: Serialize> Serialize for UncheckedRaw<T> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::SerializeStruct as _;
+            const TOKEN: &str = "$serde_json::private::RawValue";
+            let mut state = serializer.serialize_struct(TOKEN, 1)?;
+            state.serialize_field(TOKEN, &self.0)?;
+            state.end()
+        }
+    }
+
+    #[test]
+    fn raw_json_over_the_cap_is_refused_as_it_is_parsed() {
+        // `[0,0,…]` is two bytes per element, twice what the cap holds.
+        let zeros = "0,".repeat(MAX_CANONICAL_REQUEST_LEN);
+        let valid = raw_text_of(&format!("[{zeros}0]"));
+        let error = canonical_json(&valid).expect_err("over the cap");
+        assert_eq!(error.detail(), "canonical request must be 1 byte to 1 MiB");
+
+        // The text past the cap is never read: its broken tail is not
+        // reached, so the refusal is the cap's, not a parse error.
+        let error =
+            canonical_json(&UncheckedRaw(format!("[{zeros} not JSON"))).expect_err("over the cap");
+        assert_eq!(error.detail(), "canonical request must be 1 byte to 1 MiB");
+
+        // Whitespace is not output: a padded value that fits is kept.
+        let padded = raw_text_of(&format!("{}[1]", " ".repeat(2 * MAX_CANONICAL_REQUEST_LEN)));
+        assert_eq!(canonical_json(&padded).expect("fits"), b"[1]");
+
+        for broken in ["[1", "1 2", "{\"a\":}", ""] {
+            assert_eq!(
+                canonical_json(&UncheckedRaw(broken))
+                    .expect_err("not JSON")
+                    .detail(),
+                "operation request does not serialize to JSON",
+                "{broken}"
+            );
+        }
+        assert_eq!(
+            canonical_json(&UncheckedRaw(7_u8))
+                .expect_err("not text")
+                .detail(),
+            "operation request does not serialize to JSON"
+        );
+    }
+
+    fn raw_text_of(text: &str) -> Box<RawValue> {
+        RawValue::from_string(text.to_owned()).expect("raw")
     }
 
     /// An array of `len` zeros that counts the elements serialized.
