@@ -103,7 +103,10 @@ pub(super) struct OwnedEffect {
     pending: Mutex<Option<PendingCall>>,
     /// Set once the unit's position was finished for its owner.
     concluded: std::sync::atomic::AtomicBool,
-    _ticket: InFlight,
+    /// The owner's in-flight ticket: released when the unit settles
+    /// ([`conclude`](Self::conclude)), or with the owned state as a
+    /// fallback — never while the unit may still reach the provider.
+    ticket: Mutex<Option<InFlight>>,
 }
 
 /// A granted call and how its attempt settled so far.
@@ -152,11 +155,13 @@ impl Drop for OwnedEffect {
 }
 
 impl OwnedEffect {
-    /// The unit settled — its outcome is produced, it can no longer reach
-    /// the provider — so a position it took is finished for its owner
-    /// ([`EffectJournal::finish_occurrence`]), once. Called by the unit
-    /// runtime when the unit settles, not when the handle a caller may keep
-    /// is dropped.
+    /// The unit settled — its outcome is produced and recorded, it can no
+    /// longer reach the provider — so a position it took is finished for
+    /// its owner ([`EffectJournal::finish_occurrence`]) and its in-flight
+    /// ticket released, once. Called by the unit runtime only when the unit
+    /// settles, not when the handle a caller may keep is dropped: a
+    /// retained completed handle holds neither the position nor the
+    /// owner's drain.
     pub(super) fn conclude(&self) {
         if self
             .concluded
@@ -167,6 +172,12 @@ impl OwnedEffect {
         if let Some(occurrence) = self.occurrence.get() {
             self.owner.finish_occurrence(occurrence);
         }
+        let ticket = self
+            .ticket
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(ticket);
     }
 
     /// The owned state of a unit of `declaration` on `key`, whose row is at
@@ -195,7 +206,7 @@ impl OwnedEffect {
             slot: OnceLock::new(),
             pending: Mutex::new(None),
             concluded: std::sync::atomic::AtomicBool::new(false),
-            _ticket: ticket,
+            ticket: Mutex::new(Some(ticket)),
         })
     }
 

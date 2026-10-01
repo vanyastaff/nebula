@@ -1238,8 +1238,10 @@ async fn a_position_is_finished_when_its_unit_settles_even_if_its_handle_is_kept
     let row = fixture.owned();
     let mut first = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
     (&mut first).await.expect("applied");
-    // The action keeps the completed handle: the unit settled all the same.
+    // The action keeps the completed handle: the unit settled all the same,
+    // and holds no in-flight ticket.
     assert_eq!(fixture.owner.state().finished, [pay(0)]);
+    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
     row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]))
         .await
         .expect("the next one");
@@ -1266,6 +1268,11 @@ async fn a_position_is_finished_only_once_its_unit_is_gone() {
     assert_eq!(calls.made(), 1, "the call is in flight");
     assert_eq!(fixture.owner.state().released, [pay(0)]);
     assert!(fixture.owner.state().finished.is_empty(), "still open");
+    assert_eq!(
+        fixture.owner.in_flight.load(Ordering::SeqCst),
+        1,
+        "the unit may still reach the provider: its ticket is held"
+    );
     // Dropping the waiter does not end a unit whose call is in flight: its
     // position stays open while it may still reach the provider.
     unit.abort();

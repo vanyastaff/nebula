@@ -1499,6 +1499,28 @@ fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     assert!(within(&[0]).reorders_at("it1/unit/v1/#000001"));
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_retained_completed_handle_does_not_hold_the_barrier() {
+    let harness = Harness::new().await;
+    let journal = harness.stateful_journal(1);
+    journal.begin_iteration(0).expect("it0");
+    let handle = harness.handle(&journal);
+    let mut kept = handle.submit(Charge::<false> { order: 70 });
+    (&mut kept).await.expect("applied");
+    // The action keeps the completed handle across the barrier.
+    let started = tokio::time::Instant::now();
+    journal
+        .end_iteration(Duration::from_mins(1), true)
+        .await
+        .expect("nothing in flight");
+    assert_eq!(started.elapsed(), Duration::ZERO, "no wait");
+    journal
+        .begin_iteration(1)
+        .expect("the next iteration begins");
+    drop(kept);
+    assert_eq!(journal.conclude(DRAIN).await, Ok(()));
+}
+
 #[tokio::test]
 async fn the_barrier_reports_whether_the_replay_reached_its_frontier() {
     let harness = Harness::new().await;
