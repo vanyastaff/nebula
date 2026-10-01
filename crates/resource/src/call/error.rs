@@ -218,7 +218,7 @@ impl OperationError {
     }
 
     /// Marks the error as an execution owner's refusal of a step.
-    pub(crate) fn from_owner(mut self) -> Self {
+    pub(crate) fn refused_by_owner(mut self) -> Self {
         self.owner_refusal = true;
         self
     }
