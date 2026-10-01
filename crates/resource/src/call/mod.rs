@@ -177,9 +177,11 @@
 //!    JSON with sorted keys, 1 byte to 1 MiB), the recovery derived
 //!    (`Idempotent`: a stable key within [`Operation::KEY_WINDOW`]; `Write`:
 //!    opaque), the occurrence label
-//!    `unit/v1/{resource_key}/{op|session}/{name}/v{version}/#{ordinal:06}`
-//!    fixed from the unit's submit ordinal per resource, kind and name, so
-//!    labels sort in program order, and an in-flight ticket is taken. A
+//!    `unit/v1/{resource_key}/{op|session}/#{ordinal:06}` fixed from the
+//!    unit's positional submit ordinal per resource and kind, so labels sort
+//!    in program order, and an in-flight ticket is taken. The operation key
+//!    and version are bound by the contract, not the label: changing them
+//!    under a recorded occurrence is a mismatch, never a fresh effect. A
 //!    closed owner refuses `Cancelled`.
 //! 2. **First poll** — the owner prepares the effect from the canonical
 //!    request and the optional developer key part before anything is

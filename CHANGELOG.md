@@ -116,9 +116,9 @@ changes are expected between minor releases — call them out here.
   - The journal seam: `EffectRecovery` → `call::journal::Recovery`;
     `JournalIntent` carries `kind` (`UnitKind`), `operation`, `version`,
     `record_output` and a `&str` key part instead of the contract, recovery
-    declaration and `Recorded`; `EffectJournal::next_ordinal(key, kind, name)`;
-    occurrences are `unit/v1/{resource}/{op|session}/{name}/v{version}/#{n:06}`
-    from the key-sorted JSON of the operation as canonical request. An output
+    declaration and `Recorded`; `EffectJournal::next_ordinal(key, kind)`;
+    occurrences are positional, `unit/v1/{resource}/{op|session}/#{n:06}`
+    (see "Changed"), with the key-sorted JSON of the operation as canonical request. An output
     over 1 MiB is recorded digest-only.
   - `OperationCx::idempotency_key()` (and the new
     `Attempt::idempotency_key()`) also returns a local key — base64url
@@ -1426,7 +1426,16 @@ let admitted = recorded.readmit_against(fresh)?;
   withheld. A slot's contract identity binds the destination — resource key,
   credential slot identity and the row's configuration fingerprint
   (`JournalIntent::config_fingerprint`, new) — and `RECORD_OUTPUT`; a reload
-  between a unit's submit and its grant refuses the attempt unsent. Occurrences restart per node
+  between a unit's submit and its grant refuses the attempt unsent.
+  Occurrences are positional, `unit/v1/{resource}/{op|session}/#{n:06}`
+  counted per resource and unit kind (`EffectJournal::next_ordinal(key,
+  kind)` drops its `name` parameter): the operation key and version are
+  bound by the contract identity, not the occurrence, so a redeploy that
+  changes the operation at a recorded position without an action version
+  bump fails `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent instead of
+  preparing a fresh slot that would send the effect again under another
+  provider key (the run-part provider keys, which frame the occurrence,
+  differ from the earlier unreleased format). Occurrences restart per node
   attempt, so a retry or resume replays a settled effect's recorded output
   with no provider call, refuses an unknown one and re-grants a retryable
   failure within `Operation::max_attempts`; the `it{n}/` occurrence prefix is

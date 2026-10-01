@@ -28,9 +28,13 @@
 //! the ledger knows the call it may have made.
 //!
 //! **Occurrences.** A unit's occurrence is the label the resource runtime
-//! builds, `unit/v1/{resource}/{op|session}/{name}/v{version}/#{ordinal:06}`,
-//! with ordinals per `(resource, kind, name)` restarting at zero in every
-//! journal, in submit order. An engine retry of the node therefore reuses
+//! builds, `unit/v1/{resource}/{op|session}/#{ordinal:06}`: positional, with
+//! ordinals per `(resource, kind)` restarting at zero in every journal, in
+//! submit order. The operation (or session) name and version are not part
+//! of it but of the slot's contract identity, so a redeploy that changes
+//! the operation at a recorded position is an occurrence mismatch with
+//! nothing sent — never a fresh slot that sends the effect again under
+//! another provider key. An engine retry of the node therefore reuses
 //! the occurrences of its earlier attempts: a settled slot replays its
 //! recorded outcome without a provider call, an opaque ambiguous one is
 //! unknown, and a retryable failure — never recorded as a rejection — may
@@ -165,8 +169,8 @@ struct JournalInner {
 
 #[derive(Default)]
 struct JournalState {
-    /// The next ordinal per `(resource, kind, name)`.
-    ordinals: HashMap<(ResourceKey, UnitKind, String), u32>,
+    /// The next positional ordinal per `(resource, kind)`.
+    ordinals: HashMap<(ResourceKey, UnitKind), u32>,
     /// The slots this journal prepared. A slot is used by one unit at a
     /// time; its async lock serializes that unit's ledger steps with the
     /// journal's conclusion. The sync lock around the map is never held
@@ -647,12 +651,9 @@ impl fmt::Debug for NodeEffectJournal {
 
 #[async_trait::async_trait]
 impl EffectJournal for NodeEffectJournal {
-    fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind, name: &str) -> u32 {
+    fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind) -> u32 {
         let mut state = self.state();
-        let next = state
-            .ordinals
-            .entry((key.clone(), kind, name.to_owned()))
-            .or_insert(0);
+        let next = state.ordinals.entry((key.clone(), kind)).or_insert(0);
         let ordinal = *next;
         *next = next.saturating_add(1);
         ordinal

@@ -10,8 +10,8 @@
 //! through it (a `Read` never is):
 //!
 //! 1. **Submit** — the unit takes an in-flight [`InFlight`]
-//!    ([`track`](EffectJournal::track)) and its ordinal per resource, unit
-//!    kind and name ([`next_ordinal`](EffectJournal::next_ordinal)); a
+//!    ([`track`](EffectJournal::track)) and its positional ordinal per
+//!    resource and unit kind ([`next_ordinal`](EffectJournal::next_ordinal)); a
 //!    [closed](EffectJournal::is_closed) owner refuses it.
 //! 2. **Prepare** — the first poll hands the owner a [`JournalIntent`]; the
 //!    returned [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome,
@@ -42,10 +42,16 @@ use crate::{dedup::SlotIdentity, error::ErrorKind};
 /// step. A refusal ([`JournalRefusal`]) never means a provider call happened.
 #[async_trait::async_trait]
 pub trait EffectJournal: Send + Sync + fmt::Debug {
-    /// The next ordinal of a unit of `kind` named `name` (an operation key
-    /// or a session name) on `key`, in program (submit) order. Synchronous:
-    /// it is taken when the unit is submitted.
-    fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind, name: &str) -> u32;
+    /// The next ordinal of a unit of `kind` on `key`, in program (submit)
+    /// order: positional, whatever the unit's operation or session name and
+    /// version. Synchronous: it is taken when the unit is submitted.
+    ///
+    /// The name and version stay out of the occurrence on purpose: they are
+    /// part of the effect's contract, so an operation whose `KEY` or
+    /// `VERSION` changed under a recorded occurrence is a mismatch the owner
+    /// refuses with nothing sent, never a fresh occurrence that sends the
+    /// effect again.
+    fn next_ordinal(&self, key: &ResourceKey, kind: UnitKind) -> u32;
 
     /// Durably prepares the effect `intent` describes (recovering an
     /// unacknowledged earlier prepare) and returns its slot.
@@ -195,9 +201,10 @@ pub struct JournalIntent<'a> {
     /// Attempts the unit may be granted
     /// ([`Operation::max_attempts`](super::Operation::max_attempts)).
     pub max_invocations: NonZeroU32,
-    /// The occurrence label,
-    /// `unit/v1/{resource_key}/{kind}/{operation}/v{version}/#{ordinal:06}`:
-    /// visible ASCII, at most 512 bytes.
+    /// The occurrence label, `unit/v1/{resource_key}/{kind}/#{ordinal:06}`:
+    /// visible ASCII, at most 512 bytes. Positional — `operation` and
+    /// `version` are not part of it, so a changed operation under a recorded
+    /// occurrence is a mismatch.
     pub occurrence: &'a str,
     /// The canonical request (canonicalization version 1: key-sorted
     /// compact JSON), 1 byte to 1 MiB; digest it, never store it.

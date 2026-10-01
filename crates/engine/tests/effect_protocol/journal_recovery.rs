@@ -28,7 +28,7 @@ async fn a_write_settles_once_and_the_provider_sees_the_recorded_key(#[case] bac
         assert_eq!(phase(&slots[0]), EffectPhase::Resolved);
         assert_eq!(
             slots[0].occurrence(),
-            "unit/v1/test.journal.payments/op/test.charge/v1/#000000"
+            "unit/v1/test.journal.payments/op/#000000"
         );
         keys.push(recorded_key(&slots[0]));
     }
@@ -243,7 +243,7 @@ async fn idempotent_crash_residue_is_sent_again_under_the_same_key(#[case] backe
 #[case::memory(Backend::Memory)]
 #[case::sqlite(Backend::Sqlite)]
 #[tokio::test]
-async fn a_changed_request_or_repointed_credential_is_an_occurrence_mismatch(
+async fn a_changed_request_operation_or_repointed_credential_is_an_occurrence_mismatch(
     #[case] backend: Backend,
 ) {
     let Some(mut database) = Database::open(backend).await else {
@@ -254,8 +254,17 @@ async fn a_changed_request_or_repointed_credential_is_an_occurrence_mismatch(
         Rotation,
         Request,
         Repoint,
+        /// A redeploy (no action version bump) changed the operation at the
+        /// settled position: its version, or its key.
+        Redeploy(Drift),
     }
-    for change in [Change::Rotation, Change::Request, Change::Repoint] {
+    for change in [
+        Change::Rotation,
+        Change::Request,
+        Change::Repoint,
+        Change::Redeploy(Drift::Version),
+        Change::Redeploy(Drift::Operation),
+    ] {
         let mut fixture = JournalFixture::new(database.ports()).await;
         *fixture.identity.lock() = bound_to("cred-a");
         let execution = fixture.start(&[write("order-7:7")], json!({})).await;
@@ -280,6 +289,7 @@ async fn a_changed_request_or_repointed_credential_is_an_occurrence_mismatch(
                 *fixture.controls.request_override.lock() = Some("order-7:8".to_owned());
             },
             Change::Repoint => *fixture.identity.lock() = bound_to("cred-b"),
+            Change::Redeploy(drift) => *fixture.controls.drift.lock() = Some(drift),
         }
         fixture.ports = database.reconnect().await;
         database.expire_abandoned_leases().await;
@@ -295,7 +305,7 @@ async fn a_changed_request_or_repointed_credential_is_an_occurrence_mismatch(
                 assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
                 assert_eq!(receipts(&result), json!([1]));
             },
-            Change::Request | Change::Repoint => {
+            Change::Request | Change::Repoint | Change::Redeploy(_) => {
                 assert_eq!(result.status, ExecutionStatus::Failed, "{result:?}");
                 assert!(
                     node_error(&result).starts_with("ENGINE:EFFECT_OCCURRENCE_MISMATCH"),

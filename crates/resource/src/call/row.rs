@@ -284,8 +284,9 @@ where
     /// A session routes as [`submit`](Self::submit) does, by `spec`'s
     /// effect and the row's authority. On a journaled row an `Idempotent`
     /// or `Write` session is prepared, granted and recorded by the row's
-    /// owner under `unit/v1/{resource_key}/session/{name}/v{version}/#{ordinal:06}`
-    /// from `spec`'s canonical request and key part; its output is recorded
+    /// owner under `unit/v1/{resource_key}/session/#{ordinal:06}` (positional
+    /// among the row's sessions) from `spec`'s name, version, canonical
+    /// request and key part; its output is recorded
     /// and replayed without opening a session. How it closed is recorded
     /// as:
     ///

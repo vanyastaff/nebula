@@ -207,6 +207,52 @@ impl<const IDEM: bool> Operation<Payments> for Charge<IDEM> {
     }
 }
 
+/// What a redeploy changed about the operation each unit submits.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Drift {
+    /// The same `KEY` at another `VERSION`.
+    Version,
+    /// Another operation `KEY`.
+    Operation,
+}
+
+/// [`Charge`]'s opaque write, redeployed at version 2.
+#[derive(Serialize, Deserialize)]
+struct ChargeV2(UnitSpec);
+
+impl Operation<Payments> for ChargeV2 {
+    type Output = u64;
+    const KEY: &'static str = "test.charge";
+    const VERSION: u32 = 2;
+    const EFFECT: Effect = Effect::Write;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<u64, OperationError> {
+        let request = self.0.request;
+        cx.call(Cost::ONE, async move |gateway, ()| {
+            gateway.call(None, &request).await
+        })
+        .await
+    }
+}
+
+/// Another opaque write on the payments row.
+#[derive(Serialize, Deserialize)]
+struct Capture(UnitSpec);
+
+impl Operation<Payments> for Capture {
+    type Output = u64;
+    const KEY: &'static str = "test.capture";
+    const EFFECT: Effect = Effect::Write;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<u64, OperationError> {
+        let request = self.0.request;
+        cx.call(Cost::ONE, async move |gateway, ()| {
+            gateway.call(None, &request).await
+        })
+        .await
+    }
+}
+
 /// What the action does, as the execution input says.
 #[derive(Debug, Deserialize)]
 struct Script {
@@ -231,6 +277,9 @@ pub(super) struct Controls {
     pub after_units: tokio::sync::Notify,
     /// Replaces every unit's request (a non-deterministic action).
     pub request_override: parking_lot::Mutex<Option<String>>,
+    /// Replaces every unit's operation (a redeploy without an action
+    /// version bump).
+    pub drift: parking_lot::Mutex<Option<Drift>>,
     /// Retryable failures the action returns after its units.
     pub fail_after_units: AtomicU32,
     /// Dispatches of the action.
@@ -259,10 +308,12 @@ async fn run_script(
         if let Some(request) = controls.request_override.lock().clone() {
             spec.request = request;
         }
-        let unit = if spec.idempotent {
-            handle.submit(Charge::<true>(spec))
-        } else {
-            handle.submit(Charge::<false>(spec))
+        let drift = *controls.drift.lock();
+        let unit = match drift {
+            Some(Drift::Version) => handle.submit(ChargeV2(spec)),
+            Some(Drift::Operation) => handle.submit(Capture(spec)),
+            None if spec.idempotent => handle.submit(Charge::<true>(spec)),
+            None => handle.submit(Charge::<false>(spec)),
         };
         if script.leak {
             drop(tokio::spawn(unit));

@@ -151,8 +151,11 @@ configuration, and process lifecycle.
   nothing left is withheld. A slot's contract identity binds the destination (resource
   key, credential slot identity, configuration fingerprint) and `RECORD_OUTPUT`, so a
   reload to another endpoint or a changed recording policy is a mismatch. Occurrences are the
-  resource runtime's `unit/v1/{resource}/{op|session}/{name}/v{N}/#{ordinal:06}`, with
-  ordinals restarting per node attempt in submit order, so an engine retry reuses them:
+  resource runtime's positional `unit/v1/{resource}/{op|session}/#{ordinal:06}`, with
+  ordinals per resource and unit kind restarting per node attempt in submit order; the
+  operation (or session) name and version belong to the contract identity, so a redeploy
+  that changes the operation at a recorded position is a mismatch with nothing sent, not
+  a fresh slot. An engine retry reuses the occurrences:
   a settled effect replays its recorded output with no provider call, an opaque
   ambiguous one is unknown, a retryable failure may be granted again within the
   slot's budget (`Operation::max_attempts`). The `it{n}/` prefix is reserved for the

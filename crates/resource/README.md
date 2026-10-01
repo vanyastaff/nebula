@@ -842,10 +842,14 @@ ledger's 1 MiB evidence cap is recorded digest-only, so a resume fails
 (`idempotency_key()`, 1–256 bytes of visible ASCII, built deterministically
 from input or state — never random, never a retry number).
 
-The unit's occurrence is
-`unit/v1/{resource_key}/{op|session}/{name}/v{version}/#{ordinal:06}`, the
-ordinal counting units of that kind and name on the resource in submit order
-(`#000003`). Its first poll asks the owner to prepare
+The unit's occurrence is positional,
+`unit/v1/{resource_key}/{op|session}/#{ordinal:06}`, the ordinal counting
+units of that kind on the resource in submit order (`#000003`), whatever
+their operation. The operation key and version belong to the effect's
+contract instead: a redeploy that changes the `KEY` or `VERSION` of the
+operation at a recorded position fails as an occurrence mismatch with
+nothing sent, rather than preparing a fresh effect that would send it again
+under a new key. Its first poll asks the owner to prepare
 the effect before any quota, checkout or credential read: a recorded success
 replays its output with no provider call, a recorded rejection or digest and
 an unknown outcome fail without one. Every attempt's call is granted by the

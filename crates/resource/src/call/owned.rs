@@ -6,8 +6,9 @@
 //! Per unit, in order:
 //!
 //! - **submit** ([`OwnedEffect::submit`]) — refused when the owner closed;
-//!   otherwise the occurrence label is fixed from the next ordinal of the
-//!   unit's kind and name, and an in-flight ticket taken;
+//!   otherwise the occurrence label is fixed from the next positional
+//!   ordinal of the unit's kind on its resource, and an in-flight ticket
+//!   taken;
 //! - **first poll** ([`prepare`]) — before anything is spawned, checked out,
 //!   booked or read: replay, refusal, or run;
 //! - **each attempt** — the previous attempt's call is explained when the
@@ -139,9 +140,11 @@ impl fmt::Debug for OwnedEffect {
 impl OwnedEffect {
     /// The owned state of a unit of `declaration` on `key`, whose row is at
     /// `config_fingerprint`: refused `Cancelled` when `owner` closed;
-    /// otherwise with its occurrence label
-    /// `unit/v1/{key}/{kind}/{name}/v{version}/#{ordinal:06}` and an
-    /// in-flight ticket.
+    /// otherwise with its positional occurrence label
+    /// `unit/v1/{key}/{kind}/#{ordinal:06}` and an in-flight ticket. The
+    /// operation (or session) name and version are not in the label: they
+    /// are bound by the effect's contract, so a changed one under a recorded
+    /// occurrence is a mismatch rather than a fresh effect.
     pub(super) fn submit(
         owner: &Arc<dyn EffectJournal>,
         binding: &SlotIdentity,
@@ -155,11 +158,8 @@ impl OwnedEffect {
                 "effect owner closed; unit refused",
             ));
         }
-        let ordinal = owner.next_ordinal(key, declaration.kind, declaration.name);
-        let occurrence = format!(
-            "unit/v1/{key}/{}/{}/v{}/#{ordinal:06}",
-            declaration.kind, declaration.name, declaration.version
-        );
+        let ordinal = owner.next_ordinal(key, declaration.kind);
+        let occurrence = format!("unit/v1/{key}/{}/#{ordinal:06}", declaration.kind);
         let fits = occurrence.len() <= MAX_OCCURRENCE_LABEL_LEN
             && occurrence.bytes().all(|byte| (0x21..=0x7E).contains(&byte));
         if !fits {

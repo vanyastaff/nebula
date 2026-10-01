@@ -61,8 +61,8 @@ fn derived_key(parts: &ProviderKeyParts<'_>) -> String {
         .to_owned()
 }
 
-const OCCURRENCE_0: &str = "unit/v1/billing.gateway/op/billing.charge/v1/#000000";
-const OCCURRENCE_1: &str = "unit/v1/billing.gateway/op/billing.charge/v1/#000001";
+const OCCURRENCE_0: &str = "unit/v1/billing.gateway/op/#000000";
+const OCCURRENCE_1: &str = "unit/v1/billing.gateway/op/#000001";
 
 #[test]
 fn provider_key_golden_vectors() {
@@ -72,8 +72,10 @@ fn provider_key_golden_vectors() {
     assert_eq!(developer, "rT-cFUezYGxWViT9yxc08nun9dXX-uC5FWXmLEN4PWI");
     assert_eq!(developer, expected_key(1, b"order-123"));
 
+    // Re-pinned (unreleased) when occurrences became positional
+    // (`unit/v1/{resource}/op/#n`): the run part frames the occurrence.
     let run = derived_key(&key_parts(None, "exec-1", OCCURRENCE_0));
-    assert_eq!(run, "DgUZL5fC2s0-8JzBlM9tyBtrisosRGHk_CSmtT23tDE");
+    assert_eq!(run, "pz25xNO-bZfbF4P7WSSkNgfRa5IX_Avv3by_HclmDZo");
     let run_part = [
         frame_of(b"exec-1"),
         frame_of(b"charge"),
@@ -808,7 +810,7 @@ impl Operation<Gateway> for Balance {
 const DRAIN: Duration = Duration::from_secs(5);
 
 #[test]
-fn ordinals_count_per_resource_kind_and_name_from_zero() {
+fn ordinals_count_per_resource_and_kind_from_zero() {
     let executions = nebula_storage::InMemoryExecutionStore::new();
     let journal = NodeEffectJournal::new(JournalAuthority {
         ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
@@ -826,32 +828,22 @@ fn ordinals_count_per_resource_kind_and_name_from_zero() {
     });
     let key = Gateway::key();
     let other = ResourceKey::new("billing.other").expect("resource key");
+    assert_eq!(journal.next_ordinal(&key, UnitKind::Operation), 0);
+    assert_eq!(journal.next_ordinal(&key, UnitKind::Operation), 1);
     assert_eq!(
-        journal.next_ordinal(&key, UnitKind::Operation, "billing.charge"),
-        0
-    );
-    assert_eq!(
-        journal.next_ordinal(&key, UnitKind::Operation, "billing.charge"),
-        1
-    );
-    assert_eq!(
-        journal.next_ordinal(&other, UnitKind::Operation, "billing.charge"),
+        journal.next_ordinal(&other, UnitKind::Operation),
         0,
         "per resource"
     );
     assert_eq!(
-        journal.next_ordinal(&key, UnitKind::Session, "billing.charge"),
+        journal.next_ordinal(&key, UnitKind::Session),
         0,
         "sessions and operations are separate namespaces"
     );
     assert_eq!(
-        journal.next_ordinal(&key, UnitKind::Operation, "billing.refund"),
-        0,
-        "per name"
-    );
-    assert_eq!(
-        journal.next_ordinal(&key, UnitKind::Operation, "billing.charge"),
-        2
+        journal.next_ordinal(&key, UnitKind::Operation),
+        2,
+        "positional: every operation on the resource shares the sequence"
     );
 }
 
