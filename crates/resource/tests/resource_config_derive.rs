@@ -297,3 +297,154 @@ fn tuple_struct_different_first_field_differs() {
     let b = TupleCfg("b".into(), 1);
     assert_ne!(a.fingerprint(), b.fingerprint());
 }
+
+// ── Stable fingerprint: golden vectors ───────────────────────────────────────
+//
+// The fingerprint is durable: the effect journal binds recorded effects to it.
+// These vectors pin the exact bytes, computed independently of this crate as
+// the first eight bytes (big-endian) of
+// `SHA-256("nebula-resource/config-fingerprint/v1" || 0x00 || canonical JSON)`,
+// e.g. `printf 'nebula-resource/config-fingerprint/v1\0{...}' | sha256sum`.
+// A change of the encoding must fail here and ship as a new domain version.
+
+#[derive(Clone, ResourceConfig, nebula_schema::Schema)]
+#[config(schema = external)]
+struct GoldenPgCfg {
+    url: String,
+    max_conns: u32,
+    #[config(skip_fingerprint)]
+    label: String,
+}
+
+/// The same fields as [`GoldenPgCfg`], declared in the opposite order.
+#[derive(Clone, ResourceConfig, nebula_schema::Schema)]
+#[config(schema = external)]
+struct ReorderedPgCfg {
+    max_conns: u32,
+    url: String,
+}
+
+#[test]
+fn derived_fingerprint_matches_its_golden_vector() {
+    // `{"max_conns":8,"url":"postgres://db"}`
+    let cfg = GoldenPgCfg {
+        url: "postgres://db".into(),
+        max_conns: 8,
+        label: "ignored".into(),
+    };
+    assert_eq!(cfg.fingerprint(), 0xef89_6f97_85cb_04dd);
+    assert_eq!(
+        cfg.fingerprint(),
+        nebula_resource::ConfigFingerprint::new()
+            .field("url", &cfg.url)
+            .field("max_conns", &cfg.max_conns)
+            .finish(),
+        "the derive and a hand-written ConfigFingerprint agree"
+    );
+    assert!(cfg.validate().is_ok());
+    assert!(cfg.label.starts_with("ignored"));
+}
+
+#[test]
+fn field_declaration_order_does_not_change_the_fingerprint() {
+    let declared = GoldenPgCfg {
+        url: "postgres://db".into(),
+        max_conns: 8,
+        label: String::new(),
+    };
+    let reordered = ReorderedPgCfg {
+        max_conns: 8,
+        url: "postgres://db".into(),
+    };
+    assert_eq!(declared.fingerprint(), reordered.fingerprint());
+}
+
+#[derive(Clone, ResourceConfig)]
+#[config(schema = external)]
+struct RichCfg {
+    r#type: String,
+    tags: std::collections::HashMap<String, u32>,
+    timeout: Option<u64>,
+    enabled: bool,
+}
+
+// Only the fingerprint is under test here.
+nebula_resource::impl_empty_has_schema!(RichCfg);
+
+fn rich(tags: &[(&str, u32)]) -> RichCfg {
+    let mut map = std::collections::HashMap::new();
+    for (key, value) in tags {
+        map.insert((*key).to_owned(), *value);
+    }
+    RichCfg {
+        r#type: "pg".into(),
+        tags: map,
+        timeout: None,
+        enabled: true,
+    }
+}
+
+#[test]
+fn nested_map_fingerprint_matches_its_golden_vector_in_any_order() {
+    // `{"enabled":true,"tags":{"a":1,"b":2},"timeout":null,"type":"pg"}`
+    let golden = 0xa06b_1630_1b1a_5672;
+    assert_eq!(rich(&[("a", 1), ("b", 2)]).fingerprint(), golden);
+    assert_eq!(rich(&[("b", 2), ("a", 1)]).fingerprint(), golden);
+    // Rebuilt from scratch many times, each map with a fresh random hasher seed.
+    for _ in 0..16 {
+        assert_eq!(rich(&[("b", 2), ("a", 1)]).fingerprint(), golden);
+    }
+    assert_ne!(rich(&[("a", 1), ("b", 3)]).fingerprint(), golden);
+    let mut timed = rich(&[("a", 1), ("b", 2)]);
+    timed.timeout = Some(30);
+    assert_ne!(timed.fingerprint(), golden);
+}
+
+#[test]
+fn tuple_fingerprint_matches_its_golden_vector() {
+    // `{"0":"a","1":1}`
+    assert_eq!(TupleCfg("a".into(), 1).fingerprint(), 0x340b_86ea_a39a_2bab);
+}
+
+/// A field whose `Serialize` impl fails has no stable fingerprint.
+#[derive(Clone)]
+struct Unencodable;
+
+impl serde::Serialize for Unencodable {
+    fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("unencodable"))
+    }
+}
+
+/// Not serializable at all: allowed only because it is skipped.
+#[derive(Clone)]
+struct NotSerialize;
+
+#[derive(Clone, ResourceConfig)]
+#[config(schema = external)]
+struct UnencodableCfg {
+    endpoint: String,
+    broken: Unencodable,
+    #[config(skip_fingerprint)]
+    opaque: NotSerialize,
+}
+
+nebula_resource::impl_empty_has_schema!(UnencodableCfg);
+
+#[test]
+fn a_config_without_a_stable_fingerprint_is_refused_by_validate() {
+    let cfg = UnencodableCfg {
+        endpoint: "https://api.example.com".into(),
+        broken: Unencodable,
+        opaque: NotSerialize,
+    };
+    let error = cfg.validate().unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        nebula_resource::error::ErrorKind::Permanent
+    ));
+    // `SHA-256("nebula-resource/config-fingerprint/v1/unencodable")`: the one
+    // value every unencodable config shares — never admitted, by `validate`.
+    assert_eq!(cfg.fingerprint(), 0xdb2b_8946_e87e_08ab);
+    let _ = (&cfg.broken, &cfg.opaque);
+}

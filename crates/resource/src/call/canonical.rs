@@ -35,7 +35,7 @@ const RAW_VALUE_TOKEN: &str = "$serde_json::private::RawValue";
 
 /// Why a request has no canonical form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CanonicalError {
+pub(crate) enum CanonicalError {
     /// The request does not serialize to JSON.
     Unserializable,
     /// An object of the request writes one key twice.
@@ -64,7 +64,7 @@ impl ser::Error for CanonicalError {
 }
 
 /// The canonical JSON of `request`.
-pub(super) fn to_canonical<T: Serialize + ?Sized>(request: &T) -> Result<Vec<u8>, CanonicalError> {
+pub(crate) fn to_canonical<T: Serialize + ?Sized>(request: &T) -> Result<Vec<u8>, CanonicalError> {
     let mut out = Vec::new();
     write_canonical(request, &mut out)?;
     Ok(out)

@@ -32,11 +32,12 @@ impl ResourceConfig for HttpConfig {
         Ok(())
     }
 
+    /// Stable across builds (the effect journal records it): canonical
+    /// JSON of the fields digested with SHA-256, never `std::hash::Hash`.
     fn fingerprint(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.base_url.hash(&mut h);
-        h.finish()
+        nebula_resource::ConfigFingerprint::new()
+            .field("base_url", &self.base_url)
+            .finish()
     }
 }
 
