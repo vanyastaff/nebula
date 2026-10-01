@@ -49,7 +49,7 @@ use super::{
     declaration::{IdempotencyKey, canonical_json, is_valid_operation_key},
     error::OperationError,
     journal::UnitKind,
-    managed::{OperationCx, UnitHost},
+    managed::OperationCx,
     owned::OutputCodec,
     pin::PinSlots,
     work::{Declared, UnitWork},
@@ -544,10 +544,7 @@ where
     async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<T, OperationError> {
         let Self { spec, body, .. } = self;
         let deadline = cx.deadline;
-        let marker = match cx.host {
-            UnitHost::Row(row) => Some(row.marker()),
-            UnitHost::Lease(_) => None,
-        };
+        let marker = cx.host.marker();
         let idempotency_key = cx.idempotency_key().copied();
         let mut attempt = cx.attempt_session(spec.cost).await?;
         let ended = match attempt.session_parts() {
@@ -589,7 +586,7 @@ async fn drive_session<R, F, T>(
     instance: &mut R::Instance,
     slots: &R::Pinned,
     session_cx: &SessionCx,
-    marker: Option<usize>,
+    marker: usize,
     body: F,
 ) -> SessionEnded<T>
 where
@@ -611,7 +608,7 @@ where
         },
     };
     let mut rows = SESSION_ROWS.try_with(Clone::clone).unwrap_or_default();
-    rows.extend(marker);
+    rows.push(marker);
     let result = SESSION_ROWS
         .scope(rows, body(&mut session, session_cx))
         .await;

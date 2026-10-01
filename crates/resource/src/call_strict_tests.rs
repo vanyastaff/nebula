@@ -14,12 +14,12 @@ use nebula_credential::{
 use tokio::{sync::Notify, time::Instant};
 
 use super::super::{
-    Attempt, Cost, Effect, Lease, Operation, OperationCx, OperationError, PinSlots, SentState,
+    Attempt, Cost, Effect, Operation, OperationCx, OperationError, PinSlots, ResourceHandle,
+    SentState,
 };
 use crate::{
-    AcquireOptions, CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind,
-    Manager, Pooled, Provider, RegistrationSpec, Resident, ResidentConfig, ResourceEvent,
-    ShutdownConfig,
+    CredentialAdmissionProfile, CredentialUnavailableReason, Error, ErrorKind, Manager, Pooled,
+    Provider, RegistrationSpec, Resident, ResidentConfig, ResourceEvent, ShutdownConfig,
     manager::{
         CredentialReads,
         strict_fixtures::{
@@ -89,12 +89,34 @@ fn setup_limited(observer: &Arc<ScriptedObserver>) -> (Arc<Manager>, StrictResid
     (manager, resource)
 }
 
-async fn facade<R: Provider + PinSlots>(manager: &Manager) -> Lease<R> {
+fn facade<R: Provider + PinSlots>(manager: &Manager) -> ResourceHandle<R> {
     manager
-        .acquire_for_identity::<R>(&context(), &AcquireOptions::default(), &tenant())
+        .handle_for_identity::<R>(&context(), &tenant())
+        .expect("row handle")
+}
+
+/// Reads one attempt takes on a strict resident row: R1 after its waits,
+/// then R2 after its checkout — a resident row never pools, so every
+/// checkout hands out a freshly created (cloned) entry and is read again.
+const ATTEMPT_READS: usize = 2;
+
+/// Reads a first free unit through ([`ATTEMPT_READS`] reads) so the row's
+/// resident master exists before the attempt under test. A gated observer
+/// must have released [`ATTEMPT_READS`] reads for it.
+async fn warm(facade: &ResourceHandle<StrictResident>) {
+    facade
+        .submit(Once::at(Cost::FREE))
         .await
-        .expect("acquire")
-        .into_lease()
+        .expect("creates the instance");
+}
+
+/// Books the only permit of a [`setup_limited`] row through a first unit,
+/// so the next attempt waits a second for its slot.
+async fn drain(facade: &ResourceHandle<StrictResident>) {
+    facade
+        .submit(Once::at(Cost::ONE))
+        .await
+        .expect("takes the permit");
 }
 
 fn reads(manager: &Manager) -> Arc<CredentialReads> {
@@ -281,7 +303,7 @@ async fn a_slot_less_row_on_a_strict_manager_reads_nothing_per_attempt() {
     // A strict row whose slot was never bound reads nothing either.
     resident(&manager);
 
-    let unbound = facade::<UnboundRow>(&manager).await;
+    let unbound = facade::<UnboundRow>(&manager);
     unbound
         .submit(Once::at(Cost::ONE))
         .await
@@ -290,7 +312,7 @@ async fn a_slot_less_row_on_a_strict_manager_reads_nothing_per_attempt() {
         .submit(Once::at(Cost::FREE))
         .await
         .expect("slot-less");
-    let never_bound = facade::<StrictResident>(&manager).await;
+    let never_bound = facade::<StrictResident>(&manager);
     never_bound
         .submit(Attempts::free(2))
         .await
@@ -304,7 +326,7 @@ async fn an_interim_manager_reads_nothing_per_attempt() {
     let resource = resident(&manager);
     bind(&resource.db, credential_id(), 1, 1);
 
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
     let pinned = managed.submit(Attempts::free(2)).await.expect("granted");
     assert_eq!(pinned, vec![owned_epochs(&[("db", Some(1))]); 2]);
     let row = row::<StrictResident>(&manager);
@@ -315,15 +337,18 @@ async fn an_interim_manager_reads_nothing_per_attempt() {
     );
 }
 
-// ── one read per attempt ─────────────────────────────────────────────────
+// ── reads per attempt ────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn every_attempt_reads_once() {
+async fn every_attempt_reads_its_credentials() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
-    assert_eq!(observer.calls(), 1, "the acquire read");
-    assert_eq!(reads_total::<StrictResident>(&manager), 1);
+    let managed = facade::<StrictResident>(&manager);
+    assert_eq!(
+        observer.calls(),
+        0,
+        "a handle reads nothing until an attempt"
+    );
 
     let pinned = managed
         .submit(Attempts {
@@ -333,17 +358,23 @@ async fn every_attempt_reads_once() {
         .await
         .expect("granted");
     assert_eq!(pinned, vec![owned_epochs(&[("db", Some(1))]); 3]);
-    assert_eq!(observer.calls(), 1 + 3);
-    assert_eq!(reads_total::<StrictResident>(&manager), 1 + 3);
+    assert_eq!(
+        observer.calls(),
+        3 * ATTEMPT_READS,
+        "R1 and R2 for each attempt's own checkout"
+    );
+    assert_eq!(reads_total::<StrictResident>(&manager), 3 * 2);
 }
 
 #[tokio::test(start_paused = true)]
 async fn the_read_runs_after_the_quota_wait() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let (manager, _resource) = setup_limited(&observer);
-    // The acquire books the only permit; the attempt's slot is a second
+    // A first unit books the only permit; the attempt's slot is a second
     // later.
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    drain(&managed).await;
+    let calls = observer.calls();
     let started = Instant::now();
     let unit = tokio::spawn(managed.submit(Attempts {
         n: 1,
@@ -351,9 +382,9 @@ async fn the_read_runs_after_the_quota_wait() {
     }));
 
     tokio::time::sleep_until(started + Duration::from_millis(999)).await;
-    assert_eq!(observer.calls(), 1, "no read while the attempt waits");
+    assert_eq!(observer.calls(), calls, "no read while the attempt waits");
     unit.await.expect("joined").expect("granted");
-    assert_eq!(observer.calls(), 2);
+    assert_eq!(observer.calls(), calls + ATTEMPT_READS);
     assert_eq!(started.elapsed(), Duration::from_secs(1));
 }
 
@@ -361,7 +392,8 @@ async fn the_read_runs_after_the_quota_wait() {
 async fn a_reauthentication_during_the_quota_wait_refuses_and_suspends() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let (manager, _resource) = setup_limited(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    drain(&managed).await;
     let mut events = manager.subscribe_events();
     let unit = tokio::spawn(managed.submit(Once::at(Cost::ONE)));
     settle_tasks().await;
@@ -371,7 +403,6 @@ async fn a_reauthentication_during_the_quota_wait_refuses_and_suspends() {
     assert_eq!(reason(&error), Some(REAUTH));
     assert_eq!(error.sent(), SentState::NotSent);
     assert_eq!(suspended_for::<StrictResident>(&manager), Some(REAUTH));
-    assert!(managed.is_closing(), "the suspension closes the lease");
     let mut suspended = 0;
     while let Some(event) = events.try_recv() {
         if matches!(
@@ -383,12 +414,12 @@ async fn a_reauthentication_during_the_quota_wait_refuses_and_suspends() {
     }
     assert_eq!(suspended, 1);
 
-    // The next unit is refused by the closed lease before it reads.
+    // The next unit is refused by the suspended row before it reads.
     let calls = observer.calls();
     let error = managed
         .submit(Once::at(Cost::FREE))
         .await
-        .expect_err("closed lease");
+        .expect_err("suspended row");
     assert_eq!(reason(&error), Some(REAUTH));
     assert_eq!(observer.calls(), calls, "zero reads");
 }
@@ -398,12 +429,14 @@ async fn a_reauthentication_during_the_quota_wait_refuses_and_suspends() {
 #[tokio::test]
 async fn the_admission_lock_is_not_held_across_an_attempt_read() {
     let observer = ScriptedObserver::gated(available(1, 1));
-    observer.release(1);
+    observer.release(ATTEMPT_READS);
     let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    // The resident master exists before the attempt under test.
+    warm(&managed).await;
 
     let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
-    observer.until_calls(2).await;
+    observer.until_calls(ATTEMPT_READS + 1).await;
     // Completes while the attempt's read is gated.
     manager
         .suspend_credential_row(
@@ -428,12 +461,14 @@ async fn the_admission_lock_is_not_held_across_an_attempt_read() {
 #[tokio::test]
 async fn a_taint_during_an_attempt_read_refuses_as_revoked() {
     let observer = ScriptedObserver::gated(available(1, 1));
-    observer.release(1);
+    observer.release(ATTEMPT_READS);
     let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    // The resident master exists before the attempt under test.
+    warm(&managed).await;
 
     let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
-    observer.until_calls(2).await;
+    observer.until_calls(ATTEMPT_READS + 1).await;
     let _tainted = manager
         .taint_slot_for_identity(&StrictResident::key(), ScopeLevel::Global, "db", &tenant())
         .expect("taint");
@@ -445,15 +480,17 @@ async fn a_taint_during_an_attempt_read_refuses_as_revoked() {
 }
 
 #[tokio::test]
-async fn a_lease_closing_during_an_attempt_read_refuses_as_cancelled() {
+async fn a_row_removal_during_an_attempt_read_refuses_as_cancelled() {
     let observer = ScriptedObserver::gated(available(1, 1));
-    observer.release(1);
+    observer.release(ATTEMPT_READS);
     let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    // The resident master exists before the attempt under test.
+    warm(&managed).await;
     let reads = reads(&manager);
 
     let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
-    observer.until_calls(2).await;
+    observer.until_calls(ATTEMPT_READS + 1).await;
     manager.remove(&StrictResident::key()).expect("remove");
 
     let error = unit.await.expect("joined").expect_err("refused");
@@ -465,28 +502,31 @@ async fn a_lease_closing_during_an_attempt_read_refuses_as_cancelled() {
 #[tokio::test]
 async fn a_cancel_during_the_first_read_ends_it_and_a_cancel_after_the_grant_is_ignored() {
     let observer = ScriptedObserver::gated(available(1, 1));
-    observer.release(1);
+    observer.release(ATTEMPT_READS);
     let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    // The resident master exists before the attempt under test.
+    warm(&managed).await;
 
     let mut unit = managed.submit(Attempts::free(1));
     assert!(futures::poll!(&mut unit).is_pending());
-    observer.until_calls(2).await;
+    observer.until_calls(ATTEMPT_READS + 1).await;
     unit.cancel();
     let error = unit.await.expect_err("cancelled");
     assert_eq!(*error.kind(), ErrorKind::Cancelled);
     assert_eq!(error.sent(), SentState::NotSent);
     assert_eq!(reads(&manager).lane_count(), 0, "the read was dropped");
 
-    // After the first grant a cancel is ignored: the second read runs.
+    // After the first grant a cancel is ignored: the second attempt's reads
+    // run.
     let (operation, pause) = paused::<false>();
     let mut unit = managed.submit(operation);
     assert!(futures::poll!(&mut unit).is_pending());
-    observer.release(1);
+    observer.release(ATTEMPT_READS);
     pause.between.notified().await;
     unit.cancel();
     pause.resume.notify_one();
-    observer.release(1);
+    observer.release(ATTEMPT_READS);
     let pinned = unit.await.expect("granted twice");
     assert_eq!(pinned.len(), 2);
 }
@@ -494,9 +534,11 @@ async fn a_cancel_during_the_first_read_ends_it_and_a_cancel_after_the_grant_is_
 #[tokio::test(start_paused = true)]
 async fn a_read_that_never_answers_refuses_at_its_own_bound() {
     let observer = ScriptedObserver::gated(available(1, 1));
-    observer.release(1);
+    observer.release(ATTEMPT_READS);
     let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    // The resident master exists before the attempt under test.
+    warm(&managed).await;
 
     let started = Instant::now();
     let error = managed
@@ -518,14 +560,19 @@ async fn a_read_that_never_answers_refuses_at_its_own_bound() {
 async fn a_refresh_in_flight_is_joined_then_admits_or_rebinds() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    warm(&managed).await;
 
     observer.then([refreshing(1), refreshing(1)]);
     managed
         .submit(Attempts::free(1))
         .await
         .expect("the refresh left the material usable");
-    assert_eq!(observer.calls(), 1 + 3, "two joined re-reads");
+    assert_eq!(
+        observer.calls(),
+        ATTEMPT_READS + 3 + 1,
+        "R1 joined two re-reads, then R2 after the checkout"
+    );
 
     observer.then([refreshing(1)]);
     observer.answer(available(2, 2));
@@ -541,7 +588,7 @@ async fn a_refresh_in_flight_is_joined_then_admits_or_rebinds() {
 async fn newer_observed_material_refuses_without_touching_the_gate() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
     let epoch = gate_epoch::<StrictResident>(&manager);
 
     observer.answer(available(2, 2));
@@ -552,14 +599,14 @@ async fn newer_observed_material_refuses_without_touching_the_gate() {
     assert_eq!(reason(&error), Some(REBINDING));
     assert_eq!(suspended_for::<StrictResident>(&manager), None);
     assert_eq!(gate_epoch::<StrictResident>(&manager), epoch);
-    assert!(!managed.is_closing());
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_first_attempt_runs_on_material_installed_during_its_wait() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let (manager, resource) = setup_limited(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    drain(&managed).await;
     let unit = tokio::spawn(managed.submit(Attempts {
         n: 1,
         cost: Cost::ONE,
@@ -580,7 +627,7 @@ async fn a_first_attempt_runs_on_material_installed_during_its_wait() {
 async fn a_later_attempt_whose_pin_was_superseded_is_refused_rebinding() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let (manager, resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
 
     let (operation, pause) = paused::<false>();
     let unit = tokio::spawn(managed.submit(operation));
@@ -593,7 +640,11 @@ async fn a_later_attempt_whose_pin_was_superseded_is_refused_rebinding() {
     assert_eq!(reason(&error), Some(REBINDING));
     assert_eq!(error.sent(), SentState::Sent, "the first attempt was sent");
     assert!(error.is_retryable(), "a read unit is retried");
-    assert!(!managed.is_closing(), "a rebinding closes nothing");
+    assert_eq!(
+        suspended_for::<StrictResident>(&manager),
+        None,
+        "a rebinding suspends nothing"
+    );
 
     // The next unit pins the new material.
     let pinned = managed.submit(Attempts::free(1)).await.expect("granted");
@@ -604,7 +655,7 @@ async fn a_later_attempt_whose_pin_was_superseded_is_refused_rebinding() {
 async fn a_write_whose_later_attempt_rebinds_has_an_unknown_outcome() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let (manager, resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
     let mut events = manager.subscribe_events();
 
     let (operation, pause) = paused::<true>();
@@ -627,51 +678,19 @@ async fn a_write_whose_later_attempt_rebinds_has_an_unknown_outcome() {
     assert_eq!(unknown, 1);
 }
 
-// ── coalescing, shutdown, pooled leases ──────────────────────────────────
-
-#[tokio::test]
-async fn attempts_of_concurrent_units_join_the_next_read_only() {
-    let observer = ScriptedObserver::gated(available(1, 1));
-    observer.release(1);
-    let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
-    let reads = reads(&manager);
-
-    let first = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
-    observer.until_calls(2).await;
-    // A block commits after the first read started: the later units must
-    // not take that read's answer.
-    observer.answer(reauth(1, 2));
-    let rest: Vec<_> = (0..7)
-        .map(|_| tokio::spawn(managed.submit(Once::at(Cost::FREE))))
-        .collect();
-    while reads.users(credential_id()) < 8 {
-        tokio::task::yield_now().await;
-    }
-
-    observer.release(1);
-    first.await.expect("joined").expect("read before the block");
-    observer.release(1);
-    for unit in rest {
-        let error = unit
-            .await
-            .expect("joined")
-            .expect_err("read after the block");
-        assert_eq!(reason(&error), Some(REAUTH));
-    }
-    assert_eq!(observer.calls(), 1 + 2, "eight attempts, two reads");
-    assert_eq!(suspended_for::<StrictResident>(&manager), Some(REAUTH));
-}
+// ── coalescing, shutdown, pooled rows ────────────────────────────────────
 
 #[tokio::test]
 async fn a_shutdown_during_an_attempt_read_refuses_as_cancelled() {
     let observer = ScriptedObserver::gated(available(1, 1));
-    observer.release(1);
+    observer.release(ATTEMPT_READS);
     let (manager, _resource) = setup(&observer);
-    let managed = facade::<StrictResident>(&manager).await;
+    let managed = facade::<StrictResident>(&manager);
+    // The resident master exists before the attempt under test.
+    warm(&managed).await;
 
     let unit = tokio::spawn(managed.submit(Once::at(Cost::FREE)));
-    observer.until_calls(2).await;
+    observer.until_calls(ATTEMPT_READS + 1).await;
     let shutdown = {
         let manager = Arc::clone(&manager);
         tokio::spawn(async move { manager.graceful_shutdown(ShutdownConfig::default()).await })
@@ -685,7 +704,7 @@ async fn a_shutdown_during_an_attempt_read_refuses_as_cancelled() {
 }
 
 #[tokio::test]
-async fn a_pooled_lease_reads_per_attempt_and_a_block_closes_it() {
+async fn a_pooled_row_reads_per_attempt_and_a_block_suspends_it() {
     let observer = ScriptedObserver::answering(available(1, 1));
     let manager = strict_manager(erased(&observer), &Arc::default());
     let resource = register(
@@ -695,10 +714,17 @@ async fn a_pooled_lease_reads_per_attempt_and_a_block_closes_it() {
     )
     .expect("register");
     bind(&resource.db, credential_id(), 1, 1);
-    let managed = facade::<StrictPooled>(&manager).await;
+    let managed = facade::<StrictPooled>(&manager);
 
-    managed.submit(Attempts::free(2)).await.expect("granted");
-    assert_eq!(observer.calls(), 1 + 2);
+    managed.submit(Attempts::free(1)).await.expect("granted");
+    assert_eq!(observer.calls(), 2, "R1, then R2 after the create");
+    // The checkout's release runs on the release queue: wait for the
+    // connection to be idle again so the next attempt is an idle hit.
+    while row::<StrictPooled>(&manager).in_flight_count() != 0 {
+        tokio::task::yield_now().await;
+    }
+    managed.submit(Attempts::free(1)).await.expect("granted");
+    assert_eq!(observer.calls(), 2 + 1, "R1 alone serves an idle hit");
 
     observer.answer(reauth(1, 2));
     let error = managed
@@ -706,7 +732,6 @@ async fn a_pooled_lease_reads_per_attempt_and_a_block_closes_it() {
         .await
         .expect_err("blocked");
     assert_eq!(reason(&error), Some(REAUTH));
-    assert_eq!(observer.calls(), 1 + 3);
-    assert!(managed.is_closing());
+    assert_eq!(observer.calls(), 2 + 2, "R1 refuses before any checkout");
     assert_eq!(suspended_for::<StrictPooled>(&manager), Some(REAUTH));
 }

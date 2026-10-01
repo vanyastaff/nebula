@@ -11,6 +11,34 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **`nebula-resource` removes the `Lease` managed-call facade.**
+  `call::ResourceHandle<R>`
+  (`Manager::handle`, `handle_for_identity` and the erased `handle_any*`
+  family) is the only managed call facade: every attempt checks out an
+  instance of its own after its quota and row-gate waits, so no unit holds a
+  connection while it waits. Holding one instance across several units
+  belongs to a future, qualified explicit-session profile, not to an
+  unbounded escape hatch.
+  - Removed: `call::Lease<R>` (and its root re-export `nebula_resource::Lease`),
+    `ResourceGuard::into_lease`, `impl From<ResourceGuard<R>> for Lease<R>`,
+    `Lease::submit` / `submit_streaming` / `closing` / `is_closing` /
+    `resource_key`, and the per-lease unit caps (one unit at a time on a
+    `Pooled` / `Bounded` lease, 64 on a shared one) — a handle's units queue
+    at the row gate, sized to the topology's capacity, instead.
+  - `ResourceGuard` and `Manager::acquire*` stay as host-only capabilities of
+    the manager, the engine and tests; a guard no longer becomes a facade.
+    `OperationCx::closing` is the closing notice of the row generation the
+    unit started under.
+  - `nebula-sdk` is unaffected: it stopped exporting `Lease` in 0.27.0.
+  - Migration:
+
+    | Before | After |
+    |---|---|
+    | `manager.acquire::<R>(&ctx, &opts).await?.into_lease()` (or `Lease::from(guard)`) | `manager.handle::<R>(&ctx)?` (`handle_for_identity` for a pinned slot identity) |
+    | `lease.submit(op)` / `lease.submit_streaming(op, n)` | `handle.submit(op)` / `handle.submit_streaming(op, n)` |
+    | `lease.closing()` / `lease.is_closing()` | `OperationCx::closing()` inside the operation; the row's suspension or removal shows as the unit's refusal |
+    | several units sharing one held instance | one unit per attempt, or a `ResourceHandle::session` on a pooled `SessionProvider` for several native calls on one connection |
+
 - **A single action route to resources advances development packages to
   0.27.0 in lockstep.** `ResourceHandle<R>` is now the only resource
   capability an action context can name; a raw lease (`ResourceGuard<R>`,

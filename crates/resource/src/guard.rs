@@ -6,9 +6,11 @@
 //! A guard is a host-only capability (the manager, the engine, and tests).
 //! It is never an action route: no action context serves one, the
 //! `#[derive(Action)]` macro refuses `ResourceGuard<R>` slots, and
-//! `nebula-sdk` does not export it. Actions hold
-//! [`ResourceHandle<R>`](crate::call::ResourceHandle) instead, whose units are
-//! journaled — a lease bypasses the effect journal.
+//! `nebula-sdk` does not export it, and it never becomes a managed call
+//! facade. Actions hold
+//! [`ResourceHandle<R>`](crate::call::ResourceHandle) instead, whose units
+//! check out per attempt and are journaled — a lease bypasses the effect
+//! journal.
 
 use std::{
     ops::Deref,
@@ -24,7 +26,6 @@ use nebula_eventbus::EventBus;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
 
 use crate::{
-    call::{Lease, PinSlots},
     context::ResourceContext,
     events::ResourceEvent,
     metrics::ResourceOpsMetrics,
@@ -314,39 +315,6 @@ impl<R: Provider> ResourceGuard<R> {
     /// The admission generation this lease was admitted under.
     pub(crate) fn admission(&self) -> &Arc<AdmissionGeneration> {
         &self.admission
-    }
-
-    /// The row this lease came from.
-    pub(crate) fn managed(&self) -> &Arc<ManagedResource<R>> {
-        &self.managed
-    }
-
-    /// The manager's operation counters, when configured.
-    pub(crate) fn metrics(&self) -> Option<&ResourceOpsMetrics> {
-        self.metrics.as_ref()
-    }
-
-    /// The manager's event bus, when attached.
-    pub(crate) fn event_bus(&self) -> Option<&Arc<EventBus<ResourceEvent>>> {
-        self.event_bus.as_ref()
-    }
-
-    /// Turns this lease into a managed call facade: provider calls go
-    /// through [`Lease::submit`] as admitted,
-    /// budgeted units of work, and the lease is released when the facade and
-    /// every unit it started are gone.
-    ///
-    /// Latches the row's rate-limit profile to
-    /// [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt):
-    /// from now on each granted attempt books its cost, and acquires of the
-    /// row only honour pauses.
-    ///
-    /// See the [`call`](crate::call) module for the contract.
-    pub fn into_lease(self) -> Lease<R>
-    where
-        R: PinSlots,
-    {
-        Lease::from_guard(self)
     }
 
     /// Attaches the manager's event bus so this guard emits

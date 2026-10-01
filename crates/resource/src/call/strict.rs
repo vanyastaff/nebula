@@ -9,23 +9,22 @@
 //! CONTRACT.md:40-41, QUOTA-DX.md:33). The two phases are the acquire
 //! path's (`manager::strict_admission`, invariant I7):
 //!
-//! 1. [`ManagedLease::read_credentials`] reads outside every lock, through
-//!    the manager's join-next reads, bounded by the unit's deadline and the
-//!    read timeout, raced against the lease's generation and the unit's
-//!    cancel.
-//! 2. [`ManagedLease::register`] takes `Manager.admission` (through the
-//!    row's [`AdmissionLink`](crate::manager::AdmissionLink)), re-checks
-//!    taint and shutdown, applies the reading to the row's gate, checks the
-//!    row's suspension, the lease's generation and the unit's pin, and
-//!    grants under the lock. Lock order: `Manager.admission`, the row's
-//!    gate, each slot's writer lock.
+//! 1. [`read_credentials`] reads outside every lock, through the manager's
+//!    join-next reads, bounded by the unit's deadline and the read timeout,
+//!    raced against the unit's generation and the unit's cancel.
+//! 2. [`register_grant`] takes `Manager.admission` (through the row's
+//!    [`AdmissionLink`](crate::manager::AdmissionLink)), re-checks taint and
+//!    shutdown, applies the reading to the row's gate, checks the row's
+//!    suspension, the checkout's generation and the unit's pin, and grants
+//!    under the lock. Lock order: `Manager.admission`, the row's gate, each
+//!    slot's writer lock.
 //!
 //! Interim managers and rows with no bound slot read nothing and register
 //! lock-free. An outage refuses `CheckUnavailable` and changes no gate
 //! state (CONTRACT.md:77). Readmission at the installed material with an
 //! advanced use revision publishes a fresh generation without closing the
-//! lease, so the lease's later attempts are admitted too (the residual of
-//! I6).
+//! old one, so a unit started under it keeps being admitted (the residual
+//! of I6).
 //!
 //! # Pin
 //!
@@ -47,7 +46,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     error::OperationError,
-    managed::{ManagedLease, UnitShared, cancelled_before_grant, generation_refusal},
+    managed::{UnitShared, cancelled_before_grant, generation_refusal},
     pin::PinSlots,
 };
 use crate::{
@@ -147,37 +146,6 @@ pub(crate) fn pin_is_current<R: Provider, P>(
     pin: &UnitPin<P>,
 ) -> bool {
     pin.stable && slot_generations(&managed.resource) == pin.generations
-}
-
-impl<R: Provider + PinSlots> ManagedLease<R> {
-    /// Step 4 of an attempt: the strict per-attempt credential read, outside
-    /// every lock, raced against the lease's generation (see
-    /// [`read_credentials`]).
-    pub(super) async fn read_credentials(
-        &self,
-        deadline: tokio::time::Instant,
-        cancel: Option<&CancellationToken>,
-    ) -> Result<Option<StrictReading>, OperationError> {
-        read_credentials(&self.managed, &self.generation, deadline, cancel).await
-    }
-
-    /// Step 6 of an attempt: registers it and grants it under the lease's
-    /// generation (see [`register_grant`]). Strict when the attempt read.
-    pub(super) fn register(
-        &self,
-        reading: Option<&StrictReading>,
-        pin: &UnitPin<R::Pinned>,
-        shared: &UnitShared,
-    ) -> Result<(), OperationError> {
-        register_grant(
-            &self.managed,
-            reading.is_some(),
-            reading,
-            &self.generation,
-            pin,
-            shared,
-        )
-    }
 }
 
 /// The strict per-attempt credential read of `managed`, outside every lock.

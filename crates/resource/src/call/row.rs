@@ -4,8 +4,8 @@
 //!
 //! # Why a row facade
 //!
-//! A [`Lease`](super::Lease) facade owns one lease for all its units:
-//! a pooled connection stays checked out while its units wait for quota
+//! A facade that owned one lease for all its units would keep a pooled
+//! connection checked out while its units wait for quota
 //! (QUOTA-DX.md:41-43). A [`ResourceHandle`] holds no lease. Each attempt, in
 //! order (never holding `Manager.admission` or any sync lock across an
 //! await, and never waiting for quota or the row gate while holding a
@@ -15,7 +15,8 @@
 //!    refused permanently.
 //! 2. **Row pre-check**, lock-free — a tainted row is `Revoked`; a
 //!    shutting-down manager, a removed or replaced row `Cancelled`; the
-//!    unit's admission generation closed maps as a lease's does; a
+//!    unit's admission generation closed maps as the acquire path's
+//!    hand-out refusal does; a
 //!    suspended row is `CredentialUnavailable`; a row whose phase refuses
 //!    acquires is `Backpressure`.
 //! 3. **Quota**, nothing held — the attempt's [`Cost`] is booked on the
@@ -64,8 +65,8 @@ use super::{
     cost::Cost,
     error::OperationError,
     managed::{
-        Checkout, OperationCx, Submission, UnitHost, UnitScope, assert_declaration,
-        cancelled_before_grant, generation_refusal, submit_unit,
+        Checkout, OperationCx, Submission, UnitScope, assert_declaration, cancelled_before_grant,
+        generation_refusal, submit_unit,
     },
     pin::PinSlots,
     session::{SessionCx, SessionFuture, SessionProvider, SessionSpec, Sessioned},
@@ -87,8 +88,8 @@ use crate::{
 
 /// A registered row turned into a per-unit checkout facade.
 ///
-/// Built by [`Manager::handle`](crate::Manager::handle). Unlike
-/// [`Lease`](super::Lease) it holds no lease: every attempt of a
+/// Built by [`Manager::handle`](crate::Manager::handle). It holds no
+/// lease: every attempt of a
 /// submitted [`Operation`] checks out an instance of its own after its
 /// quota and row-gate waits and releases it when the attempt ends, so a
 /// unit waiting for its rate limit holds no connection (see the module
@@ -179,9 +180,9 @@ impl<R: Provider> ResourceHandle<R> {
         &self.shared.key
     }
 
-    /// The host every unit of this facade runs against: the row.
-    pub(super) fn unit_host(&self) -> UnitHost<R> {
-        UnitHost::Row(Arc::clone(&self.shared))
+    /// The row every unit of this facade runs against.
+    pub(super) fn unit_host(&self) -> Arc<RowShared<R>> {
+        Arc::clone(&self.shared)
     }
 
     /// What every unit of this facade inherits from its caller.
@@ -405,7 +406,7 @@ impl<'u, R: Provider + PinSlots> OperationCx<'u, R> {
         }
 
         // 1–3: budget, the row pre-check and the quota, nothing held.
-        self.admit_local(cost, Some(row)).await?;
+        self.admit_local(cost).await?;
         let generation = self.generation;
         let managed = &row.managed;
         let cancel = self.shared.cancel_before_grant();

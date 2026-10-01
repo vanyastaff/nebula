@@ -380,28 +380,6 @@ async fn a_unit_waiting_for_quota_holds_no_connection() {
     assert_eq!(started.elapsed(), Duration::from_secs(1));
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_lease_facade_holds_its_connection_while_its_unit_waits_for_quota() {
-    let manager = Manager::new();
-    pooled(&manager, 1, Some(RowLimit::rate(per_second(1, 1))));
-    // The acquire books the only permit before the facade latches.
-    let lease = manager
-        .acquire_for_identity::<StrictPooled>(&context(), &AcquireOptions::default(), &tenant())
-        .await
-        .expect("acquire")
-        .into_lease();
-
-    let unit = tokio::spawn(lease.submit(Once::at(Cost::ONE)));
-    settle_tasks().await;
-    assert!(!unit.is_finished(), "waiting for quota");
-    assert_eq!(
-        in_use::<StrictPooled>(&manager),
-        1,
-        "the lease keeps the connection checked out meanwhile"
-    );
-    unit.await.expect("joined").expect("granted");
-}
-
 // ── R2: the gate queues FIFO, no backpressure ────────────────────────────
 
 #[tokio::test(start_paused = true)]
@@ -730,28 +708,16 @@ async fn a_deadline_during_the_gate_wait_is_backpressure() {
     holder.await.expect("joined").expect("holder");
 }
 
-// ── R11: the retry-safety table over both hosts ──────────────────────────
+// ── R11: the retry-safety table on row units ─────────────────────────────
 
-#[derive(Debug, Clone, Copy)]
-enum Host {
-    Lease,
-    Row,
-}
-
-async fn reply<const WRITE: bool>(host: Host, error: OperationError) -> OperationError {
+async fn reply<const WRITE: bool>(error: OperationError) -> OperationError {
     let manager = Manager::new();
     pooled(&manager, 1, None);
     let operation = Reply::<WRITE> { error };
-    let unit = match host {
-        Host::Lease => manager
-            .acquire_for_identity::<StrictPooled>(&context(), &AcquireOptions::default(), &tenant())
-            .await
-            .expect("acquire")
-            .into_lease()
-            .submit(operation),
-        Host::Row => facade::<StrictPooled>(&manager).submit(operation),
-    };
-    unit.await.expect_err("the provider refused")
+    facade::<StrictPooled>(&manager)
+        .submit(operation)
+        .await
+        .expect_err("the provider refused")
 }
 
 #[rstest]
@@ -805,8 +771,7 @@ async fn reply<const WRITE: bool>(host: Host, error: OperationError) -> Operatio
     ErrorKind::Permanent
 )]
 #[tokio::test]
-async fn the_retry_safety_table_holds_for_lease_and_row_units(
-    #[values(Host::Lease, Host::Row)] host: Host,
+async fn the_retry_safety_table_holds_for_row_units(
     #[case] write: bool,
     #[case] reply_with: OperationError,
     #[case] sent: SentState,
@@ -814,13 +779,13 @@ async fn the_retry_safety_table_holds_for_lease_and_row_units(
     #[case] as_error: ErrorKind,
 ) {
     let error = if write {
-        reply::<true>(host, reply_with).await
+        reply::<true>(reply_with).await
     } else {
-        reply::<false>(host, reply_with).await
+        reply::<false>(reply_with).await
     };
-    assert_eq!(error.sent(), sent, "{host:?}");
-    assert_eq!(error.is_retryable(), retryable, "{host:?}");
-    assert_eq!(*Error::from(error).kind(), as_error, "{host:?}");
+    assert_eq!(error.sent(), sent);
+    assert_eq!(error.is_retryable(), retryable);
+    assert_eq!(*Error::from(error).kind(), as_error);
 }
 
 // ── R12: a multi-attempt row unit ────────────────────────────────────────

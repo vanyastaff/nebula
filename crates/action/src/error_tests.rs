@@ -295,8 +295,8 @@ fn ext_chaining_preserves_error_chain() {
 mod managed_unit {
     use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
     use nebula_resource::{
-        AcquireOptions, CredentialUnavailableReason, ErrorKind, Manager, RegistrationSpec,
-        Resident, ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity,
+        CredentialUnavailableReason, ErrorKind, Manager, RegistrationSpec, Resident,
+        ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity,
         call::{Cost, Operation, OperationCx, OperationError},
         resource::{Provider, ResourceMetadataDraft},
         topology::ResidentProvider,
@@ -377,11 +377,7 @@ mod managed_unit {
             .expect("register");
         let ctx =
             ResourceContext::minimal(Scope::default(), tokio_util::sync::CancellationToken::new());
-        let managed = manager
-            .acquire::<Ledger>(&ctx, &AcquireOptions::default())
-            .await
-            .expect("acquire")
-            .into_lease();
+        let managed = manager.handle::<Ledger>(&ctx).expect("row handle");
 
         let deadline = tokio::time::Instant::now().into_std() + Duration::from_secs(1);
         let unknown = managed

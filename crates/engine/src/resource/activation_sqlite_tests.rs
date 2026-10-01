@@ -21,7 +21,7 @@ use nebula_credential::{
     register_runtime_ops, scheme::SecretToken,
 };
 use nebula_resource::call::{
-    Cost, Effect, Lease, Operation, OperationCx, OperationError, PinSlots, SentState,
+    Cost, Effect, Operation, OperationCx, OperationError, PinSlots, ResourceHandle, SentState,
 };
 use nebula_storage::credential::{
     EncryptionLayer, EnvKeyProvider, SqliteCredentialPersistence, SqliteRefreshClaimRepo,
@@ -705,12 +705,32 @@ impl SqliteFixture {
         })
     }
 
-    /// A lease turned into a managed call facade.
-    async fn facade(&self, key: &ResourceKey, activated: &ActivatedResource) -> Lease<BearerRow> {
-        self.acquire(key, activated)
-            .await
+    /// The managed call facade of the activated row: a row handle whose
+    /// attempts check out per attempt.
+    fn facade(
+        &self,
+        key: &ResourceKey,
+        activated: &ActivatedResource,
+    ) -> ResourceHandle<BearerRow> {
+        let workspace = WorkspaceId::parse(&self.scope.workspace_id).expect("workspace id");
+        let ctx = ResourceContext::minimal(
+            nebula_core::scope::Scope {
+                workspace_id: Some(workspace),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+        *self
+            .manager
+            .handle_any(
+                key,
+                &ctx,
+                &nebula_resource::AcquireOptions::default(),
+                &activated.slot_identity,
+            )
             .expect("serves")
-            .into_lease()
+            .downcast::<ResourceHandle<BearerRow>>()
+            .expect("handle type")
     }
 
     /// `(material_epoch, admission_epoch)` the activator tracks.
@@ -1309,37 +1329,39 @@ fn op_reason(error: &OperationError) -> Option<CredentialUnavailableReason> {
     }
 }
 
-/// F1: every attempt of a unit reads the credential once; nothing is
-/// decrypted.
+/// F1: every attempt of a unit reads the credential through the real
+/// runtime — R1 after its waits and R2 after its own checkout (a resident
+/// row never pools, so every checkout hands out a created entry); nothing
+/// is decrypted.
 #[tokio::test]
-async fn every_managed_attempt_reads_the_credential_once() {
+async fn every_managed_attempt_reads_the_credential() {
     let fixture = SqliteFixture::strict().await;
     let (resource_id, key) = fixture.store_row().await;
     let activated = fixture
         .activate(resource_id, &key)
         .await
         .expect("activates");
-    let managed = fixture.facade(&key, &activated).await;
+    let managed = fixture.facade(&key, &activated);
     let (reads, projections) = (fixture.reads(), fixture.projections());
 
     managed.submit(Attempts(3)).await.expect("granted");
-    assert_eq!(fixture.reads(), reads + 3);
+    assert_eq!(fixture.reads(), reads + 3 * 2, "R1 and R2 per attempt");
     assert_eq!(fixture.projections(), projections, "nothing is decrypted");
 }
 
 /// F2: a revoke claim taken between two attempts refuses the second before
-/// it is sent, suspends the row and closes the lease; the next unit on the
-/// closed lease is refused without a read; the claim's lapse lets a new
-/// acquire serve again.
+/// it is sent and suspends the row; the next unit on the suspended row is
+/// refused without a read; the claim's lapse lets a new acquire reopen the
+/// row, and the facade serves again.
 #[tokio::test]
-async fn a_revoke_between_attempts_refuses_the_next_attempt_and_closes_the_lease() {
+async fn a_revoke_between_attempts_refuses_the_next_attempt_and_suspends_the_row() {
     let fixture = SqliteFixture::strict().await;
     let (resource_id, key) = fixture.store_row().await;
     let activated = fixture
         .activate(resource_id, &key)
         .await
         .expect("activates");
-    let managed = fixture.facade(&key, &activated).await;
+    let managed = fixture.facade(&key, &activated);
 
     let (operation, between, resume) = paused_read();
     let unit = tokio::spawn(managed.submit(operation));
@@ -1359,10 +1381,12 @@ async fn a_revoke_between_attempts_refuses_the_next_attempt_and_closes_the_lease
     );
     assert!(error.is_retryable(), "a read unit is retried");
     assert!(fixture.suspended(&activated));
-    assert!(managed.is_closing(), "the suspension closes the lease");
 
     let reads = fixture.reads();
-    let error = managed.submit(Attempts(1)).await.expect_err("closed lease");
+    let error = managed
+        .submit(Attempts(1))
+        .await
+        .expect_err("suspended row");
     assert_eq!(
         op_reason(&error),
         Some(CredentialUnavailableReason::OperationBlocked)
@@ -1371,27 +1395,31 @@ async fn a_revoke_between_attempts_refuses_the_next_attempt_and_closes_the_lease
     assert_eq!(fixture.reads(), reads, "refused before any read");
 
     fixture.lapse_claim().await;
-    fixture
-        .facade(&key, &activated)
-        .await
+    drop(
+        fixture
+            .acquire(&key, &activated)
+            .await
+            .expect("a new acquire serves once the claim lapsed"),
+    );
+    assert!(!fixture.suspended(&activated));
+    managed
         .submit(Attempts(1))
         .await
-        .expect("a new acquire serves once the claim lapsed");
-    assert!(!fixture.suspended(&activated));
+        .expect("the reopened row serves the same facade");
 }
 
 /// F3: a store outage between two attempts refuses the second as
-/// unchecked, without suspending the row or closing the lease; once the
-/// store is back the same facade serves, with nothing decrypted.
+/// unchecked, without suspending the row; once the store is back the same
+/// facade serves, with nothing decrypted.
 #[tokio::test]
-async fn an_outage_between_attempts_refuses_without_closing_the_lease() {
+async fn an_outage_between_attempts_refuses_without_suspending_the_row() {
     let fixture = SqliteFixture::strict().await;
     let (resource_id, key) = fixture.store_row().await;
     let activated = fixture
         .activate(resource_id, &key)
         .await
         .expect("activates");
-    let managed = fixture.facade(&key, &activated).await;
+    let managed = fixture.facade(&key, &activated);
     let projections = fixture.projections();
 
     let (operation, between, resume) = paused_read();
@@ -1406,7 +1434,6 @@ async fn an_outage_between_attempts_refuses_without_closing_the_lease() {
         Some(CredentialUnavailableReason::CheckUnavailable)
     );
     assert!(!fixture.suspended(&activated), "an outage suspends nothing");
-    assert!(!managed.is_closing(), "an outage closes no lease");
 
     fixture.outage.store(false, Ordering::SeqCst);
     managed
@@ -1418,7 +1445,7 @@ async fn an_outage_between_attempts_refuses_without_closing_the_lease() {
 
 /// F4: reauthentication completed with new material between two attempts
 /// refuses the second as rebinding; activation installs the new material
-/// and a new acquire serves on it.
+/// and a new facade serves on it.
 #[tokio::test]
 async fn new_material_between_attempts_refuses_the_next_attempt_as_rebinding() {
     let fixture = SqliteFixture::strict().await;
@@ -1427,7 +1454,7 @@ async fn new_material_between_attempts_refuses_the_next_attempt_as_rebinding() {
         .activate(resource_id, &key)
         .await
         .expect("activates");
-    let managed = fixture.facade(&key, &activated).await;
+    let managed = fixture.facade(&key, &activated);
 
     let (operation, between, resume) = paused_read();
     let unit = tokio::spawn(managed.submit(operation));
@@ -1447,7 +1474,7 @@ async fn new_material_between_attempts_refuses_the_next_attempt_as_rebinding() {
         .await
         .expect("activation installs the new material");
     let (operation, between, resume) = paused_read();
-    let unit = tokio::spawn(fixture.facade(&key, &reactivated).await.submit(operation));
+    let unit = tokio::spawn(fixture.facade(&key, &reactivated).submit(operation));
     between.notified().await;
     resume.notify_one();
     let pinned = unit.await.expect("joined").expect("serves");
@@ -1468,7 +1495,7 @@ async fn a_refresh_between_attempts_is_joined_and_then_admitted() {
         .activate(resource_id, &key)
         .await
         .expect("activates");
-    let managed = fixture.facade(&key, &activated).await;
+    let managed = fixture.facade(&key, &activated);
 
     let (operation, between, resume) = paused_read();
     let unit = tokio::spawn(managed.submit(operation));
@@ -1490,7 +1517,6 @@ async fn a_refresh_between_attempts_is_joined_and_then_admitted() {
     assert_eq!(pinned[0], pinned[1], "the unit's pin is unchanged");
     assert!(fixture.reads() >= reads + 2, "joined, then read again");
     assert!(!fixture.suspended(&activated));
-    assert!(!managed.is_closing());
 }
 
 /// F6: a slot-less resource's facade reads nothing on a strict manager.
@@ -1515,12 +1541,7 @@ async fn a_slot_less_facade_on_a_strict_manager_reads_nothing() {
         nebula_core::scope::Scope::default(),
         CancellationToken::new(),
     );
-    let managed = fixture
-        .manager
-        .acquire::<Plain>(&ctx, &nebula_resource::AcquireOptions::default())
-        .await
-        .expect("serves")
-        .into_lease();
+    let managed = fixture.manager.handle::<Plain>(&ctx).expect("serves");
     managed.submit(Attempts(2)).await.expect("granted");
     assert_eq!(fixture.reads(), 0);
 }
@@ -1560,7 +1581,7 @@ fn action_row(
     fixture: &SqliteFixture,
     key: &ResourceKey,
     identity: &SlotIdentity,
-) -> Result<nebula_resource::call::ResourceHandle<BearerRow>, nebula_action::ActionError> {
+) -> Result<ResourceHandle<BearerRow>, nebula_action::ActionError> {
     use nebula_action::ActionContextExt as _;
     action_context(
         &fixture.manager,
