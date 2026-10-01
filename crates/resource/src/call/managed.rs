@@ -1052,9 +1052,17 @@ where
             max_attempts,
             effect,
         };
-        // Bounded by the unit's deadline, which an owner's grant may shrink
-        // while the operation runs.
-        let run = shared.run_until_deadline(work.run(&mut cx));
+        // Bounded by the unit's deadline. Only an owner's grant shrinks it
+        // while the operation runs, so an unowned unit keeps the plain timer.
+        let run = async {
+            if shared.effect().is_some() {
+                shared.run_until_deadline(work.run(&mut cx)).await
+            } else {
+                tokio::time::timeout_at(deadline, work.run(&mut cx))
+                    .await
+                    .ok()
+            }
+        };
         AssertUnwindSafe(run).catch_unwind().await
     };
     let (result, abnormal) = match outcome {
