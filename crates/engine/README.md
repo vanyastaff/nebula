@@ -163,10 +163,14 @@ configuration, and process lifecycle.
   attempt number, no execution id with a developer part — and a unit presents the key
   read back from the prepared record. A call granted and never explained (a crash, a
   unit that outlived its node) is recorded as an ambiguous crossing on the next
-  prepare, never from `Drop`. After the action returns, `conclude` drains the units
+  prepare, never from `Drop`. On every exit of the node — after the action returns,
+  and on each exit before it runs (cancellation, input resolution, credential
+  refresh, rate limit, contract checks), so an earlier dispatch's unknown call is
+  never reported as a failure an error strategy could retry or continue past —
+  `conclude` drains the units
   for at most `min(OPERATION_DEADLINE_CAP, execution deadline left)`, closes the
   journal and records every unexplained call as ambiguous within the same limit; its
-  verdict overrides the action's result: a lost lease or unknown acknowledgement
+  verdict overrides the node's result: a lost lease or unknown acknowledgement
   releases the lease without finalizing, any slot whose call may have crossed without
   a recorded outcome (unknown, outstanding, ambiguous, or held past the limit by a
   stuck unit) fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even if the action

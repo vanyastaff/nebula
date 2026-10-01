@@ -1433,8 +1433,11 @@ let admitted = recorded.readmit_against(fresh)?;
   reserved for stateful iterations. The provider receives the key recorded at
   prepare, `base64url(SHA-256(...))` over the tenant, resource, operation,
   version and the developer key part (or execution, node and occurrence) —
-  never an attempt number. The journal's verdict overrides the action's
-  result: any slot whose call may have crossed without a recorded outcome
+  never an attempt number. The journal's verdict overrides the node's
+  result on every exit — after the action returns and on each exit before
+  it runs (cancellation, input resolution, credential refresh, rate limit),
+  so an earlier dispatch's unknown call is never reported as a retryable
+  failure: any slot whose call may have crossed without a recorded outcome
   (unknown, outstanding, ambiguous, or held past the drain limit by a stuck
   unit) fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even when the action
   swallowed the unit's error), a changed request, binding, configuration or

@@ -63,12 +63,15 @@
 //! nothing is sent.
 //!
 //! **Verdict.** The journal never lets a node finish on a result its ledger
-//! contradicts: after the action returns,
+//! contradicts: on every exit of the node — after the action returns, and
+//! before it runs when the node is cancelled or its input, credential
+//! refresh or rate limit fails —
 //! [`conclude`](NodeEffectJournal::conclude) drains the in-flight units,
 //! closes the journal, records every granted-but-unexplained call as
 //! ambiguous (within the drain limit) and reports a verdict that overrides
-//! the action's result. Any slot whose call may have crossed without a
-//! recorded outcome fails the node as unknown.
+//! the node's result. Any slot whose call may have crossed without a
+//! recorded outcome — this attempt's or an earlier dispatch's — fails the
+//! node as unknown.
 
 use std::{
     collections::HashMap,
