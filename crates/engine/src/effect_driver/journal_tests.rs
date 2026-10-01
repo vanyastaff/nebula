@@ -1255,7 +1255,7 @@ async fn a_unit_stuck_in_the_ledger_cannot_hold_the_verdict_past_the_drain() {
     // verdict still comes within the drain limit, and the slot it could not
     // inspect counts as unresolved.
     let verdict = tokio::time::timeout(
-        Duration::from_secs(60),
+        Duration::from_mins(1),
         journal.conclude(Duration::from_secs(1)),
     )
     .await
