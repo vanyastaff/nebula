@@ -43,8 +43,20 @@ pub(crate) fn config(version: u64) -> Config {
     Config { version }
 }
 
+thread_local! {
+    /// How many times this thread computed a [`Config`] fingerprint.
+    static FINGERPRINTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread computed a [`Config`] fingerprint: a
+/// current-thread test runtime counts every computation of its manager.
+pub(crate) fn fingerprints_computed() -> usize {
+    FINGERPRINTS.with(std::cell::Cell::get)
+}
+
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {
+        FINGERPRINTS.with(|computed| computed.set(computed.get() + 1));
         self.version
     }
 }
@@ -598,7 +610,8 @@ mod tests {
 
     use super::{
         PinSlots, RotatingPin, ScriptedObserver, StrictResident, StrictTwoSlot, bind,
-        cache_credential_id, context, credential_id, resident, seen, strict_manager, tenant,
+        cache_credential_id, context, credential_id, fingerprints_computed, resident, seen,
+        strict_manager, tenant,
     };
     use crate::AcquireOptions;
 
@@ -651,5 +664,49 @@ mod tests {
             .expect("admitted");
         drop(guard);
         assert_eq!(observer.calls(), 1);
+    }
+
+    /// Every resident acquire compares the master's build fingerprint with
+    /// the current config's: it reads the one stored at admission, never
+    /// recomputing it, and a reload computes the new one once.
+    #[tokio::test]
+    async fn a_resident_acquire_reads_the_fingerprint_stored_at_admission() {
+        let observer = ScriptedObserver::answering(seen(1, 1, CredentialAvailability::Available));
+        let manager = strict_manager(
+            Arc::clone(&observer) as Arc<dyn CredentialAvailabilityObserver>,
+            &Arc::default(),
+        );
+        let before = fingerprints_computed();
+        let resource = resident(&manager);
+        bind(&resource.db, credential_id(), 1, 1);
+        assert_eq!(fingerprints_computed(), before + 1, "admission computes it");
+
+        let (ctx, options, identity) = (context(), AcquireOptions::default(), tenant());
+        let acquire = || manager.acquire_for_identity::<StrictResident>(&ctx, &options, &identity);
+        for _ in 0..4 {
+            drop(acquire().await.expect("admitted"));
+        }
+        assert_eq!(
+            fingerprints_computed(),
+            before + 1,
+            "no acquire recomputes it"
+        );
+
+        manager
+            .reload_config::<StrictResident>(super::config(2), &nebula_core::ScopeLevel::Global)
+            .expect("reloaded");
+        assert_eq!(
+            fingerprints_computed(),
+            before + 2,
+            "a reload computes it once"
+        );
+        for _ in 0..4 {
+            drop(acquire().await.expect("admitted"));
+        }
+        assert_eq!(fingerprints_computed(), before + 2);
+        assert_eq!(
+            super::row::<StrictResident>(&manager).config_fingerprint(),
+            2
+        );
     }
 }

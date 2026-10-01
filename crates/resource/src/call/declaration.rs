@@ -667,11 +667,11 @@ mod tests {
             "-0.0",
             "1e2",
             "1E-2",
-            "-12345678901234567890",
             "18446744073709551615",
-            "18446744073709551616",
-            "123456789012345678901234567890",
+            "-9223372036854775808",
             "0.1",
+            "1.50",
+            "9007199254740992.0",
             "5e-324",
             "1.7976931348623157e308",
             r#""""#,
@@ -702,6 +702,41 @@ mod tests {
                 beta: nested(),
             },
         );
+    }
+
+    /// A raw number an `f64` cannot hold keeps its exact value. The legacy
+    /// canonicalization parsed it into an `f64`, so two different requests
+    /// (`…992.0` and `…993.0`) shared one canonical form — and one journal
+    /// request fingerprint — although the provider receives their text as
+    /// written; those are the only raw texts whose canonical bytes changed.
+    #[test]
+    fn a_raw_number_keeps_its_exact_value() {
+        for (text, canonical) in [
+            ("9007199254740992.0", "9007199254740992.0"),
+            ("9007199254740993.0", "9007199254740993e0"),
+            ("0.10000000000000000001", "10000000000000000001e-20"),
+            ("-12345678901234567890", "-12345678901234567890"),
+            ("18446744073709551616", "18446744073709551616"),
+            (
+                "123456789012345678901234567890",
+                "123456789012345678901234567890",
+            ),
+            ("1e400", "1e400"),
+            ("-2.50e-1", "-0.25"),
+        ] {
+            let raw: Box<RawValue> = RawValue::from_string(text.into()).expect("raw");
+            assert_eq!(
+                String::from_utf8(canonical_json(&raw).expect("canonical")).expect("utf8"),
+                canonical,
+                "{text}"
+            );
+        }
+        let wide = |text: &str| {
+            canonical_json(&RawValue::from_string(format!("[{text}]")).expect("raw"))
+                .expect("canonical")
+        };
+        assert_ne!(wide("9007199254740992.0"), wide("9007199254740993.0"));
+        assert_eq!(wide("1.5"), wide("1.50e0"));
     }
 
     #[derive(Serialize)]

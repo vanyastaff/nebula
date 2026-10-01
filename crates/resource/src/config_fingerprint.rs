@@ -438,6 +438,34 @@ mod tests {
         }
     }
 
+    /// Numbers keep their exact value: an integer past 2^53 typed or raw
+    /// has one stable fingerprint, and raw decimals an `f64` cannot tell
+    /// apart get different ones.
+    #[test]
+    fn numbers_are_fingerprinted_by_their_exact_value() {
+        use serde_json::value::RawValue;
+
+        let raw = |text: &str| RawValue::from_string(text.to_owned()).expect("raw");
+        // SHA-256("nebula-resource/config-fingerprint/v1\0{\"n\":9007199254740993}")
+        let golden = 0xe177_bc44_9385_a71f;
+        assert_eq!(
+            ConfigFingerprint::new()
+                .field("n", &9_007_199_254_740_993_u64)
+                .try_finish(),
+            Ok(golden)
+        );
+        assert_eq!(
+            ConfigFingerprint::new()
+                .field("n", &raw("9007199254740993"))
+                .try_finish(),
+            Ok(golden)
+        );
+        let of = |text: &str| ConfigFingerprint::new().field("n", &raw(text)).try_finish();
+        assert_ne!(of("9007199254740992.0"), of("9007199254740993.0"));
+        assert_ne!(of("0.1"), of("0.10000000000000000001"));
+        assert_eq!(of("1.5"), of("1.50"));
+    }
+
     #[test]
     fn finite_floats_match_their_golden_vector() {
         // SHA-256("nebula-resource/config-fingerprint/v1\0{\"ratio\":0.5,\"scale\":1.5}"),

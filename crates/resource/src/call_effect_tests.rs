@@ -41,7 +41,8 @@ use crate::{
     AcquireOptions, ErrorKind, Manager, PoolConfig, Pooled, Provider, RegistrationSpec,
     ResourceContext, SlotIdentity,
     manager::strict_fixtures::{
-        ScriptedObserver, StrictPooled, bind, config, credential_id, seen, strict_manager, tenant,
+        ScriptedObserver, StrictPooled, bind, config, credential_id, fingerprints_computed, seen,
+        strict_manager, tenant,
     },
     rate_limit::{Rate, RowLimit},
     resource::ResourceConfig as _,
@@ -1296,6 +1297,47 @@ async fn a_reload_after_submit_refuses_the_grant_and_sends_nothing() {
         config(2).fingerprint()
     );
     assert_eq!(calls.made(), 1);
+}
+
+/// A unit binds (at submit) and grants (before its call) the configuration
+/// fingerprint: both read the value stored when the configuration was
+/// admitted, so no unit re-encodes and re-digests the configuration; a
+/// reload computes the new one once.
+#[tokio::test(start_paused = true)]
+async fn units_read_the_fingerprint_stored_at_admission() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    let admitted = fingerprints_computed();
+
+    for reply in 1..=3 {
+        row.submit(Called::<true>::new(&calls, vec![Ok(reply)]))
+            .await
+            .expect("runs");
+    }
+    assert_eq!(fingerprints_computed(), admitted, "no unit recomputes it");
+
+    fixture
+        .manager
+        .reload_config::<StrictPooled>(config(2), &nebula_core::ScopeLevel::Global)
+        .expect("reloaded");
+    assert_eq!(
+        fingerprints_computed(),
+        admitted + 1,
+        "a reload computes it once"
+    );
+    row.submit(Called::<true>::new(&calls, vec![Ok(4)]))
+        .await
+        .expect("runs");
+    assert_eq!(fingerprints_computed(), admitted + 1);
+
+    let bound: Vec<u64> = fixture
+        .owner
+        .intents()
+        .iter()
+        .map(|intent| intent.config_fingerprint)
+        .collect();
+    assert_eq!(bound, vec![1, 1, 1, 2]);
 }
 
 #[tokio::test(start_paused = true)]

@@ -81,6 +81,9 @@ pub struct ResourceContext {
     /// The limit of the row being created; set by the manager around
     /// `Provider::create` and the topology hooks.
     limits: Option<Arc<ResourceLimiter>>,
+    /// The fingerprint stored with the row's admitted configuration that
+    /// the manager hands a topology hook beside it; set with the limits.
+    config_fingerprint: Option<u64>,
 }
 
 impl ResourceContext {
@@ -95,6 +98,7 @@ impl ResourceContext {
             resources,
             credentials,
             limits: None,
+            config_fingerprint: None,
         }
     }
 
@@ -113,14 +117,24 @@ impl ResourceContext {
             .unwrap_or_else(ResourceLimiter::detached)
     }
 
-    /// This context with `limits` attached; shares everything else.
-    pub(crate) fn with_limits(&self, limits: &Arc<ResourceLimiter>) -> Self {
+    /// This context with the row's `limits` and the fingerprint stored with
+    /// the admitted configuration the hooks receive beside it attached;
+    /// shares everything else.
+    pub(crate) fn for_row(&self, limits: &Arc<ResourceLimiter>, config_fingerprint: u64) -> Self {
         Self {
             base: Arc::clone(&self.base),
             resources: Arc::clone(&self.resources),
             credentials: Arc::clone(&self.credentials),
             limits: Some(Arc::clone(limits)),
+            config_fingerprint: Some(config_fingerprint),
         }
+    }
+
+    /// The fingerprint of the configuration a manager-driven topology hook
+    /// received, stored when that configuration was admitted; `None` on a
+    /// hand-built context, where the hook computes it from the config.
+    pub(crate) fn admitted_config_fingerprint(&self) -> Option<u64> {
+        self.config_fingerprint
     }
 
     /// Creates a minimal context for cases that only need scope + cancellation
@@ -139,6 +153,7 @@ impl ResourceContext {
             resources: Arc::new(NoopResourceAccessor),
             credentials: Arc::new(NoopCredentialAccessor),
             limits: None,
+            config_fingerprint: None,
         }
     }
 
@@ -191,6 +206,7 @@ impl ResourceContext {
             resources: Arc::clone(&self.resources),
             credentials: Arc::clone(&self.credentials),
             limits: self.limits.clone(),
+            config_fingerprint: self.config_fingerprint,
         }
     }
 }
