@@ -11,8 +11,8 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
-- **`nebula-resource` removes the `Lease` managed-call facade.**
-  `call::ResourceHandle<R>`
+- **`nebula-resource` removes the `Lease` managed-call facade; development
+  packages advance to 0.29.0 in lockstep.** `call::ResourceHandle<R>`
   (`Manager::handle`, `handle_for_identity` and the erased `handle_any*`
   family) is the only managed call facade: every attempt checks out an
   instance of its own after its quota and row-gate waits, so no unit holds a
@@ -32,7 +32,7 @@ changes are expected between minor releases — call them out here.
   - `nebula-sdk` is unaffected: it stopped exporting `Lease` in 0.27.0.
   - Migration:
 
-    | Before | After |
+    | Before (≤ 0.28) | 0.29.0 |
     |---|---|
     | `manager.acquire::<R>(&ctx, &opts).await?.into_lease()` (or `Lease::from(guard)`) | `manager.handle::<R>(&ctx)?` (`handle_for_identity` for a pinned slot identity) |
     | `lease.submit(op)` / `lease.submit_streaming(op, n)` | `handle.submit(op)` / `handle.submit_streaming(op, n)` |

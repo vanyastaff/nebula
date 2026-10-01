@@ -467,7 +467,7 @@ follow from the same generation:
 Actions submit units on a `call::ResourceHandle<R>` (a `#[resource]`
 field); host code builds one with `Manager::handle` (below). It is the only
 managed call facade: a `ResourceGuard` never becomes one (the `Lease`
-facade and `guard.into_lease()` were removed — holding one
+facade and `guard.into_lease()` were removed in 0.29.0 — holding one
 instance across several units belongs to a future, qualified
 explicit-session profile). Submitting requires `R: PinSlots`, emitted by
 `#[derive(Resource)]` and `no_credential_slots!`. The handle has no
@@ -782,7 +782,7 @@ only resource capability an action can name: `ResourceGuard<R>` slots,
 removed, and the derive refuses a lease slot with a migration hint. A
 `ResourceGuard` (from `Manager::acquire*`) stays a host-only capability
 of the manager, the engine and tests, and never becomes a managed call
-facade (the `Lease` facade was removed). A derived action without
+facade (the `Lease` facade was removed in 0.29.0). A derived action without
 `read_only` gets the default
 `Journaled(JournalProtocol::V1)` effect contract: only effects routed through
 resource handles are journaled; raw egress the action opens itself is
