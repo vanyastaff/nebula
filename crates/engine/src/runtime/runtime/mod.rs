@@ -398,9 +398,11 @@ impl ActionRuntime {
     /// on a durable turn: `admission` proves the engine built the node
     /// attempt's
     /// [`NodeEffectJournal`](crate::effect_driver::NodeEffectJournal) and
-    /// handed it to the action's resource handles through `context`. Only stateless actions with no
-    /// remote capability are admitted; public entry points keep refusing the
-    /// contract.
+    /// handed it to the action's resource handles through `context`. Only
+    /// actions of a journaled
+    /// [`JournalShape`](crate::effect_driver::JournalShape) — stateless
+    /// only — with no remote capability are admitted; public entry
+    /// points keep refusing the contract.
     pub(crate) async fn execute_journaled_action(
         &self,
         factory: Arc<dyn ActionFactory>,
@@ -414,7 +416,7 @@ impl ActionRuntime {
             metadata.effect_contract(),
             nebula_action::effect::ActionEffectContract::Journaled(_)
         ) || factory.remote_effect_factory().is_some()
-            || metadata.kind() != nebula_action::ActionKind::Stateless
+            || !crate::effect_driver::JournalShape::of(metadata.kind()).is_journaled()
         {
             self.observe_rejected("effect_requires_owner");
             return Err(RuntimeError::EffectRequiresOwner);
@@ -874,7 +876,9 @@ impl ActionRuntime {
     /// dispatch as one-shot evaluators and never run through the runner —
     /// they produce flow-control [`ActionResult`] variants but no I/O. The
     /// handle surface is intentionally identical to stateless from the
-    /// runtime's POV.
+    /// runtime's POV. A control action is never journaled: its resource
+    /// handles are read-only, so a write through one is refused before any
+    /// provider call.
     async fn execute_control_handle(
         &self,
         metadata: &ActionMetadata,

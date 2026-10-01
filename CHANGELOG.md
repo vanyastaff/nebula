@@ -1519,6 +1519,20 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Changed
 
+- **A refused write through a non-journaled action's resource handle says
+  why.** Only stateless `Journaled` actions run under a node effect journal.
+  A `Journaled` action of another kind keeps read-only handles (reads run,
+  writes are refused `Permanent` / `NotSent` before any provider call), and
+  the refusal now names the reason: "control actions decide flow and must
+  not cause effects; move effects to a stateless action", "stateful effects
+  are journaled per iteration in a later release", "agent effects are not
+  journaled; the agent profile is planned", or "effects of this action kind
+  are not journaled" (stream and others). The kind's reason takes
+  precedence over "journaled effects need execution stores", which a
+  stateless action without execution stores still reports. `ReadOnly`
+  control actions (the built-in If, Switch, Filter) are unchanged. A
+  crate-private `JournalShape` (`Flat` / `Iterated` / `None`) maps each kind
+  to how it is journaled. Additive: no version bump.
 - **Stateless `Journaled` actions get journaled resource effects.** On a
   durable turn (operation ledger and execution fence present), the engine
   runs a frozen, stateless `Journaled` action under one `NodeEffectJournal`

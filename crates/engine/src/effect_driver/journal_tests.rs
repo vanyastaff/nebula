@@ -16,6 +16,48 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 
+// ── the journal shape of each action kind ────────────────────────────────
+
+#[test]
+fn only_stateless_actions_are_journaled_and_the_rest_say_why_not() {
+    use nebula_action::ActionKind;
+    assert_eq!(JournalShape::of(ActionKind::Stateless), JournalShape::Flat);
+    assert!(JournalShape::Flat.is_journaled());
+    assert_eq!(JournalShape::read_only_detail(ActionKind::Stateless), None);
+    assert_eq!(
+        JournalShape::read_only_detail(ActionKind::Control),
+        Some(
+            "control actions decide flow and must not cause effects; move effects to a \
+             stateless action"
+        )
+    );
+    assert_eq!(
+        JournalShape::of(ActionKind::Stateful),
+        JournalShape::Iterated
+    );
+    assert!(!JournalShape::Iterated.is_journaled());
+    assert_eq!(
+        JournalShape::read_only_detail(ActionKind::Stateful),
+        Some("stateful effects are journaled per iteration in a later release")
+    );
+    assert_eq!(
+        JournalShape::read_only_detail(ActionKind::Agent),
+        Some("agent effects are not journaled; the agent profile is planned")
+    );
+    for kind in [
+        ActionKind::Control,
+        ActionKind::Agent,
+        ActionKind::Stream,
+        ActionKind::Interactive,
+        ActionKind::Trigger,
+        ActionKind::Resource,
+    ] {
+        assert_eq!(JournalShape::of(kind), JournalShape::None, "{kind:?}");
+        assert!(!JournalShape::of(kind).is_journaled(), "{kind:?}");
+        assert!(JournalShape::read_only_detail(kind).is_some(), "{kind:?}");
+    }
+}
+
 // ── the provider idempotency key ─────────────────────────────────────────
 
 fn frame_of(bytes: &[u8]) -> Vec<u8> {
