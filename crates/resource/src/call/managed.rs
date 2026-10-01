@@ -1690,7 +1690,7 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
     pub async fn finish<T>(self, result: &Result<T, OperationError>) {
         let mut attempt = self;
         let (sent, note, verdict) = match result {
-            Ok(_) => (SentState::Sent, CallNote::Plain, Some(Verdict::Pass)),
+            Ok(_) => (SentState::Sent, CallNote::Applied, Some(Verdict::Pass)),
             Err(error) => {
                 let sent = error.attempt_sent();
                 match error.signal() {
@@ -1741,7 +1741,14 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
     /// rate limit nothing: a session's single attempt.
     pub(crate) fn settle(self, sent: SentState) {
         let mut attempt = self;
-        attempt.shared.record(sent, CallNote::Plain);
+        // A session settled `Sent` committed: the provider applied it,
+        // whatever the body returned.
+        let note = if sent == SentState::Sent {
+            CallNote::Applied
+        } else {
+            CallNote::Plain
+        };
+        attempt.shared.record(sent, note);
         attempt.settled = true;
     }
 }

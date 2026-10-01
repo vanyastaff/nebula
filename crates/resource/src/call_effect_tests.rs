@@ -693,6 +693,36 @@ impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Called<IDEM> {
     }
 }
 
+/// A `Write` whose call succeeds and whose response the unit then fails to
+/// use with `local`: a local failure after the provider applied it.
+#[derive(Serialize, Deserialize)]
+struct AppliedThenFailed {
+    #[serde(skip)]
+    local: Option<OperationError>,
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for AppliedThenFailed {
+    type Output = u64;
+    const KEY: &'static str = "billing.applied_then_failed";
+    const EFFECT: Effect = Effect::Write;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let calls = self.calls;
+        let receipt = cx
+            .call(Cost::FREE, async move |_, _| {
+                calls.call(None);
+                Ok(7_u64)
+            })
+            .await?;
+        match self.local {
+            Some(local) => Err(local),
+            None => Ok(receipt),
+        }
+    }
+}
+
 /// An `Idempotent` call the provider never answers.
 #[derive(Serialize, Deserialize)]
 struct Stall {
@@ -1777,6 +1807,59 @@ async fn an_owner_refusing_a_retry_after_a_throttle_settles_nothing_crossed() {
     assert_eq!(*error.kind(), ErrorKind::Backpressure);
     assert_eq!(error.sent(), SentState::MaybeSent);
     assert_eq!(calls.made(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_local_failure_after_an_applied_call_never_records_a_rejection() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // The response does not decode: non-retryable, after the provider
+    // applied the call. Recorded applied (without output), not rejected.
+    let local = row
+        .submit(AppliedThenFailed {
+            local: Some(OperationError::new(
+                ErrorKind::Permanent,
+                "response did not decode",
+            )),
+            calls: Arc::clone(&calls),
+        })
+        .await
+        .expect_err("the local failure");
+    assert_eq!(local.detail(), "response did not decode");
+    assert_eq!(calls.made(), 1);
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Settle("applied_without_output"))
+    );
+
+    // A resume replays the applied effect without sending it again.
+    fixture.owner.resume();
+    let replayed = row
+        .submit(AppliedThenFailed {
+            local: None,
+            calls: Arc::clone(&calls),
+        })
+        .await
+        .expect_err("recorded without output");
+    assert_eq!(replayed.detail(), "effect recorded without output");
+    assert_eq!(replayed.sent(), SentState::Sent);
+    assert_eq!(calls.made(), 1, "never sent again");
+
+    // A retryable local failure stays an ambiguous crossing.
+    let fixture = Fixture::new(None);
+    let row = fixture.owned();
+    row.submit(AppliedThenFailed {
+        local: Some(OperationError::new(ErrorKind::Transient, "decoder busy")),
+        calls: Arc::clone(&calls),
+    })
+    .await
+    .expect_err("the local failure");
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Explain(Crossing::Ambiguous))
+    );
 }
 
 #[tokio::test(start_paused = true)]

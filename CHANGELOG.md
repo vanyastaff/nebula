@@ -1498,7 +1498,10 @@ let admitted = recorded.readmit_against(fresh)?;
   refused writes say "journaled effects need execution stores"
   (`Manager::handle_any_read_only_because` is new); stateful, control and
   agent `Journaled` actions stay read-only until their iterations are
-  journaled. New counters: `nebula_effect_journal_prepares_total{phase}`,
+  journaled. A unit that fails locally (non-retryable) after its call
+  succeeded — or a session the provider committed although its body
+  failed — records the effect applied without output, never a provider
+  rejection; only a call classified `rejected` records one. New counters: `nebula_effect_journal_prepares_total{phase}`,
   `nebula_effect_journal_refusals_total{step,refusal}`,
   `nebula_effect_journal_verdicts_total{code}`.
 

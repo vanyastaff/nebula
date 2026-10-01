@@ -121,8 +121,11 @@ struct PendingCall {
 /// its sent state ([`Attempt::finish`](super::Attempt::finish)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CallNote {
-    /// Nothing more: a success, an unclassified or unsettled attempt.
+    /// Nothing more: an unclassified or unsettled attempt.
     Plain,
+    /// The call succeeded: the provider applied it, whatever the unit
+    /// does afterwards.
+    Applied,
     /// The provider throttled the call and applied nothing.
     Throttled,
     /// The provider definitively rejected the call with this kind.
@@ -332,8 +335,14 @@ impl OwnedEffect {
     /// | `Ok` | any | settle `Applied` (`AppliedWithoutOutput` without `record_output`, or for an output over the 1 MiB cap) |
     /// | `Err` | `NotSent`, or throttled | explain `NotCrossed` |
     /// | `Err` | rejected | settle `Rejected` with the rejection's kind |
-    /// | `Err` | `MaybeSent`, or `Sent` (a success the unit then failed) and a retryable kind | explain `Ambiguous` |
-    /// | `Err` | `Sent` and a non-retryable kind | settle `Rejected` |
+    /// | `Err` | `MaybeSent`, or applied (a success the unit then failed) and a retryable kind | explain `Ambiguous` |
+    /// | `Err` | applied and a non-retryable kind | settle `AppliedWithoutOutput` |
+    ///
+    /// A local failure after a successful call never records a provider
+    /// rejection: the provider applied the effect, so the ledger says so
+    /// (without an output, which the unit never produced) and a resume
+    /// fails `Permanent` "recorded without output" — never sending it
+    /// again. Only a call the provider rejected records a rejection.
     pub(super) async fn finish<T>(
         &self,
         result: Result<T, OperationError>,
@@ -370,18 +379,16 @@ impl OwnedEffect {
                     (SentState::NotSent, _) | (SentState::Sent, CallNote::Throttled) => {
                         Err(Crossing::NotCrossed)
                     },
-                    (SentState::Sent, CallNote::Rejected(code)) => Ok(code),
-                    (SentState::Sent, CallNote::Plain) if !kind.is_default_retryable() => {
-                        Ok(ErrorKindCode::of(kind))
+                    (SentState::Sent, CallNote::Rejected(code)) => Ok(CallOutcome::Rejected(code)),
+                    (SentState::Sent, CallNote::Applied) if !kind.is_default_retryable() => {
+                        Ok(CallOutcome::AppliedWithoutOutput)
                     },
                     _ => Err(Crossing::Ambiguous),
                 };
                 let (step, written) = match recorded {
-                    Ok(code) => (
+                    Ok(outcome) => (
                         "settle",
-                        self.owner
-                            .settle(slot, pending.call, CallOutcome::Rejected(code))
-                            .await,
+                        self.owner.settle(slot, pending.call, outcome).await,
                     ),
                     Err(crossing) => (
                         "explain",
