@@ -261,7 +261,12 @@ configuration, and process lifecycle.
   so a higher row is never written while a lower one may or may not exist; provider
   calls stay concurrent (a unit polled once and then parked by the program before its
   prepare resolves holds the fresh prepares above it until it resumes, gives up or is
-  dropped). **Replay delays**: a replay that has not reached
+  dropped). A replay keeps the recorded order of calls as well: a slot whose record
+  lists its concurrent positions is granted a call only once every lower unit of its
+  run open in the attempt that the list does not name has settled (two slots that
+  both sent nothing, polled together, are not applied in reverse); listed ones stay
+  concurrent, a slot without a list waits on nothing, and a wait that outlives the
+  unit's budget refuses the grant deferring, nothing sent. **Replay delays**: a replay that has not reached
   its frontier (an earlier attempt recorded an effect in a later iteration) skips the
   `Continue` delay — that iteration already ran, after it; from the frontier on every
   delay is honoured (an iteration that recorded no effect cannot tell). A node

@@ -209,6 +209,18 @@
 //!   dropped (its position is then abandoned); a program that awaits a
 //!   higher effect before resuming a lower one it already started waits
 //!   out the unit's deadline and defers.
+//! - a replay keeps the recorded order of calls too: before a slot whose
+//!   record lists its concurrent positions is granted a call, every lower
+//!   unit of its run open in this attempt that the list does not name must
+//!   have settled ([`EffectJournal::finish_occurrence`]) — those had
+//!   settled before the slot was first prepared, so even two slots that
+//!   both sent nothing are not applied in reverse when a replay polls them
+//!   together. Units the list names stay concurrent; a slot recorded
+//!   without a list waits on nothing (S6). The wait holds no slot lock, so
+//!   a lower unit never waits on the higher one; bounded by the unit's
+//!   deadline (and
+//!   [`OPERATION_DEADLINE_CAP`]), it refuses the grant deferring, nothing
+//!   sent, when it runs out.
 //!
 //! **Replay delays.** The barrier reports whether an earlier attempt
 //! recorded an effect in a later iteration ([`IterationProgress`]): that
@@ -1539,6 +1551,45 @@ impl NodeEffectJournal {
         }
     }
 
+    /// Waits until no lower position of `occurrence`'s run (its iteration,
+    /// or the flat family's one run) is open in this attempt unless
+    /// `concurrent` — the positions its record lists as running alongside
+    /// it — names it: the replay keeps the order the program recorded.
+    /// Bounded by [`OPERATION_DEADLINE_CAP`] (the unit's own deadline is
+    /// shorter and drops the wait first); `false` when it ran out.
+    async fn await_ordered_lower_settled(
+        &self,
+        occurrence: &str,
+        concurrent: &[PositionRange],
+    ) -> bool {
+        let Some(position) = Position::parse(occurrence) else {
+            return true;
+        };
+        let settled = async {
+            loop {
+                let notified = self.inner.claims_settled.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                let pending = self
+                    .state()
+                    .positions
+                    .open
+                    .get(&position.family)
+                    .is_some_and(|open| {
+                        open.range((position.iteration, 0)..position.order())
+                            .any(|&(_, ordinal)| !PositionRange::any_contains(concurrent, ordinal))
+                    });
+                if !pending {
+                    return;
+                }
+                notified.await;
+            }
+        };
+        tokio::time::timeout(OPERATION_DEADLINE_CAP, settled)
+            .await
+            .is_ok()
+    }
+
     /// Whether a position of `occurrence`'s family below it was left
     /// unresolved in this attempt: uncertain (a prepare that never
     /// answered: its row may exist) or abandoned (let go before its prepare
@@ -2327,6 +2378,8 @@ impl EffectJournal for NodeEffectJournal {
         {
             open.remove(&position.order());
         }
+        // A higher slot ordered after this one may now be granted.
+        self.inner.claims_settled.notify_waiters();
     }
 
     fn release_occurrence(&self, occurrence: &str) {
@@ -2608,6 +2661,39 @@ impl EffectJournal for NodeEffectJournal {
         const STEP: &str = effect_journal_step::GRANT;
         let authority = &self.inner.authority;
         let entry = self.entry(STEP, unit)?;
+        // The slot's record says which lower units of its run were open when
+        // it was first prepared; every other lower one had settled before
+        // it. A replay keeps that order: the call waits until every lower
+        // unit of this attempt the record does not list as concurrent has
+        // settled. The slot's lock is not held meanwhile, so a lower unit
+        // never waits on this one.
+        let concurrent = entry
+            .lock()
+            .await
+            .protocol()
+            .ok()
+            .and_then(|protocol| protocol.concurrent_with().map(<[PositionRange]>::to_vec));
+        let occurrence = self
+            .state()
+            .occurrences
+            .get(&EffectSlotId::from_storage_bytes(*unit.id()))
+            .cloned();
+        if let (Some(concurrent), Some(occurrence)) = (concurrent, occurrence)
+            && !self
+                .await_ordered_lower_settled(&occurrence, &concurrent)
+                .await
+        {
+            tracing::warn!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                occurrence = %occurrence,
+                "a lower unit recorded as settled before this effect did not settle; deferring"
+            );
+            return Err(self.refuse(
+                STEP,
+                EffectExecutionError::Ledger(OperationLedgerError::AcknowledgementUnknown),
+            ));
+        }
         let mut slot = entry.lock().await;
         if self.is_closed() {
             return Err(self.refused(STEP, JournalRefusal::Closed));

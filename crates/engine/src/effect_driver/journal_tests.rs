@@ -3018,6 +3018,105 @@ async fn an_unrecorded_unsent_failure_holds_later_effects_and_defers() {
     assert_eq!(harness.desk.keys().len(), sent, "nothing sent on recovery");
 }
 
+/// Two recorded slots that sent nothing, the higher one prepared after the
+/// lower one settled (`concurrent_with = []`). A replay polling both
+/// together grants the higher one only once the lower one settled: the
+/// lower applies first, as the program ordered them.
+#[tokio::test]
+async fn a_replay_keeps_the_recorded_order_of_two_unsent_slots() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Throttled, Reply::Throttled]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    for order in [70, 71] {
+        handle
+            .submit(Charge::<false> { order })
+            .await
+            .expect_err("throttled");
+    }
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+    let slots = harness.slots().await;
+    assert_eq!(
+        slots[1]
+            .record()
+            .protocol()
+            .expect("protocol")
+            .concurrent_with(),
+        Some(&[][..]),
+        "the lower one settled before the higher one began"
+    );
+
+    // The replay polls both; the lower call is held at the provider.
+    harness.desk.script(&[Reply::Held]);
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    let lower = tokio::spawn(handle.submit(Charge::<false> { order: 70 }));
+    calls_reach(&harness.desk, 3).await;
+    let higher = tokio::spawn(handle.submit(Charge::<false> { order: 71 }));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        harness.desk.keys().len(),
+        3,
+        "the higher one waits for the lower one to settle"
+    );
+    harness.desk.release.notify_waiters();
+    lower.await.expect("task").expect("the lower one applies");
+    higher.await.expect("task").expect("then the higher one");
+    let keys = harness.desk.keys();
+    assert_eq!(keys.len(), 4);
+    assert_eq!(keys[2], keys[0], "the lower one, under its recorded key");
+    assert_eq!(
+        keys[3], keys[1],
+        "then the higher one, under its recorded key"
+    );
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+}
+
+/// A recorded pair the program ran together (the higher one lists the lower
+/// as concurrent) is not serialized on replay.
+#[tokio::test]
+async fn a_replay_does_not_serialize_a_recorded_concurrent_pair() {
+    let harness = Harness::new().await;
+    // The lower stable-key call hangs (the process dies with it open); the
+    // higher one is throttled meanwhile.
+    harness.desk.script(&[Reply::Hang, Reply::Throttled]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    let crashed = tokio::spawn(handle.submit(Charge::<true> { order: 72 }));
+    calls_reach(&harness.desk, 1).await;
+    handle
+        .submit(Charge::<false> { order: 73 })
+        .await
+        .expect_err("throttled");
+    crashed.abort();
+    let _ = crashed.await;
+    first.finish_occurrence("unit/v1/#000000");
+    assert_eq!(
+        harness.slots().await[1]
+            .record()
+            .protocol()
+            .expect("protocol")
+            .concurrent_with(),
+        Some(&[at(0)][..])
+    );
+
+    // The replay: the lower one is granted again and held; the higher one
+    // is granted alongside it.
+    harness.desk.script(&[Reply::Held]);
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    let lower = tokio::spawn(handle.submit(Charge::<true> { order: 72 }));
+    calls_reach(&harness.desk, 3).await;
+    handle
+        .submit(Charge::<false> { order: 73 })
+        .await
+        .expect("granted while the lower one is open");
+    assert_eq!(harness.desk.keys().len(), 4);
+    harness.desk.release.notify_waiters();
+    lower.await.expect("task").expect("the lower one applies");
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+}
+
 #[tokio::test]
 async fn a_changed_request_under_the_same_occurrence_is_a_mismatch_and_sends_nothing() {
     let harness = Harness::new().await;
