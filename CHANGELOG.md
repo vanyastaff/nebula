@@ -65,6 +65,17 @@ changes are expected between minor releases — call them out here.
   not land: the position turns uncertain (no fresh effect above it is
   prepared in that attempt) and the node defers, so a retry meets the slot
   again and records it.
+- **A replay keeps the recorded order of calls, and a gated run observes
+  cancellation while its handle is built.** Before granting a call, the
+  engine's effect journal now waits until every lower unit of the slot's
+  run open in the attempt that the slot's recorded `concurrent_with` does
+  not name has settled, so two recorded slots that both sent nothing are
+  not applied in reverse when a replay polls them together (listed units
+  stay concurrent; a slot without a list waits on nothing; a wait past the
+  unit's budget refuses the grant deferring, nothing sent). A stateful run
+  under an iteration barrier races the factory's handle build against
+  cancellation and closes admission at once, so work the build detached
+  cannot turn the cancellation into a barrier failure. No API change.
 
 - **A stable resource configuration fingerprint advances development packages
   to 0.28.0 in lockstep.** `ResourceConfig::fingerprint` is durable: the effect
