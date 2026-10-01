@@ -194,11 +194,14 @@ configuration, and process lifecycle.
   instead. Positions order by `(iteration, ordinal)` (a flat label is iteration 0)
   and a fresh slot is prepared only when it is consistent with what earlier attempts
   recorded: it must not lie below a recorded position of its family (a gap), nor
-  above a recorded one this attempt has not met — a position passed by on another
-  path, or one a unit took and gave up before reaching the journal (past its
-  deadline, cancelled, dropped; the resource runtime releases every position with
-  `EffectJournal::release_occurrence`, and a fresh slot above a recorded position
-  another unit is still preparing waits for it). Labels of the other family (flat
+  above a recorded consequential one this attempt has not met, passed by on another
+  path (a mismatch; a fresh slot above a recorded position another unit is still
+  preparing waits for it). A position a unit took and gave up on before its ledger
+  prepare answered (past its deadline, cancelled, dropped; the resource runtime
+  releases every position with `EffectJournal::release_occurrence`) is *abandoned*:
+  a fresh slot above it, and a barrier past a recorded effect above it, are refused
+  deferring (`AcknowledgementUnknown`, nothing sent), so the retry meets the position
+  again instead of halting on a mismatch. Labels of the other family (flat
   versus `it{n}/`) recorded by an earlier attempt are refused as a changed action
   kind; labels are parsed strictly (no leading zeros). The first barrier reads the
   node's occurrences, if no prepare did. **Determinism contract**: a replayed
@@ -211,13 +214,20 @@ configuration, and process lifecycle.
   mid-call, or the acknowledgement lost) leaves its position uncertain — its row may
   exist — and no fresh slot above it is prepared: the prepare is refused as a
   deferring `AcknowledgementUnknown`, nothing is sent, and the node defers so the next
-  attempt replays in order. Across attempts, a recorded slot that changed nothing yet
-  (only prepared, or every call explained not crossed) is refused as an occurrence
-  mismatch when an earlier attempt recorded an effect that may have been applied — a
-  recorded success, or a call that may have crossed with no recorded outcome (a
-  definitive rejection applied nothing and orders nothing) — at a
-  higher position of its family that the program ran after it: in a later iteration,
-  or one that does not list it as **concurrent**. Every fresh slot records, at its
+  attempt replays in order (only a fresh prepare leaves its position uncertain).
+  Across attempts, a recorded slot is never sent again when an earlier attempt
+  recorded an effect that may have been applied — a recorded success, or a call that
+  may have crossed with no recorded outcome (a definitive rejection applied nothing
+  and orders nothing) — at a higher position of its family that the program ran after
+  it: in a later iteration, or one that does not list it as **concurrent**. A lower
+  slot that changed nothing (only prepared, or every call explained not crossed)
+  failed unsent before the program moved on: it is refused `superseded` (`Permanent`
+  / `NotSent`, no failure of the journal's own), so a deterministic program that
+  handled that failure handles it again and replays on (the replayed kind is
+  permanent whatever the original was). A lower stable-key slot whose call crossed
+  without an outcome may have applied before or after: its outcome is recorded
+  unknown and the node halts `ENGINE:EFFECT_OUTCOME_UNKNOWN`. With nothing ordered
+  after it, an unsettled slot is granted again on retry. Every fresh slot records, at its
   first prepare (`EffectSlotBinding::concurrent_with`, kept in the protocol record),
   the exact lower positions of its iteration whose unit was still open — handed out
   and not yet settled (`EffectJournal::finish_occurrence`, signalled when the unit
@@ -232,11 +242,13 @@ configuration, and process lifecycle.
   waits until every lower position handed out in the attempt resolved its prepare
   (acknowledged, refused, given up, or left uncertain — then it is refused deferring),
   so a higher row is never written while a lower one may or may not exist; provider
-  calls stay concurrent. **Replay delays**: a replay that has not reached
+  calls stay concurrent (a unit polled once and then parked by the program before its
+  prepare resolves holds the fresh prepares above it until it resumes, gives up or is
+  dropped). **Replay delays**: a replay that has not reached
   its frontier (an earlier attempt recorded an effect in a later iteration) skips the
   `Continue` delay — that iteration already ran, after it; from the frontier on every
   delay is honoured (an iteration that recorded no effect cannot tell). A node
-  cancelled mid-iteration, or
+  cancelled mid-iteration, during the barrier's drain, or
   during the delay between iterations, ends the iteration at once: a
   later detached submission is refused closed, with no failure of its own, so the
   conclusion drains only the units already in flight. A stateful node's journal admits a unit only while an iteration is open:
@@ -279,7 +291,15 @@ configuration, and process lifecycle.
   meeting such an earlier effect again keeps its own error
   (`EngineError::SkippedJournaledEffect`): its retry policy may re-dispatch it (the
   retry replays the effect), but a final failure halts the execution instead of being
-  ignored or routed. Counters:
+  ignored or routed — also when the journal noted a failure of its own that would not
+  halt (a detached unit refused between iterations). **Invariants** (module docs of
+  `effect_driver::journal`): S1 no effect sent twice under different keys; S2 no
+  recorded effect re-sent after divergence; S3 a lower effect never applied after a
+  higher one the program ran after it; S4 concurrent units replay at least once under
+  their recorded keys; S5 every wait bounded; S6 legacy records order nothing; S7 a
+  cancelled node stays cancelled; S8 an unknown outcome is never masked. A correct
+  deterministic program is stranded only by a crossed call with no recorded outcome
+  that is opaque, or that a later applied effect is ordered after. Counters:
   `nebula_effect_journal_prepares_total{phase}`,
   `nebula_effect_journal_refusals_total{step,refusal}`,
   `nebula_effect_journal_verdicts_total{code}`. Every other `Journaled` node keeps

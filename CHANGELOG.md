@@ -1033,6 +1033,26 @@ let admitted = recorded.readmit_against(fresh)?;
   `step="prepare"`), `{step="submit", refusal="between_runs"}` and
   `nebula_effect_journal_verdicts_total{code="slot_cap_exceeded" |
   "iteration_barrier"}`. Additive: no version bump.
+- **`JournalRefusal::Superseded` and the effect journal's final ordering
+  model.** A recorded journaled effect that changed nothing (only prepared,
+  or every call explained not crossed) and that a later applied effect of
+  the node is ordered after (a later iteration, or not recorded as
+  concurrent with it) is refused `superseded` (`Permanent` / `NotSent`,
+  `nebula_effect_journal_refusals_total{step="prepare",
+  refusal="superseded"}`) with no failure of the journal's own, instead of
+  halting the node as an occurrence mismatch: a deterministic program that
+  handled that failure before replays on. A lower stable-key effect whose
+  call crossed without an outcome is recorded unknown instead of being
+  granted again after the later one. A position a unit gave up on before its
+  ledger prepare answered defers the next fresh effect above it (and the
+  barrier past a recorded one) instead of a mismatch, so the retry meets it
+  again; only a fresh prepare leaves its position uncertain. A noted
+  non-halting failure no longer lets a node failing past a skipped recorded
+  effect be routed. A cancellation during an iteration barrier's drain
+  cancels the iteration at once. The engine README and the
+  `effect_driver::journal` module docs state the invariants (S1–S8). The
+  metric's refusal label set grows to nine values. Additive: no version
+  bump.
 - **Execution-owned managed-row effects (resource side; engine wiring
   pending).** `nebula_resource::call` gains the author surface
   `EffectOperation` (an `Operation` declaring an `EffectContract`, an
