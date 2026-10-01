@@ -88,8 +88,7 @@ impl EngineResourceAccessor {
     }
 
     /// Bounds the units of every managed row this accessor hands out by
-    /// `deadline` — the execution's wall-clock budget. A lease acquire is
-    /// not bounded by it.
+    /// `deadline` — the execution's wall-clock budget.
     #[must_use]
     pub fn with_deadline(mut self, deadline: Option<std::time::Instant>) -> Self {
         self.deadline = deadline;
