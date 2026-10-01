@@ -111,6 +111,7 @@ struct FakeState {
     intents: Vec<SeenIntent>,
     fail_prepare: Option<JournalRefusal>,
     fail_settle: Option<JournalRefusal>,
+    fail_grant: Option<JournalRefusal>,
     on_grant: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -168,6 +169,10 @@ impl FakeOwner {
 
     fn fail_next_settle(&self, refusal: JournalRefusal) {
         self.state().fail_settle = Some(refusal);
+    }
+
+    fn fail_next_grant(&self, refusal: JournalRefusal) {
+        self.state().fail_grant = Some(refusal);
     }
 
     fn on_next_grant(&self, hook: impl FnOnce() + Send + 'static) {
@@ -289,6 +294,9 @@ impl EffectJournal for FakeOwner {
         }
         let hook = {
             let mut state = self.state();
+            if let Some(refusal) = state.fail_grant.take() {
+                return Err(refusal);
+            }
             let now = Instant::now();
             let call_id = state.next_id.wrapping_add(100);
             state.next_id += 1;
@@ -1351,6 +1359,183 @@ async fn a_call_explains_each_attempt_from_its_classification() {
             Step::Settle("applied"),
         ]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_owner_refusing_a_retry_ends_the_call_with_its_refusal() {
+    // The stable-key window expired during the throttle's pause, the owner
+    // closed, the slot no longer matches: the refusal is authoritative, never
+    // masked by the retryable throttle the retry followed.
+    let cases = [
+        (JournalRefusal::Unknown, ErrorKind::OutcomeUnknown),
+        (JournalRefusal::Closed, ErrorKind::Cancelled),
+        (JournalRefusal::Mismatch, ErrorKind::Permanent),
+        (JournalRefusal::Unavailable, ErrorKind::Backpressure),
+    ];
+    for (refusal, kind) in cases {
+        let fixture = Fixture::new(None);
+        let calls = Arc::new(Calls::default());
+        let owner = Arc::clone(&fixture.owner);
+        fixture
+            .owner
+            .on_next_grant(move || owner.fail_next_grant(refusal));
+        let error = fixture
+            .owned()
+            .submit(Called::<true>::new(
+                &calls,
+                vec![Err(OperationError::throttled(None)), Ok(9)],
+            ))
+            .await
+            .expect_err("the owner refused the retry");
+        assert_eq!(*error.kind(), kind, "{refusal:?}: {error}");
+        assert_ne!(error.detail(), "provider throttled the call", "{refusal:?}");
+        assert_eq!(calls.made(), 1, "{refusal:?}");
+        assert_eq!(
+            fixture.owner.log()[1..],
+            [Step::Grant, Step::Explain(Crossing::NotCrossed)],
+            "{refusal:?}"
+        );
+    }
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let owner = Arc::clone(&fixture.owner);
+    fixture
+        .owner
+        .on_next_grant(move || owner.fail_next_grant(JournalRefusal::Unknown));
+    let error = fixture
+        .owned()
+        .submit(Called::<true>::new(
+            &calls,
+            vec![Err(OperationError::throttled(None)), Ok(9)],
+        ))
+        .await
+        .expect_err("unknown");
+    assert!(
+        !error.is_retryable(),
+        "a resubmission could apply the effect twice: {error}"
+    );
+
+    // A local refusal of the retry — the throttle's pause lands past the
+    // unit deadline — still ends the call with the attempt it would have
+    // retried.
+    let fixture = Fixture::new(Some(RowLimit::rate(
+        Rate::per_second(NonZeroU32::MIN)
+            .with_burst(NonZeroU32::MIN)
+            .expect("rate"),
+    )));
+    let calls = Arc::new(Calls::default());
+    let error = fixture
+        .owned()
+        .submit(Called::<true>::new(
+            &calls,
+            vec![
+                Err(OperationError::throttled(Some(Duration::from_mins(1)))),
+                Ok(9),
+            ],
+        ))
+        .with_deadline(Instant::now().into_std() + Duration::from_secs(2))
+        .await
+        .expect_err("throttled");
+    assert_eq!(error.detail(), "provider throttled the call");
+    assert_eq!(calls.made(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_owner_refusing_a_retry_after_a_throttle_settles_nothing_crossed() {
+    // The throttle applied nothing and the refused retry was never granted:
+    // a `Write` settles not sent, its owner's refusal retryable as it is,
+    // never turned into an unknown outcome.
+    for refusal in [
+        JournalRefusal::Unavailable,
+        JournalRefusal::AcknowledgementUnknown,
+        JournalRefusal::LeaseLost,
+    ] {
+        let fixture = Fixture::new(None);
+        let calls = Arc::new(Calls::default());
+        let owner = Arc::clone(&fixture.owner);
+        fixture
+            .owner
+            .on_next_grant(move || owner.fail_next_grant(refusal));
+        let error = fixture
+            .owned()
+            .submit(Called::<false>::new(
+                &calls,
+                vec![Err(OperationError::throttled(None)), Ok(9)],
+            ))
+            .await
+            .expect_err("the owner refused the retry");
+        assert_eq!(*error.kind(), ErrorKind::Backpressure, "{refusal:?}");
+        assert_eq!(error.sent(), SentState::NotSent, "{refusal:?}");
+        assert!(error.is_retryable(), "{refusal:?}: {error}");
+        assert_eq!(
+            *crate::Error::from(error).kind(),
+            ErrorKind::Backpressure,
+            "{refusal:?}"
+        );
+        assert_eq!(calls.made(), 1, "{refusal:?}");
+    }
+
+    // The owner's own unknown outcome stays unknown.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let owner = Arc::clone(&fixture.owner);
+    fixture
+        .owner
+        .on_next_grant(move || owner.fail_next_grant(JournalRefusal::Unknown));
+    let error = fixture
+        .owned()
+        .submit(Called::<false>::new(
+            &calls,
+            vec![Err(OperationError::throttled(None)), Ok(9)],
+        ))
+        .await
+        .expect_err("unknown");
+    assert_eq!(*error.kind(), ErrorKind::OutcomeUnknown);
+    assert!(!error.is_retryable(), "{error}");
+
+    // The same for an idempotent effect.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let owner = Arc::clone(&fixture.owner);
+    fixture
+        .owner
+        .on_next_grant(move || owner.fail_next_grant(JournalRefusal::Unavailable));
+    let error = fixture
+        .owned()
+        .submit(Called::<true>::new(
+            &calls,
+            vec![Err(OperationError::throttled(None)), Ok(9)],
+        ))
+        .await
+        .expect_err("the owner refused the retry");
+    assert_eq!(*error.kind(), ErrorKind::Backpressure);
+    assert_eq!(error.sent(), SentState::NotSent);
+    assert!(error.is_retryable(), "{error}");
+
+    // An earlier attempt that may have crossed still counts: interrupted,
+    // then throttled, then the owner refuses the third attempt.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let first = Arc::clone(&fixture.owner);
+    fixture.owner.on_next_grant(move || {
+        let second = Arc::clone(&first);
+        first.on_next_grant(move || second.fail_next_grant(JournalRefusal::Unavailable));
+    });
+    let error = fixture
+        .owned()
+        .submit(Called::<true>::new(
+            &calls,
+            vec![
+                Err(OperationError::interrupted("connection lost")),
+                Err(OperationError::throttled(None)),
+                Ok(9),
+            ],
+        ))
+        .await
+        .expect_err("the owner refused the third attempt");
+    assert_eq!(*error.kind(), ErrorKind::Backpressure);
+    assert_eq!(error.sent(), SentState::MaybeSent);
+    assert_eq!(calls.made(), 2);
 }
 
 #[tokio::test(start_paused = true)]
