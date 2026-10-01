@@ -1446,6 +1446,9 @@ let admitted = recorded.readmit_against(fresh)?;
   plus `JournalOutcomeUnknown`), and a lost lease releases the turn without
   finalizing. Raw leases stay refused; only handle-routed effects are
   journaled (lease-facade units and raw egress are outside the journal).
+  A journaled node's accessor keeps the node's branch-scoped layer in front
+  of its journaled rows, so a key a scope shadows is refused as a scope
+  violation rather than served by the global row.
   Without execution stores a journaled node keeps read-only handles whose
   refused writes say "journaled effects need execution stores"
   (`Manager::handle_any_read_only_because` is new); stateful, control and

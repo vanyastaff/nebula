@@ -1,11 +1,20 @@
-//! A journaled node's exits before its action runs.
+//! A journaled node's exits before its action runs, and its resource
+//! layers.
 //!
 //! The ledger seeding writes an earlier dispatch's crash residue directly:
 //! a slot of the node with a granted call that was never explained.
 
+use std::sync::Mutex;
+
 use serde_json::json;
 
+use nebula_core::ResourceKey;
 use nebula_credential::default_credential_accessor;
+use nebula_resource::{
+    Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, SlotIdentity,
+    resource::{Provider, ResourceMetadataDraft},
+    topology::resident::ResidentProvider,
+};
 use nebula_storage_port::{
     FencingToken,
     dto::{
@@ -15,7 +24,11 @@ use nebula_storage_port::{
     store::OperationLedger,
 };
 
-use crate::{EffectExecutionError, resolver::NodeInputRequest};
+use crate::{
+    EffectExecutionError,
+    resolver::NodeInputRequest,
+    scoped_resources::{BranchId, DashScopedResourceMap, EmptyScopedResourceMap},
+};
 
 use super::*;
 
@@ -367,4 +380,99 @@ async fn a_dispatched_node_after_an_unexplained_call_fails_unknown() {
         .await;
     assert_unknown(&result, "after the action");
     assert_eq!(node.dispatches.load(Ordering::SeqCst), 1);
+}
+
+// ── the scoped layer of a journaled node ─────────────────────────────────
+
+#[derive(Clone)]
+struct Payments;
+
+#[async_trait::async_trait]
+impl Provider for Payments {
+    type Config = ();
+    type Instance = Arc<Mutex<u32>>;
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        ResourceKey::new("test.payments").expect("resource key")
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("ScopedPayments"),
+            "",
+        )
+    }
+
+    async fn create(
+        &self,
+        (): &(),
+        _: &ResourceContext,
+    ) -> Result<Arc<Mutex<u32>>, nebula_resource::error::Error> {
+        Ok(Arc::new(Mutex::new(0)))
+    }
+}
+
+nebula_resource::no_credential_slots!(Payments);
+
+impl ResidentProvider for Payments {}
+
+#[tokio::test]
+async fn a_scope_that_shadows_a_global_row_refuses_the_journaled_handle() {
+    let node = JournaledNode::new().await;
+    let manager = Arc::new(Manager::new());
+    manager
+        .register(RegistrationSpec {
+            resource: Payments,
+            config: (),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::<Payments>::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register the global row");
+    let rows = crate::resource_accessor::EngineResourceAccessor::new(
+        manager,
+        nebula_core::scope::Scope::default(),
+        CancellationToken::new(),
+    );
+    let shadowing = Arc::new(DashScopedResourceMap::new());
+    let branch = BranchId::from_node_key(node_key!("branch"));
+    shadowing.register_branch(branch.clone(), None);
+    assert!(shadowing.push(branch.clone(), Payments::key(), Arc::new(7_u32)));
+    shadowing.set_current_branch(Some(branch));
+
+    for (scoped, shadowed) in [
+        (
+            Arc::new(EmptyScopedResourceMap) as Arc<dyn crate::scoped_resources::ScopedResourceMap>,
+            false,
+        ),
+        (
+            shadowing as Arc<dyn crate::scoped_resources::ScopedResourceMap>,
+            true,
+        ),
+    ] {
+        let mut task = node.task(Input::Valid, CancellationToken::new(), None, None);
+        task.engine_resources = Some(NodeResourceLayers {
+            scoped,
+            rows: rows.clone(),
+        });
+        let journal = task.effect_journal().expect("a journal on a durable turn");
+        let resources = task.journaled_resources(Some(&journal));
+        let handle = resources.resource_handle_any(&Payments::key());
+        if shadowed {
+            let Err(error) = handle else {
+                panic!("a shadowed key must not reach the global row");
+            };
+            assert!(
+                matches!(error, nebula_core::CoreError::ScopeViolation { .. }),
+                "{error:?}"
+            );
+        } else {
+            assert!(handle.is_ok(), "the global row serves an unshadowed key");
+        }
+    }
+    assert_eq!(node.slots().await, 0, "nothing was prepared or sent");
 }

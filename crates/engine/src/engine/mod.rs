@@ -3058,14 +3058,41 @@ struct NodeTask {
     clock: Arc<dyn Clock>,
     /// Attempt provenance; never part of the logical effect occurrence address.
     attempt_generation: u64,
-    /// The node's manager-backed resource accessor, from which a journaled
-    /// action's handles are derived; `None` without a resource manager.
-    engine_resources: Option<crate::resource_accessor::EngineResourceAccessor>,
+    /// The layers of the node's manager-backed resource accessor, from
+    /// which a journaled action's accessor is derived; `None` without a
+    /// resource manager.
+    engine_resources: Option<NodeResourceLayers>,
     /// The execution's wall-clock deadline; it bounds how long a journaled
     /// node waits for its units after the action returns.
     execution_deadline: Option<Instant>,
     /// Where the node's effect journal records its counters.
     metrics: MetricsRegistry,
+}
+
+/// The layers of a node's manager-backed resource accessor
+/// ([`LayeredResourceAccessor`](crate::scoped_resources::LayeredResourceAccessor)):
+/// a journaled action's accessor keeps the branch-scoped layer — and its
+/// fail-closed refusal of a managed row a scope shadows — and changes only
+/// the authority of the global rows.
+#[derive(Clone)]
+struct NodeResourceLayers {
+    /// The branch-scoped layer the node's accessor consults first.
+    scoped: Arc<dyn crate::scoped_resources::ScopedResourceMap>,
+    /// The global, manager-backed rows.
+    rows: crate::resource_accessor::EngineResourceAccessor,
+}
+
+impl NodeResourceLayers {
+    /// The node's accessor: the scoped layer over `rows`.
+    fn layered(
+        &self,
+        rows: crate::resource_accessor::EngineResourceAccessor,
+    ) -> Arc<dyn ResourceAccessor> {
+        Arc::new(crate::scoped_resources::LayeredResourceAccessor::new(
+            Arc::clone(&self.scoped),
+            Arc::new(rows),
+        ))
+    }
 }
 
 /// Why a journaled action on a run without execution stores has read-only
@@ -3113,31 +3140,26 @@ impl NodeTask {
 
     /// The resource accessor of a journaled action: raw leases refused, and
     /// resource handles under `journal` — or read-only without one, saying
-    /// why when the run has no execution stores.
+    /// why when the run has no execution stores. The node's scoped layer
+    /// stays in front: a key a branch scope holds is never served by a
+    /// global row.
     fn journaled_resources(
         &self,
         journal: Option<&crate::effect_driver::NodeEffectJournal>,
     ) -> Arc<dyn ResourceAccessor> {
         let storeless = self.operation_ledger.is_none() || self.fencing.is_none();
-        let handles = match (&self.engine_resources, journal) {
-            (Some(rows), Some(journal)) => {
-                Some(rows.clone().with_journal(Arc::new(journal.clone())))
+        let inner = match (&self.engine_resources, journal) {
+            (Some(layers), Some(journal)) => {
+                layers.layered(layers.rows.clone().with_journal(Arc::new(journal.clone())))
             },
-            (Some(rows), None) if storeless => {
-                Some(rows.clone().with_read_only_detail(JOURNAL_NEEDS_STORES))
-            },
-            _ => None,
+            (Some(layers), None) if storeless => layers.layered(
+                layers
+                    .rows
+                    .clone()
+                    .with_read_only_detail(JOURNAL_NEEDS_STORES),
+            ),
+            _ => self.resources.clone(),
         };
-        let inner = handles.map_or_else(
-            || self.resources.clone(),
-            |handles| {
-                Arc::new(
-                    crate::scoped_resources::LayeredResourceAccessor::global_only(Arc::new(
-                        handles,
-                    )),
-                ) as Arc<dyn ResourceAccessor>
-            },
-        );
         Arc::new(crate::resource_accessor::JournaledResourceAccessor::new(
             inner,
         ))

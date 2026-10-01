@@ -29,13 +29,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::credential_accessor::EngineCredentialAccessor;
 use crate::engine::{
-    FactoryDispatch, NodeFactoryDispatch, NodeTask, WorkflowEngine, durable_error_envelope,
-    resolve_node_input_with_support, setup_refusal,
+    FactoryDispatch, NodeFactoryDispatch, NodeResourceLayers, NodeTask, WorkflowEngine,
+    durable_error_envelope, resolve_node_input_with_support, setup_refusal,
 };
 use crate::error::EngineError;
 use crate::resolver::NodeInputRequest;
 use crate::resource_accessor::EngineResourceAccessor;
-use crate::scoped_resources::LayeredResourceAccessor;
+use crate::scoped_resources::EmptyScopedResourceMap;
 
 impl WorkflowEngine {
     /// Spawn a single node into the JoinSet.
@@ -377,11 +377,16 @@ impl WorkflowEngine {
                 EngineResourceAccessor::new(Arc::clone(manager), scope, cancel_token.clone())
                     .with_slot_identities_arc(slot_identities)
                     .with_deadline(execution_deadline);
-            // A journaled node derives its handles from the same accessor,
-            // adding its effect journal (or its refusal detail).
-            engine_resources = Some(accessor.clone());
-            let global: Arc<dyn ResourceAccessor> = Arc::new(accessor);
-            Arc::new(LayeredResourceAccessor::global_only(global))
+            // A journaled node derives its handles from the same layers,
+            // adding its effect journal (or its refusal detail) to the
+            // global rows only.
+            let layers = NodeResourceLayers {
+                scoped: Arc::new(EmptyScopedResourceMap),
+                rows: accessor,
+            };
+            let resources = layers.layered(layers.rows.clone());
+            engine_resources = Some(layers);
+            resources
         } else {
             default_resource_accessor()
         };
