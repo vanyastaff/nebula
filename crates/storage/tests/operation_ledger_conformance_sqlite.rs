@@ -130,7 +130,7 @@ async fn legacy_upgrade_never_grants_and_terminal_evidence_survives_reopen() {
         destination: DestinationCapability::StableKey,
         contract: oracle::contract(DestinationCapability::StableKey),
         provider_key: None,
-        concurrent_with: &[],
+        concurrent_with: None,
     };
     assert_eq!(
         ledger

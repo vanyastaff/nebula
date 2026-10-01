@@ -12,19 +12,22 @@ changes are expected between minor releases — call them out here.
 ### Breaking
 
 - **`nebula-storage-port`: `EffectSlotBinding` gains `concurrent_with:
-  &[u32]`; development packages advance to 0.29.0 in lockstep.** The lower
-  positions of an occurrence's run whose unit was still open when it was
-  first prepared — the exact set, strictly ascending, at most
+  Option<&[u32]>`; development packages advance to 0.29.0 in lockstep.** The
+  lower positions of an occurrence's run whose unit was still open when it
+  was first prepared — the exact set, strictly ascending, at most
   `OperationProtocolRecord::MAX_CONCURRENT_WITH` (64; an owner with more
-  keeps the nearest, and the rest read as settled before it, the strict
-  reading) — are persisted with the first preparation inside the protocol
-  record (`OperationProtocolRecord::concurrent_with`, builder
+  keeps the nearest, and the rest read as settled before it) — are
+  persisted with the first preparation inside the protocol record
+  (`OperationProtocolRecord::concurrent_with() -> Option<&[u32]>`, builder
   `concurrent_with`; an unordered or oversized list is an invalid record),
-  never part of the natural key or the prepare identity. No schema
-  migration: the protocol is a JSON payload, and the field is omitted when
-  empty, so records written without it read back unchanged (empty). A
-  struct literal must name the field (`&[]` for a binding without
-  positional runs). The engine's effect journal uses it to replay
+  never part of the natural key or the prepare identity. `Some([])`
+  ("nothing ran concurrently") is persisted as an explicit `[]`; `None`
+  ("unknown": an owner that records no concurrency, or a record written
+  before the field existed) leaves it out. No schema migration: the
+  protocol is a JSON payload, and records written without the field read
+  back unchanged (`None`). A struct literal must name the field (`None` for
+  a binding without positional runs). The engine's effect journal records
+  it for every fresh slot and uses it to replay
   concurrent units after a crash instead of halting;
   `nebula_resource::call::journal::EffectJournal` gains a defaulted
   `finish_occurrence(&str)`, called by the unit runtime when a unit
@@ -1666,7 +1669,11 @@ let admitted = recorded.readmit_against(fresh)?;
   still open (handed out and not yet settled). Units awaited together are
   concurrent, so a recovery replays the unsettled one under its recorded
   provider key (at least once) instead of halting; a slot recorded without
-  the list is read strictly. A replay that has not reached its frontier —
+  the list (by the journal before this rule) orders nothing, so an upgraded
+  node recovers as before. Fresh prepares of a family run in position
+  order — a higher slot is never written while a lower prepare may or may
+  not have written its row — while provider calls stay concurrent. A
+  replay that has not reached its frontier —
   an earlier attempt recorded an effect in a later iteration — skips the
   `Continue` delays it already waited once; from the frontier on every
   delay is honoured (an iteration that recorded no effect cannot tell, so

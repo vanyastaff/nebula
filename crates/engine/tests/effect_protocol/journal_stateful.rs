@@ -550,7 +550,7 @@ async fn concurrent_writes_recover_after_a_crash_with_one_applied(#[case] backen
     if applied.occurrence() == "it0/unit/v1/#000001" {
         assert_eq!(
             applied.record().protocol().unwrap().concurrent_with(),
-            [0],
+            Some(&[0][..]),
             "the other write was open when it was prepared"
         );
     }

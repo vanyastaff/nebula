@@ -225,8 +225,14 @@ configuration, and process lifecycle.
   settled before it). Units awaited together (`join!`, `FuturesUnordered`) are
   concurrent: a recovery replays the unsettled one under its recorded provider key (at
   least once) instead of halting, while a lower slot that settled before the later
-  one began — even inside a run of concurrent units — stays refused. A slot recorded
-  without the list is read strictly. **Replay delays**: a replay that has not reached
+  one began — even inside a run of concurrent units — stays refused. Every fresh slot
+  records its list, `[]` included; a slot recorded without it (by the journal before
+  this rule) orders nothing, so an upgraded node recovers as it would have before.
+  Fresh prepares of a family run in position order: a fresh slot's ledger prepare
+  waits until every lower position handed out in the attempt resolved its prepare
+  (acknowledged, refused, given up, or left uncertain — then it is refused deferring),
+  so a higher row is never written while a lower one may or may not exist; provider
+  calls stay concurrent. **Replay delays**: a replay that has not reached
   its frontier (an earlier attempt recorded an effect in a later iteration) skips the
   `Continue` delay — that iteration already ran, after it; from the frontier on every
   delay is honoured (an iteration that recorded no effect cannot tell). A node

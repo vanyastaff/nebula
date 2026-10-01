@@ -491,11 +491,12 @@ pub struct OperationProtocolRecord {
     /// serializes byte-identically to one written before keys existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_key: Option<ProviderIdempotencyKey>,
-    /// Absent (not `[]`) when empty, so such a record serializes
-    /// byte-identically to one written before the list existed — which
-    /// reads the same: nothing ran concurrently with it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    concurrent_with: Vec<u32>,
+    /// `None` (absent from the payload) for a record written without the
+    /// list — by an owner that does not record it, or before it existed:
+    /// its concurrency is unknown. `Some([])` (persisted as `[]`) when the
+    /// owner recorded that nothing ran concurrently with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    concurrent_with: Option<Vec<u32>>,
 }
 
 #[derive(Deserialize)]
@@ -520,7 +521,7 @@ struct OperationProtocolRecordWire {
     #[serde(default)]
     provider_key: Option<ProviderIdempotencyKey>,
     #[serde(default)]
-    concurrent_with: Vec<u32>,
+    concurrent_with: Option<Vec<u32>>,
 }
 
 /// The not-crossed count of a record that does not carry the counter.
@@ -546,7 +547,7 @@ impl OperationProtocolRecord {
     /// Most lower positions one record may list as concurrent with it
     /// ([`concurrent_with`](Self::concurrent_with)). An owner with more open
     /// keeps the ones nearest the record; the others read as ordered before
-    /// it — the strict reading.
+    /// it.
     pub const MAX_CONCURRENT_WITH: usize = 64;
 
     /// Begin a validated record with no issued permits.
@@ -570,7 +571,7 @@ impl OperationProtocolRecord {
                 evidence: None,
                 adjudication_audit_digest: None,
                 provider_key: None,
-                concurrent_with: Vec::new(),
+                concurrent_with: None,
             },
         }
     }
@@ -599,12 +600,10 @@ impl OperationProtocolRecord {
         if self.version != 1 {
             return Err(violation(OperationProtocolViolation::UnsupportedVersion));
         }
-        if self.concurrent_with.len() > Self::MAX_CONCURRENT_WITH
-            || self
-                .concurrent_with
-                .windows(2)
-                .any(|pair| pair[0] >= pair[1])
-        {
+        if self.concurrent_with.as_ref().is_some_and(|positions| {
+            positions.len() > Self::MAX_CONCURRENT_WITH
+                || positions.windows(2).any(|pair| pair[0] >= pair[1])
+        }) {
             return Err(violation(OperationProtocolViolation::InconsistentState));
         }
         if self.not_crossed > self.invocations
@@ -746,10 +745,11 @@ impl OperationProtocolRecord {
     /// The lower positions of the owner's run still open when this record
     /// was first prepared
     /// ([`EffectSlotBinding::concurrent_with`](super::EffectSlotBinding::concurrent_with)),
-    /// ascending; immutable afterwards, empty for a record written without
-    /// them.
-    pub fn concurrent_with(&self) -> &[u32] {
-        &self.concurrent_with
+    /// ascending; immutable afterwards. `None` for a record written without
+    /// the list (its concurrency is unknown), `Some(&[])` when the owner
+    /// recorded that nothing ran concurrently with it.
+    pub fn concurrent_with(&self) -> Option<&[u32]> {
+        self.concurrent_with.as_deref()
     }
 }
 
@@ -855,8 +855,8 @@ impl OperationProtocolRecordBuilder {
     ///
     /// Adapters set it only when the record is first prepared; every later
     /// transition rebuilds from the stored record and so retains it.
-    pub fn concurrent_with(mut self, concurrent_with: &[u32]) -> Self {
-        self.record.concurrent_with = concurrent_with.to_vec();
+    pub fn concurrent_with(mut self, concurrent_with: Option<&[u32]>) -> Self {
+        self.record.concurrent_with = concurrent_with.map(<[u32]>::to_vec);
         self
     }
     /// Finish construction only when the complete record is coherent.

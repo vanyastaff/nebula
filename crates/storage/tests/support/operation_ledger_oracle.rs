@@ -207,7 +207,7 @@ fn binding<'a>(
         destination,
         contract: contract(destination),
         provider_key: None,
-        concurrent_with: &[],
+        concurrent_with: None,
     }
 }
 
@@ -2129,30 +2129,35 @@ pub(crate) async fn the_concurrent_positions_are_durable_and_outside_the_prepare
     let scope = scope();
     let execution = execution_id(seed);
     let fence = create_leased_execution(executions, &scope, &execution).await;
-    let listing = |occurrence: &'static str, concurrent_with: &'static [u32]| EffectSlotBinding {
-        concurrent_with,
-        ..binding(
-            &scope,
-            &execution,
-            occurrence,
-            1,
-            0x11,
-            DestinationCapability::StableKey,
-        )
-    };
+    let listing =
+        |occurrence: &'static str, concurrent_with: Option<&'static [u32]>| EffectSlotBinding {
+            concurrent_with,
+            ..binding(
+                &scope,
+                &execution,
+                occurrence,
+                1,
+                0x11,
+                DestinationCapability::StableKey,
+            )
+        };
     let positions = |record: &nebula_storage_port::dto::OperationRecord| {
-        record.protocol().unwrap().concurrent_with().to_vec()
+        record
+            .protocol()
+            .unwrap()
+            .concurrent_with()
+            .map(<[u32]>::to_vec)
     };
 
     let prepared = ledger
-        .prepare(&listing("listed", &[0, 3]), fence)
+        .prepare(&listing("listed", Some(&[0, 3])), fence)
         .await
         .unwrap();
     let slot = prepared.operation().slot_id();
     let before = ledger.read_exact(&scope, slot).await.unwrap();
-    assert_eq!(positions(&before), [0, 3]);
+    assert_eq!(positions(&before), Some(vec![0, 3]));
 
-    for other in [&[1][..], &[]] {
+    for other in [Some(&[1][..]), Some(&[]), None] {
         assert_eq!(
             ledger.prepare(&listing("listed", other), fence).await,
             Ok(PrepareOutcome::Replayed(prepared.operation())),
@@ -2175,10 +2180,21 @@ pub(crate) async fn the_concurrent_positions_are_durable_and_outside_the_prepare
     let OperationAdvance::Granted { record, .. } = granted else {
         panic!("a fresh slot grants its first permit");
     };
-    assert_eq!(positions(&record), [0, 3], "transitions keep the positions");
+    assert_eq!(
+        positions(&record),
+        Some(vec![0, 3]),
+        "transitions keep the positions"
+    );
 
+    // "None concurrent" and "unknown" round-trip distinctly.
     let alone = ledger
-        .prepare(&listing("alone", &[]), fence)
+        .prepare(&listing("alone", Some(&[])), fence)
+        .await
+        .unwrap()
+        .operation()
+        .slot_id();
+    let unknown = ledger
+        .prepare(&listing("unknown", None), fence)
         .await
         .unwrap()
         .operation()
@@ -2193,9 +2209,17 @@ pub(crate) async fn the_concurrent_positions_are_durable_and_outside_the_prepare
             .find(|occurrence| occurrence.occurrence() == label)
             .map(|occurrence| positions(occurrence.record()))
     };
-    assert_eq!(listed_positions("listed"), Some(vec![0, 3]));
-    assert_eq!(listed_positions("alone"), Some(Vec::new()));
-    assert!(positions(&ledger.read_exact(&scope, alone).await.unwrap()).is_empty());
+    assert_eq!(listed_positions("listed"), Some(Some(vec![0, 3])));
+    assert_eq!(listed_positions("alone"), Some(Some(Vec::new())));
+    assert_eq!(listed_positions("unknown"), Some(None));
+    assert_eq!(
+        positions(&ledger.read_exact(&scope, alone).await.unwrap()),
+        Some(Vec::new())
+    );
+    assert_eq!(
+        positions(&ledger.read_exact(&scope, unknown).await.unwrap()),
+        None
+    );
 }
 
 /// A later attempt that finds its predecessor's call outstanding may explain

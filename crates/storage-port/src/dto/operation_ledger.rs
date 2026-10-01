@@ -356,14 +356,14 @@ pub struct EffectSlotBinding<'a> {
     /// it began. Strictly ascending, at most
     /// [`OperationProtocolRecord::MAX_CONCURRENT_WITH`](super::OperationProtocolRecord::MAX_CONCURRENT_WITH)
     /// (an owner with more keeps the nearest; the rest read as finished
-    /// before it — the strict reading). Empty when none was, or when the
-    /// owner records none.
+    /// before it). `Some(&[])` when none was; `None` when the owner records
+    /// no concurrency — the record's concurrency is then unknown.
     ///
     /// Persisted with the first preparation only, read back from
     /// [`OperationProtocolRecord::concurrent_with`](super::OperationProtocolRecord::concurrent_with).
     /// Never part of the natural key or of the prepare identity: re-preparing
     /// with another list replays the recorded slot unchanged.
-    pub concurrent_with: &'a [u32],
+    pub concurrent_with: Option<&'a [u32]>,
 }
 
 impl EffectSlotBinding<'_> {

@@ -127,7 +127,7 @@ impl EffectTurn<'_> {
             // ledger-minted operation id; they record no separate key.
             provider_key: None,
             // One effect per node: no positional run to order.
-            concurrent_with: &[],
+            concurrent_with: None,
         };
         let slot = LedgerSlot::prepare(self.access(), &binding).await?;
         let mut driver = Driver {

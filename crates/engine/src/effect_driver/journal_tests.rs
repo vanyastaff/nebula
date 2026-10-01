@@ -408,6 +408,10 @@ struct CountingLedger {
     yield_prepares: AtomicBool,
     /// The next prepare commits and never answers.
     lose_next_prepare_answer: AtomicBool,
+    /// The next prepare never reaches the store and never answers.
+    stall_next_prepare: AtomicBool,
+    /// Notified when a prepare stalls.
+    prepare_stalled: tokio::sync::Notify,
     /// Notified when an outcome write hangs.
     hung: tokio::sync::Notify,
 }
@@ -462,6 +466,11 @@ impl OperationLedger for CountingLedger {
             for _ in 0..4 {
                 tokio::task::yield_now().await;
             }
+        }
+        if self.stall_next_prepare.swap(false, Ordering::SeqCst) {
+            // Nothing written; the answer never comes.
+            self.prepare_stalled.notify_one();
+            return std::future::pending().await;
         }
         let prepared = self.inner.prepare(binding, fencing).await;
         if self.lose_next_prepare_answer.swap(false, Ordering::SeqCst) {
@@ -549,6 +558,8 @@ impl Harness {
             hang_reads: AtomicBool::new(false),
             yield_prepares: AtomicBool::new(false),
             lose_next_prepare_answer: AtomicBool::new(false),
+            stall_next_prepare: AtomicBool::new(false),
+            prepare_stalled: tokio::sync::Notify::new(),
             hung: tokio::sync::Notify::new(),
         });
         let scope = Scope::new("workspace-a", "org-a");
@@ -1457,32 +1468,36 @@ async fn a_recorded_effect_below_an_applied_one_is_never_run_after_it() {
 #[test]
 fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     use SlotWeight::{Applied, Inert, Unsettled};
+    const NONE: Option<&[u32]> = Some(&[]);
     let lower = "unit/v1/#000000";
-    let with_higher = |concurrent: &'static [u32]| {
+    let with_higher = |concurrent: Option<&'static [u32]>| {
         PriorOccurrences::from_records([
-            (lower, Unsettled, &[][..]),
+            (lower, Unsettled, NONE),
             ("unit/v1/#000001", Applied, concurrent),
         ])
     };
     // The higher effect was prepared while the lower unit was open: they
     // ran concurrently, and the lower one replays.
-    assert!(!with_higher(&[0]).reorders_at(lower));
-    // The lower unit settled first (or a record without the list, read
-    // strictly): replaying it now would reverse them.
-    assert!(with_higher(&[]).reorders_at(lower));
+    assert!(!with_higher(Some(&[0])).reorders_at(lower));
+    // The lower unit settled first (an explicit empty list): replaying it
+    // now would reverse them.
+    assert!(with_higher(NONE).reorders_at(lower));
+    // A higher slot an older journal recorded without the list has unknown
+    // concurrency: it orders nothing, as that journal had no order rule.
+    assert!(!with_higher(None).reorders_at(lower));
     // A settled lower slot replays its outcome: no reordering.
     assert!(
         !PriorOccurrences::from_records([
-            (lower, Applied, &[][..]),
-            ("unit/v1/#000001", Applied, &[])
+            (lower, Applied, NONE),
+            ("unit/v1/#000001", Applied, NONE)
         ])
         .reorders_at(lower)
     );
     // A higher definitive rejection applied nothing: no reordering.
     assert!(
         !PriorOccurrences::from_records([
-            (lower, Unsettled, &[][..]),
-            ("unit/v1/#000001", Inert, &[])
+            (lower, Unsettled, NONE),
+            ("unit/v1/#000001", Inert, NONE)
         ])
         .reorders_at(lower)
     );
@@ -1490,28 +1505,91 @@ fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     // A hole: 0 open, 1 settled, 2 applied — 2 ran concurrently with 0
     // only, so 0 replays and 1 is refused.
     let hole = PriorOccurrences::from_records([
-        ("unit/v1/#000000", Unsettled, &[][..]),
-        ("unit/v1/#000001", Unsettled, &[]),
-        ("unit/v1/#000002", Applied, &[0]),
+        ("unit/v1/#000000", Unsettled, NONE),
+        ("unit/v1/#000001", Unsettled, NONE),
+        ("unit/v1/#000002", Applied, Some(&[0])),
     ]);
     assert!(!hole.reorders_at("unit/v1/#000000"));
     assert!(hole.reorders_at("unit/v1/#000001"));
 
     // Iterations are always ordered: the barrier drains one before the next.
     let across = PriorOccurrences::from_records([
-        ("it0/unit/v1/#000000", Unsettled, &[][..]),
-        ("it1/unit/v1/#000000", Applied, &[0]),
+        ("it0/unit/v1/#000000", Unsettled, NONE),
+        ("it1/unit/v1/#000000", Applied, Some(&[0])),
     ]);
     assert!(across.reorders_at("it0/unit/v1/#000000"));
     // Within an iteration, positions count from the iteration's ordinals.
     let within = |concurrent: &'static [u32]| {
         PriorOccurrences::from_records([
-            ("it1/unit/v1/#000001", Unsettled, &[][..]),
-            ("it1/unit/v1/#000002", Applied, concurrent),
+            ("it1/unit/v1/#000001", Unsettled, NONE),
+            ("it1/unit/v1/#000002", Applied, Some(concurrent)),
         ])
     };
     assert!(!within(&[1]).reorders_at("it1/unit/v1/#000001"));
     assert!(within(&[0]).reorders_at("it1/unit/v1/#000001"));
+}
+
+#[tokio::test]
+async fn a_higher_fresh_prepare_waits_for_a_lower_one_that_is_then_dropped() {
+    let harness = Harness::new().await;
+    harness
+        .ledger
+        .stall_next_prepare
+        .store(true, Ordering::SeqCst);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    // The lower unit reaches the ledger's prepare, which stalls before
+    // writing; the higher unit is submitted meanwhile.
+    let lower = tokio::spawn(handle.submit(Charge::<false> { order: 100 }));
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        harness.ledger.prepare_stalled.notified(),
+    )
+    .await
+    .expect("the lower prepare stalled");
+    let higher = tokio::spawn(handle.submit(Charge::<false> { order: 101 }));
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !higher.is_finished(),
+        "the higher prepare waits for the lower one"
+    );
+    assert!(harness.slots().await.is_empty(), "nothing written yet");
+    // The lower unit is dropped mid-prepare: its row may or may not exist.
+    lower.abort();
+    let _ = lower.await;
+    let refused = tokio::time::timeout(Duration::from_secs(5), higher)
+        .await
+        .expect("the higher one decides")
+        .expect("task")
+        .expect_err("above an uncertain position");
+    assert_eq!(refused.sent(), SentState::NotSent, "{refused}");
+    assert!(
+        harness.slots().await.is_empty(),
+        "the higher was not written"
+    );
+    assert_eq!(harness.desk.keys().len(), 0, "nothing sent");
+    assert!(
+        first
+            .conclude(DRAIN)
+            .await
+            .is_err_and(EffectExecutionError::is_deferred),
+        "the node defers"
+    );
+
+    // The next attempt runs both in order: no permanent gap.
+    let recovery = harness.journal(2);
+    let handle = harness.handle(&recovery);
+    let (lower, higher) = tokio::join!(
+        handle.submit(Charge::<false> { order: 100 }),
+        handle.submit(Charge::<false> { order: 101 }),
+    );
+    lower.expect("lower sent");
+    higher.expect("higher sent");
+    assert_eq!(recovery.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 2);
+    assert_eq!(harness.slots().await.len(), 2);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1686,6 +1764,7 @@ async fn a_fresh_slot_records_exactly_the_lower_units_still_open() {
                 .protocol()
                 .expect("protocol")
                 .concurrent_with()
+                .expect("always recorded, even empty")
                 .to_vec()
         })
         .collect();

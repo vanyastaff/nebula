@@ -858,7 +858,7 @@ mod tests {
             destination: DestinationCapability::Opaque,
             contract: &contract(),
             provider_key: None,
-            concurrent_with: &[],
+            concurrent_with: None,
         };
 
         let outcome = decide_prepare(slot(), &stored, &binding)
@@ -889,7 +889,7 @@ mod tests {
             destination: DestinationCapability::StableKey,
             contract: &contract(),
             provider_key: None,
-            concurrent_with: &[],
+            concurrent_with: None,
         };
 
         assert_eq!(
@@ -913,7 +913,7 @@ mod tests {
             destination: DestinationCapability::StableKey,
             contract: &stable,
             provider_key,
-            concurrent_with: &[],
+            concurrent_with: None,
         };
         let protocol = initial_protocol(&binding(key("original")), 0).unwrap();
         let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
@@ -951,12 +951,12 @@ mod tests {
             provider_key: None,
             concurrent_with,
         };
-        let protocol = initial_protocol(&binding(&[0, 2]), 0).unwrap();
-        assert_eq!(protocol.concurrent_with(), [0, 2]);
+        let protocol = initial_protocol(&binding(Some(&[0, 2])), 0).unwrap();
+        assert_eq!(protocol.concurrent_with(), Some(&[0, 2][..]));
         let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
         // A later prepare with other (or no) positions replays the record,
         // which keeps the ones it was first prepared with.
-        for other in [&[1][..], &[]] {
+        for other in [Some(&[1][..]), Some(&[]), None] {
             assert!(
                 decide_prepare(slot(), &stored, &binding(other)).is_ok(),
                 "{other:?}"
@@ -965,20 +965,29 @@ mod tests {
         assert_eq!(
             stored
                 .protocol()
-                .map(OperationProtocolRecord::concurrent_with),
+                .and_then(OperationProtocolRecord::concurrent_with),
             Some(&[0, 2][..])
         );
-        // None recorded serializes as before the list existed.
-        let alone = initial_protocol(&binding(&[]), 0).unwrap();
-        let encoded = serde_json::to_value(&alone).unwrap();
-        assert!(encoded.get("concurrent_with").is_none());
-        let listed = serde_json::to_value(initial_protocol(&binding(&[0, 2]), 0).unwrap()).unwrap();
+        // "None concurrent" is persisted as an explicit empty list; a record
+        // written without the list (unknown) leaves the field out, as before
+        // the list existed.
+        let alone =
+            serde_json::to_value(initial_protocol(&binding(Some(&[])), 0).unwrap()).unwrap();
+        assert_eq!(alone["concurrent_with"], serde_json::json!([]));
+        let unknown = serde_json::to_value(initial_protocol(&binding(None), 0).unwrap()).unwrap();
+        assert!(unknown.get("concurrent_with").is_none());
+        for (encoded, expected) in [(alone, Some(&[][..])), (unknown, None)] {
+            let decoded: OperationProtocolRecord = serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded.concurrent_with(), expected);
+        }
+        let listed =
+            serde_json::to_value(initial_protocol(&binding(Some(&[0, 2])), 0).unwrap()).unwrap();
         assert_eq!(listed["concurrent_with"], serde_json::json!([0, 2]));
         // Unordered or oversized lists are refused.
-        assert!(initial_protocol(&binding(&[2, 0]), 0).is_err());
-        assert!(initial_protocol(&binding(&[1, 1]), 0).is_err());
+        assert!(initial_protocol(&binding(Some(&[2, 0])), 0).is_err());
+        assert!(initial_protocol(&binding(Some(&[1, 1])), 0).is_err());
         let oversized: Vec<u32> = (0..=64).collect();
-        assert!(initial_protocol(&binding(&oversized), 0).is_err());
+        assert!(initial_protocol(&binding(Some(&oversized)), 0).is_err());
     }
 
     #[test]

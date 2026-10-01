@@ -142,8 +142,18 @@
 //!   under its recorded provider key — at least once, as a
 //!   durable-execution engine re-sends an unsettled scheduled effect. Any
 //!   other lower unit had settled before `H` began, even inside a run of
-//!   concurrent units, and stays refused; so does every one when the list
-//!   is absent (a record written before it existed) — the strict reading.
+//!   concurrent units, and stays refused. Every fresh slot records its
+//!   list, an empty one included; an `H` recorded without it (by the
+//!   journal before this rule, which had none) has unknown concurrency and
+//!   orders nothing, so a node upgraded mid-execution recovers as it would
+//!   have before.
+//! - fresh prepares of a family run in position order: a fresh slot's
+//!   ledger prepare waits until every lower position handed out in this
+//!   attempt resolved its prepare — acknowledged, refused, given up before
+//!   the ledger, or left uncertain (then the higher one is refused
+//!   deferring, as above) — so a higher row is never written while a lower
+//!   one may or may not exist. Only the prepare is ordered; provider calls
+//!   stay concurrent.
 //!
 //! **Replay delays.** The barrier reports whether an earlier attempt
 //! recorded an effect in a later iteration ([`IterationProgress`]): that
@@ -704,7 +714,7 @@ impl SlotWeight {
 
 /// One recorded occurrence as the journal weighs it: its label, its
 /// [`SlotWeight`] and the lower positions recorded as concurrent with it.
-type RecordedOccurrence<'a> = (&'a str, SlotWeight, &'a [u32]);
+type RecordedOccurrence<'a> = (&'a str, SlotWeight, Option<&'a [u32]>);
 
 impl PriorOccurrences {
     /// Every label as applied (a recorded success), with nothing concurrent.
@@ -713,7 +723,7 @@ impl PriorOccurrences {
         Self::from_records(
             labels
                 .into_iter()
-                .map(|label| (label, SlotWeight::Applied, &[][..])),
+                .map(|label| (label, SlotWeight::Applied, Some(&[][..]))),
         )
     }
 
@@ -727,9 +737,13 @@ impl PriorOccurrences {
                     .entry(position.family)
                     .or_default()
                     .push((position.order(), label.to_owned()));
-                if weight == SlotWeight::Applied {
-                    // A slot recorded without the list (or a lower position
-                    // the list left out) reads as ordered before it.
+                // A slot recorded without the list (an older journal's) has
+                // unknown concurrency and orders nothing: its recovery keeps
+                // the semantics it was written under. A lower position a
+                // recorded list leaves out reads as ordered before it.
+                if weight == SlotWeight::Applied
+                    && let Some(concurrent_with) = concurrent_with
+                {
                     prior
                         .consequential
                         .entry((position.family, position.iteration))
@@ -765,7 +779,9 @@ impl PriorOccurrences {
     /// with `H` — `L`'s unit had settled before `H` was first prepared. A
     /// slot listed as concurrent ran alongside `H`: the program did not
     /// order them, and `L` replays under its recorded provider key (at
-    /// least once).
+    /// least once). An `H` recorded without the list (by an older journal,
+    /// which had no order rule) is not counted: `L` keeps the recovery it
+    /// was written under.
     fn reorders_at(&self, occurrence: &str) -> bool {
         if !self.unsettled.contains(occurrence) {
             return false;
@@ -885,6 +901,8 @@ impl Drop for PrepareInFlight<'_> {
                 .or_insert(order);
             *lowest = (*lowest).min(order);
         }
+        // A higher prepare waiting on this one decides now.
+        self.journal.inner.claims_settled.notify_waiters();
     }
 }
 
@@ -994,7 +1012,7 @@ impl NodeEffectJournal {
                             SlotWeight::of(slot.record()),
                             slot.record()
                                 .protocol()
-                                .map_or(&[][..], |protocol| protocol.concurrent_with()),
+                                .and_then(|protocol| protocol.concurrent_with()),
                         )
                     },
                 )))
@@ -1237,6 +1255,42 @@ impl NodeEffectJournal {
             .collect();
         nearest.reverse();
         nearest
+    }
+
+    /// Waits until no lower position of `occurrence`'s family handed out in
+    /// this attempt is still preparing: each one was met (its prepare
+    /// acknowledged), left uncertain (its prepare never answered), or
+    /// released (refused, or given up before reaching the ledger). Only
+    /// the prepare step is ordered; provider calls stay concurrent. A unit
+    /// that never polls its lower submission again holds this one up to
+    /// its own deadline.
+    async fn await_lower_prepares(&self, occurrence: &str) {
+        let Some(position) = Position::parse(occurrence) else {
+            return;
+        };
+        loop {
+            let settled = self.inner.claims_settled.notified();
+            tokio::pin!(settled);
+            settled.as_mut().enable();
+            let pending = {
+                let state = self.state();
+                let positions = &state.positions;
+                let uncertain_below = positions
+                    .uncertain
+                    .get(&position.family)
+                    .is_some_and(|&lowest| lowest < position.order());
+                !uncertain_below
+                    && positions.claimed.iter().any(|label| {
+                        Position::parse(label).is_some_and(|lower| {
+                            lower.family == position.family && lower.order() < position.order()
+                        }) && !positions.met.contains(label)
+                    })
+            };
+            if !pending {
+                return;
+            }
+            settled.await;
+        }
     }
 
     /// Whether a position of `occurrence`'s family below it was left
@@ -1944,6 +1998,14 @@ impl EffectJournal for NodeEffectJournal {
             return Err(self.refuse(STEP, EffectExecutionError::OccurrenceMismatch));
         }
         let fresh = !prior.labels.contains(intent.occurrence);
+        if fresh {
+            // Fresh prepares of a family go in position order: this one
+            // waits until every lower position handed out in this attempt
+            // resolved its prepare — acknowledged, definitively refused,
+            // given up, or left uncertain — so a lower row that may or may
+            // not exist is known before a higher one is written.
+            self.await_lower_prepares(intent.occurrence).await;
+        }
         if fresh && self.uncertain_below(intent.occurrence) {
             // A lower position's prepare never answered: its row may exist,
             // and a recovery would run that effect after this one. Defer:
@@ -2002,7 +2064,9 @@ impl EffectJournal for NodeEffectJournal {
             contract: &derived.contract,
             provider_key: Some(derived.provider_key),
             // Recorded with a fresh slot only; a recorded one keeps its own.
-            concurrent_with: &concurrent_with,
+            // Always recorded, even empty: "none concurrent" is not
+            // "unknown".
+            concurrent_with: Some(&concurrent_with),
         };
         // From here until the ledger answers, the row may be written without
         // this unit learning it: a prepare dropped mid-call (the unit

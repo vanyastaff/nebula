@@ -165,7 +165,7 @@ impl JournaledNode {
                     destination: DestinationCapability::Opaque,
                     contract: &contract,
                     provider_key: None,
-                    concurrent_with: &[],
+                    concurrent_with: None,
                 },
                 self.fencing,
             )
