@@ -63,17 +63,24 @@ nebula_schema::impl_empty_has_schema!(TelegramConfig);
 impl ResourceConfig for TelegramConfig {
     fn validate(&self) -> Result<(), ResourceError> {
         if self.handle.is_empty() {
-            Err(ResourceError::permanent("handle must not be empty"))
-        } else {
-            Ok(())
+            return Err(ResourceError::permanent("handle must not be empty"));
         }
+        // Refuse a config without a stable fingerprint before it is admitted.
+        self.fingerprinted().try_finish()?;
+        Ok(())
     }
 
+    /// Stable across builds (the effect journal records it): canonical
+    /// JSON of the fields digested with SHA-256, never `std::hash::Hash`.
     fn fingerprint(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.handle.hash(&mut h);
-        h.finish()
+        self.fingerprinted().finish()
+    }
+}
+
+impl TelegramConfig {
+    /// The fingerprinted fields, built once for `validate` and `fingerprint`.
+    fn fingerprinted(&self) -> nebula_resource::ConfigFingerprint {
+        nebula_resource::ConfigFingerprint::new().field("handle", &self.handle)
     }
 }
 

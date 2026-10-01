@@ -139,7 +139,7 @@ fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
         pending_projection_hooks: Default::default(),
         phase_changed: Default::default(),
         resource,
-        config: ArcSwap::from_pointee(PoolCfg),
+        config: ArcSwap::from_pointee(AdmittedConfig::new(PoolCfg)),
         topology,
         store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
         retained: crate::RetainedStore::new(rq.abandonment_tracker()),

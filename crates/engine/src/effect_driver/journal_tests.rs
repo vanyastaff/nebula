@@ -16,6 +16,48 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 
+// ── the journal shape of each action kind ────────────────────────────────
+
+#[test]
+fn only_stateless_actions_are_journaled_and_the_rest_say_why_not() {
+    use nebula_action::ActionKind;
+    assert_eq!(JournalShape::of(ActionKind::Stateless), JournalShape::Flat);
+    assert!(JournalShape::Flat.is_journaled());
+    assert_eq!(JournalShape::read_only_detail(ActionKind::Stateless), None);
+    assert_eq!(
+        JournalShape::read_only_detail(ActionKind::Control),
+        Some(
+            "control actions decide flow and must not cause effects; move effects to a \
+             stateless action"
+        )
+    );
+    assert_eq!(
+        JournalShape::of(ActionKind::Stateful),
+        JournalShape::Iterated
+    );
+    assert!(!JournalShape::Iterated.is_journaled());
+    assert_eq!(
+        JournalShape::read_only_detail(ActionKind::Stateful),
+        Some("stateful effects are journaled per iteration in a later release")
+    );
+    assert_eq!(
+        JournalShape::read_only_detail(ActionKind::Agent),
+        Some("agent effects are not journaled; the agent profile is planned")
+    );
+    for kind in [
+        ActionKind::Control,
+        ActionKind::Agent,
+        ActionKind::Stream,
+        ActionKind::Interactive,
+        ActionKind::Trigger,
+        ActionKind::Resource,
+    ] {
+        assert_eq!(JournalShape::of(kind), JournalShape::None, "{kind:?}");
+        assert!(!JournalShape::of(kind).is_journaled(), "{kind:?}");
+        assert!(JournalShape::read_only_detail(kind).is_some(), "{kind:?}");
+    }
+}
+
 // ── the provider idempotency key ─────────────────────────────────────────
 
 fn frame_of(bytes: &[u8]) -> Vec<u8> {
@@ -587,10 +629,33 @@ impl Harness {
         slot.record().protocol().expect("protocol").phase()
     }
 
+    /// A fresh manager — as a restarted process builds it — with the gateway
+    /// row registered under a configuration rebuilt from scratch, calling
+    /// the same provider desk.
+    fn rebuilt_manager(&self) -> Arc<Manager> {
+        let manager = Arc::new(Manager::new());
+        manager
+            .register(RegistrationSpec {
+                resource: Gateway(Arc::clone(&self.desk)),
+                config: GatewayConfig { endpoint: 1 },
+                scope: nebula_core::ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: Resident::<Gateway>::new(ResidentConfig::default()),
+                recovery_gate: None,
+                rate_limit: None,
+            })
+            .expect("register the gateway again");
+        manager
+    }
+
     /// The gateway's handle under `journal`.
     fn handle(&self, journal: &NodeEffectJournal) -> ResourceHandle<Gateway> {
-        *self
-            .manager
+        Self::handle_on(&self.manager, journal)
+    }
+
+    /// The gateway's handle on `manager` under `journal`.
+    fn handle_on(manager: &Manager, journal: &NodeEffectJournal) -> ResourceHandle<Gateway> {
+        *manager
             .handle_any_journaled(
                 &Gateway::key(),
                 &ResourceContext::minimal(
@@ -682,7 +747,9 @@ struct GatewayConfig {
 
 impl nebula_resource::ResourceConfig for GatewayConfig {
     fn fingerprint(&self) -> u64 {
-        self.endpoint
+        nebula_resource::ConfigFingerprint::new()
+            .field("endpoint", &self.endpoint)
+            .finish()
     }
 }
 
@@ -1069,6 +1136,56 @@ async fn a_settled_write_replays_on_the_next_attempt_without_a_provider_call() {
             &[("phase", effect_journal_prepare_phase::REPLAY)]
         ),
         1
+    );
+}
+
+#[tokio::test]
+async fn a_settled_write_replays_after_a_restart_under_a_rebuilt_identical_config() {
+    use nebula_resource::ResourceConfig as _;
+
+    // The contract binds the configuration fingerprint; recorded contracts
+    // are durable, so the fingerprint is a pure function of the content,
+    // pinned here (first eight bytes of
+    // `SHA-256("nebula-resource/config-fingerprint/v1\0{\"endpoint\":1}")`):
+    // a toolchain or platform change cannot move it.
+    assert_eq!(
+        GatewayConfig { endpoint: 1 }.fingerprint(),
+        0xcfe8_eb13_93ce_3cd3
+    );
+
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    let receipt = harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 9 })
+        .await
+        .expect("applied");
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+    let slots = harness.slots().await;
+    assert_eq!(slots.len(), 1);
+
+    // A restarted process rebuilds the manager and the configuration from
+    // scratch: the recorded slot still resolves, and replays.
+    let rebuilt = harness.rebuilt_manager();
+    let retry = harness.journal(2);
+    let replayed = Harness::handle_on(&rebuilt, &retry)
+        .submit(Charge::<false> { order: 9 })
+        .await
+        .expect("replayed under the rebuilt configuration");
+    assert_eq!(replayed, receipt);
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 1, "no second provider call");
+    assert_eq!(harness.slots().await, slots, "a replay writes nothing");
+    assert_eq!(
+        harness.counter(
+            NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+            &[
+                ("step", effect_journal_step::PREPARE),
+                ("refusal", JournalRefusal::Mismatch.as_str()),
+            ]
+        ),
+        0,
+        "no contract mismatch"
     );
 }
 

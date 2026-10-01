@@ -1,9 +1,11 @@
 //! [`ResourceAction`] trait, [`ResourceHandler`] dyn contract, and adapter.
 //!
 //! A resource action runs `configure` before the downstream subtree and
-//! `cleanup` when the scope ends. The produced resource is visible only
-//! to the downstream branch, unlike a `ResourceHandle<R>` slot served from
-//! the global registry.
+//! `cleanup` when the scope ends. The produced resource is meant for the
+//! downstream branch only, unlike a `ResourceHandle<R>` slot served from
+//! the global registry. No action context can reach it today: branch
+//! wiring is deferred, and a branch-scoped key fails closed with a scope
+//! violation instead of falling through to the global row.
 
 use std::{any::Any, fmt, future::Future};
 
@@ -20,9 +22,11 @@ use crate::{
 ///
 /// The engine runs `configure` before downstream nodes; the resulting
 /// resource is scoped to the branch. When the scope ends, the engine
-/// calls `cleanup` with the same resource. Use for connection pools,
-/// caches, or other resources visible only to the downstream subtree
+/// calls `cleanup` with the same resource. Intended for connection pools,
+/// caches, or other resources meant only for the downstream subtree
 /// (unlike a `ResourceHandle<R>` slot served from the global registry).
+/// Downstream actions cannot reach the payload yet: the branch route must
+/// be handle-shaped and is not wired.
 ///
 /// A single associated type `Resource` is used for both the `configure`
 /// return and the `cleanup` parameter. Earlier iterations split these

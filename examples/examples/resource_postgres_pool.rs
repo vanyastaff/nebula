@@ -102,20 +102,28 @@ nebula_schema::impl_empty_has_schema!(PostgresConfig);
 impl ResourceConfig for PostgresConfig {
     fn validate(&self) -> Result<(), ResourceError> {
         if self.application_name.is_empty() {
-            Err(ResourceError::permanent(
+            return Err(ResourceError::permanent(
                 "application_name must not be empty",
-            ))
-        } else {
-            Ok(())
+            ));
         }
+        // Refuse a config without a stable fingerprint before it is admitted.
+        self.fingerprinted().try_finish()?;
+        Ok(())
     }
 
+    /// Stable across builds (the effect journal records it): canonical
+    /// JSON of the fields digested with SHA-256, never `std::hash::Hash`.
     fn fingerprint(&self) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        self.application_name.hash(&mut h);
-        self.statement_timeout_ms.hash(&mut h);
-        h.finish()
+        self.fingerprinted().finish()
+    }
+}
+
+impl PostgresConfig {
+    /// The fingerprinted fields, built once for `validate` and `fingerprint`.
+    fn fingerprinted(&self) -> nebula_resource::ConfigFingerprint {
+        nebula_resource::ConfigFingerprint::new()
+            .field("application_name", &self.application_name)
+            .field("statement_timeout_ms", &self.statement_timeout_ms)
     }
 }
 

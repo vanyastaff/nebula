@@ -39,6 +39,60 @@ changes are expected between minor releases — call them out here.
     | `lease.closing()` / `lease.is_closing()` | `OperationCx::closing()` inside the operation; the row's suspension or removal shows as the unit's refusal |
     | several units sharing one held instance | one unit per attempt, or a `ResourceHandle::session` on a pooled `SessionProvider` for several native calls on one connection |
 
+- **A stable resource configuration fingerprint advances development packages
+  to 0.28.0 in lockstep.** `ResourceConfig::fingerprint` is durable: the effect
+  journal binds every recorded effect's destination to it, yet the derive and
+  the SDK `HttpConfig` computed it with `std::hash::Hash` folded into
+  `DefaultHasher`, whose output is stable neither between compiler versions
+  nor across platforms — after a toolchain update every in-flight journaled
+  slot would have failed as a contract mismatch. The trait signature is
+  unchanged (`-> u64`); its contract and the derive change:
+  - `nebula-resource`: new `ConfigFingerprint` builder and
+    `ConfigFingerprintError` (also exported from
+    `nebula_sdk::integration::resource`). The fingerprint is the first eight
+    bytes, big-endian, of `SHA-256("nebula-resource/config-fingerprint/v1" ||
+    0x00 || canonical JSON)`, where the canonical JSON is an object of the
+    fingerprinted fields keyed by name, each written by its `Serialize` impl
+    with every object's keys sorted (a duplicate key refused, 1 MiB per
+    field). Declaration order and map iteration order do not change it; a
+    field rename does. The trait docs now require a pure function of the
+    configuration's content and forbid `Hash`/`DefaultHasher`.
+  - `#[derive(ResourceConfig)]`: every fingerprinted field must implement
+    `serde::Serialize` instead of `std::hash::Hash` (skip a field with
+    `#[config(skip_fingerprint)]`). The derive now always emits `validate`
+    for a config with fingerprinted fields, refusing a config whose fields
+    have no stable fingerprint (`Error::permanent`, traced as a `warn` event
+    with the field name and the failed invariant, never the value, under a
+    `resource.config.validate` span carrying the resource key) before
+    delegating to `#[config(validate = path)]`. Fieldless configs still
+    return `0`. A fingerprinted field whose type names a hash-ordered set
+    (`HashSet`, `FxHashSet`, …) is a compile error — its array order follows
+    the per-process hash seed; use `BTreeSet`, a sorted `Vec` or
+    `#[config(skip_fingerprint)]` (`HashMap` is fine: object keys are
+    sorted). A NaN or infinite float is refused
+    (`ConfigFingerprintError::NonFiniteFloat`) instead of aliasing `null`;
+    operation-request canonicalization is unchanged.
+  - The manager computes a row's fingerprint once, when its configuration
+    is registered or reloaded, and stores it with the configuration behind
+    the same atomic swap; unit binding, grants and topology acquires read
+    the stored value instead of re-encoding the configuration.
+  - Canonical JSON (fingerprints and operation requests alike) keeps a raw
+    JSON number's exact decimal value — a `RawValue`'s numbers, and a
+    `serde_json::Number` should a dependency enable `arbitrary_precision`
+    — instead of collapsing it through an `f64`. Canonical bytes change
+    only for raw numbers an `f64` cannot hold (integers outside
+    `i64`/`u64`, decimals with more digits than an `f64` keeps): such a
+    request recorded by an earlier build resolves as a mismatch once,
+    nothing sent.
+  - Every fingerprint value changes once: a hot reload compares values within
+    one process and is unaffected; journaled slots recorded by an earlier
+    build under a fingerprint of the old scheme resolve as a contract
+    mismatch once (nothing is sent).
+  - Migration: replace a hand-written `DefaultHasher` fingerprint with
+    `ConfigFingerprint::new().field("name", &self.name)….finish()` and call
+    `try_finish()?` from `validate`; give derived configs' field types a
+    `Serialize` impl.
+
 - **A single action route to resources advances development packages to
   0.27.0 in lockstep.** `ResourceHandle<R>` is now the only resource
   capability an action context can name; a raw lease (`ResourceGuard<R>`,
@@ -1547,6 +1601,20 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Changed
 
+- **A refused write through a non-journaled action's resource handle says
+  why.** Only stateless `Journaled` actions run under a node effect journal.
+  A `Journaled` action of another kind keeps read-only handles (reads run,
+  writes are refused `Permanent` / `NotSent` before any provider call), and
+  the refusal now names the reason: "control actions decide flow and must
+  not cause effects; move effects to a stateless action", "stateful effects
+  are journaled per iteration in a later release", "agent effects are not
+  journaled; the agent profile is planned", or "effects of this action kind
+  are not journaled" (stream and others). The kind's reason takes
+  precedence over "journaled effects need execution stores", which a
+  stateless action without execution stores still reports. `ReadOnly`
+  control actions (the built-in If, Switch, Filter) are unchanged. A
+  crate-private `JournalShape` (`Flat` / `Iterated` / `None`) maps each kind
+  to how it is journaled. Additive: no version bump.
 - **Stateless `Journaled` actions get journaled resource effects.** On a
   durable turn (operation ledger and execution fence present), the engine
   runs a frozen, stateless `Journaled` action under one `NodeEffectJournal`

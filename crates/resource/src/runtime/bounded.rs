@@ -233,7 +233,11 @@ where
     ) -> Result<crate::topology::CreatedEntry<R::Instance>, Error> {
         use crate::resource::ResourceConfig as _;
         // No author callback may run after create while the instance is unarmed.
-        let fp = config.fingerprint();
+        // The manager hands the fingerprint stored with this config at its
+        // admission; only a hand-built context computes it.
+        let fp = ctx
+            .admitted_config_fingerprint()
+            .unwrap_or_else(|| config.fingerprint());
         let instance = resource.create(config, ctx).await?;
         // Stamp the config fingerprint this instance was built against, and
         // seed the live fingerprint on the very first build. A reload updates

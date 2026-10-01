@@ -270,10 +270,11 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   `Write` unit is prepared, granted and recorded in the operation ledger, replayed on
   retry or resume, and an unknown outcome fails the node even if the action swallowed
   the unit's error. Without execution stores (refusal detail "journaled effects need
-  execution stores"), and for stateful, control and agent actions until their
-  iterations are journaled, the handles are read-only: reads run and writes are refused
-  before any provider call. `ReadOnly` and `Remote` actions likewise get read-only handles
-  only. No contract reaches a raw lease: since 0.27.0 the action surface has no lease route
+  execution stores"), for control actions (which decide flow and must not cause
+  effects), for stateful actions until their iterations are journaled, and for agent
+  and stream actions, the handles are read-only: reads run and writes are refused
+  before any provider call, with a detail saying why. `ReadOnly` and `Remote` actions
+  likewise get read-only handles only. No contract reaches a raw lease: since 0.27.0 the action surface has no lease route
   (`ResourceGuard<R>` slots and `acquire_resource_by_id` are removed), because a lease would
   bypass the journal. A remote stateless factory exposes
   `RemoteEffectFactory`; generic action dispatch cannot invoke it. Preparation produces

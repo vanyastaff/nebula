@@ -238,6 +238,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 pub mod call;
+mod config_fingerprint;
 pub mod context;
 #[cfg(feature = "rotation")]
 pub mod credential_fanout;
@@ -268,6 +269,7 @@ pub use call::{
     Attempt, Cost, Effect, IdempotencyKey, Operation, OperationCx, OperationError, PinSlots,
     SentState, Submission,
 };
+pub use config_fingerprint::{ConfigFingerprint, ConfigFingerprintError};
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };

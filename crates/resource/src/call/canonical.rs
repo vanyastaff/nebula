@@ -12,13 +12,14 @@
 //! sort by, is checked against the budget before it is copied. Scalars,
 //! scalar map keys and string escapes go through `serde_json` itself, so
 //! the bytes are exactly those of the request's JSON value re-emitted with
-//! sorted keys.
+//! sorted keys — except a number inside raw JSON text (a `RawValue`, or a
+//! `Number` under `arbitrary_precision`), which keeps its exact decimal
+//! value ([`canonical_number`]) instead of collapsing through an `f64`.
 
 use std::{cell::Cell, fmt, io};
 
 use serde::{
-    Deserializer, Serialize, Serializer,
-    de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
+    Serialize, Serializer,
     ser::{
         self, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
         SerializeTupleStruct, SerializeTupleVariant,
@@ -33,15 +34,24 @@ use super::declaration::MAX_CANONICAL_REQUEST_LEN;
 /// and cap as any other value.
 const RAW_VALUE_TOKEN: &str = "$serde_json::private::RawValue";
 
+/// The serde name a `serde_json::Number` serializes under when a crate in
+/// the build enables `serde_json`'s `arbitrary_precision`: its one field is
+/// the number's decimal text, written as [`canonical_number`] writes any
+/// raw number — so the canonical bytes do not depend on that feature.
+const NUMBER_TOKEN: &str = "$serde_json::private::Number";
+
 /// Why a request has no canonical form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CanonicalError {
+pub(crate) enum CanonicalError {
     /// The request does not serialize to JSON.
     Unserializable,
     /// An object of the request writes one key twice.
     DuplicateKey,
     /// The canonical form outgrows [`MAX_CANONICAL_REQUEST_LEN`].
     TooLarge,
+    /// A float is NaN or infinite, refused by [`to_canonical_finite`] only:
+    /// JSON writes it `null`, aliasing a real `null`.
+    NonFiniteFloat,
 }
 
 impl fmt::Display for CanonicalError {
@@ -50,6 +60,7 @@ impl fmt::Display for CanonicalError {
             Self::Unserializable => "the request does not serialize to JSON",
             Self::DuplicateKey => "an object of the request has a duplicate key",
             Self::TooLarge => "the canonical request is over its cap",
+            Self::NonFiniteFloat => "a float of the value is NaN or infinite",
         })
     }
 }
@@ -64,9 +75,32 @@ impl ser::Error for CanonicalError {
 }
 
 /// The canonical JSON of `request`.
-pub(super) fn to_canonical<T: Serialize + ?Sized>(request: &T) -> Result<Vec<u8>, CanonicalError> {
+pub(crate) fn to_canonical<T: Serialize + ?Sized>(request: &T) -> Result<Vec<u8>, CanonicalError> {
     let mut out = Vec::new();
     write_canonical(request, &mut out)?;
+    Ok(out)
+}
+
+/// The canonical JSON of `value`, refusing a NaN or infinite float
+/// ([`CanonicalError::NonFiniteFloat`]) — as a value or a map key — rather
+/// than writing it `null`.
+///
+/// For a digest that must tell every distinct value apart, such as a
+/// configuration fingerprint. An operation request keeps
+/// [`to_canonical`]: what reaches its provider is `serde_json`'s output,
+/// which writes such a float `null` too, so the alias is faithful there.
+pub(crate) fn to_canonical_finite<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<Vec<u8>, CanonicalError> {
+    let mut out = Vec::new();
+    let budget = Budget {
+        finite_only: true,
+        ..Budget::default()
+    };
+    value.serialize(Canonical {
+        out: &mut out,
+        budget: &budget,
+    })?;
     Ok(out)
 }
 
@@ -96,9 +130,20 @@ struct Budget {
     /// the refusal surfaces as — `serde_json`'s, a formatter's, a parser's —
     /// it is [`CanonicalError::TooLarge`].
     over: Cell<bool>,
+    /// Refuse a non-finite float instead of writing it `null`.
+    finite_only: bool,
 }
 
 impl Budget {
+    /// Refuses `finite == false` when only finite floats are admitted.
+    fn float(&self, finite: bool) -> Result<(), CanonicalError> {
+        if self.finite_only && !finite {
+            Err(CanonicalError::NonFiniteFloat)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Refuses when `len` more bytes would not fit.
     fn check(&self, len: usize) -> Result<(), CanonicalError> {
         if self.used.get().saturating_add(len) > MAX_CANONICAL_REQUEST_LEN {
@@ -285,8 +330,6 @@ impl Serializer for MapKey<'_> {
         serialize_u32(u32);
         serialize_u64(u64);
         serialize_u128(u128);
-        serialize_f32(f32);
-        serialize_f64(f64);
         serialize_char(char);
     }
 
@@ -295,6 +338,16 @@ impl Serializer for MapKey<'_> {
         serialize_none();
         serialize_unit();
         serialize_unit_struct(&'static str);
+    }
+
+    fn serialize_f32(self, key: f32) -> Result<String, CanonicalError> {
+        self.budget.float(key.is_finite())?;
+        scalar_key(key)
+    }
+
+    fn serialize_f64(self, key: f64) -> Result<String, CanonicalError> {
+        self.budget.float(key.is_finite())?;
+        scalar_key(key)
     }
 
     fn serialize_str(self, key: &str) -> Result<String, CanonicalError> {
@@ -403,8 +456,12 @@ impl<'a> Canonical<'a> {
         })
     }
 
-    fn object(self, close: &'static [u8], raw: bool) -> Result<Object<'a>, CanonicalError> {
-        if !raw {
+    fn object(
+        self,
+        close: &'static [u8],
+        raw: Option<&'static str>,
+    ) -> Result<Object<'a>, CanonicalError> {
+        if raw.is_none() {
             push(self.out, self.budget, b"{")?;
         }
         Ok(Object {
@@ -481,10 +538,12 @@ impl<'a> Serializer for Canonical<'a> {
     }
 
     fn serialize_f32(self, value: f32) -> Result<(), CanonicalError> {
+        self.budget.float(value.is_finite())?;
         push_scalar(self.out, self.budget, value)
     }
 
     fn serialize_f64(self, value: f64) -> Result<(), CanonicalError> {
+        self.budget.float(value.is_finite())?;
         push_scalar(self.out, self.budget, value)
     }
 
@@ -584,7 +643,7 @@ impl<'a> Serializer for Canonical<'a> {
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Object<'a>, CanonicalError> {
-        self.object(b"}", false)
+        self.object(b"}", None)
     }
 
     fn serialize_struct(
@@ -592,7 +651,10 @@ impl<'a> Serializer for Canonical<'a> {
         name: &'static str,
         _len: usize,
     ) -> Result<Object<'a>, CanonicalError> {
-        self.object(b"}", name == RAW_VALUE_TOKEN)
+        let raw = [RAW_VALUE_TOKEN, NUMBER_TOKEN]
+            .into_iter()
+            .find(|token| name == *token);
+        self.object(b"}", raw)
     }
 
     fn serialize_struct_variant(
@@ -603,7 +665,7 @@ impl<'a> Serializer for Canonical<'a> {
         _len: usize,
     ) -> Result<Object<'a>, CanonicalError> {
         self.open_variant(variant)?;
-        self.object(b"}}", false)
+        self.object(b"}}", None)
     }
 }
 
@@ -693,9 +755,10 @@ struct Object<'a> {
     /// A map's key waiting for its value.
     key: Option<String>,
     close: &'static [u8],
-    /// A `RawValue`: its one field is JSON text, written canonicalized in
-    /// place of the object.
-    raw: bool,
+    /// A `serde_json` private token struct — `RawValue`, or `Number` under
+    /// `arbitrary_precision` — named by its token: its one field is JSON
+    /// text, written canonicalized in place of the object.
+    raw: Option<&'static str>,
 }
 
 impl Object<'_> {
@@ -726,10 +789,15 @@ impl Object<'_> {
         Ok(member)
     }
 
-    fn raw_text<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<(), CanonicalError> {
+    fn raw_text<T: Serialize + ?Sized>(
+        &mut self,
+        value: &T,
+        number_only: bool,
+    ) -> Result<(), CanonicalError> {
         value.serialize(RawText {
             out: &mut *self.out,
             budget: self.budget,
+            number_only,
         })
     }
 
@@ -742,7 +810,7 @@ impl Object<'_> {
             raw,
             ..
         } = self;
-        if raw {
+        if raw.is_some() {
             return Ok(());
         }
         members.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
@@ -795,9 +863,9 @@ impl SerializeStruct for Object<'_> {
         key: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
-        if self.raw {
-            return if key == RAW_VALUE_TOKEN {
-                self.raw_text(value)
+        if let Some(token) = self.raw {
+            return if key == token {
+                self.raw_text(value, token == NUMBER_TOKEN)
             } else {
                 Err(CanonicalError::Unserializable)
             };
@@ -827,11 +895,14 @@ impl SerializeStructVariant for Object<'_> {
     }
 }
 
-/// The JSON text of a `RawValue`, the one field it serializes: anything
-/// but a string is refused.
+/// The JSON text of a `RawValue` (or of an `arbitrary_precision`
+/// `Number`), the one field it serializes: anything but a string is
+/// refused.
 struct RawText<'a> {
     out: &'a mut Vec<u8>,
     budget: &'a Budget,
+    /// The text must be one JSON number (a `Number`'s).
+    number_only: bool,
 }
 
 /// Refuses every scalar but the raw text's string.
@@ -877,7 +948,12 @@ impl Serializer for RawText<'_> {
     }
 
     fn serialize_str(self, text: &str) -> Result<(), CanonicalError> {
-        transcode(self.out, self.budget, text)
+        if self.number_only {
+            let number = canonical_number(text)?;
+            push(self.out, self.budget, number.as_bytes())
+        } else {
+            transcode(self.out, self.budget, text)
+        }
     }
 
     fn serialize_some<T: Serialize + ?Sized>(self, _value: &T) -> Result<(), CanonicalError> {
@@ -959,172 +1035,301 @@ impl Serializer for RawText<'_> {
 /// writers a serialized value does, so the bytes are those of the parsed
 /// value re-emitted with sorted keys.
 fn transcode(out: &mut Vec<u8>, budget: &Budget, text: &str) -> Result<(), CanonicalError> {
-    let failure = Cell::new(None);
-    let mut deserializer = serde_json::Deserializer::from_str(text);
-    let written = Transcode {
-        out,
-        budget,
-        failure: &failure,
-    }
-    .deserialize(&mut deserializer)
-    .and_then(|()| deserializer.end());
-    // The parser's own message may echo request text: only the writer's
-    // refusal or the cap's survives, any other failure is unserializable.
-    written.map_err(|_| failure.take().unwrap_or_else(|| budget.refusal()))
-}
-
-/// A raw object's key, copied out of the parser only once it can fit.
-struct RawKey<'a> {
-    budget: &'a Budget,
-}
-
-impl<'de> DeserializeSeed<'de> for RawKey<'_> {
-    type Value = String;
-
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<String, D::Error> {
-        deserializer.deserialize_str(self)
+    let mut raw = RawJson { text, at: 0 };
+    raw.value(out, budget, 0)?;
+    raw.skip_whitespace();
+    if raw.at == text.len() {
+        Ok(())
+    } else {
+        Err(CanonicalError::Unserializable)
     }
 }
 
-impl Visitor<'_> for RawKey<'_> {
-    type Value = String;
+/// Deepest nesting of raw JSON text transcoded, as deep as `serde_json`
+/// parses by default.
+const MAX_RAW_DEPTH: usize = 128;
 
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("an object key")
+/// A raw JSON text read one token at a time, validated as it is read.
+///
+/// Hand-rolled rather than driven by `serde_json`'s parser so that a
+/// number keeps its exact decimal text ([`canonical_number`]): the parser
+/// hands a visitor an `f64` for every non-integer (and every integer past
+/// `u64`), which would make distinct numbers such as `9007199254740992.0`
+/// and `9007199254740993.0` one canonical value, and it hands numbers over
+/// differently when a dependency enables `arbitrary_precision`. A string
+/// token is still decoded by `serde_json`, so escapes are its own.
+struct RawJson<'t> {
+    text: &'t str,
+    at: usize,
+}
+
+impl RawJson<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.text.as_bytes().get(self.at).copied()
     }
 
-    fn visit_str<E: de::Error>(self, key: &str) -> Result<String, E> {
-        check_key(self.budget, key.len()).map_err(E::custom)?;
-        Ok(key.to_owned())
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            self.at += 1;
+        }
     }
-}
 
-/// One JSON value of a raw text, written canonicalized into `out` as the
-/// parser reads it.
-struct Transcode<'a> {
-    out: &'a mut Vec<u8>,
-    budget: &'a Budget,
-    /// The writer's refusal, carried past the parser's error type.
-    failure: &'a Cell<Option<CanonicalError>>,
-}
+    /// Consumes `byte` when it is next.
+    fn eat(&mut self, byte: u8) -> bool {
+        let next = self.peek() == Some(byte);
+        if next {
+            self.at += 1;
+        }
+        next
+    }
 
-/// Records the writer's refusal for [`transcode`] and stops the parse.
-fn refuse<E: de::Error>(failure: &Cell<Option<CanonicalError>>, error: CanonicalError) -> E {
-    failure.set(Some(error));
-    E::custom(error)
-}
-
-impl Transcode<'_> {
-    /// Writes with `write`, a refusal recorded for [`transcode`].
-    fn write<E: de::Error>(
+    /// Writes the value at the cursor canonicalized into `out`.
+    fn value(
         &mut self,
-        write: impl FnOnce(&mut Vec<u8>, &Budget) -> Result<(), CanonicalError>,
-    ) -> Result<(), E> {
-        write(self.out, self.budget).map_err(|error| refuse(self.failure, error))
-    }
-}
-
-impl<'de> DeserializeSeed<'de> for Transcode<'_> {
-    type Value = ();
-
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_any(self)
-    }
-}
-
-/// An array element: its separating comma is written only once the parser
-/// has found the element.
-struct Element<'a> {
-    value: Transcode<'a>,
-    comma: bool,
-}
-
-impl<'de> DeserializeSeed<'de> for Element<'_> {
-    type Value = ();
-
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        let Element { mut value, comma } = self;
-        if comma {
-            value.write(|out, budget| push(out, budget, b","))?;
+        out: &mut Vec<u8>,
+        budget: &Budget,
+        depth: usize,
+    ) -> Result<(), CanonicalError> {
+        self.skip_whitespace();
+        match self.peek() {
+            Some(b'{') => self.object(out, budget, depth),
+            Some(b'[') => self.array(out, budget, depth),
+            Some(b'"') => {
+                let text = self.string()?;
+                push_str(out, budget, &text)
+            },
+            Some(b't') => self.literal("true", out, budget),
+            Some(b'f') => self.literal("false", out, budget),
+            Some(b'n') => self.literal("null", out, budget),
+            Some(b'-' | b'0'..=b'9') => {
+                let start = self.at;
+                while matches!(
+                    self.peek(),
+                    Some(b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+                ) {
+                    self.at += 1;
+                }
+                let text = self
+                    .text
+                    .get(start..self.at)
+                    .ok_or(CanonicalError::Unserializable)?;
+                let number = canonical_number(text)?;
+                push(out, budget, number.as_bytes())
+            },
+            _ => Err(CanonicalError::Unserializable),
         }
-        deserializer.deserialize_any(value)
-    }
-}
-
-impl<'de> Visitor<'de> for Transcode<'_> {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a JSON value")
     }
 
-    fn visit_bool<E: de::Error>(mut self, value: bool) -> Result<(), E> {
-        self.write(|out, budget| push_scalar(out, budget, value))
-    }
-
-    fn visit_i64<E: de::Error>(mut self, value: i64) -> Result<(), E> {
-        self.write(|out, budget| push_scalar(out, budget, value))
-    }
-
-    fn visit_u64<E: de::Error>(mut self, value: u64) -> Result<(), E> {
-        self.write(|out, budget| push_scalar(out, budget, value))
-    }
-
-    fn visit_f64<E: de::Error>(mut self, value: f64) -> Result<(), E> {
-        self.write(|out, budget| push_scalar(out, budget, value))
-    }
-
-    fn visit_str<E: de::Error>(mut self, value: &str) -> Result<(), E> {
-        self.write(|out, budget| push_str(out, budget, value))
-    }
-
-    fn visit_unit<E: de::Error>(mut self) -> Result<(), E> {
-        self.write(|out, budget| push(out, budget, b"null"))
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(mut self, mut items: A) -> Result<(), A::Error> {
-        self.write(|out, budget| push(out, budget, b"["))?;
-        let mut comma = false;
-        while items
-            .next_element_seed(Element {
-                value: Transcode {
-                    out: &mut *self.out,
-                    budget: self.budget,
-                    failure: self.failure,
-                },
-                comma,
-            })?
-            .is_some()
+    fn literal(
+        &mut self,
+        word: &'static str,
+        out: &mut Vec<u8>,
+        budget: &Budget,
+    ) -> Result<(), CanonicalError> {
+        if self
+            .text
+            .get(self.at..)
+            .is_some_and(|rest| rest.starts_with(word))
         {
-            comma = true;
+            self.at += word.len();
+            push(out, budget, word.as_bytes())
+        } else {
+            Err(CanonicalError::Unserializable)
         }
-        self.write(|out, budget| push(out, budget, b"]"))
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, mut entries: A) -> Result<(), A::Error> {
-        let Transcode {
-            out,
-            budget,
-            failure,
-        } = self;
-        let mut object = Canonical { out, budget }
-            .object(b"}", false)
-            .map_err(|error| refuse::<A::Error>(failure, error))?;
-        while let Some(key) = entries.next_key_seed(RawKey { budget })? {
-            let mut member = object
-                .begin_member(&key)
-                .map_err(|error| refuse::<A::Error>(failure, error))?;
-            entries.next_value_seed(Transcode {
-                out: &mut member,
-                budget,
-                failure,
-            })?;
-            object.members.push((key, member));
+    /// The decoded string token at the cursor.
+    fn string(&mut self) -> Result<String, CanonicalError> {
+        let bytes = self.text.as_bytes();
+        let mut end = self.at + 1;
+        loop {
+            match bytes.get(end) {
+                Some(b'"') => break,
+                Some(b'\\') => end += 2,
+                Some(_) => end += 1,
+                None => return Err(CanonicalError::Unserializable),
+            }
         }
-        object
-            .close()
-            .map_err(|error| refuse::<A::Error>(failure, error))
+        let token = self
+            .text
+            .get(self.at..=end)
+            .ok_or(CanonicalError::Unserializable)?;
+        self.at = end + 1;
+        serde_json::from_str(token).map_err(|_| CanonicalError::Unserializable)
     }
+
+    fn array(
+        &mut self,
+        out: &mut Vec<u8>,
+        budget: &Budget,
+        depth: usize,
+    ) -> Result<(), CanonicalError> {
+        if depth >= MAX_RAW_DEPTH {
+            return Err(CanonicalError::Unserializable);
+        }
+        self.at += 1;
+        push(out, budget, b"[")?;
+        self.skip_whitespace();
+        if !self.eat(b']') {
+            loop {
+                self.value(out, budget, depth + 1)?;
+                self.skip_whitespace();
+                if self.eat(b']') {
+                    break;
+                }
+                if !self.eat(b',') {
+                    return Err(CanonicalError::Unserializable);
+                }
+                // The comma is written only once its element is found.
+                self.skip_whitespace();
+                if matches!(self.peek(), None | Some(b']')) {
+                    return Err(CanonicalError::Unserializable);
+                }
+                push(out, budget, b",")?;
+            }
+        }
+        push(out, budget, b"]")
+    }
+
+    fn object(
+        &mut self,
+        out: &mut Vec<u8>,
+        budget: &Budget,
+        depth: usize,
+    ) -> Result<(), CanonicalError> {
+        if depth >= MAX_RAW_DEPTH {
+            return Err(CanonicalError::Unserializable);
+        }
+        self.at += 1;
+        let mut object = Canonical { out, budget }.object(b"}", None)?;
+        self.skip_whitespace();
+        if !self.eat(b'}') {
+            loop {
+                self.skip_whitespace();
+                if self.peek() != Some(b'"') {
+                    return Err(CanonicalError::Unserializable);
+                }
+                let key = self.string()?;
+                // The one text kept apart from the output: refused once it
+                // cannot fit as a JSON string.
+                check_key(budget, key.len())?;
+                self.skip_whitespace();
+                if !self.eat(b':') {
+                    return Err(CanonicalError::Unserializable);
+                }
+                let mut member = object.begin_member(&key)?;
+                self.value(&mut member, budget, depth + 1)?;
+                object.members.push((key, member));
+                self.skip_whitespace();
+                if self.eat(b'}') {
+                    break;
+                }
+                if !self.eat(b',') {
+                    return Err(CanonicalError::Unserializable);
+                }
+            }
+        }
+        object.close()
+    }
+}
+
+/// A JSON number's decimal value, normalized: `digits × 10^exponent`, with
+/// neither leading nor trailing zeros in `digits`; zero has no digits and
+/// no sign.
+#[derive(Debug, PartialEq, Eq)]
+struct Decimal {
+    negative: bool,
+    digits: String,
+    exponent: i128,
+}
+
+/// The decimal value of a JSON number `text`; refused unless `text` is
+/// one, by JSON's grammar.
+fn decimal(text: &str) -> Result<Decimal, CanonicalError> {
+    let refused = CanonicalError::Unserializable;
+    let digits_only =
+        |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let (negative, unsigned) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let (mantissa, exponent) = match unsigned.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, Some(exponent)),
+        None => (unsigned, None),
+    };
+    let (integer, fraction) = match mantissa.split_once('.') {
+        Some((integer, fraction)) => (integer, Some(fraction)),
+        None => (mantissa, None),
+    };
+    if !digits_only(integer)
+        || (integer.len() > 1 && integer.starts_with('0'))
+        || fraction.is_some_and(|fraction| !digits_only(fraction))
+    {
+        return Err(refused);
+    }
+    let exponent: i128 = match exponent {
+        None => 0,
+        Some(exponent) => {
+            if !digits_only(exponent.strip_prefix(['+', '-']).unwrap_or(exponent)) {
+                return Err(refused);
+            }
+            exponent.parse().map_err(|_| refused)?
+        },
+    };
+    let fraction = fraction.unwrap_or("");
+    let shift = i128::try_from(fraction.len()).map_err(|_| refused)?;
+    let mut exponent = exponent.checked_sub(shift).ok_or(refused)?;
+    let mut digits = format!("{integer}{fraction}");
+    while digits.ends_with('0') {
+        digits.pop();
+        exponent = exponent.checked_add(1).ok_or(refused)?;
+    }
+    let digits = digits.trim_start_matches('0').to_owned();
+    if digits.is_empty() {
+        return Ok(Decimal {
+            negative: false,
+            digits,
+            exponent: 0,
+        });
+    }
+    Ok(Decimal {
+        negative,
+        digits,
+        exponent,
+    })
+}
+
+/// The canonical text of the JSON number `text`, from its exact decimal
+/// value — independent of how a parser would have typed it.
+///
+/// - An integer is written as it is (any size; `-0` as `0`), as
+///   `serde_json` writes an integer value.
+/// - A number with a fraction or an exponent is written as `serde_json`
+///   writes the `f64` it parses to, when that text has exactly the same
+///   decimal value — so `1.50` and `1.5e0` write `1.5`, as a serialized
+///   `1.5_f64` does.
+/// - Otherwise the `f64` would lose digits (`9007199254740993.0`), so the
+///   exact value is written as `<digits>e<exponent>`: two numbers share a
+///   canonical text only when their decimal values are equal.
+fn canonical_number(text: &str) -> Result<String, CanonicalError> {
+    let exact = decimal(text)?;
+    if !text.contains(['.', 'e', 'E']) {
+        // `serde_json` parses `-0` as the float `-0.0`: written as it does.
+        return Ok(if exact.digits.is_empty() && text.starts_with('-') {
+            "-0.0".to_owned()
+        } else {
+            text.to_owned()
+        });
+    }
+    if let Ok(float) = text.parse::<f64>()
+        && float.is_finite()
+        && let Ok(shortest) = serde_json::to_string(&float)
+        && decimal(&shortest).is_ok_and(|value| value == exact)
+    {
+        return Ok(shortest);
+    }
+    let sign = if exact.negative { "-" } else { "" };
+    Ok(format!("{sign}{}e{}", exact.digits, exact.exponent))
 }
 
 #[cfg(test)]
@@ -1229,5 +1434,142 @@ mod tests {
         let raw = RawValue::from_string(r#"{"b":1,"\u0000":2}"#.to_owned()).expect("raw");
         write_canonical(&raw, &mut out).expect("fits");
         assert_eq!(out, br#"{"\u0000":2,"b":1}"#);
+    }
+}
+
+#[cfg(test)]
+mod number_tests {
+    use serde::{Serialize, ser::SerializeStruct as _};
+    use serde_json::value::RawValue;
+
+    use super::{
+        CanonicalError, NUMBER_TOKEN, canonical_number, to_canonical, to_canonical_finite,
+    };
+
+    /// Serializes as `serde_json::Number` does when a crate in the build
+    /// enables `arbitrary_precision`: a private token struct carrying the
+    /// number's text. The feature is off in this workspace; this pins that
+    /// the canonical bytes would not change if it were turned on.
+    struct PrivateNumber(&'static str);
+
+    impl Serialize for PrivateNumber {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut state = serializer.serialize_struct(NUMBER_TOKEN, 1)?;
+            state.serialize_field(NUMBER_TOKEN, self.0)?;
+            state.end()
+        }
+    }
+
+    fn text<T: Serialize + ?Sized>(value: &T) -> String {
+        String::from_utf8(to_canonical_finite(value).expect("canonical")).expect("utf8")
+    }
+
+    #[test]
+    fn a_private_number_token_is_its_canonical_number() {
+        for (number, typed) in [
+            ("8", text(&8_u64)),
+            ("-3", text(&-3_i64)),
+            ("1.5", text(&1.5_f64)),
+            ("0.1", text(&0.1_f64)),
+            ("1e2", text(&100.0_f64)),
+            ("18446744073709551616", "18446744073709551616".to_owned()),
+            ("9007199254740993.0", "9007199254740993e0".to_owned()),
+        ] {
+            assert_eq!(text(&PrivateNumber(number)), typed, "{number}");
+            let raw = RawValue::from_string(number.to_owned()).expect("raw");
+            assert_eq!(text(&raw), typed, "raw {number}");
+            assert_eq!(
+                to_canonical(&PrivateNumber(number)),
+                to_canonical(&raw),
+                "request mode {number}"
+            );
+        }
+        // Inside a structure, as `serde_json::Value::Number` sits.
+        let nested = std::collections::BTreeMap::from([("n", PrivateNumber("2.50"))]);
+        assert_eq!(text(&nested), r#"{"n":2.5}"#);
+        // The token carries a number, nothing else.
+        for not_a_number in [
+            "", "01", "1.", ".5", "1e", "+1", "NaN", "\"1\"", "[1]", "1 ",
+        ] {
+            assert_eq!(
+                to_canonical_finite(&PrivateNumber(not_a_number)),
+                Err(CanonicalError::Unserializable),
+                "{not_a_number:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_decimals_never_share_a_canonical_number() {
+        let pairs = [
+            ("9007199254740992.0", "9007199254740993.0"),
+            ("0.1", "0.10000000000000000001"),
+            ("1e308", "1e309"),
+            ("18446744073709551616", "18446744073709551617"),
+        ];
+        for (left, right) in pairs {
+            assert_ne!(
+                canonical_number(left),
+                canonical_number(right),
+                "{left} {right}"
+            );
+        }
+        for (left, right) in [("1.5", "1.50"), ("1.5", "15e-1"), ("100.0", "1E2")] {
+            assert_eq!(
+                canonical_number(left),
+                canonical_number(right),
+                "{left} {right}"
+            );
+        }
+        // An exact integer past 2^53 is written as it is, every time.
+        assert_eq!(
+            canonical_number("9007199254740993"),
+            Ok("9007199254740993".to_owned())
+        );
+    }
+
+    #[test]
+    fn raw_json_is_validated_as_it_is_read() {
+        for broken in [
+            "[1,]",
+            "[,1]",
+            "{\"a\":1,}",
+            "{\"a\" 1}",
+            "{ unquoted: 1 }",
+            "truthy",
+            "nil",
+            "[1 2]",
+            "\"open",
+            "01",
+            "-",
+            "1.e5",
+        ] {
+            assert_eq!(
+                to_canonical(&UncheckedRaw(broken.to_owned())),
+                Err(CanonicalError::Unserializable),
+                "{broken}"
+            );
+        }
+        // Nesting is bounded as `serde_json` bounds its parse.
+        let deep =
+            |depth: usize| UncheckedRaw(format!("{}{}", "[".repeat(depth), "]".repeat(depth)));
+        assert!(to_canonical(&deep(128)).is_ok());
+        assert_eq!(
+            to_canonical(&deep(129)),
+            Err(CanonicalError::Unserializable)
+        );
+    }
+
+    /// Serializes as a `RawValue` does, without its check that the text is
+    /// JSON.
+    struct UncheckedRaw(String);
+
+    impl Serialize for UncheckedRaw {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            const TOKEN: &str = "$serde_json::private::RawValue";
+            let mut state = serializer.serialize_struct(TOKEN, 1)?;
+            state.serialize_field(TOKEN, &self.0)?;
+            state.end()
+        }
     }
 }

@@ -101,8 +101,11 @@ fence) / `Drop` (destroy).
 
 - **Sync `is_broken`.** Read atomic flags only — no I/O, no async. For a network
   check, do it in `recycle` (async).
-- **`fingerprint()` semantics.** Hash only fields that make existing instances
-  stale (`application_name`, `statement_timeout`) — not `max_size`.
+- **`fingerprint()` semantics.** Fingerprint only fields that make existing
+  instances stale (`application_name`, `statement_timeout`) — not `max_size`.
+  Build it with `ConfigFingerprint` (or derive `ResourceConfig`), never
+  `std::hash::Hash`/`DefaultHasher`: the effect journal records it, so it must
+  be identical in every build.
 - **Credentialed pools discard by default.** If the resource declares credential
   slots, the default `recycle` **discards** rather than re-pools a dirty
   connection (cross-lease state bleed prevention, ADR-0093). Override `recycle`
@@ -297,7 +300,8 @@ fresh one. Override `check_cost()` to match the real cost of your `check`.
 
 Before sending the PR, verify:
 
-- [ ] **`fingerprint`** hashes only fields that make existing instances stale.
+- [ ] **`fingerprint`** covers only fields that make existing instances stale,
+      through `ConfigFingerprint` (stable across builds), not `DefaultHasher`.
 - [ ] **`is_broken` / `is_alive_sync`** are sync, O(1), no I/O.
 - [ ] **`check_cost`** reflects the real cost of `check` (default `Cheap`).
 - [ ] **`destroy`** consumes the `Instance` and honours `cx.deadline`; the

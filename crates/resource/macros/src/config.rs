@@ -2,15 +2,17 @@
 //!
 //! Emits:
 //! - `impl nebula_resource::ResourceConfig for T` with:
-//!   - `fn fingerprint(&self) -> u64` — deterministic structural hash folded over every
-//!     field that does NOT carry `#[config(skip_fingerprint)]`. Each included field
-//!     must implement `std::hash::Hash`. Uses `DefaultHasher::new()` (SipHash with
-//!     fixed seed) — deterministic within a process, which is the only requirement for
-//!     hot-reload change-detection.
-//!   - `fn validate(&self) -> Result<(), nebula_resource::Error>` — if
-//!     `#[config(validate = path)]` is present, delegates to `path(self)`; otherwise
-//!     the default `Ok(())` from the trait is inherited (method not emitted, so the
-//!     trait default applies).
+//!   - `fn fingerprint(&self) -> u64` — a stable fingerprint, built by
+//!     `nebula_resource::ConfigFingerprint`, of every field that does NOT carry
+//!     `#[config(skip_fingerprint)]`: SHA-256 over the canonical JSON of those fields
+//!     keyed by name. Each included field must implement `serde::Serialize`. The value
+//!     is the same in every build — the effect journal records it — which
+//!     `std::hash::Hash` cannot promise. Fieldless configs return `0`.
+//!   - `fn validate(&self) -> Result<(), nebula_resource::Error>` — when any field is
+//!     fingerprinted, first refuses a config whose fields have no stable fingerprint
+//!     (`ConfigFingerprint::try_finish`); then, if `#[config(validate = path)]` is
+//!     present, delegates to `path(self)`. A fieldless config without `validate`
+//!     inherits the trait default `Ok(())`.
 //! - Optionally `impl nebula_schema::HasSchema for T` returning a null schema for
 //!   unit structs and an empty-record schema for empty-braced structs,
 //!   UNLESS `#[config(schema = external)]` is specified, in which case no `HasSchema`
@@ -28,7 +30,7 @@
 //! ## Field attribute (`#[config(...)]`)
 //!
 //! Supported keys:
-//! - `skip_fingerprint` — this field is excluded from the fingerprint hash fold.
+//! - `skip_fingerprint` — this field is excluded from the fingerprint.
 //!
 //! Unknown field-level keys are rejected with a `compile_error!` at the key span.
 //!
@@ -36,13 +38,19 @@
 //!
 //! - Enums and unions: compile error at the type ident.
 //! - Tuple struct fields with `#[config]`: compile error.
-//! - Field included in fingerprint that does not impl `Hash` — compile error from
-//!   the emitted `<field as std::hash::Hash>::hash(&self.field, &mut h)` call.
+//! - Field included in fingerprint that does not impl `serde::Serialize` — compile
+//!   error from the emitted `ConfigFingerprint::field(name, &self.field)` call.
+//! - Field included in fingerprint whose type names a hash-ordered set (`HashSet`,
+//!   `hashbrown::HashSet`, `FxHashSet`, … anywhere in the type) — compile error at
+//!   the segment: its array order follows the per-process hash seed, so the
+//!   fingerprint would not be stable. `HashMap` is fine (object keys are sorted).
+//!
+//! `validate` also refuses NaN/infinite floats (JSON would alias them to `null`).
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{Data, DeriveInput, Fields, Ident, Path, Token, parse_macro_input};
+use syn::{Data, DeriveInput, Fields, Ident, Path, Token, ext::IdentExt as _, parse_macro_input};
 
 pub(crate) fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -186,21 +194,37 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         },
     };
 
-    // Build fingerprint hash fold: hash every included named field (or all positional
-    // fields for tuple structs). For unit structs: hash nothing → constant 0 by the
-    // fold base.
-    let fingerprint_body = build_fingerprint_body(fields)?;
+    // The stable fingerprint of every included named field (or every positional
+    // field of a tuple struct, named by index); `None` when no field is included.
+    let fingerprinted = fingerprinted_fields(fields)?;
 
-    // Build optional `validate` override.
-    let validate_impl = if let Some(path) = &opts.validate_fn {
-        quote! {
-            fn validate(&self) -> ::core::result::Result<(), ::nebula_resource::Error> {
-                #path(self)
+    // No field: all instances are structurally identical, so 0 is correct.
+    let fingerprint_body = fingerprinted
+        .as_ref()
+        .map_or_else(|| quote! { 0 }, |builder| quote! { #builder.finish() });
+
+    // A config whose fields have no stable fingerprint is refused before the
+    // caller's own validation runs.
+    let fingerprint_check = fingerprinted.as_ref().map(|builder| {
+        quote! { #builder.try_finish()?; }
+    });
+    let validate_impl = match (&opts.validate_fn, fingerprint_check) {
+        (None, None) => {
+            // No validate override — inherit the trait default (`Ok(())`).
+            quote! {}
+        },
+        (path, check) => {
+            let delegate = path.as_ref().map_or_else(
+                || quote! { ::core::result::Result::Ok(()) },
+                |path| quote! { #path(self) },
+            );
+            quote! {
+                fn validate(&self) -> ::core::result::Result<(), ::nebula_resource::Error> {
+                    #check
+                    #delegate
+                }
             }
-        }
-    } else {
-        // No validate override — inherit the trait default (`Ok(())`).
-        quote! {}
+        },
     };
 
     let resource_config_impl = quote! {
@@ -246,90 +270,117 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 
 // ── Fingerprint body builder ───────────────────────────────────────────────
 
-fn build_fingerprint_body(fields: &Fields) -> syn::Result<TokenStream2> {
-    // DefaultHasher::new() uses SipHash with fixed, non-random seed — it IS
-    // deterministic within a process and within the same std version. Hot-reload
-    // change detection only compares fingerprints within the same running process,
-    // so cross-run determinism is not required here.
-    match fields {
-        Fields::Unit => {
-            // Unit struct: no fields → hash nothing → return 0.
-            // All instances are structurally identical, so 0 is correct.
-            Ok(quote! { 0 })
-        },
-        Fields::Named(named) => {
-            let hash_calls: Vec<TokenStream2> = named
-                .named
-                .iter()
-                .map(|field| {
-                    let field_opts = FieldOptions::parse(&field.attrs)?;
-                    if field_opts.skip_fingerprint {
-                        return Ok(quote! {});
-                    }
-                    // `Fields::Named` guarantees every field has an ident;
-                    // the `let-else` turns the structural invariant into a
-                    // compiler error rather than a panic.
-                    let Some(ident) = field.ident.as_ref() else {
-                        return Err(syn::Error::new_spanned(
-                            field,
-                            "internal: named field missing ident — \
-                             report this as a #[derive(ResourceConfig)] bug",
-                        ));
-                    };
-                    Ok(quote! {
-                        ::std::hash::Hash::hash(&self.#ident, &mut __hasher);
-                    })
-                })
-                .collect::<syn::Result<Vec<_>>>()?;
+/// The `ConfigFingerprint` builder expression over every field not marked
+/// `#[config(skip_fingerprint)]`, or `None` when no field is included.
+///
+/// The fingerprint must be stable across builds — the effect journal records
+/// it — so fields are encoded through `serde::Serialize` into canonical JSON
+/// and digested with SHA-256 by `nebula_resource::ConfigFingerprint`, never
+/// through `std::hash::Hash`, whose data is not stable between compiler
+/// versions or platforms. A named field is keyed by its identifier, a
+/// positional one by its index; the builder sorts them, so declaration
+/// order does not matter.
+fn fingerprinted_fields(fields: &Fields) -> syn::Result<Option<TokenStream2>> {
+    let calls: Vec<TokenStream2> = match fields {
+        Fields::Unit => Vec::new(),
+        Fields::Named(named) => named
+            .named
+            .iter()
+            .map(|field| {
+                let field_opts = FieldOptions::parse(&field.attrs)?;
+                if field_opts.skip_fingerprint {
+                    return Ok(None);
+                }
+                // `Fields::Named` guarantees every field has an ident;
+                // the `let-else` turns the structural invariant into a
+                // compiler error rather than a panic.
+                let Some(ident) = field.ident.as_ref() else {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "internal: named field missing ident — \
+                         report this as a #[derive(ResourceConfig)] bug",
+                    ));
+                };
+                reject_unordered(&field.ty)?;
+                let name = ident.unraw().to_string();
+                Ok(Some(quote! { .field(#name, &self.#ident) }))
+            })
+            .filter_map(Result::transpose)
+            .collect::<syn::Result<Vec<_>>>()?,
+        Fields::Unnamed(unnamed) => unnamed
+            .unnamed
+            .iter()
+            .enumerate()
+            .map(|(i, field)| {
+                let field_opts = FieldOptions::parse(&field.attrs)?;
+                if field_opts.skip_fingerprint {
+                    return Ok(None);
+                }
+                reject_unordered(&field.ty)?;
+                let idx = syn::Index::from(i);
+                let name = i.to_string();
+                Ok(Some(quote! { .field(#name, &self.#idx) }))
+            })
+            .filter_map(Result::transpose)
+            .collect::<syn::Result<Vec<_>>>()?,
+    };
+    if calls.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(quote! {
+        ::nebula_resource::ConfigFingerprint::new() #(#calls)*
+    }))
+}
 
-            let all_skipped = hash_calls.iter().all(TokenStream2::is_empty);
-            if all_skipped {
-                // All fields skipped — same as unit struct.
-                Ok(quote! { 0 })
-            } else {
-                Ok(quote! {
-                    {
-                        use ::std::hash::Hasher as _;
-                        let mut __hasher = ::std::collections::hash_map::DefaultHasher::new();
-                        #(#hash_calls)*
-                        __hasher.finish()
-                    }
-                })
+/// Refuses a fingerprinted field whose type names a hash-ordered set
+/// anywhere in it (`HashSet`, `hashbrown::HashSet`, `FxHashSet`, …, also
+/// inside `Option`/`Vec`/references/tuples/arrays).
+///
+/// The canonical encoding sorts object keys — so a `HashMap` is fine — but
+/// keeps array order, which is content for a `Vec`. A hash set serializes
+/// as an array in its iteration order, which follows the per-process hash
+/// seed: equal configurations would get different fingerprints, and a
+/// journaled effect would be refused after a restart. The check is
+/// syntactic: a set hidden behind a type alias or inside another type is
+/// the field type's own determinism contract (documented on
+/// `ConfigFingerprint`).
+fn reject_unordered(ty: &syn::Type) -> syn::Result<()> {
+    match ty {
+        syn::Type::Path(path) => {
+            if let Some(qself) = &path.qself {
+                reject_unordered(&qself.ty)?;
             }
-        },
-        Fields::Unnamed(unnamed) => {
-            // Tuple struct: check that none of the fields carry `#[config(...)]` that
-            // would be confusing. We hash them positionally.
-            let hash_calls: Vec<TokenStream2> = unnamed
-                .unnamed
-                .iter()
-                .enumerate()
-                .map(|(i, field)| {
-                    let field_opts = FieldOptions::parse(&field.attrs)?;
-                    if field_opts.skip_fingerprint {
-                        return Ok(quote! {});
+            for segment in &path.path.segments {
+                if segment.ident.to_string().ends_with("HashSet") {
+                    return Err(syn::Error::new_spanned(
+                        segment,
+                        format!(
+                            "`{}` iterates in hash order, which differs between processes, so \
+                             the configuration fingerprint (recorded by the effect journal) \
+                             would not be stable; use `BTreeSet`, a sorted `Vec`, or mark the \
+                             field `#[config(skip_fingerprint)]`",
+                            segment.ident
+                        ),
+                    ));
+                }
+                if let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments {
+                    for argument in &arguments.args {
+                        if let syn::GenericArgument::Type(inner) = argument {
+                            reject_unordered(inner)?;
+                        }
                     }
-                    let idx = syn::Index::from(i);
-                    Ok(quote! {
-                        ::std::hash::Hash::hash(&self.#idx, &mut __hasher);
-                    })
-                })
-                .collect::<syn::Result<Vec<_>>>()?;
-
-            let all_skipped = hash_calls.iter().all(TokenStream2::is_empty);
-            if all_skipped {
-                Ok(quote! { 0 })
-            } else {
-                Ok(quote! {
-                    {
-                        use ::std::hash::Hasher as _;
-                        let mut __hasher = ::std::collections::hash_map::DefaultHasher::new();
-                        #(#hash_calls)*
-                        __hasher.finish()
-                    }
-                })
+                }
             }
+            Ok(())
         },
+        syn::Type::Reference(reference) => reject_unordered(&reference.elem),
+        syn::Type::Array(array) => reject_unordered(&array.elem),
+        syn::Type::Slice(slice) => reject_unordered(&slice.elem),
+        syn::Type::Paren(paren) => reject_unordered(&paren.elem),
+        syn::Type::Group(group) => reject_unordered(&group.elem),
+        syn::Type::Ptr(pointer) => reject_unordered(&pointer.elem),
+        syn::Type::Tuple(tuple) => tuple.elems.iter().try_for_each(reject_unordered),
+        _ => Ok(()),
     }
 }
 
