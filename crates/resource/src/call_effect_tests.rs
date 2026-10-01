@@ -109,6 +109,9 @@ struct FakeState {
     grant_budget: Option<Duration>,
     /// The next position of the owner's one sequence.
     next_ordinal: u32,
+    /// The run prefix the owner labels its occurrences with, when set (as
+    /// a stateful owner labels an iteration's).
+    run_prefix: Option<String>,
     slots: HashMap<String, FakeSlot>,
     next_id: u8,
     log: Vec<Step>,
@@ -165,6 +168,13 @@ impl FakeOwner {
     /// effects meet the slots the earlier run recorded.
     fn resume(&self) {
         self.state().next_ordinal = 0;
+    }
+
+    /// Starts a new positional run labelled `prefix`: its ordinals restart.
+    fn begin_run(&self, prefix: &str) {
+        let mut state = self.state();
+        state.run_prefix = Some(prefix.to_owned());
+        state.next_ordinal = 0;
     }
 
     fn fail_next_prepare(&self, refusal: JournalRefusal) {
@@ -241,6 +251,14 @@ impl EffectJournal for FakeOwner {
         let next = state.next_ordinal;
         state.next_ordinal += 1;
         next
+    }
+
+    fn next_occurrence(&self) -> String {
+        let ordinal = self.next_ordinal();
+        match self.state().run_prefix.clone() {
+            Some(prefix) => format!("{prefix}/unit/v1/#{ordinal:06}"),
+            None => occurrence(ordinal),
+        }
     }
 
     async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
@@ -1021,6 +1039,103 @@ async fn the_intent_carries_the_derived_declaration() {
         fixture.owner.log().last(),
         Some(&Step::Settle("applied_without_output"))
     );
+}
+
+/// An owner that only hands out ordinals: every durable step is refused.
+#[derive(Debug, Default)]
+struct OrdinalOnly(Mutex<u32>);
+
+#[async_trait::async_trait]
+impl EffectJournal for OrdinalOnly {
+    fn next_ordinal(&self) -> u32 {
+        let mut next = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let ordinal = *next;
+        *next += 1;
+        ordinal
+    }
+
+    async fn prepare(&self, _: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    async fn grant(&self, _: &JournalSlot) -> Result<CallGrant, JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    async fn explain(
+        &self,
+        _: &JournalSlot,
+        _: CallGrant,
+        _: Crossing,
+    ) -> Result<(), JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    async fn settle(
+        &self,
+        _: &JournalSlot,
+        _: CallGrant,
+        _: CallOutcome<'_>,
+    ) -> Result<(), JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    fn track(&self) -> InFlight {
+        InFlight::new(|| {})
+    }
+
+    fn is_closed(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn the_default_occurrence_is_the_flat_positional_label() {
+    let owner = OrdinalOnly::default();
+    assert_eq!(owner.next_occurrence(), "unit/v1/#000000");
+    assert_eq!(owner.next_occurrence(), "unit/v1/#000001");
+    assert_eq!(owner.next_ordinal(), 2, "one sequence underneath");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_owner_labels_each_run_and_a_slot_cap_refusal_sends_nothing() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    fixture.owner.begin_run("it0");
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+        .await
+        .expect("first run");
+    fixture.owner.begin_run("it1");
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]))
+        .await
+        .expect("second run");
+    let occurrences: Vec<String> = fixture
+        .owner
+        .intents()
+        .into_iter()
+        .map(|intent| intent.occurrence)
+        .collect();
+    assert_eq!(
+        occurrences,
+        ["it0/unit/v1/#000000", "it1/unit/v1/#000000"],
+        "the owner's label, its ordinal restarted per run"
+    );
+
+    fixture
+        .owner
+        .fail_next_prepare(JournalRefusal::SlotCapExceeded);
+    let refused = row
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(3)]))
+        .await
+        .expect_err("over the owner's cap");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(
+        refused.detail(),
+        "effect journal slot cap reached; unit refused"
+    );
+    assert_eq!(calls.made(), 2, "nothing sent past the cap");
 }
 
 #[tokio::test(start_paused = true)]

@@ -173,9 +173,10 @@ impl OwnedEffect {
         })
     }
 
-    /// Assigns the unit's positional occurrence label `unit/v1/#{ordinal:06}`
-    /// from the owner's next ordinal — one sequence for all its effect
-    /// units — once; later calls return the same label.
+    /// Assigns the unit's positional occurrence label from the owner's next
+    /// occurrence ([`EffectJournal::next_occurrence`]: `unit/v1/#{ordinal:06}`
+    /// by default) — one sequence for all its effect units — once; later
+    /// calls return the same label.
     ///
     /// The resource, kind (operation or session), name and version are not
     /// in the label: they are bound by the effect's contract, so a changed
@@ -183,10 +184,7 @@ impl OwnedEffect {
     /// resources or kinds reordered — is a mismatch rather than a fresh
     /// effect.
     fn assign_occurrence(&self) -> &str {
-        self.occurrence.get_or_init(|| {
-            let ordinal = self.owner.next_ordinal();
-            format!("unit/v1/#{ordinal:06}")
-        })
+        self.occurrence.get_or_init(|| self.owner.next_occurrence())
     }
 
     /// The occurrence label the owner records the effect under; empty
@@ -457,6 +455,10 @@ fn refusal_error(refusal: JournalRefusal) -> OperationError {
         JournalRefusal::Closed => {
             OperationError::new(ErrorKind::Cancelled, "effect owner closed; unit refused")
         },
+        JournalRefusal::SlotCapExceeded => OperationError::new(
+            ErrorKind::Permanent,
+            "effect journal slot cap reached; unit refused",
+        ),
         JournalRefusal::Unavailable
         | JournalRefusal::AcknowledgementUnknown
         | JournalRefusal::LeaseLost => OperationError::new(

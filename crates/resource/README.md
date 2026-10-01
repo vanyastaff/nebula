@@ -825,10 +825,15 @@ ledger's 1 MiB evidence cap is recorded digest-only, so a resume fails
 (`idempotency_key()`, 1–256 bytes of visible ASCII, built deterministically
 from input or state — never random, never a retry number).
 
-The unit's occurrence is positional, `unit/v1/#{ordinal:06}`, the ordinal
-counting all of the owner's (the node attempt's) effect units — every
+The unit's occurrence is positional, the label the owner hands out
+(`EffectJournal::next_occurrence`): by default `unit/v1/#{ordinal:06}`, the
+ordinal counting all of the owner's (the node attempt's) effect units — every
 resource, operations and sessions alike — in the order they start
-preparing (`#000003`). It is taken by the unit's first poll, not at submit:
+preparing (`#000003`). An owner whose units run in several positional runs
+prefixes the run and restarts the ordinal in each (the engine labels a
+stateful action's iteration `n` as `it{n}/unit/v1/#{ordinal:06}`); an owner
+may also refuse a prepare past its cap (`JournalRefusal::SlotCapExceeded`,
+`Permanent` / `NotSent`). It is taken by the unit's first poll, not at submit:
 a submission dropped before it is polled takes no position, so a branch
 that builds and drops one cannot shift later effects onto unrecorded
 positions. The resource key, unit kind, operation key and version belong to

@@ -13,10 +13,11 @@
 //!    ([`track`](EffectJournal::track)); a
 //!    [closed](EffectJournal::is_closed) owner refuses it. A submission is
 //!    lazy: one dropped before its first poll never reaches the owner.
-//! 2. **Prepare** — the first poll takes the unit's positional ordinal in
-//!    the owner's one sequence for all its effect units, whatever their
-//!    resource or kind ([`next_ordinal`](EffectJournal::next_ordinal)),
-//!    and hands the owner a [`JournalIntent`]; the returned
+//! 2. **Prepare** — the first poll takes the unit's positional occurrence
+//!    label in the owner's one sequence for all its effect units, whatever
+//!    their resource or kind
+//!    ([`next_occurrence`](EffectJournal::next_occurrence)), and hands the
+//!    owner a [`JournalIntent`]; the returned
 //!    [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome, refuses an
 //!    unknown one, or lets the unit run.
 //! 3. **Grant** — each attempt, after its checkout and credential reads and
@@ -41,8 +42,9 @@ use crate::{dedup::SlotIdentity, error::ErrorKind};
 /// (`Arc<dyn EffectJournal>`).
 ///
 /// Every method but [`next_ordinal`](Self::next_ordinal),
-/// [`track`](Self::track) and [`is_closed`](Self::is_closed) is a durable
-/// step. A refusal ([`JournalRefusal`]) never means a provider call happened.
+/// [`next_occurrence`](Self::next_occurrence), [`track`](Self::track) and
+/// [`is_closed`](Self::is_closed) is a durable step. A refusal
+/// ([`JournalRefusal`]) never means a provider call happened.
 #[async_trait::async_trait]
 pub trait EffectJournal: Send + Sync + fmt::Debug {
     /// The next ordinal in the owner's one sequence for all its effect
@@ -62,6 +64,22 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
     /// positions the same way, across resources and kinds: a different
     /// intent is a mismatch, an identical one is interchangeable.
     fn next_ordinal(&self) -> u32;
+
+    /// The occurrence label of the next effect unit: what the unit's first
+    /// poll records its effect under, right before
+    /// [`prepare`](Self::prepare).
+    ///
+    /// Defaults to `unit/v1/#{ordinal:06}` with the
+    /// [`next_ordinal`](Self::next_ordinal) — one flat positional sequence.
+    /// An owner whose units run in several positional runs (a stateful
+    /// action's iterations) overrides it to prefix the run, e.g.
+    /// `it{n}/unit/v1/#{ordinal:06}`, restarting the ordinal per run. The
+    /// label must be visible ASCII of at most 512 bytes; whatever the
+    /// prefix, everything but the position stays out of it (see
+    /// [`next_ordinal`](Self::next_ordinal)).
+    fn next_occurrence(&self) -> String {
+        format!("unit/v1/#{:06}", self.next_ordinal())
+    }
 
     /// Durably prepares the effect `intent` describes (recovering an
     /// unacknowledged earlier prepare) and returns its slot.
@@ -211,8 +229,10 @@ pub struct JournalIntent<'a> {
     /// Attempts the unit may be granted
     /// ([`Operation::max_attempts`](super::Operation::max_attempts)).
     pub max_invocations: NonZeroU32,
-    /// The occurrence label, `unit/v1/#{ordinal:06}`: visible ASCII, at most
-    /// 512 bytes. Positional in the owner's one sequence — the resource,
+    /// The occurrence label the owner assigned
+    /// ([`EffectJournal::next_occurrence`]; `unit/v1/#{ordinal:06}` by
+    /// default): visible ASCII, at most 512 bytes. Positional in the owner's
+    /// one sequence — the resource,
     /// `kind`, `operation` and `version` are not part of it, so a changed
     /// effect under a recorded occurrence is a mismatch.
     pub occurrence: &'a str,
@@ -406,6 +426,9 @@ pub enum JournalRefusal {
     LeaseLost,
     /// The effect's outcome is unknown: no call is granted.
     Unknown,
+    /// The owner already holds as many effects as it records for one run
+    /// of its node: no further effect is prepared.
+    SlotCapExceeded,
 }
 
 impl JournalRefusal {
@@ -419,6 +442,7 @@ impl JournalRefusal {
             Self::Closed => "closed",
             Self::LeaseLost => "lease_lost",
             Self::Unknown => "unknown",
+            Self::SlotCapExceeded => "slot_cap_exceeded",
         }
     }
 }
