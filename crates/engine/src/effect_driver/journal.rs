@@ -149,6 +149,10 @@ const IDEMPOTENCY_KEY_DOMAIN: &[u8] = b"nebula.idempotency-key.v1";
 /// Longest window the ledger accepts: one year.
 const MAX_LEDGER_WINDOW: Duration = Duration::from_hours(365 * 24);
 
+/// The least time the verdict's final occurrence read gets, even when the
+/// drain spent the whole limit.
+const FINAL_READ_FLOOR: Duration = Duration::from_secs(5);
+
 /// Most provider calls one slot may be granted.
 const MAX_SLOT_INVOCATIONS: u32 = 10_000;
 
@@ -500,6 +504,10 @@ impl NodeEffectJournal {
     ///   or fails anyway;
     /// - any other failure the journal met (an occurrence mismatch, an
     ///   invalid contract or record).
+    ///
+    /// The final read is bounded by what is left of `drain_limit`, and at
+    /// least [`FINAL_READ_FLOOR`]; a read that does not answer by then is a
+    /// deferring ledger failure (`Unavailable`).
     pub(crate) async fn conclude_node(
         &self,
         drain_limit: Duration,
@@ -555,14 +563,32 @@ impl NodeEffectJournal {
         // that died during an earlier dispatch of the node — before the
         // attempt was recorded, so this attempt's generation may still be
         // 1 — can have left a granted call that only the ledger knows of.
-        let slots = authority
-            .ledger
-            .read_occurrences(
+        // Bounded by what is left of the drain limit — at least
+        // `FINAL_READ_FLOOR`, so a node whose units used it all can still
+        // read — and deferred when the ledger does not answer by then: the
+        // turn releases its lease without finalizing.
+        let read_deadline = cleanup_deadline.max(
+            tokio::time::Instant::now()
+                .checked_add(FINAL_READ_FLOOR)
+                .unwrap_or(cleanup_deadline),
+        );
+        let slots = tokio::time::timeout_at(
+            read_deadline,
+            authority.ledger.read_occurrences(
                 &authority.scope,
                 &self.inner.execution,
                 authority.node_key.as_str(),
-            )
-            .await?;
+            ),
+        )
+        .await
+        .map_err(|_elapsed| {
+            tracing::warn!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                "the node's occurrences were not read within the verdict budget; deferring"
+            );
+            EffectExecutionError::Ledger(OperationLedgerError::Unavailable)
+        })??;
         let mut unresolved: Vec<EffectSlotId> = slots
             .iter()
             .map(EffectOccurrenceRecord::record)

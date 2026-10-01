@@ -359,6 +359,8 @@ struct CountingLedger {
     inner: nebula_storage::inmem::InMemoryOperationLedger,
     calls: AtomicUsize,
     hang_outcomes: AtomicBool,
+    /// Every later occurrence listing never returns.
+    hang_reads: AtomicBool,
     /// Notified when an outcome write hangs.
     hung: tokio::sync::Notify,
 }
@@ -395,6 +397,9 @@ impl OperationLedger for CountingLedger {
         node_key: &str,
     ) -> Result<Vec<EffectOccurrenceRecord>, OperationLedgerError> {
         self.count();
+        if self.hang_reads.load(Ordering::SeqCst) {
+            return std::future::pending().await;
+        }
         self.inner
             .read_occurrences(scope, execution_id, node_key)
             .await
@@ -484,6 +489,7 @@ impl Harness {
             inner: nebula_storage::inmem::InMemoryOperationLedger::new(&executions),
             calls: AtomicUsize::new(0),
             hang_outcomes: AtomicBool::new(false),
+            hang_reads: AtomicBool::new(false),
             hung: tokio::sync::Notify::new(),
         });
         let scope = Scope::new("workspace-a", "org-a");
@@ -899,6 +905,33 @@ async fn an_effect_prepared_into_an_earlier_attempts_gap_is_a_mismatch() {
     );
     assert_eq!(harness.desk.keys().len(), 1, "one provider call");
     assert_eq!(harness.slots().await, before, "nothing prepared");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_final_read_that_never_answers_defers_the_verdict() {
+    let harness = Harness::new().await;
+    harness.ledger.hang_reads.store(true, Ordering::SeqCst);
+    let journal = harness.journal(1);
+    let started = tokio::time::Instant::now();
+    let verdict = journal.conclude(Duration::from_mins(1)).await;
+    assert_eq!(
+        verdict,
+        Err(EffectExecutionError::Ledger(
+            OperationLedgerError::Unavailable
+        ))
+    );
+    assert!(verdict.is_err_and(EffectExecutionError::is_deferred));
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_mins(1),
+        "bounded by the verdict budget"
+    );
+
+    // A spent budget still gives the read its floor.
+    let spent = harness.journal(1);
+    let started = tokio::time::Instant::now();
+    assert!(spent.conclude(Duration::ZERO).await.is_err());
+    assert_eq!(started.elapsed(), FINAL_READ_FLOOR);
 }
 
 #[tokio::test]

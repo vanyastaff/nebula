@@ -1490,7 +1490,9 @@ let admitted = recorded.readmit_against(fresh)?;
   `ENGINE:EFFECT_OCCURRENCE_MISMATCH` (`EffectExecutionError::OccurrenceMismatch`,
   plus `JournalOutcomeUnknown`) — as does a node about to succeed although
   an earlier attempt recorded an effect (settled, or a call that crossed)
-  this attempt never met again —, and a lost lease releases the turn without
+  this attempt never met again —, and a lost lease (or a final occurrence
+  read that does not answer within the verdict budget, at least 5 s)
+  releases the turn without
   finalizing. Raw leases stay refused; only handle-routed effects are
   journaled (lease-facade units and raw egress are outside the journal).
   A journaled node's accessor keeps the node's branch-scoped layer in front

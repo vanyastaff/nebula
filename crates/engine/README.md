@@ -179,7 +179,9 @@ configuration, and process lifecycle.
   never reported as a failure an error strategy could retry or continue past —
   `conclude` drains the units
   for at most `min(OPERATION_DEADLINE_CAP, execution deadline left)`, closes the
-  journal and records every unexplained call as ambiguous within the same limit; its
+  journal and records every unexplained call as ambiguous within the same limit, then
+  reads the node's occurrences within what is left of it (at least 5 s; a read that
+  does not answer defers the turn like an unavailable ledger); its
   verdict overrides the node's result: a lost lease or unknown acknowledgement
   releases the lease without finalizing, any slot whose call may have crossed without
   a recorded outcome (unknown, outstanding, ambiguous, or held past the limit by a
