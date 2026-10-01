@@ -143,8 +143,14 @@ configuration, and process lifecycle.
   `Write` unit through the journal, which records it as one operation-ledger slot via
   the shared `LedgerSlot` core: prepare (natural key `(scope, execution, node,
   occurrence)`), grant, explain (not crossed / ambiguous), settle (exact evidence
-  recommit). Building the journal costs nothing durable: no ledger I/O happens until
-  the first effect is prepared, and reads are never prepared. Occurrences are the
+  recommit). Building the journal costs nothing durable: no ledger write happens until
+  the first effect is prepared, and reads are never prepared; `conclude` always reads
+  the node's occurrences once (a crash before an attempt was recorded leaves the next
+  attempt at the same generation). Each grant carries what is left of the ledger's
+  window for the call, and the resource runtime stops the unit there; a grant with
+  nothing left is withheld. A slot's contract identity binds the destination (resource
+  key, credential slot identity, configuration fingerprint) and `RECORD_OUTPUT`, so a
+  reload to another endpoint or a changed recording policy is a mismatch. Occurrences are the
   resource runtime's `unit/v1/{resource}/{op|session}/{name}/v{N}/#{ordinal:06}`, with
   ordinals restarting per node attempt in submit order, so an engine retry reuses them:
   a settled effect replays its recorded output with no provider call, an opaque
@@ -159,11 +165,13 @@ configuration, and process lifecycle.
   unit that outlived its node) is recorded as an ambiguous crossing on the next
   prepare, never from `Drop`. After the action returns, `conclude` drains the units
   for at most `min(OPERATION_DEADLINE_CAP, execution deadline left)`, closes the
-  journal and records every unexplained call as ambiguous; its verdict overrides the
-  action's result: a lost lease or unknown acknowledgement releases the lease without
-  finalizing, any unknown slot fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even
-  if the action swallowed the unit's error), and a changed request, key part or
-  credential binding under a recorded occurrence fails it
+  journal and records every unexplained call as ambiguous within the same limit; its
+  verdict overrides the action's result: a lost lease or unknown acknowledgement
+  releases the lease without finalizing, any slot whose call may have crossed without
+  a recorded outcome (unknown, outstanding, ambiguous, or held past the limit by a
+  stuck unit) fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even if the action
+  swallowed the unit's error), and a changed request, key part, credential binding,
+  configuration or recording policy under a recorded occurrence fails it
   `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent. Counters:
   `nebula_effect_journal_prepares_total{phase}`,
   `nebula_effect_journal_refusals_total{step,refusal}`,

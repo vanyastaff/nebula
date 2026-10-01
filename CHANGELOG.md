@@ -1416,8 +1416,17 @@ let admitted = recorded.readmit_against(fresh)?;
   per node attempt, and its resource handles drive every `Idempotent` /
   `Write` unit through it: each effect is one operation-ledger slot under the
   natural key `(scope, execution, node, occurrence)`, prepared lazily (no
-  ledger I/O until the first effect; reads are never prepared), granted per
-  provider call and settled or explained. Occurrences restart per node
+  ledger write until the first effect; reads are never prepared; concluding
+  always reads the node's occurrences once, since a crash before an attempt
+  was recorded leaves the next one at the same generation), granted per
+  provider call and settled or explained. A grant carries what is left of the
+  ledger's window for the call (`CallGrant::with_budget` / `budget`, new):
+  the resource runtime shrinks the unit's deadline to it, so no call starts
+  after a stable key's deduplication window, and a grant with nothing left is
+  withheld. A slot's contract identity binds the destination — resource key,
+  credential slot identity and the row's configuration fingerprint
+  (`JournalIntent::config_fingerprint`, new) — and `RECORD_OUTPUT`; a reload
+  between a unit's submit and its grant refuses the attempt unsent. Occurrences restart per node
   attempt, so a retry or resume replays a settled effect's recorded output
   with no provider call, refuses an unknown one and re-grants a retryable
   failure within `Operation::max_attempts`; the `it{n}/` occurrence prefix is
@@ -1425,9 +1434,11 @@ let admitted = recorded.readmit_against(fresh)?;
   prepare, `base64url(SHA-256(...))` over the tenant, resource, operation,
   version and the developer key part (or execution, node and occurrence) —
   never an attempt number. The journal's verdict overrides the action's
-  result: any unknown slot fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN`
-  (even when the action swallowed the unit's error), a changed request or
-  binding under a recorded occurrence fails it with the new
+  result: any slot whose call may have crossed without a recorded outcome
+  (unknown, outstanding, ambiguous, or held past the drain limit by a stuck
+  unit) fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even when the action
+  swallowed the unit's error), a changed request, binding, configuration or
+  recording policy under a recorded occurrence fails it with the new
   `ENGINE:EFFECT_OCCURRENCE_MISMATCH` (`EffectExecutionError::OccurrenceMismatch`,
   plus `JournalOutcomeUnknown`), and a lost lease releases the turn without
   finalizing. Raw leases stay refused; only handle-routed effects are

@@ -19,11 +19,13 @@
 //! | explain | `RecordDisposition` (`BeforeBoundary` / `Ambiguous`) |
 //! | settle | `RecordOutcome` (exact recommit on a lost acknowledgement) |
 //!
-//! **Lazy.** Building a journal costs nothing durable: no ledger I/O
-//! happens until the first `Idempotent` or `Write` unit is prepared, and a
-//! `Read` unit is never prepared. A node that only reads concludes without
-//! touching the ledger unless an earlier attempt of it may have left slots
-//! (its attempt generation is above 1).
+//! **Lazy writes, one read.** Building a journal costs nothing durable: no
+//! ledger write happens until the first `Idempotent` or `Write` unit is
+//! prepared, and a `Read` unit is never prepared. Concluding always reads
+//! the node's occurrences once — even for a node that only read: a process
+//! that died during an earlier dispatch of the node, before that attempt
+//! was recorded, leaves the next attempt at the same generation, and only
+//! the ledger knows the call it may have made.
 //!
 //! **Occurrences.** A unit's occurrence is the label the resource runtime
 //! builds, `unit/v1/{resource}/{op|session}/{name}/v{version}/#{ordinal:06}`,
@@ -47,11 +49,26 @@
 //! it as an ambiguous crossing first — an opaque effect's outcome becomes
 //! unknown, a stable-key effect may be granted again within its window.
 //!
+//! **Grant budget.** A grant carries what is left of the ledger's window
+//! for the call ([`LedgerSlot::call_timing`], as for a remote effect): the
+//! resource runtime stops the unit there, so no call starts after a stable
+//! key's deduplication window. A grant with nothing left is withheld: the
+//! outcome becomes unknown when an earlier call of the slot may have
+//! crossed, and the call is recorded not crossed otherwise.
+//!
+//! **Destination.** A slot's contract identity binds the row (resource key,
+//! credential slot identity and configuration fingerprint) and how its
+//! success is recorded: a reload that points the row elsewhere, or a
+//! changed `RECORD_OUTPUT`, makes a recorded occurrence a mismatch, and
+//! nothing is sent.
+//!
 //! **Verdict.** The journal never lets a node finish on a result its ledger
 //! contradicts: after the action returns,
 //! [`conclude`](NodeEffectJournal::conclude) drains the in-flight units,
 //! closes the journal, records every granted-but-unexplained call as
-//! ambiguous and reports a verdict that overrides the action's result.
+//! ambiguous (within the drain limit) and reports a verdict that overrides
+//! the action's result. Any slot whose call may have crossed without a
+//! recorded outcome fails the node as unknown.
 
 use std::{
     collections::HashMap,
@@ -141,9 +158,6 @@ struct JournalInner {
     in_flight: AtomicUsize,
     drained: tokio::sync::Notify,
     closed: AtomicBool,
-    /// Whether any unit asked this journal to prepare a slot: until then
-    /// the journal has done no ledger I/O.
-    prepared: AtomicBool,
 }
 
 #[derive(Default)]
@@ -203,7 +217,6 @@ impl NodeEffectJournal {
                 in_flight: AtomicUsize::new(0),
                 drained: tokio::sync::Notify::new(),
                 closed: AtomicBool::new(false),
-                prepared: AtomicBool::new(false),
             }),
         }
     }
@@ -289,6 +302,13 @@ impl NodeEffectJournal {
 
     /// Derives the slot binding of `intent`: its contract identity, request
     /// fingerprint and provider idempotency key.
+    ///
+    /// The contract identity binds the action, the destination (resource
+    /// key, credential slot identity, configuration fingerprint), the unit
+    /// (kind, operation, version, effect class, recorded output) and the
+    /// slot policy: any of them changing under a recorded occurrence is an
+    /// occurrence mismatch, and nothing is sent. The provider key binds
+    /// only what a provider deduplicates on.
     fn derive(&self, intent: &JournalIntent<'_>) -> Result<DerivedBinding, EffectExecutionError> {
         let authority = &self.inner.authority;
         let policy = slot_policy(intent.effect, intent.recovery, intent.max_invocations)?;
@@ -299,12 +319,16 @@ impl NodeEffectJournal {
             &mut identity,
             authority.action_version.to_string().as_bytes(),
         )?;
+        // The destination: the row, its credentials and its configuration.
         frame(&mut identity, intent.resource_key.as_str().as_bytes())?;
         frame(&mut identity, &slot_identity_bytes(intent.binding)?)?;
+        identity.update(intent.config_fingerprint.to_be_bytes());
         frame(&mut identity, intent.kind.as_str().as_bytes())?;
         frame(&mut identity, intent.operation.as_bytes())?;
         identity.update(intent.version.to_be_bytes());
         identity.update([effect_class(intent.effect)?]);
+        // How a success is recorded decides what a replay yields.
+        identity.update([u8::from(intent.record_output)]);
         identity.update([capability_discriminant(policy.capability())?]);
         identity.update(policy.max_invocations().to_be_bytes());
         identity.update(policy.max_queries().to_be_bytes());
@@ -367,19 +391,24 @@ impl NodeEffectJournal {
     }
 
     /// Ends the journal's node attempt: drains the in-flight units for at
-    /// most `drain_limit`, closes the journal and returns its verdict, which
+    /// most `drain_limit`, closes the journal, records leaked calls within
+    /// what is left of `drain_limit` and returns its verdict, which
     /// overrides the action's result.
     ///
-    /// The ledger is read only when this journal prepared a slot or an
-    /// earlier attempt of the node may have left one.
+    /// Reads the node's occurrences once, always: no reliable signal tells
+    /// a first dispatch from one that follows a crash before the earlier
+    /// attempt was recorded.
     ///
     /// # Errors
     ///
     /// - a deferring failure (lease lost, acknowledgement unknown, ledger
     ///   unavailable) — the turn must release its lease without finalizing;
     /// - [`JournalOutcomeUnknown`](EffectExecutionError::JournalOutcomeUnknown)
-    ///   when any slot of the node has an unknown outcome (or an unexplained
-    ///   call), even if the action swallowed the unit's error;
+    ///   when any slot of the node has an unknown outcome — recorded
+    ///   unknown, an unexplained call, an unresolved call that may have
+    ///   crossed (an ambiguous stable-key call), or a slot a stuck unit kept
+    ///   locked past the drain limit — even if the action swallowed the
+    ///   unit's error;
     /// - any other failure the journal met (an occurrence mismatch, an
     ///   invalid contract or record).
     pub(crate) async fn conclude(&self, drain_limit: Duration) -> Result<(), EffectExecutionError> {
@@ -396,6 +425,7 @@ impl NodeEffectJournal {
 
     async fn verdict(&self, drain_limit: Duration) -> Result<(), EffectExecutionError> {
         let authority = &self.inner.authority;
+        let drain_started = tokio::time::Instant::now();
         if !self.drain(drain_limit).await {
             tracing::warn!(
                 execution_id = %authority.execution_id,
@@ -405,18 +435,22 @@ impl NodeEffectJournal {
             );
         }
         self.close();
-        self.record_leaked_calls().await;
+        // The cleanup shares the drain's limit: a unit stuck in a ledger
+        // call keeps its slot locked, and the node must still conclude.
+        let cleanup_deadline = drain_started
+            .checked_add(drain_limit)
+            .unwrap_or_else(tokio::time::Instant::now);
+        let uninspected = self.record_leaked_calls(cleanup_deadline).await;
         let failure = self.state().failure;
         if let Some(failure) = failure
             && failure.is_deferred()
         {
             return Err(failure);
         }
-        if !self.inner.prepared.load(Ordering::SeqCst) && authority.attempt_generation <= 1 {
-            // Nothing was prepared and no earlier attempt of the node can
-            // have left a slot: the ledger has nothing to say.
-            return failure.map_or(Ok(()), Err);
-        }
+        // Always read, even when this attempt prepared nothing: a process
+        // that died during an earlier dispatch of the node — before the
+        // attempt was recorded, so this attempt's generation may still be
+        // 1 — can have left a granted call that only the ledger knows of.
         let slots = authority
             .ledger
             .read_occurrences(
@@ -425,25 +459,19 @@ impl NodeEffectJournal {
                 authority.node_key.as_str(),
             )
             .await?;
-        let unresolved: Vec<EffectSlotId> = slots
+        let mut unresolved: Vec<EffectSlotId> = slots
             .iter()
             .map(EffectOccurrenceRecord::record)
-            .filter(|record| {
-                record.protocol().map_or_else(
-                    || record.state() == OperationState::OutcomeUnknown,
-                    // An outstanding call left by a crashed attempt that no
-                    // unit of this one prepared again may have crossed: its
-                    // outcome is as unknown as a recorded unknown one.
-                    |protocol| {
-                        matches!(
-                            protocol.phase(),
-                            EffectPhase::OutcomeUnknown | EffectPhase::InvocationOutstanding
-                        )
-                    },
-                )
-            })
+            .filter(|record| is_unresolved(record))
             .map(|record| record.operation().slot_id())
             .collect();
+        // A slot whose unit still holds it could not be inspected: it may
+        // be mid-call, so it is never counted as resolved.
+        for slot_id in uninspected {
+            if !unresolved.contains(&slot_id) {
+                unresolved.push(slot_id);
+            }
+        }
         if let Some(first) = unresolved.first() {
             let listed: Vec<String> = unresolved.iter().map(ToString::to_string).collect();
             tracing::error!(
@@ -463,17 +491,33 @@ impl NodeEffectJournal {
     /// Records every call a unit was granted and never explained as an
     /// ambiguous crossing: a unit that outlived its action (or whose outcome
     /// could not be recorded) may have reached the provider.
-    async fn record_leaked_calls(&self) {
+    ///
+    /// Bounded by `deadline`: a slot whose unit still holds it past the
+    /// deadline (a ledger request that never returns), or whose recording
+    /// does not finish by then, is returned uninspected — the verdict counts
+    /// it as unresolved.
+    async fn record_leaked_calls(&self, deadline: tokio::time::Instant) -> Vec<EffectSlotId> {
         if self
             .state()
             .failure
             .is_some_and(EffectExecutionError::is_deferred)
         {
-            return;
+            return Vec::new();
         }
-        let entries: Vec<_> = self.state().slots.values().cloned().collect();
-        for entry in entries {
-            let mut slot = entry.lock().await;
+        let entries: Vec<_> = self
+            .state()
+            .slots
+            .iter()
+            .map(|(slot_id, entry)| (*slot_id, Arc::clone(entry)))
+            .collect();
+        let mut uninspected = Vec::new();
+        for (slot_id, entry) in entries {
+            // `timeout_at` polls the lock once even past the deadline: a free
+            // slot is always inspected.
+            let Ok(mut slot) = tokio::time::timeout_at(deadline, entry.lock()).await else {
+                uninspected.push(slot_id);
+                continue;
+            };
             let outstanding = slot.protocol().ok().and_then(|protocol| {
                 (protocol.phase() == EffectPhase::InvocationOutstanding)
                     .then(|| protocol.invocation())
@@ -482,20 +526,28 @@ impl NodeEffectJournal {
             let Some(call) = outstanding else {
                 continue;
             };
-            let recorded = slot
-                .advance(
+            let recorded = tokio::time::timeout_at(
+                deadline,
+                slot.advance(
                     self.access(),
                     &OperationCommand::RecordDisposition {
                         invocation: call,
                         disposition: InvocationDisposition::Ambiguous,
                     },
-                )
-                .await;
-            if let Err(error) = recorded {
-                let _ = self.refuse(effect_journal_step::RECORD_LEAKED_CALL, error);
-                return;
+                ),
+            )
+            .await;
+            match recorded {
+                Ok(Ok(_)) => {},
+                Ok(Err(error)) => {
+                    let _ = self.refuse(effect_journal_step::RECORD_LEAKED_CALL, error);
+                    uninspected.push(slot_id);
+                    return uninspected;
+                },
+                Err(_elapsed) => uninspected.push(slot_id),
             }
         }
+        uninspected
     }
 
     /// Resolves the phase a unit sees for a prepared `slot`, recording a
@@ -522,6 +574,46 @@ impl NodeEffectJournal {
             .await?;
         }
         slot_phase(slot)
+    }
+
+    /// Withholds a granted `call` whose window ended before the grant
+    /// reached the journal. The call is never handed out. When an earlier
+    /// call of the slot may have crossed, a resend could reach a provider
+    /// that no longer deduplicates it: the outcome becomes unknown.
+    /// Otherwise nothing ever crossed: the call is recorded not crossed and
+    /// refused as unavailable (the ledger answered too slowly).
+    async fn expired_grant(&self, slot: &mut LedgerSlot, call: OperationCallId) -> JournalRefusal {
+        const STEP: &str = effect_journal_step::GRANT;
+        // The withheld call is counted among the crossed ones until it is
+        // explained.
+        let crossed_before = slot.protocol().map_or(1, |protocol| {
+            protocol.crossed_invocations().saturating_sub(1)
+        });
+        tracing::warn!(
+            execution_id = %self.inner.authority.execution_id,
+            node_key = %self.inner.authority.node_key,
+            crossed_before,
+            "journaled effect granted with no window left; call withheld"
+        );
+        if crossed_before > 0 {
+            return match slot.mark_unknown(self.access()).await {
+                Ok(()) => self.refused(STEP, JournalRefusal::Unknown),
+                Err(error) => self.refuse(STEP, error),
+            };
+        }
+        let recorded = slot
+            .advance(
+                self.access(),
+                &OperationCommand::RecordDisposition {
+                    invocation: call,
+                    disposition: InvocationDisposition::BeforeBoundary,
+                },
+            )
+            .await;
+        match recorded {
+            Ok(_) => self.refused(STEP, JournalRefusal::Unavailable),
+            Err(error) => self.refuse(STEP, error),
+        }
     }
 
     fn count_prepared(&self, phase: &SlotPhase) {
@@ -568,9 +660,6 @@ impl EffectJournal for NodeEffectJournal {
         if self.is_closed() {
             return Err(self.refused(STEP, JournalRefusal::Closed));
         }
-        // From here on the ledger may hold a slot of this node attempt, even
-        // when the prepare's acknowledgement is lost.
-        self.inner.prepared.store(true, Ordering::SeqCst);
         let authority = &self.inner.authority;
         let derived = self
             .derive(intent)
@@ -635,6 +724,7 @@ impl EffectJournal for NodeEffectJournal {
 
     async fn grant(&self, unit: &JournalSlot) -> Result<CallGrant, JournalRefusal> {
         const STEP: &str = effect_journal_step::GRANT;
+        let authority = &self.inner.authority;
         let entry = self.entry(STEP, unit)?;
         let mut slot = entry.lock().await;
         if self.is_closed() {
@@ -654,8 +744,41 @@ impl EffectJournal for NodeEffectJournal {
             )
             .await
         {
-            Ok(Some(GrantedCall::Invocation { call, .. })) => {
-                Ok(CallGrant::from_bytes(*call.as_bytes()))
+            Ok(Some(GrantedCall::Invocation {
+                call,
+                authorized_at_ms,
+                request_started,
+            })) => {
+                if self.is_closed() {
+                    // The node concluded while the grant was in flight: the
+                    // call is never handed out, so it provably did not cross.
+                    let _ = slot
+                        .advance(
+                            self.access(),
+                            &OperationCommand::RecordDisposition {
+                                invocation: call,
+                                disposition: InvocationDisposition::BeforeBoundary,
+                            },
+                        )
+                        .await;
+                    return Err(self.refused(STEP, JournalRefusal::Closed));
+                }
+                // The ledger vouches for the call only until its window ends
+                // (a stable key's deduplication, an opaque effect's recovery
+                // window): the unit must finish the call within what is left.
+                let budget = match slot.call_timing(
+                    authority.clock.as_ref(),
+                    CallPurpose::Invocation,
+                    authorized_at_ms,
+                    request_started,
+                ) {
+                    Ok((_, budget)) => budget,
+                    Err(error) => return Err(self.refuse(STEP, error)),
+                };
+                if budget.is_zero() {
+                    return Err(self.expired_grant(&mut slot, call).await);
+                }
+                Ok(CallGrant::from_bytes(*call.as_bytes()).with_budget(budget))
             },
             // The ledger refused a fresh call: the budget or the window ran
             // out and the outcome is now unknown.
@@ -777,6 +900,23 @@ fn verdict_label(failure: Option<&EffectExecutionError>) -> &'static str {
         Some(EffectExecutionError::InvalidEvidence) => effect_journal_verdict::INVALID_EVIDENCE,
         Some(_) => effect_journal_verdict::LEDGER,
     }
+}
+
+/// Whether a slot of the node leaves its effect's outcome unknown: a slot
+/// whose outcome is not recorded although a call may have reached the
+/// provider — recorded unknown, outstanding (a crashed or leaked call), or
+/// any later phase after a call that may have crossed, such as an
+/// ambiguous stable-key call the unit did not get to resend (or whose
+/// error the action swallowed).
+fn is_unresolved(record: &OperationRecord) -> bool {
+    record.protocol().map_or_else(
+        || record.state() == OperationState::OutcomeUnknown,
+        |protocol| match protocol.phase() {
+            EffectPhase::Resolved => false,
+            EffectPhase::OutcomeUnknown | EffectPhase::InvocationOutstanding => true,
+            _ => protocol.crossed_invocations() > 0,
+        },
+    )
 }
 
 /// The phase a unit sees for a prepared `slot` with no outstanding call.

@@ -350,11 +350,15 @@ fn ledger_failures_map_to_one_refusal_and_one_verdict() {
 
 // ── a journal over a ledger ──────────────────────────────────────────────
 
-/// Counts every ledger call, forwarding to the in-memory ledger.
+/// Counts every ledger call, forwarding to the in-memory ledger; once told
+/// to, never answers an outcome write.
 #[derive(Debug)]
 struct CountingLedger {
     inner: nebula_storage::inmem::InMemoryOperationLedger,
     calls: AtomicUsize,
+    hang_outcomes: AtomicBool,
+    /// Notified when an outcome write hangs.
+    hung: tokio::sync::Notify,
 }
 
 impl CountingLedger {
@@ -364,6 +368,11 @@ impl CountingLedger {
 
     fn count(&self) {
         self.calls.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Every later outcome write never returns.
+    fn hang_outcomes(&self) {
+        self.hang_outcomes.store(true, Ordering::SeqCst);
     }
 }
 
@@ -415,7 +424,42 @@ impl OperationLedger for CountingLedger {
         command: &OperationCommand,
     ) -> Result<OperationAdvance, OperationLedgerError> {
         self.count();
+        if self.hang_outcomes.load(Ordering::SeqCst)
+            && matches!(command, OperationCommand::RecordOutcome(_))
+        {
+            self.hung.notify_one();
+            return std::future::pending().await;
+        }
         self.inner.advance(scope, slot_id, fencing, command).await
+    }
+}
+
+/// A clock whose every monotonic reading is `step` after the previous one:
+/// each ledger round trip seems to take `step`.
+struct SteppingClock {
+    origin: Instant,
+    step: Duration,
+    readings: std::sync::atomic::AtomicU32,
+}
+
+impl SteppingClock {
+    fn new(step: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            origin: Instant::now(),
+            step,
+            readings: std::sync::atomic::AtomicU32::new(0),
+        })
+    }
+}
+
+impl Clock for SteppingClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        nebula_core::accessor::SystemClock.now()
+    }
+
+    fn monotonic(&self) -> Instant {
+        let reading = self.readings.fetch_add(1, Ordering::SeqCst);
+        self.origin + self.step * reading
     }
 }
 
@@ -437,6 +481,8 @@ impl Harness {
         let ledger = Arc::new(CountingLedger {
             inner: nebula_storage::inmem::InMemoryOperationLedger::new(&executions),
             calls: AtomicUsize::new(0),
+            hang_outcomes: AtomicBool::new(false),
+            hung: tokio::sync::Notify::new(),
         });
         let scope = Scope::new("workspace-a", "org-a");
         let execution_id = ExecutionId::new();
@@ -464,7 +510,7 @@ impl Harness {
         manager
             .register(RegistrationSpec {
                 resource: Gateway(Arc::clone(&desk)),
-                config: (),
+                config: GatewayConfig { endpoint: 1 },
                 scope: nebula_core::ScopeLevel::Global,
                 slot_identity: SlotIdentity::Unbound,
                 topology: Resident::<Gateway>::new(ResidentConfig::default()),
@@ -486,6 +532,19 @@ impl Harness {
 
     /// The journal of attempt `attempt_generation` of node `charge`.
     fn journal(&self, attempt_generation: u64) -> NodeEffectJournal {
+        self.journal_with_clock(
+            attempt_generation,
+            Arc::new(nebula_core::accessor::SystemClock),
+        )
+    }
+
+    /// The journal of attempt `attempt_generation` of node `charge`, timing
+    /// its grants by `clock`.
+    fn journal_with_clock(
+        &self,
+        attempt_generation: u64,
+        clock: Arc<dyn Clock>,
+    ) -> NodeEffectJournal {
         NodeEffectJournal::new(JournalAuthority {
             ledger: Arc::clone(&self.ledger) as Arc<dyn OperationLedger>,
             scope: self.scope.clone(),
@@ -495,9 +554,26 @@ impl Harness {
             action_key: "billing.charge".to_owned(),
             action_version: semver::Version::new(1, 0, 0),
             attempt_generation,
-            clock: Arc::new(nebula_core::accessor::SystemClock),
+            clock,
             metrics: self.metrics.clone(),
         })
+    }
+
+    /// Points the gateway row at another endpoint.
+    fn reload(&self, endpoint: u64) {
+        assert_eq!(
+            self.manager
+                .reload_config::<Gateway>(
+                    GatewayConfig { endpoint },
+                    &nebula_core::ScopeLevel::Global
+                )
+                .expect("reload"),
+            nebula_resource::ReloadOutcome::SwappedImmediately
+        );
+    }
+
+    fn phase(slot: &EffectOccurrenceRecord) -> EffectPhase {
+        slot.record().protocol().expect("protocol").phase()
     }
 
     /// The gateway's handle under `journal`.
@@ -587,12 +663,24 @@ impl Desk {
     }
 }
 
+/// The gateway row's configuration: which endpoint it calls.
+#[derive(Clone, nebula_schema::Schema)]
+struct GatewayConfig {
+    endpoint: u64,
+}
+
+impl nebula_resource::ResourceConfig for GatewayConfig {
+    fn fingerprint(&self) -> u64 {
+        self.endpoint
+    }
+}
+
 #[derive(Clone)]
 struct Gateway(Arc<Desk>);
 
 #[async_trait::async_trait]
 impl Provider for Gateway {
-    type Config = ();
+    type Config = GatewayConfig;
     type Instance = Arc<Desk>;
     type Topology = Resident<Self>;
 
@@ -610,7 +698,7 @@ impl Provider for Gateway {
 
     async fn create(
         &self,
-        (): &(),
+        _: &GatewayConfig,
         _: &ResourceContext,
     ) -> Result<Arc<Desk>, nebula_resource::error::Error> {
         Ok(Arc::clone(&self.0))
@@ -644,6 +732,52 @@ impl<const IDEM: bool> Operation<Gateway> for Charge<IDEM> {
             NonZeroU32::MIN
         }
     }
+
+    async fn run(self, cx: &mut OperationCx<'_, Gateway>) -> Result<u64, OperationError> {
+        let key = cx.idempotency_key().map(ToString::to_string);
+        cx.call(Cost::ONE, async move |desk, ()| {
+            desk.charge(key.clone()).await
+        })
+        .await
+    }
+}
+
+/// [`Charge`]'s opaque `Write` with the same key, version and request,
+/// recorded as a digest only (`RECORD_OUTPUT = false`).
+#[derive(Serialize, Deserialize)]
+struct ChargeDigest {
+    order: u64,
+}
+
+impl Operation<Gateway> for ChargeDigest {
+    type Output = u64;
+    const KEY: &'static str = "billing.charge";
+    const RECORD_OUTPUT: bool = false;
+
+    async fn run(self, cx: &mut OperationCx<'_, Gateway>) -> Result<u64, OperationError> {
+        let key = cx.idempotency_key().map(ToString::to_string);
+        cx.call(Cost::ONE, async move |desk, ()| {
+            desk.charge(key.clone()).await
+        })
+        .await
+    }
+}
+
+/// An `Idempotent` charge the provider deduplicates for two seconds only,
+/// with one attempt.
+#[derive(Serialize, Deserialize)]
+struct Windowed {
+    order: u64,
+}
+
+/// [`Windowed`]'s key window.
+const SHORT_WINDOW: Duration = Duration::from_secs(2);
+
+impl Operation<Gateway> for Windowed {
+    type Output = u64;
+    const KEY: &'static str = "billing.windowed";
+    const EFFECT: Effect = Effect::Idempotent;
+    const KEY_WINDOW: Duration = SHORT_WINDOW;
 
     async fn run(self, cx: &mut OperationCx<'_, Gateway>) -> Result<u64, OperationError> {
         let key = cx.idempotency_key().map(ToString::to_string);
@@ -722,14 +856,17 @@ fn ordinals_count_per_resource_kind_and_name_from_zero() {
 }
 
 #[tokio::test]
-async fn a_read_only_in_practice_node_does_no_ledger_io() {
+async fn a_read_only_in_practice_node_writes_nothing_and_reads_once() {
     let harness = Harness::new().await;
     let journal = harness.journal(1);
     let handle = harness.handle(&journal);
     assert_eq!(handle.submit(Balance).await.expect("a read runs"), 0);
     assert_eq!(handle.submit(Balance).await.expect("a read runs"), 0);
-    assert_eq!(journal.conclude(DRAIN).await, Ok(()));
     assert_eq!(harness.ledger.calls(), 0, "reads are never prepared");
+    // Concluding reads the node's occurrences once, and nothing else: an
+    // earlier dispatch may have left a slot even at generation 1.
+    assert_eq!(journal.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.ledger.calls(), 1);
     assert!(harness.slots().await.is_empty());
     assert_eq!(
         harness.counter(
@@ -739,11 +876,45 @@ async fn a_read_only_in_practice_node_does_no_ledger_io() {
         1
     );
 
-    // A later attempt of the node may find slots an earlier one left: it
-    // reads the node's occurrences once, and nothing else.
     let retry = harness.journal(2);
     assert_eq!(retry.conclude(DRAIN).await, Ok(()));
-    assert_eq!(harness.ledger.calls(), 1);
+    assert_eq!(harness.ledger.calls(), 2);
+}
+
+#[tokio::test]
+async fn a_crash_before_the_attempt_was_recorded_still_fails_the_node() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Hang]);
+    let crashed = harness.journal(1);
+    let in_flight = tokio::spawn(
+        harness
+            .handle(&crashed)
+            .submit(Charge::<false> { order: 14 }),
+    );
+    tokio::time::timeout(Duration::from_secs(30), harness.desk.entered.notified())
+        .await
+        .expect("the call reached the gateway");
+
+    // The process died before the dispatch was recorded: the recovered node
+    // runs again as attempt 1, and this time submits no effect.
+    let recovered = harness.journal(1);
+    assert_eq!(
+        harness
+            .handle(&recovered)
+            .submit(Balance)
+            .await
+            .expect("a read runs"),
+        1
+    );
+    let verdict = recovered.conclude(DRAIN).await;
+    assert!(
+        matches!(
+            verdict,
+            Err(EffectExecutionError::JournalOutcomeUnknown { unresolved: 1, .. })
+        ),
+        "{verdict:?}"
+    );
+    in_flight.abort();
 }
 
 #[tokio::test]
@@ -965,4 +1136,199 @@ async fn a_leaked_unit_bounds_the_drain_and_the_closed_journal_refuses_it() {
     drop(leaked);
     assert!(journal.drain(Duration::from_secs(5)).await);
     assert_eq!(harness.ledger.calls(), 0);
+}
+
+#[tokio::test]
+async fn an_ambiguous_stable_key_call_the_action_swallowed_fails_the_node() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Lost, Reply::Lost]);
+    let journal = harness.journal(1);
+    let error = harness
+        .handle(&journal)
+        .submit(Charge::<true> { order: 15 })
+        .await
+        .expect_err("both answers were lost");
+    assert_eq!(error.sent(), SentState::MaybeSent);
+    assert_eq!(harness.desk.keys().len(), 2);
+    let slots = harness.slots().await;
+    assert_eq!(Harness::phase(&slots[0]), EffectPhase::Ambiguous);
+
+    // The action swallowed the error; a call that may have applied still
+    // fails the node.
+    let verdict = journal.conclude(DRAIN).await;
+    assert!(
+        matches!(
+            verdict,
+            Err(EffectExecutionError::JournalOutcomeUnknown { unresolved: 1, .. })
+        ),
+        "{verdict:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_grant_bounds_the_call_by_what_is_left_of_the_key_window() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Hang]);
+    let journal = harness.journal(1);
+    let started = tokio::time::Instant::now();
+    let error = harness
+        .handle(&journal)
+        .submit(Windowed { order: 16 })
+        .await
+        .expect_err("cut at the end of the key window");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed <= SHORT_WINDOW,
+        "the call ran past the key window: {elapsed:?}"
+    );
+    assert_eq!(error.sent(), SentState::MaybeSent);
+    assert_eq!(harness.desk.keys().len(), 1);
+    assert!(matches!(
+        journal.conclude(DRAIN).await,
+        Err(EffectExecutionError::JournalOutcomeUnknown { unresolved: 1, .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_first_grant_with_no_window_left_is_withheld_and_not_crossed() {
+    let harness = Harness::new().await;
+    // Every ledger round trip seems to outlast the two-second key window.
+    let journal = harness.journal_with_clock(1, SteppingClock::new(Duration::from_secs(3)));
+    let refused = harness
+        .handle(&journal)
+        .submit(Windowed { order: 17 })
+        .await
+        .expect_err("no window left for the call");
+    assert_eq!(refused.sent(), SentState::NotSent);
+    assert!(harness.desk.keys().is_empty(), "nothing sent");
+    let slots = harness.slots().await;
+    assert_eq!(Harness::phase(&slots[0]), EffectPhase::BeforeBoundary);
+    assert_eq!(journal.conclude(DRAIN).await, Ok(()), "nothing crossed");
+}
+
+#[tokio::test]
+async fn a_regrant_with_no_window_left_makes_the_outcome_unknown() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Lost]);
+    let first = harness.journal(1);
+    harness
+        .handle(&first)
+        .submit(Windowed { order: 18 })
+        .await
+        .expect_err("the answer was lost");
+    assert!(first.conclude(DRAIN).await.is_err());
+
+    // The retry may resend under the same key only while the provider
+    // still deduplicates it; the grant arrives after that.
+    let retry = harness.journal_with_clock(2, SteppingClock::new(Duration::from_secs(3)));
+    let refused = harness
+        .handle(&retry)
+        .submit(Windowed { order: 18 })
+        .await
+        .expect_err("past the key window");
+    assert_eq!(*refused.kind(), nebula_resource::ErrorKind::OutcomeUnknown);
+    assert_eq!(harness.desk.keys().len(), 1, "never resent");
+    let slots = harness.slots().await;
+    assert_eq!(Harness::phase(&slots[0]), EffectPhase::OutcomeUnknown);
+    assert!(matches!(
+        retry.conclude(DRAIN).await,
+        Err(EffectExecutionError::JournalOutcomeUnknown { unresolved: 1, .. })
+    ));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_unit_stuck_in_the_ledger_cannot_hold_the_verdict_past_the_drain() {
+    let harness = Harness::new().await;
+    let journal = harness.journal(1);
+    harness.ledger.hang_outcomes();
+    let stuck = tokio::spawn(
+        harness
+            .handle(&journal)
+            .submit(Charge::<false> { order: 19 }),
+    );
+    tokio::time::timeout(Duration::from_secs(30), harness.ledger.hung.notified())
+        .await
+        .expect("the settle reached the ledger");
+    assert_eq!(harness.desk.keys().len(), 1);
+
+    // The unit holds its slot in a ledger write that never returns: the
+    // verdict still comes within the drain limit, and the slot it could not
+    // inspect counts as unresolved.
+    let verdict = tokio::time::timeout(
+        Duration::from_secs(60),
+        journal.conclude(Duration::from_secs(1)),
+    )
+    .await
+    .expect("the verdict is bounded by the drain limit");
+    assert!(
+        matches!(
+            verdict,
+            Err(EffectExecutionError::JournalOutcomeUnknown { unresolved: 1, .. })
+        ),
+        "{verdict:?}"
+    );
+    stuck.abort();
+}
+
+#[tokio::test]
+async fn a_changed_output_recording_is_a_mismatch_and_sends_nothing() {
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    harness
+        .handle(&first)
+        .submit(Charge::<false> { order: 20 })
+        .await
+        .expect("applied");
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+
+    // A redeploy turned `RECORD_OUTPUT` off under the same key and version.
+    let retry = harness.journal(2);
+    let refused = harness
+        .handle(&retry)
+        .submit(ChargeDigest { order: 20 })
+        .await
+        .expect_err("recorded under other semantics");
+    assert_eq!(refused.sent(), SentState::NotSent);
+    assert_eq!(
+        retry.conclude(DRAIN).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
+    );
+    assert_eq!(harness.desk.keys().len(), 1, "nothing sent");
+}
+
+#[tokio::test]
+async fn a_reload_to_another_endpoint_is_a_mismatch_and_sends_nothing() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Lost, Reply::Lost]);
+    let first = harness.journal(1);
+    harness
+        .handle(&first)
+        .submit(Charge::<true> { order: 21 })
+        .await
+        .expect_err("both answers were lost");
+    assert!(first.conclude(DRAIN).await.is_err());
+
+    // The row now points at an endpoint with no deduplication history of
+    // the key: the ambiguous charge is never resent there.
+    harness.reload(2);
+    let retry = harness.journal(2);
+    let refused = harness
+        .handle(&retry)
+        .submit(Charge::<true> { order: 21 })
+        .await
+        .expect_err("another destination under the same occurrence");
+    assert_eq!(refused.sent(), SentState::NotSent);
+    assert_eq!(*refused.kind(), nebula_resource::ErrorKind::Permanent);
+    assert_eq!(harness.desk.keys().len(), 2, "nothing resent");
+    assert_eq!(
+        harness.counter(
+            NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+            &[
+                ("step", effect_journal_step::PREPARE),
+                ("refusal", JournalRefusal::Mismatch.as_str()),
+            ]
+        ),
+        1
+    );
+    assert!(retry.conclude(DRAIN).await.is_err());
 }
