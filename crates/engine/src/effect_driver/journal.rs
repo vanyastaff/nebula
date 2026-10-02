@@ -3091,6 +3091,7 @@ impl EffectJournal for NodeEffectJournal {
             // Always recorded, even empty: "none concurrent" is not
             // "unknown".
             concurrent_with: Some(&concurrent_with),
+            observation: false,
         };
         // From here until the ledger answers, a fresh row may be written
         // without this unit learning it: a prepare dropped mid-call (the

@@ -166,6 +166,7 @@ impl JournaledNode {
                     contract: &contract,
                     provider_key: None,
                     concurrent_with: None,
+                    observation: false,
                 },
                 self.fencing,
             )

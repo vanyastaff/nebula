@@ -1243,6 +1243,8 @@ async fn scoped_execution_store_rebind_carries_resume_tokens() {
 #[derive(Default)]
 struct ScopeRecordingLedger {
     observed: Mutex<Vec<Scope>>,
+    /// The observation flag and concurrency list of every prepare.
+    prepared: Mutex<Vec<(bool, Option<Vec<nebula_storage_port::dto::PositionRange>>)>>,
 }
 
 impl std::fmt::Debug for ScopeRecordingLedger {
@@ -1286,6 +1288,10 @@ impl OperationLedger for ScopeRecordingLedger {
             .lock()
             .expect("recording lock")
             .push(binding.scope.clone());
+        self.prepared.lock().expect("recording lock").push((
+            binding.observation,
+            binding.concurrent_with.map(<[_]>::to_vec),
+        ));
         Err(OperationLedgerError::Unavailable)
     }
 
@@ -1351,6 +1357,54 @@ async fn operation_ledger_substitutes_the_bound_scope() {
     assert_eq!(
         inner.observed.lock().expect("recording lock").as_slice(),
         &[scope_a(), scope_a()]
+    );
+}
+
+#[tokio::test]
+async fn operation_ledger_prepare_forwards_the_binding_under_the_bound_scope() {
+    use nebula_storage_port::dto::{
+        AttemptGeneration, DestinationCapability, PositionRange, PreparedEffectContract,
+        PreparedEffectPolicy, RequestFingerprint,
+    };
+    let inner = Arc::new(ScopeRecordingLedger::default());
+    let scoped = ScopedOperationLedger::new(inner.clone(), scope_a());
+    let contract = PreparedEffectContract::new(
+        RequestFingerprint::new(1, [7; 32]),
+        PreparedEffectPolicy::builder(DestinationCapability::StableKey)
+            .maximum_invocations(1)
+            .maximum_queries(0)
+            .recovery_window(Duration::from_mins(1))
+            .stable_key_window(Duration::from_mins(1))
+            .build()
+            .expect("policy"),
+    )
+    .expect("contract");
+    let foreign_scope = scope_b();
+    let concurrent = [PositionRange::new(0, 2).expect("run")];
+    let binding = EffectSlotBinding {
+        scope: &foreign_scope,
+        execution_id: "execution",
+        node_key: "node",
+        occurrence: "unit/v1/#000003",
+        attempt_generation: AttemptGeneration::new(1),
+        fingerprint: RequestFingerprint::new(1, [9; 32]),
+        destination: DestinationCapability::StableKey,
+        contract: &contract,
+        provider_key: None,
+        concurrent_with: Some(&concurrent),
+        observation: true,
+    };
+    let _ = scoped
+        .prepare(&binding, FencingToken::from_generation(1))
+        .await;
+    assert_eq!(
+        inner.observed.lock().expect("recording lock").as_slice(),
+        &[scope_a()]
+    );
+    assert_eq!(
+        inner.prepared.lock().expect("recording lock").as_slice(),
+        &[(true, Some(concurrent.to_vec()))],
+        "the observation flag and the concurrency list reach the backend"
     );
 }
 
