@@ -161,11 +161,10 @@ mod iteration_checkpoint {
             IterationCheckpointKey::new(&scope, "exe", &long, "a.b", "1.0.0"),
             Err(IterationCheckpointError::InvalidRecord)
         );
+        // The scope is taken as the execution was admitted under it: neither
+        // `Scope` nor `port_executions` bounds it, so neither does the key.
         let empty_scope = Scope::new("", "org");
-        assert_eq!(
-            IterationCheckpointKey::new(&empty_scope, "exe", "node", "a.b", "1.0.0"),
-            Err(IterationCheckpointError::InvalidRecord)
-        );
+        assert!(IterationCheckpointKey::new(&empty_scope, "exe", "node", "a.b", "1.0.0").is_ok());
     }
 
     #[test]

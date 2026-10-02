@@ -11,8 +11,10 @@
 -- every stateful node had before this table existed.
 
 CREATE TABLE port_iteration_checkpoints (
-    workspace_id TEXT NOT NULL CHECK (length(workspace_id) > 0),
-    org_id TEXT NOT NULL CHECK (length(org_id) > 0),
+    -- Tenant scope is constrained only as `port_executions` constrains it
+    -- (the FK below): any execution admitted there can be checkpointed.
+    workspace_id TEXT NOT NULL,
+    org_id TEXT NOT NULL,
     execution_id TEXT NOT NULL CHECK (length(execution_id) > 0),
     node_key TEXT NOT NULL CHECK (length(node_key) > 0),
     action_key TEXT NOT NULL CHECK (length(action_key) > 0),

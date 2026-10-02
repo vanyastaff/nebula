@@ -126,11 +126,15 @@ impl<'a> IterationCheckpointKey<'a> {
     ///
     /// # Errors
     ///
-    /// [`IterationCheckpointError::InvalidRecord`] when a text part is empty
-    /// or longer than [`MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES`], or when
-    /// `action_version` is not a canonical semantic version
-    /// (`MAJOR.MINOR.PATCH`, no leading zeros, optional pre-release and
-    /// build of `[0-9A-Za-z-.]`).
+    /// [`IterationCheckpointError::InvalidRecord`] when the execution, node,
+    /// action key or version is empty or longer than
+    /// [`MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES`], or when `action_version`
+    /// is not a canonical semantic version (`MAJOR.MINOR.PATCH`, no leading
+    /// zeros, optional pre-release and build of `[0-9A-Za-z-.]`). The tenant
+    /// scope is taken as the execution was admitted under it — `Scope` and
+    /// `port_executions` bound neither part — so every admitted execution
+    /// can be checkpointed, and a scope-enforcing decorator's
+    /// [`rescoped`](Self::rescoped) address is held to the same rule.
     pub fn new(
         scope: &'a Scope,
         execution_id: &'a str,
@@ -138,14 +142,7 @@ impl<'a> IterationCheckpointKey<'a> {
         action_key: &'a str,
         action_version: &'a str,
     ) -> Result<Self, IterationCheckpointError> {
-        let parts = [
-            scope.workspace_id.as_str(),
-            scope.org_id.as_str(),
-            execution_id,
-            node_key,
-            action_key,
-            action_version,
-        ];
+        let parts = [execution_id, node_key, action_key, action_version];
         if parts
             .iter()
             .any(|part| part.is_empty() || part.len() > MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES)
@@ -431,6 +428,31 @@ mod tests {
             "1.2.3-é",
         ] {
             assert!(!is_canonical_semver(invalid), "{invalid}");
+        }
+    }
+
+    /// Any scope an execution was admitted under addresses a checkpoint —
+    /// neither `Scope` nor `port_executions` bounds it — while the
+    /// checkpoint's own parts stay bounded.
+    #[test]
+    fn a_key_takes_any_admitted_scope_and_bounds_its_own_parts() {
+        let long = "w".repeat(MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES + 1);
+        for scope in [Scope::new("", ""), Scope::new(long.as_str(), "org")] {
+            assert!(
+                IterationCheckpointKey::new(&scope, "exec", "node", "a.b", "1.0.0").is_ok(),
+                "{scope:?}"
+            );
+        }
+        let scope = Scope::new("ws", "org");
+        for (execution, node, action) in [
+            ("", "node", "a.b"),
+            ("exec", "", "a.b"),
+            ("exec", "node", ""),
+        ] {
+            assert_eq!(
+                IterationCheckpointKey::new(&scope, execution, node, action, "1.0.0"),
+                Err(IterationCheckpointError::InvalidRecord)
+            );
         }
     }
 }
