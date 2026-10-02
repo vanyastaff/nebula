@@ -1,17 +1,32 @@
 //! A journaled stateful action's effects, per iteration: every iteration's
 //! units are recorded under `it{n}/unit/v1/#{k:06}`, every node attempt
-//! replays the iterations from the first, and the iteration barrier stops
-//! the loop at the first effect the journal cannot vouch for.
+//! resumes at its last iteration checkpoint (or replays from the first
+//! iteration without one), and the iteration barrier stops the loop at the
+//! first effect the journal cannot vouch for.
+//!
+//! The replay cases run with every checkpoint row lost
+//! ([`CheckpointFault::Lost`]): a divergence inside checkpointed iterations
+//! is not detected (they never run again), so those cases exercise what a
+//! node falls back to when its row is gone. `journal_checkpoint` covers the
+//! checkpoints themselves.
 //!
 //! Each test's controls live on its own fixture's gateway
 //! ([`IterationControls`]): nothing is shared between concurrent tests.
 
 use super::{
-    faults::{Boundary, Fault, FaultLedger},
+    faults::{Boundary, CheckpointFault, Fault, FaultCheckpoints, FaultLedger},
     journal_fixture::*,
     restart::{Backend, Database},
     *,
 };
+
+/// Loses every checkpoint row from now on: the node replays from iteration
+/// 0, exactly as it did before checkpoints existed.
+pub(super) fn lose_checkpoints(fixture: &mut JournalFixture) {
+    let inner = Arc::clone(&fixture.ports.stores.checkpoints);
+    fixture.ports.stores.checkpoints =
+        Arc::new(FaultCheckpoints::new(inner, CheckpointFault::Lost));
+}
 
 /// A fixture whose node runs the journaled stateful action.
 async fn stateful(ports: Ports) -> JournalFixture {
@@ -105,7 +120,7 @@ async fn each_iteration_journals_its_effect_under_its_own_label(#[case] backend:
 #[case::memory(Backend::Memory)]
 #[case::sqlite(Backend::Sqlite)]
 #[tokio::test]
-async fn a_resume_replays_settled_iterations_and_sends_the_next_once(#[case] backend: Backend) {
+async fn a_resume_starts_at_the_checkpoint_and_sends_the_next_once(#[case] backend: Backend) {
     let Some(mut database) = Database::open(backend).await else {
         return;
     };
@@ -122,6 +137,41 @@ async fn a_resume_replays_settled_iterations_and_sends_the_next_once(#[case] bac
 
     let result = fixture.run(execution).await.unwrap();
     assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
+    assert_eq!(
+        receipts(&result),
+        json!([1, 2, 3]),
+        "the checkpointed state's receipts, then iteration 2's"
+    );
+    assert_eq!(fixture.gateway.call_count(), 3, "iteration 2 sent once");
+    assert_eq!(
+        fixture.gateway.started(),
+        [0, 1, 2, 2],
+        "iterations 0 and 1 never ran again"
+    );
+    let slots = fixture.slots(execution).await;
+    assert_eq!(&slots[..2], &settled[..], "the resume writes nothing below");
+    assert_eq!(slots[2].occurrence(), "it2/unit/v1/#000000");
+    assert_eq!(phase(&slots[2]), EffectPhase::Resolved);
+}
+
+/// The same crash with the checkpoint row lost: the node falls back to
+/// replaying iterations 0 and 1 without a call.
+#[rstest::rstest]
+#[case::memory(Backend::Memory)]
+#[case::sqlite(Backend::Sqlite)]
+#[tokio::test]
+async fn a_lost_checkpoint_replays_settled_iterations_from_the_first(#[case] backend: Backend) {
+    let Some(mut database) = Database::open(backend).await else {
+        return;
+    };
+    let mut fixture = stateful(database.ports()).await;
+    let execution = start_three(&fixture, json!({})).await;
+    crash_at_iteration(&mut fixture, &mut database, execution, 2).await;
+    let settled = fixture.slots(execution).await;
+    lose_checkpoints(&mut fixture);
+
+    let result = fixture.run(execution).await.unwrap();
+    assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
     assert_eq!(receipts(&result), json!([1, 2, 3]), "the recorded outputs");
     assert_eq!(
         fixture.gateway.call_count(),
@@ -132,7 +182,6 @@ async fn a_resume_replays_settled_iterations_and_sends_the_next_once(#[case] bac
     let slots = fixture.slots(execution).await;
     assert_eq!(&slots[..2], &settled[..], "replay writes nothing");
     assert_eq!(slots[2].occurrence(), "it2/unit/v1/#000000");
-    assert_eq!(phase(&slots[2]), EffectPhase::Resolved);
 }
 
 // 3 ─────────────────────────────────────────────────────────────────────────
@@ -189,7 +238,11 @@ async fn a_call_granted_and_never_explained_in_an_iteration(#[case] backend: Bac
             assert_eq!(fixture.gateway.call_count(), 2, "it2 never sent");
             assert_eq!(slots.len(), 2);
             assert_eq!(phase(&slots[1]), EffectPhase::OutcomeUnknown);
-            assert_eq!(fixture.gateway.started(), [0, 1, 0, 1]);
+            assert_eq!(
+                fixture.gateway.started(),
+                [0, 1, 1],
+                "the resume starts at iteration 1, checkpointed after 0"
+            );
         }
     }
 }
@@ -250,6 +303,7 @@ async fn a_changed_request_in_a_replayed_iteration_is_a_mismatch_with_no_call(
     let execution = start_three(&fixture, json!({})).await;
     crash_at_iteration(&mut fixture, &mut database, execution, 2).await;
     let settled = fixture.slots(execution).await;
+    lose_checkpoints(&mut fixture);
 
     // A non-deterministic iteration 1: its replay asks for another request.
     *fixture.gateway.iterations.override_at.lock() = Some((1, "it-b:changed".to_owned()));
@@ -281,6 +335,7 @@ async fn a_new_effect_in_an_iteration_an_earlier_attempt_finished_is_a_gap(
     // The first attempt reached iteration 1 (and settled it).
     crash_at_iteration(&mut fixture, &mut database, execution, 2).await;
     let settled = fixture.slots(execution).await;
+    lose_checkpoints(&mut fixture);
 
     // The resumed iteration 0 submits one more write after its own: a
     // fresh position below the recorded iteration 1.
@@ -317,6 +372,7 @@ async fn a_replay_that_ends_before_a_settled_iteration(#[case] backend: Backend)
         let execution = start_three(&fixture, json!({})).await;
         crash_at_iteration(&mut fixture, &mut database, execution, 2).await;
         let settled = fixture.slots(execution).await;
+        lose_checkpoints(&mut fixture);
 
         // The replay ends at iteration 1, before its settled write:
         // completing, or failing.
@@ -387,6 +443,7 @@ async fn a_replay_that_passes_a_recorded_iteration_by_never_sends_it_again(
     crash_at_iteration(&mut fixture, &mut database, execution, 2).await;
     let settled = fixture.slots(execution).await;
     assert_eq!(labels(&settled), ["it1/unit/v1/#000000"]);
+    lose_checkpoints(&mut fixture);
 
     // The replay's iteration 1 sends nothing.
     *fixture.gateway.iterations.skip_at.lock() = Some(1);
@@ -422,6 +479,7 @@ async fn a_replay_that_skips_a_recorded_effect_within_an_iteration_stops(#[case]
         labels(&settled),
         ["it0/unit/v1/#000000", "it0/unit/v1/#000001"]
     );
+    lose_checkpoints(&mut fixture);
 
     *fixture.gateway.iterations.keep_at.lock() = Some((0, 1));
     let result = fixture.run(execution).await.unwrap();
@@ -609,6 +667,8 @@ async fn a_recovery_never_applies_a_lower_effect_after_a_higher_applied_one(
     };
     let crashed = requests(&fixture);
     assert_eq!(crashed.len(), 3, "throttled, applied, then the branch");
+    // Replaying iteration 0 is what this case is about.
+    lose_checkpoints(&mut fixture);
     assert!(
         crashed[2].starts_with("after-") && crashed[2] != "after-permanent",
         "{crashed:?}"
@@ -837,7 +897,7 @@ async fn a_detached_unit_holds_the_next_iteration_at_the_barrier(#[case] backend
 #[case::memory(Backend::Memory)]
 #[case::sqlite(Backend::Sqlite)]
 #[tokio::test]
-async fn a_node_retry_replays_earlier_iterations_and_grants_the_failed_one_again(
+async fn a_node_retry_resumes_at_its_checkpoint_and_grants_the_failed_one_again(
     #[case] backend: Backend,
 ) {
     let Some(database) = Database::open(backend).await else {
@@ -855,7 +915,11 @@ async fn a_node_retry_replays_earlier_iterations_and_grants_the_failed_one_again
     let result = fixture.run(execution).await.unwrap();
     assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
     assert_eq!(receipts(&result), json!([1, 2, 3]));
-    assert_eq!(fixture.gateway.started(), [0, 1, 2, 0, 1, 2]);
+    assert_eq!(
+        fixture.gateway.started(),
+        [0, 1, 2, 2],
+        "the retry resumes at iteration 2, checkpointed after iteration 1"
+    );
     let keys = fixture.gateway.call_keys();
     assert_eq!(keys.len(), 4, "it0, it1, it2 throttled, it2 again");
     assert_eq!(keys[2], keys[3], "the same slot granted again");

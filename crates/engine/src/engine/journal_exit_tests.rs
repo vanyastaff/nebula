@@ -263,6 +263,7 @@ impl JournaledNode {
             scope: self.scope.clone(),
             fencing: Some(self.fencing),
             operation_ledger: Some(Arc::clone(&self.ledger) as Arc<dyn OperationLedger>),
+            checkpoints: None,
             clock: Arc::new(SystemClock),
             attempt_generation: 1,
             engine_resources: None,
