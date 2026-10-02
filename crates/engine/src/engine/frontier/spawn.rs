@@ -448,6 +448,10 @@ impl WorkflowEngine {
                     .stores
                     .as_ref()
                     .map(|stores| Arc::clone(&stores.operation_ledger)),
+                checkpoints: self
+                    .stores
+                    .as_ref()
+                    .map(|stores| Arc::clone(&stores.checkpoints)),
             }
             .run(),
         );

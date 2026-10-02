@@ -118,7 +118,6 @@ scope_decorator!(ScopedStartAcceptanceStore, StartAcceptanceStore);
 scope_decorator!(ScopedExecutionTurnHandoff, ExecutionTurnHandoff);
 
 const DIRECT_SCOPE_PORTS: &[&str] = &[
-    "CheckpointStore",
     "ExecutionJournalReader",
     "ExecutionStore",
     "IdempotencyGuard",
@@ -140,6 +139,9 @@ const DIRECT_SCOPE_PORTS: &[&str] = &[
 ];
 
 const EMBEDDED_SCOPE_PORTS: &[&str] = &[
+    // The scope travels inside `IterationCheckpointKey`; the decorator
+    // re-addresses the key under its bound scope.
+    "CheckpointStore",
     "ControlQueue",
     "ExecutionTurnHandoff",
     "ResourceExecutionHandoffStore",
@@ -387,6 +389,7 @@ fn every_port_has_an_explicit_tenancy_classification() {
 
     // Atomic execution unit (§12.2): create/get/lease/commit all `&Scope`.
     assert_scoped::<ScopedExecutionStore, dyn ExecutionStore>();
+    // Iteration checkpoints: the key embeds the `Scope` (re-addressed).
     assert_scoped::<ScopedCheckpointStore, dyn CheckpointStore>();
     // Workflow + version split: row carries an embedded `Scope` (rebound).
     assert_scoped::<ScopedWorkflowStore, dyn WorkflowStore>();

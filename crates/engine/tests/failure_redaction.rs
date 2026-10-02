@@ -243,7 +243,7 @@ async fn leaky_provider_fixture() -> RedactionFixture {
             execution: execution.clone(),
             journal: journal.clone(),
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens: Arc::new(execution.resume_token_store()),
             operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(

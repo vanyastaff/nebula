@@ -102,10 +102,11 @@ impl StatefulCheckpoint {
 /// state.
 ///
 /// The runtime does not depend on any storage crate directly — hosts that
-/// want durable stateful resume implement this trait over their persistence
-/// seam; the storage-port `CheckpointStore::{save,load}_stateful_checkpoint`
-/// methods are the matching seam, and `clear` has no port counterpart (the
-/// host maps it onto its own store).
+/// call [`ActionRuntime::execute_action_with_checkpoint`] implement this trait
+/// over their own persistence. The engine's own node dispatch never uses it:
+/// a journaled stateful action resumes through its node effect journal's
+/// fenced iteration checkpoint (the storage-port `CheckpointStore`), and an
+/// unjournaled one starts at iteration 0 on every dispatch.
 ///
 /// Methods return [`ActionError`] for sink-transport/serialization failures.
 ///
@@ -404,8 +405,9 @@ impl ActionRuntime {
     /// [`JournalShape`](crate::effect_driver::JournalShape) — stateless, or
     /// stateful under the admission's iteration barrier — with no remote
     /// capability are admitted; public entry points keep refusing the
-    /// contract. A stateful action takes no checkpoint sink here: every
-    /// attempt replays its iterations from the first.
+    /// contract. A stateful action takes no caller checkpoint sink here: it
+    /// resumes from the journal's fenced iteration checkpoint, or replays
+    /// its iterations from the first.
     pub(crate) async fn execute_journaled_action(
         &self,
         factory: Arc<dyn ActionFactory>,
@@ -794,9 +796,19 @@ impl ActionRuntime {
     /// [`end_iteration`](crate::effect_driver::IterationGate::end_iteration);
     /// either refusing stops the loop with
     /// [`RuntimeError::EffectJournal`], which the engine replaces with the
-    /// journal's verdict. Such a run replays from the first iteration, so it
-    /// takes no checkpoint sink: both together are refused before the
-    /// action runs. While the replay has not reached the frontier
+    /// journal's verdict. Before the first iteration such a run asks the
+    /// gate where to start
+    /// ([`resume`](crate::effect_driver::IterationGate::resume)): at the
+    /// journal's verified iteration checkpoint — its state replaces
+    /// `init_state`, and its delay is waited (raced against cancellation)
+    /// unless the ledger shows the iteration already ran — or at iteration
+    /// 0. After every `Continue` whose barrier passed and that changed the
+    /// state, it asks the gate to record where the loop continues
+    /// ([`checkpoint`](crate::effect_driver::IterationGate::checkpoint));
+    /// a `Break` or an error records nothing. Either refusing stops the loop
+    /// the same way. The journal's checkpoint is the only one: a caller's
+    /// checkpoint sink alongside a gate is refused before the action runs.
+    /// While the replay has not reached the frontier
     /// ([`IterationProgress::replayed_past`](crate::effect_driver::IterationProgress)),
     /// a `Continue` delay is skipped: the next iteration already ran once.
     async fn execute_stateful_handle(
@@ -816,10 +828,12 @@ impl ActionRuntime {
         }
 
         if checkpoint.is_some() && iteration_gate.is_some() {
-            // A journaled run replays its effects from the first iteration;
-            // resuming from a checkpoint would skip recorded positions.
+            // A journaled run resumes only from its journal's fenced
+            // checkpoint, which the journal verifies against the ledger; a
+            // caller's sink could skip recorded positions unverified.
             return Err(RuntimeError::Internal(format!(
-                "journaled stateful action '{}' takes no checkpoint sink",
+                "journaled stateful action '{}' resumes through its effect journal and takes no \
+                 caller checkpoint sink",
                 metadata.base().key().as_str()
             )));
         }
@@ -837,8 +851,36 @@ impl ActionRuntime {
 
         let input = handle.prepare_input(input)?;
 
-        let (mut state, mut iteration) = match checkpoint.as_deref() {
-            Some(sink) => match sink.load().await {
+        let (mut state, mut iteration) = match (iteration_gate, checkpoint.as_deref()) {
+            // A journaled run starts where its journal's verified checkpoint
+            // says, or at iteration 0; a store that does not answer stops it
+            // before anything runs.
+            (Some(gate), _) => {
+                let resumed: Option<crate::effect_driver::ResumePoint> = tokio::select! {
+                    biased;
+                    () = context.cancellation().cancelled() => {
+                        gate.cancel_iteration();
+                        return Err(ActionError::Cancelled.into());
+                    }
+                    resumed = gate.resume() => resumed.map_err(RuntimeError::EffectJournal)?,
+                };
+                match resumed {
+                    Some(point) => {
+                        if let Some(delay) = point.delay {
+                            tokio::select! {
+                                () = tokio::time::sleep(delay) => {}
+                                () = context.cancellation().cancelled() => {
+                                    gate.cancel_iteration();
+                                    return Err(ActionError::Cancelled.into());
+                                }
+                            }
+                        }
+                        (point.state, point.iteration)
+                    },
+                    None => (handle.init_state()?, 0u32),
+                }
+            },
+            (None, Some(sink)) => match sink.load().await {
                 Ok(Some(cp)) => (cp.state, cp.iteration),
                 Ok(None) => (handle.init_state()?, 0u32),
                 Err(load_err) => {
@@ -853,7 +895,7 @@ impl ActionRuntime {
                     (handle.init_state()?, 0u32)
                 },
             },
-            None => (handle.init_state()?, 0u32),
+            (None, None) => (handle.init_state()?, 0u32),
         };
 
         const MAX_ITERATIONS: u32 = 10_000;
@@ -936,6 +978,20 @@ impl ActionRuntime {
                     if let Some(sink) = checkpoint.as_deref() {
                         let cp = StatefulCheckpoint::new(iteration, state.clone());
                         sink.save(&cp).await?;
+                    }
+                    // The barrier of the iteration that just ran passed `Ok`:
+                    // the journal records where the loop continues.
+                    if let Some(gate) = iteration_gate {
+                        tokio::select! {
+                            biased;
+                            () = context.cancellation().cancelled() => {
+                                gate.cancel_iteration();
+                                return Err(ActionError::Cancelled.into());
+                            }
+                            saved = gate.checkpoint(iteration, &state, delay) => {
+                                saved.map_err(RuntimeError::EffectJournal)?;
+                            }
+                        }
                     }
 
                     // A replay that has not reached the frontier skips the

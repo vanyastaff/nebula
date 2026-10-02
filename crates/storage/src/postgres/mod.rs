@@ -14,8 +14,10 @@
 mod control_queue;
 mod control_turn;
 mod execution;
+mod execution_fence;
 mod idempotency_store;
 mod identity;
+mod iteration_checkpoint;
 mod job_dispatch;
 mod operation_ledger;
 mod plan_flavor_catalog;
@@ -36,6 +38,7 @@ pub use identity::{
     PgAuditStore, PgBlobStore, PgMembershipStore, PgOrgStore, PgQuotaStore, PgResourceStore,
     PgTenantProvisioningStore, PgTriggerStore, PgUserStore, PgWorkspaceStore,
 };
+pub use iteration_checkpoint::PgCheckpointStore;
 pub use job_dispatch::PgJobDispatchQueue;
 pub use operation_ledger::PgOperationLedger;
 pub use plan_flavor_catalog::PgPlanFlavorCatalog;

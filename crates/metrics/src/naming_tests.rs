@@ -875,6 +875,10 @@ fn webhook_rate_limit_tier_labels_are_closed_set() {
 #[test]
 fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
     use super::{
+        NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL, NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL,
+        effect_journal_checkpoint_outcome, effect_journal_resume_outcome,
+    };
+    use super::{
         NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL, NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
         NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL, effect_journal_prepare_phase, effect_journal_refusal,
         effect_journal_step, effect_journal_verdict,
@@ -885,6 +889,8 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL,
         NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
         NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL,
+        NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL,
+        NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL,
     ];
     let mut unique = HashSet::new();
     for name in names {
@@ -930,12 +936,30 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_verdict::SLOT_CAP_EXCEEDED,
         effect_journal_verdict::ITERATION_BARRIER,
         effect_journal_verdict::CONCURRENCY_LIMIT,
+        effect_journal_verdict::ITERATION_CHECKPOINT,
+    ];
+    let checkpoints = [
+        effect_journal_checkpoint_outcome::RECORDED,
+        effect_journal_checkpoint_outcome::ALREADY_RECORDED,
+        effect_journal_checkpoint_outcome::OVERSIZE,
+        effect_journal_checkpoint_outcome::UNSETTLED,
+        effect_journal_checkpoint_outcome::UNAVAILABLE,
+        effect_journal_checkpoint_outcome::LEASE_REJECTED,
+        effect_journal_checkpoint_outcome::REFUSED,
+    ];
+    let resumes = [
+        effect_journal_resume_outcome::RESUMED,
+        effect_journal_resume_outcome::ABSENT,
+        effect_journal_resume_outcome::DEFERRED,
+        effect_journal_resume_outcome::INVALID,
     ];
     for (set, expected) in [
         (&phases[..], 3),
         (&steps[..], 6),
         (&refusals[..], 10),
-        (&verdicts[..], 10),
+        (&verdicts[..], 11),
+        (&checkpoints[..], 7),
+        (&resumes[..], 4),
     ] {
         let unique: HashSet<_> = set.iter().collect();
         assert_eq!(unique.len(), expected);

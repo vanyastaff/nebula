@@ -9,6 +9,7 @@ mod recovery;
 mod slot;
 
 pub use error::EffectExecutionError;
+pub(crate) use journal::ResumePoint;
 pub(crate) use journal::{
     Concluded, IterationGate, IterationProgress, JournalAdmission, JournalAuthority, JournalShape,
     NodeEffectJournal, journal_drain_limit,

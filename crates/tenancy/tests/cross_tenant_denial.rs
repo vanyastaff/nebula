@@ -56,7 +56,9 @@ use nebula_storage_port::store::{
     StartMaterialization, StartMaterializationError, TriggerStore, TurnAcceptance, TurnHandoff,
 };
 use nebula_storage_port::{
-    FencingToken, OperationCallId, Scope, StorageError, TransitionBatch, TransitionOutcome,
+    CheckpointSaved, FencingToken, IterationCheckpoint, IterationCheckpointError,
+    IterationCheckpointKey, OperationCallId, Scope, StorageError, TransitionBatch,
+    TransitionOutcome,
 };
 use nebula_tenancy::{
     ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionStore, ScopedExecutionTurnHandoff,
@@ -87,31 +89,33 @@ impl std::fmt::Debug for ScopeRecordingCheckpoints {
 
 #[async_trait::async_trait]
 impl CheckpointStore for ScopeRecordingCheckpoints {
-    async fn save_stateful_checkpoint(
+    async fn load_iteration_checkpoint(
         &self,
-        scope: &Scope,
-        _execution_id: &str,
-        _node_id: &str,
-        _checkpoint: serde_json::Value,
-    ) -> Result<(), StorageError> {
+        key: &IterationCheckpointKey<'_>,
+    ) -> Result<Option<IterationCheckpoint>, IterationCheckpointError> {
         self.observed
             .lock()
             .expect("recording lock")
-            .push(scope.clone());
-        Ok(())
+            .push(key.scope().clone());
+        Ok(None)
     }
 
-    async fn load_stateful_checkpoint(
+    async fn save_iteration_checkpoint(
         &self,
-        scope: &Scope,
-        _execution_id: &str,
-        _node_id: &str,
-    ) -> Result<Option<serde_json::Value>, StorageError> {
+        key: &IterationCheckpointKey<'_>,
+        _checkpoint: &IterationCheckpoint,
+        fencing: FencingToken,
+    ) -> Result<CheckpointSaved, IterationCheckpointError> {
+        assert_eq!(
+            fencing,
+            FencingToken::from_generation(7),
+            "the fence passes through unchanged"
+        );
         self.observed
             .lock()
             .expect("recording lock")
-            .push(scope.clone());
-        Ok(None)
+            .push(key.scope().clone());
+        Ok(CheckpointSaved::Recorded)
     }
 }
 
@@ -119,15 +123,17 @@ impl CheckpointStore for ScopeRecordingCheckpoints {
 async fn checkpoint_store_substitutes_the_bound_scope() {
     let inner = Arc::new(ScopeRecordingCheckpoints::default());
     let scoped = ScopedCheckpointStore::new(inner.clone(), scope_a());
+    let foreign = scope_b();
+    let key = IterationCheckpointKey::new(&foreign, "execution", "node", "a.stateful", "1.0.0")
+        .expect("valid key");
+    let checkpoint =
+        IterationCheckpoint::new(1, b"{}".to_vec(), [0; 32], None, 0, 1).expect("valid checkpoint");
 
     scoped
-        .save_stateful_checkpoint(&scope_b(), "execution", "node", serde_json::json!({}))
+        .save_iteration_checkpoint(&key, &checkpoint, FencingToken::from_generation(7))
         .await
         .unwrap();
-    scoped
-        .load_stateful_checkpoint(&scope_b(), "execution", "node")
-        .await
-        .unwrap();
+    scoped.load_iteration_checkpoint(&key).await.unwrap();
 
     assert_eq!(
         inner.observed.lock().expect("recording lock").as_slice(),

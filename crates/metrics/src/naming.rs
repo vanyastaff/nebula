@@ -219,10 +219,64 @@ pub mod effect_journal_refusal {
 /// own result.
 pub const NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL: &str = "nebula_effect_journal_verdicts_total";
 
+/// Counter: iteration checkpoints a journaled stateful node attempt tried to
+/// save after an iteration's barrier passed.
+///
+/// Labeled by `outcome` (see [`effect_journal_checkpoint_outcome`]). A
+/// steady `unavailable` or `oversize` rate means attempts fall back to
+/// replaying more iterations; any `refused` halts its execution.
+pub const NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL: &str = "nebula_effect_journal_checkpoints_total";
+
+/// Outcome labels for [`NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL`].
+///
+/// Closed set of seven values.
+pub mod effect_journal_checkpoint_outcome {
+    /// The checkpoint was written.
+    pub const RECORDED: &str = "recorded";
+    /// The very same checkpoint was already stored.
+    pub const ALREADY_RECORDED: &str = "already_recorded";
+    /// The state exceeds the stored bound: no save was tried.
+    pub const OVERSIZE: &str = "oversize";
+    /// A ledger position below was left uncertain in this attempt: no save
+    /// was tried.
+    pub const UNSETTLED: &str = "unsettled";
+    /// The store did not answer, or its acknowledgement was lost: the loop
+    /// continued without it.
+    pub const UNAVAILABLE: &str = "unavailable";
+    /// The execution lease no longer authorizes the save: the node defers.
+    pub const LEASE_REJECTED: &str = "lease_rejected";
+    /// The store refused the save (conflict, regression, invalid record):
+    /// the execution halts.
+    pub const REFUSED: &str = "refused";
+}
+
+/// Counter: iteration-checkpoint loads of journaled stateful node attempts.
+///
+/// Labeled by `outcome` (see [`effect_journal_resume_outcome`]).
+pub const NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL: &str = "nebula_effect_journal_resumes_total";
+
+/// Outcome labels for [`NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL`].
+///
+/// Closed set of four values.
+pub mod effect_journal_resume_outcome {
+    /// A checkpoint was found and verified: the loop resumes from it.
+    pub const RESUMED: &str = "resumed";
+    /// No checkpoint is stored: the loop starts at iteration 0.
+    pub const ABSENT: &str = "absent";
+    /// The store did not answer: the node defers, nothing runs.
+    pub const DEFERRED: &str = "deferred";
+    /// The checkpoint contradicts its digest or the ledger: the execution
+    /// halts, nothing runs.
+    pub const INVALID: &str = "invalid";
+}
+
 /// Code labels for [`NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL`].
 ///
-/// Closed set of ten values.
+/// Closed set of eleven values.
 pub mod effect_journal_verdict {
+    /// A journaled stateful action's iteration checkpoint contradicts its
+    /// ledger or could not be written consistently.
+    pub const ITERATION_CHECKPOINT: &str = "iteration_checkpoint";
     /// The journal agrees with the action's result.
     pub const OK: &str = "ok";
     /// The turn must release its lease without finalizing the node.

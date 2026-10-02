@@ -174,9 +174,26 @@ configuration, and process lifecycle.
   iteration: the journal hands the resource runtime its labels
   (`EffectJournal::next_occurrence`), `it{n}/unit/v1/#{k:06}` with `n` the iteration in
   decimal without leading zeros (0 to 9999) and `k` restarting per iteration. All
-  iterations run inside one node attempt and every attempt replays them from
-  iteration 0 — a journaled stateful action takes no checkpoint sink (the runtime
-  refuses both together). The runtime brackets each iteration with the journal's
+  iterations run inside one node attempt. **Iteration checkpoints** (since 0.31.0):
+  after every `Continue` whose barrier passed `Ok` (once, with no failure,
+  cancellation or uncertain position below) the journal saves the next iteration,
+  the state's canonical JSON and SHA-256, the delay and the count of attested
+  iterated ledger positions through the turn's `ExecutionStores.checkpoints`
+  (`CheckpointStore`, fenced by the execution lease, bound to action key and
+  version; migration 0062). The next attempt's `IterationGate::resume` loads it
+  (bounded), verifies digest, JSON and that the ledger holds exactly the attested
+  count below it and no flat label, then starts there with its state (`init_state`
+  is skipped; the delay is honoured unless the ledger shows the iteration ran) —
+  iterations below are *attested*: never run, their positions neither sent nor
+  demanded, an unknown outcome among them still halting. An unreachable store
+  defers (nothing runs, never a fallback to iteration 0); a contradicting row
+  halts (`ENGINE:EFFECT_ITERATION_CHECKPOINT`); a save refused for a lost lease
+  defers, a conflict or regression halts, an unavailable store or lost
+  acknowledgement (within 5 s) only skips the save; a state over 1 MiB is not
+  saved. Without a row (lost, never written, another action version) the attempt
+  replays from iteration 0. A caller's checkpoint sink is still refused alongside
+  the journal. Counters `nebula_effect_journal_checkpoints_total{outcome}` and
+  `nebula_effect_journal_resumes_total{outcome}`. The runtime brackets each iteration with the journal's
   barrier (`IterationGate`): `begin_iteration(n)` requires no unit in flight (else
   `ENGINE:EFFECT_ITERATION_BARRIER`, with nothing waited for: the node's conclusion
   still drains the unit within its full limit) and opens the label namespace;
@@ -327,7 +344,12 @@ configuration, and process lifecycle.
   fail); S4 concurrent units replay at least once under their recorded keys (recorded
   exactly, or the fresh effect is refused unsent); S5 every wait bounded; S6 legacy
   records order nothing; S7 a cancelled node stays cancelled; S8 an unknown outcome is
-  never masked, not even by a deferral. A correct
+  never masked, not even by a deferral; S9 an iteration a checkpoint attests never runs
+  again and its recorded positions are neither sent nor demanded — a checkpoint is
+  written only under the live fence after its iteration's barrier passed `Ok`, attests
+  only iterations whose every recorded position this attempt met or an earlier
+  checkpoint attested, and losing the row only falls back to replaying from iteration 0
+  (accepted narrowing: a divergence inside attested iterations is not detected). A correct
   deterministic program is stranded only by a crossed call with no recorded outcome
   that is opaque, or that a later applied effect is ordered after. Counters:
   `nebula_effect_journal_prepares_total{phase}`,

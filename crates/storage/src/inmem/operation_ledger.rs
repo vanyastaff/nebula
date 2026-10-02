@@ -19,6 +19,7 @@ use nebula_storage_port::{
     OperationLedgerError, OperationRecord, OperationState, PrepareOutcome, Scope,
 };
 
+use super::execution_fence::require_live_execution;
 use crate::operation_ledger::{
     compose_record, decide_prepare, prepare_label, read_label, write_label,
 };
@@ -226,7 +227,7 @@ impl OperationLedger for InMemoryOperationLedger {
                 self.execution.clock.now().timestamp_millis(),
             )?;
             let mut state = self.execution.inner.lock();
-            validate_execution(
+            require_live_execution(
                 &state,
                 binding.scope,
                 binding.execution_id,
@@ -315,7 +316,7 @@ impl OperationLedger for InMemoryOperationLedger {
         let result = (|| {
             let mut state = self.execution.inner.lock();
             let row = visible_row(&state.operation_ledger, scope, slot_id)?;
-            validate_execution(
+            require_live_execution(
                 &state,
                 scope,
                 &row.execution_id,
@@ -384,7 +385,7 @@ impl OperationLedgerAdjudicator for InMemoryOperationLedger {
         let result = (|| {
             let mut state = self.execution.inner.lock();
             let row = visible_row(&state.operation_ledger, scope, slot_id)?;
-            validate_execution(
+            require_live_execution(
                 &state,
                 scope,
                 &row.execution_id,
@@ -427,29 +428,6 @@ impl OperationLedgerAdjudicator for InMemoryOperationLedger {
         tracing::Span::current().record("outcome", write_label(&result));
         result
     }
-}
-
-fn validate_execution(
-    state: &super::execution::State,
-    scope: &Scope,
-    execution_id: &str,
-    fencing: Option<FencingToken>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<(), OperationLedgerError> {
-    let row = state
-        .rows
-        .get(execution_id)
-        .filter(|row| row.scope == *scope)
-        .ok_or(OperationLedgerError::ExecutionLeaseRejected)?;
-    if let Some(fencing) = fencing {
-        crate::operation_ledger::require_live_lease(
-            fencing,
-            row.fencing_generation,
-            row.lease_holder.is_some()
-                && row.lease_expires_at.is_some_and(|deadline| deadline > now),
-        )?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

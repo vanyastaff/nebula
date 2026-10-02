@@ -11,7 +11,8 @@ use nebula_storage_port::{
         EffectSlotBinding, EffectSlotId, OperationAdvance, OperationCommand, OperationLedgerError,
         OperationRecord, PrepareOutcome, PreparedOperation,
     },
-    store::OperationLedger,
+    store::{CheckpointStore, OperationLedger},
+    {CheckpointSaved, IterationCheckpoint, IterationCheckpointError, IterationCheckpointKey},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,5 +191,77 @@ impl OperationLedger for FaultLedger {
             return Err(OperationLedgerError::AcknowledgementUnknown);
         }
         Ok(outcome)
+    }
+}
+
+/// How a [`FaultCheckpoints`] store misbehaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CheckpointFault {
+    /// Every row is gone: loads find nothing, saves are acknowledged and
+    /// dropped. The node replays from iteration 0, exactly as before
+    /// checkpoints existed.
+    Lost,
+    /// Saves fail before reaching the store: nothing is written.
+    SavesUnavailable,
+    /// Saves commit and their acknowledgement is lost.
+    SaveAckLost,
+    /// Loads do not answer.
+    LoadsUnavailable,
+}
+
+/// A checkpoint store over a real one that fails as scripted.
+#[derive(Debug)]
+pub(super) struct FaultCheckpoints {
+    pub inner: Arc<dyn CheckpointStore>,
+    pub fault: CheckpointFault,
+    /// Saves that reached this store.
+    pub saves: std::sync::atomic::AtomicUsize,
+}
+
+impl FaultCheckpoints {
+    pub(super) fn new(inner: Arc<dyn CheckpointStore>, fault: CheckpointFault) -> Self {
+        Self {
+            inner,
+            fault,
+            saves: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl CheckpointStore for FaultCheckpoints {
+    async fn load_iteration_checkpoint(
+        &self,
+        key: &IterationCheckpointKey<'_>,
+    ) -> Result<Option<IterationCheckpoint>, IterationCheckpointError> {
+        match self.fault {
+            CheckpointFault::Lost => Ok(None),
+            CheckpointFault::LoadsUnavailable => Err(IterationCheckpointError::Unavailable),
+            _ => self.inner.load_iteration_checkpoint(key).await,
+        }
+    }
+
+    async fn save_iteration_checkpoint(
+        &self,
+        key: &IterationCheckpointKey<'_>,
+        checkpoint: &IterationCheckpoint,
+        fencing: FencingToken,
+    ) -> Result<CheckpointSaved, IterationCheckpointError> {
+        self.saves.fetch_add(1, Ordering::SeqCst);
+        match self.fault {
+            CheckpointFault::Lost => Ok(CheckpointSaved::Recorded),
+            CheckpointFault::SavesUnavailable => Err(IterationCheckpointError::Unavailable),
+            CheckpointFault::SaveAckLost => {
+                self.inner
+                    .save_iteration_checkpoint(key, checkpoint, fencing)
+                    .await?;
+                Err(IterationCheckpointError::AcknowledgementUnknown)
+            },
+            CheckpointFault::LoadsUnavailable => {
+                self.inner
+                    .save_iteration_checkpoint(key, checkpoint, fencing)
+                    .await
+            },
+        }
     }
 }

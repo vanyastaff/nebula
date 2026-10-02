@@ -108,9 +108,11 @@
 //! the refusal of a write.
 //!
 //! **Iterations.** A stateful action runs all its iterations inside one
-//! node attempt, and every attempt replays them from iteration 0 (no
-//! iteration checkpoint is kept for a journaled action: the runtime refuses
-//! a checkpoint sink on that path). The runtime brackets each iteration
+//! node attempt. An attempt starts at the iteration its node's last
+//! *iteration checkpoint* names (see **Checkpoints**), or at iteration 0
+//! with none, and replays every later iteration an earlier attempt ran (the
+//! runtime refuses a caller's checkpoint sink on that path: the journal's
+//! checkpoint is the only one). The runtime brackets each iteration
 //! with the journal's barrier ([`IterationGate`]):
 //! [`begin_iteration`](NodeEffectJournal::begin_iteration) requires no unit
 //! in flight and starts the iteration's label namespace;
@@ -229,6 +231,40 @@
 //! frontier on. An iteration that recorded no effect cannot tell: the
 //! delay before it is waited again.
 //!
+//! **Checkpoints.** Once an iteration that returned `Continue` passed its
+//! barrier — every unit drained, every recorded effect through it met, no
+//! failure noted — the runtime asks the journal to record an iteration
+//! checkpoint ([`IterationGate::checkpoint`]): the next iteration, the
+//! action's state as canonical JSON with its SHA-256, the delay before it,
+//! and how many iterated ledger positions below it the node holds (the
+//! *attested* positions: every one this attempt met, or an earlier
+//! checkpoint attested). It is saved through the node's
+//! [`CheckpointStore`], under
+//! the turn's fence, bound to the action key and version; nothing else
+//! may be saved — not before the barrier, not after a failing one, not
+//! twice, not after a cancellation, and not while a position below is
+//! uncertain in this attempt (its row may exist uncounted). A lost lease
+//! defers the node; a conflict, a regression or an invalid record halts
+//! it; an unavailable store, a lost acknowledgement or a save that does not
+//! answer within [`FINAL_READ_FLOOR`] only costs the optimisation (counted
+//! and logged, the loop goes on); a state past
+//! [`MAX_ITERATION_CHECKPOINT_STATE_BYTES`]
+//! is not saved. Before its first iteration the runtime asks the journal
+//! where to start ([`IterationGate::resume`]): the journal loads the
+//! checkpoint (bounded; a store that does not answer defers the node —
+//! nothing runs, and it never falls back to iteration 0), verifies its
+//! digest, reads the node's occurrences and requires exactly the attested
+//! count of iterated positions below it and no flat one — otherwise the
+//! execution halts, nothing sent. From then on the iterations below it are
+//! *attested*: their recorded positions are neither met nor demanded (the
+//! frontier, the barrier and the verdict skip them), while an unknown
+//! outcome among them still halts the node (S8). The delay is honoured
+//! unless the ledger shows the iteration it preceded already ran. A
+//! redeployed action version reads no checkpoint: its recorded positions
+//! then replay from iteration 0 under the occurrence rules (a changed
+//! effect is a mismatch). Rows are not cleared at terminal: they go with
+//! their execution.
+//!
 //! **Cancellation.** A node cancelled mid-iteration ends the iteration at
 //! once ([`IterationGate::cancel_iteration`]): a later submission (a
 //! detached task's) is refused closed with no failure of its own, so the
@@ -342,6 +378,16 @@
 //!   verdict, S2 or S8, overrides it);
 //! - **S8** an unknown outcome is never masked: it halts the execution
 //!   before any other verdict, a deferral included.
+//! - **S9** an iteration an iteration checkpoint attests never runs again:
+//!   its recorded positions are neither sent nor demanded. A checkpoint is
+//!   written only under the turn's live fence, after its iteration's
+//!   barrier passed `Ok`, and attests only iterations whose every recorded
+//!   position this attempt met or an earlier checkpoint attested; a resume
+//!   that finds another count of positions below it halts with nothing
+//!   sent. Losing the row only falls back to replaying from iteration 0
+//!   (S1–S8 as before). Accepted narrowing: a divergence inside attested
+//!   iterations — a program that would now take another path there — is
+//!   not detected, because those iterations do not run again.
 //!
 //! A correct deterministic program is stranded only where the ledger cannot
 //! tell what happened: a crossed call with no recorded outcome that is
@@ -361,8 +407,10 @@ use base64::Engine as _;
 use nebula_metrics::{
     MetricsRegistry,
     naming::{
-        NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL, NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
-        NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL, effect_journal_prepare_phase, effect_journal_step,
+        NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL, NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL,
+        NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL, NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL,
+        NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL, effect_journal_checkpoint_outcome,
+        effect_journal_prepare_phase, effect_journal_resume_outcome, effect_journal_step,
         effect_journal_verdict,
     },
 };
@@ -378,9 +426,12 @@ use nebula_resource::{
     },
 };
 use nebula_storage_port::dto::{
-    EffectOccurrenceRecord, EffectSlotId, KnownOutcome, OperationProtocolRecord, OperationState,
-    PositionRange, ProviderIdempotencyKey, UnsentFailureCode,
+    CheckpointSaved, EffectOccurrenceRecord, EffectSlotId, IterationCheckpoint,
+    IterationCheckpointError, IterationCheckpointKey, KnownOutcome, MAX_CHECKPOINT_ITERATION,
+    MAX_ITERATION_CHECKPOINT_STATE_BYTES, OperationProtocolRecord, OperationState, PositionRange,
+    ProviderIdempotencyKey, UnsentFailureCode,
 };
+use nebula_storage_port::store::CheckpointStore;
 use serde::{Deserialize, Serialize};
 
 use super::*;
@@ -426,6 +477,14 @@ pub(crate) const MAX_NODE_SLOTS: u32 = 10_000;
 /// Highest stateful iteration the journal labels (`it9999/`): the stateful
 /// runtime runs iterations `0..10_000`.
 const MAX_ITERATION: u32 = 9_999;
+
+// A checkpoint names the next iteration to run: at most one past the last
+// one the journal labels.
+const _: () = assert!(MAX_CHECKPOINT_ITERATION == MAX_ITERATION + 1);
+
+/// Longest delay a checkpoint records, in milliseconds: the portable durable
+/// integer range.
+const MAX_CHECKPOINT_DELAY_MS: u64 = i64::MAX.unsigned_abs();
 
 /// The positional part of every occurrence label, before its ordinal.
 const UNIT_POSITION: &str = "unit/v1/#";
@@ -485,6 +544,57 @@ pub(crate) trait IterationGate: Send + Sync {
     /// failure). Units already in flight are left to the node's conclusion,
     /// which drains them; nothing is waited for here.
     fn cancel_iteration(&self);
+
+    /// Where the loop starts: the node's iteration checkpoint, verified
+    /// against its digest and the node's ledger, or `None` to start at
+    /// iteration 0 with the action's initial state. Called once, before the
+    /// first [`begin_iteration`](Self::begin_iteration); the first iteration
+    /// begun must then be the one returned.
+    ///
+    /// # Errors
+    ///
+    /// A deferring
+    /// [`IterationCheckpoint`](EffectExecutionError::IterationCheckpoint)
+    /// failure when the store or the ledger does not answer (nothing runs;
+    /// the loop never falls back to iteration 0), a halting one when the
+    /// checkpoint contradicts its digest or the ledger, or
+    /// [`InvalidContract`](EffectExecutionError::InvalidContract) after an
+    /// iteration began. The runtime does not run the action.
+    async fn resume(&self) -> Result<Option<ResumePoint>, EffectExecutionError>;
+
+    /// Records that the loop continues at `iteration` with `state` after a
+    /// delay of `delay`, once the barrier of `iteration - 1` passed `Ok`.
+    ///
+    /// A store that does not answer only costs the optimisation: the call
+    /// succeeds and the loop goes on.
+    ///
+    /// # Errors
+    ///
+    /// The failure the journal holds; a deferring failure when the lease no
+    /// longer authorizes the save; a halting one when the store refused it
+    /// as a conflict, a regression or an invalid record;
+    /// [`InvalidContract`](EffectExecutionError::InvalidContract) when no
+    /// barrier of `iteration - 1` passed since; or
+    /// [`Cancelled`](EffectExecutionError::Cancelled) once admission closed.
+    /// The runtime starts no further iteration.
+    async fn checkpoint(
+        &self,
+        iteration: u32,
+        state: &Value,
+        delay: Option<Duration>,
+    ) -> Result<(), EffectExecutionError>;
+}
+
+/// Where a journaled stateful loop resumes ([`IterationGate::resume`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ResumePoint {
+    /// The next iteration to run.
+    pub iteration: u32,
+    /// The action's state to run it with.
+    pub state: Value,
+    /// The delay to wait before it: `None` when the action asked for none,
+    /// or when the ledger shows the iteration already ran.
+    pub delay: Option<Duration>,
 }
 
 /// How far a stateful run's replay has come when an iteration ended.
@@ -526,6 +636,19 @@ impl IterationGate for JournalIterationGate {
 
     fn cancel_iteration(&self) {
         self.journal.cancel_iteration();
+    }
+
+    async fn resume(&self) -> Result<Option<ResumePoint>, EffectExecutionError> {
+        self.journal.resume_from_checkpoint().await
+    }
+
+    async fn checkpoint(
+        &self,
+        iteration: u32,
+        state: &Value,
+        delay: Option<Duration>,
+    ) -> Result<(), EffectExecutionError> {
+        self.journal.save_checkpoint(iteration, state, delay).await
     }
 }
 
@@ -635,6 +758,10 @@ pub(crate) struct JournalAuthority {
     /// [`Iterated`](JournalShape::Iterated) journal admits units only while
     /// an iteration is open.
     pub shape: JournalShape,
+    /// Where an [`Iterated`](JournalShape::Iterated) journal loads and
+    /// saves its iteration checkpoint; `None` keeps none (every attempt
+    /// replays from iteration 0).
+    pub checkpoints: Option<Arc<dyn CheckpointStore>>,
 }
 
 /// The per-node-attempt journal of a journaled action's effects: the
@@ -705,6 +832,19 @@ struct JournalState {
     /// The failure that decides the node's verdict (the first one, unless
     /// a halting one replaces it; see `note_failure`).
     failure: Option<EffectExecutionError>,
+    /// Iterations below this one are attested by the iteration checkpoint
+    /// this attempt resumed from: they never run again, and their recorded
+    /// positions are neither met nor demanded. `0` without one.
+    attested: u32,
+    /// The iteration whose barrier last passed `Ok`, while nothing since
+    /// forbids recording a checkpoint after it: set only by a succeeding
+    /// [`end_iteration`](NodeEffectJournal::end_iteration), cleared by the
+    /// next begin, a cancellation, any noted failure, the journal closing,
+    /// and the checkpoint it allows.
+    checkpointable: Option<u32>,
+    /// The checkpoint was consulted ([`IterationGate::resume`]): it is
+    /// consulted at most once, before the first iteration.
+    resume_consulted: bool,
 }
 
 /// The positional family of an occurrence label.
@@ -1290,8 +1430,22 @@ impl NodeEffectJournal {
             return Unmet::None;
         };
         let mut state = self.state();
+        // Positions of attested iterations are never met again: the
+        // frontier starts at the first recorded position past them.
+        let attested_end = match family {
+            Family::Iterated => {
+                let attested = state.attested;
+                recorded.partition_point(|((iteration, _), _)| *iteration < attested)
+            },
+            Family::Flat => 0,
+        };
         let positions = &mut state.positions;
-        let mut frontier = positions.frontier.get(&family).copied().unwrap_or(0);
+        let mut frontier = positions
+            .frontier
+            .get(&family)
+            .copied()
+            .unwrap_or(0)
+            .max(attested_end);
         // Only a position this attempt met is passed: a recorded slot that
         // was never sent (only prepared, or every call explained not
         // crossed) still holds an effect the program intended there, and a
@@ -1383,11 +1537,19 @@ impl NodeEffectJournal {
             self.note_failure(failure);
             return Err(self.state().failure.unwrap_or(failure));
         }
-        if iteration > MAX_ITERATION || state.iteration.is_some_and(|open| iteration <= open) {
+        // A resumed loop's first iteration is the one its checkpoint names:
+        // an attested iteration never runs again.
+        let skips_resume_point =
+            state.iteration.is_none() && state.attested > 0 && iteration != state.attested;
+        if iteration > MAX_ITERATION
+            || state.iteration.is_some_and(|open| iteration <= open)
+            || skips_resume_point
+        {
             drop(state);
             self.note_failure(EffectExecutionError::InvalidContract);
             return Err(EffectExecutionError::InvalidContract);
         }
+        state.checkpointable = None;
         state.iteration = Some(iteration);
         state.run_open = true;
         state.next_ordinal = 0;
@@ -1478,6 +1640,14 @@ impl NodeEffectJournal {
             .map(|(slot_id, _)| *slot_id)
             .collect();
         let Some(first) = unresolved.first() else {
+            if succeeded {
+                // The barrier passed `Ok`: a checkpoint after this
+                // iteration may be recorded — until anything else happens.
+                let mut state = self.state();
+                if state.failure.is_none() && !self.is_closed() && !state.admission_closed {
+                    state.checkpointable = Some(iteration);
+                }
+            }
             return Ok(());
         };
         tracing::warn!(
@@ -1622,8 +1792,372 @@ impl NodeEffectJournal {
         let mut state = self.state();
         state.run_open = false;
         state.admission_closed = true;
+        state.checkpointable = None;
+    }
+}
+
+/// The node attempt's iteration checkpoint: resuming from it and recording
+/// it ([`IterationGate::resume`], [`IterationGate::checkpoint`]).
+impl NodeEffectJournal {
+    /// The address of this node attempt's iteration checkpoint.
+    fn checkpoint_key<'a>(
+        &'a self,
+        version: &'a str,
+    ) -> Result<IterationCheckpointKey<'a>, EffectExecutionError> {
+        let authority = &self.inner.authority;
+        IterationCheckpointKey::new(
+            &authority.scope,
+            &self.inner.execution,
+            authority.node_key.as_str(),
+            &authority.action_key,
+            version,
+        )
+        .map_err(EffectExecutionError::IterationCheckpoint)
     }
 
+    /// Counts one checkpoint load by `outcome`.
+    fn count_resume(&self, outcome: &'static str) {
+        let metrics = &self.inner.authority.metrics;
+        let labels = metrics.interner().single("outcome", outcome);
+        if let Ok(counter) = metrics.counter_labeled(NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL, &labels) {
+            counter.inc();
+        }
+    }
+
+    /// Counts one checkpoint save by `outcome`.
+    fn count_checkpoint(&self, outcome: &'static str) {
+        let metrics = &self.inner.authority.metrics;
+        let labels = metrics.interner().single("outcome", outcome);
+        if let Ok(counter) =
+            metrics.counter_labeled(NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL, &labels)
+        {
+            counter.inc();
+        }
+    }
+
+    /// Records `failure` in the node's verdict and returns the verdict's
+    /// failure.
+    fn fail_with(&self, failure: EffectExecutionError) -> EffectExecutionError {
+        self.note_failure(failure);
+        self.state().failure.unwrap_or(failure)
+    }
+
+    /// Where this attempt's stateful loop starts ([`IterationGate::resume`]).
+    ///
+    /// Loads the node's iteration checkpoint within [`FINAL_READ_FLOOR`],
+    /// verifies its digest and decodes its state, takes the node's one
+    /// occurrence read (also bounded) and requires exactly the attested
+    /// count of iterated positions below the checkpoint and no flat one.
+    /// On success iterations below it are attested (S9).
+    ///
+    /// # Errors
+    ///
+    /// - [`InvalidContract`](EffectExecutionError::InvalidContract) once an
+    ///   iteration began or the checkpoint was already consulted;
+    /// - a deferring failure when the store or the ledger does not answer —
+    ///   nothing runs, and the loop never falls back to iteration 0;
+    /// - a halting
+    ///   [`IterationCheckpoint`](EffectExecutionError::IterationCheckpoint)
+    ///   failure (an invalid record) when the checkpoint contradicts its
+    ///   digest, its state is not JSON,
+    ///   or the ledger holds another count of positions below it (or a
+    ///   flat one): nothing is sent.
+    pub(crate) async fn resume_from_checkpoint(
+        &self,
+    ) -> Result<Option<ResumePoint>, EffectExecutionError> {
+        {
+            let mut state = self.state();
+            if state.iteration.is_some() || state.resume_consulted {
+                drop(state);
+                return Err(self.fail_with(EffectExecutionError::InvalidContract));
+            }
+            state.resume_consulted = true;
+        }
+        let authority = &self.inner.authority;
+        let Some(store) = authority.checkpoints.as_ref() else {
+            return Ok(None);
+        };
+        let version = authority.action_version.to_string();
+        let key = self.checkpoint_key(&version)?;
+        let loaded = tokio::time::timeout(FINAL_READ_FLOOR, store.load_iteration_checkpoint(&key))
+            .await
+            .unwrap_or(Err(IterationCheckpointError::Unavailable));
+        let checkpoint = match loaded {
+            Ok(Some(checkpoint)) => checkpoint,
+            Ok(None) => {
+                self.count_resume(effect_journal_resume_outcome::ABSENT);
+                return Ok(None);
+            },
+            Err(error) => {
+                let failure = EffectExecutionError::IterationCheckpoint(error);
+                self.count_resume(if failure.is_deferred() {
+                    effect_journal_resume_outcome::DEFERRED
+                } else {
+                    effect_journal_resume_outcome::INVALID
+                });
+                tracing::warn!(
+                    execution_id = %authority.execution_id,
+                    node_key = %authority.node_key,
+                    code = error.label(),
+                    "the node's iteration checkpoint could not be loaded; nothing runs"
+                );
+                return Err(self.fail_with(failure));
+            },
+        };
+        let iteration = checkpoint.iteration();
+        let digest: [u8; 32] = Sha256::digest(checkpoint.state()).into();
+        let decoded = (digest == *checkpoint.state_digest())
+            .then(|| serde_json::from_slice::<Value>(checkpoint.state()).ok())
+            .flatten();
+        let Some(state) = decoded else {
+            return Err(self.refuse_resume(iteration, "digest or state does not verify"));
+        };
+        let read = tokio::time::timeout(FINAL_READ_FLOOR, self.prior())
+            .await
+            .unwrap_or(Err(EffectExecutionError::Ledger(
+                OperationLedgerError::Unavailable,
+            )));
+        let prior = match read {
+            Ok(prior) => prior,
+            Err(error) => {
+                self.count_resume(effect_journal_resume_outcome::DEFERRED);
+                return Err(self.fail_with(error));
+            },
+        };
+        if prior.positions.contains_key(&Family::Flat) {
+            return Err(self.refuse_resume(iteration, "the ledger holds a flat occurrence"));
+        }
+        let iterated = prior.positions.get(&Family::Iterated);
+        let below = iterated.map_or(0, |positions| {
+            positions
+                .iter()
+                .filter(|((recorded, _), _)| *recorded < iteration)
+                .count()
+        });
+        if u32::try_from(below).ok() != Some(checkpoint.attested_positions()) {
+            return Err(self.refuse_resume(
+                iteration,
+                "the ledger holds another count of positions below it",
+            ));
+        }
+        // The delay before the resumed iteration elapsed already when the
+        // ledger shows that iteration (or a later one) ran.
+        let already_ran = prior
+            .highest(Family::Iterated)
+            .is_some_and(|(last, _)| last >= iteration);
+        let delay = checkpoint
+            .resume_delay_ms()
+            .filter(|_| !already_ran)
+            .map(Duration::from_millis);
+        self.state().attested = iteration;
+        self.count_resume(effect_journal_resume_outcome::RESUMED);
+        tracing::info!(
+            execution_id = %authority.execution_id,
+            node_key = %authority.node_key,
+            iteration,
+            attested_positions = checkpoint.attested_positions(),
+            "a stateful node resumes from its iteration checkpoint"
+        );
+        Ok(Some(ResumePoint {
+            iteration,
+            state,
+            delay,
+        }))
+    }
+
+    /// Refuses a checkpoint that contradicts itself or the ledger: the
+    /// execution halts with nothing sent.
+    fn refuse_resume(&self, iteration: u32, reason: &'static str) -> EffectExecutionError {
+        self.count_resume(effect_journal_resume_outcome::INVALID);
+        tracing::error!(
+            execution_id = %self.inner.authority.execution_id,
+            node_key = %self.inner.authority.node_key,
+            iteration,
+            reason,
+            "the node's iteration checkpoint does not verify; halting, nothing sent"
+        );
+        self.fail_with(EffectExecutionError::IterationCheckpoint(
+            IterationCheckpointError::InvalidRecord,
+        ))
+    }
+
+    /// Records the iteration checkpoint the barrier of `iteration - 1`
+    /// allowed ([`IterationGate::checkpoint`]).
+    ///
+    /// # Errors
+    ///
+    /// See [`IterationGate::checkpoint`].
+    pub(crate) async fn save_checkpoint(
+        &self,
+        iteration: u32,
+        state: &Value,
+        delay: Option<Duration>,
+    ) -> Result<(), EffectExecutionError> {
+        let authority = &self.inner.authority;
+        // What a passed barrier allowed is spent here, whatever happens.
+        let (allowed, unsettled, attested_positions) = {
+            let mut guard = self.state();
+            if let Some(failure) = guard.failure {
+                return Err(failure);
+            }
+            if self.is_closed() || guard.admission_closed {
+                return Err(EffectExecutionError::Cancelled);
+            }
+            let allowed = iteration
+                .checked_sub(1)
+                .is_some_and(|passed| guard.checkpointable.take() == Some(passed));
+            let next = (iteration, 0);
+            let unsettled = guard
+                .positions
+                .uncertain
+                .get(&Family::Iterated)
+                .is_some_and(|&lowest| lowest < next);
+            // Every recorded iterated position below `iteration`: the ones
+            // earlier attempts recorded (the barrier read them) and the ones
+            // this attempt met.
+            let below = |label: &String| {
+                Position::parse(label).is_some_and(|position| {
+                    position.family == Family::Iterated && position.order() < next
+                })
+            };
+            let mut positions: HashSet<&String> = guard
+                .positions
+                .met
+                .iter()
+                .filter(|label| below(label))
+                .collect();
+            if let Some(prior) = self.inner.prior.get() {
+                positions.extend(prior.labels.iter().filter(|label| below(label)));
+            }
+            (allowed, unsettled, u32::try_from(positions.len()).ok())
+        };
+        if !allowed {
+            tracing::error!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                iteration,
+                "an iteration checkpoint no passed barrier allowed; refused"
+            );
+            return Err(self.fail_with(EffectExecutionError::InvalidContract));
+        }
+        let Some(store) = authority.checkpoints.as_ref() else {
+            return Ok(());
+        };
+        if unsettled {
+            // A lower position's prepare never answered: its row may exist
+            // and would be missing from the attested count.
+            tracing::warn!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                iteration,
+                "a position below is uncertain in this attempt; iteration checkpoint skipped"
+            );
+            self.count_checkpoint(effect_journal_checkpoint_outcome::UNSETTLED);
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(state)
+            .map_err(|_| self.fail_with(EffectExecutionError::InvalidContract))?;
+        if bytes.len() > MAX_ITERATION_CHECKPOINT_STATE_BYTES {
+            tracing::warn!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                iteration,
+                state_bytes = bytes.len(),
+                "stateful state exceeds the checkpoint bound; iteration checkpoint skipped"
+            );
+            self.count_checkpoint(effect_journal_checkpoint_outcome::OVERSIZE);
+            return Ok(());
+        }
+        let digest: [u8; 32] = Sha256::digest(&bytes).into();
+        let delay_ms = delay.map(|delay| {
+            u64::try_from(delay.as_millis())
+                .unwrap_or(u64::MAX)
+                .min(MAX_CHECKPOINT_DELAY_MS)
+        });
+        let record = attested_positions
+            .ok_or(IterationCheckpointError::InvalidRecord)
+            .and_then(|attested| {
+                IterationCheckpoint::new(
+                    iteration,
+                    bytes,
+                    digest,
+                    delay_ms,
+                    attested,
+                    authority.attempt_generation,
+                )
+            })
+            .map_err(|error| self.fail_with(EffectExecutionError::IterationCheckpoint(error)))?;
+        let version = authority.action_version.to_string();
+        let key = self
+            .checkpoint_key(&version)
+            .map_err(|error| self.fail_with(error))?;
+        let saved = tokio::time::timeout(
+            FINAL_READ_FLOOR,
+            store.save_iteration_checkpoint(&key, &record, authority.fencing),
+        )
+        .await
+        .unwrap_or(Err(IterationCheckpointError::Unavailable));
+        match saved {
+            Ok(CheckpointSaved::AlreadyRecorded) => {
+                self.count_checkpoint(effect_journal_checkpoint_outcome::ALREADY_RECORDED);
+                Ok(())
+            },
+            Ok(_) => {
+                self.count_checkpoint(effect_journal_checkpoint_outcome::RECORDED);
+                tracing::debug!(
+                    execution_id = %authority.execution_id,
+                    node_key = %authority.node_key,
+                    iteration,
+                    "iteration checkpoint recorded"
+                );
+                Ok(())
+            },
+            Err(
+                error @ (IterationCheckpointError::Unavailable
+                | IterationCheckpointError::AcknowledgementUnknown),
+            ) => {
+                // The optimisation is lost, not the run: a later attempt
+                // replays from an earlier checkpoint.
+                self.count_checkpoint(effect_journal_checkpoint_outcome::UNAVAILABLE);
+                tracing::warn!(
+                    execution_id = %authority.execution_id,
+                    node_key = %authority.node_key,
+                    iteration,
+                    code = error.label(),
+                    "iteration checkpoint not saved; continuing without it"
+                );
+                Ok(())
+            },
+            Err(IterationCheckpointError::TooLarge) => {
+                self.count_checkpoint(effect_journal_checkpoint_outcome::OVERSIZE);
+                Ok(())
+            },
+            Err(error @ IterationCheckpointError::ExecutionLeaseRejected) => {
+                self.count_checkpoint(effect_journal_checkpoint_outcome::LEASE_REJECTED);
+                tracing::warn!(
+                    execution_id = %authority.execution_id,
+                    node_key = %authority.node_key,
+                    iteration,
+                    "the execution lease no longer authorizes the iteration checkpoint; deferring"
+                );
+                Err(self.fail_with(EffectExecutionError::IterationCheckpoint(error)))
+            },
+            Err(error) => {
+                self.count_checkpoint(effect_journal_checkpoint_outcome::REFUSED);
+                tracing::error!(
+                    execution_id = %authority.execution_id,
+                    node_key = %authority.node_key,
+                    iteration,
+                    code = error.label(),
+                    "the store refused the iteration checkpoint; halting"
+                );
+                Err(self.fail_with(EffectExecutionError::IterationCheckpoint(error)))
+            },
+        }
+    }
+}
+
+impl NodeEffectJournal {
     /// Checks that this attempt met every effect an earlier attempt recorded
     /// in iterations up to `iteration`; otherwise records an occurrence
     /// mismatch in the node's verdict. What earlier attempts recorded is
@@ -1698,14 +2232,17 @@ impl NodeEffectJournal {
             .unwrap_or(EffectExecutionError::OccurrenceMismatch))
     }
 
-    /// The first recorded iterated position this attempt has not met.
+    /// The first recorded iterated position past the attested iterations
+    /// that this attempt has not met.
     fn first_unmet_label(&self, prior: &PriorOccurrences) -> Option<String> {
         let state = self.state();
         prior
             .positions
             .get(&Family::Iterated)?
             .iter()
-            .find(|(_, label)| !state.positions.met.contains(label))
+            .find(|((iteration, _), label)| {
+                *iteration >= state.attested && !state.positions.met.contains(label)
+            })
             .map(|(_, label)| label.clone())
     }
 
@@ -1750,6 +2287,8 @@ impl NodeEffectJournal {
     /// failure.
     fn note_failure(&self, error: EffectExecutionError) {
         let mut state = self.state();
+        // Any failure ends what a passed barrier allowed.
+        state.checkpointable = None;
         // The first failure stands, except that a halting one (an unknown
         // outcome, a mismatch) replaces any other: a later deferral never
         // displaces a terminal verdict — the retry it would allow meets the
@@ -1908,6 +2447,7 @@ impl NodeEffectJournal {
     /// already prepared.
     pub(crate) fn close(&self) {
         self.inner.closed.store(true, Ordering::SeqCst);
+        self.state().checkpointable = None;
     }
 
     /// Ends the journal's node attempt: drains the in-flight units for at
@@ -2083,19 +2623,25 @@ impl NodeEffectJournal {
         // failure this attempt noted, so a routable failure never lets an
         // error strategy continue past a node that skipped an effect an
         // earlier attempt applied.
-        let reached = Reached::of(&self.state());
+        let (reached, attested) = {
+            let state = self.state();
+            (Reached::of(&state), state.attested)
+        };
         // Skipped: a recorded slot this attempt did not meet that may have
         // changed the provider, or — only prepared, or every call not
         // crossed — one the program still intended: when the node is about
         // to succeed, or when this attempt met a later position of its
         // family (it went past it). A failing node that stopped before an
         // unsettled slot it never reached changed nothing and diverged from
-        // nothing.
+        // nothing. A position of an attested iteration is never skipped:
+        // that iteration does not run again (S9).
         let skipped: Vec<&str> = slots
             .iter()
             .filter(|slot| {
                 let label = slot.occurrence();
-                !reached.met(slot.record().operation().slot_id(), label)
+                !Position::parse(label).is_some_and(|position| {
+                    position.family == Family::Iterated && position.iteration < attested
+                }) && !reached.met(slot.record().operation().slot_id(), label)
                     && (is_consequential(slot.record())
                         || (SlotWeight::of(slot.record()) == SlotWeight::Unsettled
                             && (node_succeeded || reached.passed_by(label))))
@@ -3037,6 +3583,9 @@ fn verdict_label(failure: Option<&EffectExecutionError>) -> &'static str {
         },
         Some(EffectExecutionError::JournalConcurrencyLimit { .. }) => {
             effect_journal_verdict::CONCURRENCY_LIMIT
+        },
+        Some(EffectExecutionError::IterationCheckpoint(_)) => {
+            effect_journal_verdict::ITERATION_CHECKPOINT
         },
         Some(_) => effect_journal_verdict::LEDGER,
     }

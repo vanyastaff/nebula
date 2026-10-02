@@ -2166,6 +2166,16 @@ struct ScriptedGate {
     hang_end_at: Option<u32>,
     /// Iterations before this one report the replay not at its frontier.
     replayed_through: Option<u32>,
+    /// Where [`resume`](crate::effect_driver::IterationGate::resume) says
+    /// the loop starts.
+    resume_at: Option<crate::effect_driver::ResumePoint>,
+    /// What `resume` fails with instead.
+    fail_resume: Option<crate::EffectExecutionError>,
+    resumes: AtomicU32,
+    /// The checkpoint of this iteration fails with a lost lease.
+    fail_checkpoint_at: Option<u32>,
+    /// Every checkpoint recorded: next iteration, state, delay.
+    saved: std::sync::Mutex<Vec<(u32, serde_json::Value, Option<std::time::Duration>)>>,
 }
 
 impl ScriptedGate {
@@ -2211,6 +2221,38 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
     fn cancel_iteration(&self) {
         let iteration = self.open.load(AtomicOrdering::SeqCst);
         self.log.lock().unwrap().push(format!("cancel {iteration}"));
+    }
+
+    async fn resume(
+        &self,
+    ) -> Result<Option<crate::effect_driver::ResumePoint>, crate::EffectExecutionError> {
+        self.resumes.fetch_add(1, AtomicOrdering::SeqCst);
+        if let Some(failure) = self.fail_resume {
+            return Err(failure);
+        }
+        Ok(self.resume_at.clone())
+    }
+
+    async fn checkpoint(
+        &self,
+        iteration: u32,
+        state: &serde_json::Value,
+        delay: Option<std::time::Duration>,
+    ) -> Result<(), crate::EffectExecutionError> {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("checkpoint {iteration}"));
+        if self.fail_checkpoint_at == Some(iteration) {
+            return Err(crate::EffectExecutionError::IterationCheckpoint(
+                nebula_storage_port::IterationCheckpointError::ExecutionLeaseRejected,
+            ));
+        }
+        self.saved
+            .lock()
+            .unwrap()
+            .push((iteration, state.clone(), delay));
+        Ok(())
     }
 }
 
@@ -2409,7 +2451,10 @@ async fn a_cancellation_during_the_delay_closes_admission() {
         ),
         "{result:?}"
     );
-    assert_eq!(gate.log(), ["begin 0", "end 0 ok", "cancel 0"]);
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0 ok", "checkpoint 1", "cancel 0"]
+    );
 }
 
 /// A cancellation during an iteration's dispatch ends the iteration at the
@@ -2492,7 +2537,7 @@ async fn a_cancellation_during_the_barrier_drain_cancels_the_iteration() {
     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     assert_eq!(
         gate.log(),
-        ["begin 0", "end 0 ok", "begin 1", "end 1 ok"],
+        ["begin 0", "end 0 ok", "checkpoint 1", "begin 1", "end 1 ok"],
         "the barrier of iteration 1 is draining"
     );
     cancel.cancel();
@@ -2509,7 +2554,14 @@ async fn a_cancellation_during_the_barrier_drain_cancels_the_iteration() {
     );
     assert_eq!(
         gate.log(),
-        ["begin 0", "end 0 ok", "begin 1", "end 1 ok", "cancel 1"]
+        [
+            "begin 0",
+            "end 0 ok",
+            "checkpoint 1",
+            "begin 1",
+            "end 1 ok",
+            "cancel 1"
+        ]
     );
 }
 
@@ -2677,9 +2729,27 @@ async fn a_journaled_stateful_loop_brackets_every_iteration_with_the_barrier() {
     assert_eq!(
         gate.log(),
         [
-            "begin 0", "end 0 ok", "begin 1", "end 1 ok", "begin 2", "end 2 ok"
+            "begin 0",
+            "end 0 ok",
+            "checkpoint 1",
+            "begin 1",
+            "end 1 ok",
+            "checkpoint 2",
+            "begin 2",
+            "end 2 ok"
         ],
-        "each iteration opens before and closes after its one dispatch"
+        "each iteration opens before and closes after its one dispatch; a \
+         checkpoint follows every passed `Continue` barrier, none the `Break`"
+    );
+    assert_eq!(gate.resumes.load(AtomicOrdering::SeqCst), 1);
+    let saved = gate.saved.lock().unwrap().clone();
+    assert_eq!(
+        saved
+            .iter()
+            .map(|(iteration, state, _)| (*iteration, state["count"].clone()))
+            .collect::<Vec<_>>(),
+        [(1, serde_json::json!(1)), (2, serde_json::json!(2))],
+        "each checkpoint carries the next iteration and the state after the last"
     );
 }
 
@@ -2701,8 +2771,8 @@ async fn a_failed_barrier_stops_the_journaled_stateful_loop() {
     );
     assert_eq!(
         gate.log(),
-        ["begin 0", "end 0 ok", "begin 1", "end 1 ok"],
-        "no iteration starts after the journal stopped the loop"
+        ["begin 0", "end 0 ok", "checkpoint 1", "begin 1", "end 1 ok"],
+        "no iteration starts, and nothing is checkpointed, after the journal stopped the loop"
     );
 
     let gate = ScriptedGate {
@@ -2721,7 +2791,15 @@ async fn a_failed_barrier_stops_the_journaled_stateful_loop() {
     );
     assert_eq!(
         gate.log(),
-        ["begin 0", "end 0 ok", "begin 1", "end 1 ok", "begin 2"],
+        [
+            "begin 0",
+            "end 0 ok",
+            "checkpoint 1",
+            "begin 1",
+            "end 1 ok",
+            "checkpoint 2",
+            "begin 2"
+        ],
         "a refused iteration never dispatches"
     );
 }
@@ -2736,10 +2814,143 @@ async fn a_journaled_stateful_loop_refuses_a_checkpoint_sink() {
     )
     .await;
     assert!(
-        matches!(&result, Err(RuntimeError::Internal(reason)) if reason.contains("takes no checkpoint sink")),
+        matches!(&result, Err(RuntimeError::Internal(reason)) if reason.contains("takes no caller checkpoint sink")),
         "{result:?}"
     );
     assert!(gate.log().is_empty(), "the action never ran");
+    assert_eq!(gate.resumes.load(AtomicOrdering::SeqCst), 0);
     assert!(sink.saves.lock().await.is_empty());
     assert_eq!(sink.clears.load(AtomicOrdering::Relaxed), 0);
+}
+
+/// A resumed loop starts at the checkpointed iteration with its state —
+/// `init_state` is not consulted — and waits the recorded delay first.
+#[tokio::test(start_paused = true)]
+async fn a_resumed_loop_starts_at_its_checkpoint_after_its_delay() {
+    let hour = std::time::Duration::from_hours(1);
+    let resumed = |delay| ScriptedGate {
+        resume_at: Some(crate::effect_driver::ResumePoint {
+            iteration: 2,
+            state: serde_json::json!({ "count": 2u32 }),
+            delay,
+        }),
+        ..ScriptedGate::default()
+    };
+    let gate = resumed(Some(hour));
+    // The recorded delay before iteration 2, then the one before 3.
+    assert_eq!(count_to_4_an_hour_apart(&gate).await, 2 * hour);
+    assert_eq!(
+        gate.log(),
+        ["begin 2", "end 2 ok", "checkpoint 3", "begin 3", "end 3 ok"],
+        "iterations 0 and 1 never run again"
+    );
+    // The ledger showed iteration 2 ran: its delay is not waited again.
+    assert_eq!(count_to_4_an_hour_apart(&resumed(None)).await, hour);
+}
+
+/// A resume that fails stops the loop before the action runs.
+#[tokio::test]
+async fn a_failed_resume_runs_nothing() {
+    let gate = ScriptedGate {
+        fail_resume: Some(crate::EffectExecutionError::IterationCheckpoint(
+            nebula_storage_port::IterationCheckpointError::Unavailable,
+        )),
+        ..ScriptedGate::default()
+    };
+    let result = count_to_3_under(&gate, None).await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::EffectJournal(
+                crate::EffectExecutionError::IterationCheckpoint(_)
+            ))
+        ),
+        "{result:?}"
+    );
+    assert!(gate.log().is_empty(), "no iteration began");
+}
+
+/// A cancellation during the resume delay closes admission and answers
+/// `Cancelled` at once, before any iteration.
+#[tokio::test(start_paused = true)]
+async fn a_cancellation_during_the_resume_delay_closes_admission() {
+    let gate = Arc::new(ScriptedGate {
+        resume_at: Some(crate::effect_driver::ResumePoint {
+            iteration: 1,
+            state: serde_json::json!({ "count": 1u32 }),
+            delay: Some(std::time::Duration::from_hours(1)),
+        }),
+        ..ScriptedGate::default()
+    });
+    let ctx = test_context();
+    let cancel = ctx.cancellation().clone();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<CountingTo3>::new()
+            .expect("valid test catalog definition"),
+    );
+    let run = tokio::spawn({
+        let gate = Arc::clone(&gate);
+        async move {
+            let node = NodeDefinition::new(node_key!("test"), "Count", "test", "count").unwrap();
+            make_runtime(Arc::new(ActionRegistry::new()))
+                .run_factory(
+                    "test.count",
+                    factory,
+                    &node,
+                    nebula_action::ActionInput::Raw(serde_json::Value::Null),
+                    &ctx,
+                    None,
+                    ResourceAuthority::CallerSupplied,
+                    Some(gate.as_ref()),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+        .await
+        .expect("cancellation is observed during the resume delay")
+        .expect("task");
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["cancel 0"], "no iteration began");
+}
+
+/// A checkpoint the journal refuses (a lost lease) stops the loop: no later
+/// iteration runs.
+#[tokio::test]
+async fn a_refused_checkpoint_stops_the_loop() {
+    let gate = ScriptedGate {
+        fail_checkpoint_at: Some(2),
+        ..ScriptedGate::default()
+    };
+    let result = count_to_3_under(&gate, None).await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::EffectJournal(
+                crate::EffectExecutionError::IterationCheckpoint(
+                    nebula_storage_port::IterationCheckpointError::ExecutionLeaseRejected
+                )
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        [
+            "begin 0",
+            "end 0 ok",
+            "checkpoint 1",
+            "begin 1",
+            "end 1 ok",
+            "checkpoint 2"
+        ]
+    );
 }

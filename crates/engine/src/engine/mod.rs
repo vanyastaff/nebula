@@ -3054,6 +3054,9 @@ struct NodeTask {
     fencing: Option<nebula_storage_port::FencingToken>,
     /// ADR-0120 operation ledger for durable effect-slot tracking (#978).
     operation_ledger: Option<Arc<dyn nebula_storage_port::store::OperationLedger>>,
+    /// Where a journaled stateful action's iteration checkpoints live, from
+    /// the turn's execution stores.
+    checkpoints: Option<Arc<dyn nebula_storage_port::store::CheckpointStore>>,
     /// Clock used to bound a granted provider call by its pinned lifetime.
     clock: Arc<dyn Clock>,
     /// Attempt provenance; never part of the logical effect occurrence address.
@@ -3124,6 +3127,11 @@ impl NodeTask {
         let (Some(ledger), Some(fencing)) = (&self.operation_ledger, self.fencing) else {
             return None;
         };
+        let shape = crate::effect_driver::JournalShape::of(factory.metadata().kind());
+        // Only a stateful action's iterations are checkpointed.
+        let checkpoints = (shape == crate::effect_driver::JournalShape::Iterated)
+            .then(|| self.checkpoints.clone())
+            .flatten();
         Some(crate::effect_driver::NodeEffectJournal::new(
             crate::effect_driver::JournalAuthority {
                 ledger: Arc::clone(ledger),
@@ -3136,7 +3144,8 @@ impl NodeTask {
                 attempt_generation: self.attempt_generation,
                 clock: Arc::clone(&self.clock),
                 metrics: self.metrics.clone(),
-                shape: crate::effect_driver::JournalShape::of(factory.metadata().kind()),
+                shape,
+                checkpoints,
             },
         ))
     }

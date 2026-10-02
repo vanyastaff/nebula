@@ -1323,6 +1323,14 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
+    /// Head 0062, on both backends, creates only the empty
+    /// `port_iteration_checkpoints` relation (fenced iteration checkpoints of
+    /// journaled stateful actions), its constraints, and a cascading foreign
+    /// key to the execution row. Nothing is inspected, inferred, or
+    /// backfilled: a missing row means "replay from iteration 0", which is how
+    /// every stateful node ran before. It is aggregate-neutral and the floor
+    /// remains at 0040.
+    ///
     /// Head 0061, on both backends, adds the credential admission epoch (the
     /// use revision) with the constant 1 on every existing row and a named
     /// range check. Nothing is inspected or inferred: the constant claims no
@@ -1407,9 +1415,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 61);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 62);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 61);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 62);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

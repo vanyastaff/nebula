@@ -11,6 +11,7 @@ mod credential_refresh_retry;
 mod execution;
 mod idempotency;
 mod identity;
+mod iteration_checkpoint;
 mod job_dispatch;
 mod journal;
 mod membership;
@@ -51,6 +52,11 @@ pub use idempotency::CachedRecord;
 pub use identity::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
     TriggerRow, UserRow, WorkspaceRow,
+};
+pub use iteration_checkpoint::{
+    CheckpointSaved, IterationCheckpoint, IterationCheckpointError, IterationCheckpointKey,
+    MAX_CHECKPOINT_ITERATION, MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES,
+    MAX_ITERATION_CHECKPOINT_STATE_BYTES,
 };
 pub use job_dispatch::JobDispatchMsg;
 pub use journal::JournalEntry;

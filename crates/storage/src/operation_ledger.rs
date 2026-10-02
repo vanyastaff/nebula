@@ -661,16 +661,14 @@ pub(crate) fn attach_protocol_payload(
     }
 }
 
-/// Called under the execution owner's lock using its authoritative clock.
-pub(crate) fn require_live_lease(
-    fencing: nebula_storage_port::FencingToken,
-    current: u64,
-    live: bool,
-) -> Result<(), OperationLedgerError> {
-    if fencing.generation() != current || !live {
-        return Err(OperationLedgerError::ExecutionLeaseRejected);
+/// The ledger's answer to an execution fence that refused its write.
+impl From<crate::execution_fence::FenceRefusal> for OperationLedgerError {
+    fn from(refusal: crate::execution_fence::FenceRefusal) -> Self {
+        match refusal {
+            crate::execution_fence::FenceRefusal::LeaseRejected => Self::ExecutionLeaseRejected,
+            crate::execution_fence::FenceRefusal::Unavailable => Self::Unavailable,
+        }
     }
-    Ok(())
 }
 
 /// Compose a record projection from decoded durable columns.
@@ -1148,12 +1146,17 @@ mod tests {
     #[test]
     fn a_superseded_attempt_cannot_decide_the_current_one() {
         assert_eq!(
-            require_live_lease(
+            crate::execution_fence::require_live_lease(
                 nebula_storage_port::FencingToken::from_generation(4),
                 5,
                 true
-            ),
+            )
+            .map_err(OperationLedgerError::from),
             Err(OperationLedgerError::ExecutionLeaseRejected)
+        );
+        assert_eq!(
+            OperationLedgerError::from(crate::execution_fence::FenceRefusal::Unavailable),
+            OperationLedgerError::Unavailable
         );
     }
 

@@ -2,7 +2,7 @@
 
 use nebula_action::effect::{EffectFailureCode, EffectPreparationError};
 use nebula_core::OperationId;
-use nebula_storage_port::dto::OperationLedgerError;
+use nebula_storage_port::dto::{IterationCheckpointError, OperationLedgerError};
 
 /// A durable remote effect could not produce an acknowledged, usable result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -93,6 +93,13 @@ pub enum EffectExecutionError {
         /// The iteration whose barrier failed.
         iteration: u32,
     },
+    /// A journaled stateful action's iteration checkpoint could not be
+    /// loaded or saved. An unavailable store, a lost acknowledgement or a
+    /// lost lease defers the node; a checkpoint that contradicts its digest
+    /// or the node's ledger, or a save the store refused as a conflict or a
+    /// regression, halts the execution. Nothing was sent past it.
+    #[error("iteration checkpoint failed: {0}")]
+    IterationCheckpoint(IterationCheckpointError),
 }
 
 impl EffectExecutionError {
@@ -115,11 +122,13 @@ impl EffectExecutionError {
             Self::JournalSlotCapExceeded { .. } => "ENGINE:EFFECT_JOURNAL_SLOT_CAP",
             Self::JournalConcurrencyLimit { .. } => "ENGINE:EFFECT_JOURNAL_CONCURRENCY_LIMIT",
             Self::IterationUnitsOutstanding { .. } => "ENGINE:EFFECT_ITERATION_BARRIER",
+            Self::IterationCheckpoint(_) => "ENGINE:EFFECT_ITERATION_CHECKPOINT",
         }
     }
     /// Whether the failure leaves the effect's durable state unknown or
     /// contradicting the node — an unknown outcome, an occurrence mismatch,
-    /// evidence that cannot be read. No error strategy may recover the node
+    /// evidence that cannot be read, an iteration checkpoint that
+    /// contradicts the ledger or the store. No error strategy may recover the node
     /// or route past it: the node fails and the execution stops, for
     /// reconciliation.
     #[must_use]
@@ -130,6 +139,11 @@ impl EffectExecutionError {
                 | Self::JournalOutcomeUnknown { .. }
                 | Self::OccurrenceMismatch
                 | Self::InvalidEvidence
+                | Self::IterationCheckpoint(
+                    IterationCheckpointError::InvalidRecord
+                        | IterationCheckpointError::Conflict
+                        | IterationCheckpointError::Regressed { .. }
+                )
         )
     }
 
@@ -146,6 +160,11 @@ impl EffectExecutionError {
                         | OperationLedgerError::AcknowledgementUnknown
                         | OperationLedgerError::ExecutionLeaseRejected
                         | OperationLedgerError::ProtocolConflict
+                )
+                | Self::IterationCheckpoint(
+                    IterationCheckpointError::Unavailable
+                        | IterationCheckpointError::AcknowledgementUnknown
+                        | IterationCheckpointError::ExecutionLeaseRejected
                 )
         )
     }
