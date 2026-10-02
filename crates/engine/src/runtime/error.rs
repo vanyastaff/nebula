@@ -201,6 +201,28 @@ pub enum RuntimeError {
         max_turns: u32,
     },
 
+    /// An agent action declares a `max_turns()` budget above the engine's
+    /// turn cap (10 000: a journaled agent labels at most `turn9999/`).
+    /// Refused at dispatch, before turn 0 — the budget is never clamped,
+    /// and nothing runs.
+    #[classify(
+        category = "validation",
+        code = "RUNTIME:AGENT_TURN_CAP_EXCEEDED",
+        retryable = false
+    )]
+    #[error(
+        "agent action '{key}' declares a turn budget of {max_turns} turns, above the engine's \
+         cap of {cap}"
+    )]
+    AgentTurnCapExceeded {
+        /// The action key whose budget is refused.
+        key: String,
+        /// The author-declared turn budget.
+        max_turns: u32,
+        /// The engine's turn cap.
+        cap: u32,
+    },
+
     /// A single turn of an agent action exceeded its per-turn wall-clock timeout.
     ///
     /// Returned when `AgentHandle::turn_timeout()` returns `Some(d)` and the
@@ -300,17 +322,17 @@ pub enum RuntimeError {
         timeout_ms: u64,
     },
 
-    /// A journaled stateful action's iterations stopped at the node effect
-    /// journal's iteration barrier: an iteration left an effect outcome
-    /// unknown, met an occurrence mismatch or a ledger failure, or ended
-    /// with effect units still in flight. The engine replaces this error
-    /// with the journal's verdict for the node.
+    /// A journaled stateful action's iterations (or a journaled agent's
+    /// turns) stopped at the node effect journal's iteration barrier: an
+    /// iteration left an effect outcome unknown, met an occurrence mismatch
+    /// or a ledger failure, or ended with effect units still in flight. The
+    /// engine replaces this error with the journal's verdict for the node.
     #[classify(
         category = "internal",
         code = "RUNTIME:EFFECT_JOURNAL",
         retryable = false
     )]
-    #[error("stateful iterations stopped at the effect journal: {0}")]
+    #[error("stateful iterations or agent turns stopped at the effect journal: {0}")]
     EffectJournal(crate::EffectExecutionError),
 
     /// Internal runtime error.
@@ -327,8 +349,9 @@ impl RuntimeError {
     /// - An [`ActionError`](Self::ActionError) whose inner error reports itself
     ///   retryable.
     /// - [`AgentTurnTimeout`](Self::AgentTurnTimeout): a single turn exceeded
-    ///   its per-turn wall-clock deadline; retrying from the last checkpoint is
-    ///   the intended recovery path.
+    ///   its per-turn wall-clock deadline; retrying is the intended recovery
+    ///   path — a journaled agent replays from its last turn checkpoint, or
+    ///   from turn 0, its recorded answers and effects replayed.
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::ActionError(e) => e.is_retryable(),
@@ -392,6 +415,17 @@ mod tests {
             timeout: std::time::Duration::from_millis(10),
         };
         assert!(err.is_retryable(), "AgentTurnTimeout must be retryable");
+    }
+
+    #[test]
+    fn an_agent_turn_cap_refusal_is_not_retryable() {
+        let err = RuntimeError::AgentTurnCapExceeded {
+            key: "my.agent".into(),
+            max_turns: 10_001,
+            cap: 10_000,
+        };
+        assert!(!err.is_retryable());
+        assert!(err.to_string().contains("10001"));
     }
 
     #[test]

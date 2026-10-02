@@ -23,10 +23,11 @@ mod checkpoint;
 // ── the journal shape of each action kind ────────────────────────────────
 
 #[test]
-fn stateless_and_stateful_actions_are_journaled_and_the_rest_say_why_not() {
+fn stateless_stateful_and_agent_actions_are_journaled_and_the_rest_say_why_not() {
     use nebula_action::ActionKind;
     assert_eq!(JournalShape::of(ActionKind::Stateless), JournalShape::Flat);
     assert!(JournalShape::Flat.is_journaled());
+    assert!(!JournalShape::Flat.is_gated());
     assert_eq!(JournalShape::read_only_detail(ActionKind::Stateless), None);
     assert_eq!(
         JournalShape::read_only_detail(ActionKind::Control),
@@ -40,14 +41,15 @@ fn stateless_and_stateful_actions_are_journaled_and_the_rest_say_why_not() {
         JournalShape::Iterated
     );
     assert!(JournalShape::Iterated.is_journaled());
+    assert!(JournalShape::Iterated.is_gated());
     assert_eq!(JournalShape::read_only_detail(ActionKind::Stateful), None);
-    assert_eq!(
-        JournalShape::read_only_detail(ActionKind::Agent),
-        Some("agent effects are not journaled; the agent profile is planned")
-    );
+    // An agent's turns are journaled, each a positional run.
+    assert_eq!(JournalShape::of(ActionKind::Agent), JournalShape::Turned);
+    assert!(JournalShape::Turned.is_journaled());
+    assert!(JournalShape::Turned.is_gated());
+    assert_eq!(JournalShape::read_only_detail(ActionKind::Agent), None);
     for kind in [
         ActionKind::Control,
-        ActionKind::Agent,
         ActionKind::Stream,
         ActionKind::Interactive,
         ActionKind::Trigger,
@@ -1475,7 +1477,7 @@ async fn a_submission_after_a_cancelled_iteration_is_refused_and_not_waited_for(
     let journal = harness.stateful_journal(1);
     journal.begin_iteration(0).expect("it0");
     // The node is cancelled mid-iteration; a detached task submits later.
-    journal.cancel_iteration();
+    journal.abandon_iteration();
     let refused = harness
         .handle(&journal)
         .submit(Charge::<false> { order: 19 })
@@ -1496,7 +1498,7 @@ async fn a_submission_after_a_cancelled_iteration_is_refused_and_not_waited_for(
     let between = harness.stateful_journal(2);
     between.begin_iteration(0).expect("it0");
     between.end_iteration(DRAIN, true).await.expect("it0 ends");
-    between.cancel_iteration();
+    between.abandon_iteration();
     let refused = harness
         .handle(&between)
         .submit(Charge::<false> { order: 18 })
@@ -2382,6 +2384,103 @@ fn positions_parse_only_labels_the_journal_builds() {
     // A label with no position is never a gap, whatever is recorded.
     let prior = PriorOccurrences::new(["it01/unit/v1/#000005"]);
     assert!(!prior.refuses("it1/unit/v1/#000000"));
+}
+
+#[test]
+fn turn_labels_parse_strictly_as_their_own_family() {
+    assert_eq!(
+        Position::parse("turn12/unit/v1/#000003"),
+        Some(Position {
+            family: Family::Turned,
+            iteration: 12,
+            ordinal: 3
+        })
+    );
+    assert_eq!(
+        Position::parse("turn9999/unit/v1/#000000").map(Position::order),
+        Some((9_999, 0))
+    );
+    for label in [
+        "turn01/unit/v1/#000000",
+        "turn00/unit/v1/#000000",
+        "turn/unit/v1/#000000",
+        "turn+1/unit/v1/#000000",
+        "turn10000/unit/v1/#000000",
+        "turn1/unit/v1/#7",
+        "turn1/unit/v2/#000000",
+        "tur1/unit/v1/#000000",
+        "itturn1/unit/v1/#000000",
+    ] {
+        assert_eq!(Position::parse(label), None, "{label}");
+    }
+    assert_eq!(
+        occurrence_label(Family::Turned, Some(7), 2),
+        "turn7/unit/v1/#000002"
+    );
+    assert_eq!(
+        occurrence_label(Family::Iterated, Some(7), 2),
+        "it7/unit/v1/#000002"
+    );
+    assert_eq!(occurrence_label(Family::Turned, None, 2), "unit/v1/#000002");
+
+    // Flat, iterated and turned labels are mutually exclusive for a node:
+    // any of them after another family is a changed action kind.
+    for (recorded, fresh) in [
+        ("turn0/unit/v1/#000000", "it0/unit/v1/#000000"),
+        ("turn0/unit/v1/#000000", "unit/v1/#000000"),
+        ("it0/unit/v1/#000000", "turn0/unit/v1/#000000"),
+        ("unit/v1/#000000", "turn0/unit/v1/#000000"),
+    ] {
+        let prior = PriorOccurrences::new([recorded]);
+        assert!(prior.mixes_family_at(fresh), "{recorded} then {fresh}");
+        assert!(prior.refuses(fresh), "{recorded} then {fresh}");
+    }
+    // Within the turned family, positions order by turn then ordinal.
+    let turns = PriorOccurrences::new(["turn0/unit/v1/#000000", "turn2/unit/v1/#000000"]);
+    assert!(turns.leaves_gap_at("turn1/unit/v1/#000000"));
+    assert!(!turns.refuses("turn2/unit/v1/#000001"));
+    assert!(!turns.refuses("turn3/unit/v1/#000000"));
+}
+
+#[tokio::test]
+async fn an_agent_journal_labels_its_turns_and_admits_units_only_in_one() {
+    let harness = Harness::new().await;
+    let journal = NodeEffectJournal::new(harness.authority(
+        1,
+        Arc::new(nebula_core::accessor::SystemClock),
+        JournalShape::Turned,
+    ));
+    // No turn open: a submission belongs to none.
+    assert_eq!(
+        journal.admit().map(|_| ()),
+        Err(JournalRefusal::BetweenRuns)
+    );
+    let journal = NodeEffectJournal::new(harness.authority(
+        2,
+        Arc::new(nebula_core::accessor::SystemClock),
+        JournalShape::Turned,
+    ));
+    journal.begin_iteration(0).expect("turn 0");
+    assert_eq!(journal.next_occurrence(), "turn0/unit/v1/#000000");
+    assert_eq!(journal.next_occurrence(), "turn0/unit/v1/#000001");
+    journal
+        .end_iteration(DRAIN, true)
+        .await
+        .expect("nothing in flight");
+    journal.begin_iteration(1).expect("turn 1");
+    assert_eq!(
+        journal.next_occurrence(),
+        "turn1/unit/v1/#000000",
+        "the ordinal restarts per turn"
+    );
+    journal
+        .end_iteration(DRAIN, true)
+        .await
+        .expect("nothing in flight");
+    // Abandoned (a timeout or a cancellation): nothing is admitted after.
+    journal.abandon_iteration();
+    assert_eq!(journal.admit().map(|_| ()), Err(JournalRefusal::Closed));
+    assert_eq!(journal.conclude(DRAIN).await, Ok(()));
 }
 
 #[tokio::test]

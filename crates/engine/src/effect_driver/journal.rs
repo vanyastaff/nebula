@@ -4,7 +4,7 @@
 //! [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled)
 //! submits its effects as units on resource handles
 //! ([`ResourceHandle`](nebula_resource::call::ResourceHandle)). For a
-//! stateless or stateful action on a durable turn the engine builds one
+//! stateless, stateful or agent action on a durable turn the engine builds one
 //! [`NodeEffectJournal`] per node attempt and hands it to the node's handles
 //! ([`Manager::handle_any_journaled`](nebula_resource::Manager::handle_any_journaled));
 //! the resource runtime drives every `Idempotent`, `Write` or
@@ -105,9 +105,9 @@
 //!
 //! **Kinds** ([`JournalShape`]). Stateless actions are journaled with one
 //! flat occurrence sequence per node attempt; stateful actions per
-//! iteration. A control action decides flow and must not cause effects;
-//! agent, stream and other actions keep read-only handles. Each says why in
-//! the refusal of a write.
+//! iteration; agents per turn. A control action decides flow and must not
+//! cause effects; stream and other actions keep read-only handles. Each
+//! says why in the refusal of a write.
 //!
 //! **Recorded reads.** A `RecordedRead` unit — a model call, a retrieval
 //! whose answer steers the program — is an *observation* slot
@@ -291,10 +291,23 @@
 //! effect is a mismatch). Rows are not cleared at terminal: they go with
 //! their execution.
 //!
-//! **Cancellation.** A node cancelled mid-iteration ends the iteration at
-//! once ([`IterationGate::cancel_iteration`]): a later submission (a
-//! detached task's) is refused closed with no failure of its own, so the
-//! conclusion drains only the units already in flight.
+//! **Cancellation.** A node cancelled mid-iteration — or an agent's turn
+//! past its timeout — abandons the iteration at once
+//! ([`IterationGate::abandon_iteration`]): a later submission (a detached
+//! task's) is refused closed with no failure of its own, so the conclusion
+//! drains only the units already in flight, recording a call none of them
+//! explained as ambiguous (never sent again under another key).
+//!
+//! **Turns.** An agent's loop runs under the same barrier, a turn per
+//! iteration: its units are labelled `turn{n}/unit/v1/#{ordinal:06}` —
+//! model calls (recorded reads), tools and sessions in one positional
+//! sequence per turn, a model call with no label of its own — and it is
+//! checkpointed after every turn whose barrier passed `Continue`, its turn
+//! state the checkpoint's state (an unchanged one included: a no-progress
+//! turn is legal). Flat, `it{n}/` and `turn{n}/` labels are mutually
+//! exclusive for a node: another family's label is a changed action kind
+//! (a mismatch), and a resume counts only the node's own family. The
+//! positional and order rules below apply per turn as per iteration.
 //!
 //! **Admission.** A stateful node's journal admits a submitted unit only
 //! while an iteration is open
@@ -569,12 +582,15 @@ pub(crate) trait IterationGate: Send + Sync {
         succeeded: bool,
     ) -> Result<IterationProgress, EffectExecutionError>;
 
-    /// Ends the open iteration because the node was cancelled while it
-    /// ran: no unit is admitted afterwards (a later submission is refused
+    /// Abandons the open iteration (or the loop between two iterations):
+    /// the node was cancelled, or an agent's turn ran past its timeout. No
+    /// unit is admitted afterwards (a later submission is refused
     /// [`Closed`](JournalRefusal::Closed), `Cancelled`, and recorded as no
     /// failure). Units already in flight are left to the node's conclusion,
-    /// which drains them; nothing is waited for here.
-    fn cancel_iteration(&self);
+    /// which drains them and records a call none of them explained as
+    /// ambiguous — never sent again under another key; nothing is waited
+    /// for here.
+    fn abandon_iteration(&self);
 
     /// Where the loop starts: the node's iteration checkpoint, verified
     /// against its digest and the node's ledger, or `None` to start at
@@ -665,8 +681,8 @@ impl IterationGate for JournalIterationGate {
         })
     }
 
-    fn cancel_iteration(&self) {
-        self.journal.cancel_iteration();
+    fn abandon_iteration(&self) {
+        self.journal.abandon_iteration();
     }
 
     async fn resume(&self) -> Result<Option<ResumePoint>, EffectExecutionError> {
@@ -695,7 +711,7 @@ impl fmt::Debug for JournalIterationGate {
 /// Engine-private proof that a dispatch runs under a [`NodeEffectJournal`]:
 /// only this module can mint it, so generic dispatch cannot run a journaled
 /// action with write authority. It carries the journal's iteration barrier,
-/// which a stateful action's loop keeps.
+/// which a stateful action's loop keeps per iteration and an agent's per turn.
 pub(crate) struct JournalAdmission {
     gate: JournalIterationGate,
 }
@@ -710,8 +726,6 @@ impl JournalAdmission {
 /// Why a journaled control action has read-only resource handles.
 const CONTROL_NOT_JOURNALED: &str =
     "control actions decide flow and must not cause effects; move effects to a stateless action";
-/// Why a journaled agent action has read-only resource handles.
-const AGENT_NOT_JOURNALED: &str = "agent effects are not journaled; the agent profile is planned";
 /// Why a journaled action of any other kind has read-only resource handles.
 const KIND_NOT_JOURNALED: &str = "effects of this action kind are not journaled";
 
@@ -726,9 +740,14 @@ pub(crate) enum JournalShape {
     /// the iteration (`it{n}/unit/v1/#n`), its runtime loop keeping the
     /// journal's [`IterationGate`].
     Iterated,
+    /// One run per turn: an agent action, whose occurrences carry the turn
+    /// (`turn{n}/unit/v1/#n`) — model calls, tools and sessions in one
+    /// positional sequence per turn — its runtime loop keeping the
+    /// journal's [`IterationGate`] per turn.
+    Turned,
     /// No journal: a control action (which decides flow and must not cause
-    /// effects), an agent action (whose profile is planned), a stream
-    /// action, and every other kind keep read-only handles.
+    /// effects), a stream action, and every other kind keep read-only
+    /// handles.
     None,
 }
 
@@ -738,6 +757,7 @@ impl JournalShape {
         match kind {
             nebula_action::ActionKind::Stateless => Self::Flat,
             nebula_action::ActionKind::Stateful => Self::Iterated,
+            nebula_action::ActionKind::Agent => Self::Turned,
             _ => Self::None,
         }
     }
@@ -745,16 +765,22 @@ impl JournalShape {
     /// Whether a journaled action of this shape runs under a node effect
     /// journal in this version.
     pub(crate) const fn is_journaled(self) -> bool {
-        matches!(self, Self::Flat | Self::Iterated)
+        matches!(self, Self::Flat | Self::Iterated | Self::Turned)
+    }
+
+    /// Whether the journal's units run in positional runs bracketed by the
+    /// runtime loop's [`IterationGate`] — a stateful action's iterations or
+    /// an agent's turns — which it may checkpoint.
+    pub(crate) const fn is_gated(self) -> bool {
+        matches!(self, Self::Iterated | Self::Turned)
     }
 
     /// Why a journaled action of `kind` has read-only handles although its
     /// turn has execution stores, or `None` when its kind is journaled.
     pub(crate) const fn read_only_detail(kind: nebula_action::ActionKind) -> Option<&'static str> {
         match (Self::of(kind), kind) {
-            (Self::Flat | Self::Iterated, _) => None,
+            (Self::Flat | Self::Iterated | Self::Turned, _) => None,
             (Self::None, nebula_action::ActionKind::Control) => Some(CONTROL_NOT_JOURNALED),
-            (Self::None, nebula_action::ActionKind::Agent) => Some(AGENT_NOT_JOURNALED),
             (Self::None, _) => Some(KIND_NOT_JOURNALED),
         }
     }
@@ -786,12 +812,13 @@ pub(crate) struct JournalAuthority {
     pub clock: Arc<dyn Clock>,
     pub metrics: MetricsRegistry,
     /// How the action's effects are journaled: an
-    /// [`Iterated`](JournalShape::Iterated) journal admits units only while
-    /// an iteration is open.
+    /// [`Iterated`](JournalShape::Iterated) or [`Turned`](JournalShape::Turned)
+    /// journal admits units only while an iteration (a turn) is open.
     pub shape: JournalShape,
-    /// Where an [`Iterated`](JournalShape::Iterated) journal loads and
-    /// saves its iteration checkpoint; `None` keeps none (every attempt
-    /// replays from iteration 0).
+    /// Where an [`Iterated`](JournalShape::Iterated) or
+    /// [`Turned`](JournalShape::Turned) journal loads and saves its
+    /// iteration (turn) checkpoint; `None` keeps none (every attempt replays
+    /// from iteration 0).
     pub checkpoints: Option<Arc<dyn CheckpointStore>>,
 }
 
@@ -832,8 +859,8 @@ struct JournalState {
     /// The next position of the node attempt's sequence of effect units
     /// (of the open iteration, for a stateful action).
     next_ordinal: u32,
-    /// The last iteration a stateful action began; `None` for a stateless
-    /// one (flat labels).
+    /// The last iteration a stateful action (the last turn an agent) began;
+    /// `None` for a stateless one (flat labels).
     iteration: Option<u32>,
     /// Whether that iteration is still open: between its
     /// [`end_iteration`](NodeEffectJournal::end_iteration) and the next
@@ -888,6 +915,20 @@ enum Family {
     Flat,
     /// `it{n}/unit/v1/#{ordinal:06}`: a stateful action's iterations.
     Iterated,
+    /// `turn{n}/unit/v1/#{ordinal:06}`: an agent's turns.
+    Turned,
+}
+
+impl Family {
+    /// The prefix of a run's labels before its number: `it` or `turn`;
+    /// `None` for the flat family.
+    const fn run_prefix(self) -> Option<&'static str> {
+        match self {
+            Self::Flat => None,
+            Self::Iterated => Some("it"),
+            Self::Turned => Some("turn"),
+        }
+    }
 }
 
 /// Where an occurrence label sits: its family and `(iteration, ordinal)`
@@ -901,18 +942,27 @@ struct Position {
 
 impl Position {
     /// The position of a label the journal builds, read strictly: the
-    /// iteration in decimal without leading zeros (at most
+    /// iteration (or turn) in decimal without leading zeros (at most
     /// [`MAX_ITERATION`]), the ordinal zero-padded to six digits. Any other
     /// label has no position.
     fn parse(label: &str) -> Option<Self> {
-        let (family, iteration, rest) = match label.strip_prefix("it") {
-            Some(tail) => {
+        let run = [Family::Iterated, Family::Turned]
+            .into_iter()
+            .find_map(|family| {
+                let tail = label.strip_prefix(family.run_prefix()?)?;
+                // A run number starts with a digit: `it…` never reads a
+                // `turn…` label, nor the reverse.
+                tail.starts_with(|first: char| first.is_ascii_digit())
+                    .then_some((family, tail))
+            });
+        let (family, iteration, rest) = match run {
+            Some((family, tail)) => {
                 let (iteration, rest) = tail.split_once('/')?;
                 let iteration = canonical_number(iteration, 1)?;
                 if iteration > MAX_ITERATION {
                     return None;
                 }
-                (Family::Iterated, iteration, rest)
+                (family, iteration, rest)
             },
             None => (Family::Flat, 0, label),
         };
@@ -939,11 +989,16 @@ fn canonical_number(digits: &str, width: usize) -> Option<u32> {
     (format!("{number:0width$}") == digits).then_some(number)
 }
 
-/// The label of position `ordinal` of `iteration` (`None`: a flat label).
-fn occurrence_label(iteration: Option<u32>, ordinal: u32) -> String {
-    match iteration {
-        Some(iteration) => format!("it{iteration}/{UNIT_POSITION}{ordinal:06}"),
-        None => format!("{UNIT_POSITION}{ordinal:06}"),
+/// The label of position `ordinal` of run `iteration` of `family` (a flat
+/// label without a run): `unit/v1/#{ordinal:06}`,
+/// `it{iteration}/unit/v1/#{ordinal:06}` or
+/// `turn{iteration}/unit/v1/#{ordinal:06}`.
+fn occurrence_label(family: Family, iteration: Option<u32>, ordinal: u32) -> String {
+    match (family.run_prefix(), iteration) {
+        (Some(prefix), Some(iteration)) => {
+            format!("{prefix}{iteration}/{UNIT_POSITION}{ordinal:06}")
+        },
+        _ => format!("{UNIT_POSITION}{ordinal:06}"),
     }
 }
 
@@ -1543,12 +1598,12 @@ impl NodeEffectJournal {
         let mut state = self.state();
         // Positions of attested iterations are never met again: the
         // frontier starts at the first recorded position past them.
-        let attested_end = match family {
-            Family::Iterated => {
-                let attested = state.attested;
-                recorded.partition_point(|((iteration, _), _)| *iteration < attested)
-            },
-            Family::Flat => 0,
+        // Only the journal's own runs are attested (S9).
+        let attested_end = if family == self.run_family() {
+            let attested = state.attested;
+            recorded.partition_point(|((iteration, _), _)| *iteration < attested)
+        } else {
+            0
         };
         let positions = &mut state.positions;
         let mut frontier = positions
@@ -1893,16 +1948,30 @@ impl NodeEffectJournal {
         };
         self.inner.prior.get().is_some_and(|prior| {
             prior
-                .highest(Family::Iterated)
+                .highest(self.run_family())
                 .is_some_and(|(last, _)| last > iteration)
         })
     }
 
-    /// Ends the open iteration of a cancelled node: no unit is admitted
-    /// afterwards. A later submission (a detached task's) is refused closed
-    /// with no failure of its own — the node is cancelled — and units in
-    /// flight are left for the conclusion to drain.
-    pub(crate) fn cancel_iteration(&self) {
+    /// The positional family of this journal's runs: a stateful action's
+    /// iterations (`it{n}/`) or an agent's turns (`turn{n}/`). A flat
+    /// journal's labels carry no run unless an iteration is begun on it,
+    /// which labels it as a stateful action's.
+    fn run_family(&self) -> Family {
+        match self.inner.authority.shape {
+            JournalShape::Turned => Family::Turned,
+            _ => Family::Iterated,
+        }
+    }
+
+    /// Abandons the open iteration (or the loop between two): the node was
+    /// cancelled, or an agent's turn ran past its timeout. No unit is
+    /// admitted afterwards. A later submission (a detached task's) is
+    /// refused closed with no failure of its own — the node is cancelled or
+    /// failing on its own error — and units in flight are left for the
+    /// conclusion to drain, which records a call none of them explained as
+    /// ambiguous.
+    pub(crate) fn abandon_iteration(&self) {
         let mut state = self.state();
         state.run_open = false;
         state.admission_closed = true;
@@ -2038,11 +2107,17 @@ impl NodeEffectJournal {
                 return Err(self.fail_with(error));
             },
         };
-        if prior.positions.contains_key(&Family::Flat) {
-            return Err(self.refuse_resume(iteration, "the ledger holds a flat occurrence"));
+        // Only the node's own family counts: a label of another (flat, or
+        // the other kind's runs) means the action changed kind.
+        let family = self.run_family();
+        if prior.positions.keys().any(|&recorded| recorded != family) {
+            return Err(self.refuse_resume(
+                iteration,
+                "the ledger holds an occurrence of another family",
+            ));
         }
-        let iterated = prior.positions.get(&Family::Iterated);
-        let below = iterated.map_or(0, |positions| {
+        let own = prior.positions.get(&family);
+        let below = own.map_or(0, |positions| {
             positions
                 .iter()
                 .filter(|((recorded, _), _)| *recorded < iteration)
@@ -2057,7 +2132,7 @@ impl NodeEffectJournal {
         // The delay before the resumed iteration elapsed already when the
         // ledger shows that iteration (or a later one) ran.
         let already_ran = prior
-            .highest(Family::Iterated)
+            .highest(family)
             .is_some_and(|(last, _)| last >= iteration);
         let delay = checkpoint
             .resume_delay_ms()
@@ -2121,18 +2196,18 @@ impl NodeEffectJournal {
                 .checked_sub(1)
                 .is_some_and(|passed| guard.checkpointable.take() == Some(passed));
             let next = (iteration, 0);
+            let family = self.run_family();
             let unsettled = guard
                 .positions
                 .uncertain
-                .get(&Family::Iterated)
+                .get(&family)
                 .is_some_and(|&lowest| lowest < next);
-            // Every recorded iterated position below `iteration`: the ones
-            // earlier attempts recorded (the barrier read them) and the ones
-            // this attempt met.
+            // Every recorded position of the node's runs below `iteration`:
+            // the ones earlier attempts recorded (the barrier read them) and
+            // the ones this attempt met.
             let below = |label: &String| {
-                Position::parse(label).is_some_and(|position| {
-                    position.family == Family::Iterated && position.order() < next
-                })
+                Position::parse(label)
+                    .is_some_and(|position| position.family == family && position.order() < next)
             };
             let mut positions: HashSet<&String> = guard
                 .positions
@@ -2303,7 +2378,8 @@ impl NodeEffectJournal {
             },
         };
         let next = (iteration.saturating_add(1), 0);
-        let skipped = match self.first_unmet_below(prior, Family::Iterated, next) {
+        let family = self.run_family();
+        let skipped = match self.first_unmet_below(prior, family, next) {
             Unmet::None => return Ok(()),
             // Every unit is gone: a position still claimed was given up.
             Unmet::Pending | Unmet::Skipped(_) => self.first_unmet_label(prior),
@@ -2313,7 +2389,7 @@ impl NodeEffectJournal {
             state
                 .positions
                 .abandoned
-                .get(&Family::Iterated)
+                .get(&family)
                 .is_some_and(|&lowest| lowest < next)
         };
         if abandoned {
@@ -2346,13 +2422,14 @@ impl NodeEffectJournal {
             .unwrap_or(EffectExecutionError::OccurrenceMismatch))
     }
 
-    /// The first recorded iterated position past the attested iterations
-    /// that this attempt has not met.
+    /// The first recorded position of the node's runs past the attested
+    /// ones that this attempt has not met.
     fn first_unmet_label(&self, prior: &PriorOccurrences) -> Option<String> {
+        let family = self.run_family();
         let state = self.state();
         prior
             .positions
-            .get(&Family::Iterated)?
+            .get(&family)?
             .iter()
             .find(|((iteration, _), label)| {
                 *iteration >= state.attested && !state.positions.met.contains(label)
@@ -2752,6 +2829,7 @@ impl NodeEffectJournal {
             let state = self.state();
             (Reached::of(&state), state.attested)
         };
+        let family = self.run_family();
         // Skipped: a recorded slot this attempt did not meet that may have
         // changed the provider, or — only prepared, or every call not
         // crossed — one the program still intended: when the node is about
@@ -2765,7 +2843,7 @@ impl NodeEffectJournal {
             .filter(|slot| {
                 let label = slot.occurrence();
                 !Position::parse(label).is_some_and(|position| {
-                    position.family == Family::Iterated && position.iteration < attested
+                    position.family == family && position.iteration < attested
                 }) && !reached.met(slot.record().operation().slot_id(), label)
                     && (is_consequential(slot.record())
                         || (SlotWeight::of(slot.record()) == SlotWeight::Unsettled
@@ -3061,7 +3139,8 @@ impl EffectJournal for NodeEffectJournal {
     }
 
     /// `unit/v1/#{ordinal:06}` for a stateless action;
-    /// `it{n}/unit/v1/#{ordinal:06}` within stateful iteration `n`.
+    /// `it{n}/unit/v1/#{ordinal:06}` within stateful iteration `n`;
+    /// `turn{n}/unit/v1/#{ordinal:06}` within agent turn `n`.
     ///
     /// The label stays claimed until the unit
     /// [releases](EffectJournal::release_occurrence) it: a fresh slot above
@@ -3071,7 +3150,7 @@ impl EffectJournal for NodeEffectJournal {
         let mut state = self.state();
         let ordinal = state.next_ordinal;
         state.next_ordinal = ordinal.saturating_add(1);
-        let label = occurrence_label(state.iteration, ordinal);
+        let label = occurrence_label(self.run_family(), state.iteration, ordinal);
         state.positions.claimed.insert(label.clone());
         if let Some(position) = Position::parse(&label) {
             state
@@ -3704,7 +3783,7 @@ impl EffectJournal for NodeEffectJournal {
             let state = self.state();
             if self.is_closed() || state.admission_closed {
                 (JournalRefusal::Closed, None)
-            } else if self.inner.authority.shape == JournalShape::Iterated && !state.run_open {
+            } else if self.inner.authority.shape.is_gated() && !state.run_open {
                 let iteration = state.iteration.unwrap_or(0);
                 (
                     JournalRefusal::BetweenRuns,

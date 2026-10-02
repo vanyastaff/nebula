@@ -14,14 +14,60 @@
 //!    via `#[resource(key = "llm")]`).
 //! 3. Returning [`ActionResult::Continue`] starts the next turn with the turn
 //!    state as `step` left it; returning any terminal result (typically
-//!    [`ActionResult::Break`]) delivers the final output downstream. The turn
-//!    state lives in memory for one dispatch of the node: nothing is
-//!    persisted between turns, so a crash or a retry of the node starts again
-//!    from [`AgentAction::init_turn`].
+//!    [`ActionResult::Break`]) delivers the final output downstream.
 //! 4. The engine enforces [`AgentAction::max_turns`] — exceeding the budget
-//!    surfaces a typed `AgentBudgetExceeded` error rather than looping forever.
+//!    surfaces a typed `AgentBudgetExceeded` error rather than looping
+//!    forever; a budget above 10 000 turns is refused before turn 0.
 //! 5. [`AgentAction::turn_timeout`] bounds each individual turn's wall-clock
-//!    time, preventing a hung provider call from pinning a worker indefinitely.
+//!    time, preventing a hung provider call from pinning a worker
+//!    indefinitely. A timed-out turn fails the node retryably; the retry
+//!    replays it.
+//!
+//! ## Journaled turns (experimental)
+//!
+//! A default-contract (`Journaled`) agent on a durable turn runs under its
+//! node's effect journal, one positional run per turn: every unit its
+//! resource handles submit — model calls, tools, sessions — is labelled
+//! `turn{n}/unit/v1/#{k}` in the order the units start, recorded in the
+//! operation ledger and replayed on a retry or a resume. After every turn
+//! that returned `Continue` the engine checkpoints the turn state (at most
+//! 1 MiB of JSON; a larger one is not saved and the agent replays from turn
+//! 0), so a later attempt resumes at the next turn. Replaying from turn 0
+//! costs ledger reads only: a recorded model answer is replayed, never asked
+//! again, and a recorded effect is never sent again. A storeless run, or a
+//! `ReadOnly` contract, keeps read-only handles and in-memory turn state: a
+//! crash or a retry starts from [`AgentAction::init_turn`].
+//!
+//! ## Determinism contract
+//!
+//! A journaled agent is replayed, so it must be deterministic in what the
+//! journal records:
+//!
+//! 1. `step` is deterministic in its input, its turn state and the results
+//!    its units yield — recorded answers, effect outputs and replayed
+//!    failures.
+//! 2. Every nondeterministic input that steers an effect arrives through a
+//!    recorded read (`Effect::RecordedRead` on the resource operation): the
+//!    model call, a retrieval or search whose answer matters. A clock,
+//!    randomness, the environment or a plain `Effect::Read` that steers an
+//!    effect makes the replay diverge, which halts the execution as an
+//!    occurrence mismatch, nothing sent.
+//! 3. Submit tool calls in the order the recorded model output lists them;
+//!    join only units that may run concurrently; never submit from a task
+//!    detached past the end of a turn (refused, "between runs").
+//! 4. A tool-call id the model returned is data, never identity: never build
+//!    an operation's idempotency key from it. A tool call's identity is its
+//!    position in the turn.
+//! 5. Keep request ids, timestamps and other per-call values out of an
+//!    operation's serialized value (`#[serde(skip)]`): the canonical request
+//!    must be the same on a replay.
+//! 6. Keep the turn state within 1 MiB of JSON to benefit from checkpoints.
+//! 7. Declare `RecordedRead` only for a call with no provider-side effect: a
+//!    model call that runs hosted tools (web search, a code interpreter),
+//!    stores a response, appends to a server-side conversation or uploads a
+//!    file is an `Idempotent` or `Write` effect.
+//!
+//! `Wait` and capability-gated isolation are not supported for agents.
 //!
 //! ## Llm-agnostic contract
 //!
@@ -48,12 +94,6 @@
 //! The runtime races every turn against the execution-level cancellation
 //! token and also honours `turn_timeout`. Authors do not need to poll the
 //! token themselves; the runtime handles it.
-//!
-//! ## Effects
-//!
-//! An agent's resource handles are read-only: reads run, and an `Idempotent`
-//! or `Write` unit is refused before any provider call ("agent effects are
-//! not journaled"), whatever the action's effect contract.
 
 use std::{future::Future, sync::Arc, time::Duration};
 
@@ -78,8 +118,10 @@ use crate::{
 ///
 /// `Self::Turn` is the state carried across turns — the running conversation
 /// transcript, tool-call history, or any other state the author needs. It
-/// crosses the object-safe handle as JSON, so it must be serializable; it is
-/// not persisted: a crash or a retry of the node starts from
+/// crosses the object-safe handle as JSON, so it must be serializable. A
+/// journaled agent's turn state is checkpointed after every `Continue` (see
+/// the module's "Journaled turns" and "Determinism contract"); otherwise it
+/// is not persisted, and a crash or a retry of the node starts from
 /// [`init_turn`](AgentAction::init_turn) again.
 ///
 /// # Slots and the Llm provider
@@ -147,15 +189,18 @@ pub trait AgentAction: Action {
     /// This is the running context the action maintains across turns — a
     /// conversation transcript, accumulated tool results, or any other
     /// cross-turn state the author needs. It must be serializable: it crosses
-    /// the object-safe handle as JSON. It is kept in memory for one dispatch
-    /// of the node and not persisted between turns.
+    /// the object-safe handle as JSON, and a journaled agent's is
+    /// checkpointed after every `Continue` (keep it within 1 MiB of JSON to
+    /// benefit). Without a journal it is kept in memory for one dispatch of
+    /// the node.
     type Turn: Serialize + DeserializeOwned + Clone + Send + Sync;
 
     /// Maximum number of turns before the engine raises `AgentBudgetExceeded`.
     ///
     /// Authors should set a domain-appropriate value. The engine rejects any
     /// action whose loop does not terminate within this many turns with a
-    /// typed error — it does not silently loop forever.
+    /// typed error — it does not silently loop forever. At most 10 000: a
+    /// larger budget is refused before the first turn (never clamped).
     fn max_turns(&self) -> u32 {
         25
     }
@@ -186,6 +231,12 @@ pub trait AgentAction: Action {
     /// Returning `Continue` without mutating `turn` is legal — the engine does
     /// not apply a stuck-state guard. Use [`max_turns`](Self::max_turns) to cap
     /// loops that never converge.
+    ///
+    /// A journaled agent's `step` is replayed: it must follow the module's
+    /// determinism contract — every nondeterministic input that steers an
+    /// effect through a recorded read, tool calls submitted in the order the
+    /// recorded model output lists them, nothing submitted from a task that
+    /// outlives the turn.
     ///
     /// # Errors
     ///

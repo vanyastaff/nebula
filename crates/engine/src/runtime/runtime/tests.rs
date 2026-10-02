@@ -2218,9 +2218,12 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
         })
     }
 
-    fn cancel_iteration(&self) {
+    fn abandon_iteration(&self) {
         let iteration = self.open.load(AtomicOrdering::SeqCst);
-        self.log.lock().unwrap().push(format!("cancel {iteration}"));
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("abandon {iteration}"));
     }
 
     async fn resume(
@@ -2453,7 +2456,7 @@ async fn a_cancellation_during_the_delay_closes_admission() {
     );
     assert_eq!(
         gate.log(),
-        ["begin 0", "end 0 ok", "checkpoint 1", "cancel 0"]
+        ["begin 0", "end 0 ok", "checkpoint 1", "abandon 0"]
     );
 }
 
@@ -2499,7 +2502,7 @@ async fn a_cancelled_iteration_closes_admission_at_the_barrier() {
         ),
         "{result:?}"
     );
-    assert_eq!(gate.log(), ["begin 0", "cancel 0"]);
+    assert_eq!(gate.log(), ["begin 0", "abandon 0"]);
 }
 
 /// A cancellation while the barrier drains an iteration's units cancels the
@@ -2560,7 +2563,7 @@ async fn a_cancellation_during_the_barrier_drain_cancels_the_iteration() {
             "checkpoint 1",
             "begin 1",
             "end 1 ok",
-            "cancel 1"
+            "abandon 1"
         ]
     );
 }
@@ -2598,7 +2601,7 @@ async fn a_cancellation_before_the_first_iteration_closes_admission() {
         ),
         "{result:?}"
     );
-    assert_eq!(gate.log(), ["cancel 0"], "closed before any iteration");
+    assert_eq!(gate.log(), ["abandon 0"], "closed before any iteration");
 }
 
 /// A stateful action whose construction never finishes (a
@@ -2690,7 +2693,7 @@ async fn a_cancellation_while_the_handle_is_built_closes_admission_at_once() {
         ),
         "{result:?}"
     );
-    assert_eq!(gate.log(), ["cancel 0"]);
+    assert_eq!(gate.log(), ["abandon 0"]);
 }
 
 /// Runs [`CountingTo3`] through the dispatch core under `gate`, with
@@ -2919,7 +2922,7 @@ async fn a_cancellation_during_the_resume_delay_closes_admission() {
         ),
         "{result:?}"
     );
-    assert_eq!(gate.log(), ["cancel 0"], "no iteration began");
+    assert_eq!(gate.log(), ["abandon 0"], "no iteration began");
 }
 
 /// A checkpoint the journal refuses (a lost lease) stops the loop: no later
@@ -2953,4 +2956,484 @@ async fn a_refused_checkpoint_stops_the_loop() {
             "checkpoint 2"
         ]
     );
+}
+
+// ── journaled agent turns: the same barrier, one iteration per turn ──────
+
+/// Counts its turns in its turn state and breaks after the third.
+struct CountingAgent;
+
+impl Action for CountingAgent {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        pure_metadata(
+            action_key!("test.agent_count"),
+            "CountingAgent",
+            "counts its turns",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+impl nebula_action::AgentAction for CountingAgent {
+    type Turn = u32;
+
+    fn init_turn(&self, _input: &serde_json::Value) -> u32 {
+        0
+    }
+
+    async fn step(
+        &self,
+        turn: &mut u32,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        *turn += 1;
+        if *turn >= 3 {
+            return Ok(ActionResult::break_completed(
+                serde_json::json!({ "turns": *turn }),
+            ));
+        }
+        Ok(ActionResult::Continue {
+            output: ActionOutput::Value(serde_json::json!(null)),
+            progress: None,
+            delay: None,
+        })
+    }
+}
+impl FromWorkflowNode for CountingAgent {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(CountingAgent)
+    }
+}
+
+/// Steps taken by [`IdleAgent`]: kept out of its turn state, which never
+/// changes.
+static IDLE_STEPS: AtomicU32 = AtomicU32::new(0);
+
+/// Thinks two turns without changing its turn state, then breaks.
+struct IdleAgent;
+
+impl Action for IdleAgent {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        pure_metadata(
+            action_key!("test.agent_idle"),
+            "IdleAgent",
+            "makes no progress twice",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+impl nebula_action::AgentAction for IdleAgent {
+    type Turn = serde_json::Value;
+
+    fn init_turn(&self, _input: &serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "thinking": true })
+    }
+
+    async fn step(
+        &self,
+        _turn: &mut serde_json::Value,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        if IDLE_STEPS.fetch_add(1, AtomicOrdering::SeqCst) >= 2 {
+            return Ok(ActionResult::break_completed(serde_json::json!("done")));
+        }
+        Ok(ActionResult::Continue {
+            output: ActionOutput::Value(serde_json::json!(null)),
+            progress: None,
+            delay: None,
+        })
+    }
+}
+impl FromWorkflowNode for IdleAgent {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(IdleAgent)
+    }
+}
+
+/// A turn that never finishes, bounded by a one-minute turn timeout.
+struct HungAgent;
+
+impl Action for HungAgent {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        pure_metadata(
+            action_key!("test.agent_hung"),
+            "HungAgent",
+            "a turn that never ends",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+impl nebula_action::AgentAction for HungAgent {
+    type Turn = u32;
+
+    fn turn_timeout(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_mins(1))
+    }
+
+    fn init_turn(&self, _input: &serde_json::Value) -> u32 {
+        0
+    }
+
+    async fn step(
+        &self,
+        _turn: &mut u32,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        std::future::pending().await
+    }
+}
+impl FromWorkflowNode for HungAgent {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(HungAgent)
+    }
+}
+
+/// Declares one turn more than the engine's cap.
+struct BoundlessAgent;
+
+impl Action for BoundlessAgent {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        pure_metadata(
+            action_key!("test.agent_boundless"),
+            "BoundlessAgent",
+            "too many turns",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+impl nebula_action::AgentAction for BoundlessAgent {
+    type Turn = u32;
+
+    fn max_turns(&self) -> u32 {
+        MAX_AGENT_TURNS + 1
+    }
+
+    fn init_turn(&self, _input: &serde_json::Value) -> u32 {
+        0
+    }
+
+    async fn step(
+        &self,
+        _turn: &mut u32,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        Ok(ActionResult::break_completed(serde_json::json!(null)))
+    }
+}
+impl FromWorkflowNode for BoundlessAgent {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(BoundlessAgent)
+    }
+}
+
+/// The agent factory of `A`.
+fn agent_factory<A>() -> Arc<dyn ActionFactory>
+where
+    A: nebula_action::AgentAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
+    A::Input: serde::de::DeserializeOwned + Send + Sync,
+    A::Output: Serialize + Send + Sync,
+{
+    Arc::new(nebula_action::GenericAgentFactory::<A>::new().expect("valid test catalog definition"))
+}
+
+/// Runs the agent of `factory` (registered as `key`) through the dispatch
+/// core under `gate`, with `ctx`.
+async fn run_agent(
+    factory: Arc<dyn ActionFactory>,
+    key: &str,
+    ctx: &ActionRuntimeContext,
+    gate: Option<&ScriptedGate>,
+) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+    let node = NodeDefinition::new(node_key!("test"), "Agent", "test", "agent").unwrap();
+    make_runtime(Arc::new(ActionRegistry::new()))
+        .run_factory(
+            key,
+            factory,
+            &node,
+            nebula_action::ActionInput::Raw(serde_json::Value::Null),
+            ctx,
+            None,
+            ResourceAuthority::CallerSupplied,
+            gate.map(|gate| gate as &dyn crate::effect_driver::IterationGate),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_journaled_agent_brackets_every_turn_and_checkpoints_each_continue() {
+    let gate = ScriptedGate::default();
+    let result = run_agent(
+        agent_factory::<CountingAgent>(),
+        "test.agent_count",
+        &test_context(),
+        Some(&gate),
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(ActionResult::Break { .. })),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        [
+            "begin 0",
+            "end 0 ok",
+            "checkpoint 1",
+            "begin 1",
+            "end 1 ok",
+            "checkpoint 2",
+            "begin 2",
+            "end 2 ok"
+        ],
+        "each turn opens before and closes after its step; a checkpoint follows every passed \
+         `Continue` barrier, none the `Break`"
+    );
+    assert_eq!(gate.resumes.load(AtomicOrdering::SeqCst), 1);
+    let saved = gate.saved.lock().unwrap().clone();
+    assert_eq!(
+        saved
+            .iter()
+            .map(|(turn, state, _)| (*turn, state.clone()))
+            .collect::<Vec<_>>(),
+        [(1, serde_json::json!(1)), (2, serde_json::json!(2))],
+        "each checkpoint carries the next turn and the turn state after the last"
+    );
+}
+
+#[tokio::test]
+async fn a_no_progress_turn_is_checkpointed_too() {
+    let gate = ScriptedGate::default();
+    let result = run_agent(
+        agent_factory::<IdleAgent>(),
+        "test.agent_idle",
+        &test_context(),
+        Some(&gate),
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(ActionResult::Break { .. })),
+        "{result:?}"
+    );
+    let saved = gate.saved.lock().unwrap().clone();
+    assert_eq!(
+        saved
+            .iter()
+            .map(|(turn, state, _)| (*turn, state.clone()))
+            .collect::<Vec<_>>(),
+        [
+            (1, serde_json::json!({ "thinking": true })),
+            (2, serde_json::json!({ "thinking": true }))
+        ],
+        "an unchanged turn state is no stuck loop for an agent: every passed barrier \
+         checkpoints"
+    );
+}
+
+#[tokio::test]
+async fn a_resumed_agent_starts_at_its_turn_checkpoint() {
+    let gate = ScriptedGate {
+        resume_at: Some(crate::effect_driver::ResumePoint {
+            iteration: 1,
+            state: serde_json::json!(1),
+            delay: None,
+        }),
+        ..ScriptedGate::default()
+    };
+    let result = run_agent(
+        agent_factory::<CountingAgent>(),
+        "test.agent_count",
+        &test_context(),
+        Some(&gate),
+    )
+    .await;
+    let Ok(ActionResult::Break { output, .. }) = result else {
+        panic!("{result:?}");
+    };
+    assert_eq!(
+        output.as_value(),
+        Some(&serde_json::json!({ "turns": 3 })),
+        "the checkpointed turn state, not init_turn's"
+    );
+    assert_eq!(
+        gate.log(),
+        ["begin 1", "end 1 ok", "checkpoint 2", "begin 2", "end 2 ok"],
+        "turn 0 never runs again"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_barrier_stops_the_journaled_agent() {
+    let gate = ScriptedGate {
+        fail_end_at: Some(1),
+        ..ScriptedGate::default()
+    };
+    let result = run_agent(
+        agent_factory::<CountingAgent>(),
+        "test.agent_count",
+        &test_context(),
+        Some(&gate),
+    )
+    .await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::EffectJournal(
+                crate::EffectExecutionError::OccurrenceMismatch
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0 ok", "checkpoint 1", "begin 1", "end 1 ok"]
+    );
+}
+
+/// A turn past its timeout is abandoned — nothing is admitted after it, and
+/// its units in flight are left to the node's conclusion — and the timeout
+/// stays retryable: the retry replays the turn.
+#[tokio::test(start_paused = true)]
+async fn a_turn_past_its_timeout_is_abandoned_and_stays_retryable() {
+    let gate = ScriptedGate::default();
+    let result = run_agent(
+        agent_factory::<HungAgent>(),
+        "test.agent_hung",
+        &test_context(),
+        Some(&gate),
+    )
+    .await;
+    let Err(error) = result else {
+        panic!("{result:?}");
+    };
+    assert!(
+        matches!(error, RuntimeError::AgentTurnTimeout { turn: 0, .. }),
+        "{error:?}"
+    );
+    assert!(error.is_retryable());
+    assert_eq!(gate.log(), ["begin 0", "abandon 0"]);
+}
+
+/// Every cancellation exit abandons the turn: at dispatch, and mid-turn.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_agent_abandons_its_turn() {
+    let gate = ScriptedGate::default();
+    let ctx = test_context();
+    ctx.cancellation().cancel();
+    let result = run_agent(
+        agent_factory::<CountingAgent>(),
+        "test.agent_count",
+        &ctx,
+        Some(&gate),
+    )
+    .await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["abandon 0"], "closed before any turn");
+
+    let gate = Arc::new(ScriptedGate::default());
+    let ctx = test_context();
+    let cancel = ctx.cancellation().clone();
+    let run = tokio::spawn({
+        let gate = Arc::clone(&gate);
+        async move {
+            run_agent(
+                agent_factory::<HungAgent>(),
+                "test.agent_hung",
+                &ctx,
+                Some(gate.as_ref()),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+        .await
+        .expect("cancellation is observed mid-turn")
+        .expect("task");
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["begin 0", "abandon 0"]);
+}
+
+/// A turn budget above the engine's cap is refused before turn 0, journaled
+/// or not: nothing runs, nothing is resumed.
+#[tokio::test]
+async fn a_turn_budget_above_the_cap_is_refused_before_turn_0() {
+    let gate = ScriptedGate::default();
+    for gate in [Some(&gate), None] {
+        let result = run_agent(
+            agent_factory::<BoundlessAgent>(),
+            "test.agent_boundless",
+            &test_context(),
+            gate,
+        )
+        .await;
+        let Err(error) = result else {
+            panic!("{result:?}");
+        };
+        assert!(
+            matches!(
+                error,
+                RuntimeError::AgentTurnCapExceeded {
+                    max_turns: 10_001,
+                    cap: 10_000,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(!error.is_retryable());
+    }
+    assert!(gate.log().is_empty(), "no turn began");
+    assert_eq!(gate.resumes.load(AtomicOrdering::SeqCst), 0);
 }
