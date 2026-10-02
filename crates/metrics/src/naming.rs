@@ -167,8 +167,10 @@ pub const NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL: &str = "nebula_effect_journal_re
 
 /// Step labels for [`NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL`].
 ///
-/// Closed set of five values: the journal's durable steps.
+/// Closed set of six values: the journal's admission and durable steps.
 pub mod effect_journal_step {
+    /// Admitting a submitted unit.
+    pub const SUBMIT: &str = "submit";
     /// Preparing an effect's slot.
     pub const PREPARE: &str = "prepare";
     /// Granting a provider call.
@@ -183,7 +185,7 @@ pub mod effect_journal_step {
 
 /// Refusal labels for [`NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL`].
 ///
-/// Closed set of six values, one per journal refusal.
+/// Closed set of ten values, one per journal refusal.
 pub mod effect_journal_refusal {
     /// The journal's store is unavailable.
     pub const UNAVAILABLE: &str = "unavailable";
@@ -197,6 +199,17 @@ pub mod effect_journal_refusal {
     pub const LEASE_LOST: &str = "lease_lost";
     /// The effect's outcome is unknown: no call is granted.
     pub const UNKNOWN: &str = "unknown";
+    /// The node attempt reached its journaled slot cap: no further effect
+    /// is prepared.
+    pub const SLOT_CAP_EXCEEDED: &str = "slot_cap_exceeded";
+    /// A unit was submitted while no stateful iteration was open.
+    pub const BETWEEN_RUNS: &str = "between_runs";
+    /// A recorded, never-sent effect below a later applied one was not
+    /// sent again.
+    pub const SUPERSEDED: &str = "superseded";
+    /// The lower effects still open were too interleaved to record exactly
+    /// with a fresh effect: it was not prepared.
+    pub const CONCURRENCY_LIMIT: &str = "concurrency_limit";
 }
 
 /// Counter: node verdicts of effect journals.
@@ -208,7 +221,7 @@ pub const NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL: &str = "nebula_effect_journal_ve
 
 /// Code labels for [`NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL`].
 ///
-/// Closed set of seven values.
+/// Closed set of ten values.
 pub mod effect_journal_verdict {
     /// The journal agrees with the action's result.
     pub const OK: &str = "ok";
@@ -224,6 +237,14 @@ pub mod effect_journal_verdict {
     pub const INVALID_EVIDENCE: &str = "invalid_evidence";
     /// The ledger refused a step for another reason.
     pub const LEDGER: &str = "ledger";
+    /// The node attempt reached its journaled slot cap.
+    pub const SLOT_CAP_EXCEEDED: &str = "slot_cap_exceeded";
+    /// A stateful action's iteration ended with its effect units still in
+    /// flight past the drain limit.
+    pub const ITERATION_BARRIER: &str = "iteration_barrier";
+    /// A fresh effect was refused: the lower effects still open were too
+    /// interleaved to record exactly.
+    pub const CONCURRENCY_LIMIT: &str = "concurrency_limit";
 }
 
 // ---------------------------------------------------------------------------

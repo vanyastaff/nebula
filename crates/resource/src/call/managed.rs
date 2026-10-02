@@ -779,6 +779,11 @@ where
         Ok(())
     };
     if let Err(refusal) = refused {
+        // Settled before its first poll reached the owner: nothing was
+        // prepared or sent, and the unit's ticket goes now.
+        if let Some(owned) = shared.effect() {
+            owned.conclude();
+        }
         let result = Err(refusal.settled(SentState::NotSent, effect, &host.key));
         host.record_settled(&span, &result, SentState::NotSent, 0);
         return result;
@@ -794,10 +799,12 @@ where
             match prepared {
                 Prepared::Run => Some(codec),
                 Prepared::Replayed(output) => {
+                    owned.conclude();
                     host.record_replayed(&span);
                     return Ok(output);
                 },
                 Prepared::Refused(refusal, sent) => {
+                    owned.conclude();
                     let result = Err(refusal.settled(sent, effect, &host.key));
                     host.record_settled(&span, &result, sent, 0);
                     return result;
@@ -820,12 +827,19 @@ where
     );
     match runtime.await {
         Ok(outcome) => outcome,
-        // Only a runtime shutdown aborts the task; the unit never settled.
-        Err(_aborted) => Err(OperationError::new(
-            ErrorKind::Cancelled,
-            "the runtime stopped before the unit settled",
-        )
-        .settled(shared.fold(true), effect, &key)),
+        // Only a runtime shutdown aborts the task; the unit never settled,
+        // but its task is gone and can no longer reach the provider: a call
+        // it was granted stays outstanding for its owner to explain.
+        Err(_aborted) => {
+            if let Some(owned) = shared.effect() {
+                owned.conclude();
+            }
+            Err(OperationError::new(
+                ErrorKind::Cancelled,
+                "the runtime stopped before the unit settled",
+            )
+            .settled(shared.fold(true), effect, &key))
+        },
     }
 }
 
@@ -848,6 +862,13 @@ where
     let generation = match host.unit_generation() {
         Ok(generation) => generation,
         Err(refusal) => {
+            if let Some(owned) = shared.effect() {
+                // Prepared and refused before any call: nothing was sent.
+                if let Some(slot) = owned.slot() {
+                    owned.record_unsent(slot, refusal.kind()).await;
+                }
+                owned.conclude();
+            }
             let result = Err(refusal.settled(SentState::NotSent, effect, &host.key));
             host.record_settled(&span, &result, SentState::NotSent, 0);
             return result;
@@ -909,6 +930,11 @@ where
         (Some(owned), Some(codec)) => owned.finish(result, abnormal, codec).await,
         _ => result,
     };
+    // The unit settled: it can no longer reach the provider, whoever keeps
+    // its handle.
+    if let Some(owned) = shared.effect() {
+        owned.conclude();
+    }
     let result = result.map_err(|error| error.settled(sent, effect, &host.key));
     host.record_settled(&span, &result, sent, shared.attempts());
     result

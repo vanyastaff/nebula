@@ -300,6 +300,19 @@ pub enum RuntimeError {
         timeout_ms: u64,
     },
 
+    /// A journaled stateful action's iterations stopped at the node effect
+    /// journal's iteration barrier: an iteration left an effect outcome
+    /// unknown, met an occurrence mismatch or a ledger failure, or ended
+    /// with effect units still in flight. The engine replaces this error
+    /// with the journal's verdict for the node.
+    #[classify(
+        category = "internal",
+        code = "RUNTIME:EFFECT_JOURNAL",
+        retryable = false
+    )]
+    #[error("stateful iterations stopped at the effect journal: {0}")]
+    EffectJournal(crate::EffectExecutionError),
+
     /// Internal runtime error.
     #[classify(category = "internal", code = "RUNTIME:INTERNAL")]
     #[error("runtime error: {0}")]

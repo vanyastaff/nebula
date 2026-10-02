@@ -448,6 +448,146 @@ impl std::fmt::Debug for FrozenOutcomeEvidence {
     }
 }
 
+/// An inclusive run `first..=last` of positions of an owner's positional
+/// run, persisted as `[first, last]`.
+///
+/// A record's [`concurrent_with`](OperationProtocolRecord::concurrent_with)
+/// is a list of them: any set of positions, compact for the contiguous runs
+/// units awaited together leave open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "[u32; 2]", into = "[u32; 2]")]
+pub struct PositionRange {
+    first: u32,
+    last: u32,
+}
+
+impl PositionRange {
+    /// The positions `first..=last`; `None` when `first > last`.
+    #[must_use]
+    pub const fn new(first: u32, last: u32) -> Option<Self> {
+        if first > last {
+            return None;
+        }
+        Some(Self { first, last })
+    }
+
+    /// The lowest position of the run.
+    #[must_use]
+    pub const fn first(self) -> u32 {
+        self.first
+    }
+
+    /// The highest position of the run.
+    #[must_use]
+    pub const fn last(self) -> u32 {
+        self.last
+    }
+
+    /// Whether `position` is in the run.
+    #[must_use]
+    pub const fn contains(self, position: u32) -> bool {
+        self.first <= position && position <= self.last
+    }
+
+    /// The fewest runs covering exactly `positions`, which must be strictly
+    /// ascending; `None` when they are not.
+    #[must_use]
+    pub fn coalesce(positions: impl IntoIterator<Item = u32>) -> Option<Vec<Self>> {
+        let mut ranges: Vec<Self> = Vec::new();
+        for position in positions {
+            match ranges.last_mut() {
+                Some(range) if position <= range.last => return None,
+                Some(range) if Some(position) == range.last.checked_add(1) => {
+                    range.last = position;
+                },
+                _ => ranges.push(Self {
+                    first: position,
+                    last: position,
+                }),
+            }
+        }
+        Some(ranges)
+    }
+
+    /// Whether any of `ranges` — canonical: ascending, disjoint and not
+    /// adjacent — contains `position`.
+    #[must_use]
+    pub fn any_contains(ranges: &[Self], position: u32) -> bool {
+        let candidate = ranges.partition_point(|range| range.last < position);
+        ranges
+            .get(candidate)
+            .is_some_and(|range| range.contains(position))
+    }
+
+    /// Whether `ranges` are canonical: ascending, disjoint and not adjacent
+    /// (two adjacent runs are one).
+    fn are_canonical(ranges: &[Self]) -> bool {
+        ranges
+            .windows(2)
+            .all(|pair| u64::from(pair[0].last) + 1 < u64::from(pair[1].first))
+    }
+}
+
+impl TryFrom<[u32; 2]> for PositionRange {
+    type Error = &'static str;
+
+    fn try_from([first, last]: [u32; 2]) -> Result<Self, Self::Error> {
+        Self::new(first, last).ok_or("a position range must not end before it starts")
+    }
+}
+
+impl From<PositionRange> for [u32; 2] {
+    fn from(range: PositionRange) -> Self {
+        [range.first, range.last]
+    }
+}
+
+/// An owner's secret-free classification of the failure a unit settled
+/// with when it sent nothing (or the provider applied nothing): visible
+/// lowercase ASCII — `a-z`, `0-9`, `_`, `@`, `.` — of 1 to
+/// [`MAX_LEN`](Self::MAX_LEN) bytes. Its vocabulary is the owner's; the
+/// ledger only bounds and keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct UnsentFailureCode(String);
+
+impl UnsentFailureCode {
+    /// Longest code, in bytes.
+    pub const MAX_LEN: usize = 64;
+
+    /// `code`, when it is 1 to [`MAX_LEN`](Self::MAX_LEN) bytes of `a-z`,
+    /// `0-9`, `_`, `@` or `.`.
+    #[must_use]
+    pub fn new(code: &str) -> Option<Self> {
+        let valid = !code.is_empty()
+            && code.len() <= Self::MAX_LEN
+            && code.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_@.".contains(&byte)
+            });
+        valid.then(|| Self(code.to_owned()))
+    }
+
+    /// The code.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for UnsentFailureCode {
+    type Error = &'static str;
+
+    fn try_from(code: String) -> Result<Self, Self::Error> {
+        Self::new(&code).ok_or("an unsent failure code must be 1 to 64 bytes of [a-z0-9_@.]")
+    }
+}
+
+impl From<UnsentFailureCode> for String {
+    fn from(code: UnsentFailureCode) -> Self {
+        code.0
+    }
+}
+
 #[expect(
     clippy::trivially_copy_pass_by_ref,
     reason = "serde's skip_serializing_if passes the field by reference"
@@ -491,6 +631,17 @@ pub struct OperationProtocolRecord {
     /// serializes byte-identically to one written before keys existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_key: Option<ProviderIdempotencyKey>,
+    /// `None` (absent from the payload) for a record written without the
+    /// list — by an owner that does not record it, or before it existed:
+    /// its concurrency is unknown. `Some([])` (persisted as `[]`) when the
+    /// owner recorded that nothing ran concurrently with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    concurrent_with: Option<Vec<PositionRange>>,
+    /// Absent unless the owner recorded how a unit that sent nothing
+    /// failed, so a record without it serializes byte-identically to one
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unsent_failure: Option<UnsentFailureCode>,
 }
 
 #[derive(Deserialize)]
@@ -514,6 +665,10 @@ struct OperationProtocolRecordWire {
     adjudication_audit_digest: Option<[u8; 32]>,
     #[serde(default)]
     provider_key: Option<ProviderIdempotencyKey>,
+    #[serde(default)]
+    concurrent_with: Option<Vec<PositionRange>>,
+    #[serde(default)]
+    unsent_failure: Option<UnsentFailureCode>,
 }
 
 /// The not-crossed count of a record that does not carry the counter.
@@ -536,6 +691,14 @@ impl OperationProtocolRecord {
     /// refused locally from being granted forever.
     pub const GRANT_CEILING: u32 = 10_000;
 
+    /// Most runs of lower positions one record may list as concurrent with
+    /// it ([`concurrent_with`](Self::concurrent_with)). Any number of
+    /// positions fits when they form at most this many runs; an owner whose
+    /// open positions would need more must not prepare the record — a list
+    /// is never truncated, since a dropped position would read as ordered
+    /// before the record.
+    pub const MAX_CONCURRENT_RANGES: usize = 64;
+
     /// Begin a validated record with no issued permits.
     pub fn prepared(
         contract: PreparedEffectContract,
@@ -557,6 +720,8 @@ impl OperationProtocolRecord {
                 evidence: None,
                 adjudication_audit_digest: None,
                 provider_key: None,
+                concurrent_with: None,
+                unsent_failure: None,
             },
         }
     }
@@ -584,6 +749,21 @@ impl OperationProtocolRecord {
         self.contract.validate()?;
         if self.version != 1 {
             return Err(violation(OperationProtocolViolation::UnsupportedVersion));
+        }
+        if self.concurrent_with.as_ref().is_some_and(|ranges| {
+            ranges.len() > Self::MAX_CONCURRENT_RANGES || !PositionRange::are_canonical(ranges)
+        }) {
+            return Err(violation(OperationProtocolViolation::InconsistentState));
+        }
+        // An unsent failure describes a slot nothing of which is in flight
+        // or settled: any later call or outcome supersedes it.
+        if self.unsent_failure.is_some()
+            && !matches!(
+                self.phase,
+                EffectPhase::Prepared | EffectPhase::BeforeBoundary
+            )
+        {
+            return Err(violation(OperationProtocolViolation::InconsistentState));
         }
         if self.not_crossed > self.invocations
             || self.invocations > Self::GRANT_CEILING
@@ -721,6 +901,24 @@ impl OperationProtocolRecord {
     pub const fn provider_key(&self) -> Option<ProviderIdempotencyKey> {
         self.provider_key
     }
+    /// The lower positions of the owner's run still open when this record
+    /// was first prepared
+    /// ([`EffectSlotBinding::concurrent_with`](super::EffectSlotBinding::concurrent_with)),
+    /// as canonical runs — ascending, disjoint, not adjacent; immutable
+    /// afterwards. `None` for a record written without the list (its
+    /// concurrency is unknown), `Some(&[])` when the owner recorded that
+    /// nothing ran concurrently with it.
+    pub fn concurrent_with(&self) -> Option<&[PositionRange]> {
+        self.concurrent_with.as_deref()
+    }
+    /// How the slot's unit last failed while sending nothing
+    /// ([`OperationCommand::RecordUnsentFailure`]), as its owner classified
+    /// it; `None` when not recorded (a record written before the field
+    /// existed, or by an owner that does not record it). Cleared by any
+    /// later call or outcome.
+    pub const fn unsent_failure(&self) -> Option<&UnsentFailureCode> {
+        self.unsent_failure.as_ref()
+    }
 }
 
 impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
@@ -744,6 +942,8 @@ impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
             evidence: wire.evidence,
             adjudication_audit_digest: wire.adjudication_audit_digest,
             provider_key: wire.provider_key,
+            concurrent_with: wire.concurrent_with,
+            unsent_failure: wire.unsent_failure,
         };
         record.validate()?;
         Ok(record)
@@ -818,6 +1018,22 @@ impl OperationProtocolRecordBuilder {
         self.record.provider_key = provider_key;
         self
     }
+    /// Set the lower positions still open when the record was first
+    /// prepared: canonical runs, at most
+    /// [`OperationProtocolRecord::MAX_CONCURRENT_RANGES`].
+    ///
+    /// Adapters set it only when the record is first prepared; every later
+    /// transition rebuilds from the stored record and so retains it.
+    pub fn concurrent_with(mut self, concurrent_with: Option<&[PositionRange]>) -> Self {
+        self.record.concurrent_with = concurrent_with.map(<[PositionRange]>::to_vec);
+        self
+    }
+    /// Set how the slot's unit last failed while sending nothing; only a
+    /// `Prepared` or `BeforeBoundary` record may carry it.
+    pub fn unsent_failure(mut self, unsent_failure: Option<UnsentFailureCode>) -> Self {
+        self.record.unsent_failure = unsent_failure;
+        self
+    }
     /// Finish construction only when the complete record is coherent.
     ///
     /// # Errors
@@ -861,6 +1077,17 @@ pub enum OperationCommand {
         /// Last acknowledged protocol revision.
         expected_revision: u64,
     },
+    /// The slot's unit settled failing with nothing in flight and nothing
+    /// applied: keep the owner's classification of that failure, so a later
+    /// run that must not send the effect again can fail the same way.
+    /// Permitted only while the slot is `Prepared` or `BeforeBoundary` (a
+    /// [`ProtocolConflict`](super::OperationLedgerError::ProtocolConflict)
+    /// otherwise); replaces an earlier classification, and any later call
+    /// or outcome clears it. Grants nothing.
+    RecordUnsentFailure {
+        /// The owner's secret-free classification.
+        failure: UnsentFailureCode,
+    },
 }
 
 /// Successful transition projection. Only a fresh acknowledged grant response
@@ -893,6 +1120,57 @@ pub enum OperationAdvance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn position_ranges_cover_any_set_exactly_and_canonically() {
+        let positions: Vec<u32> = (0..100).chain([150, 152, 153]).collect();
+        let ranges = PositionRange::coalesce(positions.iter().copied()).unwrap();
+        assert_eq!(
+            ranges,
+            [
+                PositionRange::new(0, 99).unwrap(),
+                PositionRange::new(150, 150).unwrap(),
+                PositionRange::new(152, 153).unwrap(),
+            ]
+        );
+        assert!(PositionRange::are_canonical(&ranges));
+        for position in 0..200 {
+            assert_eq!(
+                PositionRange::any_contains(&ranges, position),
+                positions.contains(&position),
+                "{position}"
+            );
+        }
+        assert_eq!(PositionRange::coalesce([1, 1]), None, "not ascending");
+        assert_eq!(PositionRange::coalesce([2, 1]), None, "not ascending");
+        assert_eq!(PositionRange::coalesce([u32::MAX]).unwrap().len(), 1);
+        assert_eq!(PositionRange::new(3, 2), None);
+        assert_eq!(
+            serde_json::to_value(&ranges).unwrap(),
+            serde_json::json!([[0, 99], [150, 150], [152, 153]])
+        );
+        assert!(serde_json::from_value::<PositionRange>(serde_json::json!([3, 2])).is_err());
+        // Adjacent or overlapping runs are not canonical.
+        assert!(!PositionRange::are_canonical(&[
+            PositionRange::new(0, 1).unwrap(),
+            PositionRange::new(2, 3).unwrap(),
+        ]));
+        assert!(!PositionRange::are_canonical(&[
+            PositionRange::new(0, 4).unwrap(),
+            PositionRange::new(2, 3).unwrap(),
+        ]));
+    }
+
+    #[test]
+    fn unsent_failure_codes_are_bounded_tokens() {
+        assert!(UnsentFailureCode::new("exhausted@1500").is_some());
+        assert!(UnsentFailureCode::new("credential_unavailable@reauth_required").is_some());
+        assert!(UnsentFailureCode::new("").is_none());
+        assert!(UnsentFailureCode::new("Transient").is_none());
+        assert!(UnsentFailureCode::new("a b").is_none());
+        assert!(UnsentFailureCode::new(&"a".repeat(65)).is_none());
+        assert!(serde_json::from_value::<UnsentFailureCode>(serde_json::json!("x y")).is_err());
+    }
 
     #[test]
     fn frozen_evidence_is_bounded_exact_and_payload_redacted() {

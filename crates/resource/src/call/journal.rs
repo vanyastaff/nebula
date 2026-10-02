@@ -9,14 +9,16 @@
 //! or [`ResourceHandle::session`](super::ResourceHandle::session) is driven
 //! through it (a `Read` never is):
 //!
-//! 1. **Submit** — the unit takes an in-flight [`InFlight`]
-//!    ([`track`](EffectJournal::track)); a
-//!    [closed](EffectJournal::is_closed) owner refuses it. A submission is
+//! 1. **Submit** — the owner admits the unit with an in-flight [`InFlight`]
+//!    ([`admit`](EffectJournal::admit)); a
+//!    [closed](EffectJournal::is_closed) owner, or one between two runs,
+//!    refuses it. A submission is
 //!    lazy: one dropped before its first poll never reaches the owner.
-//! 2. **Prepare** — the first poll takes the unit's positional ordinal in
-//!    the owner's one sequence for all its effect units, whatever their
-//!    resource or kind ([`next_ordinal`](EffectJournal::next_ordinal)),
-//!    and hands the owner a [`JournalIntent`]; the returned
+//! 2. **Prepare** — the first poll takes the unit's positional occurrence
+//!    label in the owner's one sequence for all its effect units, whatever
+//!    their resource or kind
+//!    ([`next_occurrence`](EffectJournal::next_occurrence)), and hands the
+//!    owner a [`JournalIntent`]; the returned
 //!    [`JournalSlot`]'s [`SlotPhase`] replays a recorded outcome, refuses an
 //!    unknown one, or lets the unit run.
 //! 3. **Grant** — each attempt, after its checkout and credential reads and
@@ -34,15 +36,20 @@ use std::{fmt, num::NonZeroU32, sync::Mutex, time::Duration};
 use nebula_core::ResourceKey;
 
 use super::{cost::Effect, declaration::IdempotencyKey};
-use crate::{dedup::SlotIdentity, error::ErrorKind};
+use crate::{
+    dedup::SlotIdentity,
+    error::{CredentialUnavailableReason, ErrorKind},
+};
 
 /// The owner of a row's execution-owned effects: prepares, grants and
 /// records them. Implemented by the engine; object safe
 /// (`Arc<dyn EffectJournal>`).
 ///
 /// Every method but [`next_ordinal`](Self::next_ordinal),
-/// [`track`](Self::track) and [`is_closed`](Self::is_closed) is a durable
-/// step. A refusal ([`JournalRefusal`]) never means a provider call happened.
+/// [`next_occurrence`](Self::next_occurrence),
+/// [`release_occurrence`](Self::release_occurrence), [`track`](Self::track)
+/// and [`is_closed`](Self::is_closed) is a durable step. A refusal
+/// ([`JournalRefusal`]) never means a provider call happened.
 #[async_trait::async_trait]
 pub trait EffectJournal: Send + Sync + fmt::Debug {
     /// The next ordinal in the owner's one sequence for all its effect
@@ -62,6 +69,46 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
     /// positions the same way, across resources and kinds: a different
     /// intent is a mismatch, an identical one is interchangeable.
     fn next_ordinal(&self) -> u32;
+
+    /// The occurrence label of the next effect unit: what the unit's first
+    /// poll records its effect under, right before
+    /// [`prepare`](Self::prepare).
+    ///
+    /// Defaults to `unit/v1/#{ordinal:06}` with the
+    /// [`next_ordinal`](Self::next_ordinal) — one flat positional sequence.
+    /// An owner whose units run in several positional runs (a stateful
+    /// action's iterations) overrides it to prefix the run, e.g.
+    /// `it{n}/unit/v1/#{ordinal:06}`, restarting the ordinal per run. The
+    /// label must be visible ASCII of at most 512 bytes; whatever the
+    /// prefix, everything but the position stays out of it (see
+    /// [`next_ordinal`](Self::next_ordinal)).
+    fn next_occurrence(&self) -> String {
+        format!("unit/v1/#{:06}", self.next_ordinal())
+    }
+
+    /// The unit labelled `occurrence` stopped preparing: its
+    /// [`prepare`](Self::prepare) returned, or it gave up before reaching
+    /// the owner or while the owner prepared (cancelled, past its deadline,
+    /// dropped). Called once per [`next_occurrence`](Self::next_occurrence),
+    /// whatever happened. An owner that refuses a fresh effect above a
+    /// position its run never met waits for this before deciding; defaults
+    /// to nothing.
+    fn release_occurrence(&self, occurrence: &str) {
+        let _ = occurrence;
+    }
+
+    /// The unit labelled `occurrence` settled — replayed, refused, given up
+    /// or finished its last call — so nothing of it can still reach the
+    /// provider. Called once per [`next_occurrence`](Self::next_occurrence),
+    /// after [`release_occurrence`](Self::release_occurrence): by the unit
+    /// runtime when the unit settles, whether or not a caller keeps its
+    /// handle, or — for a unit that never settled through its runtime —
+    /// when its owned state is dropped. An owner that records which units ran
+    /// concurrently uses it to tell a unit that finished before another
+    /// began from one still open; defaults to nothing.
+    fn finish_occurrence(&self, occurrence: &str) {
+        let _ = occurrence;
+    }
 
     /// Durably prepares the effect `intent` describes (recovering an
     /// unacknowledged earlier prepare) and returns its slot.
@@ -109,9 +156,52 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
         outcome: CallOutcome<'_>,
     ) -> Result<(), JournalRefusal>;
 
+    /// The unit of `slot` settled failing with `failure`, and nothing of it
+    /// crossed: its last call was explained
+    /// [`NotCrossed`](Crossing::NotCrossed), or it failed before a call was
+    /// granted. An owner keeps it to fail the effect the same way when a
+    /// later run must not send it again
+    /// ([`JournalRefusal::Superseded`]). The unit runtime awaits it before
+    /// the unit's failure reaches its caller, so nothing the program runs
+    /// after that failure precedes the record. A refusal changes nothing
+    /// about the unit's result; an owner that could not record it must fail
+    /// closed (hold later effects of its run and defer), never let a later
+    /// run replay the effect without it. Defaults to nothing.
+    ///
+    /// # Errors
+    ///
+    /// Why the owner did not record it.
+    async fn record_unsent_failure(
+        &self,
+        slot: &JournalSlot,
+        failure: UnsentFailure,
+    ) -> Result<(), JournalRefusal> {
+        let _ = (slot, failure);
+        Ok(())
+    }
+
     /// An in-flight ticket held by every submitted unit until it is gone;
     /// the owner drains them before finalizing its node.
     fn track(&self) -> InFlight;
+
+    /// Admits a submitted unit: its in-flight ticket, or why the owner
+    /// refuses it — [`Closed`](JournalRefusal::Closed) when it
+    /// [closed](Self::is_closed), or
+    /// [`BetweenRuns`](JournalRefusal::BetweenRuns) when its units run in
+    /// positional runs and none is open. The unit runtime submits through
+    /// it. Defaults to [`track`](Self::track) unless closed; an owner whose
+    /// runs roll over overrides it so that admission and rollover are one
+    /// atomic transition.
+    ///
+    /// # Errors
+    ///
+    /// Why the owner refuses the unit; nothing was sent.
+    fn admit(&self) -> Result<InFlight, JournalRefusal> {
+        if self.is_closed() {
+            return Err(JournalRefusal::Closed);
+        }
+        Ok(self.track())
+    }
 
     /// Whether the owner closed (its node finished): a closed owner refuses
     /// every new unit.
@@ -211,8 +301,10 @@ pub struct JournalIntent<'a> {
     /// Attempts the unit may be granted
     /// ([`Operation::max_attempts`](super::Operation::max_attempts)).
     pub max_invocations: NonZeroU32,
-    /// The occurrence label, `unit/v1/#{ordinal:06}`: visible ASCII, at most
-    /// 512 bytes. Positional in the owner's one sequence — the resource,
+    /// The occurrence label the owner assigned
+    /// ([`EffectJournal::next_occurrence`]; `unit/v1/#{ordinal:06}` by
+    /// default): visible ASCII, at most 512 bytes. Positional in the owner's
+    /// one sequence — the resource,
     /// `kind`, `operation` and `version` are not part of it, so a changed
     /// effect under a recorded occurrence is a mismatch.
     pub occurrence: &'a str,
@@ -406,6 +498,25 @@ pub enum JournalRefusal {
     LeaseLost,
     /// The effect's outcome is unknown: no call is granted.
     Unknown,
+    /// The owner already holds as many effects as it records for one run
+    /// of its node: no further effect is prepared.
+    SlotCapExceeded,
+    /// The owner's units run in positional runs (a stateful action's
+    /// iterations) and none is open: a unit submitted between two runs
+    /// belongs to neither.
+    BetweenRuns,
+    /// The effect was recorded and never sent, and a later effect of the
+    /// owner's run may since have been applied: sending it now would apply
+    /// it out of order. It is not sent; the unit fails as it did when the
+    /// run moved past it — with the recorded [`UnsentFailure`]
+    /// ([`EffectJournal::record_unsent_failure`]), or `Permanent` when none
+    /// was recorded.
+    Superseded(Option<UnsentFailure>),
+    /// The owner records, with each fresh effect, the lower units of its run
+    /// still open, and these are too interleaved — more separate runs of
+    /// open positions than it can record — to record exactly. Nothing is
+    /// prepared or sent.
+    ConcurrencyLimit,
 }
 
 impl JournalRefusal {
@@ -419,6 +530,10 @@ impl JournalRefusal {
             Self::Closed => "closed",
             Self::LeaseLost => "lease_lost",
             Self::Unknown => "unknown",
+            Self::SlotCapExceeded => "slot_cap_exceeded",
+            Self::BetweenRuns => "between_runs",
+            Self::Superseded(_) => "superseded",
+            Self::ConcurrencyLimit => "concurrency_limit",
         }
     }
 }
@@ -525,6 +640,25 @@ impl ErrorKindCode {
         }
     }
 
+    /// The code [`as_str`](Self::as_str) names.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        [
+            Self::Transient,
+            Self::Permanent,
+            Self::Exhausted,
+            Self::Backpressure,
+            Self::NotFound,
+            Self::Cancelled,
+            Self::Revoked,
+            Self::Ambiguous,
+            Self::CredentialUnavailable,
+            Self::OutcomeUnknown,
+        ]
+        .into_iter()
+        .find(|code| code.as_str() == name)
+    }
+
     /// The kind a replayed rejection fails with. Only non-retryable kinds
     /// are recorded as rejections; a retryable code is replayed as
     /// `Permanent`, because a recorded rejection is final.
@@ -548,4 +682,132 @@ impl fmt::Display for ErrorKindCode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
+}
+
+/// How a unit that sent nothing failed: its [`ErrorKind`] with the kind's
+/// own secret-free payload (an `Exhausted` retry hint, in whole
+/// milliseconds; a `CredentialUnavailable` reason). The unit's static detail
+/// and sent state are not part of it.
+///
+/// Recorded by the owner when the unit settles
+/// ([`EffectJournal::record_unsent_failure`]) and handed back with
+/// [`JournalRefusal::Superseded`], so a run that must not send the effect
+/// again fails it the same way the run that moved past it saw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct UnsentFailure {
+    code: ErrorKindCode,
+    /// `Exhausted` only: the retry hint, in whole milliseconds.
+    retry_after_ms: Option<u64>,
+    /// `CredentialUnavailable` only.
+    credential: Option<CredentialUnavailableReason>,
+}
+
+impl UnsentFailure {
+    /// The failure of `kind`.
+    #[must_use]
+    pub fn of(kind: &ErrorKind) -> Self {
+        let (retry_after_ms, credential) = match kind {
+            ErrorKind::Exhausted { retry_after } => (
+                retry_after
+                    .map(|retry_after| u64::try_from(retry_after.as_millis()).unwrap_or(u64::MAX)),
+                None,
+            ),
+            ErrorKind::CredentialUnavailable { reason } => (None, Some(*reason)),
+            _ => (None, None),
+        };
+        Self {
+            code: ErrorKindCode::of(kind),
+            retry_after_ms,
+            credential,
+        }
+    }
+
+    /// The kind the failure is replayed as: the recorded kind with its
+    /// payload.
+    #[must_use]
+    pub fn kind(self) -> ErrorKind {
+        match self.code {
+            ErrorKindCode::Transient => ErrorKind::Transient,
+            ErrorKindCode::Permanent => ErrorKind::Permanent,
+            ErrorKindCode::Exhausted => ErrorKind::Exhausted {
+                retry_after: self.retry_after_ms.map(Duration::from_millis),
+            },
+            ErrorKindCode::Backpressure => ErrorKind::Backpressure,
+            ErrorKindCode::NotFound => ErrorKind::NotFound,
+            ErrorKindCode::Cancelled => ErrorKind::Cancelled,
+            ErrorKindCode::Revoked => ErrorKind::Revoked,
+            ErrorKindCode::Ambiguous => ErrorKind::Ambiguous,
+            ErrorKindCode::CredentialUnavailable => {
+                self.credential.map_or(ErrorKind::Permanent, |reason| {
+                    ErrorKind::CredentialUnavailable { reason }
+                })
+            },
+            ErrorKindCode::OutcomeUnknown => ErrorKind::OutcomeUnknown,
+        }
+    }
+
+    /// The failure's code: its kind
+    /// ([`ErrorKindCode::as_str`]), then `@` and the retry hint in
+    /// milliseconds for `exhausted`, or `@` and the reason for
+    /// `credential_unavailable` — e.g. `exhausted@1500`,
+    /// `credential_unavailable@reauth_required`. At most 64 bytes of
+    /// `[a-z0-9_@]`.
+    #[must_use]
+    pub fn code(self) -> String {
+        match (self.retry_after_ms, self.credential) {
+            (Some(retry_after_ms), _) => format!("{}@{retry_after_ms}", self.code),
+            (None, Some(reason)) => format!("{}@{}", self.code, credential_code(reason)),
+            (None, None) => self.code.as_str().to_owned(),
+        }
+    }
+
+    /// The failure a [`code`](Self::code) names; `None` for a code this
+    /// version does not know.
+    #[must_use]
+    pub fn parse(code: &str) -> Option<Self> {
+        let (kind, payload) = match code.split_once('@') {
+            Some((kind, payload)) => (kind, Some(payload)),
+            None => (code, None),
+        };
+        let code = ErrorKindCode::parse(kind)?;
+        let (retry_after_ms, credential) = match (code, payload) {
+            (_, None) => (None, None),
+            (ErrorKindCode::Exhausted, Some(payload)) => (Some(payload.parse().ok()?), None),
+            (ErrorKindCode::CredentialUnavailable, Some(payload)) => {
+                (None, Some(credential_reason(payload)?))
+            },
+            (_, Some(_)) => return None,
+        };
+        Some(Self {
+            code,
+            retry_after_ms,
+            credential,
+        })
+    }
+}
+
+/// The stable code of a credential `reason`.
+const fn credential_code(reason: CredentialUnavailableReason) -> &'static str {
+    match reason {
+        CredentialUnavailableReason::ReauthRequired => "reauth_required",
+        CredentialUnavailableReason::OperationBlocked => "operation_blocked",
+        CredentialUnavailableReason::RefreshInFlight => "refresh_in_flight",
+        CredentialUnavailableReason::Rebinding => "rebinding",
+        CredentialUnavailableReason::CheckUnavailable => "check_unavailable",
+        CredentialUnavailableReason::Absent => "absent",
+    }
+}
+
+/// The credential reason a [`credential_code`] names.
+fn credential_reason(code: &str) -> Option<CredentialUnavailableReason> {
+    [
+        CredentialUnavailableReason::ReauthRequired,
+        CredentialUnavailableReason::OperationBlocked,
+        CredentialUnavailableReason::RefreshInFlight,
+        CredentialUnavailableReason::Rebinding,
+        CredentialUnavailableReason::CheckUnavailable,
+        CredentialUnavailableReason::Absent,
+    ]
+    .into_iter()
+    .find(|reason| credential_code(*reason) == code)
 }

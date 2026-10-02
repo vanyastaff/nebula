@@ -10,7 +10,8 @@ mod slot;
 
 pub use error::EffectExecutionError;
 pub(crate) use journal::{
-    Concluded, JournalAdmission, JournalAuthority, JournalShape, NodeEffectJournal,
+    Concluded, IterationGate, IterationProgress, JournalAdmission, JournalAuthority, JournalShape,
+    NodeEffectJournal, journal_drain_limit,
 };
 use slot::{CallPurpose, GrantedCall, LedgerAccess, LedgerSlot};
 
@@ -125,6 +126,8 @@ impl EffectTurn<'_> {
             // Remote effects identify themselves to the provider by the
             // ledger-minted operation id; they record no separate key.
             provider_key: None,
+            // One effect per node: no positional run to order.
+            concurrent_with: None,
         };
         let slot = LedgerSlot::prepare(self.access(), &binding).await?;
         let mut driver = Driver {

@@ -3101,12 +3101,12 @@ const JOURNAL_NEEDS_STORES: &str = "journaled effects need execution stores";
 
 impl NodeTask {
     /// The effect journal of this node attempt: built only for a frozen
-    /// journaled action of a [`Flat`](crate::effect_driver::JournalShape::Flat)
-    /// shape (stateless) with no remote capability, under this
+    /// journaled action of a journaled
+    /// [`JournalShape`](crate::effect_driver::JournalShape) (stateless, or
+    /// stateful per iteration) with no remote capability, under this
     /// turn's operation ledger and execution lease. Building it costs
     /// nothing durable. Control actions decide flow and keep read-only
-    /// handles; stateful actions keep them until their iterations are
-    /// journaled; agent, stream and other actions keep them.
+    /// handles; agent, stream and other actions keep them.
     fn effect_journal(&self) -> Option<crate::effect_driver::NodeEffectJournal> {
         let NodeFactoryDispatch::Frozen {
             factory,
@@ -3136,6 +3136,7 @@ impl NodeTask {
                 attempt_generation: self.attempt_generation,
                 clock: Arc::clone(&self.clock),
                 metrics: self.metrics.clone(),
+                shape: crate::effect_driver::JournalShape::of(factory.metadata().kind()),
             },
         ))
     }
@@ -3170,8 +3171,9 @@ impl NodeTask {
     /// The resource accessor the action of `contract` is dispatched with.
     ///
     /// Every action reaches resources through resource handles only — the
-    /// accessor has no raw-lease route. A stateless journaled one on a
-    /// durable turn gets handles under this node attempt's effect journal;
+    /// accessor has no raw-lease route. A stateless or stateful journaled
+    /// one on a durable turn gets handles under this node attempt's effect
+    /// journal;
     /// every other node (a journaled one without a journal, a `ReadOnly` or
     /// `Remote` one) gets read-only handles, whose `Idempotent` and `Write`
     /// units are refused before any provider call.
@@ -3192,11 +3194,7 @@ impl NodeTask {
     /// returned: the unit deadline cap, or less when the execution's
     /// wall-clock budget ends sooner.
     fn journal_drain_limit(execution_deadline: Option<Instant>) -> Duration {
-        execution_deadline.map_or(nebula_resource::call::OPERATION_DEADLINE_CAP, |deadline| {
-            deadline
-                .saturating_duration_since(Instant::now())
-                .min(nebula_resource::call::OPERATION_DEADLINE_CAP)
-        })
+        crate::effect_driver::journal_drain_limit(execution_deadline)
     }
 
     /// The node's result under its effect journal's verdict, which
@@ -3422,9 +3420,10 @@ impl NodeTask {
                             .await
                             .map_err(EngineError::Runtime)
                     },
-                    // A stateless journaled action on a durable turn runs
-                    // under its node attempt's effect journal, whose verdict
-                    // `run` lays over the result.
+                    // A stateless or stateful journaled action on a durable
+                    // turn runs under its node attempt's effect journal,
+                    // whose verdict `run` lays over the result; a stateful
+                    // one's loop keeps the journal's iteration barrier.
                     ActionEffectContract::Journaled(_)
                         if factory.remote_effect_factory().is_none() =>
                     {
@@ -3436,13 +3435,12 @@ impl NodeTask {
                                     &self.node,
                                     input,
                                     &action_ctx,
-                                    journal.admission(),
+                                    journal.admission(self.execution_deadline),
                                 )
                                 .await
                                 .map_err(EngineError::Runtime),
                             // No journal (no execution stores, a control
-                            // action, a stateful action until its iterations
-                            // are journaled, or an agent, stream or other
+                            // action, or an agent, stream or other
                             // unjournaled kind):
                             // the context's accessor hands out read-only
                             // handles saying why, so reads run and writes

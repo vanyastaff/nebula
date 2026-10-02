@@ -27,6 +27,10 @@ pub(super) enum Fault {
     After,
     AfterReadUnavailable,
     PreparedWithoutPersistence,
+    /// The command commits and its answer never comes back.
+    AnswerLost,
+    /// The command never reaches the store and never answers.
+    Hang,
 }
 
 #[derive(Debug, Default)]
@@ -42,9 +46,15 @@ pub(super) struct FaultLedger {
     pub boundary: Boundary,
     pub fault: Fault,
     fired: AtomicBool,
+    /// Commands at the boundary that pass before the fault fires.
+    skip: std::sync::atomic::AtomicU32,
     pub natural_reads: std::sync::atomic::AtomicUsize,
     pub outcome_attempts: parking_lot::Mutex<Vec<nebula_storage_port::dto::FrozenOutcomeEvidence>>,
     pub outcome_gate: Option<Arc<OutcomeGate>>,
+    /// Fired when a command whose answer is lost committed.
+    pub answer_lost: tokio::sync::Notify,
+    /// Fired whenever an outcome was recorded.
+    pub recorded: tokio::sync::Notify,
 }
 
 impl FaultLedger {
@@ -54,13 +64,34 @@ impl FaultLedger {
             boundary,
             fault,
             fired: AtomicBool::new(false),
+            skip: std::sync::atomic::AtomicU32::new(0),
             natural_reads: std::sync::atomic::AtomicUsize::new(0),
             outcome_attempts: parking_lot::Mutex::new(Vec::new()),
             outcome_gate: None,
+            answer_lost: tokio::sync::Notify::new(),
+            recorded: tokio::sync::Notify::new(),
         }
     }
+    /// The same fault, fired at the boundary's command after the first
+    /// `skip` pass.
+    pub(super) fn skipping(self, skip: u32) -> Self {
+        self.skip.store(skip, Ordering::SeqCst);
+        self
+    }
     fn fires(&self, boundary: Boundary) -> bool {
-        self.boundary == boundary && !self.fired.swap(true, Ordering::SeqCst)
+        if self.boundary != boundary {
+            return false;
+        }
+        if self
+            .skip
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return false;
+        }
+        !self.fired.swap(true, Ordering::SeqCst)
     }
 }
 
@@ -114,6 +145,10 @@ impl OperationLedger for FaultLedger {
             return Err(OperationLedgerError::AcknowledgementUnknown);
         }
         let outcome = self.inner.prepare(binding, fencing).await?;
+        if fire && matches!(self.fault, Fault::AnswerLost) {
+            self.answer_lost.notify_one();
+            return std::future::pending().await;
+        }
         if fire {
             return Err(OperationLedgerError::AcknowledgementUnknown);
         }
@@ -144,7 +179,13 @@ impl OperationLedger for FaultLedger {
         if fire && matches!(self.fault, Fault::Before) {
             return Err(OperationLedgerError::AcknowledgementUnknown);
         }
+        if fire && matches!(self.fault, Fault::Hang) {
+            return std::future::pending().await;
+        }
         let outcome = self.inner.advance(scope, slot, fencing, command).await?;
+        if matches!(command, OperationCommand::RecordOutcome(_)) {
+            self.recorded.notify_one();
+        }
         if fire {
             return Err(OperationLedgerError::AcknowledgementUnknown);
         }

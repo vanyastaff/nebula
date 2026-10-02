@@ -250,9 +250,18 @@ impl CredentialAvailabilityObserver for CountingObserver {
                 + 'a,
         >,
     > {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        self.inner
-            .observe_availability(scope, credential_id, expected_key, cancel)
+        // Counted once the read answered, not when it was issued: a test
+        // that waits for a read to have *seen* the store (a refresh in
+        // flight) must not act while the query is still queued, or its
+        // change can land before the read and the read misses it.
+        Box::pin(async move {
+            let observed = self
+                .inner
+                .observe_availability(scope, credential_id, expected_key, cancel)
+                .await;
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            observed
+        })
     }
 }
 

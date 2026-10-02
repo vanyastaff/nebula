@@ -40,6 +40,7 @@ async fn missing_execution_cannot_authorize_prepare() {
         destination: DestinationCapability::Opaque,
         contract: oracle::contract(DestinationCapability::Opaque),
         provider_key: None,
+        concurrent_with: None,
     };
     assert!(
         ledger
