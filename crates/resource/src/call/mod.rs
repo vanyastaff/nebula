@@ -204,7 +204,11 @@
 //!    ([`ErrorKindCode`](journal::ErrorKindCode)), otherwise how the call
 //!    crossed (unreachable or throttled: not crossed; interrupted or
 //!    unclassified: ambiguous). A record that fails after a possible
-//!    crossing fails the unit `OutcomeUnknown`.
+//!    crossing fails the unit `OutcomeUnknown`. A unit that fails with
+//!    nothing crossed also tells the owner how it failed
+//!    ([`UnsentFailure`](journal::UnsentFailure)) before the failure is
+//!    returned, so a later
+//!    run that must not send the effect again fails it the same way.
 //!
 //! [`OperationCx::idempotency_key`] and [`SessionCx::idempotency_key`] are the provider
 //! idempotency key ([`IdempotencyKey`]) to send: for a journaled effect the

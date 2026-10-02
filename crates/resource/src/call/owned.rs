@@ -20,7 +20,8 @@
 //!   shrinks to the grant's budget; a registration that then refuses
 //!   explains it `NotCrossed` ([`OwnedEffect::release_refused`]);
 //! - **settle** ([`OwnedEffect::finish`]) — the last call is settled or
-//!   explained from the unit's result.
+//!   explained from the unit's result; a failure with nothing crossed is
+//!   recorded with the owner ([`OwnedEffect::record_unsent`]).
 //!
 //! A unit cancelled before its first grant leaves only its prepare behind:
 //! the slot stays prepared and a resumed unit runs it again. A grant still
@@ -43,7 +44,7 @@ use super::{
     error::OperationError,
     journal::{
         CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight, JournalIntent,
-        JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase, UnitKind,
+        JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase, UnitKind, UnsentFailure,
     },
     managed::{UnitShared, cancelled_before_grant},
 };
@@ -101,7 +102,12 @@ pub(super) struct OwnedEffect {
     slot: OnceLock<JournalSlot>,
     /// The unit's latest granted call not yet explained or settled.
     pending: Mutex<Option<PendingCall>>,
-    _ticket: InFlight,
+    /// Set once the unit's position was finished for its owner.
+    concluded: std::sync::atomic::AtomicBool,
+    /// The owner's in-flight ticket: released when the unit settles
+    /// ([`conclude`](Self::conclude)), or with the owned state as a
+    /// fallback — never while the unit may still reach the provider.
+    ticket: Mutex<Option<InFlight>>,
 }
 
 /// A granted call and how its attempt settled so far.
@@ -140,10 +146,46 @@ impl fmt::Debug for OwnedEffect {
     }
 }
 
+impl Drop for OwnedEffect {
+    /// Fallback for a unit that never settled through its runtime (its
+    /// waiter dropped before the first poll finished): the position is
+    /// finished for its owner when the owned state goes.
+    fn drop(&mut self) {
+        self.conclude();
+    }
+}
+
 impl OwnedEffect {
+    /// The unit settled — its outcome is produced and recorded, it can no
+    /// longer reach the provider — so a position it took is finished for
+    /// its owner ([`EffectJournal::finish_occurrence`]) and its in-flight
+    /// ticket released, once. Called by the unit runtime only when the unit
+    /// settles, not when the handle a caller may keep is dropped: a
+    /// retained completed handle holds neither the position nor the
+    /// owner's drain.
+    pub(super) fn conclude(&self) {
+        if self
+            .concluded
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        if let Some(occurrence) = self.occurrence.get() {
+            self.owner.finish_occurrence(occurrence);
+        }
+        let ticket = self
+            .ticket
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        drop(ticket);
+    }
+
     /// The owned state of a unit of `declaration` on `key`, whose row is at
-    /// `config_fingerprint`: refused `Cancelled` when `owner` closed;
-    /// otherwise with an in-flight ticket. Its occurrence is assigned later,
+    /// `config_fingerprint`: refused when `owner` does not admit it
+    /// ([`EffectJournal::admit`]: `Cancelled` when it closed, `Permanent`
+    /// between its runs); otherwise with an in-flight ticket. Its occurrence
+    /// is assigned later,
     /// when its first poll starts the prepare
     /// ([`assign_occurrence`](Self::assign_occurrence)): a submission
     /// dropped before it is polled takes no position.
@@ -154,12 +196,7 @@ impl OwnedEffect {
         config_fingerprint: u64,
         declaration: JournalDeclaration,
     ) -> Result<Self, OperationError> {
-        if owner.is_closed() {
-            return Err(OperationError::new(
-                ErrorKind::Cancelled,
-                "effect owner closed; unit refused",
-            ));
-        }
+        let ticket = owner.admit().map_err(refusal_error)?;
         Ok(Self {
             owner: Arc::clone(owner),
             resource_key: key.clone(),
@@ -169,13 +206,15 @@ impl OwnedEffect {
             occurrence: OnceLock::new(),
             slot: OnceLock::new(),
             pending: Mutex::new(None),
-            _ticket: owner.track(),
+            concluded: std::sync::atomic::AtomicBool::new(false),
+            ticket: Mutex::new(Some(ticket)),
         })
     }
 
-    /// Assigns the unit's positional occurrence label `unit/v1/#{ordinal:06}`
-    /// from the owner's next ordinal — one sequence for all its effect
-    /// units — once; later calls return the same label.
+    /// Assigns the unit's positional occurrence label from the owner's next
+    /// occurrence ([`EffectJournal::next_occurrence`]: `unit/v1/#{ordinal:06}`
+    /// by default) — one sequence for all its effect units — once; later
+    /// calls return the same label.
     ///
     /// The resource, kind (operation or session), name and version are not
     /// in the label: they are bound by the effect's contract, so a changed
@@ -183,10 +222,7 @@ impl OwnedEffect {
     /// resources or kinds reordered — is a mismatch rather than a fresh
     /// effect.
     fn assign_occurrence(&self) -> &str {
-        self.occurrence.get_or_init(|| {
-            let ordinal = self.owner.next_ordinal();
-            format!("unit/v1/#{ordinal:06}")
-        })
+        self.occurrence.get_or_init(|| self.owner.next_occurrence())
     }
 
     /// The occurrence label the owner records the effect under; empty
@@ -317,7 +353,8 @@ impl OwnedEffect {
     /// | Result | Last call | Recorded |
     /// |---|---|---|
     /// | `Ok` | any | settle `Applied` (`AppliedWithoutOutput` without `record_output`, or for an output over the 1 MiB cap) |
-    /// | `Err` | `NotSent`, or throttled | explain `NotCrossed` |
+    /// | `Err` | none pending (every call already explained) | record the unsent failure |
+    /// | `Err` | `NotSent`, or throttled | explain `NotCrossed`, then record the unsent failure |
     /// | `Err` | rejected | settle `Rejected` with the rejection's kind |
     /// | `Err` | `MaybeSent`, or applied (a success the unit then failed) and a retryable kind | explain `Ambiguous` |
     /// | `Err` | applied and a non-retryable kind | settle `AppliedWithoutOutput` |
@@ -333,7 +370,15 @@ impl OwnedEffect {
         abnormal: bool,
         codec: OutputCodec<T>,
     ) -> Result<T, OperationError> {
-        let (Some(pending), Some(slot)) = (self.take_pending(), self.slot()) else {
+        let Some(slot) = self.slot() else {
+            return result;
+        };
+        let Some(pending) = self.take_pending() else {
+            // No call in flight: every call the unit was granted is already
+            // explained, so a failure now sent nothing more.
+            if let Err(error) = &result {
+                self.record_unsent(slot, error.kind()).await;
+            }
             return result;
         };
         let sent = if abnormal {
@@ -380,7 +425,12 @@ impl OwnedEffect {
                     ),
                 };
                 match written {
-                    Ok(()) => Err(error),
+                    Ok(()) => {
+                        if matches!(recorded, Err(Crossing::NotCrossed)) {
+                            self.record_unsent(slot, kind).await;
+                        }
+                        Err(error)
+                    },
                     Err(refusal) if matches!(recorded, Err(Crossing::NotCrossed)) => {
                         let _ = self.refused(step, refusal);
                         Err(error)
@@ -388,6 +438,25 @@ impl OwnedEffect {
                     Err(refusal) => Err(self.unrecorded(step, refusal)),
                 }
             },
+        }
+    }
+
+    /// Tells the owner how the unit failed while sending nothing
+    /// ([`EffectJournal::record_unsent_failure`]), before the failure is
+    /// returned: the unit's result stands either way, and an owner that
+    /// could not record it fails closed on its side.
+    pub(super) async fn record_unsent(&self, slot: &JournalSlot, kind: &ErrorKind) {
+        if let Err(refusal) = self
+            .owner
+            .record_unsent_failure(slot, UnsentFailure::of(kind))
+            .await
+        {
+            tracing::debug!(
+                target: "nebula.resource",
+                occurrence = self.occurrence(),
+                refusal = refusal.as_str(),
+                "effect owner did not record how the unsent unit failed"
+            );
         }
     }
 
@@ -457,6 +526,26 @@ fn refusal_error(refusal: JournalRefusal) -> OperationError {
         JournalRefusal::Closed => {
             OperationError::new(ErrorKind::Cancelled, "effect owner closed; unit refused")
         },
+        JournalRefusal::SlotCapExceeded => OperationError::new(
+            ErrorKind::Permanent,
+            "effect journal slot cap reached; unit refused",
+        ),
+        // The failure the earlier run saw, kind and payload; `Permanent` when
+        // it was not recorded (a slot recorded before failures were).
+        JournalRefusal::Superseded(failure) => OperationError::new(
+            failure.map_or(ErrorKind::Permanent, UnsentFailure::kind),
+            "effect failed unsent in an earlier run that moved past it; not sent again",
+        ),
+        JournalRefusal::ConcurrencyLimit => OperationError::new(
+            ErrorKind::Permanent,
+            "too many interleaved concurrent effects: the lower effects still open form more \
+             separate runs than the journal records (64); unit refused",
+        ),
+        JournalRefusal::BetweenRuns => OperationError::new(
+            ErrorKind::Permanent,
+            "effect submitted while its owner has no open run (between stateful iterations); \
+             unit refused",
+        ),
         JournalRefusal::Unavailable
         | JournalRefusal::AcknowledgementUnknown
         | JournalRefusal::LeaseLost => OperationError::new(
@@ -474,6 +563,19 @@ pub(super) enum Prepared<T> {
     Replayed(T),
     /// No run: the unit settles with this error and sent state.
     Refused(OperationError, SentState),
+}
+
+/// Tells the owner, when dropped, that the unit labelled `occurrence`
+/// stopped preparing ([`EffectJournal::release_occurrence`]).
+struct ReleaseOccurrence<'a> {
+    owner: &'a dyn EffectJournal,
+    occurrence: &'a str,
+}
+
+impl Drop for ReleaseOccurrence<'_> {
+    fn drop(&mut self) {
+        self.owner.release_occurrence(self.occurrence);
+    }
 }
 
 /// The first poll of an owned unit: the owner's prepare, raced against the
@@ -505,6 +607,13 @@ pub(super) async fn prepare<T>(
     // first poll consumes no ordinal, so a branch that builds and drops one
     // cannot shift the effects after it onto unrecorded positions.
     let occurrence = effect.assign_occurrence();
+    // However this first poll ends — prepared, refused, cancelled, past the
+    // deadline before the owner was reached, or dropped — the owner learns
+    // the position stopped preparing.
+    let _released = ReleaseOccurrence {
+        owner: effect.owner.as_ref(),
+        occurrence,
+    };
     let declaration = &effect.declaration;
     let intent = JournalIntent {
         resource_key: &effect.resource_key,

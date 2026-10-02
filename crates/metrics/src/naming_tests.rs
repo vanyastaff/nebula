@@ -900,6 +900,7 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_prepare_phase::UNKNOWN,
     ];
     let steps = [
+        effect_journal_step::SUBMIT,
         effect_journal_step::PREPARE,
         effect_journal_step::GRANT,
         effect_journal_step::EXPLAIN,
@@ -913,6 +914,10 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_refusal::CLOSED,
         effect_journal_refusal::LEASE_LOST,
         effect_journal_refusal::UNKNOWN,
+        effect_journal_refusal::SLOT_CAP_EXCEEDED,
+        effect_journal_refusal::BETWEEN_RUNS,
+        effect_journal_refusal::SUPERSEDED,
+        effect_journal_refusal::CONCURRENCY_LIMIT,
     ];
     let verdicts = [
         effect_journal_verdict::OK,
@@ -922,12 +927,15 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_verdict::INVALID_CONTRACT,
         effect_journal_verdict::INVALID_EVIDENCE,
         effect_journal_verdict::LEDGER,
+        effect_journal_verdict::SLOT_CAP_EXCEEDED,
+        effect_journal_verdict::ITERATION_BARRIER,
+        effect_journal_verdict::CONCURRENCY_LIMIT,
     ];
     for (set, expected) in [
         (&phases[..], 3),
-        (&steps[..], 5),
-        (&refusals[..], 6),
-        (&verdicts[..], 7),
+        (&steps[..], 6),
+        (&refusals[..], 10),
+        (&verdicts[..], 10),
     ] {
         let unique: HashSet<_> = set.iter().collect();
         assert_eq!(unique.len(), expected);

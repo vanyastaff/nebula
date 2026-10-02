@@ -233,6 +233,7 @@ async fn dispatch_counted_contract(
             &test_context(),
             None,
             authority,
+            None,
         )
         .await;
     (result, executions.load(Ordering::Relaxed), metrics)
@@ -2150,4 +2151,595 @@ fn stateful_state_digest_is_cross_instance_deterministic() {
     // Different values must produce different digests.
     let other = serde_json::json!({ "node_a": "failed" });
     assert_ne!(stateful_state_digest(&state), stateful_state_digest(&other));
+}
+
+// ── journaled stateful iterations: the effect journal's barrier ──────────
+
+/// An iteration barrier that logs every call and fails where scripted.
+#[derive(Default)]
+struct ScriptedGate {
+    log: std::sync::Mutex<Vec<String>>,
+    open: AtomicU32,
+    fail_begin_at: Option<u32>,
+    fail_end_at: Option<u32>,
+    /// The iteration whose barrier never answers (a drain stuck on a unit).
+    hang_end_at: Option<u32>,
+    /// Iterations before this one report the replay not at its frontier.
+    replayed_through: Option<u32>,
+}
+
+impl ScriptedGate {
+    fn log(&self) -> Vec<String> {
+        self.log.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::effect_driver::IterationGate for ScriptedGate {
+    fn begin_iteration(&self, iteration: u32) -> Result<(), crate::EffectExecutionError> {
+        self.log.lock().unwrap().push(format!("begin {iteration}"));
+        self.open.store(iteration, AtomicOrdering::SeqCst);
+        if self.fail_begin_at == Some(iteration) {
+            return Err(crate::EffectExecutionError::IterationUnitsOutstanding { iteration });
+        }
+        Ok(())
+    }
+
+    async fn end_iteration(
+        &self,
+        succeeded: bool,
+    ) -> Result<crate::effect_driver::IterationProgress, crate::EffectExecutionError> {
+        let iteration = self.open.load(AtomicOrdering::SeqCst);
+        let outcome = if succeeded { "ok" } else { "err" };
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("end {iteration} {outcome}"));
+        if self.hang_end_at == Some(iteration) {
+            std::future::pending::<()>().await;
+        }
+        if self.fail_end_at == Some(iteration) {
+            return Err(crate::EffectExecutionError::OccurrenceMismatch);
+        }
+        Ok(crate::effect_driver::IterationProgress {
+            replayed_past: self
+                .replayed_through
+                .is_some_and(|through| iteration < through),
+        })
+    }
+
+    fn cancel_iteration(&self) {
+        let iteration = self.open.load(AtomicOrdering::SeqCst);
+        self.log.lock().unwrap().push(format!("cancel {iteration}"));
+    }
+}
+
+/// Continues after every iteration with a one-hour delay.
+struct DelayedStateful;
+
+impl Action for DelayedStateful {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        pure_metadata(
+            action_key!("test.delayed"),
+            "DelayedStateful",
+            "continues after a delay",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+impl StatefulAction for DelayedStateful {
+    type State = JsonValue;
+    fn init_state(&self) -> Self::State {
+        serde_json::json!({ "count": 0u32 })
+    }
+    async fn execute(
+        &self,
+        _input: &Self::Input,
+        state: &mut Self::State,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        let count = state
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        *state = serde_json::json!({ "count": count + 1 });
+        Ok(ActionResult::Continue {
+            output: ActionOutput::Value(serde_json::json!(null)),
+            progress: None,
+            delay: Some(std::time::Duration::from_hours(1)),
+        })
+    }
+}
+impl FromWorkflowNode for DelayedStateful {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(DelayedStateful)
+    }
+}
+
+/// Counts to 4, continuing after each iteration with a one-hour delay.
+struct DelayedCountingTo4;
+
+impl Action for DelayedCountingTo4 {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        pure_metadata(
+            action_key!("test.delayed_count"),
+            "DelayedCountingTo4",
+            "counts to 4, an hour apart",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+impl StatefulAction for DelayedCountingTo4 {
+    type State = JsonValue;
+    fn init_state(&self) -> Self::State {
+        serde_json::json!({ "count": 0u32 })
+    }
+    async fn execute(
+        &self,
+        _input: &Self::Input,
+        state: &mut Self::State,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        Ok(match counting_step(state, 4) {
+            ActionResult::Continue {
+                output, progress, ..
+            } => ActionResult::Continue {
+                output,
+                progress,
+                delay: Some(std::time::Duration::from_hours(1)),
+            },
+            done => done,
+        })
+    }
+}
+impl FromWorkflowNode for DelayedCountingTo4 {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(DelayedCountingTo4)
+    }
+}
+
+/// Runs [`DelayedCountingTo4`] under `gate` and returns the virtual time it
+/// took.
+async fn count_to_4_an_hour_apart(gate: &ScriptedGate) -> std::time::Duration {
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<DelayedCountingTo4>::new()
+            .expect("valid test catalog definition"),
+    );
+    let node = NodeDefinition::new(node_key!("test"), "Count", "test", "delayed_count").unwrap();
+    let started = tokio::time::Instant::now();
+    let result = make_runtime(Arc::new(ActionRegistry::new()))
+        .run_factory(
+            "test.delayed_count",
+            factory,
+            &node,
+            nebula_action::ActionInput::Raw(serde_json::Value::Null),
+            &test_context(),
+            None,
+            ResourceAuthority::CallerSupplied,
+            Some(gate),
+        )
+        .await;
+    assert!(
+        matches!(result, Ok(ActionResult::Break { .. })),
+        "{result:?}"
+    );
+    started.elapsed()
+}
+
+/// A replay skips the delays before iterations an earlier attempt already
+/// ran, and honours them from its frontier on.
+#[tokio::test(start_paused = true)]
+async fn a_replay_skips_the_delays_it_already_waited() {
+    let hour = std::time::Duration::from_hours(1);
+    // Fresh: three delays between four iterations.
+    assert_eq!(
+        count_to_4_an_hour_apart(&ScriptedGate::default()).await,
+        3 * hour
+    );
+    // Replaying iterations 0 and 1 (an earlier attempt recorded effects up
+    // to iteration 2): only the delay at the frontier, before iteration 3.
+    let gate = ScriptedGate {
+        replayed_through: Some(2),
+        ..ScriptedGate::default()
+    };
+    assert_eq!(count_to_4_an_hour_apart(&gate).await, hour);
+}
+
+/// A cancellation during the delay between two iterations closes admission
+/// too: a detached submission is refused as closed, not as a barrier
+/// violation, and the node stays cancelled.
+#[tokio::test(start_paused = true)]
+async fn a_cancellation_during_the_delay_closes_admission() {
+    let gate = Arc::new(ScriptedGate::default());
+    let ctx = test_context();
+    let cancel = ctx.cancellation().clone();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<DelayedStateful>::new()
+            .expect("valid test catalog definition"),
+    );
+    let run = tokio::spawn({
+        let gate = Arc::clone(&gate);
+        async move {
+            let node =
+                NodeDefinition::new(node_key!("test"), "Delayed", "test", "delayed").unwrap();
+            make_runtime(Arc::new(ActionRegistry::new()))
+                .run_factory(
+                    "test.delayed",
+                    factory,
+                    &node,
+                    nebula_action::ActionInput::Raw(serde_json::Value::Null),
+                    &ctx,
+                    None,
+                    ResourceAuthority::CallerSupplied,
+                    Some(gate.as_ref()),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+        .await
+        .expect("cancellation is observed")
+        .expect("task");
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["begin 0", "end 0 ok", "cancel 0"]);
+}
+
+/// A cancellation during an iteration's dispatch ends the iteration at the
+/// barrier — no later submission is admitted — instead of leaving it open.
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_iteration_closes_admission_at_the_barrier() {
+    let gate = Arc::new(ScriptedGate::default());
+    let ctx = test_context();
+    let cancel = ctx.cancellation().clone();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<SleepyStateful>::new()
+            .expect("valid test catalog definition"),
+    );
+    let run = tokio::spawn({
+        let gate = Arc::clone(&gate);
+        async move {
+            let node = NodeDefinition::new(node_key!("test"), "Sleepy", "test", "sleepy").unwrap();
+            make_runtime(Arc::new(ActionRegistry::new()))
+                .run_factory(
+                    "test.sleepy",
+                    factory,
+                    &node,
+                    nebula_action::ActionInput::Raw(serde_json::Value::Null),
+                    &ctx,
+                    None,
+                    ResourceAuthority::CallerSupplied,
+                    Some(gate.as_ref()),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+        .await
+        .expect("cancellation is observed")
+        .expect("task");
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["begin 0", "cancel 0"]);
+}
+
+/// A cancellation while the barrier drains an iteration's units cancels the
+/// iteration and answers `Cancelled` at once instead of waiting the drain out.
+#[tokio::test(start_paused = true)]
+async fn a_cancellation_during_the_barrier_drain_cancels_the_iteration() {
+    let gate = Arc::new(ScriptedGate {
+        hang_end_at: Some(1),
+        ..ScriptedGate::default()
+    });
+    let ctx = test_context();
+    let cancel = ctx.cancellation().clone();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<CountingTo3>::new()
+            .expect("valid test catalog definition"),
+    );
+    let run = tokio::spawn({
+        let gate = Arc::clone(&gate);
+        async move {
+            let node = NodeDefinition::new(node_key!("test"), "Count", "test", "count").unwrap();
+            make_runtime(Arc::new(ActionRegistry::new()))
+                .run_factory(
+                    "test.count",
+                    factory,
+                    &node,
+                    nebula_action::ActionInput::Raw(serde_json::Value::Null),
+                    &ctx,
+                    None,
+                    ResourceAuthority::CallerSupplied,
+                    Some(gate.as_ref()),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0 ok", "begin 1", "end 1 ok"],
+        "the barrier of iteration 1 is draining"
+    );
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+        .await
+        .expect("cancellation is observed during the drain")
+        .expect("task");
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0 ok", "begin 1", "end 1 ok", "cancel 1"]
+    );
+}
+
+/// A node cancelled before its first iteration (while the factory built
+/// the handle) closes the journal's admission too: no iteration begins, and
+/// a detached task's later submission is refused instead of failing the
+/// cancelled node.
+#[tokio::test]
+async fn a_cancellation_before_the_first_iteration_closes_admission() {
+    let gate = ScriptedGate::default();
+    let ctx = test_context();
+    ctx.cancellation().cancel();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<CountingTo3>::new()
+            .expect("valid test catalog definition"),
+    );
+    let node = NodeDefinition::new(node_key!("test"), "Count", "test", "count").unwrap();
+    let result = make_runtime(Arc::new(ActionRegistry::new()))
+        .run_factory(
+            "test.count",
+            factory,
+            &node,
+            nebula_action::ActionInput::Raw(serde_json::Value::Null),
+            &ctx,
+            None,
+            ResourceAuthority::CallerSupplied,
+            Some(&gate),
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["cancel 0"], "closed before any iteration");
+}
+
+/// A stateful action whose construction never finishes (a
+/// `FromWorkflowNode` stuck on something it awaits).
+struct NeverBuilt;
+
+impl Action for NeverBuilt {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        pure_metadata(
+            action_key!("test.never_built"),
+            "NeverBuilt",
+            "never finishes building",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static D: OnceLock<Dependencies> = OnceLock::new();
+        D.get_or_init(Dependencies::new)
+    }
+}
+impl StatefulAction for NeverBuilt {
+    type State = JsonValue;
+    fn init_state(&self) -> Self::State {
+        serde_json::json!(null)
+    }
+    async fn execute(
+        &self,
+        _input: &Self::Input,
+        _state: &mut Self::State,
+        _ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        Ok(ActionResult::success(serde_json::json!(null)))
+    }
+}
+impl FromWorkflowNode for NeverBuilt {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _ctx: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        std::future::pending().await
+    }
+}
+
+/// A cancellation while the factory builds the handle is observed at once:
+/// admission closes before the build returns, so nothing the build detached
+/// can submit and turn the cancellation into a barrier failure.
+#[tokio::test(start_paused = true)]
+async fn a_cancellation_while_the_handle_is_built_closes_admission_at_once() {
+    let gate = Arc::new(ScriptedGate::default());
+    let ctx = test_context();
+    let cancel = ctx.cancellation().clone();
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<NeverBuilt>::new()
+            .expect("valid test catalog definition"),
+    );
+    let run = tokio::spawn({
+        let gate = Arc::clone(&gate);
+        async move {
+            let node =
+                NodeDefinition::new(node_key!("test"), "Never", "test", "never_built").unwrap();
+            make_runtime(Arc::new(ActionRegistry::new()))
+                .run_factory(
+                    "test.never_built",
+                    factory,
+                    &node,
+                    nebula_action::ActionInput::Raw(serde_json::Value::Null),
+                    &ctx,
+                    None,
+                    ResourceAuthority::CallerSupplied,
+                    Some(gate.as_ref()),
+                )
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    assert!(gate.log().is_empty(), "still building");
+    cancel.cancel();
+    let result = tokio::time::timeout(std::time::Duration::from_millis(500), run)
+        .await
+        .expect("cancellation is observed while building")
+        .expect("task");
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::ActionError(ActionError::Cancelled))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(gate.log(), ["cancel 0"]);
+}
+
+/// Runs [`CountingTo3`] through the dispatch core under `gate`, with
+/// `checkpoint`.
+async fn count_to_3_under(
+    gate: &ScriptedGate,
+    checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
+) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+    let factory: Arc<dyn ActionFactory> = Arc::new(
+        nebula_action::GenericStatefulFactory::<CountingTo3>::new()
+            .expect("valid test catalog definition"),
+    );
+    let node = NodeDefinition::new(node_key!("test"), "Count", "test", "count").unwrap();
+    make_runtime(Arc::new(ActionRegistry::new()))
+        .run_factory(
+            "test.count",
+            factory,
+            &node,
+            nebula_action::ActionInput::Raw(serde_json::Value::Null),
+            &test_context(),
+            checkpoint,
+            ResourceAuthority::CallerSupplied,
+            Some(gate),
+        )
+        .await
+}
+
+#[tokio::test]
+async fn a_journaled_stateful_loop_brackets_every_iteration_with_the_barrier() {
+    let gate = ScriptedGate::default();
+    let result = count_to_3_under(&gate, None).await;
+    assert!(
+        matches!(result, Ok(ActionResult::Break { .. })),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        [
+            "begin 0", "end 0 ok", "begin 1", "end 1 ok", "begin 2", "end 2 ok"
+        ],
+        "each iteration opens before and closes after its one dispatch"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_barrier_stops_the_journaled_stateful_loop() {
+    let gate = ScriptedGate {
+        fail_end_at: Some(1),
+        ..ScriptedGate::default()
+    };
+    let result = count_to_3_under(&gate, None).await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::EffectJournal(
+                crate::EffectExecutionError::OccurrenceMismatch
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0 ok", "begin 1", "end 1 ok"],
+        "no iteration starts after the journal stopped the loop"
+    );
+
+    let gate = ScriptedGate {
+        fail_begin_at: Some(2),
+        ..ScriptedGate::default()
+    };
+    let result = count_to_3_under(&gate, None).await;
+    assert!(
+        matches!(
+            result,
+            Err(RuntimeError::EffectJournal(
+                crate::EffectExecutionError::IterationUnitsOutstanding { iteration: 2 }
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(
+        gate.log(),
+        ["begin 0", "end 0 ok", "begin 1", "end 1 ok", "begin 2"],
+        "a refused iteration never dispatches"
+    );
+}
+
+#[tokio::test]
+async fn a_journaled_stateful_loop_refuses_a_checkpoint_sink() {
+    let gate = ScriptedGate::default();
+    let sink = Arc::new(RecordingSink::new());
+    let result = count_to_3_under(
+        &gate,
+        Some(Arc::clone(&sink) as Arc<dyn StatefulCheckpointSink>),
+    )
+    .await;
+    assert!(
+        matches!(&result, Err(RuntimeError::Internal(reason)) if reason.contains("takes no checkpoint sink")),
+        "{result:?}"
+    );
+    assert!(gate.log().is_empty(), "the action never ran");
+    assert!(sink.saves.lock().await.is_empty());
+    assert_eq!(sink.clears.load(AtomicOrdering::Relaxed), 0);
 }

@@ -63,8 +63,127 @@ pub(super) struct Gateway {
     pub hold_next: parking_lot::Mutex<Option<Arc<Gate>>>,
     /// Calls to apply and then lose the answer of.
     pub lose_first: AtomicU32,
+    /// The next call is throttled: the provider applies nothing.
+    pub throttle_next: AtomicBool,
     /// Fired whenever a call reaches the gateway.
     pub entered: tokio::sync::Notify,
+    /// What the stateful action consults at the start of every iteration —
+    /// this gateway's own, so no state is shared between tests.
+    pub iterations: IterationControls,
+}
+
+/// Per-iteration test controls of the stateful action, which it reads
+/// through a free `Read` unit ([`Consult`]) at the start of every
+/// iteration. A one-shot control fires on the first run that reaches its
+/// iteration; the others apply on every run while set.
+#[derive(Debug, Default)]
+pub(super) struct IterationControls {
+    /// Every iteration started, in order, across runs.
+    pub started: parking_lot::Mutex<Vec<u32>>,
+    /// One-shot: the iteration never gets past its start (a crash point).
+    pub hold_at: parking_lot::Mutex<Option<u32>>,
+    /// Fired when an iteration reached `hold_at`.
+    pub held: tokio::sync::Notify,
+    /// One-shot: the iteration's first call is applied and then waits at
+    /// `call_gate`.
+    pub hold_call_at: parking_lot::Mutex<Option<u32>>,
+    /// The gate a `hold_call_at` call waits at.
+    pub call_gate: Arc<Gate>,
+    /// One-shot: the answer of the iteration's first call is lost.
+    pub lose_at: parking_lot::Mutex<Option<u32>>,
+    /// One-shot: the iteration's first call is throttled.
+    pub throttle_at: parking_lot::Mutex<Option<u32>>,
+    /// The iteration's units carry this request instead.
+    pub override_at: parking_lot::Mutex<Option<(u32, String)>>,
+    /// The iteration submits one more write after its units.
+    pub extra_at: parking_lot::Mutex<Option<u32>>,
+    /// The iteration skips its units.
+    pub skip_at: parking_lot::Mutex<Option<u32>>,
+    /// The iteration submits only its first so many units.
+    pub keep_at: parking_lot::Mutex<Option<(u32, usize)>>,
+    /// The action completes at the iteration, before its units.
+    pub break_at: parking_lot::Mutex<Option<u32>>,
+    /// The action fails (not retryable) at the iteration, before its units.
+    pub fail_at: parking_lot::Mutex<Option<u32>>,
+    /// The iteration submits its units without awaiting them.
+    pub leak_at: parking_lot::Mutex<Option<u32>>,
+    /// The iteration returns a timer `Wait` after its units.
+    pub wait_at: parking_lot::Mutex<Option<u32>>,
+}
+
+/// What the stateful action does in one iteration, as the gateway's
+/// [`IterationControls`] decide it.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct IterationPlan {
+    request_override: Option<String>,
+    extra: bool,
+    skip: bool,
+    keep: Option<usize>,
+    stop: bool,
+    fail: bool,
+    leak: bool,
+    wait: bool,
+}
+
+/// Takes a one-shot control when it is set for `iteration`.
+fn fires(control: &parking_lot::Mutex<Option<u32>>, iteration: u32) -> bool {
+    let mut control = control.lock();
+    if *control == Some(iteration) {
+        *control = None;
+        return true;
+    }
+    false
+}
+
+/// Whether a lasting control is set for `iteration`.
+fn applies(control: &parking_lot::Mutex<Option<u32>>, iteration: u32) -> bool {
+    *control.lock() == Some(iteration)
+}
+
+impl Gateway {
+    /// The plan of the stateful action's `iteration`, arming the gateway's
+    /// one-shot faults for the iteration's calls.
+    async fn consult(&self, iteration: u32) -> IterationPlan {
+        let controls = &self.iterations;
+        controls.started.lock().push(iteration);
+        if fires(&controls.hold_at, iteration) {
+            controls.held.notify_one();
+            std::future::pending::<()>().await;
+        }
+        if fires(&controls.hold_call_at, iteration) {
+            *self.hold_next.lock() = Some(Arc::clone(&controls.call_gate));
+        }
+        if fires(&controls.lose_at, iteration) {
+            self.lose_first.store(1, Ordering::SeqCst);
+        }
+        if fires(&controls.throttle_at, iteration) {
+            self.throttle_next.store(true, Ordering::SeqCst);
+        }
+        IterationPlan {
+            request_override: controls
+                .override_at
+                .lock()
+                .as_ref()
+                .filter(|(at, _)| *at == iteration)
+                .map(|(_, request)| request.clone()),
+            extra: applies(&controls.extra_at, iteration),
+            skip: applies(&controls.skip_at, iteration),
+            keep: controls
+                .keep_at
+                .lock()
+                .filter(|(at, _)| *at == iteration)
+                .map(|(_, keep)| keep),
+            stop: applies(&controls.break_at, iteration),
+            fail: applies(&controls.fail_at, iteration),
+            leak: applies(&controls.leak_at, iteration),
+            wait: applies(&controls.wait_at, iteration),
+        }
+    }
+
+    /// The iterations the stateful action started, across runs.
+    pub(super) fn started(&self) -> Vec<u32> {
+        self.iterations.started.lock().clone()
+    }
 }
 
 impl Gateway {
@@ -92,6 +211,10 @@ impl Gateway {
             key: key.clone(),
             request: request.to_owned(),
         });
+        if self.throttle_next.swap(false, Ordering::SeqCst) {
+            self.entered.notify_one();
+            return Err(OperationError::throttled(None));
+        }
         let receipt = {
             let mut applied = self.applied.lock();
             let next = u64::try_from(applied.len()).unwrap() + 1;
@@ -254,6 +377,30 @@ impl Operation<Payments> for Capture {
     }
 }
 
+/// The stateful action's look at its iteration's controls: a free `Read`,
+/// never journaled.
+#[derive(Serialize, Deserialize)]
+struct Consult {
+    iteration: u32,
+}
+
+impl Operation<Payments> for Consult {
+    type Output = IterationPlan;
+    const KEY: &'static str = "test.consult";
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, Payments>,
+    ) -> Result<IterationPlan, OperationError> {
+        let iteration = self.iteration;
+        cx.call(Cost::FREE, async move |gateway, ()| {
+            Ok(gateway.consult(iteration).await)
+        })
+        .await
+    }
+}
+
 /// What the action does, as the execution input says.
 #[derive(Debug, Deserialize)]
 struct Script {
@@ -400,11 +547,42 @@ impl StatelessAction for ChargeAction {
     }
 }
 
-/// The controls of the stateful action, which the generic stateful factory
-/// builds per dispatch.
-static STATEFUL_CONTROLS: OnceLock<Arc<Controls>> = OnceLock::new();
+/// What the stateful action does, as the execution input says: the units
+/// of each iteration, in order.
+#[derive(Debug, Deserialize)]
+struct IterationScript {
+    iterations: Vec<Vec<UnitSpec>>,
+    /// Swallow unit errors (recording their kind) and go on anyway.
+    #[serde(default)]
+    swallow: bool,
+    /// Before its units, the first iteration submits this many writes of
+    /// distinct requests (a node over its journaled slot cap).
+    #[serde(default)]
+    fill: u32,
+    /// Submit every unit of an iteration and await them together
+    /// (`join_all`), instead of one after the other.
+    #[serde(default)]
+    concurrent: bool,
+    /// The delay each `Continue` asks for before the next iteration.
+    #[serde(default)]
+    delay_secs: u64,
+    /// After the iteration's units, for every swallowed error, submit a
+    /// write `after-{kind}`: the program branches on the error's kind.
+    #[serde(default)]
+    branch_on_kind: bool,
+}
 
-/// The journaled stateful action: one iteration running the script.
+/// The stateful action's state: the next iteration and every receipt so
+/// far.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(super) struct IterationState {
+    next: u32,
+    receipts: Vec<Value>,
+}
+
+/// The journaled stateful action: one iteration per entry of its script,
+/// each consulting the gateway's [`IterationControls`] first. Its controls
+/// live on the fixture's own gateway, so concurrent tests share nothing.
 #[derive(nebula_action::Action)]
 #[action(
     key = "journal.charge",
@@ -416,26 +594,140 @@ static STATEFUL_CONTROLS: OnceLock<Arc<Controls>> = OnceLock::new();
 struct StatefulCharge;
 
 impl StatefulAction for StatefulCharge {
-    type State = u32;
+    type State = IterationState;
 
-    fn init_state(&self) -> u32 {
-        0
+    fn init_state(&self) -> IterationState {
+        IterationState::default()
     }
 
     async fn execute(
         &self,
         input: &Value,
-        state: &mut u32,
+        state: &mut IterationState,
         ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<Value>, ActionError> {
-        *state += 1;
-        let script: Script = serde_json::from_value(input.clone())
+        let script: IterationScript = serde_json::from_value(input.clone())
             .map_err(|error| ActionError::fatal(format!("bad script: {error}")))?;
-        let controls = STATEFUL_CONTROLS.get_or_init(Arc::default);
-        let output = run_script(controls, script, ctx).await?;
-        Ok(ActionResult::Break {
-            output: nebula_action::ActionOutput::Value(output),
-            reason: nebula_action::BreakReason::Completed,
+        let handle = ctx.resource_handle_by_id::<Payments>(Payments::key().as_str())?;
+        let iteration = state.next;
+        let plan = handle.submit(Consult { iteration }).await?;
+        if plan.fail {
+            return Err(ActionError::fatal("the iteration failed"));
+        }
+        if plan.stop {
+            return Ok(ActionResult::Break {
+                output: nebula_action::ActionOutput::Value(json!({ "receipts": state.receipts })),
+                reason: nebula_action::BreakReason::Completed,
+            });
+        }
+        let mut units = if plan.skip {
+            Vec::new()
+        } else {
+            script
+                .iterations
+                .get(usize::try_from(iteration).unwrap())
+                .cloned()
+                .unwrap_or_default()
+        };
+        if let Some(keep) = plan.keep {
+            units.truncate(keep);
+        }
+        if iteration == 0 {
+            let fill = (0..script.fill).map(|n| UnitSpec {
+                idempotent: false,
+                request: format!("fill-{n}"),
+                key: None,
+                budget: 1,
+            });
+            units.splice(0..0, fill);
+        }
+        if plan.extra {
+            units.push(UnitSpec {
+                idempotent: false,
+                request: format!("extra-{iteration}"),
+                key: None,
+                budget: 1,
+            });
+        }
+        let submit = |mut spec: UnitSpec| {
+            if let Some(request) = &plan.request_override {
+                spec.request.clone_from(request);
+            }
+            if spec.idempotent {
+                handle.submit(Charge::<true>(spec))
+            } else {
+                handle.submit(Charge::<false>(spec))
+            }
+        };
+        let settled = if script.concurrent {
+            futures::future::join_all(units.into_iter().map(submit)).await
+        } else {
+            let mut settled = Vec::new();
+            for spec in units {
+                let unit = submit(spec);
+                if plan.leak {
+                    drop(tokio::spawn(unit));
+                    continue;
+                }
+                let result = unit.await;
+                let failed = result.is_err();
+                settled.push(result);
+                if failed && !script.swallow {
+                    break;
+                }
+            }
+            settled
+        };
+        let mut branches = Vec::new();
+        for result in settled {
+            match result {
+                Ok(receipt) => state.receipts.push(json!(receipt)),
+                Err(error) if script.swallow => {
+                    branches.push(error.kind().to_string());
+                    state.receipts.push(json!({
+                        "kind": error.kind().to_string(),
+                        "sent": error.sent().as_str(),
+                        "detail": error.detail(),
+                    }));
+                },
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if script.branch_on_kind {
+            for kind in branches {
+                let receipt = handle
+                    .submit(Charge::<false>(UnitSpec {
+                        idempotent: false,
+                        request: format!("after-{kind}"),
+                        key: None,
+                        budget: 1,
+                    }))
+                    .await?;
+                state.receipts.push(json!(receipt));
+            }
+        }
+        state.next += 1;
+        let output = nebula_action::ActionOutput::Value(json!({ "receipts": state.receipts }));
+        if plan.wait {
+            return Ok(ActionResult::Wait {
+                condition: nebula_action::WaitCondition::Duration {
+                    duration: std::time::Duration::from_millis(50),
+                },
+                timeout: None,
+                partial_output: Some(output),
+            });
+        }
+        if usize::try_from(state.next).unwrap() >= script.iterations.len() {
+            return Ok(ActionResult::Break {
+                output,
+                reason: nebula_action::BreakReason::Completed,
+            });
+        }
+        Ok(ActionResult::Continue {
+            output,
+            progress: None,
+            delay: (script.delay_secs > 0)
+                .then(|| std::time::Duration::from_secs(script.delay_secs)),
         })
     }
 }
@@ -587,19 +879,16 @@ impl JournalFixture {
         .await
     }
 
-    async fn build_with(
+    pub(super) async fn build_with(
         ports: Ports,
         kind: Kind,
         retry: Option<nebula_workflow::RetryConfig>,
         strategy: nebula_workflow::ErrorStrategy,
     ) -> Self {
         let gateway = Arc::new(Gateway::default());
-        let controls = match kind {
-            Kind::Stateless => Arc::new(Controls::default()),
-            Kind::Stateful => Arc::clone(STATEFUL_CONTROLS.get_or_init(Arc::default)),
-            // A control action runs with its own fresh controls.
-            Kind::Control | Kind::ReadOnlyControl => Arc::new(Controls::default()),
-        };
+        // A stateful action reads its controls from the fixture's gateway; a
+        // control action runs with its own fresh controls.
+        let controls = Arc::new(Controls::default());
         let manager = Arc::new(Manager::new());
         for identity in [
             SlotIdentity::Unbound,
@@ -668,10 +957,22 @@ impl JournalFixture {
     /// Admits an execution running `units` (JSON unit specs) with `extra`
     /// script flags.
     pub(super) async fn start(&self, units: &[Value], extra: Value) -> nebula_core::ExecutionId {
-        let mut input = json!({ "units": units });
-        if let (Some(input), Value::Object(extra)) = (input.as_object_mut(), extra) {
-            input.extend(extra);
-        }
+        self.start_input(script_input(json!({ "units": units }), extra))
+            .await
+    }
+
+    /// Admits an execution of the stateful action running `iterations`
+    /// (each a list of JSON unit specs) with `extra` script flags.
+    pub(super) async fn start_iterations(
+        &self,
+        iterations: &[&[Value]],
+        extra: Value,
+    ) -> nebula_core::ExecutionId {
+        self.start_input(script_input(json!({ "iterations": iterations }), extra))
+            .await
+    }
+
+    async fn start_input(&self, input: Value) -> nebula_core::ExecutionId {
         WorkflowStartService::new(
             self.ports.workflows.clone(),
             self.ports.stores.execution.clone(),
@@ -694,6 +995,55 @@ impl JournalFixture {
         .unwrap()
         .state()
         .execution_id
+    }
+
+    /// Runs the fixture's workflow on `input` once, in process, on an
+    /// engine without execution stores: no operation ledger, so no effect
+    /// journal.
+    pub(super) async fn run_storeless(&self, input: Value) -> nebula_engine::ExecutionResult {
+        let registry = Arc::new(ActionRegistry::new());
+        registry.register_factory(
+            self.frozen
+                .resolve_action(&action_key!("journal.charge"))
+                .expect("the fixture's action"),
+        );
+        let metrics = MetricsRegistry::new();
+        let runtime = Arc::new(
+            ActionRuntime::try_new(
+                registry,
+                Arc::new(InProcessRunner::new()),
+                DataPassingPolicy::default(),
+                metrics.clone(),
+            )
+            .unwrap(),
+        );
+        let engine = WorkflowEngine::new(runtime, metrics)
+            .unwrap()
+            .with_resource_manager(Arc::clone(&self.manager));
+        engine.record_resource_slot_identity(
+            ScopeLevel::Global,
+            Payments::key(),
+            self.identity.lock().clone(),
+        );
+        // The registry resolves the node's action by its full key.
+        let node = NodeDefinition::new(node_key!("charge"), "Charge", "journal", "journal.charge")
+            .unwrap();
+        let definition = WorkflowBuilder::new("Storeless journaled effects")
+            .add_node(node)
+            .build()
+            .unwrap();
+        tokio::time::timeout(
+            HANG_GUARD,
+            engine.execute_workflow(
+                &nebula_engine::store_seam::single_tenant_scope(),
+                &definition,
+                input,
+                ExecutionBudget::default(),
+            ),
+        )
+        .await
+        .expect("the run finishes")
+        .expect("workflow execution")
     }
 
     /// A fresh engine over the fixture's ports, resource manager and current
@@ -767,6 +1117,14 @@ impl JournalFixture {
             .await
             .unwrap()
     }
+}
+
+/// A script `input` extended with the `extra` flags.
+fn script_input(mut input: Value, extra: Value) -> Value {
+    if let (Some(input), Value::Object(extra)) = (input.as_object_mut(), extra) {
+        input.extend(extra);
+    }
+    input
 }
 
 /// The phase of `slot`.

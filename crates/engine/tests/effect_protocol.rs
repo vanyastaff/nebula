@@ -58,6 +58,8 @@ mod journal_fixture;
 mod journal_kinds;
 #[path = "effect_protocol/journal_recovery.rs"]
 mod journal_recovery;
+#[path = "effect_protocol/journal_stateful.rs"]
+mod journal_stateful;
 #[path = "effect_protocol/journal_verdict.rs"]
 mod journal_verdict;
 #[path = "effect_protocol/matrix.rs"]

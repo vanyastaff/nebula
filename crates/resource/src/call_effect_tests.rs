@@ -110,6 +110,13 @@ struct FakeState {
     grant_budget: Option<Duration>,
     /// The next position of the owner's one sequence.
     next_ordinal: u32,
+    /// The run prefix the owner labels its occurrences with, when set (as
+    /// a stateful owner labels an iteration's).
+    run_prefix: Option<String>,
+    /// Occurrences units released, in order.
+    released: Vec<String>,
+    /// Occurrences whose units are gone, in order.
+    finished: Vec<String>,
     slots: HashMap<String, FakeSlot>,
     next_id: u8,
     log: Vec<Step>,
@@ -117,6 +124,8 @@ struct FakeState {
     fail_prepare: Option<JournalRefusal>,
     fail_settle: Option<JournalRefusal>,
     fail_grant: Option<JournalRefusal>,
+    /// The next submission is refused with this.
+    fail_admit: Option<JournalRefusal>,
     on_grant: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -166,6 +175,13 @@ impl FakeOwner {
     /// effects meet the slots the earlier run recorded.
     fn resume(&self) {
         self.state().next_ordinal = 0;
+    }
+
+    /// Starts a new positional run labelled `prefix`: its ordinals restart.
+    fn begin_run(&self, prefix: &str) {
+        let mut state = self.state();
+        state.run_prefix = Some(prefix.to_owned());
+        state.next_ordinal = 0;
     }
 
     fn fail_next_prepare(&self, refusal: JournalRefusal) {
@@ -242,6 +258,22 @@ impl EffectJournal for FakeOwner {
         let next = state.next_ordinal;
         state.next_ordinal += 1;
         next
+    }
+
+    fn next_occurrence(&self) -> String {
+        let ordinal = self.next_ordinal();
+        match self.state().run_prefix.clone() {
+            Some(prefix) => format!("{prefix}/unit/v1/#{ordinal:06}"),
+            None => occurrence(ordinal),
+        }
+    }
+
+    fn release_occurrence(&self, occurrence: &str) {
+        self.state().released.push(occurrence.to_owned());
+    }
+
+    fn finish_occurrence(&self, occurrence: &str) {
+        self.state().finished.push(occurrence.to_owned());
     }
 
     async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
@@ -407,6 +439,16 @@ impl EffectJournal for FakeOwner {
         InFlight::new(move || {
             in_flight.fetch_sub(1, Ordering::SeqCst);
         })
+    }
+
+    fn admit(&self) -> Result<InFlight, JournalRefusal> {
+        if let Some(refusal) = self.state().fail_admit.take() {
+            return Err(refusal);
+        }
+        if self.is_closed() {
+            return Err(JournalRefusal::Closed);
+        }
+        Ok(self.track())
     }
 
     fn is_closed(&self) -> bool {
@@ -1022,6 +1064,243 @@ async fn the_intent_carries_the_derived_declaration() {
         fixture.owner.log().last(),
         Some(&Step::Settle("applied_without_output"))
     );
+}
+
+/// An owner that only hands out ordinals: every durable step is refused.
+#[derive(Debug, Default)]
+struct OrdinalOnly(Mutex<u32>);
+
+#[async_trait::async_trait]
+impl EffectJournal for OrdinalOnly {
+    fn next_ordinal(&self) -> u32 {
+        let mut next = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let ordinal = *next;
+        *next += 1;
+        ordinal
+    }
+
+    async fn prepare(&self, _: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    async fn grant(&self, _: &JournalSlot) -> Result<CallGrant, JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    async fn explain(
+        &self,
+        _: &JournalSlot,
+        _: CallGrant,
+        _: Crossing,
+    ) -> Result<(), JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    async fn settle(
+        &self,
+        _: &JournalSlot,
+        _: CallGrant,
+        _: CallOutcome<'_>,
+    ) -> Result<(), JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    fn track(&self) -> InFlight {
+        InFlight::new(|| {})
+    }
+
+    fn is_closed(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_unit_its_owner_does_not_admit_is_refused_unsent() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    fixture.owner.state().fail_admit = Some(JournalRefusal::BetweenRuns);
+    let refused = row
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+        .await
+        .expect_err("between the owner's runs");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(
+        refused.detail(),
+        "effect submitted while its owner has no open run (between stateful iterations); unit \
+         refused"
+    );
+    assert!(
+        fixture.owner.intents().is_empty(),
+        "nothing reached the owner"
+    );
+    assert_eq!(calls.made(), 0);
+    // The default admission refuses only a closed owner.
+    assert_eq!(
+        OrdinalOnly::default().admit().map(|_| ()),
+        Err(JournalRefusal::Closed)
+    );
+}
+
+#[test]
+fn the_default_occurrence_is_the_flat_positional_label() {
+    let owner = OrdinalOnly::default();
+    assert_eq!(owner.next_occurrence(), "unit/v1/#000000");
+    assert_eq!(owner.next_occurrence(), "unit/v1/#000001");
+    assert_eq!(owner.next_ordinal(), 2, "one sequence underneath");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_owner_labels_each_run_and_a_slot_cap_refusal_sends_nothing() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    fixture.owner.begin_run("it0");
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+        .await
+        .expect("first run");
+    fixture.owner.begin_run("it1");
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]))
+        .await
+        .expect("second run");
+    let occurrences: Vec<String> = fixture
+        .owner
+        .intents()
+        .into_iter()
+        .map(|intent| intent.occurrence)
+        .collect();
+    assert_eq!(
+        occurrences,
+        ["it0/unit/v1/#000000", "it1/unit/v1/#000000"],
+        "the owner's label, its ordinal restarted per run"
+    );
+
+    fixture
+        .owner
+        .fail_next_prepare(JournalRefusal::SlotCapExceeded);
+    let refused = row
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(3)]))
+        .await
+        .expect_err("over the owner's cap");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(
+        refused.detail(),
+        "effect journal slot cap reached; unit refused"
+    );
+    assert_eq!(calls.made(), 2, "nothing sent past the cap");
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_position_handed_out_is_released_even_when_the_unit_gives_up() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Polled only past its deadline: the unit takes a position and gives up
+    // before reaching the owner.
+    let late = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
+    tokio::time::advance(crate::call::OPERATION_DEADLINE_CAP + Duration::from_secs(1)).await;
+    let gave_up = late.await.expect_err("past its deadline");
+    assert_unsent(&gave_up, &ErrorKind::Backpressure);
+    assert!(
+        fixture.owner.intents().is_empty(),
+        "never reached the owner"
+    );
+    assert_eq!(fixture.owner.state().released, [pay(0)]);
+
+    assert_eq!(
+        fixture.owner.state().finished,
+        [pay(0)],
+        "the unit that gave up is gone"
+    );
+
+    // A unit's position stays open from its first poll until the unit is
+    // gone, past its prepare.
+    let unit = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]));
+    let unit = tokio::spawn(unit);
+    unit.await
+        .expect("the unit task")
+        .expect("prepared and run");
+    assert_eq!(
+        fixture.owner.state().released,
+        [pay(0), pay(1)],
+        "released once its prepare returned"
+    );
+    assert_eq!(fixture.owner.state().finished, [pay(0), pay(1)]);
+    assert_eq!(calls.made(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_position_is_finished_when_its_unit_settles_even_if_its_handle_is_kept() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    let mut first = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
+    (&mut first).await.expect("applied");
+    // The action keeps the completed handle: the unit settled all the same,
+    // and holds no in-flight ticket.
+    assert_eq!(fixture.owner.state().finished, [pay(0)]);
+    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]))
+        .await
+        .expect("the next one");
+    drop(first);
+    assert_eq!(
+        fixture.owner.state().finished,
+        [pay(0), pay(1)],
+        "finished once each"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_unit_refused_before_its_first_poll_releases_its_ticket() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    // Cancelled before its first poll: refused before reaching the owner.
+    let mut cancelled = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
+    cancelled.cancel();
+    let refused = (&mut cancelled).await.expect_err("cancelled");
+    assert_unsent(&refused, &ErrorKind::Cancelled);
+    // The handle is kept: the settled unit holds no in-flight ticket.
+    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
+    assert!(
+        fixture.owner.intents().is_empty(),
+        "never reached the owner"
+    );
+    assert_eq!(calls.made(), 0);
+    drop(cancelled);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_position_is_finished_only_once_its_unit_is_gone() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    // The call stalls: the unit is prepared and released, not finished.
+    let unit = tokio::spawn(row.submit(Stall {
+        calls: Arc::clone(&calls),
+    }));
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.made(), 1, "the call is in flight");
+    assert_eq!(fixture.owner.state().released, [pay(0)]);
+    assert!(fixture.owner.state().finished.is_empty(), "still open");
+    assert_eq!(
+        fixture.owner.in_flight.load(Ordering::SeqCst),
+        1,
+        "the unit may still reach the provider: its ticket is held"
+    );
+    // Dropping the waiter does not end a unit whose call is in flight: its
+    // position stays open while it may still reach the provider.
+    unit.abort();
+    let _ = unit.await;
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert!(fixture.owner.state().finished.is_empty(), "still in flight");
 }
 
 #[tokio::test(start_paused = true)]
@@ -2637,4 +2916,78 @@ async fn a_library_session_runs_without_an_owner() {
         .expect_err("no effect authority");
     assert_unsent(&refused, &ErrorKind::Permanent);
     assert!(fixture.owner.log().is_empty());
+}
+
+#[test]
+fn an_unsent_failure_round_trips_its_kind_and_payload_through_its_code() {
+    use super::super::journal::UnsentFailure;
+    use crate::error::CredentialUnavailableReason;
+    let kinds = [
+        ErrorKind::Transient,
+        ErrorKind::Permanent,
+        ErrorKind::Exhausted { retry_after: None },
+        ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_millis(1500)),
+        },
+        ErrorKind::Backpressure,
+        ErrorKind::NotFound,
+        ErrorKind::Cancelled,
+        ErrorKind::Revoked,
+        ErrorKind::Ambiguous,
+        ErrorKind::CredentialUnavailable {
+            reason: CredentialUnavailableReason::ReauthRequired,
+        },
+        ErrorKind::CredentialUnavailable {
+            reason: CredentialUnavailableReason::CheckUnavailable,
+        },
+        ErrorKind::OutcomeUnknown,
+    ];
+    for kind in kinds {
+        let failure = UnsentFailure::of(&kind);
+        let code = failure.code();
+        assert!(code.len() <= 64, "{code}");
+        assert!(
+            code.bytes().all(|byte| byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || b"_@".contains(&byte)),
+            "{code}"
+        );
+        assert_eq!(UnsentFailure::parse(&code), Some(failure), "{code}");
+        assert_eq!(failure.kind(), kind, "{code}");
+    }
+    assert_eq!(
+        UnsentFailure::of(&ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_millis(1500)),
+        })
+        .code(),
+        "exhausted@1500"
+    );
+    for unknown in [
+        "",
+        "teapot",
+        "transient@1",
+        "exhausted@soon",
+        "credential_unavailable@x",
+    ] {
+        assert_eq!(UnsentFailure::parse(unknown), None, "{unknown}");
+    }
+}
+
+#[test]
+fn a_superseded_effect_fails_with_its_recorded_kind_or_permanent_without_one() {
+    use super::super::journal::UnsentFailure;
+    let throttled = ErrorKind::Exhausted {
+        retry_after: Some(Duration::from_secs(2)),
+    };
+    let replayed = super::refusal_error(JournalRefusal::Superseded(Some(UnsentFailure::of(
+        &throttled,
+    ))));
+    assert_eq!(*replayed.kind(), throttled);
+    // A slot recorded before failures were (legacy) fails `Permanent`.
+    let legacy = super::refusal_error(JournalRefusal::Superseded(None));
+    assert_eq!(*legacy.kind(), ErrorKind::Permanent);
+    assert_eq!(
+        replayed.detail(),
+        "effect failed unsent in an earlier run that moved past it; not sent again"
+    );
 }
