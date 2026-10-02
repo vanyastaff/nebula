@@ -65,28 +65,39 @@ async fn the_schema_refuses_rows_outside_the_record_bounds() {
         )
         .await
         .unwrap();
+    let insert_versioned =
+        |iteration: i64, state: Vec<u8>, digest: Vec<u8>, version_digest: Vec<u8>| {
+            let pool = pool.clone();
+            let scope = scope.clone();
+            let execution = execution.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO port_iteration_checkpoints \
+                     (workspace_id, org_id, execution_id, node_key, action_key, action_version, \
+                      action_version_digest, iteration, state, state_digest, resume_delay_ms, \
+                      attested_positions, attempt_generation, fencing_generation, written_at_ms) \
+                     VALUES (?, ?, ?, 'node', 'action', '1.0.0', ?, ?, ?, ?, NULL, 0, 0, 0, 0)",
+                )
+                .bind(&scope.workspace_id)
+                .bind(&scope.org_id)
+                .bind(&execution)
+                .bind(version_digest)
+                .bind(iteration)
+                .bind(state)
+                .bind(digest)
+                .execute(&pool)
+                .await
+            }
+        };
     let insert = |iteration: i64, state: Vec<u8>, digest: Vec<u8>| {
-        let pool = pool.clone();
-        let scope = scope.clone();
-        let execution = execution.clone();
-        async move {
-            sqlx::query(
-                "INSERT INTO port_iteration_checkpoints \
-                 (workspace_id, org_id, execution_id, node_key, action_key, action_version, \
-                  iteration, state, state_digest, resume_delay_ms, attested_positions, \
-                  attempt_generation, fencing_generation, written_at_ms) \
-                 VALUES (?, ?, ?, 'node', 'action', '1.0.0', ?, ?, ?, NULL, 0, 0, 0, 0)",
-            )
-            .bind(&scope.workspace_id)
-            .bind(&scope.org_id)
-            .bind(&execution)
-            .bind(iteration)
-            .bind(state)
-            .bind(digest)
-            .execute(&pool)
-            .await
-        }
+        insert_versioned(iteration, state, digest, vec![7; 32])
     };
+    assert!(
+        insert_versioned(1, b"{}".to_vec(), vec![0; 32], vec![7; 31])
+            .await
+            .is_err(),
+        "short version digest"
+    );
     assert!(
         insert(0, b"{}".to_vec(), vec![0; 32]).await.is_err(),
         "iteration 0"
@@ -104,4 +115,69 @@ async fn the_schema_refuses_rows_outside_the_record_bounds() {
         "state past 1 MiB"
     );
     assert!(insert(1, b"{}".to_vec(), vec![0; 32]).await.is_ok());
+}
+
+/// The key indexes the version's digest, never its text: a row found under
+/// the digest whose stored text is another version is corrupt, and both a
+/// load and a save of the key fail closed instead of answering for it.
+#[tokio::test]
+async fn a_stored_version_that_differs_from_the_key_fails_closed() {
+    use nebula_storage_port::store::{CheckpointStore, ExecutionStore};
+    use nebula_storage_port::{
+        IterationCheckpoint, IterationCheckpointError, IterationCheckpointKey,
+    };
+
+    let pool = fresh_pool().await;
+    let scope = oracle::scope();
+    let execution = oracle::execution_id(0xC1);
+    let executions = SqliteExecutionStore::new(pool.clone());
+    executions
+        .create(
+            &scope,
+            &execution,
+            "workflow",
+            serde_json::json!({"status":"Created"}),
+        )
+        .await
+        .unwrap();
+    let fencing = executions
+        .acquire_lease(
+            &scope,
+            &execution,
+            "runner",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let key = IterationCheckpointKey::new(&scope, &execution, "node", "action", "1.0.0").unwrap();
+    sqlx::query(
+        "INSERT INTO port_iteration_checkpoints \
+         (workspace_id, org_id, execution_id, node_key, action_key, action_version, \
+          action_version_digest, iteration, state, state_digest, resume_delay_ms, \
+          attested_positions, attempt_generation, fencing_generation, written_at_ms) \
+         VALUES (?, ?, ?, 'node', 'action', '2.0.0', ?, 1, X'7B7D', ?, NULL, 0, 0, 0, 0)",
+    )
+    .bind(&scope.workspace_id)
+    .bind(&scope.org_id)
+    .bind(&execution)
+    .bind(key.action_version_digest().as_slice())
+    .bind([0_u8; 32].as_slice())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let store = SqliteCheckpointStore::new(pool);
+    assert_eq!(
+        store.load_iteration_checkpoint(&key).await,
+        Err(IterationCheckpointError::InvalidRecord)
+    );
+    let checkpoint = IterationCheckpoint::new(2, b"{}".to_vec(), [1; 32], None, 0, 1).unwrap();
+    assert_eq!(
+        store
+            .save_iteration_checkpoint(&key, &checkpoint, fencing)
+            .await,
+        Err(IterationCheckpointError::InvalidRecord),
+        "a save never overwrites a row it cannot account for"
+    );
 }

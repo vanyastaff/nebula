@@ -131,6 +131,22 @@ pub(crate) fn stored_checkpoint(
     ))
 }
 
+/// Admits a row found under the key's version digest only when its stored
+/// version text is the key's version: the index carries the digest, never
+/// the unbounded text, so a row whose text differs is corrupt (or a digest
+/// collision) and fails closed.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn require_stored_version(
+    stored: &str,
+    key: &nebula_storage_port::IterationCheckpointKey<'_>,
+) -> Result<(), IterationCheckpointError> {
+    if stored == key.action_version() {
+        Ok(())
+    } else {
+        Err(IterationCheckpointError::InvalidRecord)
+    }
+}
+
 /// The SQL value of a `u64` the record already bounded to `i64`.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn durable_integer(value: u64) -> Result<i64, IterationCheckpointError> {

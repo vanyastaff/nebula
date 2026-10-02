@@ -208,6 +208,17 @@ impl<'a> IterationCheckpointKey<'a> {
     pub const fn action_version(&self) -> &'a str {
         self.action_version
     }
+
+    /// SHA-256 of [`action_version`](Self::action_version): the fixed-width
+    /// form a backend indexes, since an admitted version (its build suffix)
+    /// has no length bound and an index entry does. A backend keeps the
+    /// version text beside it and treats a row whose text differs from the
+    /// key's as invalid.
+    #[must_use]
+    pub fn action_version_digest(&self) -> [u8; 32] {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(self.action_version.as_bytes()).into()
+    }
 }
 
 /// Whether `version` is a canonical semantic version: `MAJOR.MINOR.PATCH`

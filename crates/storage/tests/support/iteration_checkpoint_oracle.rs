@@ -110,7 +110,59 @@ macro_rules! iteration_checkpoint_conformance_suite {
         $crate::iteration_checkpoint_case!(the_row_is_bound_to_its_whole_key, 0x09, $store);
         $crate::iteration_checkpoint_case!(the_largest_state_round_trips, 0x0A, $store);
         $crate::iteration_checkpoint_case!(a_checkpoint_round_trips_byte_exact, 0x0B, $store);
+        $crate::iteration_checkpoint_case!(
+            a_version_with_a_long_build_suffix_round_trips,
+            0x0C,
+            $store
+        );
     };
+}
+
+/// A canonical version whose build suffix is about 10 KiB of incompressible
+/// identifiers: past any index-entry limit, so a backend must not index it.
+pub(crate) fn long_build_version() -> String {
+    let identifiers: Vec<String> = (0..300)
+        .map(|_| uuid::Uuid::new_v4().simple().to_string())
+        .collect();
+    format!("1.0.0+{}", identifiers.join("."))
+}
+
+pub(crate) async fn a_version_with_a_long_build_suffix_round_trips(
+    store: &dyn CheckpointStore,
+    executions: &dyn ExecutionStore,
+    seed: u8,
+) {
+    let scope = scope();
+    let execution = execution_id(seed);
+    let fencing = leased_execution(executions, &scope, &execution).await;
+    let version = long_build_version();
+    assert!(version.len() > 9_000);
+    let key = IterationCheckpointKey::new(&scope, &execution, NODE, ACTION, &version)
+        .expect("any canonical version is a key");
+    assert_eq!(
+        store
+            .save_iteration_checkpoint(&key, &checkpoint(2, 2), fencing)
+            .await,
+        Ok(CheckpointSaved::Recorded)
+    );
+    assert_eq!(
+        store
+            .save_iteration_checkpoint(&key, &checkpoint(3, 3), fencing)
+            .await,
+        Ok(CheckpointSaved::Recorded),
+        "the long-version row upserts like any other"
+    );
+    let stored = store
+        .load_iteration_checkpoint(&key)
+        .await
+        .expect("loads")
+        .expect("recorded");
+    assert_eq!(stored.iteration(), 3);
+    // Another long version of the same node is another row.
+    let other = long_build_version();
+    let other_key =
+        IterationCheckpointKey::new(&scope, &execution, NODE, ACTION, &other).expect("key");
+    assert_eq!(store.load_iteration_checkpoint(&other_key).await, Ok(None));
 }
 
 #[macro_export]

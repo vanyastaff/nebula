@@ -18,7 +18,11 @@ CREATE TABLE port_iteration_checkpoints (
     execution_id TEXT NOT NULL CHECK (length(execution_id) > 0),
     node_key TEXT NOT NULL CHECK (length(node_key) > 0),
     action_key TEXT NOT NULL CHECK (length(action_key) > 0),
+    -- The version text has no length bound (an admitted build suffix may be
+    -- long), so it is stored but never indexed; the key carries its SHA-256.
     action_version TEXT NOT NULL CHECK (length(action_version) > 0),
+    action_version_digest BLOB NOT NULL
+        CHECK (typeof(action_version_digest) = 'blob' AND length(action_version_digest) = 32),
 
     -- The next iteration to run; the stateful runtime caps a loop at 10000.
     iteration INTEGER NOT NULL
@@ -41,7 +45,7 @@ CREATE TABLE port_iteration_checkpoints (
     written_at_ms INTEGER NOT NULL
         CHECK (typeof(written_at_ms) = 'integer'),
 
-    PRIMARY KEY (workspace_id, org_id, execution_id, node_key, action_key, action_version),
+    PRIMARY KEY (workspace_id, org_id, execution_id, node_key, action_key, action_version_digest),
     FOREIGN KEY (execution_id, workspace_id, org_id)
         REFERENCES port_executions (id, workspace_id, org_id) ON DELETE CASCADE
 );

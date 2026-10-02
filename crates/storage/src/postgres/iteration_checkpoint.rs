@@ -17,7 +17,8 @@ use nebula_storage_port::{
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 use crate::iteration_checkpoint::{
-    SaveDecision, decide_save, durable_integer, load_label, save_label, stored_checkpoint,
+    SaveDecision, decide_save, durable_integer, load_label, require_stored_version, save_label,
+    stored_checkpoint,
 };
 
 /// PostgreSQL-backed fenced iteration-checkpoint store.
@@ -52,19 +53,19 @@ async fn load(
     key: &IterationCheckpointKey<'_>,
 ) -> Result<Option<IterationCheckpoint>, IterationCheckpointError> {
     let row = sqlx::query(
-        "SELECT iteration::bigint AS iteration, state, state_digest, resume_delay_ms, \
-                attested_positions::bigint AS attested_positions, attempt_generation, \
-                fencing_generation, written_at_ms \
+        "SELECT action_version, iteration::bigint AS iteration, state, state_digest, \
+                resume_delay_ms, attested_positions::bigint AS attested_positions, \
+                attempt_generation, fencing_generation, written_at_ms \
          FROM port_iteration_checkpoints \
          WHERE workspace_id = $1 AND org_id = $2 AND execution_id = $3 \
-           AND node_key = $4 AND action_key = $5 AND action_version = $6",
+           AND node_key = $4 AND action_key = $5 AND action_version_digest = $6",
     )
     .bind(key.scope().workspace_id.as_str())
     .bind(key.scope().org_id.as_str())
     .bind(key.execution_id())
     .bind(key.node_key())
     .bind(key.action_key())
-    .bind(key.action_version())
+    .bind(key.action_version_digest().as_slice())
     .fetch_optional(pool)
     .await
     .map_err(unavailable)?;
@@ -72,6 +73,11 @@ async fn load(
         return Ok(None);
     };
     let corrupt = |_error: sqlx::Error| IterationCheckpointError::InvalidRecord;
+    require_stored_version(
+        &row.try_get::<String, _>("action_version")
+            .map_err(corrupt)?,
+        key,
+    )?;
     stored_checkpoint(
         row.try_get("iteration").map_err(corrupt)?,
         row.try_get("state").map_err(corrupt)?,
@@ -90,9 +96,10 @@ async fn stored_identity(
     key: &IterationCheckpointKey<'_>,
 ) -> Result<Option<(u32, [u8; 32])>, IterationCheckpointError> {
     let row = sqlx::query(
-        "SELECT iteration::bigint AS iteration, state_digest FROM port_iteration_checkpoints \
+        "SELECT action_version, iteration::bigint AS iteration, state_digest \
+         FROM port_iteration_checkpoints \
          WHERE workspace_id = $1 AND org_id = $2 AND execution_id = $3 \
-           AND node_key = $4 AND action_key = $5 AND action_version = $6 \
+           AND node_key = $4 AND action_key = $5 AND action_version_digest = $6 \
          FOR UPDATE",
     )
     .bind(key.scope().workspace_id.as_str())
@@ -100,12 +107,14 @@ async fn stored_identity(
     .bind(key.execution_id())
     .bind(key.node_key())
     .bind(key.action_key())
-    .bind(key.action_version())
+    .bind(key.action_version_digest().as_slice())
     .fetch_optional(&mut **tx)
     .await
     .map_err(unavailable)?;
     row.map(|row| {
         let corrupt = |_error| IterationCheckpointError::InvalidRecord;
+        let version: String = row.try_get("action_version").map_err(corrupt)?;
+        require_stored_version(&version, key)?;
         let iteration: i64 = row.try_get("iteration").map_err(corrupt)?;
         let digest: Vec<u8> = row.try_get("state_digest").map_err(corrupt)?;
         Ok((
@@ -144,11 +153,12 @@ async fn save(
     sqlx::query(
         "INSERT INTO port_iteration_checkpoints \
          (workspace_id, org_id, execution_id, node_key, action_key, action_version, \
-          iteration, state, state_digest, resume_delay_ms, attested_positions, \
-          attempt_generation, fencing_generation, written_at_ms) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, \
+          action_version_digest, iteration, state, state_digest, resume_delay_ms, \
+          attested_positions, attempt_generation, fencing_generation, written_at_ms) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
                  (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint) \
-         ON CONFLICT (workspace_id, org_id, execution_id, node_key, action_key, action_version) \
+         ON CONFLICT (workspace_id, org_id, execution_id, node_key, action_key, \
+                      action_version_digest) \
          DO UPDATE SET iteration = excluded.iteration, state = excluded.state, \
            state_digest = excluded.state_digest, resume_delay_ms = excluded.resume_delay_ms, \
            attested_positions = excluded.attested_positions, \
@@ -162,6 +172,7 @@ async fn save(
     .bind(key.node_key())
     .bind(key.action_key())
     .bind(key.action_version())
+    .bind(key.action_version_digest().as_slice())
     .bind(
         i32::try_from(checkpoint.iteration())
             .map_err(|_| IterationCheckpointError::InvalidRecord)?,

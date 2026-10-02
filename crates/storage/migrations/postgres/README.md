@@ -83,7 +83,9 @@ and must be stopped before it applies.
 Migration `0062_port_iteration_checkpoints.sql` creates the empty
 `port_iteration_checkpoints` relation: one fenced iteration checkpoint per
 (tenant, execution, node, action key, action version) of a journaled stateful
-action, its bounds as `CHECK`s (iteration `1..=10000`, state at most 1 MiB, a
+action — the key indexes the version's SHA-256 (`action_version_digest`), since
+an admitted version has no length bound and an index entry does; the text is
+stored beside it and a mismatch reads as an invalid record — its bounds as `CHECK`s (iteration `1..=10000`, state at most 1 MiB, a
 32-byte digest, non-negative delay and counters), and a cascading foreign key
 to the execution row. Nothing is backfilled; a missing row means "replay from
 iteration 0". Aggregate-neutral: the general catalog floor stays at `0040`.

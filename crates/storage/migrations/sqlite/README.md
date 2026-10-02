@@ -54,7 +54,9 @@ it, because they do not advance the epoch. SQLite has no `0060`
 Migration `0062_port_iteration_checkpoints.sql` creates the empty
 `port_iteration_checkpoints` relation: one fenced iteration checkpoint per
 (tenant, execution, node, action key, action version) of a journaled stateful
-action, its bounds as `CHECK`s (iteration `1..=10000`, state at most 1 MiB, a
+action — the key indexes the version's SHA-256 (`action_version_digest`), as on
+PostgreSQL; the text is stored beside it and a mismatch reads as an invalid
+record — its bounds as `CHECK`s (iteration `1..=10000`, state at most 1 MiB, a
 32-byte digest, non-negative delay and counters, `typeof` guards as in
 `0045`), and a cascading foreign key to the execution row. Nothing is
 backfilled; a missing row means "replay from iteration 0". Aggregate-neutral:
