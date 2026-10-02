@@ -9,6 +9,14 @@ mod recovery;
 mod slot;
 
 pub use error::EffectExecutionError;
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "the stateful runtime calls the gate's resume in the next change"
+    )
+)]
+pub(crate) use journal::ResumePoint;
 pub(crate) use journal::{
     Concluded, IterationGate, IterationProgress, JournalAdmission, JournalAuthority, JournalShape,
     NodeEffectJournal, journal_drain_limit,

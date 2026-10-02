@@ -2212,6 +2212,21 @@ impl crate::effect_driver::IterationGate for ScriptedGate {
         let iteration = self.open.load(AtomicOrdering::SeqCst);
         self.log.lock().unwrap().push(format!("cancel {iteration}"));
     }
+
+    async fn resume(
+        &self,
+    ) -> Result<Option<crate::effect_driver::ResumePoint>, crate::EffectExecutionError> {
+        Ok(None)
+    }
+
+    async fn checkpoint(
+        &self,
+        _iteration: u32,
+        _state: &serde_json::Value,
+        _delay: Option<std::time::Duration>,
+    ) -> Result<(), crate::EffectExecutionError> {
+        Ok(())
+    }
 }
 
 /// Continues after every iteration with a one-hour delay.

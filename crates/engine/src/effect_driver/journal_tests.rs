@@ -16,6 +16,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 
+/// Iteration checkpoints: attestation, the barrier gate, resume integrity.
+#[path = "journal_checkpoint_tests.rs"]
+mod checkpoint;
+
 // ── the journal shape of each action kind ────────────────────────────────
 
 #[test]
@@ -695,6 +699,7 @@ impl Harness {
             clock,
             metrics: self.metrics.clone(),
             shape,
+            checkpoints: None,
         }
     }
 
@@ -1002,6 +1007,7 @@ fn ordinals_are_one_node_wide_sequence_from_zero() {
         clock: Arc::new(nebula_core::accessor::SystemClock),
         metrics: MetricsRegistry::new(),
         shape: JournalShape::Flat,
+        checkpoints: None,
     });
     // Every resource and unit kind shares the node attempt's sequence.
     assert_eq!(journal.next_ordinal(), 0);
@@ -1249,6 +1255,7 @@ fn admission_waits_for_the_rollover_it_races() {
         clock: Arc::new(nebula_core::accessor::SystemClock),
         metrics: MetricsRegistry::new(),
         shape: JournalShape::Iterated,
+        checkpoints: None,
     });
     journal.begin_iteration(0).expect("it0");
     // The rollover holds the journal's state: an admission racing it waits
