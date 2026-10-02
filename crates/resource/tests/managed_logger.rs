@@ -4,9 +4,9 @@
 //!
 //! It proves the facade on a resource with no credentials and no rate
 //! limit: no credential is ever read, "enqueued" and "flushed" are distinct
-//! outcomes, a closed lease refuses new attempts without sending, a cancel
+//! outcomes, a removed row refuses new attempts without sending, a cancel
 //! before the first attempt sends nothing, a dropped waiter does not abort a
-//! granted unit and the lease is released only after it ends, and shutdown
+//! granted unit and its checkout is released only after it ends, and shutdown
 //! flushes the buffer within the teardown deadline. It deliberately uses no
 //! `tracing-appender`: the sink is the resource's own instance.
 
@@ -33,10 +33,10 @@ use nebula_credential::{
     TenantScope,
 };
 use nebula_resource::{
-    AcquireOptions, CredentialAdmissionProfile, Error, ErrorKind, Manager, ManagerConfig,
-    RateLimitProfile, RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext,
-    ResourceEvent, ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
-    call::{Cost, Effect, Lease, Operation, OperationCx, OperationError, SentState},
+    CredentialAdmissionProfile, Error, ErrorKind, Manager, ManagerConfig, RateLimitProfile,
+    RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext, ResourceEvent,
+    ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
+    call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle, SentState},
     resource::{Provider, ResourceMetadataDraft},
     topology::ResidentProvider,
 };
@@ -411,12 +411,10 @@ impl Fixture {
         ResourceContext::new(base, Arc::new(NoResources), credentials)
     }
 
-    async fn managed(&self) -> Lease<Logger> {
+    fn managed(&self) -> ResourceHandle<Logger> {
         self.manager
-            .acquire::<Logger>(&self.context(), &AcquireOptions::default())
-            .await
-            .expect("acquire the logger")
-            .into_lease()
+            .handle::<Logger>(&self.context())
+            .expect("the logger's row handle")
     }
 
     fn units_settled(&self) -> nebula_resource::CallUnitsSnapshot {
@@ -444,7 +442,7 @@ async fn settle_tasks() {
 #[tokio::test(start_paused = true)]
 async fn enqueued_and_flushed_are_distinct_and_no_credential_is_read() {
     let fixture = Fixture::new(8);
-    let logger = fixture.managed().await;
+    let logger = fixture.managed();
 
     assert_eq!(
         logger.submit(write("one")).await.expect("enqueued"),
@@ -486,7 +484,7 @@ async fn enqueued_and_flushed_are_distinct_and_no_credential_is_read() {
 async fn a_strict_manager_reads_no_credential_for_the_logger() {
     let observer = Arc::new(CountingObserver::default());
     let fixture = Fixture::strict(8, &observer);
-    let logger = fixture.managed().await;
+    let logger = fixture.managed();
     fixture.logger.open_gate();
 
     assert_eq!(
@@ -515,7 +513,7 @@ async fn a_strict_manager_reads_no_credential_for_the_logger() {
 #[tokio::test(start_paused = true)]
 async fn a_full_buffer_is_backpressure_and_nothing_is_sent() {
     let fixture = Fixture::new(1);
-    let logger = fixture.managed().await;
+    let logger = fixture.managed();
     logger.submit(write("fits")).await.expect("enqueued");
     settle_tasks().await;
     logger
@@ -540,17 +538,16 @@ async fn a_full_buffer_is_backpressure_and_nothing_is_sent() {
 #[tokio::test(start_paused = true)]
 async fn a_removed_row_refuses_new_attempts_without_sending() {
     let fixture = Fixture::new(8);
-    let logger = fixture.managed().await;
+    let logger = fixture.managed();
     fixture
         .manager
         .remove(&Logger::key())
         .expect("remove the row");
-    assert!(logger.is_closing());
 
     let error = logger
         .submit(write("late"))
         .await
-        .expect_err("a closed lease admits nothing");
+        .expect_err("a removed row admits nothing");
     assert_eq!(*error.kind(), ErrorKind::Cancelled);
     assert_eq!(error.sent(), SentState::NotSent);
     let as_error = Error::from(error);
@@ -570,7 +567,7 @@ async fn a_removed_row_refuses_new_attempts_without_sending() {
 #[tokio::test(start_paused = true)]
 async fn a_cancel_before_the_first_attempt_sends_nothing() {
     let fixture = Fixture::new(8);
-    let logger = fixture.managed().await;
+    let logger = fixture.managed();
     let unit = logger.submit(write("never"));
     unit.cancel();
     let error = unit.await.expect_err("cancelled");
@@ -585,11 +582,13 @@ async fn a_cancel_before_the_first_attempt_sends_nothing() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_dropped_waiter_does_not_abort_a_granted_flush_and_the_lease_outlives_it() {
+async fn a_dropped_waiter_does_not_abort_a_granted_flush_and_its_checkout_outlives_it() {
     let fixture = Fixture::new(8);
-    let mut events = fixture.manager.subscribe_events();
-    let logger = fixture.managed().await;
+    let logger = fixture.managed();
     logger.submit(write("held")).await.expect("enqueued");
+    settle_tasks().await;
+    // The write's own checkout is back; only the flush's counts from here.
+    let mut events = fixture.manager.subscribe_events();
 
     let mut flush = logger.submit(Flush);
     assert!(futures::poll!(&mut flush).is_pending());
@@ -599,7 +598,10 @@ async fn a_dropped_waiter_does_not_abort_a_granted_flush_and_the_lease_outlives_
     settle_tasks().await;
     let released_early = std::iter::from_fn(|| events.try_recv())
         .any(|event| matches!(event, ResourceEvent::Released { .. }));
-    assert!(!released_early, "the running flush keeps the lease");
+    assert!(
+        !released_early,
+        "the running flush keeps its attempt's checkout"
+    );
 
     fixture.logger.open_gate();
     settle_tasks().await;
@@ -607,13 +609,13 @@ async fn a_dropped_waiter_does_not_abort_a_granted_flush_and_the_lease_outlives_
     assert_eq!(fixture.units_settled().sent, 2, "the flush settled");
     let released = std::iter::from_fn(|| events.try_recv())
         .any(|event| matches!(event, ResourceEvent::Released { .. }));
-    assert!(released, "the lease is released once the unit ended");
+    assert!(released, "the checkout is released once the unit ended");
 }
 
 #[tokio::test(start_paused = true)]
 async fn shutdown_flushes_the_buffer_within_the_teardown_deadline() {
     let fixture = Fixture::new(8);
-    let logger = fixture.managed().await;
+    let logger = fixture.managed();
     for line in ["a", "b", "c"] {
         logger.submit(write(line)).await.expect("enqueued");
     }

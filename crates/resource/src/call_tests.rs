@@ -1,6 +1,6 @@
-//! Managed call facade: attempt admission and booking, the settled outcome
-//! of a unit, cancellation, deadlines, the per-lease unit cap, pinned slots
-//! and the unit's observability.
+//! Managed call facade on a [`ResourceHandle`]: attempt admission and
+//! booking, the settled outcome of a unit, cancellation, deadlines, the
+//! drain, pinned slots and the unit's observability.
 
 use std::{
     num::NonZeroU32,
@@ -17,8 +17,8 @@ use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Attempt, Cost, Effect, Lease, OPERATION_DEADLINE_CAP, Operation, OperationCx, OperationError,
-    PinSlots, SentState, Submission,
+    Attempt, Cost, Effect, OPERATION_DEADLINE_CAP, Operation, OperationCx, OperationError,
+    PinSlots, ResourceHandle, SentState, Submission,
 };
 use crate::{
     AcquireOptions, CredentialUnavailableReason, Error, ErrorKind, Manager, ManagerConfig,
@@ -189,14 +189,14 @@ async fn acquire<R: Provider>(manager: &Manager) -> ResourceGuard<R> {
         .expect("acquire")
 }
 
-async fn managed<R: Provider + PinSlots>(manager: &Manager) -> Lease<R> {
-    acquire::<R>(manager).await.into_lease()
+fn handle<R: Provider + PinSlots>(manager: &Manager) -> ResourceHandle<R> {
+    manager.handle::<R>(&context()).expect("row handle")
 }
 
 fn read_only_row<R: Provider + PinSlots>(
     manager: &Manager,
     ctx: &ResourceContext,
-) -> crate::call::ResourceHandle<R> {
+) -> ResourceHandle<R> {
     manager
         .handle_any_read_only(
             &R::key(),
@@ -205,7 +205,7 @@ fn read_only_row<R: Provider + PinSlots>(
             &SlotIdentity::Unbound,
         )
         .expect("read-only row")
-        .downcast::<crate::call::ResourceHandle<R>>()
+        .downcast::<ResourceHandle<R>>()
         .map(|row| *row)
         .expect("typed read-only row")
 }
@@ -308,7 +308,7 @@ impl<R: Provider + PinSlots> Operation<R> for Refused {
 }
 
 /// A granted attempt parked until `release` fires; it records whether the
-/// lease was closing once released.
+/// unit's row generation was closing once released.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Gated {
     #[serde(skip)]
@@ -496,7 +496,7 @@ fn the_facade_and_its_units_cross_threads() {
     fn send_sync_clone<T: Send + Sync + Clone>() {}
     fn send<T: Send + Unpin>() {}
     fn gates<R: Provider + PinSlots, O: Operation<R>>() {
-        send_sync_clone::<Lease<R>>();
+        send_sync_clone::<ResourceHandle<R>>();
         send::<Submission<O::Output>>();
         send::<OperationError>();
     }
@@ -516,15 +516,16 @@ fn the_facade_and_its_units_cross_threads() {
 // ── profile and booking ──────────────────────────────────────────────────
 
 #[tokio::test(start_paused = true)]
-async fn into_lease_latches_per_attempt_and_acquires_stop_booking() {
+async fn a_handle_latches_per_attempt_and_acquires_stop_booking() {
     let manager = Manager::new();
-    resident(&manager, Some(RowLimit::rate(per_second(1, 2))));
+    // One permit: an acquire that booked it would hold the attempt back.
+    resident(&manager, Some(RowLimit::rate(per_second(1, 1))));
     let health = manager
         .health_check::<Api>(&ScopeLevel::Global)
         .expect("row");
     assert_eq!(health.rate_limit_profile, RateLimitProfile::PerAcquire);
 
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let health = manager
         .health_check::<Api>(&ScopeLevel::Global)
         .expect("row");
@@ -542,16 +543,15 @@ async fn into_lease_latches_per_attempt_and_acquires_stop_booking() {
     facade
         .submit(Once::sent(Cost::ONE))
         .await
-        .expect("the permit the first acquire left");
+        .expect("the permit no acquire took");
     assert_eq!(started.elapsed(), Duration::ZERO);
 }
 
 #[tokio::test(start_paused = true)]
 async fn attempts_book_their_cost_and_free_books_nothing() {
     let manager = Manager::new();
-    // The first acquire books one permit before the latch; three remain.
-    resident(&manager, Some(RowLimit::rate(per_second(1, 4))));
-    let facade = managed::<Api>(&manager).await;
+    resident(&manager, Some(RowLimit::rate(per_second(1, 3))));
+    let facade = handle::<Api>(&manager);
 
     let started = Instant::now();
     let three = Cost::units(NonZeroU32::new(3).expect("three"));
@@ -578,7 +578,7 @@ async fn attempts_book_their_cost_and_free_books_nothing() {
 async fn a_cost_above_the_burst_is_refused_permanently_and_not_sent() {
     let manager = metered_manager();
     resident(&manager, Some(RowLimit::rate(per_second(1, 2))));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
 
     let error = facade
         .submit(Once::sent(Cost::units(NonZeroU32::new(5).expect("five"))))
@@ -598,7 +598,7 @@ async fn a_cost_above_the_burst_is_refused_permanently_and_not_sent() {
 async fn a_keyed_cost_books_its_key() {
     let manager = Manager::new();
     resident(&manager, Some(RowLimit::rate(per_second(10, 10))));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let started = Instant::now();
     facade
         .submit(Once::sent(Cost::keyed("chat_id", 7)))
@@ -623,18 +623,17 @@ async fn refused_after(
 ) -> (OperationError, crate::ResourceOpsSnapshot) {
     let manager = metered_manager();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     close(&manager);
-    assert!(facade.is_closing());
     let error = facade
         .submit(Once::sent(Cost::ONE))
         .await
-        .expect_err("a closed lease admits no attempt");
+        .expect_err("a closed row admits no attempt");
     (error, snapshot(&manager))
 }
 
 #[tokio::test]
-async fn a_closed_lease_refuses_attempts_and_nothing_is_sent() {
+async fn a_closed_row_refuses_attempts_and_nothing_is_sent() {
     let (removed, metrics) = refused_after(|manager| {
         manager.remove(&Api::key()).expect("remove");
     })
@@ -671,10 +670,10 @@ async fn a_closed_lease_refuses_attempts_and_nothing_is_sent() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_new_attempt_is_refused_once_the_lease_closes() {
+async fn a_new_unit_is_refused_once_the_row_closes() {
     let manager = metered_manager();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let (operation, gate) = gated();
     let running = tokio::spawn(facade.submit(operation));
     gate.entered.notified().await;
@@ -693,7 +692,7 @@ async fn a_new_attempt_is_refused_once_the_lease_closes() {
     assert_eq!(metrics.call_attempts.granted, 1);
     assert_eq!(
         metrics.call_attempts.refused, 0,
-        "a unit submitted on a closed lease is refused before it asks for an attempt"
+        "a unit submitted on a closed row is refused before it asks for an attempt"
     );
     assert_eq!(metrics.call_units.not_sent, 1);
 
@@ -712,9 +711,14 @@ async fn a_new_attempt_is_refused_once_the_lease_closes() {
 #[tokio::test(start_paused = true)]
 async fn a_suspension_during_the_quota_wait_ends_it_credential_unavailable() {
     let manager = Manager::new();
-    // The acquire takes the only permit; the attempt waits a second for one.
+    // A first unit takes the only permit; the next attempt waits a second
+    // for one.
     resident(&manager, Some(RowLimit::rate(per_second(1, 1))));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
+    facade
+        .submit(Once::sent(Cost::ONE))
+        .await
+        .expect("takes the permit");
     let started = Instant::now();
     let unit = tokio::spawn(facade.submit(Once::sent(Cost::ONE)));
     settle_tasks().await;
@@ -723,7 +727,7 @@ async fn a_suspension_during_the_quota_wait_ends_it_credential_unavailable() {
     let error = unit
         .await
         .expect("unit task")
-        .expect_err("the wait ends with the lease");
+        .expect_err("the wait ends with the row's admission");
     assert!(
         matches!(error.kind(), ErrorKind::CredentialUnavailable { .. }),
         "{error}"
@@ -746,19 +750,12 @@ async fn a_suspension_during_the_quota_wait_ends_it_credential_unavailable() {
 /// inside it.
 const PAUSE: Duration = Duration::from_mins(1);
 
-fn handle<R: Provider + PinSlots>(manager: &Manager) -> crate::call::ResourceHandle<R> {
-    manager.handle::<R>(&context()).expect("row handle")
-}
-
 type Parked = tokio::task::JoinHandle<Result<u32, OperationError>>;
 
 /// Registers an unrated `Api` row, records a [`PAUSE`] through a throttled
 /// unit on its handle — on `chat_id` 1 when `per_key`, else on the whole
 /// quota — and parks a second unit of that cost inside the pause's wait.
-async fn parked_behind_a_pause(
-    manager: &Manager,
-    per_key: bool,
-) -> (crate::call::ResourceHandle<Api>, Parked) {
+async fn parked_behind_a_pause(manager: &Manager, per_key: bool) -> (ResourceHandle<Api>, Parked) {
     resident(manager, None);
     let handle = handle::<Api>(manager);
     let (throttle, cost) = if per_key {
@@ -1025,7 +1022,7 @@ async fn handle_unit_limit_events_mark_transitions_and_penalties_only() {
 async fn a_cancel_before_the_first_grant_settles_cancelled_not_sent() {
     let manager = Manager::new();
     resident(&manager, Some(RowLimit::rate(per_second(1, 1))));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
 
     // Before the first poll.
     let unit = facade.submit(Once::sent(Cost::FREE));
@@ -1035,7 +1032,11 @@ async fn a_cancel_before_the_first_grant_settles_cancelled_not_sent() {
     assert_eq!(*error.kind(), ErrorKind::Cancelled);
     assert_eq!(error.sent(), SentState::NotSent);
 
-    // During the first attempt's quota wait (the acquire took the permit).
+    // During the first attempt's quota wait (a first unit took the permit).
+    facade
+        .submit(Once::sent(Cost::ONE))
+        .await
+        .expect("takes the permit");
     let started = Instant::now();
     let mut unit = facade.submit(Once::sent(Cost::ONE));
     assert!(futures::poll!(&mut unit).is_pending());
@@ -1095,7 +1096,7 @@ async fn a_denied_unit_honours_pre_grant_cancellation_and_records_every_settleme
 async fn a_cancel_after_the_grant_is_ignored() {
     let manager = Manager::new();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let (operation, gate) = gated();
     let mut unit = facade.submit(operation);
     assert!(futures::poll!(&mut unit).is_pending());
@@ -1111,7 +1112,7 @@ async fn a_cancel_after_the_grant_is_ignored() {
 async fn a_deadline_after_a_grant_is_maybe_sent_and_unknown_for_a_write() {
     let manager = metered_manager();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let mut events = manager.subscribe_events();
 
     let started = Instant::now();
@@ -1161,7 +1162,7 @@ async fn a_deadline_after_a_grant_is_maybe_sent_and_unknown_for_a_write() {
 async fn a_deadline_can_only_shorten_the_host_cap() {
     let manager = Manager::new();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let started = Instant::now();
     let error = facade
         .submit(Hang::<true>)
@@ -1176,7 +1177,7 @@ async fn a_deadline_can_only_shorten_the_host_cap() {
 async fn a_panic_after_a_grant_is_maybe_sent() {
     let manager = Manager::new();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let error = facade
         .submit(PanicAfterGrant)
         .await
@@ -1186,14 +1187,14 @@ async fn a_panic_after_a_grant_is_maybe_sent() {
     facade
         .submit(Once::sent(Cost::FREE))
         .await
-        .expect("the lease survives a panicking unit");
+        .expect("the row survives a panicking unit");
 }
 
 #[tokio::test(start_paused = true)]
 async fn the_attempt_budget_bounds_grants() {
     let manager = metered_manager();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let error = facade
         .submit(OverBudget)
         .await
@@ -1211,7 +1212,7 @@ async fn the_attempt_budget_bounds_grants() {
 async fn a_provider_refusal_is_sent_and_retryable_with_a_capped_hint() {
     let manager = Manager::new();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let error = facade
         .submit(Refused {
             error: OperationError::throttled(Some(Duration::from_mins(10))),
@@ -1323,36 +1324,41 @@ fn a_resource_error_converts_by_kind_only() {
     assert!(!format!("{:?}", Cost::keyed("chat_id", "hunter2")).contains("hunter2"));
 }
 
-// ── unit cap, lease sharing and drain ────────────────────────────────────
+// ── row gate, a shared instance and drain ────────────────────────────────
 
 #[tokio::test(start_paused = true)]
-async fn one_unit_runs_at_a_time_on_a_pooled_lease() {
+async fn units_beyond_the_pool_capacity_wait_at_the_row_gate() {
     let manager = Manager::new();
     pooled(&manager);
-    let facade = managed::<PooledApi>(&manager).await;
+    let facade = handle::<PooledApi>(&manager);
     let (first, first_gate) = gated();
     let (second, second_gate) = gated();
+    let (third, third_gate) = gated();
     let first = tokio::spawn(facade.submit(first));
     let second = tokio::spawn(facade.submit(second));
     first_gate.entered.notified().await;
+    second_gate.entered.notified().await;
+    let third = tokio::spawn(facade.submit(third));
     settle_tasks().await;
     assert!(
-        futures::poll!(Box::pin(second_gate.entered.notified())).is_pending(),
-        "the second unit waits for the lease's unit slot"
+        futures::poll!(Box::pin(third_gate.entered.notified())).is_pending(),
+        "the third unit waits for the row gate: the pool holds two"
     );
 
     first_gate.release.notify_one();
     first.await.expect("task").expect("first");
-    second_gate.entered.notified().await;
+    third_gate.entered.notified().await;
     second_gate.release.notify_one();
+    third_gate.release.notify_one();
     second.await.expect("task").expect("second");
+    third.await.expect("task").expect("third");
 }
 
 #[tokio::test(start_paused = true)]
-async fn units_share_a_resident_lease() {
+async fn units_share_a_resident_instance() {
     let manager = Manager::new();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let (first, first_gate) = gated();
     let (second, second_gate) = gated();
     let first = tokio::spawn(facade.submit(first));
@@ -1366,31 +1372,40 @@ async fn units_share_a_resident_lease() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn unit_slots_full_until_the_deadline_is_backpressure() {
+async fn a_row_gate_full_until_the_deadline_is_backpressure() {
     let manager = Manager::new();
     pooled(&manager);
-    let facade = managed::<PooledApi>(&manager).await;
-    let (operation, gate) = gated();
-    let holder = tokio::spawn(facade.submit(operation));
-    gate.entered.notified().await;
+    let facade = handle::<PooledApi>(&manager);
+    let (first, first_gate) = gated();
+    let (second, second_gate) = gated();
+    let first = tokio::spawn(facade.submit(first));
+    let second = tokio::spawn(facade.submit(second));
+    first_gate.entered.notified().await;
+    second_gate.entered.notified().await;
     let error = facade
         .submit(Once::sent(Cost::FREE))
         .with_deadline(in_one(Duration::from_secs(1)))
         .await
-        .expect_err("no slot before the deadline");
+        .expect_err("no gate permit before the deadline");
     assert_eq!(*error.kind(), ErrorKind::Backpressure);
     assert_eq!(error.sent(), SentState::NotSent);
-    gate.release.notify_one();
-    holder.await.expect("task").expect("holder");
+    first_gate.release.notify_one();
+    second_gate.release.notify_one();
+    first.await.expect("task").expect("first");
+    second.await.expect("task").expect("second");
 }
 
 #[tokio::test]
-async fn clones_share_the_lease_and_the_drain_waits_for_running_units() {
+async fn clones_share_the_row_and_the_drain_waits_for_running_units() {
     let manager = Arc::new(Manager::new());
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let clone = facade.clone();
-    let closing = facade.closing();
+    let generation = row::<Api>(&manager)
+        .admission
+        .current()
+        .expect("an open generation");
+    let closing = crate::LeaseClosing::of(&generation);
     let (operation, gate) = gated();
     let running = tokio::spawn(clone.submit(operation));
     gate.entered.notified().await;
@@ -1399,7 +1414,7 @@ async fn clones_share_the_lease_and_the_drain_waits_for_running_units() {
     assert_eq!(
         row::<Api>(&manager).in_flight.0.load(Ordering::SeqCst),
         1,
-        "the running unit keeps the lease"
+        "the running unit keeps its attempt's checkout"
     );
 
     let shutdown = tokio::spawn({
@@ -1419,14 +1434,14 @@ async fn clones_share_the_lease_and_the_drain_waits_for_running_units() {
     shutdown
         .await
         .expect("shutdown task")
-        .expect("the drain completes once the unit released the lease");
+        .expect("the drain completes once the unit released its checkout");
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_dropped_waiter_after_the_grant_still_settles() {
     let manager = metered_manager();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let (operation, gate) = gated();
     let mut unit = facade.submit(operation);
     assert!(futures::poll!(&mut unit).is_pending());
@@ -1446,7 +1461,7 @@ async fn a_dropped_waiter_after_the_grant_still_settles() {
     assert_eq!(
         row.in_flight.0.load(Ordering::SeqCst),
         0,
-        "the lease was released after the unit ended"
+        "the checkout was released after the unit ended"
     );
 }
 
@@ -1457,7 +1472,7 @@ async fn a_unit_keeps_its_pinned_slot_and_the_next_unit_sees_the_rotation() {
     let manager = Manager::new();
     let api = resident(&manager, None);
     api.token.store(Arc::new("v1".to_owned()));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
 
     let (first, second) = facade
         .submit(PinnedTwice {
@@ -1480,7 +1495,7 @@ async fn a_rotation_before_the_first_grant_reaches_the_unit() {
     let manager = Manager::new();
     let api = resident(&manager, None);
     api.token.store(Arc::new("v1".to_owned()));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
 
@@ -1569,7 +1584,7 @@ async fn each_unit_runs_in_a_span_with_its_outcome() {
     let _default = tracing::subscriber::set_default(capture.clone());
     let manager = Manager::new();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     facade
         .submit(Once::sent(Cost::FREE))
         .await
@@ -1720,7 +1735,7 @@ impl<R: Provider + PinSlots, const EFFECT: u8> Operation<R> for Scripted<EFFECT>
 }
 
 async fn scripted<const EFFECT: u8>(
-    facade: &Lease<Api>,
+    facade: &ResourceHandle<Api>,
     operation: Scripted<EFFECT>,
 ) -> (Result<u32, OperationError>, usize) {
     let calls = operation.calls();
@@ -1825,7 +1840,7 @@ fn each_constructor_classifies_its_call() {
 async fn a_called_unit_folds_its_classified_sent_state() {
     let manager = Manager::new();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let cases = [
         (Ok(1), SentState::Sent),
         (Err(OperationError::throttled(None)), SentState::Sent),
@@ -1876,7 +1891,7 @@ async fn a_called_unit_folds_its_classified_sent_state() {
 async fn a_throttle_pauses_the_quota_and_the_next_attempt_waits_it_out() {
     let manager = Manager::new();
     resident(&manager, Some(RowLimit::rate(per_second(10, 10))));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let started = Instant::now();
     let operation = Scripted::<WRITE>::new(vec![
         Err(OperationError::throttled(Some(Duration::from_secs(3)))),
@@ -1913,7 +1928,7 @@ async fn a_throttle_pauses_the_quota_and_the_next_attempt_waits_it_out() {
 async fn a_key_throttle_pauses_only_its_key() {
     let manager = Manager::new();
     resident(&manager, Some(RowLimit::rate(per_second(10, 10))));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let operation = Scripted::<WRITE>::new(vec![Err(OperationError::throttled_key(Some(
         Duration::from_secs(5),
     )))])
@@ -1941,7 +1956,7 @@ async fn a_key_throttle_pauses_only_its_key() {
 async fn second_backoff(between: OperationError) -> Duration {
     let manager = Manager::new();
     resident(&manager, Some(RowLimit::rate(per_second(10, 10))));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     for reply in [
         OperationError::throttled(None),
         between,
@@ -1983,7 +1998,7 @@ async fn an_unreachable_or_interrupted_call_never_resets_the_backoff() {
 async fn retries_inside_a_call_follow_the_classification_within_the_budget() {
     let manager = Manager::new();
     resident(&manager, None);
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let interrupted = || Err(OperationError::interrupted("reset"));
 
     // An interrupted write is never sent twice.
@@ -2048,7 +2063,7 @@ async fn retries_inside_a_call_follow_the_classification_within_the_budget() {
 async fn a_pause_past_the_deadline_ends_the_call_with_the_throttle() {
     let manager = Manager::new();
     resident(&manager, Some(RowLimit::rate(per_second(10, 10))));
-    let facade = managed::<Api>(&manager).await;
+    let facade = handle::<Api>(&manager);
     let operation = Scripted::<READ>::new(vec![
         Err(OperationError::throttled(Some(Duration::from_mins(1)))),
         Ok(1),
@@ -2131,14 +2146,18 @@ impl crate::rate_limit::ErasedLimitStore for StalledPenalties {
 
 #[tokio::test(start_paused = true)]
 async fn a_throttle_whose_report_outlasts_the_deadline_settles_as_the_throttle() {
-    let store = Arc::new(StalledPenalties(crate::rate_limit::MemoryLimitStore::new()));
-    let manager = Manager::with_config(ManagerConfig::default().with_shared_limit_store(store));
-    let shared = crate::rate_limit::LimitKey::new("acct:stalled").expect("limit key");
-    resident(
-        &manager,
-        Some(RowLimit::rate(per_second(10, 10)).with_key(shared)),
-    );
-    let facade = managed::<Api>(&manager).await;
+    let stalled = || {
+        let store = Arc::new(StalledPenalties(crate::rate_limit::MemoryLimitStore::new()));
+        let manager = Manager::with_config(ManagerConfig::default().with_shared_limit_store(store));
+        let shared = crate::rate_limit::LimitKey::new("acct:stalled").expect("limit key");
+        resident(
+            &manager,
+            Some(RowLimit::rate(per_second(10, 10)).with_key(shared)),
+        );
+        manager
+    };
+    let manager = stalled();
+    let facade = handle::<Api>(&manager);
     // The deadline lands inside the report's own budget: it cuts the
     // stalled penalty write off after the attempt finished as throttled.
     let operation = Scripted::<WRITE>::new(vec![Err(OperationError::throttled(Some(
@@ -2172,6 +2191,10 @@ async fn a_throttle_whose_report_outlasts_the_deadline_settles_as_the_throttle()
     ));
 
     // A deadline during the provider call itself is still an abnormal end.
+    // A fresh row: the throttle above paused this one's quota for 30 s, and
+    // a handle's free attempt waits out a pause before it is granted.
+    let manager = stalled();
+    let facade = handle::<Api>(&manager);
     let operation = Hang::<false>;
     let error = facade
         .submit(operation)

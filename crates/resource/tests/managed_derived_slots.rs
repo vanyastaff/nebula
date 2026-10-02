@@ -13,8 +13,8 @@ use nebula_credential::{
     SecretString, SecretToken, StaticResolveResult,
 };
 use nebula_resource::{
-    AcquireOptions, CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident,
-    ResidentConfig, Resource, ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
+    CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig, Resource,
+    ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
     call::{Cost, Effect, Operation, OperationCx, OperationError},
     resource::{Provider, ResourceMetadataDraft},
     topology::ResidentProvider,
@@ -179,11 +179,7 @@ async fn a_unit_reads_the_derived_pin_through_its_attempt() {
         })
         .expect("register");
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-    let managed = manager
-        .acquire::<Mailer>(&ctx, &AcquireOptions::default())
-        .await
-        .expect("acquire")
-        .into_lease();
+    let managed = manager.handle::<Mailer>(&ctx).expect("row handle");
     assert_eq!(
         managed.submit(ReadSlots).await.expect("read"),
         (true, false)

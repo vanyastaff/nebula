@@ -1,11 +1,16 @@
-//! Managed call facade: provider calls made through a lease as admitted,
-//! budgeted, settled units of work.
+//! Managed call facade: provider calls made through a registered row as
+//! admitted, budgeted, settled units of work.
 //!
-//! A lease ([`ResourceGuard`](crate::ResourceGuard)) becomes a [`Lease`]
-//! facade with [`into_lease`](crate::ResourceGuard::into_lease). Action
-//! code then describes each provider call as an [`Operation`] and
-//! [`submit`](Lease::submit)s it; the facade has no `Deref` to the
-//! instance, so a call cannot bypass it by accident.
+//! A row becomes a [`ResourceHandle`] facade with
+//! [`Manager::handle`](crate::Manager::handle) (or, for an action, the
+//! engine's type-erased [`Manager::handle_any`](crate::Manager::handle_any)
+//! family). Action code then describes each provider call as an
+//! [`Operation`] and [`submit`](ResourceHandle::submit)s it; the facade has
+//! no `Deref` to an instance, so a call cannot bypass it by accident. A
+//! raw [`ResourceGuard`](crate::ResourceGuard) from
+//! [`Manager::acquire`](crate::Manager::acquire) stays a host-only
+//! capability and never becomes a facade: holding one instance across
+//! several units belongs to a future, qualified explicit-session profile.
 //!
 //! # Unit and attempt
 //!
@@ -15,9 +20,9 @@
 //!   CONTRACT.md:36-46, DX-API.md:106-114).
 //! - An **attempt** ([`Attempt`]) is one admitted provider call.
 //!   [`OperationCx::attempt`] is the unit's single linearization point: budget,
-//!   admission against the lease, quota booking at the attempt's [`Cost`],
-//!   the strict credential read, registration and grant (CONTRACT.md:64,
-//!   :88-92).
+//!   the row's admission, quota booking at the attempt's [`Cost`], the row
+//!   gate, the strict credential read, the attempt's own checkout,
+//!   registration and grant (CONTRACT.md:64, :88-92).
 //! - A **call** ([`OperationCx::call`]) is the usual way to use attempts:
 //!   a closure makes the provider request on each attempt and returns a
 //!   classified result; the runtime finishes the attempt from it and takes
@@ -26,11 +31,11 @@
 //!   unit's deadline (DX-API.md:36, CONTRACT.md:96). An operation that
 //!   holds the attempt itself finishes it with [`Attempt::finish`].
 //!
-//! A unit is lazy. Its first poll waits for one of the lease's unit slots on
-//! the caller's task, then the runtime runs it on its own task until it
-//! settles. Dropped before its first poll it never ran; dropped later, the
-//! caller only stops waiting — the runtime still settles the unit, and the
-//! lease is released only after the last unit ends (DX-API.md:114).
+//! A unit is lazy. Its first poll hands it to the runtime, which runs it on
+//! its own task until it settles. Dropped before its first poll it never
+//! ran; dropped later, the caller only stops waiting — the runtime still
+//! settles the unit, and an attempt's checkout is released only after that
+//! attempt ends (DX-API.md:114).
 //!
 //! # Settled outcome
 //!
@@ -66,13 +71,13 @@
 //!
 //! | Situation | Kind | Sent |
 //! |---|---|---|
-//! | lease closing (removal, shutdown) | `Cancelled` | `NotSent` |
-//! | credential suspension closed the lease | `CredentialUnavailable` | `NotSent` |
+//! | row closing (removal, replacement, shutdown) | `Cancelled` | `NotSent` |
+//! | credential suspension of the row | `CredentialUnavailable` | `NotSent` |
 //! | credential revoke tainted the row | `Revoked` | `NotSent` |
 //! | strict read refused (blocked, outage, absent, new material) | `CredentialUnavailable` | `NotSent` |
 //! | the unit's pinned slots were rotated since its first grant | `CredentialUnavailable { Rebinding }` | `NotSent` |
 //! | local quota slot past the deadline | `Exhausted` | `NotSent` |
-//! | limit store down, unit slots full until the deadline | `Backpressure` | `NotSent` |
+//! | limit store down, row gate full until the deadline, phase not accepting | `Backpressure` | `NotSent` |
 //! | provider throttled ([`OperationError::throttled`]) | `Exhausted` | `Sent` |
 //! | retry-unsafe effect with an unknown outcome | `OutcomeUnknown` (as `Error`) | `Sent` / `MaybeSent` |
 //!
@@ -82,12 +87,13 @@
 //!
 //! # Closing
 //!
-//! [`OperationCx::closing`] and [`Lease::closing`] are the lease generation's
-//! [`LeaseClosing`](crate::LeaseClosing). Once it fires, new attempts are
-//! refused; an attempt already granted is not aborted — an operation that
-//! wants to stop early selects on [`closed`](crate::LeaseClosing::closed)
-//! (CONTRACT.md:74). A credential refresh or a config reload leaves the
-//! lease's generation open, so neither interrupts a unit (canon §13.2).
+//! [`OperationCx::closing`] is the [`LeaseClosing`](crate::LeaseClosing) of
+//! the row generation the unit started under. Once it fires, new attempts
+//! are refused; an attempt already granted is not aborted — an operation
+//! that wants to stop early selects on
+//! [`closed`](crate::LeaseClosing::closed) (CONTRACT.md:74). A credential
+//! refresh or a config reload leaves that generation open, so neither
+//! interrupts a unit (canon §13.2).
 //!
 //! # Credentials
 //!
@@ -95,7 +101,7 @@
 //! every attempt on a credential-bound row reads each bound credential's
 //! availability after every wait of the attempt, outside every lock, and is
 //! registered under the manager's admission lock: a blocked credential
-//! suspends the row and closes its leases, a store outage refuses without
+//! suspends the row and closes its generation, a store outage refuses without
 //! changing the row, newer material refuses `Rebinding` until it is
 //! installed (CONTRACT.md:40-41, :64, :77; QUOTA-DX.md:33). Attempts share
 //! reads join-next with each other and with acquires; an attempt only takes
@@ -116,17 +122,16 @@
 //!
 //! # Rate limit
 //!
-//! [`into_lease`](crate::ResourceGuard::into_lease) latches the row's
-//! profile to [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt):
+//! Building a [`ResourceHandle`] latches the row's profile to
+//! [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt):
 //! each granted attempt books its [`Cost`], and acquires only honour pauses
-//! (QUOTA-DX.md:32, :34). A quota wait is raced against the lease's
-//! generation and against [`Submission::cancel`], so a closed lease never sends
-//! (CONTRACT.md:88-92).
+//! (QUOTA-DX.md:32, :34). A quota wait is raced against the unit's
+//! generation, the manager's shutdown and [`Submission::cancel`], so a
+//! closed row never sends (CONTRACT.md:88-92).
 //!
 //! # Per-unit checkout and sessions
 //!
-//! A [`ResourceHandle`] ([`Manager::handle`](crate::Manager::handle))
-//! runs the same [`Operation`]s without a lease: every attempt books its
+//! A [`ResourceHandle`] holds no lease: every attempt books its
 //! quota and waits for the row gate with nothing held, then checks out an
 //! instance of its own through the acquire pipeline's admission and
 //! releases it when the attempt ends (see the `row` module docs for the
@@ -163,7 +168,7 @@
 //!
 //! | Authority | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
 //! |---|---|---|---|
-//! | unjournaled (library row, [`Lease`]) | runs | runs | runs |
+//! | unjournaled (library row) | runs | runs | runs |
 //! | read-only ([`Manager::handle_any_read_only`](crate::Manager::handle_any_read_only)) | runs | refused `Permanent` / `NotSent` | refused |
 //! | journaled ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled)) | runs, never prepared | through the [`EffectJournal`](journal::EffectJournal) | refused ("streaming effects are not journaled in v1") |
 //!
@@ -217,8 +222,7 @@
 //! resource, the operation key and version, and the part (base64url
 //! SHA-256). Either is the same for every attempt, retry and resume. A unit
 //! cancelled before its first grant leaves only its prepare behind, which a
-//! resumed unit runs again. The lease facade [`Lease`] has no owner.
-//! Interim: the engine does not hand out owned rows yet; its owner over the
+//! resumed unit runs again. Interim: the engine does not hand out owned rows yet; its owner over the
 //! operation ledger comes with the engine wiring.
 //!
 //! # Interim defaults
@@ -230,16 +234,12 @@
 //! - A unit's deadline is at most [`OPERATION_DEADLINE_CAP`] (5 minutes, the
 //!   rate limit's `DEFAULT_MAX_PENALTY`); [`Submission::with_deadline`] can only
 //!   shorten it.
-//! - At most one unit runs at a time on a lease whose topology checks out
-//!   exclusively (`Pooled`, `Bounded`), and 64 on a shared instance
-//!   (`Resident`, custom). Further units wait for a slot until their
-//!   deadline, then fail with `Backpressure`.
 //! - A cost booked for an attempt that is cancelled before it reaches the
 //!   provider is not refunded (QUOTA-DX.md:32 baseline).
-//! - A pooled [`Lease`] stays checked out while its units wait for
-//!   quota and while their strict credential reads run; a [`ResourceHandle`]
-//!   checks out per attempt instead, after those waits (QUOTA-DX.md:41,
-//!   :43).
+//! - A [`ResourceHandle`] checks out per attempt, after the attempt's quota
+//!   and row-gate waits, so a unit waiting for quota holds no connection
+//!   (QUOTA-DX.md:41, :43). Holding one instance across several units is
+//!   out of scope until a qualified explicit-session profile exists.
 //! - The row gate of a [`ResourceHandle`] is sized to the topology's capacity
 //!   at its first use and ignores a reload that resizes the pool; a pool
 //!   saturated by plain leases refuses a row attempt `Backpressure` (the
@@ -265,13 +265,13 @@
 //!
 //! # Streaming
 //!
-//! A [`StreamOperation`] submitted with [`Lease::submit_streaming`] or
+//! A [`StreamOperation`] submitted with
 //! [`ResourceHandle::submit_streaming`] runs as one ordinary unit that also
 //! sends items through a bounded [`StreamSink`]; the caller pulls them from
 //! [`Streaming`], then the unit's error, if any, once. A mid-stream failure
 //! is never an item, a dropped or cancelled consumer ends the operation at
-//! its next send, and the lease closing is honoured by selecting on
-//! [`OperationCx::closing`] (CONTRACT.md:57). On a row, each attempt still checks
+//! its next send, and the row closing is honoured by selecting on
+//! [`OperationCx::closing`] (CONTRACT.md:57). Each attempt still checks
 //! out per attempt after its quota and gate waits; items sent while an
 //! attempt is alive keep its checkout, and a consumer gone mid-stream
 //! releases it with its gate permit. [`StreamOperation`] documents the
@@ -313,7 +313,7 @@ pub use cost::{Cost, Effect, SentState};
 pub use declaration::IdempotencyKey;
 pub use error::OperationError;
 pub(crate) use managed::UnitScope;
-pub use managed::{Attempt, Lease, OPERATION_DEADLINE_CAP, OperationCx, Submission};
+pub use managed::{Attempt, OPERATION_DEADLINE_CAP, OperationCx, Submission};
 pub use pin::PinSlots;
 pub use row::ResourceHandle;
 pub use session::{

@@ -194,7 +194,7 @@ row reports it as a `RateLimitProfile` (`as_str()` in parentheses):
 |---|---|---|---|---|
 | `PausesOnly` (`pauses_only`) | no rate declared or set, not served by the facade | nothing | not paced; a provider pause holds acquires | supported |
 | `PerAcquire` (`per_acquire`) | a rate, not served by the facade | acquire | bounded interval: one permit per lease, however many calls it makes | supported |
-| `PerAttempt` (`per_attempt`) | the managed call facade served the row (`Manager::handle`, or `ResourceGuard::into_lease`) | granted attempt, at its declared cost (`FREE` books nothing) | strict: each provider attempt books its cost; acquires only honour pauses | supported |
+| `PerAttempt` (`per_attempt`) | the managed call facade served the row (`Manager::handle` and its erased forms) | granted attempt, at its declared cost (`FREE` books nothing) | strict: each provider attempt books its cost; acquires only honour pauses | supported |
 
 The profile is observed, not declared: it latches to `PerAttempt` the first
 time the managed call facade serves the row and keeps it for the row's life.
@@ -207,8 +207,8 @@ the SDK does not re-export it.
 #### Credential admission profiles
 
 How a row admits new work against its bound credentials is chosen at
-registration, latched per attempt when a strict row's lease first becomes a
-managed call facade, and reported as a `CredentialAdmissionProfile`
+registration, latched per attempt when a strict row first serves a managed
+call facade, and reported as a `CredentialAdmissionProfile`
 (`as_str()` in parentheses), in `ResourceHealthSnapshot::credential_admission`
 and `ManagedResourceView::credential_admission_profile()`:
 
@@ -465,12 +465,14 @@ follow from the same generation:
 ### Managed call facade
 
 Actions submit units on a `call::ResourceHandle<R>` (a `#[resource]`
-field). Host code may also turn a lease into `call::Lease<R>` with
-`guard.into_lease()` — host-only, never an action route, not SDK-exported,
-and scheduled for removal. Both require
-`R: PinSlots`, emitted by `#[derive(Resource)]` and `no_credential_slots!`.
-Neither has a `Deref`: every provider call is an `Operation` submitted as a
-`Submission`, and the instance is reached only inside a granted `Attempt`.
+field); host code builds one with `Manager::handle` (below). It is the only
+managed call facade: a `ResourceGuard` never becomes one (the `Lease`
+facade and `guard.into_lease()` were removed in 0.30.0 — holding one
+instance across several units belongs to a future, qualified
+explicit-session profile). Submitting requires `R: PinSlots`, emitted by
+`#[derive(Resource)]` and `no_credential_slots!`. The handle has no
+`Deref`: every provider call is an `Operation` submitted as a `Submission`,
+and the instance is reached only inside a granted `Attempt`.
 
 ```rust,ignore
 #[derive(Serialize, Deserialize)]
@@ -540,16 +542,16 @@ developer part when there is one.
 - **Unit vs attempt.** A unit owns the intent, a deadline (at most 5
   minutes; `Submission::with_deadline` only shortens it), an attempt budget
   (`Operation::max_attempts`, one by default) and one settled outcome.
-  `OperationCx::attempt(cost)` is the single linearization point: budget, lease
+  `OperationCx::attempt(cost)` is the single linearization point: budget, row
   admission, quota booking at the attempt's `Cost` (`ONE`, `FREE`,
-  `units(n)`, `keyed(dimension, value)`), final admission, grant.
+  `units(n)`, `keyed(dimension, value)`), the row gate, the attempt's own
+  checkout, final admission, grant (the order is below).
   `OperationCx::call` asks for attempts through it and re-attempts only what
   the classification allows (table above).
-- **Lazy and runtime-owned.** The first poll waits for a unit slot on the
-  lease (1 for `Pooled` / `Bounded`, 64 for `Resident` / custom), then the
-  runtime runs the unit on its own task. Dropped before the first poll it
-  never ran; dropped later, the runtime still settles it and the lease is
-  released only after it ends. `Submission::cancel` stops a unit until its first
+- **Lazy and runtime-owned.** The first poll hands the unit to the runtime,
+  which runs it on its own task. Dropped before the first poll it never ran;
+  dropped later, the runtime still settles it and an attempt's checkout is
+  released only after that attempt ends. `Submission::cancel` stops a unit until its first
   grant (it then settles `Cancelled`, `NotSent`); after a grant it is ignored.
 - **Settled outcome.** Each attempt is finished `NotSent` / `Sent` /
   `MaybeSent` from its classified result; one dropped unfinished is
@@ -561,7 +563,8 @@ developer part when there is one.
   `Read` / `Idempotent`, and as a resource `Error` a retry-unsafe unit becomes
   `ErrorKind::OutcomeUnknown` (never retried) and publishes
   `ResourceEvent::OperationOutcomeUnknown`.
-- **Closing.** New attempts are refused once the lease's generation closes —
+- **Closing.** New attempts are refused once the row generation the unit
+  started under closes —
   `Cancelled` (removal, shutdown), `CredentialUnavailable` (suspension),
   `Revoked` (taint), all `NotSent`; a quota wait ends early too. A granted
   attempt is not aborted: select on `OperationCx::closing()` to stop at a safe point.
@@ -570,7 +573,7 @@ developer part when there is one.
   row reads each bound credential's availability after its quota wait,
   outside every lock (join-next shared with other attempts and acquires),
   and is registered under the manager's admission lock: a blocked credential
-  suspends the row and closes its leases (`ReauthRequired` /
+  suspends the row and closes its generation (`ReauthRequired` /
   `OperationBlocked`), an outage refuses `CheckUnavailable` and changes
   nothing, material the row has not installed refuses `Rebinding` — all
   unsent. `PinSlots::pin_slots` runs once per unit, at its first grant,
@@ -588,12 +591,12 @@ developer part when there is one.
   (granted / refused by the facade, not a driver's own retries) and
   `call_units` (by sent state).
 
-**Streaming units.** `Lease::submit_streaming(op, capacity)` runs a
+**Streaming units.** `ResourceHandle::submit_streaming(op, capacity)` runs a
 `StreamOperation` — `run(self, cx, sink)` — as one ordinary unit and hands
 back `Streaming<Item, Output>`:
 
 ```rust,ignore
-let mut stream = lease.submit_streaming(Tail { from }, NonZeroUsize::new(8).unwrap());
+let mut stream = handle.submit_streaming(Tail { from }, NonZeroUsize::new(8).unwrap());
 while let Some(line) = stream.next().await {
     handle(line?); // the unit's error arrives once, after every item it sent
 }
@@ -606,8 +609,8 @@ while let Some(line) = stream.next().await {
 - Dropped before its first `next`, the unit never ran. `Streaming::cancel`
   before the first grant settles `Cancelled` / `NotSent`; after it — or when
   the handle is dropped — the sink closes (`send` fails with `ConsumerGone`,
-  `StreamSink::closed` resolves) and the operation ends. The lease is
-  released after the unit ends.
+  `StreamSink::closed` resolves) and the operation ends. A checkout still
+  held is released after the unit ends.
 - The facade never aborts a granted attempt: a stream that should stop on
   removal or shutdown selects on `OperationCx::closing()`. The 5-minute unit cap
   applies to streams too.
@@ -616,11 +619,9 @@ while let Some(line) = stream.next().await {
   `Idempotent` or `Write` stream.
 
 Interim defaults, revisited before the surface is frozen (it is not in any
-prelude): the 5-minute unit deadline cap; the per-lease unit caps above; no
+prelude): the 5-minute unit deadline cap; no
 refund of a cost booked for an attempt cancelled or refused before it
-reached the provider; a pooled `Lease` stays checked out while its
-units wait for quota and while their credential reads run — use a
-`ResourceHandle` (below) to check out per attempt instead; `Sent` with
+reached the provider; `Sent` with
 `Exhausted` means the provider refused and applied
 nothing, so it stays retryable; the `Read` / `Idempotent` / `Write` effect
 vocabulary; `Rebinding` with a one-second hint for a superseded pin, with no
@@ -635,8 +636,8 @@ own and releases it when the attempt ends, in this order — nothing is held
 across a wait, and `Manager.admission` is never held across an await:
 
 1. budget, then a lock-free row pre-check (taint `Revoked`; shutdown,
-   removal or replacement `Cancelled`; the unit's generation closed as for a
-   lease; suspension `CredentialUnavailable`; a phase that refuses acquires
+   removal or replacement `Cancelled`; the unit's generation closed as for an
+   acquire's hand-out; suspension `CredentialUnavailable`; a phase that refuses acquires
    `Backpressure`);
 2. the quota at the attempt's `Cost`, holding nothing (`FREE` only waits out
    a pause);
@@ -661,8 +662,7 @@ facade latches the row to `PerAttempt`; a strict row reports
 its units fail `Cancelled`.
 
 `ResourceHandle::submit_streaming(op, capacity)` runs a `StreamOperation` as a
-row unit, with the same `Streaming` handle and delivery rules as
-`Lease::submit_streaming`: each attempt books its quota and passes the row
+row unit, with the `Streaming` handle and delivery rules above: each attempt books its quota and passes the row
 gate with nothing held, then checks out. Items sent while an `Attempt` is
 alive keep its checkout (a slow consumer holds the connection through
 backpressure); a consumer that drops or cancels mid-stream ends the
@@ -780,11 +780,13 @@ cancellation token the same way. Since 0.27.0 a `ResourceHandle<R>` is the
 only resource capability an action can name: `ResourceGuard<R>` slots,
 `acquire_resource_by_id` and the erased `ResourceAccessor::acquire_any` are
 removed, and the derive refuses a lease slot with a migration hint. A
-`ResourceGuard` (and the `Lease` facade over it) stays a host-only capability
-of the manager, the engine and tests. A derived action without `read_only` gets the default
+`ResourceGuard` (from `Manager::acquire*`) stays a host-only capability
+of the manager, the engine and tests, and never becomes a managed call
+facade (the `Lease` facade was removed in 0.30.0). A derived action without
+`read_only` gets the default
 `Journaled(JournalProtocol::V1)` effect contract: only effects routed through
-resource handles are journaled; a lease-facade unit or raw egress the action
-opens itself is outside the journal. A stateless journaled action on a
+resource handles are journaled; raw egress the action opens itself is
+outside the journal. A stateless journaled action on a
 durable engine turn gets handles under its node attempt's effect journal
 (below): its `Idempotent` and `Write` units are prepared, granted and
 recorded by the engine. Every other journaled action — a run without
@@ -811,7 +813,7 @@ effect and the row's authority:
 
 | Row | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
 |---|---|---|---|
-| library (`handle`, `handle_any`), `Lease` | runs | runs | runs |
+| library (`handle`, `handle_any`) | runs | runs | runs |
 | read-only (`handle_any_read_only`, `handle_any_read_only_because`) | runs | refused `Permanent` / `NotSent` | refused |
 | journaled (`handle_any_journaled`) | runs, never prepared | through the owner | refused ("streaming effects are not journaled in v1") |
 

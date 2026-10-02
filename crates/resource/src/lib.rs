@@ -266,7 +266,7 @@ pub mod topology;
 pub mod topology_tag;
 
 pub use call::{
-    Attempt, Cost, Effect, IdempotencyKey, Lease, Operation, OperationCx, OperationError, PinSlots,
+    Attempt, Cost, Effect, IdempotencyKey, Operation, OperationCx, OperationError, PinSlots,
     SentState, Submission,
 };
 pub use config_fingerprint::{ConfigFingerprint, ConfigFingerprintError};

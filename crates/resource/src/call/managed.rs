@@ -1,6 +1,6 @@
-//! The lease-owning facade ([`Lease`]), its units ([`Submission`]) and the
-//! per-unit runtime: permit, spawn, deadline, attempt admission and the
-//! settled outcome.
+//! The units of a [`ResourceHandle`](super::ResourceHandle)
+//! ([`Submission`]) and the per-unit runtime: spawn, deadline, attempt
+//! admission and the settled outcome.
 
 use std::{
     fmt,
@@ -18,8 +18,6 @@ use std::{
 
 use futures::FutureExt as _;
 use nebula_core::ResourceKey;
-use nebula_eventbus::EventBus;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
 
@@ -36,8 +34,8 @@ use super::{
     pin::PinSlots,
     row::{CheckoutFit, RowShared},
     session::{SessionBinding, SessionProvider},
-    strict::{UnitPin, capture_pin},
-    work::{Plain, UnitWork},
+    strict::UnitPin,
+    work::UnitWork,
 };
 use crate::{
     dedup::SlotIdentity,
@@ -52,7 +50,6 @@ use crate::{
         managed::ManagedResource,
     },
     topology::{PoolProvider, Pooled},
-    topology_tag::TopologyTag,
 };
 
 /// Host cap on a unit's deadline, and the deadline a unit gets unless
@@ -60,47 +57,9 @@ use crate::{
 /// [`DEFAULT_MAX_PENALTY`] until the package fixes a host budget.
 pub const OPERATION_DEADLINE_CAP: std::time::Duration = DEFAULT_MAX_PENALTY;
 
-/// Units that may run at once on one lease whose topology checks out an
-/// instance exclusively ([`Pooled`], [`Bounded`](crate::Bounded)). A
-/// [`ResourceHandle`](super::ResourceHandle) has no lease-wide cap: it checks out
-/// per attempt.
-const EXCLUSIVE_UNIT_CAP: usize = 1;
-
-/// Units that may run at once on one lease of a shared instance
-/// ([`Resident`](crate::Resident), custom topologies). Interim.
-const SHARED_UNIT_CAP: usize = 64;
-
 const PENDING: u8 = 0;
 const GRANTED: u8 = 1;
 const CANCELLED: u8 = 2;
-
-/// The lease a [`Lease`] facade owns, shared by every unit it started.
-///
-/// Dropping the last reference drops the guard, which releases the lease;
-/// an attempt that [`taint`](Attempt::taint)ed it is re-applied first, so
-/// the release bypasses recycling.
-pub(super) struct ManagedLease<R: Provider> {
-    guard: ResourceGuard<R>,
-    pub(super) managed: Arc<ManagedResource<R>>,
-    pub(super) generation: Arc<AdmissionGeneration>,
-    pub(super) key: ResourceKey,
-    metrics: Option<ResourceOpsMetrics>,
-    events: Option<Arc<EventBus<ResourceEvent>>>,
-    units: Arc<Semaphore>,
-    tainted: AtomicBool,
-}
-
-impl<R: Provider> ManagedLease<R> {
-    /// Refuses a new attempt once the lease's admission generation closed:
-    /// `Revoked` for a tainted row, `CredentialUnavailable` when a credential
-    /// suspension closed it, `Cancelled` otherwise (removal, shutdown).
-    ///
-    /// The same mapping as the acquire path's hand-out refusal, applied to
-    /// the lease's own generation rather than the row's current one.
-    pub(super) fn admission_refusal(&self) -> Result<(), OperationError> {
-        generation_refusal(&self.managed, &self.generation)
-    }
-}
 
 /// The refusal of new work under `generation` on `managed`: `Revoked` for a
 /// tainted row, then, once the generation closed, `CredentialUnavailable`
@@ -127,51 +86,12 @@ pub(super) fn generation_refusal<R: Provider>(
     })
 }
 
-/// What a unit runs against: the lease a [`Lease`] facade owns, or the
-/// row a [`ResourceHandle`](super::ResourceHandle) checks out from per attempt.
-pub(super) enum UnitHost<R: Provider> {
-    /// A lease-wide facade: every attempt runs on the lease's instance.
-    Lease(Arc<ManagedLease<R>>),
-    /// A row facade: every attempt checks out an instance of its own.
-    Row(Arc<RowShared<R>>),
-}
-
-impl<R: Provider> UnitHost<R> {
-    pub(super) fn key(&self) -> &ResourceKey {
-        match self {
-            Self::Lease(lease) => &lease.key,
-            Self::Row(row) => &row.key,
-        }
-    }
-
-    pub(super) fn managed(&self) -> &Arc<ManagedResource<R>> {
-        match self {
-            Self::Lease(lease) => &lease.managed,
-            Self::Row(row) => &row.managed,
-        }
-    }
-
+/// The unit runtime's bookkeeping on the row a unit runs against: every
+/// attempt of a [`ResourceHandle`](super::ResourceHandle) unit checks out an
+/// instance of its own from it.
+impl<R: Provider> RowShared<R> {
     fn metrics(&self) -> Option<&ResourceOpsMetrics> {
-        match self {
-            Self::Lease(lease) => lease.metrics.as_ref(),
-            Self::Row(row) => row.link.metrics(),
-        }
-    }
-
-    fn events(&self) -> Option<&Arc<EventBus<ResourceEvent>>> {
-        match self {
-            Self::Lease(lease) => lease.events.as_ref(),
-            Self::Row(row) => Some(row.link.admission().events()),
-        }
-    }
-
-    /// The admission generation a unit of this host is refused under: the
-    /// lease's own, or the row's current one when the unit starts.
-    fn unit_generation(&self) -> Result<Arc<AdmissionGeneration>, OperationError> {
-        match self {
-            Self::Lease(lease) => Ok(Arc::clone(&lease.generation)),
-            Self::Row(row) => row.unit_generation(),
-        }
+        self.link.metrics()
     }
 
     fn record_attempt(&self, granted: bool) {
@@ -188,7 +108,7 @@ impl<R: Provider> UnitHost<R> {
         span.record("outcome", "replayed");
         tracing::debug!(
             parent: span,
-            resource.key = %self.key(),
+            resource.key = %self.key,
             "managed unit replayed its recorded effect output"
         );
     }
@@ -217,16 +137,18 @@ impl<R: Provider> UnitHost<R> {
             if error.is_outcome_unknown() {
                 tracing::warn!(
                     parent: span,
-                    resource.key = %self.key(),
+                    resource.key = %self.key,
                     kind = %error.kind(),
                     sent = sent.as_str(),
                     "managed unit failed with an unknown outcome; reconcile before retrying"
                 );
-                if let Some(events) = self.events() {
-                    let _ = events.emit(ResourceEvent::OperationOutcomeUnknown {
-                        key: self.key().clone(),
-                    });
-                }
+                let _ =
+                    self.link
+                        .admission()
+                        .events()
+                        .emit(ResourceEvent::OperationOutcomeUnknown {
+                            key: self.key.clone(),
+                        });
             } else {
                 tracing::debug!(
                     parent: span,
@@ -236,136 +158,6 @@ impl<R: Provider> UnitHost<R> {
                 );
             }
         }
-    }
-}
-
-impl<R: Provider> Drop for ManagedLease<R> {
-    fn drop(&mut self) {
-        if *self.tainted.get_mut() {
-            self.guard.taint();
-        }
-    }
-}
-
-/// A lease turned into a managed call facade.
-///
-/// Built by [`ResourceGuard::into_lease`]. Provider calls go through
-/// [`submit`](Self::submit), one [`Operation`] per [`Submission`]; each attempt of
-/// a unit is admitted against the lease, booked on the row's rate limit and
-/// settled. There is deliberately no `Deref` to the instance: a call cannot
-/// skip admission and the limit by accident, and the instance is reached
-/// only inside a granted [`Attempt`].
-///
-/// ```compile_fail
-/// use nebula_resource::{PinSlots, Provider, call::Lease};
-///
-/// fn skip_the_facade<R: Provider + PinSlots>(managed: &Lease<R>) -> &R::Instance {
-///     &**managed
-/// }
-/// ```
-///
-/// Cloning shares the lease: the lease is released when the last clone and
-/// the last unit any clone started are gone, so a revoke or shutdown drain
-/// waits for running units.
-///
-/// Host-only, like the [`ResourceGuard`] it wraps: a `Lease` holds one
-/// checkout for its whole life and its units are not journaled, so it is
-/// never an action route and `nebula-sdk` does not export it. Actions hold
-/// [`ResourceHandle<R>`](crate::call::ResourceHandle), which checks out per
-/// attempt. The type is scheduled for removal.
-pub struct Lease<R: Provider> {
-    lease: Arc<ManagedLease<R>>,
-}
-
-impl<R: Provider> Clone for Lease<R> {
-    fn clone(&self) -> Self {
-        Self {
-            lease: Arc::clone(&self.lease),
-        }
-    }
-}
-
-impl<R: Provider> fmt::Debug for Lease<R> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Lease")
-            .field("resource_key", &self.lease.key)
-            .field("generation", &self.lease.guard.generation())
-            .finish_non_exhaustive()
-    }
-}
-
-impl<R: Provider + PinSlots> From<ResourceGuard<R>> for Lease<R> {
-    fn from(guard: ResourceGuard<R>) -> Self {
-        guard.into_lease()
-    }
-}
-
-impl<R: Provider> Lease<R> {
-    /// The row's key.
-    #[must_use]
-    pub fn resource_key(&self) -> &ResourceKey {
-        &self.lease.key
-    }
-
-    /// The closing notice of the lease's admission generation. Once it
-    /// fires, new attempts are refused; attempts already granted run on.
-    #[must_use]
-    pub fn closing(&self) -> LeaseClosing {
-        self.lease.guard.closing()
-    }
-
-    /// Whether the lease's admission generation closed.
-    #[must_use]
-    pub fn is_closing(&self) -> bool {
-        self.lease.guard.is_closing()
-    }
-}
-
-impl<R: Provider + PinSlots> Lease<R> {
-    pub(crate) fn from_guard(guard: ResourceGuard<R>) -> Self {
-        let managed = Arc::clone(guard.managed());
-        managed.rate_limiter.latch_per_attempt();
-        let cap = match guard.topology_tag() {
-            TopologyTag::Pool | TopologyTag::Bounded => EXCLUSIVE_UNIT_CAP,
-            TopologyTag::Resident | TopologyTag::Custom => SHARED_UNIT_CAP,
-        };
-        let lease = ManagedLease {
-            generation: Arc::clone(guard.admission()),
-            key: guard.resource_key().clone(),
-            metrics: guard.metrics().cloned(),
-            events: guard.event_bus().cloned(),
-            units: Arc::new(Semaphore::new(cap)),
-            tainted: AtomicBool::new(false),
-            managed,
-            guard,
-        };
-        Self {
-            lease: Arc::new(lease),
-        }
-    }
-
-    /// Submits `operation` as one unit of work.
-    ///
-    /// The unit is lazy: nothing happens until it is first polled. Its first
-    /// poll waits for one of the lease's unit slots, then hands the
-    /// operation to the runtime, which runs it under the unit's deadline and
-    /// settles it. Dropping the [`Submission`] before its first poll means the
-    /// operation never ran; dropping it later only stops waiting — the
-    /// runtime still settles the unit and the lease stays held until it
-    /// ends. A lease has no execution owner: every effect runs unjournaled.
-    ///
-    /// A malformed declaration ([`Operation::KEY`], [`Operation::VERSION`],
-    /// an `Idempotent` [`Operation::KEY_WINDOW`] of zero) fails the build;
-    /// see [`Operation`].
-    pub fn submit<O: Operation<R>>(&self, operation: O) -> Submission<O::Output> {
-        assert_declaration::<R, O>();
-        submit_unit(self.unit_host(), &UnitScope::default(), Plain(operation))
-    }
-
-    /// The host every unit of this facade runs against: its lease.
-    pub(super) fn unit_host(&self) -> UnitHost<R> {
-        UnitHost::Lease(Arc::clone(&self.lease))
     }
 }
 
@@ -415,7 +207,7 @@ pub(crate) enum EffectAuthority {
 /// grant it is ignored and the unit runs to its own deadline (Design
 /// DX-API.md:114). The parent deadline bounds every unit's deadline, below
 /// [`OPERATION_DEADLINE_CAP`]; [`Submission::with_deadline`] can only shorten it
-/// further. A lease facade's units inherit nothing.
+/// further. The default scope inherits nothing.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct UnitScope {
     /// The parent cancellation: each unit's own cancel is a child of it.
@@ -469,7 +261,7 @@ impl UnitScope {
     ///
     /// | Authority | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
     /// |---|---|---|---|
-    /// | unjournaled (library, lease) | plain | plain | plain |
+    /// | unjournaled (library) | plain | plain | plain |
     /// | read-only | plain | refused `Permanent` | refused `Permanent` |
     /// | journaled | plain, never prepared | through the owner | refused `Permanent` |
     ///
@@ -551,12 +343,12 @@ enum Route {
     Owned(Box<OwnedEffect>),
 }
 
-/// Builds the lazy [`Submission`] of `work` on `host`, in a
+/// Builds the lazy [`Submission`] of `work` on the row `host`, in a
 /// `nebula.resource.unit` span naming its operation key (or session name),
 /// under `scope`. A unit routed to the facade's owner is driven through it
 /// (see the `owned` module).
 pub(super) fn submit_unit<R, W>(
-    host: UnitHost<R>,
+    host: Arc<RowShared<R>>,
     scope: &UnitScope,
     work: W,
 ) -> Submission<W::Output>
@@ -564,7 +356,7 @@ where
     R: Provider + PinSlots,
     W: UnitWork<R>,
 {
-    let key = host.key().clone();
+    let key = host.key.clone();
     let declared = work.declared();
     let effect = declared.effect;
     let span = tracing::info_span!(
@@ -576,7 +368,7 @@ where
         sent = tracing::field::Empty,
         outcome = tracing::field::Empty,
     );
-    let (shared, refused) = match scope.admit(&key, host.managed(), &work) {
+    let (shared, refused) = match scope.admit(&key, &host.managed, &work) {
         Ok(Route::Owned(owned)) => (UnitShared::new(scope).with_effect(*owned), None),
         Ok(Route::Plain { local_key }) => (UnitShared::new(scope).with_local_key(local_key), None),
         Err(refusal) => (UnitShared::new(scope), Some(refusal)),
@@ -606,10 +398,10 @@ where
                                 detail = refusal.detail(),
                                 "managed row refused a unit at submit"
                             );
-                            Err(refusal.settled(SentState::NotSent, effect, host.key()))
+                            Err(refusal.settled(SentState::NotSent, effect, &host.key))
                         },
                         Err(cancelled) => {
-                            Err(cancelled.settled(SentState::NotSent, effect, host.key()))
+                            Err(cancelled.settled(SentState::NotSent, effect, &host.key))
                         },
                     };
                     host.record_settled(&denied_span, &result, SentState::NotSent, 0);
@@ -895,10 +687,11 @@ pub(super) fn cancelled_before_grant() -> OperationError {
 
 /// One submitted [`Operation`]: a future of its settled outcome.
 ///
-/// Lazy until first polled (see [`Lease::submit`]). Once started the
-/// runtime owns the unit: dropping this handle stops waiting but never
-/// aborts the operation — the runtime settles it, and the lease is released
-/// only after it ends.
+/// Lazy until first polled (see
+/// [`ResourceHandle::submit`](super::ResourceHandle::submit)). Once started
+/// the runtime owns the unit: dropping this handle stops waiting but never
+/// aborts the operation — the runtime settles it, and an attempt's checkout
+/// is released only after that attempt ends.
 #[must_use = "a unit does nothing until awaited; dropped before its first poll it never runs"]
 pub struct Submission<T> {
     shared: Arc<UnitShared>,
@@ -924,7 +717,7 @@ impl<T> Submission<T> {
     }
 
     /// Cancels the unit if none of its attempts was granted yet: a wait for
-    /// a unit slot or for the first attempt's quota ends, and the unit
+    /// the first attempt's quota or row gate ends, and the unit
     /// settles `Cancelled` and `NotSent`. Once an attempt was granted the
     /// cancel is ignored and the runtime settles the unit as it ends.
     /// Idempotent.
@@ -952,35 +745,11 @@ impl<T> fmt::Debug for Submission<T> {
     }
 }
 
-/// Waits for one of `lease`'s unit slots, until the unit's deadline.
-async fn lease_unit_slot<R: Provider>(
-    lease: &ManagedLease<R>,
-    shared: &UnitShared,
-    deadline: tokio::time::Instant,
-) -> Result<OwnedSemaphorePermit, OperationError> {
-    tokio::select! {
-        biased;
-        () = shared.cancel.cancelled() => Err(cancelled_before_grant()),
-        () = lease.generation.token().cancelled() => {
-            Err(lease.admission_refusal().err().unwrap_or_else(|| {
-                OperationError::new(ErrorKind::Cancelled, "lease closing; new attempts refused")
-            }))
-        },
-        permit = Arc::clone(&lease.units).acquire_owned() => permit.map_err(|_closed| {
-            OperationError::new(ErrorKind::Cancelled, "lease closing; new attempts refused")
-        }),
-        () = tokio::time::sleep_until(deadline) => Err(OperationError::new(
-            ErrorKind::Backpressure,
-            "the lease's unit slots stayed full until the unit deadline",
-        )),
-    }
-}
-
-/// The caller's side of a unit: waits for a unit slot on a lease host,
-/// prepares an owned unit's effect, then spawns the runtime task and waits
-/// for its outcome. `effect` is what the unit's settled error reports.
+/// The caller's side of a unit: prepares an owned unit's effect, then
+/// spawns the runtime task and waits for its outcome. `effect` is what the
+/// unit's settled error reports.
 async fn start_unit<R, W>(
-    host: UnitHost<R>,
+    host: Arc<RowShared<R>>,
     shared: Arc<UnitShared>,
     work: W,
     effect: Effect,
@@ -992,37 +761,33 @@ where
 {
     let deadline = shared.deadline();
     // A unit cancelled before its first poll — its parent cancellation
-    // already fired — settles here: nothing is spawned or checked out.
-    // A row facade has no unit slots: each attempt queues on the row gate
+    // already fired — settles here: nothing is spawned or checked out. A
+    // row facade has no unit slots: each attempt queues on the row gate
     // with nothing checked out instead.
-    let permit = match &host {
-        _ if shared.cancel.is_cancelled() => shared
+    let refused = if shared.cancel.is_cancelled() {
+        shared
             .refuse_if_cancelled()
-            .and(Err(cancelled_before_grant())),
-        UnitHost::Lease(lease) => lease_unit_slot(lease, &shared, deadline).await.map(Some),
+            .and(Err(cancelled_before_grant()))
+    } else if super::session::in_session_of(host.marker()) {
         // Awaited inside a session of the same row, the unit would wait for
         // the row gate while that session holds a checkout.
-        UnitHost::Row(row) if super::session::in_session_of(row.marker()) => {
-            Err(OperationError::new(
-                ErrorKind::Permanent,
-                "a unit of a row awaited inside a session of the same row; refused",
-            ))
-        },
-        UnitHost::Row(_) => Ok(None),
+        Err(OperationError::new(
+            ErrorKind::Permanent,
+            "a unit of a row awaited inside a session of the same row; refused",
+        ))
+    } else {
+        Ok(())
     };
-    let permit = match permit {
-        Ok(permit) => permit,
-        Err(refusal) => {
-            // Settled before its first poll reached the owner: nothing was
-            // prepared or sent, and the unit's ticket goes now.
-            if let Some(owned) = shared.effect() {
-                owned.conclude();
-            }
-            let result = Err(refusal.settled(SentState::NotSent, effect, host.key()));
-            host.record_settled(&span, &result, SentState::NotSent, 0);
-            return result;
-        },
-    };
+    if let Err(refusal) = refused {
+        // Settled before its first poll reached the owner: nothing was
+        // prepared or sent, and the unit's ticket goes now.
+        if let Some(owned) = shared.effect() {
+            owned.conclude();
+        }
+        let result = Err(refusal.settled(SentState::NotSent, effect, &host.key));
+        host.record_settled(&span, &result, SentState::NotSent, 0);
+        return result;
+    }
     // An owned unit's first poll: the owner prepares its effect before
     // anything is spawned, booked, read or checked out.
     let codec = match (W::codec(), shared.effect()) {
@@ -1040,7 +805,7 @@ where
                 },
                 Prepared::Refused(refusal, sent) => {
                     owned.conclude();
-                    let result = Err(refusal.settled(sent, effect, host.key()));
+                    let result = Err(refusal.settled(sent, effect, &host.key));
                     host.record_settled(&span, &result, sent, 0);
                     return result;
                 },
@@ -1048,14 +813,13 @@ where
         },
         _ => None,
     };
-    let key = host.key().clone();
+    let key = host.key.clone();
     let runtime = tokio::spawn(
         run_unit::<R, W>(
             host,
             Arc::clone(&shared),
             work,
             (effect, codec),
-            permit,
             deadline,
             span.clone(),
         )
@@ -1084,11 +848,10 @@ where
 /// call is recorded with its owner (through `codec`) before the unit
 /// settles. The slots are pinned at the unit's first grant, not here.
 async fn run_unit<R, W>(
-    host: UnitHost<R>,
+    host: Arc<RowShared<R>>,
     shared: Arc<UnitShared>,
     work: W,
     (effect, codec): (Effect, Option<OutputCodec<W::Output>>),
-    _permit: Option<OwnedSemaphorePermit>,
     deadline: tokio::time::Instant,
     span: tracing::Span,
 ) -> Result<W::Output, OperationError>
@@ -1106,7 +869,7 @@ where
                 }
                 owned.conclude();
             }
-            let result = Err(refusal.settled(SentState::NotSent, effect, host.key()));
+            let result = Err(refusal.settled(SentState::NotSent, effect, &host.key));
             host.record_settled(&span, &result, SentState::NotSent, 0);
             return result;
         },
@@ -1172,18 +935,19 @@ where
     if let Some(owned) = shared.effect() {
         owned.conclude();
     }
-    let result = result.map_err(|error| error.settled(sent, effect, host.key()));
+    let result = result.map_err(|error| error.settled(sent, effect, &host.key));
     host.record_settled(&span, &result, sent, shared.attempts());
     result
 }
 
 /// What an [`Operation`] runs against: the unit's deadline, its attempt
-/// budget and the lease's closing notice, and the only way to reach the
-/// provider — [`attempt`](Self::attempt).
+/// budget and the closing notice of the row generation it started under,
+/// and the only way to reach the provider — [`attempt`](Self::attempt).
 pub struct OperationCx<'u, R: Provider + PinSlots> {
-    pub(super) host: &'u UnitHost<R>,
-    /// The admission generation the unit is refused under: the lease's, or
-    /// the row's current one when the unit started.
+    /// The row every attempt of the unit checks out from.
+    pub(super) host: &'u RowShared<R>,
+    /// The admission generation the unit is refused under: the row's
+    /// current one when the unit started.
     pub(super) generation: &'u Arc<AdmissionGeneration>,
     /// The unit's slots, pinned at its first grant.
     pub(super) pin: Option<UnitPin<R::Pinned>>,
@@ -1199,7 +963,7 @@ impl<R: Provider + PinSlots> fmt::Debug for OperationCx<'_, R> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("OperationCx")
-            .field("resource_key", self.host.key())
+            .field("resource_key", &self.host.key)
             .field("attempts", &self.shared.attempts())
             .field("max_attempts", &self.max_attempts)
             .finish_non_exhaustive()
@@ -1213,41 +977,51 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
     ///
     /// 1. **Budget** — past [`Operation::max_attempts`] granted attempts the
     ///    attempt is refused permanently.
-    /// 2. **Admission** — the lease's admission generation must be open:
-    ///    `Revoked` for a tainted row, `CredentialUnavailable` when a
-    ///    credential suspension closed it, `Cancelled` on removal or
-    ///    shutdown.
-    /// 3. **Quota** — unless the cost is [`Cost::FREE`], the cost is booked
-    ///    on the row's limit, waiting for its slot no later than the unit's
-    ///    deadline. The wait ends early when the lease closes or the unit is
-    ///    cancelled before its first grant; a slot booked meanwhile is
-    ///    forfeited. A cost above the burst fails permanently, a slot past
-    ///    the deadline is `Exhausted` with a `retry_after`, an unreachable
-    ///    limit store is `Backpressure`.
-    /// 4. **Credential read** — on a strict manager (one with a credential
+    /// 2. **Row pre-check** — the unit's admission generation must be open
+    ///    and the row admitting work: `Revoked` for a tainted row,
+    ///    `CredentialUnavailable` for a suspended one, `Cancelled` on removal,
+    ///    replacement or shutdown, `Backpressure` in a phase that refuses
+    ///    work.
+    /// 3. **Quota** — the cost is booked on the row's limit (a [`Cost::FREE`]
+    ///    attempt only waits out a provider's pause), waiting for its slot no
+    ///    later than the unit's deadline with nothing checked out. The wait
+    ///    ends early when the unit's generation closes, the manager shuts
+    ///    down or the unit is cancelled before its first grant; a slot booked
+    ///    meanwhile is forfeited. A cost above the burst fails permanently, a
+    ///    slot past the deadline is `Exhausted` with a `retry_after`, an
+    ///    unreachable limit store is `Backpressure`.
+    /// 4. **Row gate** — one permit per checkout, FIFO, sized to the
+    ///    topology's capacity; still full at the unit's deadline:
+    ///    `Backpressure`.
+    /// 5. **Credential read** — on a strict manager (one with a credential
     ///    observer) and a row with bound slots, every bound credential's
     ///    availability is read after every wait of the attempt, outside every
     ///    lock, bounded by the unit's deadline and the read timeout, and
-    ///    raced against the lease's generation and [`Submission::cancel`]. Every
-    ///    attempt reads, [`Cost::FREE`] included; concurrent attempts of a
-    ///    credential share reads join-next (only a read issued after the
+    ///    raced against the unit's generation and [`Submission::cancel`].
+    ///    Every attempt reads, [`Cost::FREE`] included; concurrent attempts of
+    ///    a credential share reads join-next (only a read issued after the
     ///    attempt arrived answers it). An interim manager or a slot-less row
     ///    reads nothing.
-    /// 5. **Pin** — the unit's first grant pins its credential slots
-    ///    ([`Attempt::credentials`]).
-    /// 6. **Registration and grant** — on a strict read, under the manager's
+    /// 6. **Pin** — the unit's first attempt pins its credential slots
+    ///    ([`Attempt::credentials`]); later attempts keep the pin.
+    /// 7. **Checkout** — the acquire pipeline's own admission and the
+    ///    checkout of an instance for this attempt, bounded by the unit's
+    ///    deadline; on a strict row an instance created for it is read again.
+    /// 8. **Registration and grant** — on a strict read, under the manager's
     ///    admission lock: a revoke taint is `Revoked`, shutdown `Cancelled`;
     ///    the read is applied to the row (a blocked credential suspends it
-    ///    and closes its leases, a usable one reopens or readmits it) and a
-    ///    denying credential refuses `CredentialUnavailable` with the read's
-    ///    reason; a suspended row or a closed lease refuses; a pin a rotation
-    ///    superseded since the unit pinned it refuses `Rebinding`. Without a
-    ///    strict read the lease's admission is re-checked, lock-free. The
-    ///    attempt is then granted unless [`Submission::cancel`] won the race for
-    ///    the unit's first grant.
+    ///    and closes its generation, a usable one reopens or readmits it) and
+    ///    a denying credential refuses `CredentialUnavailable` with the read's
+    ///    reason; a suspended row or a closed generation refuses; a pin a
+    ///    rotation superseded since the unit pinned it refuses `Rebinding`.
+    ///    Without a strict read the checkout's generation is re-checked,
+    ///    lock-free. An execution-owned effect's call is granted by its owner
+    ///    first. The attempt is then granted unless [`Submission::cancel`] won
+    ///    the race for the unit's first grant.
     ///
     /// Every refusal means nothing reached the provider; a quota slot booked
-    /// for a refused attempt is forfeited.
+    /// for a refused attempt is forfeited and a refused checkout goes back
+    /// to the pool.
     ///
     /// # Errors
     ///
@@ -1259,17 +1033,17 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
     /// grants nothing.
     pub async fn attempt(&mut self, cost: Cost) -> Result<Attempt<'_, R>, OperationError> {
         let (host, shared) = (self.host, self.shared);
-        let admitted = self.admit(&cost).await;
+        let admitted = self.admit_row(host, &cost, None).await;
         host.record_attempt(admitted.is_ok());
         if let Err(refusal) = &admitted
             && refusal.supersedes_retried()
         {
             shared.owner_refused_next();
         }
-        let (target, pin) = admitted?;
+        let (checkout, pin) = admitted?;
         Ok(Attempt {
-            target,
-            managed: host.managed(),
+            checkout: Box::new(checkout),
+            managed: &host.managed,
             pinned: pin.pinned(),
             shared,
             cost,
@@ -1402,10 +1176,10 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
         }
     }
 
-    /// A session's single attempt on a row host: admitted like a row
-    /// attempt, on a checkout that fits the provider's
-    /// [`SessionBinding`], and destroyed on release unless the session
-    /// closed cleanly ([`Attempt::end_session`]).
+    /// A session's single attempt: admitted like any row attempt, on a
+    /// checkout that fits the provider's [`SessionBinding`], and destroyed
+    /// on release unless the session closed cleanly
+    /// ([`Attempt::end_session`]).
     pub(super) async fn attempt_session(
         &mut self,
         cost: Cost,
@@ -1413,27 +1187,21 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
     where
         R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
     {
-        let UnitHost::Row(row) = self.host else {
-            return Err(OperationError::new(
-                ErrorKind::Permanent,
-                "sessions run on a managed row",
-            ));
-        };
         let fit: Option<CheckoutFit<R>> = match R::BINDING {
             SessionBinding::Connection => Some(built_at_pinned_epoch::<R>),
             SessionBinding::Session => None,
         };
         let (host, shared) = (self.host, self.shared);
-        let admitted = self.admit_row(row, &cost, fit).await;
+        let admitted = self.admit_row(host, &cost, fit).await;
         host.record_attempt(admitted.is_ok());
         let (mut checkout, pin) = admitted?;
         checkout.taint_on_abandon = true;
         checkout.session = Some(SessionWatch {
-            metrics: row.link.metrics().cloned(),
+            metrics: host.link.metrics().cloned(),
         });
         Ok(Attempt {
-            target: AttemptTarget::Checkout(Box::new(checkout)),
-            managed: host.managed(),
+            checkout: Box::new(checkout),
+            managed: &host.managed,
             pinned: pin.pinned(),
             shared,
             cost,
@@ -1441,68 +1209,22 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
         })
     }
 
-    /// Steps 1–6 of [`attempt`](Self::attempt); on a grant, what the
-    /// attempt runs on and the unit's pin.
-    async fn admit(
-        &mut self,
-        cost: &Cost,
-    ) -> Result<(AttemptTarget<'_, R>, &UnitPin<R::Pinned>), OperationError> {
-        match self.host {
-            UnitHost::Lease(lease) => {
-                self.admit_local(cost, None).await?;
-                let cancel = self.shared.cancel_before_grant();
-                let reading = lease.read_credentials(self.deadline, cancel).await?;
-                // No await from here on: the pin is never lost to a dropped
-                // future. The first grant pins the slots; a refused first
-                // attempt keeps no pin, so the next attempt pins afresh.
-                let (pin, fresh) = match self.pin.take() {
-                    Some(pin) => (pin, false),
-                    None => (capture_pin(&lease.managed), true),
-                };
-                let granted = lease.register(reading.as_ref(), &pin, self.shared);
-                match granted {
-                    Ok(()) => Ok((AttemptTarget::Lease(lease), &*self.pin.insert(pin))),
-                    Err(refusal) => {
-                        if !fresh {
-                            self.pin = Some(pin);
-                        }
-                        Err(refusal)
-                    },
-                }
-            },
-            UnitHost::Row(row) => {
-                let (checkout, pin) = self.admit_row(row, cost, None).await?;
-                Ok((AttemptTarget::Checkout(Box::new(checkout)), pin))
-            },
-        }
-    }
-
-    /// Budget, the host's admission and the quota booking: every step
-    /// before anything is checked out or pinned. A lease host books nothing
-    /// for [`Cost::FREE`]; a row host (`row`) still honours the limit's
-    /// pauses for it, and its waits also end when the manager shuts down.
-    pub(super) async fn admit_local(
-        &self,
-        cost: &Cost,
-        row: Option<&RowShared<R>>,
-    ) -> Result<(), OperationError> {
+    /// Budget, the row pre-check and the quota booking: every step before
+    /// anything is checked out or pinned. A [`Cost::FREE`] attempt still
+    /// honours the limit's pauses, and every wait also ends when the
+    /// manager shuts down.
+    pub(super) async fn admit_local(&self, cost: &Cost) -> Result<(), OperationError> {
         if self.shared.attempts() >= self.max_attempts.get() {
             return Err(OperationError::new(
                 ErrorKind::Permanent,
                 "attempt budget exhausted",
             ));
         }
-        let managed = self.host.managed();
+        let row = self.host;
         let generation = self.generation;
-        let precheck = || match row {
-            Some(row) => row.precheck(generation),
-            None => generation_refusal(managed, generation),
-        };
+        let precheck = || row.precheck(generation);
         precheck()?;
-        if cost.is_free() && row.is_none() {
-            return Ok(());
-        }
-        let limiter = &managed.rate_limiter;
+        let limiter = &row.managed.rate_limiter;
         let deadline = Some(self.deadline.into_std());
         let booking = async {
             if cost.is_free() {
@@ -1517,12 +1239,7 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
                 None => limiter.ready_weighted(cost.permits(), deadline).await,
             }
         };
-        let shutdown = async {
-            match row {
-                Some(row) => row.link.admission().cancel().cancelled().await,
-                None => std::future::pending().await,
-            }
-        };
+        let shutdown = row.link.admission().cancel().cancelled();
         let booked = tokio::select! {
             biased;
             () = shutdown => Err(Error::cancelled()),
@@ -1542,15 +1259,13 @@ impl<R: Provider + PinSlots> OperationCx<'_, R> {
         self.deadline.into_std()
     }
 
-    /// The closing notice of the lease. A granted attempt is not aborted
-    /// when it fires; an operation that wants to stop early selects on
-    /// [`LeaseClosing::closed`].
+    /// The closing notice of the row generation the unit started under:
+    /// it fires once that generation stops admitting work (a removal, a
+    /// credential suspension, shutdown). A granted attempt is not aborted when it fires; an operation that
+    /// wants to stop early selects on [`LeaseClosing::closed`].
     #[must_use]
     pub fn closing(&self) -> LeaseClosing {
-        match self.host {
-            UnitHost::Lease(lease) => lease.guard.closing(),
-            UnitHost::Row(_) => LeaseClosing::of(self.generation),
-        }
+        LeaseClosing::of(self.generation)
     }
 
     /// Attempts granted to this unit so far.
@@ -1592,20 +1307,13 @@ fn quota_refusal(error: &Error) -> OperationError {
 /// slots. Settle it with what happened to the request; an attempt dropped
 /// unsettled counts as [`SentState::MaybeSent`].
 pub struct Attempt<'a, R: Provider + PinSlots> {
-    target: AttemptTarget<'a, R>,
+    /// The instance the attempt checked out for itself.
+    checkout: Box<Checkout<R>>,
     managed: &'a Arc<ManagedResource<R>>,
     pinned: &'a R::Pinned,
     shared: &'a UnitShared,
     cost: Cost,
     settled: bool,
-}
-
-/// The instance one granted attempt runs on.
-pub(super) enum AttemptTarget<'a, R: Provider> {
-    /// The facade's lease, shared by every attempt of every unit.
-    Lease(&'a ManagedLease<R>),
-    /// The instance a row attempt checked out for itself.
-    Checkout(Box<Checkout<R>>),
 }
 
 /// One row attempt's checkout: the lease on its instance (with the row-gate
@@ -1669,15 +1377,10 @@ impl<R: Provider + PinSlots> fmt::Debug for Attempt<'_, R> {
 }
 
 impl<R: Provider + PinSlots> Attempt<'_, R> {
-    /// The instance the attempt runs on: the lease's for a [`Lease`]
-    /// facade, the attempt's own checkout for a
-    /// [`ResourceHandle`](super::ResourceHandle).
+    /// The instance the attempt runs on: the attempt's own checkout.
     #[must_use]
     pub fn instance(&self) -> &R::Instance {
-        match &self.target {
-            AttemptTarget::Lease(lease) => &lease.guard,
-            AttemptTarget::Checkout(checkout) => &checkout.guard,
-        }
+        &self.checkout.guard
     }
 
     /// The credential slots pinned at the unit's first grant; the same for
@@ -1695,14 +1398,11 @@ impl<R: Provider + PinSlots> Attempt<'_, R> {
         self.shared.idempotency_key()
     }
 
-    /// Marks the instance tainted: when its lease is released it is
-    /// destroyed, not recycled. Use it when the instance is left in an
+    /// Marks the instance tainted: when the attempt's checkout is released
+    /// it is destroyed, not recycled. Use it when the instance is left in an
     /// unknown state.
     pub fn taint(&self) {
-        match &self.target {
-            AttemptTarget::Lease(lease) => lease.tainted.store(true, Ordering::Release),
-            AttemptTarget::Checkout(checkout) => checkout.tainted.store(true, Ordering::Release),
-        }
+        self.checkout.tainted.store(true, Ordering::Release);
     }
 
     /// Finishes the attempt from its call's `result`: the low-level side of
@@ -1806,15 +1506,13 @@ where
 {
     /// What a session opens on: the provider, the checked-out instance
     /// (mutably — the checkout holds it exclusively), the unit's pinned
-    /// slots and the checkout's closing notice. `None` for an attempt that
-    /// has no checkout of its own.
+    /// slots and the checkout's closing notice. `None` when the checkout
+    /// holds no pooled instance.
     pub(super) fn session_parts(
         &mut self,
     ) -> Option<(&'a R, &mut R::Instance, &'a R::Pinned, LeaseClosing)> {
         let (managed, pinned) = (self.managed, self.pinned);
-        let AttemptTarget::Checkout(checkout) = &mut self.target else {
-            return None;
-        };
+        let checkout = &mut *self.checkout;
         let closing = checkout.guard.closing();
         let instance = checkout.guard.pooled_instance_mut()?;
         Some((&managed.resource, instance, pinned, closing))
@@ -1823,16 +1521,15 @@ where
     /// The session ended as `outcome`; with `keep` its instance goes back
     /// to the pool when the checkout is released, otherwise it is destroyed.
     pub(super) fn end_session(&mut self, outcome: SessionOutcome, keep: bool) {
-        if let AttemptTarget::Checkout(checkout) = &mut self.target {
-            if keep {
-                checkout.taint_on_abandon = false;
-            }
-            if let Some(SessionWatch {
-                metrics: Some(metrics),
-            }) = checkout.session.take()
-            {
-                metrics.record_session(outcome);
-            }
+        let checkout = &mut *self.checkout;
+        if keep {
+            checkout.taint_on_abandon = false;
+        }
+        if let Some(SessionWatch {
+            metrics: Some(metrics),
+        }) = checkout.session.take()
+        {
+            metrics.record_session(outcome);
         }
     }
 }

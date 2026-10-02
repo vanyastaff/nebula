@@ -17,7 +17,7 @@ use super::{
     declaration::is_valid_declaration,
     error::OperationError,
     journal::UnitKind,
-    managed::{Lease, OperationCx, Submission, UnitScope, submit_unit},
+    managed::{OperationCx, Submission, submit_unit},
     owned::OutputCodec,
     pin::PinSlots,
     row::ResourceHandle,
@@ -26,12 +26,12 @@ use super::{
 use crate::{error::ErrorKind, resource::Provider};
 
 /// A provider call that yields items while it runs, submitted with
-/// [`Lease::submit_streaming`] or [`ResourceHandle::submit_streaming`].
+/// [`ResourceHandle::submit_streaming`].
 ///
 /// For a response read in chunks, a subscription, a long poll. It runs as
-/// one ordinary [`Submission`]: the same lazy start, unit slot, deadline, attempt
-/// admission, pinned credential slots and settled outcome as
-/// [`Lease::submit`]. Every provider request still goes through
+/// one ordinary [`Submission`]: the same lazy start, deadline, attempt
+/// admission, per-attempt checkout, pinned credential slots and settled
+/// outcome as [`ResourceHandle::submit`]. Every provider request still goes through
 /// [`OperationCx::attempt`] — finished with
 /// [`Attempt::finish`](super::Attempt::finish) once the stream's head is
 /// known — and the unit settles once, with [`run`](Self::run)'s
@@ -62,9 +62,9 @@ use crate::{error::ErrorKind, resource::Provider};
 /// - Dropping the [`Streaming`] handle mid-stream does the same: the
 ///   operation sees [`ConsumerGone`] on its next send, or
 ///   [`StreamSink::closed`] while it waits on the provider, and ends. The
-///   runtime still settles the unit, and the lease is released after it
-///   ends (Design DX-API.md:114).
-/// - Honouring the lease closing is the operation's choice, as for any
+///   runtime still settles the unit, and a checkout still held is released
+///   after it ends (Design DX-API.md:114).
+/// - Honouring the row closing is the operation's choice, as for any
 ///   unit (Design CONTRACT.md:57): the facade never aborts a granted
 ///   attempt. A long-lived stream selects on [`OperationCx::closing`] so a
 ///   removal or a shutdown drain does not wait for it.
@@ -312,24 +312,6 @@ fn streaming<O, T, Out>(
         cancel,
         outcome: None,
         error_yielded: false,
-    }
-}
-
-impl<R: Provider + PinSlots> Lease<R> {
-    /// Submits `operation` as one streaming unit whose items reach the
-    /// returned [`Streaming`] through a buffer of `capacity` items.
-    ///
-    /// The unit is as lazy as [`submit`](Self::submit)'s: nothing happens
-    /// until the first [`Streaming::next`] or [`Streaming::finish`].
-    pub fn submit_streaming<O: StreamOperation<R>>(
-        &self,
-        operation: O,
-        capacity: NonZeroUsize,
-    ) -> Streaming<O::Item, O::Output> {
-        assert_stream_declaration::<R, O>();
-        streaming(operation, capacity, |streamed| {
-            submit_unit(self.unit_host(), &UnitScope::default(), streamed)
-        })
     }
 }
 

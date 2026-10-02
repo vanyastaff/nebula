@@ -627,9 +627,7 @@ impl KeyedLimits {
 /// The profile is observed, not declared: a row reports
 /// [`PerAttempt`](Self::PerAttempt) from the moment the managed call facade
 /// first serves it — a [`Manager::handle`](crate::Manager::handle) of the
-/// row, or a lease turned into a facade with
-/// [`ResourceGuard::into_lease`](crate::ResourceGuard::into_lease) — and
-/// keeps it for the row's life. Before that it reports
+/// row — and keeps it for the row's life. Before that it reports
 /// [`PerAcquire`](Self::PerAcquire) or [`PausesOnly`](Self::PausesOnly) by
 /// whether it has a rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 async-trait = "0.1.89"
-nebula-sdk = { version = "=0.29.0", default-features = false, features = ["http", "resource-http"] }
+nebula-sdk = { version = "=0.30.0", default-features = false, features = ["http", "resource-http"] }
 
 [workspace]
 
