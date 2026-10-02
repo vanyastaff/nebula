@@ -70,6 +70,9 @@ mod control_turn;
 /// Credential persistence (encryption, audit, refresh claims, pending state).
 pub mod credential;
 mod error;
+/// Backend-independent execution-lease fence, shared by every adapter that
+/// writes under a turn's lease so the fence cannot drift between ports.
+mod execution_fence;
 mod execution_state;
 /// Serialization format abstraction (JSON / MessagePack).
 pub mod format;

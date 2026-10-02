@@ -11,6 +11,7 @@
 mod control_queue;
 mod control_turn;
 mod execution;
+mod execution_fence;
 mod idempotency_store;
 mod identity;
 mod job_dispatch;
