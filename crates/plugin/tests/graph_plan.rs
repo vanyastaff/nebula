@@ -491,7 +491,7 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         .compile_graph_v1(WorkflowVersionId::new(), &workflow)
         .unwrap();
     let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-    assert_eq!(record["compiler_version"], 6);
+    assert_eq!(record["compiler_version"], 7);
     assert_eq!(record["canonical_hash_version"], 3);
     assert_eq!(
         record["content"]["actions"][0]["effect_contract"],
@@ -510,7 +510,7 @@ fn scalar_contracts_roundtrip_under_the_new_epoch_without_named_parameters() {
             .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
             .unwrap();
         let wire = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-        assert_eq!(wire["compiler_version"], 6);
+        assert_eq!(wire["compiler_version"], 7);
         assert_eq!(wire["canonical_hash_version"], 3);
         assert_eq!(
             wire["content"]["actions"][0]["input_schema"],
@@ -673,6 +673,7 @@ fn an_agent_action_compiles_into_a_plan_that_records_its_kind() {
         .expect("an agent node compiles");
     plan.validate_against(&registry).unwrap();
     let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+    assert_eq!(record["compiler_version"], 7);
     assert_eq!(record["content"]["actions"][0]["kind"], "agent");
     assert_eq!(
         record["content"]["actions"][0]["effect_contract"],

@@ -41,11 +41,19 @@ changes are expected between minor releases — call them out here.
     `observation: true` field — absent for effects, so their records stay
     byte-identical; no SQL migration. **Rollback hazard**: the record is
     `deny_unknown_fields`, so a build from before 0.32.0 refuses to decode
-    an observation's record, and a plan holding an agent node
-    (`RecordedActionKindV1::Agent`) does not decode before 0.32.0 either.
+    an observation's record.
   - `nebula-plugin`: agent nodes compile into Graph-v1 plans (kind
-    `agent`); the `UNSUPPORTED_NODE_KIND` expected value is
-    `stateless|stateful|control|agent`.
+    `agent`) under the new plan epoch **compiler 7** / hash 3, the first
+    whose action kind grammar includes `Agent`; the
+    `UNSUPPORTED_NODE_KIND` expected value is
+    `stateless|stateful|control|agent`. Every new plan is recorded at
+    epoch 7, so **plan revision ids change** for newly compiled plans
+    (the same workflow compiled by 0.31 and 0.32 gets different ids).
+    Epoch 5 and 6 records decode exactly as before; an `Agent` kind under
+    them, or a capability-gated agent under any epoch, is non-canonical
+    even with a valid seal. **Rollback hazard**: a build from before
+    0.32.0 refuses every epoch-7 plan by its `RecordedPlanEpochV1` header
+    (`UnsupportedFormat`), not only those holding an agent node.
   - `nebula-engine`: `RuntimeError::AgentTurnCapExceeded`
     (`RUNTIME:AGENT_TURN_CAP_EXCEEDED`): a `max_turns()` above 10 000 is
     refused before turn 0, never clamped. A turn past its timeout stays

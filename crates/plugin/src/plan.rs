@@ -27,6 +27,8 @@ pub(crate) const COMPILER_VERSION_GRAPH_V4: u16 = 4;
 pub(crate) const COMPILER_VERSION_GRAPH_V5: u16 = 5;
 /// The first epoch whose action effect records may carry `Journaled`.
 pub(crate) const COMPILER_VERSION_GRAPH_V6: u16 = 6;
+/// The first epoch whose action kind records may carry `Agent`.
+pub(crate) const COMPILER_VERSION_GRAPH_V7: u16 = 7;
 pub(crate) const CANONICAL_HASH_VERSION_V1: u16 = 1;
 pub(crate) const CANONICAL_HASH_VERSION_V2: u16 = 2;
 pub(crate) const CANONICAL_HASH_VERSION_V3: u16 = 3;
@@ -53,10 +55,12 @@ pub(crate) enum PlanEpoch {
     GraphV5,
     /// Graph-v5 semantics whose effect grammar adds `Journaled`.
     GraphV6,
+    /// Graph-v6 semantics whose action kind grammar adds `Agent`.
+    GraphV7,
 }
 
 impl PlanEpoch {
-    pub(crate) const CURRENT: Self = Self::GraphV6;
+    pub(crate) const CURRENT: Self = Self::GraphV7;
 
     pub(crate) const fn from_record(
         compiler_version: u16,
@@ -69,6 +73,7 @@ impl PlanEpoch {
             (COMPILER_VERSION_GRAPH_V4, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV4),
             (COMPILER_VERSION_GRAPH_V5, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV5),
             (COMPILER_VERSION_GRAPH_V6, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV6),
+            (COMPILER_VERSION_GRAPH_V7, CANONICAL_HASH_VERSION_V3) => Some(Self::GraphV7),
             _ => None,
         }
     }
@@ -80,6 +85,7 @@ impl PlanEpoch {
             Self::GraphV4Legacy | Self::GraphV4 => COMPILER_VERSION_GRAPH_V4,
             Self::GraphV5 => COMPILER_VERSION_GRAPH_V5,
             Self::GraphV6 => COMPILER_VERSION_GRAPH_V6,
+            Self::GraphV7 => COMPILER_VERSION_GRAPH_V7,
         }
     }
 
@@ -88,14 +94,21 @@ impl PlanEpoch {
             Self::GraphV1 => CANONICAL_HASH_VERSION_V1,
             Self::GraphV3 => CANONICAL_HASH_VERSION_V2,
             Self::GraphV4Legacy => CANONICAL_HASH_VERSION_V2,
-            Self::GraphV4 | Self::GraphV5 | Self::GraphV6 => CANONICAL_HASH_VERSION_V3,
+            Self::GraphV4 | Self::GraphV5 | Self::GraphV6 | Self::GraphV7 => {
+                CANONICAL_HASH_VERSION_V3
+            },
         }
     }
 
     pub(crate) const fn records_effect_contract(self) -> bool {
         matches!(
             self,
-            Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6
+            Self::GraphV3
+                | Self::GraphV4Legacy
+                | Self::GraphV4
+                | Self::GraphV5
+                | Self::GraphV6
+                | Self::GraphV7
         )
     }
 
@@ -103,36 +116,51 @@ impl PlanEpoch {
     /// epochs froze a closed grammar without it, so a `Journaled` record
     /// labelled with one of them is non-canonical, never reinterpreted.
     pub(crate) const fn records_journaled_effects(self) -> bool {
-        matches!(self, Self::GraphV6)
+        matches!(self, Self::GraphV6 | Self::GraphV7)
+    }
+
+    /// Whether this epoch's action kind grammar includes `Agent`. Earlier
+    /// epochs froze a closed grammar without it, so an `Agent` record
+    /// labelled with one of them is non-canonical, never reinterpreted.
+    pub(crate) const fn records_agent_kind(self) -> bool {
+        matches!(self, Self::GraphV7)
     }
 
     const fn supports_intrinsic_error_port(self) -> bool {
         matches!(
             self,
-            Self::GraphV3 | Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6
+            Self::GraphV3
+                | Self::GraphV4Legacy
+                | Self::GraphV4
+                | Self::GraphV5
+                | Self::GraphV6
+                | Self::GraphV7
         )
     }
 
     const fn records_binding_selector_provenance(self) -> bool {
-        matches!(self, Self::GraphV4 | Self::GraphV5 | Self::GraphV6)
+        matches!(
+            self,
+            Self::GraphV4 | Self::GraphV5 | Self::GraphV6 | Self::GraphV7
+        )
     }
 
     const fn supports_scalar_schema(self) -> bool {
         matches!(
             self,
-            Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6
+            Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6 | Self::GraphV7
         )
     }
 
     const fn supports_static_root_rules(self) -> bool {
         matches!(
             self,
-            Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6
+            Self::GraphV4Legacy | Self::GraphV4 | Self::GraphV5 | Self::GraphV6 | Self::GraphV7
         )
     }
 
     const fn supports_property_policy(self) -> bool {
-        matches!(self, Self::GraphV5 | Self::GraphV6)
+        matches!(self, Self::GraphV5 | Self::GraphV6 | Self::GraphV7)
     }
 }
 
@@ -377,8 +405,8 @@ pub(crate) enum RecordedActionKindV1 {
     Stateful,
     Control,
     Trigger,
-    /// An agent's turn loop (experimental: journaled turns). A plan holding
-    /// one does not decode in a build from before 0.32.0.
+    /// An agent's turn loop (experimental: journaled turns). Only epoch 7
+    /// records it; a build from before 0.32.0 refuses epoch 7 by its header.
     Agent,
 }
 
@@ -1419,6 +1447,16 @@ fn validate_record(
         record.canonical_hash_version,
     )?;
     for action in &record.content.actions {
+        if action.kind == RecordedActionKindV1::Agent {
+            if !epoch.records_agent_kind() {
+                return Err(noncanonical("actions.kind"));
+            }
+            // The runtime refuses a capability-gated agent, so no compiler
+            // records one.
+            if action.isolation != RecordedIsolationV1::None {
+                return Err(noncanonical("actions.isolation"));
+            }
+        }
         match (&action.effect_contract, epoch.records_effect_contract()) {
             (None, false) => {},
             (Some(contract), true) => {
