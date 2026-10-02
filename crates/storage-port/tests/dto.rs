@@ -63,6 +63,149 @@ fn journal_entry_roundtrips() {
     assert_eq!(back.seq, Some(1));
 }
 
+mod iteration_checkpoint {
+    use nebula_storage_port::{
+        IterationCheckpoint, IterationCheckpointError, IterationCheckpointKey,
+        MAX_CHECKPOINT_ITERATION, MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES,
+        MAX_ITERATION_CHECKPOINT_STATE_BYTES, Scope,
+    };
+
+    fn record(
+        iteration: u32,
+        state: Vec<u8>,
+    ) -> Result<IterationCheckpoint, IterationCheckpointError> {
+        IterationCheckpoint::new(iteration, state, [7; 32], Some(250), 3, 2)
+    }
+
+    #[test]
+    fn iteration_is_bounded_to_the_runtime_cap() {
+        assert_eq!(
+            record(0, b"{}".to_vec()),
+            Err(IterationCheckpointError::InvalidRecord)
+        );
+        assert!(record(1, b"{}".to_vec()).is_ok());
+        assert!(record(MAX_CHECKPOINT_ITERATION, b"{}".to_vec()).is_ok());
+        assert_eq!(
+            record(MAX_CHECKPOINT_ITERATION + 1, b"{}".to_vec()),
+            Err(IterationCheckpointError::InvalidRecord)
+        );
+    }
+
+    #[test]
+    fn state_is_bounded_and_kept_byte_exact() {
+        let largest = vec![b'x'; MAX_ITERATION_CHECKPOINT_STATE_BYTES];
+        let kept = record(4, largest.clone()).expect("the bound itself is admitted");
+        assert_eq!(kept.state(), largest.as_slice());
+        assert_eq!(
+            record(4, vec![b'x'; MAX_ITERATION_CHECKPOINT_STATE_BYTES + 1]),
+            Err(IterationCheckpointError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn delay_and_generation_stay_in_the_portable_range() {
+        let too_far = u64::try_from(i64::MAX).unwrap() + 1;
+        assert_eq!(
+            IterationCheckpoint::new(1, Vec::new(), [0; 32], Some(too_far), 0, 0),
+            Err(IterationCheckpointError::InvalidRecord)
+        );
+        assert_eq!(
+            IterationCheckpoint::new(1, Vec::new(), [0; 32], None, 0, too_far),
+            Err(IterationCheckpointError::InvalidRecord)
+        );
+    }
+
+    #[test]
+    fn provenance_is_adapter_written() {
+        let fresh = record(2, b"{\"n\":1}".to_vec()).unwrap();
+        assert_eq!((fresh.fencing_generation(), fresh.written_at_ms()), (0, 0));
+        let stored = fresh.with_write_provenance(9, 1_700_000_000_000);
+        assert_eq!(stored.fencing_generation(), 9);
+        assert_eq!(stored.written_at_ms(), 1_700_000_000_000);
+        assert_eq!(stored.iteration(), 2);
+        assert_eq!(stored.resume_delay_ms(), Some(250));
+        assert_eq!(stored.attested_positions(), 3);
+        assert_eq!(stored.attempt_generation(), 2);
+    }
+
+    #[test]
+    fn debug_prints_length_and_digest_never_the_state() {
+        let secret = b"{\"token\":\"hunter2-very-secret\"}".to_vec();
+        let printed = format!("{:?}", record(3, secret.clone()).unwrap());
+        assert!(!printed.contains("hunter2"), "{printed}");
+        assert!(
+            printed.contains(&format!("state_bytes: {}", secret.len())),
+            "{printed}"
+        );
+        assert!(printed.contains(&"07".repeat(32)), "{printed}");
+    }
+
+    #[test]
+    fn key_parts_are_bounded_and_the_version_canonical() {
+        let scope = Scope::new("ws", "org");
+        assert!(IterationCheckpointKey::new(&scope, "exe", "node", "a.b", "1.2.3").is_ok());
+        assert!(IterationCheckpointKey::new(&scope, "exe", "node", "a.b", "1.2.3-rc.1+7").is_ok());
+        for version in ["", "1.2", "01.2.3", "v1.2.3", "1.2.3-"] {
+            assert_eq!(
+                IterationCheckpointKey::new(&scope, "exe", "node", "a.b", version),
+                Err(IterationCheckpointError::InvalidRecord),
+                "{version}"
+            );
+        }
+        assert_eq!(
+            IterationCheckpointKey::new(&scope, "", "node", "a.b", "1.0.0"),
+            Err(IterationCheckpointError::InvalidRecord)
+        );
+        let long = "n".repeat(MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES + 1);
+        assert_eq!(
+            IterationCheckpointKey::new(&scope, "exe", &long, "a.b", "1.0.0"),
+            Err(IterationCheckpointError::InvalidRecord)
+        );
+        let empty_scope = Scope::new("", "org");
+        assert_eq!(
+            IterationCheckpointKey::new(&empty_scope, "exe", "node", "a.b", "1.0.0"),
+            Err(IterationCheckpointError::InvalidRecord)
+        );
+    }
+
+    #[test]
+    fn rescoping_keeps_every_other_part() {
+        let caller = Scope::new("ws-a", "org-a");
+        let bound = Scope::new("ws-b", "org-b");
+        let key = IterationCheckpointKey::new(&caller, "exe", "node", "a.b", "1.0.0").unwrap();
+        let rescoped = key.rescoped(&bound);
+        assert_eq!(rescoped.scope(), &bound);
+        assert_eq!(
+            (
+                rescoped.execution_id(),
+                rescoped.node_key(),
+                rescoped.action_key(),
+                rescoped.action_version()
+            ),
+            ("exe", "node", "a.b", "1.0.0")
+        );
+    }
+
+    #[test]
+    fn deferred_failures_say_nothing_about_the_stored_row() {
+        for deferred in [
+            IterationCheckpointError::Unavailable,
+            IterationCheckpointError::AcknowledgementUnknown,
+            IterationCheckpointError::ExecutionLeaseRejected,
+        ] {
+            assert!(deferred.is_deferred(), "{deferred:?}");
+        }
+        for definitive in [
+            IterationCheckpointError::Conflict,
+            IterationCheckpointError::Regressed { stored: 4 },
+            IterationCheckpointError::InvalidRecord,
+            IterationCheckpointError::TooLarge,
+        ] {
+            assert!(!definitive.is_deferred(), "{definitive:?}");
+        }
+    }
+}
+
 // Compile-time guard: a fresh FencingToken generation is comparable, proving
 // the id seam stays usable from DTO-consuming code.
 #[test]

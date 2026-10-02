@@ -263,7 +263,7 @@ async fn persistent_engine_refuses_a_direct_fresh_start() {
         execution: execution.clone(),
         journal: Arc::new(nebula_storage::InMemoryJournalReader::new(&execution)),
         node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
         idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
         resume_tokens: Arc::new(execution.resume_token_store()),
         operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
@@ -682,7 +682,7 @@ async fn idempotency_key_differentiates_attempts() {
         execution: execution.clone(),
         journal,
         node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
         idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
         resume_tokens: Arc::new(execution.resume_token_store()),
         operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(

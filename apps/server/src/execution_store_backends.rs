@@ -81,7 +81,7 @@ fn build_memory_execution_stores(
                 execution: projected_execution,
                 journal: projected_journal,
                 node_results: projected_node_results,
-                checkpoints: Arc::new(InMemoryCheckpointStore::new()),
+                checkpoints: Arc::new(InMemoryCheckpointStore::new(&execution_store)),
                 idempotency: Arc::new(InMemoryIdempotencyGuard::new()),
                 resume_tokens: projected_resume_tokens,
                 operation_ledger: Arc::new(InMemoryOperationLedger::new(&execution_store)),
@@ -187,7 +187,7 @@ async fn build_sqlite_execution_stores(
 
     tracing::info!(backend = "sqlite", db_path = %database_path, "execution-stores: SQLite migrations ready");
     tracing::warn!(
-        "node-result and checkpoint stores are in-memory (not persisted across restarts); \
+        "the node-result store is in-memory (not persisted across restarts); \
          crash-recovery re-executes affected nodes via the reclaim sweep — \
          authoritative execution state is the SQLite execution row"
     );
@@ -221,7 +221,9 @@ async fn build_sqlite_execution_stores(
                 execution: Arc::clone(&execution_store),
                 journal: Arc::clone(&journal_reader),
                 node_results: Arc::clone(&node_results) as _,
-                checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+                checkpoints: Arc::new(nebula_storage::sqlite::SqliteCheckpointStore::new(
+                    pool.clone(),
+                )),
                 idempotency: Arc::new(SqliteIdempotencyGuard::new(pool.clone())),
                 resume_tokens: Arc::clone(&resume_token_store),
                 operation_ledger: Arc::new(SqliteOperationLedger::new(pool.clone())),
@@ -325,7 +327,7 @@ async fn build_postgres_execution_stores(
         "execution-stores: Postgres migrations ready"
     );
     tracing::warn!(
-        "node-result and checkpoint stores are in-memory (not persisted across restarts); \
+        "the node-result store is in-memory (not persisted across restarts); \
          crash-recovery re-executes affected nodes via the reclaim sweep — \
          authoritative execution state is the Postgres execution row"
     );
@@ -360,7 +362,9 @@ async fn build_postgres_execution_stores(
                 execution: Arc::clone(&execution_store),
                 journal: Arc::clone(&journal_reader),
                 node_results: Arc::clone(&node_result_store),
-                checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+                checkpoints: Arc::new(nebula_storage::postgres::PgCheckpointStore::new(
+                    pool.clone(),
+                )),
                 idempotency: Arc::new(PgIdempotencyGuard::new(pool.clone())),
                 resume_tokens: Arc::clone(&resume_token_store),
                 operation_ledger: Arc::new(PgOperationLedger::new(pool.clone())),

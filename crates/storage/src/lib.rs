@@ -80,6 +80,10 @@ pub mod format;
 pub mod identity_secret;
 /// In-memory adapter implementing the `nebula-storage-port` contract.
 pub mod inmem;
+/// Backend-independent iteration-checkpoint decisions, shared by every
+/// checkpoint adapter so monotone upsert, exact recommit, conflict and
+/// regress cannot drift between backends.
+mod iteration_checkpoint;
 /// Row-to-domain type conversion utilities.
 pub mod mapping;
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]

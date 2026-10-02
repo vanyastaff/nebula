@@ -102,10 +102,11 @@ impl StatefulCheckpoint {
 /// state.
 ///
 /// The runtime does not depend on any storage crate directly — hosts that
-/// want durable stateful resume implement this trait over their persistence
-/// seam; the storage-port `CheckpointStore::{save,load}_stateful_checkpoint`
-/// methods are the matching seam, and `clear` has no port counterpart (the
-/// host maps it onto its own store).
+/// call [`ActionRuntime::execute_action_with_checkpoint`] implement this trait
+/// over their own persistence. The engine's own node dispatch never uses it:
+/// a journaled stateful action resumes through its node effect journal's
+/// fenced iteration checkpoint (the storage-port `CheckpointStore`), and an
+/// unjournaled one starts at iteration 0 on every dispatch.
 ///
 /// Methods return [`ActionError`] for sink-transport/serialization failures.
 ///

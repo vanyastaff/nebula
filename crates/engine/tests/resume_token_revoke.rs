@@ -448,7 +448,7 @@ impl RevokeHarness {
             execution: execution.clone(),
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens,
             operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
@@ -532,7 +532,7 @@ impl RevokeHarness {
             execution: Arc::clone(&interceptor) as Arc<dyn ExecutionStore>,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens,
             operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(

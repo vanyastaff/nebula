@@ -227,10 +227,10 @@ impl WtStores {
         let versions = InMemoryWorkflowVersionStore::new();
         Self {
             frozen: Arc::new(std::sync::Mutex::new(None)),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
         }
@@ -2003,7 +2003,7 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
                 execution: Arc::clone(&fenced) as Arc<dyn ExecutionStore>,
                 journal,
                 node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-                checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+                checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&inner)),
                 idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
                 resume_tokens: Arc::new(inner.resume_token_store()),
                 operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(

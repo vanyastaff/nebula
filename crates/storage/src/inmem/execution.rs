@@ -81,6 +81,13 @@ pub(super) struct State {
     pub(super) accepted_turns:
         std::collections::BTreeMap<String, super::turn_recovery::AcceptedTurn>,
     pub(super) operation_ledger: super::operation_ledger::LedgerState,
+    /// Fenced iteration checkpoints of journaled stateful actions. Shares the
+    /// aggregate lock so a save's lease check and write are one critical
+    /// section, mirroring the SQL backends' fenced transaction.
+    pub(super) iteration_checkpoints: HashMap<
+        super::iteration_checkpoint::CheckpointRowKey,
+        nebula_storage_port::IterationCheckpoint,
+    >,
     pub(super) materialized_starts: HashMap<String, crate::start_materialization::StoredStart>,
     pub(super) materialized_bundle_owners: HashMap<nebula_core::ExecutionContractBundleId, String>,
     pub(super) rows: HashMap<String, Row>,

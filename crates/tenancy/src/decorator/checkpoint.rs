@@ -3,9 +3,16 @@
 use std::sync::Arc;
 
 use nebula_storage_port::store::CheckpointStore;
-use nebula_storage_port::{Scope, StorageError};
+use nebula_storage_port::{
+    CheckpointSaved, FencingToken, IterationCheckpoint, IterationCheckpointError,
+    IterationCheckpointKey, Scope,
+};
 
 /// Forces every checkpoint read and write into one bound tenant.
+///
+/// The caller's key is re-addressed under the bound scope; the fencing token
+/// passes through unchanged, so the backend still fences the write by the
+/// bound tenant's execution lease.
 #[derive(Clone)]
 pub struct ScopedCheckpointStore {
     inner: Arc<dyn CheckpointStore>,
@@ -34,26 +41,23 @@ impl ScopedCheckpointStore {
 
 #[async_trait::async_trait]
 impl CheckpointStore for ScopedCheckpointStore {
-    async fn save_stateful_checkpoint(
+    async fn load_iteration_checkpoint(
         &self,
-        _scope: &Scope,
-        execution_id: &str,
-        node_id: &str,
-        checkpoint: serde_json::Value,
-    ) -> Result<(), StorageError> {
+        key: &IterationCheckpointKey<'_>,
+    ) -> Result<Option<IterationCheckpoint>, IterationCheckpointError> {
         self.inner
-            .save_stateful_checkpoint(&self.bound, execution_id, node_id, checkpoint)
+            .load_iteration_checkpoint(&key.rescoped(&self.bound))
             .await
     }
 
-    async fn load_stateful_checkpoint(
+    async fn save_iteration_checkpoint(
         &self,
-        _scope: &Scope,
-        execution_id: &str,
-        node_id: &str,
-    ) -> Result<Option<serde_json::Value>, StorageError> {
+        key: &IterationCheckpointKey<'_>,
+        checkpoint: &IterationCheckpoint,
+        fencing: FencingToken,
+    ) -> Result<CheckpointSaved, IterationCheckpointError> {
         self.inner
-            .load_stateful_checkpoint(&self.bound, execution_id, node_id)
+            .save_iteration_checkpoint(&key.rescoped(&self.bound), checkpoint, fencing)
             .await
     }
 }

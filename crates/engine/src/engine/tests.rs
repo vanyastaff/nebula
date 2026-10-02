@@ -271,10 +271,10 @@ impl TestStores {
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = nebula_storage::InMemoryWorkflowVersionStore::new();
         Self {
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
         }
