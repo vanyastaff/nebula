@@ -2570,6 +2570,31 @@ impl EffectJournal for NodeEffectJournal {
             .met
             .insert(intent.occurrence.to_owned());
         self.inner.claims_settled.notify_waiters();
+        // The recorded order holds for every answer this slot gives, not
+        // only a fresh call: a replayed outcome or a refusal handed back
+        // before a lower unit the record shows settled first would let the
+        // program run its next effect ahead of that lower one. Wait (bounded,
+        // the slot lock not taken) until those lower units settle; a fresh
+        // slot's list names every lower unit still open, so it never waits.
+        if let Some(concurrent) = slot
+            .protocol()
+            .ok()
+            .and_then(|protocol| protocol.concurrent_with().map(<[PositionRange]>::to_vec))
+            && !self
+                .await_ordered_lower_settled(intent.occurrence, &concurrent)
+                .await
+        {
+            tracing::warn!(
+                execution_id = %authority.execution_id,
+                node_key = %authority.node_key,
+                occurrence = intent.occurrence,
+                "a lower unit recorded as settled before this effect did not settle; deferring"
+            );
+            return Err(self.refuse(
+                STEP,
+                EffectExecutionError::Ledger(OperationLedgerError::AcknowledgementUnknown),
+            ));
+        }
         if prior.reorders_at(intent.occurrence) {
             // A recorded effect that was never sent, below one the program
             // ran after it and that may have been applied: sending it now

@@ -3128,6 +3128,46 @@ async fn a_replay_keeps_the_recorded_order_of_two_unsent_slots() {
     assert_eq!(retry.conclude(DRAIN).await, Ok(()));
 }
 
+/// A replayed answer keeps the recorded order too: a higher slot that
+/// recorded a rejection after the lower one settled (`concurrent_with =
+/// []`) hands its rejection back only once the lower one — sent again on
+/// replay — settles, so the program cannot run its next effect ahead of it.
+#[tokio::test]
+async fn a_replayed_outcome_waits_for_the_lower_units_recorded_before_it() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Throttled, Reply::Rejected]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    for order in [74, 75] {
+        handle
+            .submit(Charge::<false> { order })
+            .await
+            .expect_err("throttled, then rejected");
+    }
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+
+    // The replay: the lower one is sent again and held at the provider.
+    harness.desk.script(&[Reply::Held]);
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    let lower = tokio::spawn(handle.submit(Charge::<false> { order: 74 }));
+    calls_reach(&harness.desk, 3).await;
+    let higher = tokio::spawn(handle.submit(Charge::<false> { order: 75 }));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !higher.is_finished(),
+        "the recorded rejection waits for the lower unit to settle"
+    );
+    harness.desk.release.notify_waiters();
+    lower.await.expect("task").expect("the lower one applies");
+    higher
+        .await
+        .expect("task")
+        .expect_err("then the recorded rejection replays");
+    assert_eq!(harness.desk.keys().len(), 3, "the rejection replays unsent");
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+}
+
 /// A recorded pair the program ran together (the higher one lists the lower
 /// as concurrent) is not serialized on replay.
 #[tokio::test]
