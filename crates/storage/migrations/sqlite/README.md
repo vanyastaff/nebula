@@ -51,6 +51,15 @@ so the backfill default remains; stop old credential writers before applying
 it, because they do not advance the epoch. SQLite has no `0060`
 (PostgreSQL-only rate limits), so its head jumps from `0059` to `0061`.
 
+Migration `0062_port_iteration_checkpoints.sql` creates the empty
+`port_iteration_checkpoints` relation: one fenced iteration checkpoint per
+(tenant, execution, node, action key, action version) of a journaled stateful
+action, its bounds as `CHECK`s (iteration `1..=10000`, state at most 1 MiB, a
+32-byte digest, non-negative delay and counters, `typeof` guards as in
+`0045`), and a cascading foreign key to the execution row. Nothing is
+backfilled; a missing row means "replay from iteration 0". Aggregate-neutral:
+the general catalog floor stays at `0040`.
+
 ## Storage-port adapter schema (0027)
 
 `crates/storage/src/sqlite/schema.sql` is the **cumulative** `port_*` schema,

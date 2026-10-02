@@ -12,8 +12,12 @@ use super::{
 
 fn backend_versions(backend: BackendKind) -> Vec<i64> {
     match backend {
-        BackendKind::Sqlite => (1..=28).chain(30..=35).chain(39..=59).chain([61]).collect(),
-        BackendKind::Postgres => (1..=61).collect(),
+        BackendKind::Sqlite => (1..=28)
+            .chain(30..=35)
+            .chain(39..=59)
+            .chain([61, 62])
+            .collect(),
+        BackendKind::Postgres => (1..=62).collect(),
     }
 }
 
@@ -224,8 +228,8 @@ fn rejects_a_supported_ledger_without_the_credentials_relation() {
 #[test]
 fn accepts_exact_successful_backend_prefixes_at_or_above_the_floor() {
     for (backend, accepted_heads) in [
-        (BackendKind::Sqlite, &[30, 35, 39, 40, 41, 59, 61][..]),
-        (BackendKind::Postgres, &[30, 38, 39, 40, 41, 60, 61][..]),
+        (BackendKind::Sqlite, &[30, 35, 39, 40, 41, 59, 61, 62][..]),
+        (BackendKind::Postgres, &[30, 38, 39, 40, 41, 60, 61, 62][..]),
     ] {
         let policy = policy(backend);
         for latest in accepted_heads {
@@ -375,7 +379,7 @@ fn rejects_other_backend_reserved_unknown_and_future_versions() {
         );
     }
 
-    for migration in [62, 777] {
+    for migration in [63, 777] {
         let mut rows = canonical_ledger(&sqlite_policy, sqlite_policy.current_version);
         rows.push(MigrationLedgerRow {
             version: migration,
@@ -525,7 +529,7 @@ fn material_epoch_presence_and_range_match_the_0040_schema_boundary() {
 fn admission_epoch_presence_and_range_match_the_0061_schema_boundary() {
     for backend in [BackendKind::Sqlite, BackendKind::Postgres] {
         let policy = policy(backend);
-        assert_eq!(policy.current_version, 61);
+        assert_eq!(policy.current_version, 62);
 
         let admitted =
             migrated_observation(&policy, policy.current_version, vec![credential("{}")]);
