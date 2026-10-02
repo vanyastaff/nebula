@@ -3,7 +3,7 @@
 //!
 //! A write authorized by an execution lease — an operation-ledger prepare or
 //! advance, an iteration checkpoint — is admitted only while the presented
-//! [`FencingToken`] is the execution row's current fencing generation **and**
+//! [`FencingToken`](nebula_storage_port::FencingToken) is the execution row's current fencing generation **and**
 //! that lease is live by the backend's own clock. The comparison is answered
 //! once here; each backend's helper (`inmem::execution_fence`,
 //! `sqlite::execution_fence`, `postgres::execution_fence`) reads the row under

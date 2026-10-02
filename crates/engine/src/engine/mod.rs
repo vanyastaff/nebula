@@ -316,7 +316,7 @@ pub struct WorkflowEngine {
     /// next to [`resource_registrars`] and the
     /// [`resource_manager`](Self::resource_manager) it is driven against
     /// because the three are the resource-rotation triad: the registrar
-    /// path [`bind`](nebula_credential_rotation_index_bind)s a row when a
+    /// path binds ([`ResourceFanoutIndex::bind`](nebula_resource::ResourceFanoutIndex::bind)) a row when a
     /// credential resolves into a `#[credential]` slot, and the
     /// `ResourceFanoutDriver` drains it on a rotation/revoke event into the
     /// `Manager` slot ports. No `nebula-resource → nebula-engine` edge: the

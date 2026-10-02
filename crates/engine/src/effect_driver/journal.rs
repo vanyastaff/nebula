@@ -239,7 +239,7 @@
 //! and how many iterated ledger positions below it the node holds (the
 //! *attested* positions: every one this attempt met, or an earlier
 //! checkpoint attested). It is saved through the node's
-//! [`CheckpointStore`](nebula_storage_port::store::CheckpointStore), under
+//! [`CheckpointStore`], under
 //! the turn's fence, bound to the action key and version; nothing else
 //! may be saved — not before the barrier, not after a failing one, not
 //! twice, not after a cancellation, and not while a position below is
@@ -248,7 +248,7 @@
 //! it; an unavailable store, a lost acknowledgement or a save that does not
 //! answer within [`FINAL_READ_FLOOR`] only costs the optimisation (counted
 //! and logged, the loop goes on); a state past
-//! [`MAX_ITERATION_CHECKPOINT_STATE_BYTES`](nebula_storage_port::MAX_ITERATION_CHECKPOINT_STATE_BYTES)
+//! [`MAX_ITERATION_CHECKPOINT_STATE_BYTES`]
 //! is not saved. Before its first iteration the runtime asks the journal
 //! where to start ([`IterationGate::resume`]): the journal loads the
 //! checkpoint (bounded; a store that does not answer defers the node —
