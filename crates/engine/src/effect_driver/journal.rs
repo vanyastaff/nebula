@@ -484,13 +484,6 @@ const _: () = assert!(MAX_CHECKPOINT_ITERATION == MAX_ITERATION + 1);
 
 /// Longest delay a checkpoint records, in milliseconds: the portable durable
 /// integer range.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the stateful runtime calls the gate's checkpoint in the next change"
-    )
-)]
 const MAX_CHECKPOINT_DELAY_MS: u64 = i64::MAX.unsigned_abs();
 
 /// The positional part of every occurrence label, before its ordinal.
@@ -567,10 +560,6 @@ pub(crate) trait IterationGate: Send + Sync {
     /// checkpoint contradicts its digest or the ledger, or
     /// [`InvalidContract`](EffectExecutionError::InvalidContract) after an
     /// iteration began. The runtime does not run the action.
-    #[expect(
-        dead_code,
-        reason = "the stateful runtime calls the gate's resume in the next change"
-    )]
     async fn resume(&self) -> Result<Option<ResumePoint>, EffectExecutionError>;
 
     /// Records that the loop continues at `iteration` with `state` after a
@@ -588,10 +577,6 @@ pub(crate) trait IterationGate: Send + Sync {
     /// barrier of `iteration - 1` passed since; or
     /// [`Cancelled`](EffectExecutionError::Cancelled) once admission closed.
     /// The runtime starts no further iteration.
-    #[expect(
-        dead_code,
-        reason = "the stateful runtime calls the gate's checkpoint in the next change"
-    )]
     async fn checkpoint(
         &self,
         iteration: u32,
@@ -601,13 +586,6 @@ pub(crate) trait IterationGate: Send + Sync {
 }
 
 /// Where a journaled stateful loop resumes ([`IterationGate::resume`]).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the stateful runtime calls the gate's resume in the next change"
-    )
-)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResumePoint {
     /// The next iteration to run.
@@ -783,13 +761,6 @@ pub(crate) struct JournalAuthority {
     /// Where an [`Iterated`](JournalShape::Iterated) journal loads and
     /// saves its iteration checkpoint; `None` keeps none (every attempt
     /// replays from iteration 0).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the stateful runtime calls the gate's resume and checkpoint in the next change"
-        )
-    )]
     pub checkpoints: Option<Arc<dyn CheckpointStore>>,
 }
 
@@ -873,13 +844,6 @@ struct JournalState {
     checkpointable: Option<u32>,
     /// The checkpoint was consulted ([`IterationGate::resume`]): it is
     /// consulted at most once, before the first iteration.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the stateful runtime calls the gate's resume in the next change"
-        )
-    )]
     resume_consulted: bool,
 }
 
@@ -1834,13 +1798,6 @@ impl NodeEffectJournal {
 
 /// The node attempt's iteration checkpoint: resuming from it and recording
 /// it ([`IterationGate::resume`], [`IterationGate::checkpoint`]).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the stateful runtime calls the gate's resume and checkpoint in the next change"
-    )
-)]
 impl NodeEffectJournal {
     /// The address of this node attempt's iteration checkpoint.
     fn checkpoint_key<'a>(
