@@ -4160,6 +4160,109 @@ async fn a_read_whose_ceiling_is_spent_fails_exhausted_and_the_node_is_not_unkno
 }
 
 #[tokio::test]
+async fn a_read_spent_before_its_failure_was_recorded_replays_exhausted_once_superseded() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Hang, Reply::Applied]);
+    let first = harness.journal(1);
+    let asking = tokio::spawn(harness.handle(&first).submit(Ask::new()));
+    tokio::time::timeout(Duration::from_secs(5), harness.desk.entered.notified())
+        .await
+        .expect("the call reached the provider");
+    // The process dies mid-call: no failure is recorded for the read.
+    asking.abort();
+    let _ = asking.await;
+    // The ledger closes the slot (its window or ceiling ran out) before any
+    // run recorded how the read failed.
+    let slot = harness.slots().await[0].record().operation().slot_id();
+    let revision = protocol_at(&harness, OCCURRENCE_0).await.revision();
+    harness
+        .ledger
+        .inner
+        .advance(
+            &harness.scope,
+            slot,
+            harness.fencing,
+            &OperationCommand::MarkUnknown {
+                expected_revision: revision,
+            },
+        )
+        .await
+        .expect("spent");
+    assert_eq!(protocol_at(&harness, OCCURRENCE_0).await.unsent_failure(), None);
+
+    // A run whose owner cannot record the read's failure fails closed:
+    // nothing fresh is prepared above the read, and the node defers.
+    harness
+        .ledger
+        .fail_next_unsent_failure
+        .store(true, Ordering::SeqCst);
+    let held_run = harness.journal(2);
+    let handle = harness.handle(&held_run);
+    let spent = handle.submit(Ask::new()).await.expect_err("spent");
+    assert_eq!(
+        *spent.kind(),
+        nebula_resource::ErrorKind::Exhausted { retry_after: None }
+    );
+    let held = handle
+        .submit(Charge::<false> { order: 35 })
+        .await
+        .expect_err("held above the unrecorded read");
+    assert_eq!(held.sent(), SentState::NotSent);
+    let verdict = held_run.conclude(DRAIN).await;
+    assert!(
+        verdict.is_err_and(EffectExecutionError::is_deferred),
+        "{verdict:?}"
+    );
+    assert_eq!(harness.slots().await.len(), 1, "nothing prepared above it");
+
+    // The next run's read fails `Exhausted`; the program goes on and
+    // charges above it.
+    let retry = harness.journal(3);
+    let handle = harness.handle(&retry);
+    let spent = handle.submit(Ask::new()).await.expect_err("spent");
+    assert_eq!(
+        *spent.kind(),
+        nebula_resource::ErrorKind::Exhausted { retry_after: None }
+    );
+    assert_eq!(
+        protocol_at(&harness, OCCURRENCE_0)
+            .await
+            .unsent_failure()
+            .map(UnsentFailureCode::as_str),
+        Some("exhausted"),
+        "recorded before the program saw it"
+    );
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 35 })
+            .await
+            .expect("applied"),
+        2
+    );
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+
+    // A later run meets the read superseded by the charge: it fails as the
+    // program saw it fail, `Exhausted` — never `Permanent`.
+    let replay = harness.journal(4);
+    let handle = harness.handle(&replay);
+    let superseded = handle.submit(Ask::new()).await.expect_err("superseded");
+    assert_eq!(
+        *superseded.kind(),
+        nebula_resource::ErrorKind::Exhausted { retry_after: None }
+    );
+    assert_eq!(superseded.sent(), SentState::NotSent);
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 35 })
+            .await
+            .expect("replayed"),
+        2
+    );
+    assert_eq!(replay.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 2, "never asked again");
+}
+
+#[tokio::test]
 async fn an_answer_the_ledger_did_not_record_is_withheld_and_holds_later_effects() {
     let harness = Harness::new().await;
     // Record before return: the settle of the answer fails, so the caller

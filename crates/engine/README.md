@@ -179,7 +179,7 @@ configuration, and process lifecycle.
   recorded (≤ 1 MiB, never digest-only) before the unit returns it and replays with no
   provider call; an unanswered read is asked again at the same position, a spent
   ceiling fails it `Exhausted`, and it never makes the node unknown; its failure is
-  recorded whatever crossed, and an unanswered read below any position recorded after
+  recorded whatever crossed (a ceiling spent at prepare included), and an unanswered read below any position recorded after
   it is refused `superseded` with that failure. A settle or explanation the ledger does
   not take withholds the answer (`Transient` / `MaybeSent`) and turns the position
   uncertain (nothing fresh above it, the node defers). An answered read orders lower

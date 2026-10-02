@@ -3525,4 +3525,14 @@ async fn a_recorded_read_whose_ceiling_is_spent_fails_exhausted_never_unknown() 
     assert_unsent(&spent, &ErrorKind::Exhausted { retry_after: None });
     assert!(!spent.is_outcome_unknown());
     assert_eq!(calls.made(), 0);
+    // Both failures are recorded before the caller sees them: a later run
+    // that supersedes either read fails it `Exhausted` too, never
+    // `Permanent`.
+    assert_eq!(
+        fixture.owner.unsent(),
+        vec![
+            (occurrence(0), "exhausted".to_owned()),
+            (occurrence(1), "exhausted".to_owned()),
+        ]
+    );
 }

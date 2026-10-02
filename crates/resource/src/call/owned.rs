@@ -866,9 +866,14 @@ pub(super) async fn prepare<T>(
             OperationError::new(code.replayed_kind(), "recorded provider rejection replayed"),
             SentState::Sent,
         ),
-        // A recorded read is never unknown: its ceiling is spent.
+        // A recorded read is never unknown: its ceiling is spent. The
+        // failure is recorded before the caller sees it, as every failure
+        // of a read without an answer is: a later run that supersedes the
+        // read fails it the same way.
         SlotPhase::Unknown if effect.observes() => {
-            Prepared::Refused(spent_read(), SentState::NotSent)
+            let spent = spent_read();
+            effect.record_unsent(&slot, spent.kind()).await;
+            Prepared::Refused(spent, SentState::NotSent)
         },
         SlotPhase::Unknown => {
             Prepared::Refused(refusal_error(JournalRefusal::Unknown), SentState::MaybeSent)

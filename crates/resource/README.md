@@ -829,7 +829,8 @@ answer over 1 MiB less 1 KiB or without a JSON form fails `Permanent` before
 the caller sees it, a settle the owner does not take withholds the answer
 (`Transient` / `MaybeSent`, retryable), every failure without an answer is
 recorded whatever was sent, and a spent ceiling fails `Exhausted` — never an
-unknown outcome. A plain `Read` is never recorded: an answer that changed
+unknown outcome — recorded before the caller sees it, even when the ceiling is
+met at prepare. A plain `Read` is never recorded: an answer that changed
 and steers a later effect makes a replay diverge.
 
 For a journaled effect the runtime derives the whole journal declaration
