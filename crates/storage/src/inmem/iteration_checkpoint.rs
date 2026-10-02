@@ -87,8 +87,11 @@ impl CheckpointStore for InMemoryCheckpointStore {
         fencing: FencingToken,
     ) -> Result<CheckpointSaved, IterationCheckpointError> {
         let result = (|| {
-            let now = self.execution.clock.now();
             let mut state = self.execution.inner.lock();
+            // Read the clock under the execution lock, right before the fence
+            // check: liveness is judged at the same point as the write, never
+            // with a reading taken before a wait for the lock.
+            let now = self.execution.clock.now();
             require_live_execution(&state, key.scope(), key.execution_id(), Some(fencing), now)?;
             let row_key = CheckpointRowKey::of(key);
             let stored = state.iteration_checkpoints.get(&row_key);
