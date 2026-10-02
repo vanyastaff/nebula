@@ -11,6 +11,47 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **`CheckpointStore` becomes the fenced, version-bound store of journaled
+  stateful actions' iteration checkpoints; development packages advance to
+  0.31.0 in lockstep.** A journaled stateful node now resumes at its last
+  iteration checkpoint instead of replaying every iteration: after each
+  `Continue` whose effect barrier passed, the engine saves the next
+  iteration, the state (canonical JSON, ≤ 1 MiB) and its SHA-256, the delay
+  and the attested ledger-position count under the execution lease; a resume
+  verifies the digest and the count against the operation ledger and halts
+  (`ENGINE:EFFECT_ITERATION_CHECKPOINT`) on any contradiction, or defers when
+  the store does not answer. Attested iterations never run again (invariant
+  S9); a divergence inside them is no longer detected — the accepted
+  narrowing. Paired migration `0062_port_iteration_checkpoints` is
+  aggregate-neutral (the catalog floor stays at 0040).
+  - `nebula-storage-port`: `CheckpointStore::{save,load}_stateful_checkpoint`
+    are replaced by `load_iteration_checkpoint(&IterationCheckpointKey)` and
+    `save_iteration_checkpoint(&IterationCheckpointKey, &IterationCheckpoint,
+    FencingToken) -> CheckpointSaved`; new `IterationCheckpoint`,
+    `IterationCheckpointKey`, `IterationCheckpointError`, `CheckpointSaved`
+    and the `MAX_*` bounds.
+  - `nebula-storage`: `InMemoryCheckpointStore::new` takes the
+    `&InMemoryExecutionStore` whose leases fence it; new
+    `SqliteCheckpointStore` and `PgCheckpointStore`. The worker and server
+    composition roots use the SQL adapters (checkpoints are no longer
+    in-memory on SQLite/PostgreSQL deployments).
+  - `nebula-tenancy`: `ScopedCheckpointStore` re-addresses the key under its
+    bound scope and passes the fence through.
+  - `nebula-engine`: `EffectExecutionError::IterationCheckpoint`; the
+    `ExecutionStores.checkpoints` field is now read. New counters
+    `nebula_effect_journal_checkpoints_total{outcome}` and
+    `nebula_effect_journal_resumes_total{outcome}`, and the
+    `iteration_checkpoint` verdict code.
+  - Migration:
+
+    | Before (≤ 0.30) | 0.31.0 |
+    |---|---|
+    | `InMemoryCheckpointStore::new()` | `InMemoryCheckpointStore::new(&execution_store)` (the in-memory execution store the other in-memory ports share) |
+    | `ExecutionStores { checkpoints: Arc::new(InMemoryCheckpointStore::new()), .. }` on a SQLite / PostgreSQL deployment | `SqliteCheckpointStore::new(pool)` / `PgCheckpointStore::new(pool)` over the execution store's pool |
+    | `store.save_stateful_checkpoint(&scope, exec, node, json)` | `store.save_iteration_checkpoint(&IterationCheckpointKey::new(&scope, exec, node, action_key, version)?, &IterationCheckpoint::new(..)?, fencing)` |
+    | `store.load_stateful_checkpoint(&scope, exec, node)` | `store.load_iteration_checkpoint(&key)` |
+    | journaled stateful node replays from iteration 0 on every attempt | resumes at its last verified checkpoint; replays from 0 only without one |
+
 - **`nebula-resource` removes the `Lease` managed-call facade; development
   packages advance to 0.30.0 in lockstep.** `call::ResourceHandle<R>`
   (`Manager::handle`, `handle_for_identity` and the erased `handle_any*`

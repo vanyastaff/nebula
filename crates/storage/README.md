@@ -254,9 +254,16 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 - **[L2-§11.5]** `TransitionBatch::journal` backs the durable `port_execution_journal`
   (append-only, replayable) and is committed with the state transition. No production caller
   fills the batch's journal rows yet (#1013); the legacy `execution_journal` table has no
-  INSERT writer. `CheckpointStore`
-  remains **best-effort**: a checkpoint write failure may log and not abort execution; work
-  since the last checkpoint may be replayed or lost. Seams:
+  INSERT writer. `CheckpointStore` holds the **fenced iteration checkpoints** of journaled
+  stateful actions (migration 0062, `port_iteration_checkpoints`): one row per tenant,
+  execution, node, action key and action version, saved in one transaction under the
+  execution fence the operation ledger shares (`execution_fence`), monotone (a lower
+  iteration never replaces a higher one; an equal one must carry the same state digest),
+  cascading with its execution. A lost row only costs replaying from iteration 0 — the
+  operation ledger stays the authority on effects, and the engine cross-checks every resume
+  against it. Adapters: `InMemoryCheckpointStore::new(&InMemoryExecutionStore)`,
+  `SqliteCheckpointStore`, `PgCheckpointStore`; oracle
+  `tests/support/iteration_checkpoint_oracle.rs`. Seams:
   `crates/storage-port/src/batch.rs` and `crates/storage-port/src/store/checkpoint.rs`.
 
 - **[ADR-0009]** Resume-persistence schema foundation. `NodeResultStore::set_workflow_input` /
@@ -464,7 +471,7 @@ model — they keep live consumers (the API idempotency middleware, the
 | `port_executions` row + state JSON | **Durable** (CAS via `ExecutionStore` + `TransitionBatch`) | Source of truth |
 | `port_execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state. No production writer yet (#1013) — `TransitionBatch::journal` rows have no producer, and the legacy `execution_journal` table has no INSERT writer |
 | `port_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2) |
-| stateful checkpoints | **Best-effort** | Write failure logs, does not abort; may replay |
+| iteration checkpoints (`port_iteration_checkpoints`) | **Durable + fenced** (SQLite/PostgreSQL; in-memory reference shares the execution store) | Saved under the live execution lease, monotone per `(tenant, execution, node, action key, action version)`, cascades with its execution. An unavailable save only skips the optimisation (the next attempt replays from an earlier checkpoint or iteration 0); never authority over effects — the operation ledger is. Verified by `iteration_checkpoint_conformance_{inmem,sqlite,postgres}` and the engine `journal_checkpoint` suite |
 | lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0072) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
 | local idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. This is not a remote-effect ledger or atomicity guarantee. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
 | credential admission epoch (use revision) | **Durable + transactional** on SQLite/PostgreSQL; **replacement-only** in the in-memory pairing | Advanced with every closing write in one transaction (replace, won revoke claim, sentinel, escalation). The in-memory claim repository is a separate object and cannot advance it on claim transitions, so invariant I-A holds only on the SQL backends. Verified by the credential semantic oracle and the claim-side cases in `refresh_claim_conformance_{sqlite,postgres}` |

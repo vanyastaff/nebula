@@ -129,9 +129,12 @@ SQLite/Postgres, под Mutex в InMemory).
   относится к prepare и outcome DB commits: prepare uncertainty запрещает provider
   invocation, пока DB reconciliation не подтвердит exact durable prepared record и ID;
   outcome uncertainty разрешает только ledger reads и exact frozen-evidence recommit.
-- **[L2-§11.5] Durable journal, best-effort checkpoint.** `TransitionBatch::journal`
+- **[L2-§11.5] Durable journal, fenced iteration checkpoint.** `TransitionBatch::journal`
   пишется в том же commit, что и переход (append-only, replayable). `CheckpointStore` —
-  best-effort: сбой логируется, не абортит исполнение.
+  fenced iteration checkpoints journaled stateful actions (migration 0062): запись под
+  execution fence, монотонная, привязанная к action key + version. Недоступный store
+  только пропускает сохранение (не абортит исполнение); потеря строки = replay с
+  iteration 0. Authority над effects остаётся у operation ledger.
 - **[L2-§12.2] Atomic outbox.** `execution_control_queue` пишется в **той же логической
   операции**, что и сопровождаемый переход; cancel-сигнал enqueue-ится атомарно с
   `cancelling`-переходом (нельзя «переход без enqueue» или «enqueue без перехода»).

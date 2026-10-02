@@ -556,19 +556,22 @@ where
     /// Returns [`ActionError::Validation`] if state decoding fails, or propagates
     /// errors from the underlying action.
     ///
-    /// # State checkpointing invariant
+    /// # State write-back
     ///
     /// State mutations performed by the typed action are flushed back to
-    /// `state` **before** any error from `action.execute()` is propagated.
-    /// If the typed action increments a counter or advances a cursor and
-    /// then returns [`ActionError::Retryable`], the engine checkpoints the
-    /// new state — retries resume from the mutated position instead of
-    /// replaying completed work (which would duplicate API calls, double
-    /// charges, and double emits).
+    /// `state` **before** any error from `action.execute()` is propagated,
+    /// so the caller always holds the state the action last wrote. The only
+    /// path that leaves `state` untouched is `Validation` raised while
+    /// deserializing state — in that case `typed_state` was never created
+    /// and cannot have been mutated.
     ///
-    /// The only path that does NOT checkpoint is `Validation` raised while
-    /// deserializing state — in that case `typed_state` was never created and
-    /// cannot have been mutated.
+    /// The engine does **not** checkpoint the state of a failed iteration:
+    /// an iteration that returns an error, `Retryable` included, records
+    /// nothing, and a retry of the node starts from the last iteration that
+    /// returned `Continue` and passed its effect barrier (a journaled
+    /// action's iteration checkpoint), or from `init_state` without one.
+    /// Effects a failed iteration already sent are kept from repeating by
+    /// the node's effect journal, not by its state.
     async fn dispatch(
         &self,
         input: &PreparedActionInput,

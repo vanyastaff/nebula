@@ -73,6 +73,19 @@ does **not** implement any backend.
   reads recover a preparation whose slot identity was never acknowledged.
   Privileged adjudication serializes under the same execution owner and retains
   its audit evidence; it remains a separate capability from ordinary effect calls.
+- **Fenced, version-bound iteration checkpoints.** `CheckpointStore` loads and
+  saves one `IterationCheckpoint` per `IterationCheckpointKey` (tenant, execution,
+  node, action key, canonical action version): the next iteration (1..=10 000),
+  canonical state bytes (≤ 1 MiB) with their SHA-256, the resume delay, the
+  attested ledger-position count and provenance (attempt and fencing generation,
+  backend write time). A save runs under the same execution fence as the operation
+  ledger: insert, replace a lower iteration, `AlreadyRecorded` for an exact
+  recommit (same iteration and digest), `Conflict` for other state at the same
+  iteration, `Regressed` for a lower one. Loads take no fence; a row of another
+  tenant, action or version is indistinguishable from none. The port does not hash;
+  `Debug` prints the state's length and digest only, and every
+  `IterationCheckpointError` is payload-free. Credentials never belong in the state:
+  it is stored unencrypted.
 - **Bounded effect protocol.** `OperationLedger::advance` grants explicit invocation
   and read-only query attempts under persisted policy limits and backend-clock
   deadlines. Only calls that may have crossed the provider boundary spend the
