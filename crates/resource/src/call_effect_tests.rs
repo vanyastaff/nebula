@@ -32,7 +32,7 @@ use super::super::{
     declaration::local_idempotency_key,
     journal::{
         CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight, JournalIntent,
-        JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase, UnitKind,
+        JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase, UnitKind, UnsentFailure,
     },
     managed::submit_unit,
     work::Plain,
@@ -123,7 +123,10 @@ struct FakeState {
     intents: Vec<SeenIntent>,
     fail_prepare: Option<JournalRefusal>,
     fail_settle: Option<JournalRefusal>,
+    fail_explain: Option<JournalRefusal>,
     fail_grant: Option<JournalRefusal>,
+    /// Unsent failures recorded, as `(occurrence, code)`, in order.
+    unsent: Vec<(String, String)>,
     /// The next submission is refused with this.
     fail_admit: Option<JournalRefusal>,
     on_grant: Option<Box<dyn FnOnce() + Send>>,
@@ -190,6 +193,15 @@ impl FakeOwner {
 
     fn fail_next_settle(&self, refusal: JournalRefusal) {
         self.state().fail_settle = Some(refusal);
+    }
+
+    fn fail_next_explain(&self, refusal: JournalRefusal) {
+        self.state().fail_explain = Some(refusal);
+    }
+
+    /// The unsent failures recorded so far, as `(occurrence, code)`.
+    fn unsent(&self) -> Vec<(String, String)> {
+        self.state().unsent.clone()
     }
 
     fn grant_with_budget(&self, budget: Duration) {
@@ -315,6 +327,11 @@ impl EffectJournal for FakeOwner {
             let phase = match (&slot.phase, slot.recovery) {
                 (Phase::Resolved(outcome), _) => SlotPhase::Replay(outcome.clone()),
                 (Phase::Prepared | Phase::BeforeBoundary, _) => SlotPhase::Runnable,
+                // A recorded read with no answer may be asked again.
+                (Phase::Ambiguous | Phase::Outstanding(_), Recovery::Observation) => {
+                    slot.phase = Phase::Ambiguous;
+                    SlotPhase::Runnable
+                },
                 (Phase::Ambiguous | Phase::Outstanding(_), Recovery::StableKey { window })
                     if now < slot.prepared_at + window =>
                 {
@@ -335,7 +352,13 @@ impl EffectJournal for FakeOwner {
             key: IdempotencyKey::new(&format!("key-{id}")).expect("key"),
             fingerprint,
             recovery: intent.recovery,
-            max_invocations: intent.max_invocations.get(),
+            // A recorded read may be asked again up to the owner's own
+            // ceiling (the ledger's), not the unit's attempt budget.
+            max_invocations: if intent.recovery == Recovery::Observation {
+                10_000
+            } else {
+                intent.max_invocations.get()
+            },
             invocations: 0,
             prepared_at: now,
             phase: Phase::Prepared,
@@ -360,7 +383,8 @@ impl EffectJournal for FakeOwner {
             let budget = state.grant_budget;
             let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
             let grantable = match (&fake.phase, fake.recovery) {
-                (Phase::Prepared | Phase::BeforeBoundary, _) => true,
+                (Phase::Prepared | Phase::BeforeBoundary, _)
+                | (Phase::Ambiguous, Recovery::Observation) => true,
                 (Phase::Ambiguous, Recovery::StableKey { window }) => {
                     now < fake.prepared_at + window
                 },
@@ -394,13 +418,18 @@ impl EffectJournal for FakeOwner {
         crossing: Crossing,
     ) -> Result<(), JournalRefusal> {
         let mut state = self.state();
+        if let Some(refusal) = state.fail_explain.take() {
+            return Err(refusal);
+        }
         let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
         if fake.phase != Phase::Outstanding(call) {
             return Err(JournalRefusal::Mismatch);
         }
         fake.phase = match (crossing, fake.recovery) {
             (Crossing::NotCrossed, _) => Phase::BeforeBoundary,
-            (Crossing::Ambiguous, Recovery::StableKey { .. }) => Phase::Ambiguous,
+            (Crossing::Ambiguous, Recovery::StableKey { .. } | Recovery::Observation) => {
+                Phase::Ambiguous
+            },
             _ => Phase::Unknown,
         };
         state.log.push(Step::Explain(crossing));
@@ -430,6 +459,22 @@ impl EffectJournal for FakeOwner {
         };
         fake.phase = Phase::Resolved(recorded);
         state.log.push(Step::Settle(step));
+        Ok(())
+    }
+
+    async fn record_unsent_failure(
+        &self,
+        slot: &JournalSlot,
+        failure: UnsentFailure,
+    ) -> Result<(), JournalRefusal> {
+        let mut state = self.state();
+        let occurrence = state
+            .slots
+            .iter()
+            .find(|(_, fake)| fake.id == *slot.id())
+            .map(|(occurrence, _)| occurrence.clone())
+            .ok_or(JournalRefusal::Mismatch)?;
+        state.unsent.push((occurrence, failure.code()));
         Ok(())
     }
 
@@ -2920,7 +2965,6 @@ async fn a_library_session_runs_without_an_owner() {
 
 #[test]
 fn an_unsent_failure_round_trips_its_kind_and_payload_through_its_code() {
-    use super::super::journal::UnsentFailure;
     use crate::error::CredentialUnavailableReason;
     let kinds = [
         ErrorKind::Transient,
@@ -2975,7 +3019,6 @@ fn an_unsent_failure_round_trips_its_kind_and_payload_through_its_code() {
 
 #[test]
 fn a_superseded_effect_fails_with_its_recorded_kind_or_permanent_without_one() {
-    use super::super::journal::UnsentFailure;
     let throttled = ErrorKind::Exhausted {
         retry_after: Some(Duration::from_secs(2)),
     };
@@ -2990,4 +3033,496 @@ fn a_superseded_effect_fails_with_its_recorded_kind_or_permanent_without_one() {
         replayed.detail(),
         "effect failed unsent in an earlier run that moved past it; not sent again"
     );
+}
+
+// ── recorded reads ───────────────────────────────────────────────────────
+
+const ASK: &str = "model.ask";
+
+/// A recorded read — a model call: each attempt answers the next scripted
+/// result. Its canonical request is `{"prompt":…}`.
+#[derive(Serialize, Deserialize)]
+struct Ask {
+    prompt: String,
+    #[serde(skip)]
+    script: Vec<Result<String, OperationError>>,
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl Ask {
+    fn new(calls: &Arc<Calls>, script: Vec<Result<String, OperationError>>) -> Self {
+        Self {
+            prompt: "what next?".to_owned(),
+            script,
+            calls: Arc::clone(calls),
+        }
+    }
+
+    fn answering(calls: &Arc<Calls>, answer: &str) -> Self {
+        Self::new(calls, vec![Ok(answer.to_owned())])
+    }
+}
+
+impl<R: Provider + PinSlots> Operation<R> for Ask {
+    type Output = String;
+    const KEY: &'static str = ASK;
+    const EFFECT: Effect = Effect::RecordedRead;
+
+    fn max_attempts(&self) -> NonZeroU32 {
+        NonZeroU32::new(u32::try_from(self.script.len()).expect("few")).expect("a reply")
+    }
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<String, OperationError> {
+        let mut script = std::collections::VecDeque::from(self.script);
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            script.pop_front().unwrap_or_else(|| Ok(String::new()))
+        })
+        .await
+    }
+}
+
+/// The canonical request of an [`Ask`].
+fn ask_request() -> Vec<u8> {
+    br#"{"prompt":"what next?"}"#.to_vec()
+}
+
+/// A recorded read whose answer has no JSON form (a map with non-string
+/// keys).
+#[derive(Serialize, Deserialize)]
+struct AskForMap {
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for AskForMap {
+    type Output = BTreeMap<Vec<u8>, u8>;
+    const KEY: &'static str = "model.ask_map";
+    const EFFECT: Effect = Effect::RecordedRead;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Self::Output, OperationError> {
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(BTreeMap::from([(vec![1_u8], 1_u8)]))
+        })
+        .await
+    }
+}
+
+/// A recorded read that declares its answer digest-only: refused, it never
+/// replays the answer the program saw.
+#[derive(Serialize, Deserialize)]
+struct DigestOnlyRead {
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for DigestOnlyRead {
+    type Output = u64;
+    const KEY: &'static str = "model.digest";
+    const EFFECT: Effect = Effect::RecordedRead;
+    const RECORD_OUTPUT: bool = false;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(1)
+        })
+        .await
+    }
+}
+
+/// A streamed recorded read of three items.
+struct StreamedAnswer(Arc<Calls>);
+
+impl<R: Provider + PinSlots> StreamOperation<R> for StreamedAnswer {
+    type Item = u8;
+    type Output = ();
+    const KEY: &'static str = "model.stream";
+    const EFFECT: Effect = Effect::RecordedRead;
+
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, R>,
+        mut sink: StreamSink<u8>,
+    ) -> Result<(), OperationError> {
+        let attempt = cx.attempt(Cost::FREE).await?;
+        self.0.call(attempt.idempotency_key());
+        attempt.finish(&Ok::<(), OperationError>(())).await;
+        for token in 0..3 {
+            sink.send(token).await?;
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_recorded_read_routes_through_the_owner_only_on_a_journaled_row() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+
+    // Without an owner it is a plain read: a library row and a read-only
+    // row both run it, and nothing records it.
+    let library = fixture
+        .library()
+        .submit(Ask::answering(&calls, "library"))
+        .await
+        .expect("a library row reads");
+    assert_eq!(library, "library");
+    let read_only = fixture
+        .read_only()
+        .submit(Ask::answering(&calls, "read-only"))
+        .await
+        .expect("a read-only row reads");
+    assert_eq!(read_only, "read-only");
+    assert!(fixture.owner.log().is_empty(), "nothing recorded");
+
+    // A journaled row drives it through the owner like an effect.
+    let owned = fixture
+        .owned()
+        .submit(Ask::answering(&calls, "journaled"))
+        .await
+        .expect("a journaled row records the answer");
+    assert_eq!(owned, "journaled");
+    assert_eq!(
+        fixture.owner.log(),
+        vec![
+            Step::Prepare(occurrence(0)),
+            Step::Grant,
+            Step::Settle("applied")
+        ]
+    );
+    let intents = fixture.owner.intents();
+    let intent = &intents[0];
+    assert_eq!(intent.kind, UnitKind::Operation);
+    assert_eq!(intent.operation, ASK);
+    assert_eq!(intent.effect, Effect::RecordedRead);
+    assert_eq!(intent.recovery, Recovery::Observation);
+    assert_eq!(intent.recovery.as_str(), "observation");
+    assert!(intent.record_output, "an answer is always recorded");
+    assert_eq!(intent.canonical_request, ask_request());
+    assert_eq!(Effect::RecordedRead.as_str(), "recorded_read");
+    assert!(Effect::RecordedRead.is_replay_safe());
+
+    // Streamed: refused under a journal, a plain read elsewhere.
+    let capacity = NonZeroUsize::MIN;
+    let refused = fixture
+        .owned()
+        .submit_streaming(StreamedAnswer(Arc::clone(&calls)), capacity)
+        .finish()
+        .await
+        .expect_err("not journaled in v1");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(
+        refused.detail(),
+        "streaming recorded reads are not journaled in v1"
+    );
+    fixture
+        .read_only()
+        .submit_streaming(StreamedAnswer(Arc::clone(&calls)), capacity)
+        .finish()
+        .await
+        .expect("a streamed read on a read-only row");
+    assert_eq!(calls.made(), 4, "one call per run, none for the refusal");
+    assert_eq!(fixture.owner.log().len(), 3, "the refusal reached no owner");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_digest_only_recorded_read_is_refused_at_submit() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    for row in [fixture.owned(), fixture.library(), fixture.read_only()] {
+        // `submit` would fail the build; the runtime refuses the same
+        // declaration when it gets past it, on every route.
+        let error = submit_unit(
+            row.unit_host(),
+            row.unit_scope(),
+            Plain(DigestOnlyRead {
+                calls: Arc::clone(&calls),
+            }),
+        )
+        .await
+        .expect_err("refused");
+        assert_unsent(&error, &ErrorKind::Permanent);
+        assert_eq!(
+            error.detail(),
+            "a recorded read records its output: RECORD_OUTPUT must stay true"
+        );
+    }
+    assert_eq!(calls.made(), 0);
+    assert!(fixture.owner.log().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_recorded_answer_replays_without_asking_again() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    let first = row
+        .submit(Ask::answering(&calls, "first"))
+        .await
+        .expect("asked");
+    assert_eq!(first, "first");
+
+    // The provider would answer differently now: the replay observes the
+    // answer the program observed.
+    fixture.owner.resume();
+    let replayed = row
+        .submit(Ask::answering(&calls, "second"))
+        .await
+        .expect("replayed");
+    assert_eq!(replayed, "first");
+    assert_eq!(calls.made(), 1, "not asked again");
+    assert_eq!(fixture.attempts(), (1, 0), "the replay took no attempt");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_answer_the_owner_did_not_record_is_withheld_and_retryable() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    fixture.owner.fail_next_settle(JournalRefusal::Unavailable);
+    let withheld = row
+        .submit(Ask::answering(&calls, "lost"))
+        .await
+        .expect_err("the answer was not recorded");
+    assert_eq!(*withheld.kind(), ErrorKind::Transient, "{withheld}");
+    assert_eq!(withheld.sent(), SentState::MaybeSent);
+    assert_eq!(
+        withheld.detail(),
+        "recorded read could not be recorded by its owner; answer withheld"
+    );
+    assert!(withheld.is_retryable(), "asked again, never unknown");
+    assert!(!withheld.is_outcome_unknown());
+    assert_eq!(
+        crate::Error::from(withheld).kind(),
+        &ErrorKind::Transient,
+        "never converted to an unknown outcome"
+    );
+    assert!(
+        matches!(
+            fixture.owner.phase(&occurrence(0)),
+            Some(Phase::Outstanding(_))
+        ),
+        "the owner holds no answer"
+    );
+
+    // A resumed run asks the same position again and returns what it
+    // records.
+    fixture.owner.resume();
+    let asked = row
+        .submit(Ask::answering(&calls, "again"))
+        .await
+        .expect("asked again");
+    assert_eq!(asked, "again");
+    assert_eq!(calls.made(), 2);
+    assert_eq!(
+        fixture.owner.phase(&occurrence(0)),
+        Some(Phase::Resolved(RecordedOutcome::Succeeded(
+            br#""again""#.to_vec()
+        )))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_answer_that_cannot_be_recorded_fails_before_the_caller_sees_it() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Over the cap: the JSON string's quotes count.
+    let oversized = "x".repeat(super::MAX_RECORDED_ANSWER_LEN - 1);
+    let refused = row
+        .submit(Ask::answering(&calls, &oversized))
+        .await
+        .expect_err("over the recording cap");
+    assert_eq!(*refused.kind(), ErrorKind::Permanent);
+    assert_eq!(refused.sent(), SentState::MaybeSent);
+    assert_eq!(
+        refused.detail(),
+        "recorded read's answer is over the recording cap; withheld"
+    );
+
+    let unserializable = row
+        .submit(AskForMap {
+            calls: Arc::clone(&calls),
+        })
+        .await
+        .expect_err("no JSON form");
+    assert_eq!(*unserializable.kind(), ErrorKind::Permanent);
+    assert_eq!(unserializable.sent(), SentState::MaybeSent);
+    assert_eq!(
+        unserializable.detail(),
+        "recorded read's answer does not serialize; withheld"
+    );
+
+    // Neither is recorded digest-only: each call is explained and the
+    // failure recorded, so a run that must not ask again fails the same.
+    assert_eq!(
+        fixture.owner.log(),
+        vec![
+            Step::Prepare(occurrence(0)),
+            Step::Grant,
+            Step::Explain(Crossing::Ambiguous),
+            Step::Prepare(occurrence(1)),
+            Step::Grant,
+            Step::Explain(Crossing::Ambiguous),
+        ]
+    );
+    assert_eq!(
+        fixture.owner.unsent(),
+        vec![
+            (occurrence(0), "permanent".to_owned()),
+            (occurrence(1), "permanent".to_owned()),
+        ]
+    );
+
+    // At the cap it is recorded with its output.
+    let fits = "x".repeat(super::MAX_RECORDED_ANSWER_LEN - 2);
+    let answered = row
+        .submit(Ask::answering(&calls, &fits))
+        .await
+        .expect("fits");
+    assert_eq!(answered.len(), fits.len());
+    assert_eq!(fixture.owner.log().last(), Some(&Step::Settle("applied")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_recorded_read_records_its_failure_whatever_was_sent() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Interrupted: it may have reached the provider. Explained ambiguous,
+    // its failure recorded all the same — never an unknown outcome.
+    let interrupted = row
+        .submit(Ask::new(
+            &calls,
+            vec![Err(OperationError::interrupted("connection reset"))],
+        ))
+        .await
+        .expect_err("interrupted");
+    assert_eq!(*interrupted.kind(), ErrorKind::Transient);
+    assert_eq!(interrupted.sent(), SentState::MaybeSent);
+    assert!(interrupted.is_retryable());
+    assert!(!interrupted.is_outcome_unknown());
+    // Unreachable: nothing crossed.
+    row.submit(Ask::new(
+        &calls,
+        vec![Err(OperationError::unreachable("no route"))],
+    ))
+    .await
+    .expect_err("unreachable");
+    // Rejected: a definitive answer, recorded and replayed.
+    let rejected = row
+        .submit(Ask::new(
+            &calls,
+            vec![Err(OperationError::rejected("prompt refused"))],
+        ))
+        .await
+        .expect_err("rejected");
+    assert_eq!(*rejected.kind(), ErrorKind::Permanent);
+    assert_eq!(
+        fixture.owner.log(),
+        vec![
+            Step::Prepare(occurrence(0)),
+            Step::Grant,
+            Step::Explain(Crossing::Ambiguous),
+            Step::Prepare(occurrence(1)),
+            Step::Grant,
+            Step::Explain(Crossing::NotCrossed),
+            Step::Prepare(occurrence(2)),
+            Step::Grant,
+            Step::Settle("permanent"),
+        ]
+    );
+    assert_eq!(
+        fixture.owner.unsent(),
+        vec![
+            (occurrence(0), "transient".to_owned()),
+            (occurrence(1), "transient".to_owned()),
+        ],
+        "every failure without a recorded answer, whatever was sent"
+    );
+
+    // An explanation the owner does not take withholds the failure too:
+    // retryable, nothing more recorded.
+    fixture.owner.fail_next_explain(JournalRefusal::Unavailable);
+    let unexplained = row
+        .submit(Ask::new(
+            &calls,
+            vec![Err(OperationError::interrupted("connection reset"))],
+        ))
+        .await
+        .expect_err("not explained");
+    assert_eq!(*unexplained.kind(), ErrorKind::Transient);
+    assert_eq!(unexplained.sent(), SentState::MaybeSent);
+    assert!(unexplained.is_retryable());
+    assert_eq!(fixture.owner.unsent().len(), 2);
+
+    // A resumed run asks the unanswered positions again and replays the
+    // rejection without a call.
+    fixture.owner.resume();
+    let made = calls.made();
+    for answer in ["zero", "one"] {
+        assert_eq!(
+            row.submit(Ask::answering(&calls, answer))
+                .await
+                .expect("asked again"),
+            answer
+        );
+    }
+    let replayed = row
+        .submit(Ask::answering(&calls, "two"))
+        .await
+        .expect_err("the rejection replays");
+    assert_eq!(*replayed.kind(), ErrorKind::Permanent);
+    assert_eq!(calls.made(), made + 2, "no call for the replayed rejection");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_recorded_read_whose_ceiling_is_spent_fails_exhausted_never_unknown() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // The owner refuses the grant: its ceiling for asking again is spent.
+    fixture.owner.fail_next_grant(JournalRefusal::Unknown);
+    let refused = row
+        .submit(Ask::answering(&calls, "never"))
+        .await
+        .expect_err("the ceiling is spent");
+    assert_eq!(*refused.kind(), ErrorKind::Exhausted { retry_after: None });
+    assert_eq!(
+        refused.detail(),
+        "recorded read may not be asked again: its owner's ceiling is spent"
+    );
+    assert!(!refused.is_outcome_unknown());
+
+    // A slot the owner holds as spent fails the same way at its prepare,
+    // with nothing sent.
+    fixture.owner.seed_unit(
+        &occurrence(1),
+        (
+            StrictPooled::key().to_string(),
+            UnitKind::Operation,
+            ASK.to_owned(),
+            1,
+            ask_request(),
+            None,
+        ),
+        Phase::Unknown,
+    );
+    let spent = row
+        .submit(Ask::answering(&calls, "never"))
+        .await
+        .expect_err("spent at its prepare");
+    assert_unsent(&spent, &ErrorKind::Exhausted { retry_after: None });
+    assert!(!spent.is_outcome_unknown());
+    assert_eq!(calls.made(), 0);
 }

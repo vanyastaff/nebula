@@ -12,6 +12,7 @@ exported as nebula_sdk::integration::resource::Effect
 #[non_exhaustive]
 pub enum Effect {
     Read,
+    RecordedRead,
     Idempotent,
     #[default] Write,
 }

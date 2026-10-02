@@ -4,9 +4,10 @@
 //! The resource runtime never writes durable effect state. A row an action
 //! gets with effect-owner authority
 //! ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled))
-//! carries a [`EffectJournal`]; every `Idempotent` or `Write` unit
-//! submitted with [`ResourceHandle::submit`](super::ResourceHandle::submit)
-//! or [`ResourceHandle::session`](super::ResourceHandle::session) is driven
+//! carries a [`EffectJournal`]; every `Idempotent`, `Write` or
+//! `RecordedRead` unit submitted with
+//! [`ResourceHandle::submit`](super::ResourceHandle::submit) or
+//! [`ResourceHandle::session`](super::ResourceHandle::session) is driven
 //! through it (a `Read` never is):
 //!
 //! 1. **Submit** — the owner admits the unit with an in-flight [`InFlight`]
@@ -30,6 +31,14 @@
 //!
 //! The engine implements the owner over its operation ledger; this crate
 //! only drives the seam.
+//!
+//! A [`RecordedRead`](Effect::RecordedRead) unit is driven through the
+//! seam too ([`Recovery::Observation`]): its answer is settled with the
+//! owner before the unit returns it — a settle the owner does not take
+//! fails the unit retryably, so the caller never sees an answer a replay
+//! would not — and a failure is recorded with
+//! [`record_unsent_failure`](EffectJournal::record_unsent_failure) whatever
+//! was sent. A plain `Read` never is.
 
 use std::{fmt, num::NonZeroU32, sync::Mutex, time::Duration};
 
@@ -159,7 +168,9 @@ pub trait EffectJournal: Send + Sync + fmt::Debug {
     /// The unit of `slot` settled failing with `failure`, and nothing of it
     /// crossed: its last call was explained
     /// [`NotCrossed`](Crossing::NotCrossed), or it failed before a call was
-    /// granted. An owner keeps it to fail the effect the same way when a
+    /// granted — or, for a recorded read ([`Recovery::Observation`]), it
+    /// failed with no answer recorded, whatever was sent (its last call
+    /// explained first). An owner keeps it to fail the effect the same way when a
     /// later run must not send it again
     /// ([`JournalRefusal::Superseded`]). The unit runtime awaits it before
     /// the unit's failure reaches its caller, so nothing the program runs
@@ -238,7 +249,9 @@ impl fmt::Display for UnitKind {
 /// How the owner recovers an effect whose outcome it does not know, derived
 /// from the unit's [`Effect`]: an [`Idempotent`](Effect::Idempotent) unit
 /// recovers by [`StableKey`](Self::StableKey) within its key window, a
-/// [`Write`](Effect::Write) is [`Opaque`](Self::Opaque).
+/// [`Write`](Effect::Write) is [`Opaque`](Self::Opaque), a
+/// [`RecordedRead`](Effect::RecordedRead) an
+/// [`Observation`](Self::Observation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Recovery {
@@ -252,15 +265,25 @@ pub enum Recovery {
     /// Nothing tells a repeat apart: an ambiguous attempt is never sent
     /// again, its outcome is unknown until reconciled.
     Opaque,
+    /// A recorded read ([`Effect::RecordedRead`]): nothing to recover on the
+    /// provider's side. The answer is recorded before the unit returns it;
+    /// a call the owner holds no answer for may be asked again (within the
+    /// owner's ceiling: a spent one fails the unit
+    /// [`Exhausted`](crate::ErrorKind::Exhausted), never with an unknown
+    /// outcome), and a failure is recorded whatever was sent, so a run that
+    /// must not ask again fails it the same way
+    /// ([`JournalRefusal::Superseded`]).
+    Observation,
 }
 
 impl Recovery {
-    /// Stable lowercase name: `stable_key` or `opaque`.
+    /// Stable lowercase name: `stable_key`, `opaque` or `observation`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::StableKey { .. } => "stable_key",
             Self::Opaque => "opaque",
+            Self::Observation => "observation",
         }
     }
 }
@@ -291,7 +314,7 @@ pub struct JournalIntent<'a> {
     /// The operation's interface version: the journal contract, with
     /// `operation`. At least 1.
     pub version: u32,
-    /// The unit's declared effect: `Idempotent` or `Write`.
+    /// The unit's declared effect: `Idempotent`, `Write` or `RecordedRead`.
     pub effect: Effect,
     /// How an unknown outcome is recovered.
     pub recovery: Recovery,
@@ -496,7 +519,10 @@ pub enum JournalRefusal {
     Closed,
     /// The owner lost the lease that authorizes its writes.
     LeaseLost,
-    /// The effect's outcome is unknown: no call is granted.
+    /// The effect's outcome is unknown: no call is granted. For a recorded
+    /// read ([`Recovery::Observation`]), whose outcome is never unknown, the
+    /// owner's ceiling for asking again is spent: the unit fails
+    /// [`Exhausted`](crate::ErrorKind::Exhausted).
     Unknown,
     /// The owner already holds as many effects as it records for one run
     /// of its node: no further effect is prepared.

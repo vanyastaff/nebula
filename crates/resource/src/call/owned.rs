@@ -28,6 +28,13 @@
 //! in flight when the unit's deadline cut the operation off is not
 //! explained here: the owner sees an outstanding call and treats it as an
 //! ambiguous crossing.
+//!
+//! A recorded read ([`Recovery::Observation`]) settles differently
+//! ([`OwnedEffect::finish`]): its answer reaches the caller only after the
+//! owner recorded it (record before return), an answer that cannot be
+//! recorded — over the cap, unserializable, or refused by the owner — is
+//! withheld, and every failure without a recorded answer is recorded with
+//! the owner whatever was sent. Its outcome is never unknown.
 
 use std::{
     fmt,
@@ -40,7 +47,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use super::{
     cost::{Effect, SentState},
-    declaration::MAX_RECORDED_OUTPUT_LEN,
+    declaration::{MAX_RECORDED_ANSWER_LEN, MAX_RECORDED_OUTPUT_LEN},
     error::OperationError,
     journal::{
         CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight, JournalIntent,
@@ -104,6 +111,9 @@ pub(super) struct OwnedEffect {
     pending: Mutex<Option<PendingCall>>,
     /// Set once the unit's position was finished for its owner.
     concluded: std::sync::atomic::AtomicBool,
+    /// A recorded read's answer arrived and was withheld from the caller
+    /// (not recordable, or not recorded): the unit settles `MaybeSent`.
+    answer_withheld: std::sync::atomic::AtomicBool,
     /// The owner's in-flight ticket: released when the unit settles
     /// ([`conclude`](Self::conclude)), or with the owned state as a
     /// fallback — never while the unit may still reach the provider.
@@ -207,8 +217,21 @@ impl OwnedEffect {
             slot: OnceLock::new(),
             pending: Mutex::new(None),
             concluded: std::sync::atomic::AtomicBool::new(false),
+            answer_withheld: std::sync::atomic::AtomicBool::new(false),
             ticket: Mutex::new(Some(ticket)),
         })
+    }
+
+    /// Whether the unit is a recorded read ([`Recovery::Observation`]).
+    fn observes(&self) -> bool {
+        self.declaration.recovery == Recovery::Observation
+    }
+
+    /// Whether a recorded read's answer arrived and was withheld from the
+    /// caller because it was not recorded: the unit settles `MaybeSent`.
+    pub(super) fn answer_withheld(&self) -> bool {
+        self.answer_withheld
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Assigns the unit's positional occurrence label from the owner's next
@@ -364,6 +387,9 @@ impl OwnedEffect {
     /// (without an output, which the unit never produced) and a resume
     /// fails `Permanent` "recorded without output" — never sending it
     /// again. Only a call the provider rejected records a rejection.
+    ///
+    /// A recorded read settles by its own table
+    /// ([`finish_observation`](Self::finish_observation)).
     pub(super) async fn finish<T>(
         &self,
         result: Result<T, OperationError>,
@@ -373,6 +399,9 @@ impl OwnedEffect {
         let Some(slot) = self.slot() else {
             return result;
         };
+        if self.observes() {
+            return self.finish_observation(slot, result, abnormal, codec).await;
+        }
         let Some(pending) = self.take_pending() else {
             // No call in flight: every call the unit was granted is already
             // explained, so a failure now sent nothing more.
@@ -441,8 +470,150 @@ impl OwnedEffect {
         }
     }
 
+    /// Records a recorded read's last call from its `result` and returns
+    /// the unit's result. Record before return: an answer reaches the
+    /// caller only once the owner recorded it.
+    ///
+    /// | Result | Last call | Recorded | Caller sees |
+    /// |---|---|---|---|
+    /// | `Ok` | pending | settle `Applied` with the answer | the answer, once settled |
+    /// | `Ok` | pending, answer unserializable or over the cap | explain `Ambiguous`, record the failure | `Permanent`, `MaybeSent` |
+    /// | `Ok` | none (no provider answer) | nothing | the output |
+    /// | `Err` | rejected | settle `Rejected` | the rejection, once settled |
+    /// | `Err` | `NotSent`, or throttled | explain `NotCrossed`, record the failure | the error |
+    /// | `Err` | anything else | explain `Ambiguous`, record the failure | the error |
+    /// | `Err` | none pending | record the failure | the error |
+    ///
+    /// A settle or explanation the owner does not take fails the unit
+    /// `Transient` / `MaybeSent` — retryable, never an unknown outcome — and
+    /// withholds the answer: the caller never sees one a replay would not.
+    async fn finish_observation<T>(
+        &self,
+        slot: &JournalSlot,
+        result: Result<T, OperationError>,
+        abnormal: bool,
+        codec: OutputCodec<T>,
+    ) -> Result<T, OperationError> {
+        let error = match (result, self.take_pending()) {
+            (Ok(output), Some(pending)) => match self.encode_answer(&output, codec) {
+                Ok(answer) => {
+                    return match self
+                        .owner
+                        .settle(slot, pending.call, CallOutcome::Applied(&answer))
+                        .await
+                    {
+                        Ok(()) => Ok(output),
+                        Err(refusal) => Err(self.withheld("settle", refusal)),
+                    };
+                },
+                Err(error) => {
+                    self.answer_withheld
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    if let Err(refusal) = self
+                        .owner
+                        .explain(slot, pending.call, Crossing::Ambiguous)
+                        .await
+                    {
+                        return Err(self.withheld("explain", refusal));
+                    }
+                    error
+                },
+            },
+            // No call is pending: the output is no provider answer of this
+            // unit (every call it was granted is already explained).
+            (Ok(output), None) => return Ok(output),
+            (Err(error), Some(pending)) => {
+                let sent = if abnormal {
+                    SentState::MaybeSent
+                } else {
+                    pending.sent
+                };
+                let crossing = match (sent, pending.note) {
+                    (SentState::Sent, CallNote::Rejected(code)) => {
+                        // A definitive answer: recorded, replayed as is.
+                        return match self
+                            .owner
+                            .settle(slot, pending.call, CallOutcome::Rejected(code))
+                            .await
+                        {
+                            Ok(()) => Err(error),
+                            Err(refusal) => Err(self.withheld("settle", refusal)),
+                        };
+                    },
+                    (SentState::NotSent, _) | (SentState::Sent, CallNote::Throttled) => {
+                        Crossing::NotCrossed
+                    },
+                    _ => Crossing::Ambiguous,
+                };
+                if let Err(refusal) = self.owner.explain(slot, pending.call, crossing).await {
+                    return Err(self.withheld("explain", refusal));
+                }
+                error
+            },
+            (Err(error), None) => error,
+        };
+        // No answer is recorded: the failure is, whatever was sent, so a
+        // run that must not ask again fails the same way.
+        self.record_unsent(slot, error.kind()).await;
+        Err(error)
+    }
+
+    /// A recorded read's answer as the owner records it, or why it cannot
+    /// be: it does not serialize, or it is over
+    /// [`MAX_RECORDED_ANSWER_LEN`]. Never digest-only.
+    fn encode_answer<T>(
+        &self,
+        output: &T,
+        codec: OutputCodec<T>,
+    ) -> Result<Vec<u8>, OperationError> {
+        let Ok(encoded) = (codec.encode)(output) else {
+            tracing::warn!(
+                target: "nebula.resource",
+                occurrence = self.occurrence(),
+                "recorded read's answer could not be serialized; withheld"
+            );
+            return Err(OperationError::new(
+                ErrorKind::Permanent,
+                "recorded read's answer does not serialize; withheld",
+            ));
+        };
+        if encoded.len() > MAX_RECORDED_ANSWER_LEN {
+            tracing::warn!(
+                target: "nebula.resource",
+                occurrence = self.occurrence(),
+                output_len = encoded.len(),
+                "recorded read's answer is over the recording cap; withheld"
+            );
+            return Err(OperationError::new(
+                ErrorKind::Permanent,
+                "recorded read's answer is over the recording cap; withheld",
+            ));
+        }
+        Ok(encoded)
+    }
+
+    /// The unit error when the owner did not record a recorded read's
+    /// answer or call: the answer is withheld and the unit may be asked
+    /// again — retryable, never an unknown outcome.
+    fn withheld(&self, step: &'static str, refusal: JournalRefusal) -> OperationError {
+        self.answer_withheld
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        tracing::warn!(
+            target: "nebula.resource",
+            occurrence = self.occurrence(),
+            step,
+            refusal = refusal.as_str(),
+            "effect owner did not record a recorded read; answer withheld"
+        );
+        OperationError::new(
+            ErrorKind::Transient,
+            "recorded read could not be recorded by its owner; answer withheld",
+        )
+    }
+
     /// Tells the owner how the unit failed while sending nothing
-    /// ([`EffectJournal::record_unsent_failure`]), before the failure is
+    /// ([`EffectJournal::record_unsent_failure`]) — or, for a recorded
+    /// read, failed with no answer recorded — before the failure is
     /// returned: the unit's result stands either way, and an owner that
     /// could not record it fails closed on its side.
     pub(super) async fn record_unsent(&self, slot: &JournalSlot, kind: &ErrorKind) {
@@ -493,6 +664,11 @@ impl OwnedEffect {
             refusal = refusal.as_str(),
             "effect owner refused a step"
         );
+        if self.observes() && refusal == JournalRefusal::Unknown {
+            // A recorded read's outcome is never unknown: the owner's
+            // ceiling for asking again is spent.
+            return spent_read().refused_by_owner();
+        }
         refusal_error(refusal).refused_by_owner()
     }
 
@@ -511,6 +687,15 @@ impl OwnedEffect {
             "effect outcome could not be recorded by its owner",
         )
     }
+}
+
+/// The unit error of a recorded read whose owner may not ask it again: its
+/// ceiling is spent. `Exhausted`, never an unknown outcome.
+fn spent_read() -> OperationError {
+    OperationError::new(
+        ErrorKind::Exhausted { retry_after: None },
+        "recorded read may not be asked again: its owner's ceiling is spent",
+    )
 }
 
 /// The unit error of an owner refusal.
@@ -650,7 +835,7 @@ pub(super) async fn prepare<T>(
     let slot = match prepared {
         Ok(slot) => slot,
         Err(refusal) => {
-            let sent = if refusal == JournalRefusal::Unknown {
+            let sent = if refusal == JournalRefusal::Unknown && !effect.observes() {
                 SentState::MaybeSent
             } else {
                 SentState::NotSent
@@ -681,6 +866,10 @@ pub(super) async fn prepare<T>(
             OperationError::new(code.replayed_kind(), "recorded provider rejection replayed"),
             SentState::Sent,
         ),
+        // A recorded read is never unknown: its ceiling is spent.
+        SlotPhase::Unknown if effect.observes() => {
+            Prepared::Refused(spent_read(), SentState::NotSent)
+        },
         SlotPhase::Unknown => {
             Prepared::Refused(refusal_error(JournalRefusal::Unknown), SentState::MaybeSent)
         },

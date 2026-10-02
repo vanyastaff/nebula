@@ -166,11 +166,20 @@
 //! routes each unit by its [`Effect`] and the authority of the caller that
 //! built the row:
 //!
-//! | Authority | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
-//! |---|---|---|---|
-//! | unjournaled (library row) | runs | runs | runs |
-//! | read-only ([`Manager::handle_any_read_only`](crate::Manager::handle_any_read_only)) | runs | refused `Permanent` / `NotSent` | refused |
-//! | journaled ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled)) | runs, never prepared | through the [`EffectJournal`](journal::EffectJournal) | refused ("streaming effects are not journaled in v1") |
+//! | Authority | `Read` | `RecordedRead` | `Idempotent` / `Write` | streamed `RecordedRead` / `Idempotent` / `Write` |
+//! |---|---|---|---|---|
+//! | unjournaled (library row) | runs | runs as a read | runs | runs |
+//! | read-only ([`Manager::handle_any_read_only`](crate::Manager::handle_any_read_only)) | runs | runs as a read | refused `Permanent` / `NotSent` | runs as a read / refused |
+//! | journaled ([`Manager::handle_any_journaled`](crate::Manager::handle_any_journaled)) | runs, never prepared | through the [`EffectJournal`](journal::EffectJournal), answer recorded | through the [`EffectJournal`](journal::EffectJournal) | refused ("streaming recorded reads are not journaled in v1" / "streaming effects are not journaled in v1") |
+//!
+//! A [`RecordedRead`](Effect::RecordedRead) is a read whose answer steers
+//! the program — a model's completion, a retrieval whose result decides
+//! what runs next — and that has no provider-side effect (see the variant
+//! for what it must not be declared on). Under a journal its answer is
+//! recorded before the unit returns it and replayed on resume; a plain
+//! [`Read`](Effect::Read) is asked again on every replay, so an answer that
+//! changed and steers a later effect makes the replay diverge, which halts
+//! it as an occurrence mismatch.
 //!
 //! The resource runtime never writes durable effect state; for a journaled
 //! effect it derives the journal declaration from the [`Operation`] (or the
@@ -256,8 +265,9 @@
 //!   package.
 //! - `Sent` with `Exhausted` means the provider refused and applied
 //!   nothing, so it stays retryable for any effect.
-//! - The effect vocabulary is [`Effect::Read`], [`Effect::Idempotent`] and
-//!   [`Effect::Write`] (the default; DX-API.md:110).
+//! - The effect vocabulary is [`Effect::Read`], [`Effect::RecordedRead`],
+//!   [`Effect::Idempotent`] and [`Effect::Write`] (the default;
+//!   DX-API.md:110).
 //! - A superseded pin refuses `Rebinding` with the reason's one-second
 //!   retry hint; the unit is not re-prepared on the new material by the
 //!   runtime (an opt-in resubmission of a cloneable operation is a
@@ -336,7 +346,8 @@ use crate::resource::Provider;
 ///
 /// An operation carries only what a journal needs, and the runtime derives
 /// the rest. On a row an action got with effect-owner authority, an
-/// `Idempotent` or `Write` unit is recorded under the contract
+/// `Idempotent`, `Write` or `RecordedRead` unit is recorded under the
+/// contract
 /// `(KEY, VERSION)`, from the key-sorted JSON of the operation value (its
 /// canonical request: logical intent only — no credentials, signatures or
 /// timestamps), with the developer key part of
@@ -353,7 +364,17 @@ use crate::resource::Provider;
 ///   long the provider deduplicates a key; non-zero.
 /// - [`RECORD_OUTPUT`](Self::RECORD_OUTPUT): `false` records a success
 ///   digest-only, so a resume fails `Permanent` instead of replaying. An
-///   output over 1 MiB is recorded digest-only too.
+///   output over 1 MiB is recorded digest-only too. A
+///   [`RecordedRead`](Effect::RecordedRead) is never digest-only: it must
+///   keep `RECORD_OUTPUT` true, and an answer over the cap (1 MiB less
+///   1 KiB) or without a JSON form fails the unit `Permanent` before the
+///   caller sees it.
+///
+/// Keep request ids, timestamps and other per-attempt values out of the
+/// operation's serialized value (`#[serde(skip)]`): they would change the
+/// canonical request of a replay, a mismatch. A tool-call id a model
+/// returned is data, never identity: never build
+/// [`idempotency_key`](Self::idempotency_key) from it.
 ///
 /// A declaration that breaks these rules fails the build when the
 /// operation is submitted (a post-monomorphization error, reported by
@@ -437,7 +458,8 @@ pub trait Operation<R: Provider + PinSlots>: Serialize + DeserializeOwned + Send
     const KEY_WINDOW: Duration = Duration::from_hours(24);
 
     /// Whether a journal records a success with its output (replayed on
-    /// resume) or digest-only. `true` by default.
+    /// resume) or digest-only. `true` by default; a
+    /// [`RecordedRead`](Effect::RecordedRead) must keep it `true`.
     const RECORD_OUTPUT: bool = true;
 
     /// The developer part of the provider idempotency key — `order-123` —

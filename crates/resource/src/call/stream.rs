@@ -78,7 +78,10 @@ use crate::{error::ErrorKind, resource::Provider};
 /// A stream is never recorded by an execution owner: on a journaled row an
 /// `Idempotent` or `Write` stream is refused `Permanent` / `NotSent`
 /// ("streaming effects are not journaled in v1"), and on a read-only row
-/// as any effect is. [`KEY`](Self::KEY) and [`VERSION`](Self::VERSION)
+/// as any effect is. A [`RecordedRead`](Effect::RecordedRead) stream is
+/// refused the same way on a journaled row ("streaming recorded reads are
+/// not journaled in v1") and runs as a plain read elsewhere.
+/// [`KEY`](Self::KEY) and [`VERSION`](Self::VERSION)
 /// follow the [`Operation`](super::Operation) rules and name the unit in
 /// its span; a stream has no serde bounds.
 ///
@@ -246,9 +249,12 @@ where
             name: O::KEY,
             version: O::VERSION,
             effect: O::EFFECT,
-            // Never journaled: no window, no recorded output.
+            // Never journaled: no window. A stream declares no
+            // `RECORD_OUTPUT`, so it never breaks the recorded-read rule
+            // (a streamed recorded read runs plain, or is refused under a
+            // journal).
             key_window: Duration::MAX,
-            record_output: false,
+            record_output: true,
         }
     }
 
@@ -281,7 +287,7 @@ where
 fn assert_stream_declaration<R: Provider + PinSlots, O: StreamOperation<R>>() {
     const {
         assert!(
-            is_valid_declaration(O::KEY, O::VERSION, O::EFFECT, Duration::MAX),
+            is_valid_declaration(O::KEY, O::VERSION, O::EFFECT, Duration::MAX, true),
             "StreamOperation::KEY must be 1..=64 bytes of [A-Za-z0-9_.-] starting and ending \
              alphanumeric, and VERSION at least 1"
         );
