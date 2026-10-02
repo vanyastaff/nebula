@@ -52,6 +52,8 @@ mod faults;
 use faults::{Boundary, Fault, FaultLedger};
 #[path = "effect_protocol/input_proof.rs"]
 mod input_proof;
+#[path = "effect_protocol/journal_agent.rs"]
+mod journal_agent;
 #[path = "effect_protocol/journal_checkpoint.rs"]
 mod journal_checkpoint;
 #[path = "effect_protocol/journal_fixture.rs"]

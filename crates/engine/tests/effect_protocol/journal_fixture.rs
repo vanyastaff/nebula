@@ -10,9 +10,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionContext, ActionContextExt, ActionError, ControlAction, ControlOutcome,
-    GenericControlFactory, GenericStatefulFactory, InstanceFactory, StatefulAction,
-    StatelessAction,
+    ActionContext, ActionContextExt, ActionError, AgentAction, ControlAction, ControlOutcome,
+    GenericAgentFactory, GenericControlFactory, GenericStatefulFactory, InstanceFactory,
+    StatefulAction, StatelessAction,
 };
 use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_resource::{
@@ -70,6 +70,139 @@ pub(super) struct Gateway {
     /// What the stateful action consults at the start of every iteration —
     /// this gateway's own, so no state is shared between tests.
     pub iterations: IterationControls,
+    /// The fake model and what the agent consults at the start of every
+    /// turn — this gateway's own.
+    pub agent: AgentControls,
+}
+
+/// The fake model behind the agent's recorded read, and per-turn test
+/// controls the agent reads through free `Read` units ([`ConsultTurn`],
+/// [`Pause`]). A one-shot control fires on the first run that reaches its
+/// turn; the others apply while set.
+#[derive(Debug, Default)]
+pub(super) struct AgentControls {
+    /// Every turn started, in order, across runs.
+    pub started: parking_lot::Mutex<Vec<u32>>,
+    /// Real model calls, across runs: the model's answer is this count, so
+    /// it changes on every real call.
+    pub model_calls: AtomicU32,
+    /// Every prompt the model received.
+    pub prompts: parking_lot::Mutex<Vec<String>>,
+    /// Fired when a crash point is reached.
+    pub held: tokio::sync::Notify,
+    /// One-shot: the turn never gets past its start, before the model's
+    /// prepare (a crash point).
+    pub hold_at: parking_lot::Mutex<Option<u32>>,
+    /// One-shot: the turn's model call is answered and then waits at
+    /// `model_gate` (granted, never explained).
+    pub hold_model_at: parking_lot::Mutex<Option<u32>>,
+    /// The gate a `hold_model_at` model call waits at.
+    pub model_gate: Arc<Gate>,
+    /// Armed for the next model call by `hold_model_at`.
+    hold_model: AtomicBool,
+    /// One-shot: the turn's model call never answers.
+    pub hang_model_at: parking_lot::Mutex<Option<u32>>,
+    /// Armed for the next model call by `hang_model_at`.
+    hang_model: AtomicBool,
+    /// One-shot: the model's answer is recorded, and the turn stops before
+    /// any tool (a crash point).
+    pub hold_after_model_at: parking_lot::Mutex<Option<u32>>,
+    /// One-shot: the turn's first tool call is applied and then waits at
+    /// `tool_gate` (granted, never explained).
+    pub hold_tool_at: parking_lot::Mutex<Option<u32>>,
+    /// The gate a `hold_tool_at` tool call waits at.
+    pub tool_gate: Arc<Gate>,
+    /// One-shot: the answer of the turn's first tool call is lost.
+    pub lose_tool_at: parking_lot::Mutex<Option<u32>>,
+    /// One-shot: the turn's tools settled, and the turn stops before it
+    /// returns (a crash point).
+    pub hold_after_tools_at: parking_lot::Mutex<Option<u32>>,
+    /// The prompt every turn sends instead (a changed prompt).
+    pub prompt_override: parking_lot::Mutex<Option<String>>,
+    /// A clock the agent reads through a plain `Read` when its script
+    /// steers its tools by it: another value on every read.
+    pub ticks: AtomicU32,
+}
+
+/// What the agent does in one turn, as the gateway's [`AgentControls`]
+/// decide it.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct TurnPlan {
+    prompt_override: Option<String>,
+}
+
+/// Where in a turn the agent may be held.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+enum PausePoint {
+    AfterModel,
+    AfterTools,
+}
+
+impl Gateway {
+    /// The plan of the agent's `turn`, arming the gateway's one-shot faults
+    /// for the turn's calls.
+    async fn consult_turn(&self, turn: u32) -> TurnPlan {
+        let controls = &self.agent;
+        controls.started.lock().push(turn);
+        if fires(&controls.hold_at, turn) {
+            controls.held.notify_one();
+            std::future::pending::<()>().await;
+        }
+        if fires(&controls.hold_model_at, turn) {
+            controls.hold_model.store(true, Ordering::SeqCst);
+        }
+        if fires(&controls.hang_model_at, turn) {
+            controls.hang_model.store(true, Ordering::SeqCst);
+        }
+        if fires(&controls.hold_tool_at, turn) {
+            *self.hold_next.lock() = Some(Arc::clone(&controls.tool_gate));
+        }
+        if fires(&controls.lose_tool_at, turn) {
+            self.lose_first.store(1, Ordering::SeqCst);
+        }
+        TurnPlan {
+            prompt_override: controls.prompt_override.lock().clone(),
+        }
+    }
+
+    /// Holds the agent at `point` of `turn` when a crash point is set there.
+    async fn pause(&self, turn: u32, point: PausePoint) {
+        let controls = &self.agent;
+        let control = match point {
+            PausePoint::AfterModel => &controls.hold_after_model_at,
+            PausePoint::AfterTools => &controls.hold_after_tools_at,
+        };
+        if fires(control, turn) {
+            controls.held.notify_one();
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// The fake model: answers `prompt` with the number of real calls so
+    /// far, so every real call answers differently.
+    async fn ask(&self, prompt: &str) -> Result<u64, OperationError> {
+        let controls = &self.agent;
+        let answer = controls.model_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        controls.prompts.lock().push(prompt.to_owned());
+        if controls.hang_model.swap(false, Ordering::SeqCst) {
+            return std::future::pending().await;
+        }
+        if controls.hold_model.swap(false, Ordering::SeqCst) {
+            controls.model_gate.entered.notify_one();
+            controls.model_gate.release.notified().await;
+        }
+        Ok(u64::from(answer))
+    }
+
+    /// Real model calls so far.
+    pub(super) fn model_calls(&self) -> u32 {
+        self.agent.model_calls.load(Ordering::SeqCst)
+    }
+
+    /// The turns the agent started, across runs.
+    pub(super) fn turns_started(&self) -> Vec<u32> {
+        self.agent.started.lock().clone()
+    }
 }
 
 /// Per-iteration test controls of the stateful action, which it reads
@@ -401,6 +534,88 @@ impl Operation<Payments> for Consult {
     }
 }
 
+/// The agent's look at its turn's controls: a free `Read`, never journaled.
+#[derive(Serialize, Deserialize)]
+struct ConsultTurn {
+    turn: u32,
+}
+
+impl Operation<Payments> for ConsultTurn {
+    type Output = TurnPlan;
+    const KEY: &'static str = "test.consult_turn";
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<TurnPlan, OperationError> {
+        let turn = self.turn;
+        cx.call(Cost::FREE, async move |gateway, ()| {
+            Ok(gateway.consult_turn(turn).await)
+        })
+        .await
+    }
+}
+
+/// Where the agent may be held: a free `Read`, never journaled.
+#[derive(Serialize, Deserialize)]
+struct Pause {
+    turn: u32,
+    point: PausePoint,
+}
+
+impl Operation<Payments> for Pause {
+    type Output = ();
+    const KEY: &'static str = "test.pause";
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<(), OperationError> {
+        let (turn, point) = (self.turn, self.point);
+        cx.call(Cost::FREE, async move |gateway, ()| {
+            gateway.pause(turn, point).await;
+            Ok(())
+        })
+        .await
+    }
+}
+
+/// The model call: a recorded read whose answer steers the agent's tools.
+#[derive(Serialize, Deserialize)]
+pub(super) struct AskModel {
+    pub prompt: String,
+}
+
+impl Operation<Payments> for AskModel {
+    type Output = u64;
+    const KEY: &'static str = "test.model";
+    const EFFECT: Effect = Effect::RecordedRead;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<u64, OperationError> {
+        let prompt = self.prompt;
+        cx.call(Cost::ONE, async move |gateway, ()| {
+            gateway.ask(&prompt).await
+        })
+        .await
+    }
+}
+
+/// A clock read through a plain `Read`: never recorded, another value on
+/// every read.
+#[derive(Serialize, Deserialize)]
+struct Tick;
+
+impl Operation<Payments> for Tick {
+    type Output = u64;
+    const KEY: &'static str = "test.tick";
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<u64, OperationError> {
+        cx.call(Cost::FREE, async |gateway, ()| {
+            Ok(u64::from(
+                gateway.agent.ticks.fetch_add(1, Ordering::SeqCst) + 1,
+            ))
+        })
+        .await
+    }
+}
+
 /// What the action does, as the execution input says.
 #[derive(Debug, Deserialize)]
 struct Script {
@@ -570,6 +785,10 @@ struct IterationScript {
     /// write `after-{kind}`: the program branches on the error's kind.
     #[serde(default)]
     branch_on_kind: bool,
+    /// Before its units, every iteration asks the model (a recorded read)
+    /// and suffixes its units' requests with the answer.
+    #[serde(default)]
+    ask: bool,
 }
 
 /// The stateful action's state: the next iteration and every receipt so
@@ -649,9 +868,23 @@ impl StatefulAction for StatefulCharge {
                 budget: 1,
             });
         }
+        let answer = if script.ask {
+            Some(
+                handle
+                    .submit(AskModel {
+                        prompt: format!("iteration {iteration}"),
+                    })
+                    .await?,
+            )
+        } else {
+            None
+        };
         let submit = |mut spec: UnitSpec| {
             if let Some(request) = &plan.request_override {
                 spec.request.clone_from(request);
+            }
+            if let Some(answer) = answer {
+                spec.request = format!("{}@{answer}", spec.request);
             }
             if spec.idempotent {
                 handle.submit(Charge::<true>(spec))
@@ -732,6 +965,182 @@ impl StatefulAction for StatefulCharge {
     }
 }
 
+/// What the agent does, as the execution input says: the tools the model
+/// "proposes" in each turn, in order.
+#[derive(Debug, Deserialize)]
+struct AgentScript {
+    turns: Vec<Vec<UnitSpec>>,
+    /// Submit a turn's tools together (`join_all`), in the order the model
+    /// lists them.
+    #[serde(default)]
+    concurrent: bool,
+    /// Steer the tools by a plain `Read` (a clock) instead of the model's
+    /// recorded answer: a nondeterministic input a replay does not
+    /// reproduce.
+    #[serde(default)]
+    steer_by_read: bool,
+    /// The model call's own deadline, in milliseconds.
+    #[serde(default)]
+    model_deadline_ms: Option<u64>,
+}
+
+/// The agent's turn state: its script, the next turn and every receipt so
+/// far.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct AgentTurn {
+    script: Value,
+    turn: u32,
+    receipts: Vec<Value>,
+}
+
+/// One turn of the journaled agent: consult the turn's controls, ask the
+/// model (a recorded read), run the tools its answer steers — their
+/// requests suffixed with the answer — and continue until the script's
+/// last turn.
+async fn agent_turn(
+    state: &mut AgentTurn,
+    ctx: &(impl ActionContext + ?Sized),
+) -> Result<ActionResult<Value>, ActionError> {
+    let script: AgentScript = serde_json::from_value(state.script.clone())
+        .map_err(|error| ActionError::fatal(format!("bad script: {error}")))?;
+    let handle = ctx.resource_handle_by_id::<Payments>(Payments::key().as_str())?;
+    let turn = state.turn;
+    let plan = handle.submit(ConsultTurn { turn }).await?;
+    let prompt = plan
+        .prompt_override
+        .unwrap_or_else(|| format!("turn {turn} after {} receipts", state.receipts.len()));
+    let ask = handle.submit(AskModel { prompt });
+    let ask = match script.model_deadline_ms {
+        Some(ms) => {
+            ask.with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(ms))
+        },
+        None => ask,
+    };
+    let answer = ask.await?;
+    handle
+        .submit(Pause {
+            turn,
+            point: PausePoint::AfterModel,
+        })
+        .await?;
+    let steer = if script.steer_by_read {
+        handle.submit(Tick).await?
+    } else {
+        answer
+    };
+    let tools = script
+        .turns
+        .get(usize::try_from(turn).unwrap())
+        .cloned()
+        .unwrap_or_default();
+    let submit = |mut spec: UnitSpec| {
+        spec.request = format!("{}@{steer}", spec.request);
+        if spec.idempotent {
+            handle.submit(Charge::<true>(spec))
+        } else {
+            handle.submit(Charge::<false>(spec))
+        }
+    };
+    let settled = if script.concurrent {
+        futures::future::join_all(tools.into_iter().map(submit)).await
+    } else {
+        let mut settled = Vec::new();
+        for spec in tools {
+            settled.push(Ok(submit(spec).await?));
+        }
+        settled
+    };
+    for receipt in settled {
+        state.receipts.push(json!(receipt?));
+    }
+    handle
+        .submit(Pause {
+            turn,
+            point: PausePoint::AfterTools,
+        })
+        .await?;
+    state.turn += 1;
+    if usize::try_from(state.turn).unwrap() >= script.turns.len() {
+        return Ok(ActionResult::Break {
+            output: nebula_action::ActionOutput::Value(
+                json!({ "turns": state.turn, "receipts": state.receipts }),
+            ),
+            reason: nebula_action::BreakReason::Completed,
+        });
+    }
+    Ok(ActionResult::Continue {
+        output: nebula_action::ActionOutput::Value(Value::Null),
+        progress: None,
+        delay: None,
+    })
+}
+
+/// The journaled agent (experimental: journaled turns), on the default
+/// (`Journaled`) contract.
+#[derive(nebula_action::Action)]
+#[action(
+    key = "journal.charge",
+    name = "Charge",
+    description = "Journaled agent test action",
+    input = Value,
+    output = Value
+)]
+struct AgentCharge;
+
+impl AgentAction for AgentCharge {
+    type Turn = AgentTurn;
+
+    fn init_turn(&self, input: &Value) -> AgentTurn {
+        AgentTurn {
+            script: input.clone(),
+            turn: 0,
+            receipts: Vec::new(),
+        }
+    }
+
+    async fn step(
+        &self,
+        turn: &mut AgentTurn,
+        ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Value>, ActionError> {
+        agent_turn(turn, ctx).await
+    }
+}
+
+/// [`AgentCharge`] with a turn timeout of [`AGENT_TURN_TIMEOUT`].
+#[derive(nebula_action::Action)]
+#[action(
+    key = "journal.charge",
+    name = "Charge",
+    description = "Journaled agent test action with a turn timeout",
+    input = Value,
+    output = Value
+)]
+struct TimedAgentCharge;
+
+/// [`TimedAgentCharge`]'s turn timeout: well above a slow SQLite turn.
+pub(super) const AGENT_TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl AgentAction for TimedAgentCharge {
+    type Turn = AgentTurn;
+
+    fn turn_timeout(&self) -> Option<std::time::Duration> {
+        Some(AGENT_TURN_TIMEOUT)
+    }
+
+    fn init_turn(&self, input: &Value) -> AgentTurn {
+        AgentCharge.init_turn(input)
+    }
+
+    async fn step(
+        &self,
+        turn: &mut AgentTurn,
+        ctx: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Value>, ActionError> {
+        agent_turn(turn, ctx).await
+    }
+}
+
 /// A control action of the default (`Journaled`) contract that tries the
 /// script's units anyway and passes their receipts on. It runs with fresh
 /// default controls on every evaluation — no state shared between tests.
@@ -781,12 +1190,15 @@ impl ControlAction for ReadOnlyControlCharge {
     }
 }
 
-/// Which action kind the fixture's node runs. (An agent action cannot be
-/// compiled into a durable plan; `resource_integration` covers its handles.)
+/// Which action kind the fixture's node runs.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Kind {
     Stateless,
     Stateful,
+    /// The journaled agent.
+    Agent,
+    /// The journaled agent with a turn timeout.
+    TimedAgent,
     /// A control action of the default (`Journaled`) contract.
     Control,
     /// A control action of the `ReadOnly` contract.
@@ -807,6 +1219,10 @@ fn frozen_plugin(kind: Kind, controls: &Arc<Controls>) -> Arc<FrozenPluginRegist
         ),
         Kind::Stateful => {
             Arc::new(GenericStatefulFactory::<StatefulCharge>::new().expect("admitted"))
+        },
+        Kind::Agent => Arc::new(GenericAgentFactory::<AgentCharge>::new().expect("admitted")),
+        Kind::TimedAgent => {
+            Arc::new(GenericAgentFactory::<TimedAgentCharge>::new().expect("admitted"))
         },
         Kind::Control => Arc::new(GenericControlFactory::<ControlCharge>::new().expect("admitted")),
         Kind::ReadOnlyControl => {
@@ -958,6 +1374,17 @@ impl JournalFixture {
     /// script flags.
     pub(super) async fn start(&self, units: &[Value], extra: Value) -> nebula_core::ExecutionId {
         self.start_input(script_input(json!({ "units": units }), extra))
+            .await
+    }
+
+    /// Admits an execution of the agent running `turns` (the tools of each
+    /// turn, JSON unit specs) with `extra` script flags.
+    pub(super) async fn start_turns(
+        &self,
+        turns: &[&[Value]],
+        extra: Value,
+    ) -> nebula_core::ExecutionId {
+        self.start_input(script_input(json!({ "turns": turns }), extra))
             .await
     }
 
