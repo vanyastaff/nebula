@@ -449,8 +449,9 @@ impl nebula_resource::call::Operation<BoundResident> for OneAttempt {
     }
 }
 
-/// `attempt_bound_interim` vs `attempt_bound_strict`: one managed unit of
-/// one free attempt on a row handle of a warm resident, on an interim
+/// `handle_attempt_bound_interim` vs `handle_attempt_bound_strict`: one
+/// managed unit of one free attempt on a row handle of a warm resident (each
+/// attempt checks the resident out and releases it), on an interim
 /// manager (lock-free registration, no read) and on a strict one (a read
 /// through an in-memory observer that answers at once, then registration
 /// under `Manager.admission`). The difference is the per-attempt strict
@@ -492,8 +493,8 @@ fn bench_strict_attempt_admission(c: &mut Criterion) {
     });
 
     for (name, (_manager, managed)) in [
-        ("attempt_bound_interim", &interim),
-        ("attempt_bound_strict", &strict),
+        ("handle_attempt_bound_interim", &interim),
+        ("handle_attempt_bound_strict", &strict),
     ] {
         group.bench_function(name, |b| {
             b.to_async(&rt).iter(|| async {
