@@ -4188,7 +4188,10 @@ async fn a_read_spent_before_its_failure_was_recorded_replays_exhausted_once_sup
         )
         .await
         .expect("spent");
-    assert_eq!(protocol_at(&harness, OCCURRENCE_0).await.unsent_failure(), None);
+    assert_eq!(
+        protocol_at(&harness, OCCURRENCE_0).await.unsent_failure(),
+        None
+    );
 
     // A run whose owner cannot record the read's failure fails closed:
     // nothing fresh is prepared above the read, and the node defers.
