@@ -211,6 +211,7 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 - **Graph** is Nebula's flagship and current generally described profile: an activation-validated dynamic DAG executed against typed integration contracts.
 - **Interactive**, **Agent**, and **Stream** are future profiles. Each requires its own bounded runtime semantics, persisted state model, admission policy, recovery tests, and capability negotiation before it may appear in the stable SDK or API.
+- **Agent — experimental: journaled turns.** An agent node compiles into a Graph plan and runs its turn loop as a node of it: on a durable turn every handle-routed unit of a turn — model calls declared `RecordedRead`, tools, sessions — is journaled per turn (`turn{n}/`), a model answer is recorded before the agent sees it and replayed on recovery, and the turn state is checkpointed after every passed turn (at most 10 000 turns). The profile is not in the stable SDK or API: no stable agent authoring surface, no `Wait`, no capability-gated isolation. The engine holds no model-specific code: a model is an ordinary resource operation with a declared effect class.
 - A capability-gated profile must be rejected at activation when the selected worker/runtime cannot honor it. Hidden, unstable, or planned profiles are not silently downgraded to Graph behavior.
 - MCP or another protocol bridge may be an edge adapter to a supported profile; it is never the durability, identity, or execution authority.
 

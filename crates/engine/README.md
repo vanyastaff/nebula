@@ -140,11 +140,11 @@ configuration, and process lifecycle.
   scope violation instead of reaching a global row. Plans recorded without an effect
   field stay refused.
 - **Node effect journal** (`effect_driver::journal`, crate-private). A frozen,
-  stateless or stateful `Journaled` action on a durable turn (operation ledger and
+  stateless, stateful or agent `Journaled` action on a durable turn (operation ledger and
   execution fence present) runs under one `NodeEffectJournal` per node attempt, through
   `ActionRuntime::execute_journaled_action` and an engine-private admission witness.
   Its resource handles (`Manager::handle_any_journaled`) drive every `Idempotent` /
-  `Write` unit through the journal, which records it as one operation-ledger slot via
+  `Write` / `RecordedRead` unit through the journal, which records it as one operation-ledger slot via
   the shared `LedgerSlot` core: prepare (natural key `(scope, execution, node,
   occurrence)`), grant, explain (not crossed / ambiguous), settle (exact evidence
   recommit). Building the journal costs nothing durable: no ledger write happens until
@@ -170,7 +170,29 @@ configuration, and process lifecycle.
   recorded further on. An engine retry reuses the occurrences:
   a settled effect replays its recorded output with no provider call, an opaque
   ambiguous one is unknown, a retryable failure may be granted again within the
-  slot's budget (`Operation::max_attempts`). **Stateful actions** are journaled per
+  slot's budget (`Operation::max_attempts`). **Recorded reads** (since 0.32.0): a
+  `RecordedRead` unit (a model call, a retrieval whose answer steers the program; only
+  for a call with no provider-side effect) is an *observation* slot — a stable key
+  over the ledger's one-year window and its 10 000-call ceiling, effect class 3 in the
+  contract identity, the protocol record's optional `observation` flag (no migration).
+  Its prompt is digested, never stored (a changed prompt is a mismatch); its answer is
+  recorded (≤ 1 MiB, never digest-only) before the unit returns it and replays with no
+  provider call; an unanswered read is asked again at the same position, a spent
+  ceiling fails it `Exhausted`, and it never makes the node unknown; its failure is
+  recorded whatever crossed, and an unanswered read below any position recorded after
+  it is refused `superseded` with that failure. A settle or explanation the ledger does
+  not take withholds the answer (`Transient` / `MaybeSent`) and turns the position
+  uncertain (nothing fresh above it, the node defers). An answered read orders lower
+  positions as an applied effect does. A plain `Read` is never recorded. Counters
+  `nebula_effect_journal_prepares_total{phase="observation"}` and
+  `nebula_effect_journal_recorded_read_bytes_total`. **Agents** (since 0.32.0,
+  experimental: journaled turns) are journaled per turn, `turn{n}/unit/v1/#{k:06}`
+  (`n` 0 to 9999) — model calls, tools and sessions in one sequence per turn — under
+  the same barrier and the same checkpoint store as stateful iterations: a turn
+  checkpoint after every passed `Continue`, no-progress turns included; a `max_turns`
+  above 10 000 is refused before turn 0 (`RUNTIME:AGENT_TURN_CAP_EXCEEDED`); every
+  cancellation exit, and a turn past its timeout (still retryable), abandons the turn
+  (`IterationGate::abandon_iteration`). **Stateful actions** are journaled per
   iteration: the journal hands the resource runtime its labels
   (`EffectJournal::next_occurrence`), `it{n}/unit/v1/#{k:06}` with `n` the iteration in
   decimal without leading zeros (0 to 9999) and `k` restarting per iteration. All
@@ -223,9 +245,10 @@ configuration, and process lifecycle.
   releases every position with `EffectJournal::release_occurrence`) is *abandoned*:
   a fresh slot above it, and a barrier past a recorded effect above it, are refused
   deferring (`AcknowledgementUnknown`, nothing sent), so the retry meets the position
-  again instead of halting on a mismatch. Labels of the other family (flat
-  versus `it{n}/`) recorded by an earlier attempt are refused as a changed action
-  kind; labels are parsed strictly (no leading zeros). The first barrier reads the
+  again instead of halting on a mismatch. Labels of another family (flat,
+  `it{n}/` and `turn{n}/` are mutually exclusive for a node) recorded by an earlier
+  attempt are refused as a changed action kind, and a resume counts only the node's
+  own family; labels are parsed strictly (no leading zeros). The first barrier reads the
   node's occurrences, if no prepare did. **Determinism contract**: a replayed
   iteration must submit the same effects in the same order — inputs a replay does
   not reproduce (clocks, randomness, unrecorded reads) diverge, and the divergence
@@ -349,7 +372,11 @@ configuration, and process lifecycle.
   written only under the live fence after its iteration's barrier passed `Ok`, attests
   only iterations whose every recorded position this attempt met or an earlier
   checkpoint attested, and losing the row only falls back to replaying from iteration 0
-  (accepted narrowing: a divergence inside attested iterations is not detected). A correct
+  (accepted narrowing: a divergence inside attested iterations is not detected) — the
+  same per turn for `turn{n}/`; S10 a recorded read's answer the program observed is
+  the answer every replay observes, an unobserved one may be asked again, and a
+  recorded read never makes an outcome unknown; S11 an answered recorded read orders
+  lower positions as an applied effect does. A correct
   deterministic program is stranded only by a crossed call with no recorded outcome
   that is opaque, or that a later applied effect is ordered after. Counters:
   `nebula_effect_journal_prepares_total{phase}`,
@@ -357,12 +384,12 @@ configuration, and process lifecycle.
   `nebula_effect_journal_verdicts_total{code}`. Every other `Journaled` node keeps
   read-only handles (reads run, writes are refused `NotSent`), and the refusal says
   why: a control action ("control actions decide flow and must not cause effects;
-  move effects to a stateless action"), an agent action ("agent effects are
-  not journaled; the agent profile is planned"), a stream or other kind ("effects of
-  this action kind are not journaled"), or a stateless or stateful one without
+  move effects to a stateless action"), a stream or other kind ("effects of
+  this action kind are not journaled"), or a stateless, stateful or agent one without
   execution stores ("journaled effects need execution stores"). The crate-private
   `JournalShape` maps a kind to how it is journaled: `Flat` (stateless), `Iterated`
-  (stateful, per iteration), `None` (control, agent, stream and the rest).
+  (stateful, per iteration), `Turned` (agent, per turn), `None` (control, stream and
+  the rest).
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `EngineResourceAccessor` — scoped resource accessor injected into action contexts.
