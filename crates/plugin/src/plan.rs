@@ -377,6 +377,9 @@ pub(crate) enum RecordedActionKindV1 {
     Stateful,
     Control,
     Trigger,
+    /// An agent's turn loop (experimental: journaled turns). A plan holding
+    /// one does not decode in a build from before 0.32.0.
+    Agent,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
