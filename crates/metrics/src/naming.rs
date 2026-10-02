@@ -147,7 +147,7 @@ pub const NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL: &str = "nebula_effect_journal_pr
 
 /// Phase labels for [`NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL`].
 ///
-/// Closed set of three values: every successful prepare resolves to one.
+/// Closed set of four values: every successful prepare resolves to one.
 pub mod effect_journal_prepare_phase {
     /// No outcome is recorded: the unit runs.
     pub const RUNNABLE: &str = "runnable";
@@ -155,7 +155,19 @@ pub mod effect_journal_prepare_phase {
     pub const REPLAY: &str = "replay";
     /// The outcome is unknown: the unit is refused without a provider call.
     pub const UNKNOWN: &str = "unknown";
+    /// A recorded read with no recorded answer: the unit asks the provider
+    /// (again, after a crash or a failure). A steady rate beside `replay`
+    /// is model or retrieval calls asked again.
+    pub const OBSERVATION: &str = "observation";
 }
+
+/// Counter: bytes of recorded-read answers node effect journals recorded.
+///
+/// Unlabeled. Each answer is at most 1 MiB and stays with its execution's
+/// ledger rows; this is the evidence volume model and retrieval answers add
+/// to the operation ledger.
+pub const NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL: &str =
+    "nebula_effect_journal_recorded_read_bytes_total";
 
 /// Counter: unit steps an effect journal refused.
 ///

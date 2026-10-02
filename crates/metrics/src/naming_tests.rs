@@ -875,8 +875,9 @@ fn webhook_rate_limit_tier_labels_are_closed_set() {
 #[test]
 fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
     use super::{
-        NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL, NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL,
-        effect_journal_checkpoint_outcome, effect_journal_resume_outcome,
+        NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL, NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL,
+        NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL, effect_journal_checkpoint_outcome,
+        effect_journal_resume_outcome,
     };
     use super::{
         NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL, NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
@@ -891,6 +892,7 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL,
         NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL,
         NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL,
+        NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL,
     ];
     let mut unique = HashSet::new();
     for name in names {
@@ -904,6 +906,7 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_prepare_phase::RUNNABLE,
         effect_journal_prepare_phase::REPLAY,
         effect_journal_prepare_phase::UNKNOWN,
+        effect_journal_prepare_phase::OBSERVATION,
     ];
     let steps = [
         effect_journal_step::SUBMIT,
@@ -954,7 +957,7 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         effect_journal_resume_outcome::INVALID,
     ];
     for (set, expected) in [
-        (&phases[..], 3),
+        (&phases[..], 4),
         (&steps[..], 6),
         (&refusals[..], 10),
         (&verdicts[..], 11),
@@ -994,4 +997,9 @@ fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
         .unwrap();
     verdict.inc();
     assert_eq!(verdict.get(), 1);
+    let bytes = registry
+        .counter(NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL)
+        .unwrap();
+    bytes.inc_by(1024);
+    assert_eq!(bytes.get(), 1024);
 }

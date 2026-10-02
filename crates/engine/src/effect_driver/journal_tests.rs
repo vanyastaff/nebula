@@ -252,12 +252,38 @@ fn slot_policies_project_the_declared_recovery() {
         ),
         (Effect::Idempotent, Recovery::Opaque),
         (Effect::Read, Recovery::Opaque),
+        (Effect::RecordedRead, Recovery::Opaque),
+        (Effect::Write, Recovery::Observation),
     ] {
         assert_eq!(
             policy(effect, recovery, 1).err(),
             Some(EffectExecutionError::InvalidContract)
         );
     }
+
+    // A recorded read: a stable key over the ledger's longest window, with
+    // the ledger's ceiling of calls whatever the unit's attempts.
+    let read = policy(Effect::RecordedRead, Recovery::Observation, 1).expect("recorded read");
+    assert_eq!(read.capability(), DestinationCapability::StableKey);
+    assert_eq!(read.max_invocations(), 10_000);
+    assert_eq!(read.max_queries(), 0);
+    assert_eq!(read.stable_window_ms(), Some(31_536_000_000));
+    assert_eq!(read.recovery_window_ms(), 31_536_000_000);
+    assert_eq!(
+        policy(Effect::RecordedRead, Recovery::Observation, 7).expect("read"),
+        read,
+        "the unit's attempts do not change the slot's contract"
+    );
+    // The effect class is part of the contract identity: a write never
+    // replays as a read, nor the reverse.
+    assert_eq!(effect_class(Effect::Idempotent), Ok(1));
+    assert_eq!(effect_class(Effect::Write), Ok(2));
+    assert_eq!(effect_class(Effect::RecordedRead), Ok(3));
+    assert_eq!(
+        effect_class(Effect::Read),
+        Err(EffectExecutionError::InvalidContract),
+        "a plain read is never prepared"
+    );
 }
 
 #[test]
@@ -284,7 +310,8 @@ fn recorded_outcomes_replay_exactly() {
     let operation = OperationId::from_bytes([4; 16]);
     let call = OperationCallId::from_bytes([5; 16]);
     let output = br#"{"receipt":"r-1","amount":7}"#;
-    let applied = journal_evidence(operation, call, CallOutcome::Applied(output)).expect("applied");
+    let applied =
+        journal_evidence(operation, call, CallOutcome::Applied(output), false).expect("applied");
     assert_eq!(applied.outcome(), KnownOutcome::Succeeded);
     let Ok(RecordedOutcome::Succeeded(bytes)) = replay(operation, &applied) else {
         panic!("an applied output replays");
@@ -294,16 +321,16 @@ fn recorded_outcomes_replay_exactly() {
         serde_json::from_slice::<Value>(output).expect("json")
     );
 
-    let digest_only =
-        journal_evidence(operation, call, CallOutcome::AppliedWithoutOutput).expect("digest");
+    let digest_only = journal_evidence(operation, call, CallOutcome::AppliedWithoutOutput, false)
+        .expect("digest");
     assert_eq!(
         replay(operation, &digest_only),
         Ok(RecordedOutcome::OutputUnavailable)
     );
 
     for code in ERROR_KIND_CODES {
-        let rejected =
-            journal_evidence(operation, call, CallOutcome::Rejected(code)).expect("rejected");
+        let rejected = journal_evidence(operation, call, CallOutcome::Rejected(code), false)
+            .expect("rejected");
         assert_eq!(rejected.outcome(), KnownOutcome::Failed);
         assert_eq!(
             replay(operation, &rejected),
@@ -319,12 +346,32 @@ fn recorded_outcomes_replay_exactly() {
 
     // An output too large to keep is recorded as applied without output.
     let oversized = serde_json::to_vec(&"a".repeat(1_048_577)).expect("json");
-    let kept = journal_evidence(operation, call, CallOutcome::Applied(&oversized)).expect("kept");
+    let kept =
+        journal_evidence(operation, call, CallOutcome::Applied(&oversized), false).expect("kept");
     assert_eq!(kept.outcome(), KnownOutcome::Succeeded);
     assert_eq!(
         replay(operation, &kept),
         Ok(RecordedOutcome::OutputUnavailable)
     );
+
+    // A recorded read's answer is never kept digest-only: refused instead.
+    let answered = journal_evidence(operation, call, CallOutcome::Applied(output), true)
+        .expect("an answer that fits");
+    assert!(matches!(
+        replay(operation, &answered),
+        Ok(RecordedOutcome::Succeeded(_))
+    ));
+    for refused in [
+        CallOutcome::Applied(&oversized),
+        CallOutcome::Applied(b"not json"),
+        CallOutcome::AppliedWithoutOutput,
+    ] {
+        assert_eq!(
+            journal_evidence(operation, call, refused, true).err(),
+            Some(EffectExecutionError::InvalidEvidence),
+            "{refused:?}"
+        );
+    }
 }
 
 // ── refusals and verdicts ────────────────────────────────────────────────
@@ -427,6 +474,10 @@ struct CountingLedger {
     release_grant: tokio::sync::Notify,
     /// Notified when an outcome write hangs.
     hung: tokio::sync::Notify,
+    /// Every outcome write is refused, unwritten, while set.
+    fail_outcomes: AtomicBool,
+    /// The next outcome write commits and its acknowledgement is lost.
+    lose_next_outcome_ack: AtomicBool,
 }
 
 impl CountingLedger {
@@ -521,6 +572,16 @@ impl OperationLedger for CountingLedger {
         {
             return Err(OperationLedgerError::Unavailable);
         }
+        if matches!(command, OperationCommand::RecordOutcome(_)) {
+            if self.fail_outcomes.load(Ordering::SeqCst) {
+                return Err(OperationLedgerError::Unavailable);
+            }
+            if self.lose_next_outcome_ack.swap(false, Ordering::SeqCst) {
+                // Committed; the acknowledgement is lost.
+                self.inner.advance(scope, slot_id, fencing, command).await?;
+                return Err(OperationLedgerError::AcknowledgementUnknown);
+            }
+        }
         if matches!(command, OperationCommand::GrantInvocation { .. })
             && self.hold_next_grant.swap(false, Ordering::SeqCst)
         {
@@ -593,6 +654,8 @@ impl Harness {
             grant_held: tokio::sync::Notify::new(),
             release_grant: tokio::sync::Notify::new(),
             hung: tokio::sync::Notify::new(),
+            fail_outcomes: AtomicBool::new(false),
+            lose_next_outcome_ack: AtomicBool::new(false),
         });
         let scope = Scope::new("workspace-a", "org-a");
         let execution_id = ExecutionId::new();
@@ -985,6 +1048,32 @@ impl Operation<Gateway> for Balance {
             Ok(desk.keys.lock().expect("keys").len())
         })
         .await
+    }
+}
+
+/// A recorded read — a model call — whose answer (the desk's receipt)
+/// changes on every real call.
+#[derive(Serialize, Deserialize)]
+struct Ask {
+    prompt: String,
+}
+
+impl Ask {
+    fn new() -> Self {
+        Self {
+            prompt: "what next?".to_owned(),
+        }
+    }
+}
+
+impl Operation<Gateway> for Ask {
+    type Output = u64;
+    const KEY: &'static str = "model.ask";
+    const EFFECT: Effect = Effect::RecordedRead;
+
+    async fn run(self, cx: &mut OperationCx<'_, Gateway>) -> Result<u64, OperationError> {
+        cx.call(Cost::ONE, async move |desk, ()| desk.charge(None).await)
+            .await
     }
 }
 
@@ -1645,6 +1734,18 @@ const fn at(ordinal: u32) -> PositionRange {
     }
 }
 
+/// The prior occurrences of recorded effects (no recorded read), each with
+/// its weight and concurrency list.
+fn effects<'a>(
+    records: impl IntoIterator<Item = (&'a str, SlotWeight, Option<&'a [PositionRange]>)>,
+) -> PriorOccurrences {
+    PriorOccurrences::from_records(
+        records
+            .into_iter()
+            .map(|(label, weight, concurrent)| (label, weight, concurrent, false)),
+    )
+}
+
 #[test]
 fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     use SlotWeight::{Applied, Inert, Unsettled};
@@ -1653,7 +1754,7 @@ fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     const AT_1: &[PositionRange] = &[at(1)];
     let lower = "unit/v1/#000000";
     let with_higher = |concurrent: Option<&'static [PositionRange]>| {
-        PriorOccurrences::from_records([
+        effects([
             (lower, Unsettled, NONE),
             ("unit/v1/#000001", Applied, concurrent),
         ])
@@ -1669,24 +1770,16 @@ fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     assert!(!with_higher(None).reorders_at(lower));
     // A settled lower slot replays its outcome: no reordering.
     assert!(
-        !PriorOccurrences::from_records([
-            (lower, Applied, NONE),
-            ("unit/v1/#000001", Applied, NONE)
-        ])
-        .reorders_at(lower)
+        !effects([(lower, Applied, NONE), ("unit/v1/#000001", Applied, NONE)]).reorders_at(lower)
     );
     // A higher definitive rejection applied nothing: no reordering.
     assert!(
-        !PriorOccurrences::from_records([
-            (lower, Unsettled, NONE),
-            ("unit/v1/#000001", Inert, NONE)
-        ])
-        .reorders_at(lower)
+        !effects([(lower, Unsettled, NONE), ("unit/v1/#000001", Inert, NONE)]).reorders_at(lower)
     );
 
     // A hole: 0 open, 1 settled, 2 applied — 2 ran concurrently with 0
     // only, so 0 replays and 1 is refused.
-    let hole = PriorOccurrences::from_records([
+    let hole = effects([
         ("unit/v1/#000000", Unsettled, NONE),
         ("unit/v1/#000001", Unsettled, NONE),
         ("unit/v1/#000002", Applied, Some(AT_0)),
@@ -1695,14 +1788,14 @@ fn an_unsettled_slot_reorders_only_past_a_later_effect_the_program_ordered() {
     assert!(hole.reorders_at("unit/v1/#000001"));
 
     // Iterations are always ordered: the barrier drains one before the next.
-    let across = PriorOccurrences::from_records([
+    let across = effects([
         ("it0/unit/v1/#000000", Unsettled, NONE),
         ("it1/unit/v1/#000000", Applied, Some(AT_0)),
     ]);
     assert!(across.reorders_at("it0/unit/v1/#000000"));
     // Within an iteration, positions count from the iteration's ordinals.
     let within = |concurrent: &'static [PositionRange]| {
-        PriorOccurrences::from_records([
+        effects([
             ("it1/unit/v1/#000001", Unsettled, NONE),
             ("it1/unit/v1/#000002", Applied, Some(concurrent)),
         ])
@@ -3626,4 +3719,417 @@ async fn a_reload_to_another_endpoint_is_a_mismatch_and_sends_nothing() {
         1
     );
     assert!(retry.conclude(DRAIN).await.is_err());
+}
+
+// ── recorded reads (S10, S11) ────────────────────────────────────────────
+
+/// The protocol of the slot recorded at `occurrence`.
+async fn protocol_at(harness: &Harness, occurrence: &str) -> OperationProtocolRecord {
+    harness
+        .slots()
+        .await
+        .into_iter()
+        .find(|slot| slot.occurrence() == occurrence)
+        .and_then(|slot| slot.record().protocol().cloned())
+        .expect("recorded")
+}
+
+#[tokio::test]
+async fn a_recorded_read_replays_its_answer_without_asking_again() {
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    assert_eq!(handle.submit(Ask::new()).await.expect("answered"), 1);
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 30 })
+            .await
+            .expect("applied"),
+        2
+    );
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+    let read = protocol_at(&harness, OCCURRENCE_0).await;
+    assert!(read.is_observation(), "recorded as an observation");
+    assert_eq!(
+        read.contract().policy().capability(),
+        DestinationCapability::StableKey
+    );
+    assert!(!protocol_at(&harness, OCCURRENCE_1).await.is_observation());
+    assert_eq!(
+        harness.counter(
+            NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL,
+            &[("phase", effect_journal_prepare_phase::OBSERVATION)]
+        ),
+        1
+    );
+    assert_eq!(
+        harness
+            .metrics
+            .counter(NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL)
+            .expect("counter")
+            .get(),
+        1,
+        "the answer `1` is one byte of JSON"
+    );
+
+    // The provider would answer differently now: the replay observes the
+    // recorded answer, and the effect it steered replays under its key.
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    assert_eq!(handle.submit(Ask::new()).await.expect("replayed"), 1);
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 30 })
+            .await
+            .expect("replayed"),
+        2
+    );
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 2, "nothing asked or sent again");
+    assert_eq!(
+        harness.counter(
+            NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL,
+            &[("phase", effect_journal_prepare_phase::REPLAY)]
+        ),
+        2
+    );
+}
+
+#[tokio::test]
+async fn a_read_never_replays_as_a_write_nor_a_write_as_a_read() {
+    let harness = Harness::new().await;
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    handle.submit(Ask::new()).await.expect("answered");
+    handle
+        .submit(Charge::<false> { order: 31 })
+        .await
+        .expect("applied");
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+
+    // The program now writes where it read, and reads where it wrote:
+    // another effect class at each recorded position, a mismatch, nothing
+    // sent.
+    let swapped = harness.journal(2);
+    let handle = harness.handle(&swapped);
+    let write = handle
+        .submit(Charge::<false> { order: 31 })
+        .await
+        .expect_err("a write at a recorded read");
+    assert_eq!(write.sent(), SentState::NotSent);
+    assert_eq!(*write.kind(), nebula_resource::ErrorKind::Permanent);
+    assert_eq!(
+        swapped.conclude(DRAIN).await,
+        Err(EffectExecutionError::OccurrenceMismatch)
+    );
+    assert_eq!(harness.desk.keys().len(), 2, "nothing sent");
+}
+
+#[tokio::test]
+async fn an_unanswered_read_is_never_unknown_and_is_asked_again() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Lost]);
+    let first = harness.journal(1);
+    let lost = harness
+        .handle(&first)
+        .submit(Ask::new())
+        .await
+        .expect_err("the answer was lost");
+    assert_eq!(*lost.kind(), nebula_resource::ErrorKind::Transient);
+    assert_eq!(lost.sent(), SentState::MaybeSent);
+    assert!(lost.is_retryable(), "asked again, never unknown");
+    // The node fails with its own error: no unknown outcome.
+    assert_eq!(
+        first.conclude_node(DRAIN, false).await,
+        Ok(Concluded::Clean)
+    );
+    let read = protocol_at(&harness, OCCURRENCE_0).await;
+    assert_eq!(read.phase(), EffectPhase::Ambiguous);
+    assert_eq!(
+        read.unsent_failure().map(UnsentFailureCode::as_str),
+        Some("transient"),
+        "its failure is recorded whatever was sent"
+    );
+
+    // Nothing recorded above it: the retry asks the same position again.
+    let retry = harness.journal(2);
+    assert_eq!(
+        harness
+            .handle(&retry)
+            .submit(Ask::new())
+            .await
+            .expect("asked again"),
+        2
+    );
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.slots().await.len(), 1, "the same position");
+    assert_eq!(harness.desk.keys().len(), 2);
+}
+
+#[tokio::test]
+async fn a_read_cut_off_mid_call_is_asked_again_after_the_crash() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Hang]);
+    let first = harness.journal(1);
+    let asking = tokio::spawn(harness.handle(&first).submit(Ask::new()));
+    tokio::time::timeout(Duration::from_secs(5), harness.desk.entered.notified())
+        .await
+        .expect("the call reached the provider");
+    // The process dies with the call granted and never explained.
+    asking.abort();
+    let _ = asking.await;
+    assert_eq!(
+        protocol_at(&harness, OCCURRENCE_0).await.phase(),
+        EffectPhase::InvocationOutstanding
+    );
+
+    // The next attempt records the residue ambiguous and asks again — an
+    // opaque write would be unknown here; a read is not.
+    let retry = harness.journal(2);
+    assert_eq!(
+        harness
+            .handle(&retry)
+            .submit(Ask::new())
+            .await
+            .expect("asked again"),
+        2
+    );
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 2);
+}
+
+#[tokio::test]
+async fn an_unanswered_read_below_any_later_position_replays_its_failure() {
+    let harness = Harness::new().await;
+    // The read's answer is lost; the program goes on (it swallowed the
+    // failure) and charges, which the provider only throttles: a slot that
+    // changed nothing, above the read.
+    harness.desk.script(&[Reply::Lost, Reply::Throttled]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    handle.submit(Ask::new()).await.expect_err("lost");
+    handle
+        .submit(Charge::<false> { order: 32 })
+        .await
+        .expect_err("throttled");
+    assert_eq!(
+        first.conclude_node(DRAIN, false).await,
+        Ok(Concluded::Clean)
+    );
+
+    // Asking again could steer the replay elsewhere than the run that
+    // recorded the charge: the read fails as the program saw it fail, with
+    // nothing sent, and the charge — an effect below nothing — is sent.
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    let superseded = handle
+        .submit(Ask::new())
+        .await
+        .expect_err("not asked again");
+    assert_eq!(*superseded.kind(), nebula_resource::ErrorKind::Transient);
+    assert_eq!(superseded.sent(), SentState::NotSent);
+    assert_eq!(
+        superseded.detail(),
+        "effect failed unsent in an earlier run that moved past it; not sent again"
+    );
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 32 })
+            .await
+            .expect("granted again"),
+        3
+    );
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 3, "the read was not asked again");
+}
+
+#[tokio::test]
+async fn an_answered_read_orders_an_unsettled_write_below_it() {
+    let harness = Harness::new().await;
+    // The charge is throttled (changed nothing); the program goes on and
+    // asks the model, whose answer is recorded.
+    harness.desk.script(&[Reply::Throttled, Reply::Applied]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    handle
+        .submit(Charge::<false> { order: 33 })
+        .await
+        .expect_err("throttled");
+    assert_eq!(handle.submit(Ask::new()).await.expect("answered"), 2);
+    assert_eq!(
+        first.conclude_node(DRAIN, false).await,
+        Ok(Concluded::Clean)
+    );
+
+    // Sending the charge now would apply it after the answer the program
+    // observed (S11): it fails as it did, and the answer replays.
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    let superseded = handle
+        .submit(Charge::<false> { order: 33 })
+        .await
+        .expect_err("not sent again");
+    assert_eq!(superseded.sent(), SentState::NotSent);
+    assert_eq!(handle.submit(Ask::new()).await.expect("replayed"), 2);
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 2, "no further call");
+}
+
+#[tokio::test]
+async fn a_crossed_stable_key_write_below_an_answered_read_is_unknown() {
+    let harness = Harness::new().await;
+    // The idempotent charge's first answer is lost (it may have applied)
+    // and its second attempt is throttled: one of its two calls crossed,
+    // so its budget allows another. The program goes on and asks the
+    // model.
+    harness
+        .desk
+        .script(&[Reply::Lost, Reply::Throttled, Reply::Applied]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    handle
+        .submit(Charge::<true> { order: 34 })
+        .await
+        .expect_err("lost, then throttled");
+    handle.submit(Ask::new()).await.expect("answered");
+    assert!(first.conclude_node(DRAIN, false).await.is_err());
+
+    // Granting the charge again could apply it after the observed answer:
+    // its outcome is unknown, no call, and the node halts.
+    let retry = harness.journal(2);
+    let unknown = harness
+        .handle(&retry)
+        .submit(Charge::<true> { order: 34 })
+        .await
+        .expect_err("not granted again");
+    assert_eq!(*unknown.kind(), nebula_resource::ErrorKind::OutcomeUnknown);
+    assert!(matches!(
+        retry.conclude(DRAIN).await,
+        Err(EffectExecutionError::JournalOutcomeUnknown { .. })
+    ));
+    assert_eq!(harness.desk.keys().len(), 3, "no further call");
+}
+
+#[tokio::test]
+async fn a_read_whose_ceiling_is_spent_fails_exhausted_and_the_node_is_not_unknown() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Lost]);
+    let first = harness.journal(1);
+    harness
+        .handle(&first)
+        .submit(Ask::new())
+        .await
+        .expect_err("lost");
+    assert_eq!(
+        first.conclude_node(DRAIN, false).await,
+        Ok(Concluded::Clean)
+    );
+    // The ledger closes the slot (its window or ceiling ran out).
+    let slot = harness.slots().await[0].record().operation().slot_id();
+    let revision = protocol_at(&harness, OCCURRENCE_0).await.revision();
+    harness
+        .ledger
+        .inner
+        .advance(
+            &harness.scope,
+            slot,
+            harness.fencing,
+            &OperationCommand::MarkUnknown {
+                expected_revision: revision,
+            },
+        )
+        .await
+        .expect("spent");
+
+    let retry = harness.journal(2);
+    let spent = harness
+        .handle(&retry)
+        .submit(Ask::new())
+        .await
+        .expect_err("not asked again");
+    assert_eq!(
+        *spent.kind(),
+        nebula_resource::ErrorKind::Exhausted { retry_after: None }
+    );
+    assert_eq!(spent.sent(), SentState::NotSent);
+    assert_eq!(
+        retry.conclude_node(DRAIN, false).await,
+        Ok(Concluded::Clean),
+        "never an unknown outcome"
+    );
+    assert_eq!(harness.desk.keys().len(), 1, "never asked again");
+}
+
+#[tokio::test]
+async fn an_answer_the_ledger_did_not_record_is_withheld_and_holds_later_effects() {
+    let harness = Harness::new().await;
+    // Record before return: the settle of the answer fails, so the caller
+    // never sees the answer.
+    harness.ledger.fail_outcomes.store(true, Ordering::SeqCst);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    let withheld = handle
+        .submit(Ask::new())
+        .await
+        .expect_err("the answer was not recorded");
+    assert_eq!(*withheld.kind(), nebula_resource::ErrorKind::Transient);
+    assert_eq!(withheld.sent(), SentState::MaybeSent);
+    assert!(withheld.is_retryable());
+    harness.ledger.fail_outcomes.store(false, Ordering::SeqCst);
+    // The program went on from the failure: nothing fresh is written above
+    // the read in this attempt.
+    let held = handle
+        .submit(Charge::<false> { order: 35 })
+        .await
+        .expect_err("held above the unrecorded read");
+    assert_eq!(held.sent(), SentState::NotSent);
+    assert_eq!(harness.desk.keys().len(), 1, "only the read was asked");
+    let verdict = first.conclude_node(DRAIN, false).await;
+    assert!(
+        verdict.as_ref().is_err_and(|error| error.is_deferred()),
+        "{verdict:?}"
+    );
+
+    // The retry asks the same read again and only then charges.
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    assert_eq!(handle.submit(Ask::new()).await.expect("asked again"), 2);
+    assert_eq!(
+        handle
+            .submit(Charge::<false> { order: 35 })
+            .await
+            .expect("applied"),
+        3
+    );
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+}
+
+#[tokio::test]
+async fn a_lost_settle_acknowledgement_recommits_the_exact_answer() {
+    let harness = Harness::new().await;
+    harness
+        .ledger
+        .lose_next_outcome_ack
+        .store(true, Ordering::SeqCst);
+    let first = harness.journal(1);
+    assert_eq!(
+        harness
+            .handle(&first)
+            .submit(Ask::new())
+            .await
+            .expect("recorded once the exact answer reads back"),
+        1
+    );
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+    let retry = harness.journal(2);
+    assert_eq!(
+        harness
+            .handle(&retry)
+            .submit(Ask::new())
+            .await
+            .expect("replayed"),
+        1
+    );
+    assert_eq!(retry.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 1);
 }
