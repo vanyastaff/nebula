@@ -12,9 +12,12 @@
 //!    reference to the turn state and a context that carries workflow inputs
 //!    and resource slots (including an LLM provider slot the author adds
 //!    via `#[resource(key = "llm")]`).
-//! 3. Returning [`ActionResult::Continue`] saves the turn state and starts the
-//!    next turn; returning any terminal result (typically [`ActionResult::Break`])
-//!    delivers the final output downstream.
+//! 3. Returning [`ActionResult::Continue`] starts the next turn with the turn
+//!    state as `step` left it; returning any terminal result (typically
+//!    [`ActionResult::Break`]) delivers the final output downstream. The turn
+//!    state lives in memory for one dispatch of the node: nothing is
+//!    persisted between turns, so a crash or a retry of the node starts again
+//!    from [`AgentAction::init_turn`].
 //! 4. The engine enforces [`AgentAction::max_turns`] — exceeding the budget
 //!    surfaces a typed `AgentBudgetExceeded` error rather than looping forever.
 //! 5. [`AgentAction::turn_timeout`] bounds each individual turn's wall-clock
@@ -45,6 +48,12 @@
 //! The runtime races every turn against the execution-level cancellation
 //! token and also honours `turn_timeout`. Authors do not need to poll the
 //! token themselves; the runtime handles it.
+//!
+//! ## Effects
+//!
+//! An agent's resource handles are read-only: reads run, and an `Idempotent`
+//! or `Write` unit is refused before any provider call ("agent effects are
+//! not journaled"), whatever the action's effect contract.
 
 use std::{future::Future, sync::Arc, time::Duration};
 
@@ -64,12 +73,14 @@ use crate::{
 ///
 /// Authors implement [`init_turn`](AgentAction::init_turn) and
 /// [`step`](AgentAction::step). The engine owns the loop: it calls `step`
-/// repeatedly, saves the `Turn` state after each `Continue`, and delivers the
-/// final output when the action breaks.
+/// repeatedly, carrying the `Turn` state from one turn to the next, and
+/// delivers the final output when the action breaks.
 ///
-/// `Self::Turn` is the per-turn state checkpoint type — the running conversation
-/// transcript, tool-call history, or any other state the author needs to carry
-/// across turns. It must be serializable so the engine can checkpoint it.
+/// `Self::Turn` is the state carried across turns — the running conversation
+/// transcript, tool-call history, or any other state the author needs. It
+/// crosses the object-safe handle as JSON, so it must be serializable; it is
+/// not persisted: a crash or a retry of the node starts from
+/// [`init_turn`](AgentAction::init_turn) again.
 ///
 /// # Slots and the Llm provider
 ///
@@ -131,12 +142,13 @@ use crate::{
     note = "implement `init_turn` and `step` (Turn and Input/Output are associated types)"
 )]
 pub trait AgentAction: Action {
-    /// Per-turn state the engine checkpoints after every `Continue`.
+    /// State the engine carries from one turn to the next.
     ///
     /// This is the running context the action maintains across turns — a
     /// conversation transcript, accumulated tool results, or any other
-    /// cross-turn state the author needs. It must be serializable so the
-    /// engine can checkpoint it between turns.
+    /// cross-turn state the author needs. It must be serializable: it crosses
+    /// the object-safe handle as JSON. It is kept in memory for one dispatch
+    /// of the node and not persisted between turns.
     type Turn: Serialize + DeserializeOwned + Clone + Send + Sync;
 
     /// Maximum number of turns before the engine raises `AgentBudgetExceeded`.
@@ -197,7 +209,7 @@ pub trait AgentAction: Action {
 /// # Turn state
 ///
 /// Turn state is carried as `serde_json::Value` between calls so the engine can
-/// checkpoint it without knowing the concrete `A::Turn` type. The adapter
+/// hold it without knowing the concrete `A::Turn` type. The adapter
 /// deserialises into the typed turn on each `step` call and serialises it back.
 ///
 /// # Errors
@@ -254,7 +266,7 @@ pub trait AgentHandle: crate::handle::sealed::Agent + Send + Sync + 'static {
 ///
 /// Turn state mutations performed by the typed action are flushed back to the
 /// JSON `turn_state` argument before any error is propagated — matching the
-/// checkpoint-before-error contract that `StatefulActionAdapter` enforces.
+/// flush-before-error contract that `StatefulActionAdapter` enforces.
 ///
 /// **Double-failure exception:** if flushing the turn state to JSON fails
 /// *and* the action step returned an error, the flush is skipped and the
@@ -346,12 +358,12 @@ where
     /// Returns [`ActionError::Validation`] if turn state deserialization fails,
     /// or propagates errors from the underlying action.
     ///
-    /// # Turn state checkpointing invariant
+    /// # Turn state flush invariant
     ///
     /// Mutations made to `turn_state` inside `step` are flushed back to the
     /// JSON `turn_state` argument **before** any error from the action is
-    /// propagated, so that a `Retryable` error does not replay work already
-    /// completed in this turn. The one exception is the double-failure path
+    /// propagated, so the caller holding `turn_state` sees what the turn did
+    /// even when it failed. The one exception is the double-failure path
     /// (serialization fails *and* the action returned an error): the flush is
     /// skipped and the original action error propagates; the loss is logged at
     /// `ERROR` level.
@@ -371,8 +383,8 @@ where
 
         let step_result = self.action.step(&mut typed_turn, ctx).await;
 
-        // Flush turn state back to JSON regardless of Ok/Err — a Retryable
-        // must checkpoint the updated position to avoid replaying work.
+        // Flush turn state back to JSON regardless of Ok/Err: the caller
+        // sees what the turn did even when it failed.
         match (serde_json::to_value(&typed_turn), &step_result) {
             (Ok(updated_state), _) => {
                 *turn_state = updated_state;
