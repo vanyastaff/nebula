@@ -26,7 +26,9 @@ pub const MAX_ITERATION_CHECKPOINT_STATE_BYTES: usize = 1_048_576;
 /// stateful runtime runs at most this many iterations.
 pub const MAX_CHECKPOINT_ITERATION: u32 = 10_000;
 
-/// Most bytes of each text part of an [`IterationCheckpointKey`].
+/// Most bytes of the execution, node and action-key parts of an
+/// [`IterationCheckpointKey`] (the version is bounded by action metadata
+/// admission instead).
 pub const MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES: usize = 512;
 
 /// Why an iteration checkpoint could not be loaded or saved.
@@ -126,13 +128,15 @@ impl<'a> IterationCheckpointKey<'a> {
     ///
     /// # Errors
     ///
-    /// [`IterationCheckpointError::InvalidRecord`] when the execution, node,
-    /// action key or version is empty or longer than
+    /// [`IterationCheckpointError::InvalidRecord`] when the execution, node or
+    /// action key is empty or longer than
     /// [`MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES`], or when `action_version`
     /// is not a canonical semantic version (`MAJOR.MINOR.PATCH`, no leading
-    /// zeros, optional pre-release and build of `[0-9A-Za-z-.]`). The tenant
-    /// scope is taken as the execution was admitted under it — `Scope` and
-    /// `port_executions` bound neither part — so every admitted execution
+    /// zeros, optional pre-release and build of `[0-9A-Za-z-.]`). The version
+    /// takes no length cap of its own: action metadata admission already
+    /// bounds it, and any version it admits must address a checkpoint. The
+    /// tenant scope is taken as the execution was admitted under it — `Scope`
+    /// and `port_executions` bound neither part — so every admitted execution
     /// can be checkpointed, and a scope-enforcing decorator's
     /// [`rescoped`](Self::rescoped) address is held to the same rule.
     pub fn new(
@@ -142,7 +146,7 @@ impl<'a> IterationCheckpointKey<'a> {
         action_key: &'a str,
         action_version: &'a str,
     ) -> Result<Self, IterationCheckpointError> {
-        let parts = [execution_id, node_key, action_key, action_version];
+        let parts = [execution_id, node_key, action_key];
         if parts
             .iter()
             .any(|part| part.is_empty() || part.len() > MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES)
@@ -444,6 +448,13 @@ mod tests {
             );
         }
         let scope = Scope::new("ws", "org");
+        // Any version metadata admission accepts addresses a checkpoint,
+        // however long its build suffix.
+        let version = format!(
+            "1.0.0+{}",
+            "b".repeat(MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES + 1)
+        );
+        assert!(IterationCheckpointKey::new(&scope, "exec", "node", "a.b", &version).is_ok());
         for (execution, node, action) in [
             ("", "node", "a.b"),
             ("exec", "", "a.b"),
