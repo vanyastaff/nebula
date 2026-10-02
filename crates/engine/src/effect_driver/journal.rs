@@ -2564,18 +2564,16 @@ impl EffectJournal for NodeEffectJournal {
         };
         drop(in_flight);
         let slot = prepared.map_err(|error| self.refuse_prepare(intent.occurrence, error))?;
-        // The position is met: the slot recorded here is this unit's.
-        self.state()
-            .positions
-            .met
-            .insert(intent.occurrence.to_owned());
-        self.inner.claims_settled.notify_waiters();
         // The recorded order holds for every answer this slot gives, not
         // only a fresh call: a replayed outcome or a refusal handed back
         // before a lower unit the record shows settled first would let the
         // program run its next effect ahead of that lower one. Wait (bounded,
         // the slot lock not taken) until those lower units settle; a fresh
         // slot's list names every lower unit still open, so it never waits.
+        // The position is met only after the wait: a unit dropped while
+        // waiting (its own deadline) never received the recorded answer, so
+        // its position is let go unmet — abandoned, deferring — instead of
+        // counting as replayed.
         if let Some(concurrent) = slot
             .protocol()
             .ok()
@@ -2595,6 +2593,12 @@ impl EffectJournal for NodeEffectJournal {
                 EffectExecutionError::Ledger(OperationLedgerError::AcknowledgementUnknown),
             ));
         }
+        // The position is met: the slot recorded here is this unit's.
+        self.state()
+            .positions
+            .met
+            .insert(intent.occurrence.to_owned());
+        self.inner.claims_settled.notify_waiters();
         if prior.reorders_at(intent.occurrence) {
             // A recorded effect that was never sent, below one the program
             // ran after it and that may have been applied: sending it now

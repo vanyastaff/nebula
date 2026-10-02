@@ -3168,6 +3168,45 @@ async fn a_replayed_outcome_waits_for_the_lower_units_recorded_before_it() {
     assert_eq!(retry.conclude(DRAIN).await, Ok(()));
 }
 
+/// A replay whose own deadline passes while it waits for the lower units
+/// recorded before it never received the recorded answer: its position is
+/// let go unmet (abandoned), so the node does not conclude as if the
+/// recorded outcome had been replayed.
+#[tokio::test]
+async fn a_replay_dropped_while_it_waits_its_turn_is_not_counted_replayed() {
+    let harness = Harness::new().await;
+    harness.desk.script(&[Reply::Throttled, Reply::Rejected]);
+    let first = harness.journal(1);
+    let handle = harness.handle(&first);
+    for order in [76, 77] {
+        handle
+            .submit(Charge::<false> { order })
+            .await
+            .expect_err("throttled, then rejected");
+    }
+    assert_eq!(first.conclude(DRAIN).await, Ok(()));
+
+    harness.desk.script(&[Reply::Held]);
+    let retry = harness.journal(2);
+    let handle = harness.handle(&retry);
+    let lower = tokio::spawn(handle.submit(Charge::<false> { order: 76 }));
+    calls_reach(&harness.desk, 3).await;
+    let gave_up = handle
+        .submit(Charge::<false> { order: 77 })
+        .with_deadline(Instant::now() + Duration::from_millis(100))
+        .await
+        .expect_err("its deadline passes while the lower one is held");
+    assert_eq!(gave_up.sent(), SentState::NotSent, "{gave_up}");
+    harness.desk.release.notify_waiters();
+    lower.await.expect("task").expect("the lower one applies");
+    let verdict = retry.conclude(DRAIN).await;
+    assert!(
+        verdict.is_err_and(EffectExecutionError::is_deferred),
+        "the recorded answer was never delivered: not a clean replay ({verdict:?})"
+    );
+    assert_eq!(harness.desk.keys().len(), 3, "the rejection was never sent");
+}
+
 /// A recorded pair the program ran together (the higher one lists the lower
 /// as concurrent) is not serialized on replay.
 #[tokio::test]
