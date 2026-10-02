@@ -47,6 +47,13 @@ pub enum ActionPackageValidationError {
         /// Dynamic port key.
         key: String,
     },
+    /// An agent declared capability-gated isolation, which the runtime does
+    /// not support for agents.
+    #[error(
+        "agent actions must run with IsolationLevel::None: capability-gated agent execution \
+         is not supported"
+    )]
+    CapabilityGatedAgent,
 }
 
 /// Collection of package validation failures.
@@ -92,6 +99,11 @@ pub(crate) fn validate_action_package(
     }
     if metadata.outputs().is_empty() && metadata.kind() != crate::ActionKind::Control {
         errors.push(ActionPackageValidationError::MissingOutputPorts);
+    }
+    if metadata.kind() == crate::ActionKind::Agent
+        && metadata.isolation_level() != crate::IsolationLevel::None
+    {
+        errors.push(ActionPackageValidationError::CapabilityGatedAgent);
     }
 
     let mut input_keys = HashSet::new();
@@ -209,6 +221,37 @@ mod tests {
                 .errors()
                 .contains(&ActionPackageValidationError::MissingOutputPorts)
         );
+    }
+
+    #[test]
+    fn a_capability_gated_agent_is_refused_at_admission() {
+        let draft = |isolation| {
+            crate::ActionMetadataDraft::new(
+                action_key!("test.agent"),
+                crate::metadata_name!("Agent"),
+                "desc",
+            )
+            .with_isolation_level(isolation)
+        };
+
+        let crate::ActionMetadataAdmissionError::Package(error) =
+            draft(crate::IsolationLevel::CapabilityGated)
+                .admit_for::<ValidationAction>(crate::ActionKind::Agent)
+                .expect_err("the runtime never runs a capability-gated agent")
+        else {
+            panic!("a capability-gated agent must be a package admission failure");
+        };
+        assert_eq!(
+            error.errors(),
+            [ActionPackageValidationError::CapabilityGatedAgent]
+        );
+
+        draft(crate::IsolationLevel::None)
+            .admit_for::<ValidationAction>(crate::ActionKind::Agent)
+            .expect("an ungated agent admits");
+        draft(crate::IsolationLevel::CapabilityGated)
+            .admit_for::<ValidationAction>(crate::ActionKind::Stateless)
+            .expect("a capability-gated stateless action admits");
     }
 
     #[test]

@@ -54,6 +54,11 @@ changes are expected between minor releases — call them out here.
     even with a valid seal. **Rollback hazard**: a build from before
     0.32.0 refuses every epoch-7 plan by its `RecordedPlanEpochV1` header
     (`UnsupportedFormat`), not only those holding an agent node.
+  - `nebula-action`: metadata admission refuses an agent declared with
+    `IsolationLevel::CapabilityGated` (new
+    `ActionPackageValidationError::CapabilityGatedAgent`, on a
+    `#[non_exhaustive]` enum): the runtime never runs one, so it fails
+    when its factory is built instead of at every dispatch.
   - `nebula-engine`: `RuntimeError::AgentTurnCapExceeded`
     (`RUNTIME:AGENT_TURN_CAP_EXCEEDED`): a `max_turns()` above 10 000 is
     refused before turn 0, never clamped. A turn past its timeout stays
@@ -71,6 +76,7 @@ changes are expected between minor releases — call them out here.
     | a `Journaled` agent relying on its writes being refused | declare the agent `#[action(read_only)]`, or make its writes journal-safe (determinism contract in `nebula_action::agent`) |
     | `EffectSlotBinding { .., concurrent_with }` | `EffectSlotBinding { .., concurrent_with, observation: false }` |
     | an agent with `max_turns()` above 10 000 | at most 10 000 |
+    | an agent with `IsolationLevel::CapabilityGated` | `IsolationLevel::None` (the runtime never ran a gated agent) |
 
 - **`CheckpointStore` becomes the fenced, version-bound store of journaled
   stateful actions' iteration checkpoints; development packages advance to

@@ -68,6 +68,8 @@
 //!    file is an `Idempotent` or `Write` effect.
 //!
 //! `Wait` and capability-gated isolation are not supported for agents.
+//! Metadata admission refuses a capability-gated agent
+//! ([`CapabilityGatedAgent`](crate::ActionPackageValidationError::CapabilityGatedAgent)).
 //!
 //! ## Llm-agnostic contract
 //!
