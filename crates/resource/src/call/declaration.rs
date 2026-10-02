@@ -33,6 +33,11 @@ pub(super) const MAX_CANONICAL_REQUEST_LEN: usize = 1024 * 1024;
 /// Largest output an owner records, in bytes: the operation ledger's
 /// evidence cap. A larger output is recorded digest-only.
 pub(super) const MAX_RECORDED_OUTPUT_LEN: usize = 1024 * 1024;
+/// Largest answer a recorded read returns, in bytes: the ledger's 1 MiB
+/// evidence cap less 1 KiB for the owner's evidence envelope, so an answer
+/// that fits is always recorded with its output — a recorded read is never
+/// recorded digest-only. A larger answer is withheld and the unit fails.
+pub(super) const MAX_RECORDED_ANSWER_LEN: usize = MAX_RECORDED_OUTPUT_LEN - 1024;
 
 /// Domain separation of a library unit's local idempotency key.
 const LOCAL_KEY_DOMAIN: &str = "nebula.idempotency.local.v1";
@@ -60,18 +65,23 @@ pub(crate) const fn is_valid_operation_key(key: &str) -> bool {
 }
 
 /// Whether an operation's constants are well formed: a valid
-/// [`KEY`](super::Operation::KEY), a `VERSION` of at least 1, and a
-/// non-zero `KEY_WINDOW` for an [`Idempotent`](Effect::Idempotent) one.
-/// Checked at compile time by every `submit`, and again at submit time.
+/// [`KEY`](super::Operation::KEY), a `VERSION` of at least 1, a non-zero
+/// `KEY_WINDOW` for an [`Idempotent`](Effect::Idempotent) one, and a
+/// recorded output (`RECORD_OUTPUT`) for a
+/// [`RecordedRead`](Effect::RecordedRead) — whose answer is never recorded
+/// digest-only. Checked at compile time by every `submit`, and again at
+/// submit time.
 pub(crate) const fn is_valid_declaration(
     key: &str,
     version: u32,
     effect: Effect,
     key_window: Duration,
+    record_output: bool,
 ) -> bool {
     is_valid_operation_key(key)
         && version >= 1
         && !(matches!(effect, Effect::Idempotent) && key_window.is_zero())
+        && (record_output || !matches!(effect, Effect::RecordedRead))
 }
 
 /// The submit-time refusal of a declaration that breaks
@@ -81,6 +91,7 @@ pub(super) fn check_declaration(
     version: u32,
     effect: Effect,
     key_window: Duration,
+    record_output: bool,
 ) -> Result<(), OperationError> {
     if !is_valid_operation_key(key) {
         return Err(OperationError::new(
@@ -98,6 +109,12 @@ pub(super) fn check_declaration(
         return Err(OperationError::new(
             ErrorKind::Permanent,
             "an idempotent operation's key window must be non-zero",
+        ));
+    }
+    if effect == Effect::RecordedRead && !record_output {
+        return Err(OperationError::new(
+            ErrorKind::Permanent,
+            "a recorded read records its output: RECORD_OUTPUT must stay true",
         ));
     }
     Ok(())
@@ -291,25 +308,57 @@ mod tests {
     #[test]
     fn declarations_need_a_version_and_an_idempotent_window() {
         let day = Duration::from_hours(24);
-        assert!(is_valid_declaration("op", 1, Effect::Write, day));
-        assert!(is_valid_declaration("op", 1, Effect::Write, Duration::ZERO));
-        assert!(!is_valid_declaration("op", 0, Effect::Write, day));
+        assert!(is_valid_declaration("op", 1, Effect::Write, day, true));
+        assert!(is_valid_declaration(
+            "op",
+            1,
+            Effect::Write,
+            Duration::ZERO,
+            false
+        ));
+        assert!(!is_valid_declaration("op", 0, Effect::Write, day, true));
         assert!(!is_valid_declaration(
             "op",
             1,
             Effect::Idempotent,
-            Duration::ZERO
+            Duration::ZERO,
+            true
         ));
-        assert!(!is_valid_declaration("bad key", 1, Effect::Read, day));
-        for (key, version, effect, window) in [
-            ("bad key", 1, Effect::Read, day),
-            ("op", 0, Effect::Write, day),
-            ("op", 1, Effect::Idempotent, Duration::ZERO),
+        assert!(!is_valid_declaration("bad key", 1, Effect::Read, day, true));
+        // A recorded read's window is never read; its output is always
+        // recorded.
+        assert!(is_valid_declaration(
+            "op",
+            1,
+            Effect::RecordedRead,
+            Duration::ZERO,
+            true
+        ));
+        assert!(!is_valid_declaration(
+            "op",
+            1,
+            Effect::RecordedRead,
+            day,
+            false
+        ));
+        for (key, version, effect, window, record_output) in [
+            ("bad key", 1, Effect::Read, day, true),
+            ("op", 0, Effect::Write, day, true),
+            ("op", 1, Effect::Idempotent, Duration::ZERO, true),
+            ("op", 1, Effect::RecordedRead, day, false),
         ] {
-            let error = check_declaration(key, version, effect, window).expect_err("refused");
+            let error = check_declaration(key, version, effect, window, record_output)
+                .expect_err("refused");
             assert_eq!(*error.kind(), ErrorKind::Permanent);
         }
-        check_declaration("op", 1, Effect::Idempotent, day).expect("valid");
+        assert_eq!(
+            check_declaration("op", 1, Effect::RecordedRead, day, false)
+                .expect_err("digest-only read")
+                .detail(),
+            "a recorded read records its output: RECORD_OUTPUT must stay true"
+        );
+        check_declaration("op", 1, Effect::Idempotent, day, true).expect("valid");
+        check_declaration("op", 1, Effect::Read, day, false).expect("a plain read");
     }
 
     #[test]

@@ -786,12 +786,13 @@ facade (the `Lease` facade was removed in 0.30.0). A derived action without
 `read_only` gets the default
 `Journaled(JournalProtocol::V1)` effect contract: only effects routed through
 resource handles are journaled; raw egress the action opens itself is
-outside the journal. A stateless journaled action on a
+outside the journal. A stateless, stateful (per iteration) or agent (per
+turn, experimental) journaled action on a
 durable engine turn gets handles under its node attempt's effect journal
-(below): its `Idempotent` and `Write` units are prepared, granted and
-recorded by the engine. Every other journaled action — a run without
-execution stores, a control action, a stateful action until its iterations
-are journaled, an agent or stream action — runs with read-only handle authority: reads run, and a
+(below): its `Idempotent`, `Write` and `RecordedRead` units are prepared,
+granted and recorded by the engine. Every other journaled action — a run
+without execution stores, a control action, a stream action — runs with
+read-only handle authority: reads (a `RecordedRead` included, unrecorded) run, and a
 `Write` through a handle is refused as `NotSent` before any provider call
 (`Manager::handle_any_read_only_because` lets the engine say why, e.g.
 "journaled effects need execution stores"). No action reaches a raw lease,
@@ -811,11 +812,26 @@ never writes effect state.
 There is one `submit` and one `session`; the runtime routes each unit by its
 effect and the row's authority:
 
-| Row | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
-|---|---|---|---|
-| library (`handle`, `handle_any`) | runs | runs | runs |
-| read-only (`handle_any_read_only`, `handle_any_read_only_because`) | runs | refused `Permanent` / `NotSent` | refused |
-| journaled (`handle_any_journaled`) | runs, never prepared | through the owner | refused ("streaming effects are not journaled in v1") |
+| Row | `Read` | `RecordedRead` | `Idempotent` / `Write` | streamed `RecordedRead` / `Idempotent` / `Write` |
+|---|---|---|---|---|
+| library (`handle`, `handle_any`) | runs | runs as a read | runs | runs |
+| read-only (`handle_any_read_only`, `handle_any_read_only_because`) | runs | runs as a read | refused `Permanent` / `NotSent` | runs as a read / refused |
+| journaled (`handle_any_journaled`) | runs, never prepared | through the owner, answer recorded | through the owner | refused ("streaming recorded reads are not journaled in v1" / "streaming effects are not journaled in v1") |
+
+`Effect::RecordedRead` is a read whose answer steers the program — a model's
+completion, a retrieval or search whose result decides what runs next — with
+**no provider-side effect** (a call that runs hosted tools, stores a response,
+appends to a server-side conversation or uploads a file is `Idempotent` or
+`Write`). Under a journal its answer is recorded before the unit returns it
+and replayed on resume without a provider call (`Recovery::Observation`): it
+must keep `RECORD_OUTPUT` true (refused at build and at submit otherwise), an
+answer over 1 MiB less 1 KiB or without a JSON form fails `Permanent` before
+the caller sees it, a settle the owner does not take withholds the answer
+(`Transient` / `MaybeSent`, retryable), every failure without an answer is
+recorded whatever was sent, and a spent ceiling fails `Exhausted` — never an
+unknown outcome — recorded before the caller sees it, even when the ceiling is
+met at prepare. A plain `Read` is never recorded: an answer that changed
+and steers a later effect makes a replay diverge.
 
 For a journaled effect the runtime derives the whole journal declaration
 from the operation (or the `SessionSpec`): the contract `(KEY, VERSION)`,
@@ -833,7 +849,8 @@ ordinal counting all of the owner's (the node attempt's) effect units — every
 resource, operations and sessions alike — in the order they start
 preparing (`#000003`). An owner whose units run in several positional runs
 prefixes the run and restarts the ordinal in each (the engine labels a
-stateful action's iteration `n` as `it{n}/unit/v1/#{ordinal:06}`); an owner
+stateful action's iteration `n` as `it{n}/unit/v1/#{ordinal:06}` and an
+agent's turn `n` as `turn{n}/unit/v1/#{ordinal:06}`); an owner
 may also refuse a prepare past its cap (`JournalRefusal::SlotCapExceeded`,
 `Permanent` / `NotSent`), and refuse a submission while none of its runs is
 open (`EffectJournal::admit` → `JournalRefusal::BetweenRuns`, `Permanent` /

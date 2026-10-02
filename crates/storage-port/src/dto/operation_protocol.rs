@@ -596,6 +596,14 @@ const fn is_zero(count: &u32) -> bool {
     *count == 0
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+const fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
 /// Read-only durable protocol projection. Deserializing never grants invocation authority.
 ///
 /// # Budget accounting
@@ -642,6 +650,13 @@ pub struct OperationProtocolRecord {
     /// written before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     unsent_failure: Option<UnsentFailureCode>,
+    /// The slot records an observation — a read whose answer its owner
+    /// replays — rather than an effect; see
+    /// [`is_observation`](Self::is_observation). Absent (not `false`) for an
+    /// effect, so an effect's record serializes byte-identically to one
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    observation: bool,
 }
 
 #[derive(Deserialize)]
@@ -669,6 +684,8 @@ struct OperationProtocolRecordWire {
     concurrent_with: Option<Vec<PositionRange>>,
     #[serde(default)]
     unsent_failure: Option<UnsentFailureCode>,
+    #[serde(default)]
+    observation: bool,
 }
 
 /// The not-crossed count of a record that does not carry the counter.
@@ -722,7 +739,25 @@ impl OperationProtocolRecord {
                 provider_key: None,
                 concurrent_with: None,
                 unsent_failure: None,
+                observation: false,
             },
+        }
+    }
+
+    /// Whether a record in `phase` may carry an unsent failure
+    /// ([`OperationCommand::RecordUnsentFailure`]): one nothing of which is
+    /// in flight or settled — `Prepared` or `BeforeBoundary` — or, for an
+    /// [observation](Self::is_observation), any phase without an answer or
+    /// a call in flight (`Ambiguous` and `OutcomeUnknown` too): an
+    /// observation changed nothing whatever crossed, and its owner keeps
+    /// how it failed so a later run that must not ask again fails the same
+    /// way.
+    #[must_use]
+    pub const fn admits_unsent_failure(observation: bool, phase: EffectPhase) -> bool {
+        match phase {
+            EffectPhase::Prepared | EffectPhase::BeforeBoundary => true,
+            EffectPhase::Ambiguous | EffectPhase::OutcomeUnknown => observation,
+            _ => false,
         }
     }
 
@@ -756,12 +791,16 @@ impl OperationProtocolRecord {
             return Err(violation(OperationProtocolViolation::InconsistentState));
         }
         // An unsent failure describes a slot nothing of which is in flight
-        // or settled: any later call or outcome supersedes it.
+        // or settled (or an observation without an answer): any later call
+        // or outcome supersedes it.
         if self.unsent_failure.is_some()
-            && !matches!(
-                self.phase,
-                EffectPhase::Prepared | EffectPhase::BeforeBoundary
-            )
+            && !Self::admits_unsent_failure(self.observation, self.phase)
+        {
+            return Err(violation(OperationProtocolViolation::InconsistentState));
+        }
+        // An observation is asked again by a stable key: never opaque.
+        if self.observation
+            && self.contract.policy().capability() != DestinationCapability::StableKey
         {
             return Err(violation(OperationProtocolViolation::InconsistentState));
         }
@@ -919,6 +958,19 @@ impl OperationProtocolRecord {
     pub const fn unsent_failure(&self) -> Option<&UnsentFailureCode> {
         self.unsent_failure.as_ref()
     }
+    /// Whether the slot records an observation — a read whose answer its
+    /// owner records and replays, with no provider-side effect — rather
+    /// than an effect
+    /// ([`EffectSlotBinding::observation`](super::EffectSlotBinding::observation));
+    /// immutable afterwards. Always a
+    /// [`StableKey`](DestinationCapability::StableKey) slot. The ledger
+    /// keeps its protocol as for any stable-key slot, except that an unsent
+    /// failure may also be recorded once a call crossed
+    /// ([`admits_unsent_failure`](Self::admits_unsent_failure)); what an
+    /// unanswered or exhausted observation means is its owner's.
+    pub const fn is_observation(&self) -> bool {
+        self.observation
+    }
 }
 
 impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
@@ -944,6 +996,7 @@ impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
             provider_key: wire.provider_key,
             concurrent_with: wire.concurrent_with,
             unsent_failure: wire.unsent_failure,
+            observation: wire.observation,
         };
         record.validate()?;
         Ok(record)
@@ -1029,9 +1082,19 @@ impl OperationProtocolRecordBuilder {
         self
     }
     /// Set how the slot's unit last failed while sending nothing; only a
-    /// `Prepared` or `BeforeBoundary` record may carry it.
+    /// record that
+    /// [admits one](OperationProtocolRecord::admits_unsent_failure) may
+    /// carry it.
     pub fn unsent_failure(mut self, unsent_failure: Option<UnsentFailureCode>) -> Self {
         self.record.unsent_failure = unsent_failure;
+        self
+    }
+    /// Mark the record an observation (a stable-key slot only).
+    ///
+    /// Adapters set it only when the record is first prepared; every later
+    /// transition rebuilds from the stored record and so retains it.
+    pub const fn observation(mut self, observation: bool) -> Self {
+        self.record.observation = observation;
         self
     }
     /// Finish construction only when the complete record is coherent.
@@ -1080,9 +1143,12 @@ pub enum OperationCommand {
     /// The slot's unit settled failing with nothing in flight and nothing
     /// applied: keep the owner's classification of that failure, so a later
     /// run that must not send the effect again can fail the same way.
-    /// Permitted only while the slot is `Prepared` or `BeforeBoundary` (a
+    /// Permitted only while the slot is `Prepared` or `BeforeBoundary` —
+    /// for an [observation](OperationProtocolRecord::is_observation) also
+    /// `Ambiguous` or `OutcomeUnknown`, whatever crossed
+    /// ([`OperationProtocolRecord::admits_unsent_failure`]) — and a
     /// [`ProtocolConflict`](super::OperationLedgerError::ProtocolConflict)
-    /// otherwise); replaces an earlier classification, and any later call
+    /// otherwise; replaces an earlier classification, and any later call
     /// or outcome clears it. Grants nothing.
     RecordUnsentFailure {
         /// The owner's secret-free classification.
@@ -1120,6 +1186,71 @@ pub enum OperationAdvance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_observation_is_flagged_only_when_set_and_admits_a_failure_after_a_crossing() {
+        let stable = PreparedEffectContract::new(
+            RequestFingerprint::new(1, [1; 32]),
+            PreparedEffectPolicy::builder(DestinationCapability::StableKey)
+                .maximum_invocations(2)
+                .maximum_queries(0)
+                .recovery_window(Duration::from_mins(1))
+                .stable_key_window(Duration::from_mins(1))
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        let ambiguous = |observation| {
+            OperationProtocolRecord::prepared(stable.clone(), 0)
+                .revision(2)
+                .phase(EffectPhase::Ambiguous)
+                .invocations(1, Some(OperationCallId::from_bytes([7; 16])))
+                .disposition(Some(InvocationDisposition::Ambiguous))
+                .observation(observation)
+                .unsent_failure(UnsentFailureCode::new("transient"))
+                .build()
+        };
+        let observed = ambiguous(true).expect("an observation keeps its failure");
+        assert!(observed.is_observation());
+        assert!(
+            ambiguous(false).is_err(),
+            "an effect that crossed keeps none"
+        );
+        let encoded = serde_json::to_value(&observed).unwrap();
+        assert_eq!(encoded["observation"], serde_json::json!(true));
+        let decoded: OperationProtocolRecord = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, observed);
+        // Absent for an effect, and an absent flag decodes as an effect.
+        let effect = OperationProtocolRecord::prepared(stable.clone(), 0)
+            .build()
+            .unwrap();
+        let encoded = serde_json::to_value(&effect).unwrap();
+        assert!(encoded.get("observation").is_none());
+        assert!(
+            !serde_json::from_value::<OperationProtocolRecord>(encoded)
+                .unwrap()
+                .is_observation()
+        );
+        for (phase, effect, observation) in [
+            (EffectPhase::Prepared, true, true),
+            (EffectPhase::BeforeBoundary, true, true),
+            (EffectPhase::Ambiguous, false, true),
+            (EffectPhase::OutcomeUnknown, false, true),
+            (EffectPhase::InvocationOutstanding, false, false),
+            (EffectPhase::Resolved, false, false),
+        ] {
+            assert_eq!(
+                OperationProtocolRecord::admits_unsent_failure(false, phase),
+                effect,
+                "{phase:?}"
+            );
+            assert_eq!(
+                OperationProtocolRecord::admits_unsent_failure(true, phase),
+                observation,
+                "{phase:?}"
+            );
+        }
+    }
 
     #[test]
     fn position_ranges_cover_any_set_exactly_and_canonically() {

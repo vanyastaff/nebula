@@ -30,6 +30,12 @@ use super::{
     runner::{ActionRunContext, ActionRunner},
 };
 
+/// Most turns an agent may declare (`max_turns()`): a journaled agent labels
+/// its turns `turn0/` to `turn9999/` and checkpoints at most the turn after
+/// the last, as a stateful action its iterations (10 000). A larger budget
+/// is refused before turn 0, never clamped.
+pub(crate) const MAX_AGENT_TURNS: u32 = nebula_storage_port::dto::MAX_CHECKPOINT_ITERATION;
+
 /// Who built the resource accessor of a dispatch's context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResourceAuthority {
@@ -402,12 +408,13 @@ impl ActionRuntime {
     /// [`NodeEffectJournal`](crate::effect_driver::NodeEffectJournal) and
     /// handed it to the action's resource handles through `context`. Only
     /// actions of a journaled
-    /// [`JournalShape`](crate::effect_driver::JournalShape) — stateless, or
-    /// stateful under the admission's iteration barrier — with no remote
-    /// capability are admitted; public entry points keep refusing the
-    /// contract. A stateful action takes no caller checkpoint sink here: it
-    /// resumes from the journal's fenced iteration checkpoint, or replays
-    /// its iterations from the first.
+    /// [`JournalShape`](crate::effect_driver::JournalShape) — stateless,
+    /// stateful under the admission's iteration barrier, or agent under it
+    /// per turn — with no remote capability are admitted; public entry
+    /// points keep refusing the contract. A stateful action takes no caller
+    /// checkpoint sink here: it resumes from the journal's fenced iteration
+    /// checkpoint, or replays its iterations from the first; an agent
+    /// resumes from its turn checkpoint the same way.
     pub(crate) async fn execute_journaled_action(
         &self,
         factory: Arc<dyn ActionFactory>,
@@ -588,7 +595,7 @@ impl ActionRuntime {
         if context.cancellation().is_cancelled() {
             // Admission closes on every cancellation exit of a gated run.
             if let Some(gate) = iteration_gate {
-                gate.cancel_iteration();
+                gate.abandon_iteration();
             }
             return Err(ActionError::Cancelled.into());
         }
@@ -603,7 +610,7 @@ impl ActionRuntime {
                 tokio::select! {
                     biased;
                     () = context.cancellation().cancelled() => {
-                        gate.cancel_iteration();
+                        gate.abandon_iteration();
                         return Err(ActionError::Cancelled.into());
                     },
                     instantiated = factory.instantiate(node, context) => instantiated,
@@ -661,7 +668,7 @@ impl ActionRuntime {
             },
             ActionHandle::Agent(inner) => {
                 let r = self
-                    .execute_agent_handle(metadata, inner, input, context)
+                    .execute_agent_handle(metadata, inner, input, context, iteration_gate)
                     .await;
                 self.observe_dispatched(started, &r);
                 r
@@ -844,7 +851,7 @@ impl ActionRuntime {
             // cancellation exit, so a detached task holding a journaled
             // handle cannot submit and turn the cancellation into a failure.
             if let Some(gate) = iteration_gate {
-                gate.cancel_iteration();
+                gate.abandon_iteration();
             }
             return Err(ActionError::Cancelled.into());
         }
@@ -859,7 +866,7 @@ impl ActionRuntime {
                 let resumed: Option<crate::effect_driver::ResumePoint> = tokio::select! {
                     biased;
                     () = context.cancellation().cancelled() => {
-                        gate.cancel_iteration();
+                        gate.abandon_iteration();
                         return Err(ActionError::Cancelled.into());
                     }
                     resumed = gate.resume() => resumed.map_err(RuntimeError::EffectJournal)?,
@@ -870,7 +877,7 @@ impl ActionRuntime {
                             tokio::select! {
                                 () = tokio::time::sleep(delay) => {}
                                 () = context.cancellation().cancelled() => {
-                                    gate.cancel_iteration();
+                                    gate.abandon_iteration();
                                     return Err(ActionError::Cancelled.into());
                                 }
                             }
@@ -911,7 +918,7 @@ impl ActionRuntime {
 
             if context.cancellation().is_cancelled() {
                 if let Some(gate) = iteration_gate {
-                    gate.cancel_iteration();
+                    gate.abandon_iteration();
                 }
                 return Err(ActionError::Cancelled.into());
             }
@@ -934,7 +941,7 @@ impl ActionRuntime {
                         // submits from now on is admitted, so the node's
                         // conclusion drains only what was already in flight.
                         if let Some(gate) = iteration_gate {
-                            gate.cancel_iteration();
+                            gate.abandon_iteration();
                         }
                         return Err(ActionError::Cancelled.into());
                     }
@@ -951,7 +958,7 @@ impl ActionRuntime {
                 Some(gate) => tokio::select! {
                     biased;
                     () = context.cancellation().cancelled() => {
-                        gate.cancel_iteration();
+                        gate.abandon_iteration();
                         return Err(ActionError::Cancelled.into());
                     }
                     ended = gate.end_iteration(iteration_result.is_ok()) => {
@@ -985,7 +992,7 @@ impl ActionRuntime {
                         tokio::select! {
                             biased;
                             () = context.cancellation().cancelled() => {
-                                gate.cancel_iteration();
+                                gate.abandon_iteration();
                                 return Err(ActionError::Cancelled.into());
                             }
                             saved = gate.checkpoint(iteration, &state, delay) => {
@@ -1005,7 +1012,7 @@ impl ActionRuntime {
                                 // a barrier violation — the node stays
                                 // cancelled.
                                 if let Some(gate) = iteration_gate {
-                                    gate.cancel_iteration();
+                                    gate.abandon_iteration();
                                 }
                                 return Err(ActionError::Cancelled.into());
                             }
@@ -1071,16 +1078,49 @@ impl ActionRuntime {
     /// - **Per-turn wall-clock timeout** — each `step` future is individually
     ///   bounded so a hung provider cannot pin a worker indefinitely.
     ///
-    /// Turn state is kept as a local `serde_json::Value` variable. There is no
-    /// durable checkpoint: on a worker crash the whole action re-executes from
-    /// scratch with the original input. Mid-loop resume would require wiring a
-    /// checkpoint sink, which is out of scope for this foundational implementation.
+    /// Turn state is kept as a local `serde_json::Value` variable. Without
+    /// an `iteration_gate` (a storeless run, a `ReadOnly` contract) there is
+    /// no durable checkpoint: a crash or a retry re-executes the action from
+    /// [`init_turn`](nebula_action::AgentHandle::init_turn).
     ///
-    /// # Cancellation
+    /// # Journaled turns
+    ///
+    /// A journaled agent runs under its node effect journal's
+    /// `iteration_gate`, one iteration per turn (`turn{n}/` labels): before
+    /// turn 0 the gate says where to start
+    /// ([`resume`](crate::effect_driver::IterationGate::resume) — the turn
+    /// checkpoint's state replaces `init_turn`, its delay is waited unless
+    /// the ledger shows that turn already ran); each turn opens with
+    /// [`begin_iteration`](crate::effect_driver::IterationGate::begin_iteration)
+    /// and, once `step` returned — successfully or not — closes with
+    /// [`end_iteration`](crate::effect_driver::IterationGate::end_iteration);
+    /// after every `Continue` whose barrier passed — whether or not the turn
+    /// changed its state — the gate records the turn checkpoint
+    /// ([`checkpoint`](crate::effect_driver::IterationGate::checkpoint)).
+    /// Any of them refusing stops the loop with
+    /// [`RuntimeError::EffectJournal`], which the engine replaces with the
+    /// journal's verdict. While the replay has not reached the frontier, a
+    /// `Continue` delay is skipped. Recorded answers and effects replay
+    /// without a provider call, so a replay from turn 0 costs ledger reads
+    /// only; a checkpoint is an optimisation.
+    ///
+    /// # Caps
+    ///
+    /// A `max_turns()` above [`MAX_AGENT_TURNS`] is refused before turn 0
+    /// ([`RuntimeError::AgentTurnCapExceeded`], never clamped).
+    ///
+    /// # Cancellation and timeouts
     ///
     /// Every turn races against the execution-level cancellation token via
     /// `tokio::select!`. The per-turn timeout (if any) is composed with
-    /// cancellation so neither can block the other.
+    /// cancellation so neither can block the other. Every cancellation exit
+    /// — at dispatch, mid-turn, in the barrier's drain, during a delay — and
+    /// a turn past its timeout abandon the gate's iteration
+    /// ([`abandon_iteration`](crate::effect_driver::IterationGate::abandon_iteration)):
+    /// no unit is admitted afterwards, and the node's conclusion drains the
+    /// units in flight, recording a call none of them explained as
+    /// ambiguous. The timeout stays retryable: the retry replays the turn
+    /// under the same recorded positions.
     #[tracing::instrument(
         name = "runtime.execute_agent_handle",
         skip_all,
@@ -1088,6 +1128,7 @@ impl ActionRuntime {
             action.key = %metadata.base().key().as_str(),
             action.kind = "agent",
             max_turns = handle.max_turns(),
+            journaled = iteration_gate.is_some(),
         )
     )]
     async fn execute_agent_handle(
@@ -1096,6 +1137,7 @@ impl ActionRuntime {
         handle: Box<dyn AgentHandle>,
         input: nebula_action::ActionInput,
         context: &dyn ActionContext,
+        iteration_gate: Option<&dyn crate::effect_driver::IterationGate>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         if !matches!(metadata.isolation_level(), IsolationLevel::None) {
             return Err(RuntimeError::Internal(
@@ -1103,16 +1145,68 @@ impl ActionRuntime {
             ));
         }
 
+        let max_turns = handle.max_turns();
+        if max_turns > MAX_AGENT_TURNS {
+            tracing::warn!(
+                action.key = %metadata.base().key().as_str(),
+                max_turns,
+                cap = MAX_AGENT_TURNS,
+                "agent turn budget above the engine's cap; refused before turn 0"
+            );
+            return Err(RuntimeError::AgentTurnCapExceeded {
+                key: metadata.base().key().as_str().to_owned(),
+                max_turns,
+                cap: MAX_AGENT_TURNS,
+            });
+        }
+
+        // Every cancellation exit of a gated run closes admission, so a
+        // detached task holding a journaled handle cannot submit afterwards.
+        let abandon = || {
+            if let Some(gate) = iteration_gate {
+                gate.abandon_iteration();
+            }
+        };
+
         if context.cancellation().is_cancelled() {
+            abandon();
             return Err(ActionError::Cancelled.into());
         }
 
         let input = handle.prepare_input(input)?;
-        let mut turn_state = handle.init_turn(input)?;
-        let max_turns = handle.max_turns();
         let turn_timeout = handle.turn_timeout();
 
-        let mut turn: u32 = 0;
+        let (mut turn_state, mut turn) = match iteration_gate {
+            // A journaled run starts where its journal's verified turn
+            // checkpoint says, or at turn 0; a store that does not answer
+            // stops it before anything runs.
+            Some(gate) => {
+                let resumed: Option<crate::effect_driver::ResumePoint> = tokio::select! {
+                    biased;
+                    () = context.cancellation().cancelled() => {
+                        abandon();
+                        return Err(ActionError::Cancelled.into());
+                    }
+                    resumed = gate.resume() => resumed.map_err(RuntimeError::EffectJournal)?,
+                };
+                match resumed {
+                    Some(point) => {
+                        if let Some(delay) = point.delay {
+                            tokio::select! {
+                                () = tokio::time::sleep(delay) => {}
+                                () = context.cancellation().cancelled() => {
+                                    abandon();
+                                    return Err(ActionError::Cancelled.into());
+                                }
+                            }
+                        }
+                        (point.state, point.iteration)
+                    },
+                    None => (handle.init_turn(input)?, 0u32),
+                }
+            },
+            None => (handle.init_turn(input)?, 0u32),
+        };
 
         loop {
             if turn >= max_turns {
@@ -1123,7 +1217,13 @@ impl ActionRuntime {
             }
 
             if context.cancellation().is_cancelled() {
+                abandon();
                 return Err(ActionError::Cancelled.into());
+            }
+
+            if let Some(gate) = iteration_gate {
+                gate.begin_iteration(turn)
+                    .map_err(RuntimeError::EffectJournal)?;
             }
 
             let step_result = {
@@ -1135,12 +1235,16 @@ impl ActionRuntime {
                         tokio::select! {
                             biased;
                             () = context.cancellation().cancelled() => {
+                                abandon();
                                 return Err(ActionError::Cancelled.into());
                             }
                             timeout_result = tokio::time::timeout(deadline, &mut step_future) => {
                                 match timeout_result {
                                     Ok(step_outcome) => step_outcome,
                                     Err(_elapsed) => {
+                                        // The turn is abandoned: its units in
+                                        // flight are left to the conclusion.
+                                        abandon();
                                         return Err(RuntimeError::AgentTurnTimeout {
                                             key: metadata.base().key().as_str().to_owned(),
                                             turn,
@@ -1155,12 +1259,29 @@ impl ActionRuntime {
                         tokio::select! {
                             biased;
                             () = context.cancellation().cancelled() => {
+                                abandon();
                                 return Err(ActionError::Cancelled.into());
                             }
                             step_outcome = &mut step_future => step_outcome,
                         }
                     },
                 }
+            };
+
+            // The turn's units drain before its result counts — a failing
+            // turn's too: nothing of it may cross into the next.
+            let progress = match iteration_gate {
+                Some(gate) => tokio::select! {
+                    biased;
+                    () = context.cancellation().cancelled() => {
+                        abandon();
+                        return Err(ActionError::Cancelled.into());
+                    }
+                    ended = gate.end_iteration(step_result.is_ok()) => {
+                        ended.map_err(RuntimeError::EffectJournal)?
+                    }
+                },
+                None => crate::effect_driver::IterationProgress::default(),
             };
 
             let result = step_result?;
@@ -1178,10 +1299,28 @@ impl ActionRuntime {
 
             match result {
                 ActionResult::Continue { delay, .. } => {
-                    if let Some(d) = delay {
+                    // The barrier of the turn that just ran passed `Ok`: the
+                    // journal records where the loop continues — every turn,
+                    // a no-progress one included.
+                    if let Some(gate) = iteration_gate {
+                        tokio::select! {
+                            biased;
+                            () = context.cancellation().cancelled() => {
+                                abandon();
+                                return Err(ActionError::Cancelled.into());
+                            }
+                            saved = gate.checkpoint(turn, &turn_state, delay) => {
+                                saved.map_err(RuntimeError::EffectJournal)?;
+                            }
+                        }
+                    }
+                    // A replay that has not reached the frontier skips the
+                    // delay: the next turn already ran once, after it.
+                    if let Some(d) = delay.filter(|_| !progress.replayed_past) {
                         tokio::select! {
                             () = tokio::time::sleep(d) => {}
                             () = context.cancellation().cancelled() => {
+                                abandon();
                                 return Err(ActionError::Cancelled.into());
                             }
                         }

@@ -11,6 +11,73 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Journaled agent turns and recorded reads (experimental); development
+  packages advance to 0.32.0 in lockstep.** A default-contract
+  (`Journaled`) agent action on a durable turn now runs under its node's
+  effect journal, one positional run per turn (`turn{n}/unit/v1/#{k:06}`):
+  its writes execute and are recorded in the operation ledger **instead of
+  being refused `NotSent`**, and its turn state is checkpointed after every
+  turn that returned `Continue` (the iteration checkpoint store, unchanged).
+  Model calls are ordinary resource operations declared with the new
+  `Effect::RecordedRead`: their answer is recorded before the agent sees it
+  and replayed on recovery without a provider call (invariants S10, S11).
+  Agents stay out of the stable SDK and API (canon §6.2).
+  - `nebula-resource`: `Effect::RecordedRead` (`as_str` `recorded_read`,
+    replay safe) and `Recovery::Observation` (both on `#[non_exhaustive]`
+    enums). `RecordedRead` is only for calls with **no provider-side
+    effect** (hosted tools, stored responses, server-side conversation
+    appends and uploads are `Idempotent` or `Write`). Under a journal its
+    answer is recorded before return (≤ 1 MiB less 1 KiB, never
+    digest-only), an unrecorded answer is withheld (`Transient` /
+    `MaybeSent`), and a spent ceiling fails `Exhausted` — never
+    `OutcomeUnknown`; `RECORD_OUTPUT = false` with it fails the build and is
+    refused at submit; a streamed one is refused under a journal; without
+    a journal it runs as a plain read.
+  - `nebula-storage-port`: `EffectSlotBinding::observation` (a new public
+    field: struct literals must set it, `false` for an effect);
+    `OperationProtocolRecord::is_observation` and
+    `admits_unsent_failure`; `RecordUnsentFailure` is also admitted on an
+    observation slot after a crossing. The record carries an optional
+    `observation: true` field — absent for effects, so their records stay
+    byte-identical; no SQL migration. **Rollback hazard**: the record is
+    `deny_unknown_fields`, so a build from before 0.32.0 refuses to decode
+    an observation's record.
+  - `nebula-plugin`: agent nodes compile into Graph-v1 plans (kind
+    `agent`) under the new plan epoch **compiler 7** / hash 3, the first
+    whose action kind grammar includes `Agent`; the
+    `UNSUPPORTED_NODE_KIND` expected value is
+    `stateless|stateful|control|agent`. Every new plan is recorded at
+    epoch 7, so **plan revision ids change** for newly compiled plans
+    (the same workflow compiled by 0.31 and 0.32 gets different ids).
+    Epoch 5 and 6 records decode exactly as before; an `Agent` kind under
+    them, or a capability-gated agent under any epoch, is non-canonical
+    even with a valid seal. **Rollback hazard**: a build from before
+    0.32.0 refuses every epoch-7 plan by its `RecordedPlanEpochV1` header
+    (`UnsupportedFormat`), not only those holding an agent node.
+  - `nebula-action`: metadata admission refuses an agent declared with
+    `IsolationLevel::CapabilityGated` (new
+    `ActionPackageValidationError::CapabilityGatedAgent`, on a
+    `#[non_exhaustive]` enum): the runtime never runs one, so it fails
+    when its factory is built instead of at every dispatch.
+  - `nebula-engine`: `RuntimeError::AgentTurnCapExceeded`
+    (`RUNTIME:AGENT_TURN_CAP_EXCEEDED`): a `max_turns()` above 10 000 is
+    refused before turn 0, never clamped. A turn past its timeout stays
+    retryable and its retry replays the turn. New counter
+    `nebula_effect_journal_recorded_read_bytes_total` and the
+    `observation` phase of `nebula_effect_journal_prepares_total`.
+  - Model answers are kept as plaintext JSON evidence with their execution
+    and may contain user data (see the storage durability matrix); prompts
+    are digested, never stored.
+  - Migration:
+
+    | Before (≤ 0.31) | 0.32.0 |
+    |---|---|
+    | a model / retrieval operation declared `Effect::Read` whose answer steers a later effect | `Effect::RecordedRead` (keep `RECORD_OUTPUT` true; only with no provider-side effect) |
+    | a `Journaled` agent relying on its writes being refused | declare the agent `#[action(read_only)]`, or make its writes journal-safe (determinism contract in `nebula_action::agent`) |
+    | `EffectSlotBinding { .., concurrent_with }` | `EffectSlotBinding { .., concurrent_with, observation: false }` |
+    | an agent with `max_turns()` above 10 000 | at most 10 000 |
+    | an agent with `IsolationLevel::CapabilityGated` | `IsolationLevel::None` (the runtime never ran a gated agent) |
+
 - **`CheckpointStore` becomes the fenced, version-bound store of journaled
   stateful actions' iteration checkpoints; development packages advance to
   0.31.0 in lockstep.** A journaled stateful node now resumes at its last

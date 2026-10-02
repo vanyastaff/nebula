@@ -36,11 +36,13 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
   `WorkflowVersionId` and `WorkflowDefinition` into an opaque
   `ExecutablePlanRevision`. The compiler selects the registry's own exact plugin set/flavor,
   validates the closed Graph-v1 contract, and leaves resource/credential selectors abstract.
-  New plans use compiler version 6 and canonical hash version 3 inside the unchanged v1
+  New plans use compiler version 7 and canonical hash version 3 inside the unchanged v1
   record framing. They pin effect declarations, binding-selector provenance, and schema
-  property policy v2. Compiler 6 is the first epoch whose effect grammar includes
-  `Journaled`; compiler 5/hash 3 records remain checked plans and reject a `Journaled`
-  effect as non-canonical. Readers decode `RecordedPlanEpochV1` and `check` it before the
+  property policy v2. Compiler 7 is the first epoch whose action kind grammar includes
+  `Agent` (only without capability gating); compiler 6 is the first whose effect grammar
+  includes `Journaled`. Compiler 6/hash 3 and 5/hash 3 records remain checked plans and
+  reject an `Agent` kind as non-canonical; compiler 5 also rejects a `Journaled` effect.
+  Readers decode `RecordedPlanEpochV1` and `check` it before the
   record body, so an unknown epoch is refused before its grammar is decoded. Historical compiler 1/hash 1, compiler 3/hash 2, and compiler 4/hash 2
   or 3 records retain their original bytes and hashes as untrusted evidence. They cannot
   mint a current checked plan; recompile against freshly admitted component definitions.

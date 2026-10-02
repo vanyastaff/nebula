@@ -1665,7 +1665,7 @@ mod resource_handle {
                 .svc
                 .submit(LostWrite)
                 .await
-                .expect_err("an agent action has no effect journal");
+                .expect_err("a storeless agent has no effect journal");
             Ok(ActionResult::break_completed(serde_json::json!({
                 "calls": calls,
                 "write_kind": refused.kind().to_string(),
@@ -1675,8 +1675,11 @@ mod resource_handle {
         }
     }
 
+    /// An agent's turns are journaled on a durable turn (the effect
+    /// protocol suite's `journal_agent` covers its writes); a storeless run
+    /// has no journal, and says so.
     #[tokio::test]
-    async fn a_journaled_agent_action_reads_but_its_writes_are_refused_saying_why() {
+    async fn a_storeless_journaled_agent_reads_but_its_writes_are_refused_saying_why() {
         let manager = Arc::new(Manager::new());
         let calls = register_svc(&manager, None);
         let engine = engine(manager, |registry| {
@@ -1698,8 +1701,8 @@ mod resource_handle {
         assert_eq!(output(&result)["write_sent"], "not_sent");
         assert_eq!(
             output(&result)["write_detail"],
-            "agent effects are not journaled; the agent profile is planned",
-            "the refusal says why an agent's write has no journal"
+            "journaled effects need execution stores",
+            "the refusal says why a storeless agent's write has no journal"
         );
         assert_eq!(calls.count(), 1, "the write made zero provider calls");
     }

@@ -265,14 +265,15 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   `Remote(RemoteEffectDescriptor)`. `Journaled` covers only effects routed through
   resource handles; a side channel the action opens itself is invisible to the engine
   and is never journaled (nor is a lease-facade unit). A `Journaled` action runs on the
-  engine's node dispatch only. When the turn has execution stores, a stateless one gets
+  engine's node dispatch only. When the turn has execution stores, a stateless one (or a
+  stateful one, per iteration, or an agent, per turn — experimental: journaled turns,
+  under the determinism contract of `AgentAction`) gets
   resource handles under its node attempt's effect journal: every `Idempotent` /
   `Write` unit is prepared, granted and recorded in the operation ledger, replayed on
   retry or resume, and an unknown outcome fails the node even if the action swallowed
   the unit's error. Without execution stores (refusal detail "journaled effects need
   execution stores"), for control actions (which decide flow and must not cause
-  effects), for stateful actions until their iterations are journaled, and for agent
-  and stream actions, the handles are read-only: reads run and writes are refused
+  effects), and for stream actions, the handles are read-only: reads run and writes are refused
   before any provider call, with a detail saying why. `ReadOnly` and `Remote` actions
   likewise get read-only handles only. No contract reaches a raw lease: since 0.27.0 the action surface has no lease route
   (`ResourceGuard<R>` slots and `acquire_resource_by_id` are removed), because a lease would

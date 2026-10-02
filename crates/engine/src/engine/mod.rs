@@ -3105,11 +3105,11 @@ const JOURNAL_NEEDS_STORES: &str = "journaled effects need execution stores";
 impl NodeTask {
     /// The effect journal of this node attempt: built only for a frozen
     /// journaled action of a journaled
-    /// [`JournalShape`](crate::effect_driver::JournalShape) (stateless, or
-    /// stateful per iteration) with no remote capability, under this
-    /// turn's operation ledger and execution lease. Building it costs
-    /// nothing durable. Control actions decide flow and keep read-only
-    /// handles; agent, stream and other actions keep them.
+    /// [`JournalShape`](crate::effect_driver::JournalShape) (stateless,
+    /// stateful per iteration, or agent per turn) with no remote
+    /// capability, under this turn's operation ledger and execution lease.
+    /// Building it costs nothing durable. Control actions decide flow and
+    /// keep read-only handles; stream and other actions keep them.
     fn effect_journal(&self) -> Option<crate::effect_driver::NodeEffectJournal> {
         let NodeFactoryDispatch::Frozen {
             factory,
@@ -3128,10 +3128,9 @@ impl NodeTask {
             return None;
         };
         let shape = crate::effect_driver::JournalShape::of(factory.metadata().kind());
-        // Only a stateful action's iterations are checkpointed.
-        let checkpoints = (shape == crate::effect_driver::JournalShape::Iterated)
-            .then(|| self.checkpoints.clone())
-            .flatten();
+        // Only a stateful action's iterations and an agent's turns are
+        // checkpointed.
+        let checkpoints = shape.is_gated().then(|| self.checkpoints.clone()).flatten();
         Some(crate::effect_driver::NodeEffectJournal::new(
             crate::effect_driver::JournalAuthority {
                 ledger: Arc::clone(ledger),
@@ -3180,9 +3179,9 @@ impl NodeTask {
     /// The resource accessor the action of `contract` is dispatched with.
     ///
     /// Every action reaches resources through resource handles only — the
-    /// accessor has no raw-lease route. A stateless or stateful journaled
-    /// one on a durable turn gets handles under this node attempt's effect
-    /// journal;
+    /// accessor has no raw-lease route. A stateless, stateful or agent
+    /// journaled one on a durable turn gets handles under this node
+    /// attempt's effect journal;
     /// every other node (a journaled one without a journal, a `ReadOnly` or
     /// `Remote` one) gets read-only handles, whose `Idempotent` and `Write`
     /// units are refused before any provider call.
@@ -3429,10 +3428,11 @@ impl NodeTask {
                             .await
                             .map_err(EngineError::Runtime)
                     },
-                    // A stateless or stateful journaled action on a durable
-                    // turn runs under its node attempt's effect journal,
-                    // whose verdict `run` lays over the result; a stateful
-                    // one's loop keeps the journal's iteration barrier.
+                    // A stateless, stateful or agent journaled action on a
+                    // durable turn runs under its node attempt's effect
+                    // journal, whose verdict `run` lays over the result; a
+                    // stateful one's loop keeps the journal's iteration
+                    // barrier, an agent's per turn.
                     ActionEffectContract::Journaled(_)
                         if factory.remote_effect_factory().is_none() =>
                     {
@@ -3449,8 +3449,8 @@ impl NodeTask {
                                 .await
                                 .map_err(EngineError::Runtime),
                             // No journal (no execution stores, a control
-                            // action, or an agent, stream or other
-                            // unjournaled kind):
+                            // action, or a stream or other unjournaled
+                            // kind):
                             // the context's accessor hands out read-only
                             // handles saying why, so reads run and writes
                             // through handles are refused as NotSent before

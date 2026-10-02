@@ -482,6 +482,7 @@ mod tests {
             contract: &contract,
             provider_key: None,
             concurrent_with: None,
+            observation: false,
         };
         let slot = ledger
             .prepare(&binding, fencing)

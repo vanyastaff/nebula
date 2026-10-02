@@ -343,7 +343,7 @@ async fn a_checkpoint_needs_its_own_passed_barrier() {
     let journal = checkpointed(&fresh, 1, &store);
     journal.begin_iteration(0).expect("it0");
     journal.end_iteration(DRAIN, true).await.expect("passes");
-    journal.cancel_iteration();
+    journal.abandon_iteration();
     assert_eq!(
         journal.save_checkpoint(1, &state, None).await,
         Err(EffectExecutionError::Cancelled)
@@ -569,6 +569,111 @@ async fn save_failures_continue_defer_or_halt_by_kind() {
         ),
         1
     );
+}
+
+/// The agent journal of attempt `attempt_generation`, checkpointing its
+/// turns into `store`.
+fn checkpointed_turns(
+    harness: &Harness,
+    attempt_generation: u64,
+    store: &Arc<ScriptedCheckpoints>,
+) -> NodeEffectJournal {
+    let mut authority = harness.authority(
+        attempt_generation,
+        Arc::new(nebula_core::accessor::SystemClock),
+        JournalShape::Turned,
+    );
+    authority.checkpoints = Some(Arc::clone(store) as Arc<dyn CheckpointStore>);
+    NodeEffectJournal::new(authority)
+}
+
+#[tokio::test]
+async fn an_agent_checkpoints_every_passed_turn_and_resumes_counting_its_turns() {
+    let harness = Harness::new().await;
+    let store = ScriptedCheckpoints::new(&harness);
+    let first = checkpointed_turns(&harness, 1, &store);
+    assert_eq!(first.resume_from_checkpoint().await, Ok(None));
+    charge_iteration(&harness, &first, 0, 40).await;
+    let state = serde_json::json!({"transcript": ["hi"]});
+    first
+        .save_checkpoint(1, &state, None)
+        .await
+        .expect("after turn 0");
+    // A turn that changes nothing and records nothing is legal, and is
+    // checkpointed all the same.
+    first.begin_iteration(1).expect("turn 1");
+    first
+        .end_iteration(DRAIN, true)
+        .await
+        .expect("a no-progress turn");
+    first
+        .save_checkpoint(2, &state, None)
+        .await
+        .expect("after the no-progress turn");
+    drop(first);
+    assert_eq!(
+        harness.slots().await[0].occurrence(),
+        "turn0/unit/v1/#000000"
+    );
+
+    let second = checkpointed_turns(&harness, 2, &store);
+    let point = second
+        .resume_from_checkpoint()
+        .await
+        .expect("verified")
+        .expect("a checkpoint");
+    assert_eq!(point.iteration, 2);
+    assert_eq!(point.state, state);
+    assert_eq!(second.begin_iteration(2), Ok(()));
+    second.end_iteration(DRAIN, true).await.expect("turn 2");
+    assert_eq!(second.conclude(DRAIN).await, Ok(()));
+    assert_eq!(harness.desk.keys().len(), 1, "turn 0 never ran again");
+    assert_eq!(
+        harness.counter(
+            NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL,
+            &[("outcome", "recorded")]
+        ),
+        2
+    );
+}
+
+#[tokio::test]
+async fn a_turn_resume_refuses_a_label_of_another_family() {
+    let invalid =
+        EffectExecutionError::IterationCheckpoint(IterationCheckpointError::InvalidRecord);
+    // A stateful iteration recorded under the node, then an agent's turn
+    // checkpoint: the node's action changed kind.
+    let harness = Harness::new().await;
+    let store = ScriptedCheckpoints::new(&harness);
+    let iterated = harness.stateful_journal(1);
+    charge_iteration(&harness, &iterated, 0, 41).await;
+    drop(iterated);
+    store_checkpoint(&harness, &store, 1, b"{}", sha256(b"{}"), 1).await;
+    let turns = checkpointed_turns(&harness, 2, &store);
+    assert_eq!(turns.resume_from_checkpoint().await, Err(invalid));
+    assert_eq!(turns.begin_iteration(1), Err(invalid), "nothing runs");
+
+    // The reverse: a turn recorded, then a stateful resume.
+    let harness = Harness::new().await;
+    let store = ScriptedCheckpoints::new(&harness);
+    let agent = checkpointed_turns(&harness, 1, &store);
+    charge_iteration(&harness, &agent, 0, 42).await;
+    drop(agent);
+    store_checkpoint(&harness, &store, 1, b"{}", sha256(b"{}"), 1).await;
+    let stateful = checkpointed(&harness, 2, &store);
+    assert_eq!(stateful.resume_from_checkpoint().await, Err(invalid));
+
+    // Its own family counts: the same row resumes an agent.
+    let agent = checkpointed_turns(&harness, 3, &store);
+    assert_eq!(
+        agent
+            .resume_from_checkpoint()
+            .await
+            .expect("verified")
+            .map(|point| point.iteration),
+        Some(1)
+    );
+    assert_eq!(harness.desk.keys().len(), 1, "nothing sent by the resumes");
 }
 
 #[tokio::test]

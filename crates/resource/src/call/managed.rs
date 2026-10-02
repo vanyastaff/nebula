@@ -167,9 +167,16 @@ impl<R: Provider> RowShared<R> {
 pub(super) fn assert_declaration<R: Provider + PinSlots, O: Operation<R>>() {
     const {
         assert!(
-            is_valid_declaration(O::KEY, O::VERSION, O::EFFECT, O::KEY_WINDOW),
+            is_valid_declaration(
+                O::KEY,
+                O::VERSION,
+                O::EFFECT,
+                O::KEY_WINDOW,
+                O::RECORD_OUTPUT
+            ),
             "Operation::KEY must be 1..=64 bytes of [A-Za-z0-9_.-] starting and ending \
-             alphanumeric, VERSION at least 1, and an Idempotent KEY_WINDOW non-zero"
+             alphanumeric, VERSION at least 1, an Idempotent KEY_WINDOW non-zero, and a \
+             RecordedRead's RECORD_OUTPUT true"
         );
     }
 }
@@ -257,13 +264,13 @@ impl UnitScope {
 
     /// Routes a unit at submit (the declaration, the developer key part,
     /// then the caller's authority) and, on an owned facade, takes the
-    /// owner's side of the submit. `Idempotent` and `Write` units route:
+    /// owner's side of the submit. Units route:
     ///
-    /// | Authority | `Read` | `Idempotent` / `Write` | streamed `Idempotent` / `Write` |
-    /// |---|---|---|---|
-    /// | unjournaled (library) | plain | plain | plain |
-    /// | read-only | plain | refused `Permanent` | refused `Permanent` |
-    /// | journaled | plain, never prepared | through the owner | refused `Permanent` |
+    /// | Authority | `Read` | `RecordedRead` | `Idempotent` / `Write` | streamed `RecordedRead` / `Idempotent` / `Write` |
+    /// |---|---|---|---|---|
+    /// | unjournaled (library) | plain | plain | plain | plain |
+    /// | read-only | plain | plain | refused `Permanent` | plain read / refused `Permanent` |
+    /// | journaled | plain, never prepared | through the owner | through the owner | refused `Permanent` |
     ///
     /// A plain unit that declared a developer key part presents a local
     /// idempotency key; every refusal is unsent.
@@ -286,6 +293,7 @@ impl UnitScope {
             declared.version,
             declared.effect,
             declared.key_window,
+            declared.record_output,
         )?;
         let key_part = work.key_part();
         if let Some(part) = &key_part {
@@ -300,8 +308,12 @@ impl UnitScope {
         if declared.effect == Effect::Read {
             return plain(key_part);
         }
+        let recorded_read = declared.effect == Effect::RecordedRead;
         let (owner, binding) = match &self.effect_authority {
             EffectAuthority::Unjournaled => return plain(key_part),
+            // Without an owner a recorded read is a plain read: nothing
+            // records it, and nothing replays it.
+            EffectAuthority::ReadOnly { .. } if recorded_read => return plain(key_part),
             EffectAuthority::ReadOnly { detail } => {
                 return Err(OperationError::new(ErrorKind::Permanent, detail));
             },
@@ -310,13 +322,18 @@ impl UnitScope {
         if W::codec().is_none() {
             return Err(OperationError::new(
                 ErrorKind::Permanent,
-                "streaming effects are not journaled in v1",
+                if recorded_read {
+                    "streaming recorded reads are not journaled in v1"
+                } else {
+                    "streaming effects are not journaled in v1"
+                },
             ));
         }
         let recovery = match declared.effect {
             Effect::Idempotent => Recovery::StableKey {
                 window: declared.key_window,
             },
+            Effect::RecordedRead => Recovery::Observation,
             _ => Recovery::Opaque,
         };
         let declaration = JournalDeclaration {
@@ -925,10 +942,16 @@ where
             (Err(OperationError::new(kind, "operation panicked")), true)
         },
     };
-    let sent = shared.fold(abnormal);
     let result = match (shared.effect(), codec) {
         (Some(owned), Some(codec)) => owned.finish(result, abnormal, codec).await,
         _ => result,
+    };
+    // A recorded read whose answer arrived but was withheld (not recorded)
+    // settles `MaybeSent`: the caller never saw what the provider answered.
+    let sent = if shared.effect().is_some_and(OwnedEffect::answer_withheld) {
+        SentState::MaybeSent
+    } else {
+        shared.fold(abnormal)
     };
     // The unit settled: it can no longer reach the provider, whoever keeps
     // its handle.

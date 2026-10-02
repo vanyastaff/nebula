@@ -4,11 +4,12 @@
 //! [`Journaled`](nebula_action::effect::ActionEffectContract::Journaled)
 //! submits its effects as units on resource handles
 //! ([`ResourceHandle`](nebula_resource::call::ResourceHandle)). For a
-//! stateless or stateful action on a durable turn the engine builds one
+//! stateless, stateful or agent action on a durable turn the engine builds one
 //! [`NodeEffectJournal`] per node attempt and hands it to the node's handles
 //! ([`Manager::handle_any_journaled`](nebula_resource::Manager::handle_any_journaled));
-//! the resource runtime drives every `Idempotent` or `Write` unit through
-//! it (see [`nebula_resource::call::journal`]). The journal records each
+//! the resource runtime drives every `Idempotent`, `Write` or
+//! `RecordedRead` unit through it (see [`nebula_resource::call::journal`]).
+//! The journal records each
 //! unit as one slot of the operation ledger, through the same [`LedgerSlot`]
 //! core as the remote-effect driver, under the turn's execution lease:
 //!
@@ -20,8 +21,9 @@
 //! | settle | `RecordOutcome` (exact recommit on a lost acknowledgement) |
 //!
 //! **Lazy writes, few reads.** Building a journal costs nothing durable: no
-//! ledger write happens until the first `Idempotent` or `Write` unit is
-//! prepared, and a `Read` unit is never prepared. Concluding always reads
+//! ledger write happens until the first `Idempotent`, `Write` or
+//! `RecordedRead` unit is prepared, and a plain `Read` unit is never
+//! prepared. Concluding always reads
 //! the node's occurrences once — even for a node that only read: a process
 //! that died during an earlier dispatch of the node, before that attempt
 //! was recorded, leaves the next attempt at the same generation, and only
@@ -103,9 +105,32 @@
 //!
 //! **Kinds** ([`JournalShape`]). Stateless actions are journaled with one
 //! flat occurrence sequence per node attempt; stateful actions per
-//! iteration. A control action decides flow and must not cause effects;
-//! agent, stream and other actions keep read-only handles. Each says why in
-//! the refusal of a write.
+//! iteration; agents per turn. A control action decides flow and must not
+//! cause effects; stream and other actions keep read-only handles. Each
+//! says why in the refusal of a write.
+//!
+//! **Recorded reads.** A `RecordedRead` unit — a model call, a retrieval
+//! whose answer steers the program — is an *observation* slot
+//! (`Recovery::Observation`; the record's `observation` flag): a stable
+//! key over the ledger's longest window and its ceiling of calls, effect
+//! class 3 in its contract identity (a write never replays as a read, nor
+//! the reverse). Its canonical request is digested, never stored, so a
+//! changed prompt at a recorded position is a mismatch; its answer is
+//! recorded (never digest-only: an answer the evidence cannot hold is
+//! refused) before its unit returns it, and replays without a provider
+//! call. Its outcome is never unknown: a call without an answer (lost,
+//! cut off, a crash residue) is asked again at the same position, a spent
+//! ceiling fails the unit `Exhausted`, its failure is recorded whatever
+//! crossed, and a settle or explanation the ledger does not take withholds
+//! the answer and turns the position uncertain — nothing fresh is written
+//! above it in that attempt, and the node defers. An unanswered read below
+//! any position recorded after it (one that does not list it as
+//! concurrent) is refused [`Superseded`](JournalRefusal::Superseded) with
+//! its recorded failure — the program saw it fail and went on — and asked
+//! again only with nothing recorded above it. An answered read orders the
+//! positions below it as an applied effect does (S11). A plain `Read` is
+//! never recorded: an answer that changed and steers a later effect makes
+//! the replay diverge, which halts it as a mismatch (S2).
 //!
 //! **Iterations.** A stateful action runs all its iterations inside one
 //! node attempt. An attempt starts at the iteration its node's last
@@ -150,7 +175,8 @@
 //!   `H` after `L`: `H` is of a later iteration (the barrier drains one
 //!   iteration before the next begins), or `H` does not list `L` as
 //!   **concurrent**. When such an `H` may have changed the provider (an
-//!   outcome, or a call that crossed), `L` is never sent again:
+//!   outcome, or a call that crossed) or is an answered recorded read (the
+//!   program observed it: S11), `L` is never sent again:
 //!   - an `L` that changed nothing (only prepared, or every call
 //!     explained not crossed) failed unsent before the program moved on —
 //!     it is refused [`Superseded`](JournalRefusal::Superseded): the unit
@@ -265,10 +291,23 @@
 //! effect is a mismatch). Rows are not cleared at terminal: they go with
 //! their execution.
 //!
-//! **Cancellation.** A node cancelled mid-iteration ends the iteration at
-//! once ([`IterationGate::cancel_iteration`]): a later submission (a
-//! detached task's) is refused closed with no failure of its own, so the
-//! conclusion drains only the units already in flight.
+//! **Cancellation.** A node cancelled mid-iteration — or an agent's turn
+//! past its timeout — abandons the iteration at once
+//! ([`IterationGate::abandon_iteration`]): a later submission (a detached
+//! task's) is refused closed with no failure of its own, so the conclusion
+//! drains only the units already in flight, recording a call none of them
+//! explained as ambiguous (never sent again under another key).
+//!
+//! **Turns.** An agent's loop runs under the same barrier, a turn per
+//! iteration: its units are labelled `turn{n}/unit/v1/#{ordinal:06}` —
+//! model calls (recorded reads), tools and sessions in one positional
+//! sequence per turn, a model call with no label of its own — and it is
+//! checkpointed after every turn whose barrier passed `Continue`, its turn
+//! state the checkpoint's state (an unchanged one included: a no-progress
+//! turn is legal). Flat, `it{n}/` and `turn{n}/` labels are mutually
+//! exclusive for a node: another family's label is a changed action kind
+//! (a mismatch), and a resume counts only the node's own family. The
+//! positional and order rules below apply per turn as per iteration.
 //!
 //! **Admission.** A stateful node's journal admits a submitted unit only
 //! while an iteration is open
@@ -362,8 +401,8 @@
 //!   run that goes past a recorded slot it never met — one only prepared
 //!   included — or succeeds without meeting it is a mismatch, nothing sent;
 //! - **S3** a lower effect is never applied after a higher one the program
-//!   ran after it (refused superseded — with the failure the program saw —
-//!   or unknown);
+//!   ran after it, applied or observed (refused superseded — with the
+//!   failure the program saw — or unknown);
 //! - **S4** units the program ran concurrently replay at least once under
 //!   their recorded keys: every open lower unit is recorded with a fresh
 //!   slot, exactly, or the fresh slot is refused unsent;
@@ -388,6 +427,11 @@
 //!   (S1–S8 as before). Accepted narrowing: a divergence inside attested
 //!   iterations — a program that would now take another path there — is
 //!   not detected, because those iterations do not run again.
+//! - **S10** a recorded read's answer the program observed is the answer
+//!   every replay observes; an unobserved one may be asked again; a
+//!   recorded read never makes an outcome unknown.
+//! - **S11** an answered recorded read orders lower positions as an applied
+//!   effect does.
 //!
 //! A correct deterministic program is stranded only where the ledger cannot
 //! tell what happened: a crossed call with no recorded outcome that is
@@ -408,10 +452,10 @@ use nebula_metrics::{
     MetricsRegistry,
     naming::{
         NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL, NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL,
-        NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL, NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL,
-        NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL, effect_journal_checkpoint_outcome,
-        effect_journal_prepare_phase, effect_journal_resume_outcome, effect_journal_step,
-        effect_journal_verdict,
+        NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL, NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+        NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL, NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL,
+        effect_journal_checkpoint_outcome, effect_journal_prepare_phase,
+        effect_journal_resume_outcome, effect_journal_step, effect_journal_verdict,
     },
 };
 use nebula_resource::{
@@ -538,12 +582,15 @@ pub(crate) trait IterationGate: Send + Sync {
         succeeded: bool,
     ) -> Result<IterationProgress, EffectExecutionError>;
 
-    /// Ends the open iteration because the node was cancelled while it
-    /// ran: no unit is admitted afterwards (a later submission is refused
+    /// Abandons the open iteration (or the loop between two iterations):
+    /// the node was cancelled, or an agent's turn ran past its timeout. No
+    /// unit is admitted afterwards (a later submission is refused
     /// [`Closed`](JournalRefusal::Closed), `Cancelled`, and recorded as no
     /// failure). Units already in flight are left to the node's conclusion,
-    /// which drains them; nothing is waited for here.
-    fn cancel_iteration(&self);
+    /// which drains them and records a call none of them explained as
+    /// ambiguous — never sent again under another key; nothing is waited
+    /// for here.
+    fn abandon_iteration(&self);
 
     /// Where the loop starts: the node's iteration checkpoint, verified
     /// against its digest and the node's ledger, or `None` to start at
@@ -634,8 +681,8 @@ impl IterationGate for JournalIterationGate {
         })
     }
 
-    fn cancel_iteration(&self) {
-        self.journal.cancel_iteration();
+    fn abandon_iteration(&self) {
+        self.journal.abandon_iteration();
     }
 
     async fn resume(&self) -> Result<Option<ResumePoint>, EffectExecutionError> {
@@ -664,7 +711,7 @@ impl fmt::Debug for JournalIterationGate {
 /// Engine-private proof that a dispatch runs under a [`NodeEffectJournal`]:
 /// only this module can mint it, so generic dispatch cannot run a journaled
 /// action with write authority. It carries the journal's iteration barrier,
-/// which a stateful action's loop keeps.
+/// which a stateful action's loop keeps per iteration and an agent's per turn.
 pub(crate) struct JournalAdmission {
     gate: JournalIterationGate,
 }
@@ -679,8 +726,6 @@ impl JournalAdmission {
 /// Why a journaled control action has read-only resource handles.
 const CONTROL_NOT_JOURNALED: &str =
     "control actions decide flow and must not cause effects; move effects to a stateless action";
-/// Why a journaled agent action has read-only resource handles.
-const AGENT_NOT_JOURNALED: &str = "agent effects are not journaled; the agent profile is planned";
 /// Why a journaled action of any other kind has read-only resource handles.
 const KIND_NOT_JOURNALED: &str = "effects of this action kind are not journaled";
 
@@ -695,9 +740,14 @@ pub(crate) enum JournalShape {
     /// the iteration (`it{n}/unit/v1/#n`), its runtime loop keeping the
     /// journal's [`IterationGate`].
     Iterated,
+    /// One run per turn: an agent action, whose occurrences carry the turn
+    /// (`turn{n}/unit/v1/#n`) — model calls, tools and sessions in one
+    /// positional sequence per turn — its runtime loop keeping the
+    /// journal's [`IterationGate`] per turn.
+    Turned,
     /// No journal: a control action (which decides flow and must not cause
-    /// effects), an agent action (whose profile is planned), a stream
-    /// action, and every other kind keep read-only handles.
+    /// effects), a stream action, and every other kind keep read-only
+    /// handles.
     None,
 }
 
@@ -707,6 +757,7 @@ impl JournalShape {
         match kind {
             nebula_action::ActionKind::Stateless => Self::Flat,
             nebula_action::ActionKind::Stateful => Self::Iterated,
+            nebula_action::ActionKind::Agent => Self::Turned,
             _ => Self::None,
         }
     }
@@ -714,16 +765,22 @@ impl JournalShape {
     /// Whether a journaled action of this shape runs under a node effect
     /// journal in this version.
     pub(crate) const fn is_journaled(self) -> bool {
-        matches!(self, Self::Flat | Self::Iterated)
+        matches!(self, Self::Flat | Self::Iterated | Self::Turned)
+    }
+
+    /// Whether the journal's units run in positional runs bracketed by the
+    /// runtime loop's [`IterationGate`] — a stateful action's iterations or
+    /// an agent's turns — which it may checkpoint.
+    pub(crate) const fn is_gated(self) -> bool {
+        matches!(self, Self::Iterated | Self::Turned)
     }
 
     /// Why a journaled action of `kind` has read-only handles although its
     /// turn has execution stores, or `None` when its kind is journaled.
     pub(crate) const fn read_only_detail(kind: nebula_action::ActionKind) -> Option<&'static str> {
         match (Self::of(kind), kind) {
-            (Self::Flat | Self::Iterated, _) => None,
+            (Self::Flat | Self::Iterated | Self::Turned, _) => None,
             (Self::None, nebula_action::ActionKind::Control) => Some(CONTROL_NOT_JOURNALED),
-            (Self::None, nebula_action::ActionKind::Agent) => Some(AGENT_NOT_JOURNALED),
             (Self::None, _) => Some(KIND_NOT_JOURNALED),
         }
     }
@@ -755,12 +812,13 @@ pub(crate) struct JournalAuthority {
     pub clock: Arc<dyn Clock>,
     pub metrics: MetricsRegistry,
     /// How the action's effects are journaled: an
-    /// [`Iterated`](JournalShape::Iterated) journal admits units only while
-    /// an iteration is open.
+    /// [`Iterated`](JournalShape::Iterated) or [`Turned`](JournalShape::Turned)
+    /// journal admits units only while an iteration (a turn) is open.
     pub shape: JournalShape,
-    /// Where an [`Iterated`](JournalShape::Iterated) journal loads and
-    /// saves its iteration checkpoint; `None` keeps none (every attempt
-    /// replays from iteration 0).
+    /// Where an [`Iterated`](JournalShape::Iterated) or
+    /// [`Turned`](JournalShape::Turned) journal loads and saves its
+    /// iteration (turn) checkpoint; `None` keeps none (every attempt replays
+    /// from iteration 0).
     pub checkpoints: Option<Arc<dyn CheckpointStore>>,
 }
 
@@ -801,8 +859,8 @@ struct JournalState {
     /// The next position of the node attempt's sequence of effect units
     /// (of the open iteration, for a stateful action).
     next_ordinal: u32,
-    /// The last iteration a stateful action began; `None` for a stateless
-    /// one (flat labels).
+    /// The last iteration a stateful action (the last turn an agent) began;
+    /// `None` for a stateless one (flat labels).
     iteration: Option<u32>,
     /// Whether that iteration is still open: between its
     /// [`end_iteration`](NodeEffectJournal::end_iteration) and the next
@@ -829,6 +887,9 @@ struct JournalState {
     slots: HashMap<EffectSlotId, Arc<tokio::sync::Mutex<LedgerSlot>>>,
     /// The occurrence label of each slot this journal prepared.
     occurrences: HashMap<EffectSlotId, String>,
+    /// The slots this journal prepared that record a recorded read (an
+    /// observation): never an unknown outcome.
+    observations: HashSet<EffectSlotId>,
     /// The failure that decides the node's verdict (the first one, unless
     /// a halting one replaces it; see `note_failure`).
     failure: Option<EffectExecutionError>,
@@ -854,6 +915,20 @@ enum Family {
     Flat,
     /// `it{n}/unit/v1/#{ordinal:06}`: a stateful action's iterations.
     Iterated,
+    /// `turn{n}/unit/v1/#{ordinal:06}`: an agent's turns.
+    Turned,
+}
+
+impl Family {
+    /// The prefix of a run's labels before its number: `it` or `turn`;
+    /// `None` for the flat family.
+    const fn run_prefix(self) -> Option<&'static str> {
+        match self {
+            Self::Flat => None,
+            Self::Iterated => Some("it"),
+            Self::Turned => Some("turn"),
+        }
+    }
 }
 
 /// Where an occurrence label sits: its family and `(iteration, ordinal)`
@@ -867,18 +942,27 @@ struct Position {
 
 impl Position {
     /// The position of a label the journal builds, read strictly: the
-    /// iteration in decimal without leading zeros (at most
+    /// iteration (or turn) in decimal without leading zeros (at most
     /// [`MAX_ITERATION`]), the ordinal zero-padded to six digits. Any other
     /// label has no position.
     fn parse(label: &str) -> Option<Self> {
-        let (family, iteration, rest) = match label.strip_prefix("it") {
-            Some(tail) => {
+        let run = [Family::Iterated, Family::Turned]
+            .into_iter()
+            .find_map(|family| {
+                let tail = label.strip_prefix(family.run_prefix()?)?;
+                // A run number starts with a digit: `it…` never reads a
+                // `turn…` label, nor the reverse.
+                tail.starts_with(|first: char| first.is_ascii_digit())
+                    .then_some((family, tail))
+            });
+        let (family, iteration, rest) = match run {
+            Some((family, tail)) => {
                 let (iteration, rest) = tail.split_once('/')?;
                 let iteration = canonical_number(iteration, 1)?;
                 if iteration > MAX_ITERATION {
                     return None;
                 }
-                (Family::Iterated, iteration, rest)
+                (family, iteration, rest)
             },
             None => (Family::Flat, 0, label),
         };
@@ -905,11 +989,16 @@ fn canonical_number(digits: &str, width: usize) -> Option<u32> {
     (format!("{number:0width$}") == digits).then_some(number)
 }
 
-/// The label of position `ordinal` of `iteration` (`None`: a flat label).
-fn occurrence_label(iteration: Option<u32>, ordinal: u32) -> String {
-    match iteration {
-        Some(iteration) => format!("it{iteration}/{UNIT_POSITION}{ordinal:06}"),
-        None => format!("{UNIT_POSITION}{ordinal:06}"),
+/// The label of position `ordinal` of run `iteration` of `family` (a flat
+/// label without a run): `unit/v1/#{ordinal:06}`,
+/// `it{iteration}/unit/v1/#{ordinal:06}` or
+/// `turn{iteration}/unit/v1/#{ordinal:06}`.
+fn occurrence_label(family: Family, iteration: Option<u32>, ordinal: u32) -> String {
+    match (family.run_prefix(), iteration) {
+        (Some(prefix), Some(iteration)) => {
+            format!("{prefix}{iteration}/{UNIT_POSITION}{ordinal:06}")
+        },
+        _ => format!("{UNIT_POSITION}{ordinal:06}"),
     }
 }
 
@@ -939,6 +1028,16 @@ struct PriorOccurrences {
     consequential: HashMap<(Family, u32), Vec<ConsequentialSlot>>,
     /// The latest iteration per family holding such a slot.
     last_consequential_iteration: HashMap<Family, u32>,
+    /// Recorded labels of recorded reads (observations) with no recorded
+    /// answer: asked again, unless a position the program ran after them
+    /// is recorded (S10, [`Self::reorders_at`]).
+    unanswered_reads: HashSet<String>,
+    /// Every recorded slot with a concurrency list, per family and
+    /// iteration — answered, unsettled or not: what an unanswered read is
+    /// ordered before.
+    recorded_with_order: HashMap<(Family, u32), Vec<ConsequentialSlot>>,
+    /// The latest iteration per family holding such a slot.
+    last_ordered_iteration: HashMap<Family, u32>,
 }
 
 /// An applied recorded slot's ordinal and the lower ordinals of its
@@ -967,8 +1066,21 @@ enum SlotWeight {
 
 impl SlotWeight {
     /// The weight of a recorded slot.
+    ///
+    /// A recorded read (an observation) is `Applied` once answered — the
+    /// program observed the answer and ran its later effects on it, so it
+    /// orders the slots before it as an applied effect does (S11) — and
+    /// `Unsettled` otherwise, whatever crossed: it changed nothing, and
+    /// it is never `Pending` (its outcome is never unknown, S10).
     fn of(record: &OperationRecord) -> Self {
         match record.protocol() {
+            Some(protocol) if protocol.is_observation() => {
+                if protocol.phase() == EffectPhase::Resolved {
+                    Self::Applied
+                } else {
+                    Self::Unsettled
+                }
+            },
             None => Self::Applied,
             Some(protocol) if protocol.phase() == EffectPhase::Resolved => {
                 if may_have_applied(record) {
@@ -990,8 +1102,9 @@ impl SlotWeight {
 }
 
 /// One recorded occurrence as the journal weighs it: its label, its
-/// [`SlotWeight`] and the lower positions recorded as concurrent with it.
-type RecordedOccurrence<'a> = (&'a str, SlotWeight, Option<&'a [PositionRange]>);
+/// [`SlotWeight`], the lower positions recorded as concurrent with it, and
+/// whether it is a recorded read (an observation).
+type RecordedOccurrence<'a> = (&'a str, SlotWeight, Option<&'a [PositionRange]>, bool);
 
 impl PriorOccurrences {
     /// Every label as applied (a recorded success), with nothing concurrent.
@@ -1000,20 +1113,38 @@ impl PriorOccurrences {
         Self::from_records(
             labels
                 .into_iter()
-                .map(|label| (label, SlotWeight::Applied, Some(&[][..]))),
+                .map(|label| (label, SlotWeight::Applied, Some(&[][..]), false)),
         )
     }
 
     /// The recorded occurrences.
     fn from_records<'a>(records: impl IntoIterator<Item = RecordedOccurrence<'a>>) -> Self {
         let mut prior = Self::default();
-        for (label, weight, concurrent_with) in records {
+        for (label, weight, concurrent_with, observation) in records {
+            if observation && weight == SlotWeight::Unsettled {
+                prior.unanswered_reads.insert(label.to_owned());
+            }
             if let Some(position) = Position::parse(label) {
                 prior
                     .positions
                     .entry(position.family)
                     .or_default()
                     .push((position.order(), label.to_owned()));
+                // Every slot recorded with its list orders an unanswered
+                // read below it that it does not list: the program ran it
+                // after the read failed, on that failure.
+                if let Some(concurrent_with) = concurrent_with {
+                    prior
+                        .recorded_with_order
+                        .entry((position.family, position.iteration))
+                        .or_default()
+                        .push((position.ordinal, concurrent_with.to_vec()));
+                    let last = prior
+                        .last_ordered_iteration
+                        .entry(position.family)
+                        .or_insert(position.iteration);
+                    *last = (*last).max(position.iteration);
+                }
                 // A slot recorded without the list (an older journal's) has
                 // unknown concurrency and orders nothing: its recovery keeps
                 // the semantics it was written under. A lower position a
@@ -1065,8 +1196,30 @@ impl PriorOccurrences {
     /// least once). An `H` recorded without the list (by an older journal,
     /// which had no order rule) is not counted: `L` keeps the recovery it
     /// was written under.
+    ///
+    /// A recorded read (an observation) with no recorded answer is refused
+    /// below *any* position the program ran after it — answered,
+    /// unsettled or not: the program saw the read fail and went on, so
+    /// asking it again now could steer the replay elsewhere than the run
+    /// that recorded those positions. With nothing recorded after it, it is
+    /// asked again.
     fn reorders_at(&self, occurrence: &str) -> bool {
+        if self.unanswered_reads.contains(occurrence) {
+            return self.recorded_after(occurrence);
+        }
         self.unsettled.contains(occurrence) && self.ordered_after(occurrence)
+    }
+
+    /// Whether a slot was recorded, with its concurrency list, at a position
+    /// of `occurrence`'s family the program ran after it: a later
+    /// iteration, or a later ordinal of its iteration that does not list it
+    /// as concurrent.
+    fn recorded_after(&self, occurrence: &str) -> bool {
+        Self::ordered_after_in(
+            &self.recorded_with_order,
+            &self.last_ordered_iteration,
+            occurrence,
+        )
     }
 
     /// Whether `occurrence` is recorded with a call that may have crossed
@@ -1082,13 +1235,26 @@ impl PriorOccurrences {
     /// later iteration, or a later ordinal of its iteration that does not
     /// list it as concurrent.
     fn ordered_after(&self, occurrence: &str) -> bool {
+        Self::ordered_after_in(
+            &self.consequential,
+            &self.last_consequential_iteration,
+            occurrence,
+        )
+    }
+
+    /// Whether `slots` hold one the program ran after `occurrence`: in a
+    /// later iteration than `occurrence`'s (`last` per family), or later in
+    /// its iteration without listing it as concurrent.
+    fn ordered_after_in(
+        slots: &HashMap<(Family, u32), Vec<ConsequentialSlot>>,
+        last: &HashMap<Family, u32>,
+        occurrence: &str,
+    ) -> bool {
         Position::parse(occurrence).is_some_and(|position| {
-            let later_iteration = self
-                .last_consequential_iteration
+            let later_iteration = last
                 .get(&position.family)
                 .is_some_and(|&last| last > position.iteration);
-            let later_in_order = self
-                .consequential
+            let later_in_order = slots
                 .get(&(position.family, position.iteration))
                 .is_some_and(|slots| {
                     slots.iter().any(|(ordinal, concurrent_with)| {
@@ -1404,12 +1570,12 @@ impl NodeEffectJournal {
                     .await?;
                 Ok::<_, EffectExecutionError>(PriorOccurrences::from_records(slots.iter().map(
                     |slot| {
+                        let protocol = slot.record().protocol();
                         (
                             slot.occurrence(),
                             SlotWeight::of(slot.record()),
-                            slot.record()
-                                .protocol()
-                                .and_then(|protocol| protocol.concurrent_with()),
+                            protocol.and_then(OperationProtocolRecord::concurrent_with),
+                            protocol.is_some_and(OperationProtocolRecord::is_observation),
                         )
                     },
                 )))
@@ -1432,12 +1598,12 @@ impl NodeEffectJournal {
         let mut state = self.state();
         // Positions of attested iterations are never met again: the
         // frontier starts at the first recorded position past them.
-        let attested_end = match family {
-            Family::Iterated => {
-                let attested = state.attested;
-                recorded.partition_point(|((iteration, _), _)| *iteration < attested)
-            },
-            Family::Flat => 0,
+        // Only the journal's own runs are attested (S9).
+        let attested_end = if family == self.run_family() {
+            let attested = state.attested;
+            recorded.partition_point(|((iteration, _), _)| *iteration < attested)
+        } else {
+            0
         };
         let positions = &mut state.positions;
         let mut frontier = positions
@@ -1629,9 +1795,12 @@ impl NodeEffectJournal {
                 .collect()
         };
         // Every unit is gone: no slot lock is held. A slot still locked
-        // could be mid-step and is never counted as resolved.
+        // could be mid-step and is never counted as resolved — unless it
+        // records a recorded read, which is never unknown (S10).
+        let observations = self.state().observations.clone();
         let unresolved: Vec<EffectSlotId> = slots
             .iter()
+            .filter(|(slot_id, _)| !observations.contains(slot_id))
             .filter(|(_, entry)| {
                 entry
                     .try_lock()
@@ -1779,16 +1948,30 @@ impl NodeEffectJournal {
         };
         self.inner.prior.get().is_some_and(|prior| {
             prior
-                .highest(Family::Iterated)
+                .highest(self.run_family())
                 .is_some_and(|(last, _)| last > iteration)
         })
     }
 
-    /// Ends the open iteration of a cancelled node: no unit is admitted
-    /// afterwards. A later submission (a detached task's) is refused closed
-    /// with no failure of its own — the node is cancelled — and units in
-    /// flight are left for the conclusion to drain.
-    pub(crate) fn cancel_iteration(&self) {
+    /// The positional family of this journal's runs: a stateful action's
+    /// iterations (`it{n}/`) or an agent's turns (`turn{n}/`). A flat
+    /// journal's labels carry no run unless an iteration is begun on it,
+    /// which labels it as a stateful action's.
+    fn run_family(&self) -> Family {
+        match self.inner.authority.shape {
+            JournalShape::Turned => Family::Turned,
+            _ => Family::Iterated,
+        }
+    }
+
+    /// Abandons the open iteration (or the loop between two): the node was
+    /// cancelled, or an agent's turn ran past its timeout. No unit is
+    /// admitted afterwards. A later submission (a detached task's) is
+    /// refused closed with no failure of its own — the node is cancelled or
+    /// failing on its own error — and units in flight are left for the
+    /// conclusion to drain, which records a call none of them explained as
+    /// ambiguous.
+    pub(crate) fn abandon_iteration(&self) {
         let mut state = self.state();
         state.run_open = false;
         state.admission_closed = true;
@@ -1924,11 +2107,17 @@ impl NodeEffectJournal {
                 return Err(self.fail_with(error));
             },
         };
-        if prior.positions.contains_key(&Family::Flat) {
-            return Err(self.refuse_resume(iteration, "the ledger holds a flat occurrence"));
+        // Only the node's own family counts: a label of another (flat, or
+        // the other kind's runs) means the action changed kind.
+        let family = self.run_family();
+        if prior.positions.keys().any(|&recorded| recorded != family) {
+            return Err(self.refuse_resume(
+                iteration,
+                "the ledger holds an occurrence of another family",
+            ));
         }
-        let iterated = prior.positions.get(&Family::Iterated);
-        let below = iterated.map_or(0, |positions| {
+        let own = prior.positions.get(&family);
+        let below = own.map_or(0, |positions| {
             positions
                 .iter()
                 .filter(|((recorded, _), _)| *recorded < iteration)
@@ -1943,7 +2132,7 @@ impl NodeEffectJournal {
         // The delay before the resumed iteration elapsed already when the
         // ledger shows that iteration (or a later one) ran.
         let already_ran = prior
-            .highest(Family::Iterated)
+            .highest(family)
             .is_some_and(|(last, _)| last >= iteration);
         let delay = checkpoint
             .resume_delay_ms()
@@ -2007,18 +2196,18 @@ impl NodeEffectJournal {
                 .checked_sub(1)
                 .is_some_and(|passed| guard.checkpointable.take() == Some(passed));
             let next = (iteration, 0);
+            let family = self.run_family();
             let unsettled = guard
                 .positions
                 .uncertain
-                .get(&Family::Iterated)
+                .get(&family)
                 .is_some_and(|&lowest| lowest < next);
-            // Every recorded iterated position below `iteration`: the ones
-            // earlier attempts recorded (the barrier read them) and the ones
-            // this attempt met.
+            // Every recorded position of the node's runs below `iteration`:
+            // the ones earlier attempts recorded (the barrier read them) and
+            // the ones this attempt met.
             let below = |label: &String| {
-                Position::parse(label).is_some_and(|position| {
-                    position.family == Family::Iterated && position.order() < next
-                })
+                Position::parse(label)
+                    .is_some_and(|position| position.family == family && position.order() < next)
             };
             let mut positions: HashSet<&String> = guard
                 .positions
@@ -2189,7 +2378,8 @@ impl NodeEffectJournal {
             },
         };
         let next = (iteration.saturating_add(1), 0);
-        let skipped = match self.first_unmet_below(prior, Family::Iterated, next) {
+        let family = self.run_family();
+        let skipped = match self.first_unmet_below(prior, family, next) {
             Unmet::None => return Ok(()),
             // Every unit is gone: a position still claimed was given up.
             Unmet::Pending | Unmet::Skipped(_) => self.first_unmet_label(prior),
@@ -2199,7 +2389,7 @@ impl NodeEffectJournal {
             state
                 .positions
                 .abandoned
-                .get(&Family::Iterated)
+                .get(&family)
                 .is_some_and(|&lowest| lowest < next)
         };
         if abandoned {
@@ -2232,13 +2422,14 @@ impl NodeEffectJournal {
             .unwrap_or(EffectExecutionError::OccurrenceMismatch))
     }
 
-    /// The first recorded iterated position past the attested iterations
-    /// that this attempt has not met.
+    /// The first recorded position of the node's runs past the attested
+    /// ones that this attempt has not met.
     fn first_unmet_label(&self, prior: &PriorOccurrences) -> Option<String> {
+        let family = self.run_family();
         let state = self.state();
         prior
             .positions
-            .get(&Family::Iterated)?
+            .get(&family)?
             .iter()
             .find(|((iteration, _), label)| {
                 *iteration >= state.attested && !state.positions.met.contains(label)
@@ -2542,7 +2733,18 @@ impl NodeEffectJournal {
         let cleanup_deadline = drain_started
             .checked_add(cleanup_budget)
             .unwrap_or_else(tokio::time::Instant::now);
-        let uninspected = self.record_leaked_calls(cleanup_deadline).await;
+        let mut uninspected = self.record_leaked_calls(cleanup_deadline).await;
+        // A recorded read whose unit still holds its slot is never an
+        // unknown outcome (S10): what it holds is only uncertain, and the
+        // node defers so a retry meets it again.
+        let observations = self.state().observations.clone();
+        let reads_held = uninspected.len();
+        uninspected.retain(|slot_id| !observations.contains(slot_id));
+        if uninspected.len() < reads_held {
+            self.note_failure(EffectExecutionError::Ledger(
+                OperationLedgerError::AcknowledgementUnknown,
+            ));
+        }
         let failure = self.state().failure;
         // A deferring failure (a lost lease, an unanswered or unavailable
         // ledger) still reads the occurrences first: another unit of the node
@@ -2627,6 +2829,7 @@ impl NodeEffectJournal {
             let state = self.state();
             (Reached::of(&state), state.attested)
         };
+        let family = self.run_family();
         // Skipped: a recorded slot this attempt did not meet that may have
         // changed the provider, or — only prepared, or every call not
         // crossed — one the program still intended: when the node is about
@@ -2640,7 +2843,7 @@ impl NodeEffectJournal {
             .filter(|slot| {
                 let label = slot.occurrence();
                 !Position::parse(label).is_some_and(|position| {
-                    position.family == Family::Iterated && position.iteration < attested
+                    position.family == family && position.iteration < attested
                 }) && !reached.met(slot.record().operation().slot_id(), label)
                     && (is_consequential(slot.record())
                         || (SlotWeight::of(slot.record()) == SlotWeight::Unsettled
@@ -2838,7 +3041,11 @@ impl NodeEffectJournal {
             crossed_before,
             "journaled effect granted with no window left; call withheld"
         );
-        if crossed_before > 0 {
+        // A recorded read changed nothing whatever crossed: never unknown.
+        let observation = slot
+            .protocol()
+            .is_ok_and(OperationProtocolRecord::is_observation);
+        if crossed_before > 0 && !observation {
             return match slot.mark_unknown(self.access()).await {
                 Ok(()) => self.refused(STEP, JournalRefusal::Unknown),
                 Err(error) => self.refuse(STEP, error),
@@ -2859,8 +3066,45 @@ impl NodeEffectJournal {
         }
     }
 
-    fn count_prepared(&self, phase: &SlotPhase) {
+    /// A recorded read of `unit` whose answer or call could not be recorded
+    /// fails closed: its unit withholds the answer (the program never sees
+    /// one a replay would not), and its position turns uncertain, so no
+    /// fresh effect above it is prepared in this attempt — the program may
+    /// have gone on from the failure — and the node defers, letting a retry
+    /// meet the read again. Nothing for an effect's unit, whose unrecorded
+    /// call makes its outcome unknown instead.
+    fn hold_above_unrecorded_read(&self, unit: &JournalSlot) {
+        let slot_id = EffectSlotId::from_storage_bytes(*unit.id());
+        let occurrence = {
+            let state = self.state();
+            state
+                .observations
+                .contains(&slot_id)
+                .then(|| state.occurrences.get(&slot_id).cloned())
+                .flatten()
+        };
+        if let Some(occurrence) = occurrence {
+            self.mark_uncertain(&occurrence);
+        }
+    }
+
+    /// Counts `bytes` of a recorded read's answer recorded.
+    fn count_recorded_read_bytes(&self, bytes: usize) {
+        if let Ok(counter) = self
+            .inner
+            .authority
+            .metrics
+            .counter(NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL)
+        {
+            counter.inc_by(u64::try_from(bytes).unwrap_or(u64::MAX));
+        }
+    }
+
+    /// Counts one prepare by the phase it handed out; a recorded read with
+    /// no answer (`observation`) is asked, not run as an effect.
+    fn count_prepared(&self, phase: &SlotPhase, observation: bool) {
         let label = match phase {
+            SlotPhase::Runnable if observation => effect_journal_prepare_phase::OBSERVATION,
             SlotPhase::Runnable => effect_journal_prepare_phase::RUNNABLE,
             SlotPhase::Replay(_) => effect_journal_prepare_phase::REPLAY,
             _ => effect_journal_prepare_phase::UNKNOWN,
@@ -2895,7 +3139,8 @@ impl EffectJournal for NodeEffectJournal {
     }
 
     /// `unit/v1/#{ordinal:06}` for a stateless action;
-    /// `it{n}/unit/v1/#{ordinal:06}` within stateful iteration `n`.
+    /// `it{n}/unit/v1/#{ordinal:06}` within stateful iteration `n`;
+    /// `turn{n}/unit/v1/#{ordinal:06}` within agent turn `n`.
     ///
     /// The label stays claimed until the unit
     /// [releases](EffectJournal::release_occurrence) it: a fresh slot above
@@ -2905,7 +3150,7 @@ impl EffectJournal for NodeEffectJournal {
         let mut state = self.state();
         let ordinal = state.next_ordinal;
         state.next_ordinal = ordinal.saturating_add(1);
-        let label = occurrence_label(state.iteration, ordinal);
+        let label = occurrence_label(self.run_family(), state.iteration, ordinal);
         state.positions.claimed.insert(label.clone());
         if let Some(position) = Position::parse(&label) {
             state
@@ -3091,6 +3336,7 @@ impl EffectJournal for NodeEffectJournal {
             // Always recorded, even empty: "none concurrent" is not
             // "unknown".
             concurrent_with: Some(&concurrent_with),
+            observation: intent.recovery == Recovery::Observation,
         };
         // From here until the ledger answers, a fresh row may be written
         // without this unit learning it: a prepare dropped mid-call (the
@@ -3172,6 +3418,9 @@ impl EffectJournal for NodeEffectJournal {
             .and_then(|key| IdempotencyKey::new(key.as_str()).ok())
             .ok_or_else(|| self.refuse(STEP, EffectExecutionError::InvalidEvidence))?;
         let slot_id = slot.slot_id();
+        let observation = slot
+            .protocol()
+            .is_ok_and(OperationProtocolRecord::is_observation);
         let entry = Arc::new(tokio::sync::Mutex::new(slot));
         {
             let mut state = self.state();
@@ -3185,6 +3434,9 @@ impl EffectJournal for NodeEffectJournal {
             state
                 .occurrences
                 .insert(slot_id, intent.occurrence.to_owned());
+            if observation {
+                state.observations.insert(slot_id);
+            }
             if state.iteration.is_some() {
                 state.iteration_slots.push(slot_id);
             }
@@ -3215,7 +3467,7 @@ impl EffectJournal for NodeEffectJournal {
             .protocol()
             .map_err(|error| self.refuse(STEP, error))?
             .revision();
-        self.count_prepared(&phase);
+        self.count_prepared(&phase, observation);
         tracing::debug!(
             execution_id = %authority.execution_id,
             node_key = %authority.node_key,
@@ -3373,16 +3625,21 @@ impl EffectJournal for NodeEffectJournal {
             // An unrecognized crossing may have reached the provider.
             _ => InvocationDisposition::Ambiguous,
         };
-        slot.advance(
-            self.access(),
-            &OperationCommand::RecordDisposition {
-                invocation: OperationCallId::from_bytes(*call.as_bytes()),
-                disposition,
-            },
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| self.refuse(STEP, error))
+        let explained = slot
+            .advance(
+                self.access(),
+                &OperationCommand::RecordDisposition {
+                    invocation: OperationCallId::from_bytes(*call.as_bytes()),
+                    disposition,
+                },
+            )
+            .await
+            .map(|_| ());
+        drop(slot);
+        explained.map_err(|error| {
+            self.hold_above_unrecorded_read(unit);
+            self.refuse(STEP, error)
+        })
     }
 
     async fn settle(
@@ -3397,15 +3654,35 @@ impl EffectJournal for NodeEffectJournal {
         if self.is_closed() {
             return Err(self.refused(STEP, JournalRefusal::Closed));
         }
-        let evidence = journal_evidence(
+        let observation = slot
+            .protocol()
+            .is_ok_and(OperationProtocolRecord::is_observation);
+        let answer_bytes = match outcome {
+            CallOutcome::Applied(bytes) if observation => bytes.len(),
+            _ => 0,
+        };
+        let committed = match journal_evidence(
             slot.operation_id(),
             OperationCallId::from_bytes(*call.as_bytes()),
             outcome,
-        )
-        .map_err(|error| self.refuse(STEP, error))?;
-        slot.commit_evidence(self.access(), &evidence)
-            .await
-            .map_err(|error| self.refuse(STEP, error))
+            observation,
+        ) {
+            Ok(evidence) => slot.commit_evidence(self.access(), &evidence).await,
+            Err(error) => Err(error),
+        };
+        drop(slot);
+        match committed {
+            Ok(()) => {
+                if answer_bytes > 0 {
+                    self.count_recorded_read_bytes(answer_bytes);
+                }
+                Ok(())
+            },
+            Err(error) => {
+                self.hold_above_unrecorded_read(unit);
+                Err(self.refuse(STEP, error))
+            },
+        }
     }
 
     /// Fails closed: the unit's result stands either way, but a
@@ -3437,12 +3714,13 @@ impl EffectJournal for NodeEffectJournal {
         if self.is_closed() {
             return Err(JournalRefusal::Closed);
         }
-        // Only a slot nothing of which crossed keeps a classification: any
-        // other is never superseded, so there is nothing to record.
+        // Only a slot nothing of which crossed keeps a classification — or
+        // a recorded read without an answer, whatever crossed: any other is
+        // never superseded, so there is nothing to record.
         let eligible = slot.protocol().is_ok_and(|protocol| {
-            matches!(
+            OperationProtocolRecord::admits_unsent_failure(
+                protocol.is_observation(),
                 protocol.phase(),
-                EffectPhase::Prepared | EffectPhase::BeforeBoundary
             )
         });
         if !eligible {
@@ -3505,7 +3783,7 @@ impl EffectJournal for NodeEffectJournal {
             let state = self.state();
             if self.is_closed() || state.admission_closed {
                 (JournalRefusal::Closed, None)
-            } else if self.inner.authority.shape == JournalShape::Iterated && !state.run_open {
+            } else if self.inner.authority.shape.is_gated() && !state.run_open {
                 let iteration = state.iteration.unwrap_or(0);
                 (
                     JournalRefusal::BetweenRuns,
@@ -3597,23 +3875,32 @@ fn verdict_label(failure: Option<&EffectExecutionError>) -> &'static str {
 /// any later phase after a call that may have crossed, such as an
 /// ambiguous stable-key call the unit did not get to resend (or whose
 /// error the action swallowed).
+///
+/// A recorded read (an observation) never is (S10): it changed nothing,
+/// and a call without an answer may be asked again.
 fn is_unresolved(record: &OperationRecord) -> bool {
     record.protocol().map_or_else(
         || record.state() == OperationState::OutcomeUnknown,
-        |protocol| match protocol.phase() {
-            EffectPhase::Resolved => false,
-            EffectPhase::OutcomeUnknown | EffectPhase::InvocationOutstanding => true,
-            _ => protocol.crossed_invocations() > 0,
+        |protocol| {
+            !protocol.is_observation()
+                && match protocol.phase() {
+                    EffectPhase::Resolved => false,
+                    EffectPhase::OutcomeUnknown | EffectPhase::InvocationOutstanding => true,
+                    _ => protocol.crossed_invocations() > 0,
+                }
         },
     )
 }
 
 /// Whether a slot records something that may have changed the provider: a
 /// recorded outcome, or a call that crossed. A slot only prepared, or whose
-/// calls all stayed before the boundary, changed nothing.
+/// calls all stayed before the boundary, changed nothing. A recorded read
+/// counts once answered — the program ran on its answer — and never for a
+/// call that crossed without one.
 fn is_consequential(record: &OperationRecord) -> bool {
     record.protocol().is_none_or(|protocol| {
-        protocol.phase() == EffectPhase::Resolved || protocol.crossed_invocations() > 0
+        protocol.phase() == EffectPhase::Resolved
+            || (!protocol.is_observation() && protocol.crossed_invocations() > 0)
     })
 }
 
@@ -3658,7 +3945,13 @@ fn slot_phase(slot: &LedgerSlot) -> Result<SlotPhase, EffectExecutionError> {
 /// - `Idempotent` + stable key: at most `max_invocations` calls (clamped to
 ///   the ledger's `1..=10_000`), the author's key window (at most a year),
 ///   a recovery window covering it and at least [`OPERATION_DEADLINE_CAP`];
-/// - `Write` + opaque: the recovery window is [`OPERATION_DEADLINE_CAP`].
+/// - `Write` + opaque: the recovery window is [`OPERATION_DEADLINE_CAP`];
+/// - `RecordedRead` + observation: a stable key over the ledger's longest
+///   window (a year) with the ledger's ceiling of calls
+///   ([`MAX_SLOT_INVOCATIONS`]): a read may be asked again after any crash
+///   or retry of its node — its unit's own attempts stay bounded by
+///   `max_invocations` in the resource runtime — and only a spent ceiling
+///   or a year without an answer stops it (`Exhausted`, never unknown).
 ///
 /// No queries: journaled effects have no reconciliation query yet.
 fn slot_policy(
@@ -3668,6 +3961,15 @@ fn slot_policy(
 ) -> Result<PreparedEffectPolicy, EffectExecutionError> {
     let max_invocations = max_invocations.get().min(MAX_SLOT_INVOCATIONS);
     let builder = match (effect, recovery) {
+        (Effect::RecordedRead, Recovery::Observation) => {
+            return PreparedEffectPolicy::builder(DestinationCapability::StableKey)
+                .stable_key_window(MAX_LEDGER_WINDOW)
+                .recovery_window(MAX_LEDGER_WINDOW)
+                .maximum_invocations(MAX_SLOT_INVOCATIONS)
+                .maximum_queries(0)
+                .build()
+                .map_err(|_| EffectExecutionError::InvalidContract);
+        },
         (Effect::Idempotent, Recovery::StableKey { window }) => {
             let window = window.min(MAX_LEDGER_WINDOW);
             PreparedEffectPolicy::builder(DestinationCapability::StableKey)
@@ -3687,11 +3989,13 @@ fn slot_policy(
         .map_err(|_| EffectExecutionError::InvalidContract)
 }
 
-/// The byte of a unit's declared effect class in its contract identity.
+/// The byte of a unit's declared effect class in its contract identity: a
+/// slot recorded for a write never replays as a read, nor the reverse.
 fn effect_class(effect: Effect) -> Result<u8, EffectExecutionError> {
     match effect {
         Effect::Idempotent => Ok(1),
         Effect::Write => Ok(2),
+        Effect::RecordedRead => Ok(3),
         _ => Err(EffectExecutionError::InvalidContract),
     }
 }
@@ -3799,25 +4103,33 @@ const ERROR_KIND_CODES: [ErrorKindCode; 10] = [
     ErrorKindCode::OutcomeUnknown,
 ];
 
-/// The frozen evidence of a granted call's `outcome`.
+/// The frozen evidence of a granted call's `outcome`. A recorded read's
+/// answer (`observation`) is never recorded digest-only: an answer the
+/// evidence cannot hold is refused (its unit withholds it), where an
+/// effect's falls back to `OutputUnavailable`.
 fn journal_evidence(
     operation_id: OperationId,
     call: OperationCallId,
     outcome: CallOutcome<'_>,
+    observation: bool,
 ) -> Result<FrozenOutcomeEvidence, EffectExecutionError> {
     let operation_id = *operation_id.as_bytes();
     let unavailable = || JournalEvidence::OutputUnavailable { operation_id };
     let (known, recorded) = match outcome {
         CallOutcome::Applied(bytes) => (
             KnownOutcome::Succeeded,
-            serde_json::from_slice::<Value>(bytes).map_or_else(
-                |_| unavailable(),
-                |output| JournalEvidence::Output {
+            match serde_json::from_slice::<Value>(bytes) {
+                Ok(output) => JournalEvidence::Output {
                     operation_id,
                     output,
                 },
-            ),
+                Err(_) if observation => return Err(EffectExecutionError::InvalidEvidence),
+                Err(_) => unavailable(),
+            },
         ),
+        CallOutcome::AppliedWithoutOutput if observation => {
+            return Err(EffectExecutionError::InvalidEvidence);
+        },
         CallOutcome::AppliedWithoutOutput => (KnownOutcome::Succeeded, unavailable()),
         CallOutcome::Rejected(code) => (
             KnownOutcome::Failed,
@@ -3832,7 +4144,12 @@ fn journal_evidence(
     let payload =
         serde_json::to_vec(&recorded).map_err(|_| EffectExecutionError::InvalidEvidence)?;
     // A known applied effect never becomes retryable because its output is
-    // too large to keep: the bounded terminal fact remains durable.
+    // too large to keep: the bounded terminal fact remains durable. A
+    // recorded read's answer is never kept digest-only.
+    if observation {
+        return FrozenOutcomeEvidence::v1_json(source, known, payload)
+            .map_err(|_| EffectExecutionError::InvalidEvidence);
+    }
     FrozenOutcomeEvidence::v1_json(source, known, payload).or_else(|_| {
         let payload = serde_json::to_vec(&unavailable())
             .map_err(|_| EffectExecutionError::InvalidEvidence)?;

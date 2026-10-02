@@ -182,7 +182,7 @@ impl DiagnosticValue<'_> {
             Self::Missing => "<missing>".to_owned(),
             Self::UniqueNode => "<unique-node-id>".to_owned(),
             Self::UniqueTrigger => "<unique-trigger-id>".to_owned(),
-            Self::GraphNodeKind => "stateless|stateful|control".to_owned(),
+            Self::GraphNodeKind => "stateless|stateful|control|agent".to_owned(),
             Self::TriggerKind => "trigger".to_owned(),
             Self::StatelessKind => "stateless".to_owned(),
             Self::StatefulKind => "stateful".to_owned(),
@@ -504,7 +504,8 @@ fn project_action_kind(kind: ActionKind) -> Result<RecordedActionKindV1, Contrac
         ActionKind::Stateful => Ok(RecordedActionKindV1::Stateful),
         ActionKind::Control => Ok(RecordedActionKindV1::Control),
         ActionKind::Trigger => Ok(RecordedActionKindV1::Trigger),
-        ActionKind::Stream | ActionKind::Agent | ActionKind::Interactive | ActionKind::Resource => {
+        ActionKind::Agent => Ok(RecordedActionKindV1::Agent),
+        ActionKind::Stream | ActionKind::Interactive | ActionKind::Resource => {
             Err(ContractProjectionError::ActionKind)
         },
         _ => Err(ContractProjectionError::ActionKind),
@@ -952,6 +953,7 @@ impl<'a> GraphCompiler<'a> {
                 RecordedActionKindV1::Stateless
                     | RecordedActionKindV1::Stateful
                     | RecordedActionKindV1::Control
+                    | RecordedActionKindV1::Agent
             ) {
                 self.diagnostics.push(
                     DiagnosticCode::UnsupportedNodeKind,
@@ -1165,7 +1167,10 @@ impl<'a> GraphCompiler<'a> {
         if !trigger
             && !matches!(
                 kind,
-                ActionKind::Stateless | ActionKind::Stateful | ActionKind::Control
+                ActionKind::Stateless
+                    | ActionKind::Stateful
+                    | ActionKind::Control
+                    | ActionKind::Agent
             )
         {
             self.diagnostics.push(
@@ -2088,6 +2093,7 @@ fn recorded_action_kind_value(kind: &RecordedActionKindV1) -> DiagnosticValue<'s
         RecordedActionKindV1::Stateful => DiagnosticValue::StatefulKind,
         RecordedActionKindV1::Control => DiagnosticValue::ControlKind,
         RecordedActionKindV1::Trigger => DiagnosticValue::TriggerKind,
+        RecordedActionKindV1::Agent => DiagnosticValue::AgentKind,
     }
 }
 

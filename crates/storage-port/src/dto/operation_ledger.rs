@@ -365,6 +365,17 @@ pub struct EffectSlotBinding<'a> {
     /// Never part of the natural key or of the prepare identity: re-preparing
     /// with another list replays the recorded slot unchanged.
     pub concurrent_with: Option<&'a [super::PositionRange]>,
+    /// The slot records an observation — a read whose answer the owner
+    /// records and replays, with no provider-side effect — rather than an
+    /// effect. Only a [`DestinationCapability::StableKey`] slot may be one
+    /// (an invalid protocol otherwise).
+    ///
+    /// Persisted with the first preparation, read back from
+    /// [`OperationProtocolRecord::is_observation`](super::OperationProtocolRecord::is_observation),
+    /// and part of the prepare identity: re-preparing an occurrence as an
+    /// observation where an effect was recorded, or the reverse, is
+    /// [`OperationLedgerError::OperationMismatch`] with no durable change.
+    pub observation: bool,
 }
 
 impl EffectSlotBinding<'_> {

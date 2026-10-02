@@ -491,7 +491,7 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         .compile_graph_v1(WorkflowVersionId::new(), &workflow)
         .unwrap();
     let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-    assert_eq!(record["compiler_version"], 6);
+    assert_eq!(record["compiler_version"], 7);
     assert_eq!(record["canonical_hash_version"], 3);
     assert_eq!(
         record["content"]["actions"][0]["effect_contract"],
@@ -510,7 +510,7 @@ fn scalar_contracts_roundtrip_under_the_new_epoch_without_named_parameters() {
             .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
             .unwrap();
         let wire = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-        assert_eq!(wire["compiler_version"], 6);
+        assert_eq!(wire["compiler_version"], 7);
         assert_eq!(wire["canonical_hash_version"], 3);
         assert_eq!(
             wire["content"]["actions"][0]["input_schema"],
@@ -602,6 +602,89 @@ fn the_default_effect_contract_compiles_and_records_journaled_v1() {
             )
         )
     );
+}
+
+/// An agent action of the default (`Journaled`) contract (experimental:
+/// journaled turns).
+struct EchoAgent;
+
+impl Action for EchoAgent {
+    type Input = Value;
+    type Output = Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            nebula_core::action_key!("demo.echo"),
+            nebula_action::metadata_name!("Echo agent"),
+            "Graph-v1 agent fixture",
+        )
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
+    }
+}
+
+impl nebula_action::AgentAction for EchoAgent {
+    type Turn = u32;
+
+    fn init_turn(&self, _input: &Value) -> u32 {
+        0
+    }
+
+    async fn step(
+        &self,
+        _turn: &mut u32,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Value>, ActionError> {
+        Ok(ActionResult::break_completed(Value::Null))
+    }
+}
+
+impl nebula_action::FromWorkflowNode for EchoAgent {
+    type Error = ActionError;
+
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _context: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(EchoAgent)
+    }
+}
+
+#[test]
+fn an_agent_action_compiles_into_a_plan_that_records_its_kind() {
+    let mut plugin = ContractPlugin::new(ValidSchema::empty());
+    plugin.action =
+        Arc::new(nebula_action::GenericAgentFactory::<EchoAgent>::new().expect("agent admits"));
+    let mut registry = PluginRegistry::new();
+    registry
+        .register(Arc::new(ResolvedPlugin::from(plugin).unwrap()))
+        .unwrap();
+    let registry = registry
+        .freeze(
+            ArtifactSetDigest::from_bytes([0x9a; 32]),
+            "1.0.0".parse().unwrap(),
+        )
+        .unwrap();
+    let plan = registry
+        .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
+        .expect("an agent node compiles");
+    plan.validate_against(&registry).unwrap();
+    let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+    assert_eq!(record["compiler_version"], 7);
+    assert_eq!(record["content"]["actions"][0]["kind"], "agent");
+    assert_eq!(
+        record["content"]["actions"][0]["effect_contract"],
+        serde_json::json!({ "Journaled": { "protocol_version": 1 } })
+    );
+    let loaded = ExecutablePlanRevision::try_from(
+        serde_json::from_value::<RecordedExecutablePlanRevisionV1>(record).unwrap(),
+    )
+    .expect("the record roundtrips");
+    assert_eq!(loaded.id(), plan.id());
+    loaded.validate_against(&registry).unwrap();
 }
 
 #[test]

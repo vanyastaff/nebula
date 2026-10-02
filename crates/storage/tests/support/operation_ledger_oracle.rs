@@ -208,6 +208,7 @@ fn binding<'a>(
         contract: contract(destination),
         provider_key: None,
         concurrent_with: None,
+        observation: false,
     }
 }
 
@@ -743,6 +744,11 @@ macro_rules! operation_ledger_conformance_suite {
         $crate::operation_ledger_case!(
             an_unsent_failure_is_durable_until_a_later_call,
             0x4a,
+            $ledger
+        );
+        $crate::operation_ledger_case!(
+            an_observation_keeps_its_failure_after_a_crossing,
+            0x4b,
             $ledger
         );
     };
@@ -2345,6 +2351,132 @@ pub(crate) async fn an_unsent_failure_is_durable_until_a_later_call(
     };
     assert_eq!(failure(&again), Some(code("backpressure")));
     assert_eq!(ledger.read_exact(&scope, slot).await.unwrap(), again);
+}
+
+/// An observation slot — a read its owner records and replays — round-trips
+/// its flag through every read, is part of the prepare identity (an effect
+/// at its occurrence is a mismatch, nothing written), and keeps how its unit
+/// failed even after a call crossed — which an effect's slot refuses — until
+/// a later call clears it.
+pub(crate) async fn an_observation_keeps_its_failure_after_a_crossing(
+    ledger: &impl LedgerUnderTest,
+    executions: &dyn ExecutionStore,
+    seed: u8,
+) {
+    use nebula_storage_port::dto::{EffectPhase, InvocationDisposition, UnsentFailureCode};
+    let scope = scope();
+    let execution = execution_id(seed);
+    let fence = create_leased_execution(executions, &scope, &execution).await;
+    let effect = |occurrence| {
+        binding(
+            &scope,
+            &execution,
+            occurrence,
+            1,
+            0x11,
+            DestinationCapability::StableKey,
+        )
+    };
+    let observing = |occurrence| EffectSlotBinding {
+        observation: true,
+        ..effect(occurrence)
+    };
+
+    let prepared = ledger.prepare(&observing("read"), fence).await.unwrap();
+    let slot = prepared.operation().slot_id();
+    let before = ledger.read_exact(&scope, slot).await.unwrap();
+    assert!(before.protocol().unwrap().is_observation());
+    assert_eq!(
+        ledger.prepare(&effect("read"), fence).await,
+        Err(OperationLedgerError::OperationMismatch { slot_id: slot }),
+        "an effect never replays an observation"
+    );
+    assert_eq!(ledger.read_exact(&scope, slot).await.unwrap(), before);
+    assert_eq!(
+        ledger.prepare(&observing("read"), fence).await,
+        Ok(PrepareOutcome::Replayed(prepared.operation()))
+    );
+
+    let call = granted_call(grant_now(ledger, &scope, slot, fence).await.unwrap());
+    explain(
+        ledger,
+        &scope,
+        slot,
+        fence,
+        call,
+        InvocationDisposition::Ambiguous,
+    )
+    .await;
+    let code = UnsentFailureCode::new("transient").unwrap();
+    let failure = OperationCommand::RecordUnsentFailure {
+        failure: code.clone(),
+    };
+    let OperationAdvance::Recorded(recorded) =
+        ledger.advance(&scope, slot, fence, &failure).await.unwrap()
+    else {
+        panic!("recording an unsent failure grants nothing");
+    };
+    let protocol = recorded.protocol().unwrap();
+    assert_eq!(protocol.phase(), EffectPhase::Ambiguous);
+    assert_eq!(protocol.unsent_failure(), Some(&code));
+    assert!(protocol.is_observation());
+    assert_eq!(ledger.read_exact(&scope, slot).await.unwrap(), recorded);
+    let listed = ledger
+        .read_occurrences(&scope, &execution, "charge")
+        .await
+        .unwrap();
+    let listed = listed
+        .iter()
+        .find(|occurrence| occurrence.occurrence() == "read")
+        .unwrap()
+        .record()
+        .protocol()
+        .unwrap();
+    assert!(listed.is_observation());
+    assert_eq!(listed.unsent_failure(), Some(&code));
+
+    // An effect whose call crossed keeps no unsent failure.
+    let write = ledger
+        .prepare(&effect("write"), fence)
+        .await
+        .unwrap()
+        .operation()
+        .slot_id();
+    assert!(
+        !ledger
+            .read_exact(&scope, write)
+            .await
+            .unwrap()
+            .protocol()
+            .unwrap()
+            .is_observation()
+    );
+    let call = granted_call(grant_now(ledger, &scope, write, fence).await.unwrap());
+    explain(
+        ledger,
+        &scope,
+        write,
+        fence,
+        call,
+        InvocationDisposition::Ambiguous,
+    )
+    .await;
+    assert_eq!(
+        ledger
+            .advance(&scope, write, fence, &failure)
+            .await
+            .map(|_| ()),
+        Err(OperationLedgerError::ProtocolConflict)
+    );
+
+    // Asked again: the later call clears the observation's failure.
+    let OperationAdvance::Granted { record, .. } =
+        grant_now(ledger, &scope, slot, fence).await.unwrap()
+    else {
+        panic!("an unanswered observation is granted again within its window");
+    };
+    assert_eq!(record.protocol().unwrap().unsent_failure(), None);
+    assert!(record.protocol().unwrap().is_observation());
 }
 
 /// A later attempt that finds its predecessor's call outstanding may explain

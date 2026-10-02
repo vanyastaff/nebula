@@ -129,6 +129,7 @@ impl EffectTurn<'_> {
             provider_key: None,
             // One effect per node: no positional run to order.
             concurrent_with: None,
+            observation: false,
         };
         let slot = LedgerSlot::prepare(self.access(), &binding).await?;
         let mut driver = Driver {

@@ -45,7 +45,7 @@ async fn crash_at_iteration(
 }
 
 /// The fixture action's version, as the engine binds its checkpoints.
-fn action_version(fixture: &JournalFixture) -> String {
+pub(super) fn action_version(fixture: &JournalFixture) -> String {
     fixture
         .frozen
         .resolve_action(&action_key!("journal.charge"))
@@ -57,7 +57,7 @@ fn action_version(fixture: &JournalFixture) -> String {
 }
 
 /// The node's checkpoint row stored under `version`, if any.
-async fn stored(
+pub(super) async fn stored(
     fixture: &JournalFixture,
     execution: nebula_core::ExecutionId,
     version: &str,
@@ -82,7 +82,7 @@ async fn stored(
 
 /// Writes `checkpoint` under `version` as a short-lived owner of
 /// `execution` would.
-async fn plant(
+pub(super) async fn plant(
     fixture: &JournalFixture,
     execution: nebula_core::ExecutionId,
     version: &str,
@@ -123,7 +123,7 @@ async fn plant(
 }
 
 /// A checkpoint of `iteration` whose state is `state` and digest `digest`.
-fn checkpoint(
+pub(super) fn checkpoint(
     iteration: u32,
     state: &Value,
     digest: Option<[u8; 32]>,
@@ -311,11 +311,11 @@ async fn a_stale_owner_cannot_record_a_checkpoint(#[case] backend: Backend) {
 
 /// Hands the lease to another owner just before the save it wraps.
 #[derive(Debug)]
-struct TakeoverBeforeSave {
-    inner: Arc<dyn CheckpointStore>,
-    execution: Arc<dyn ExecutionStore>,
-    scope: Scope,
-    successor: parking_lot::Mutex<Option<FencingToken>>,
+pub(super) struct TakeoverBeforeSave {
+    pub inner: Arc<dyn CheckpointStore>,
+    pub execution: Arc<dyn ExecutionStore>,
+    pub scope: Scope,
+    pub successor: parking_lot::Mutex<Option<FencingToken>>,
 }
 
 #[async_trait::async_trait]

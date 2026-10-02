@@ -207,6 +207,9 @@ pub(super) enum CheckpointFault {
     SaveAckLost,
     /// Loads do not answer.
     LoadsUnavailable,
+    /// Saves never reach the store and never answer (a crash point after a
+    /// passed barrier, before its checkpoint).
+    SavesHang,
 }
 
 /// A checkpoint store over a real one that fails as scripted.
@@ -216,6 +219,8 @@ pub(super) struct FaultCheckpoints {
     pub fault: CheckpointFault,
     /// Saves that reached this store.
     pub saves: std::sync::atomic::AtomicUsize,
+    /// Fired whenever a save reached this store.
+    pub save_entered: tokio::sync::Notify,
 }
 
 impl FaultCheckpoints {
@@ -224,6 +229,7 @@ impl FaultCheckpoints {
             inner,
             fault,
             saves: std::sync::atomic::AtomicUsize::new(0),
+            save_entered: tokio::sync::Notify::new(),
         }
     }
 }
@@ -248,8 +254,10 @@ impl CheckpointStore for FaultCheckpoints {
         fencing: FencingToken,
     ) -> Result<CheckpointSaved, IterationCheckpointError> {
         self.saves.fetch_add(1, Ordering::SeqCst);
+        self.save_entered.notify_one();
         match self.fault {
             CheckpointFault::Lost => Ok(CheckpointSaved::Recorded),
+            CheckpointFault::SavesHang => std::future::pending().await,
             CheckpointFault::SavesUnavailable => Err(IterationCheckpointError::Unavailable),
             CheckpointFault::SaveAckLost => {
                 self.inner
