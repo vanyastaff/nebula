@@ -49,17 +49,21 @@ pub struct Observation {
     pub findings: Vec<Finding>,
 }
 
-/// A checked-in waiver for a branch that cannot be driven hermetically.
+/// A checked-in waiver.
 ///
-/// Without `status` the whole operation leaves the coverage denominator;
-/// with `status` only that documented success status does. Either way the
-/// operation's observed responses are still validated.
+/// With `operation_id` and no `status` the whole operation leaves the coverage
+/// denominator; with `status` only that documented success status does. Either
+/// way the operation's observed responses are still validated. Without
+/// `operation_id` the entry waives a served route that is deliberately absent
+/// from the document (an internal or transport route), matched by method and
+/// path template.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Exclusion {
     method: String,
     path: String,
-    operation_id: String,
+    #[serde(default)]
+    operation_id: Option<String>,
     #[serde(default)]
     status: Option<u16>,
     reason: String,
@@ -248,6 +252,39 @@ pub(super) fn unconsumed_response(
     }
 }
 
+/// An observation of a served route the document does not describe.
+pub(super) fn undocumented_operation(method: String, path: String, status: u16) -> Observation {
+    let operation = Operation {
+        method,
+        path,
+        operation_id: String::new(),
+    };
+    Observation {
+        findings: vec![Finding {
+            operation: operation.clone(),
+            status,
+            kind: UNDOCUMENTED_OPERATION.to_owned(),
+            schema_path: response_pointer(&operation, None),
+        }],
+        operation,
+        status,
+        body_complete: false,
+    }
+}
+
+const UNDOCUMENTED_OPERATION: &str = "undocumented-operation";
+
+/// Documented error (4xx/5xx) statuses of one served operation.
+fn documented_error_statuses(spec: &Value, operation: &Operation) -> BTreeSet<u16> {
+    spec.pointer(&response_pointer(operation, None))
+        .and_then(|item| item["responses"].as_object())
+        .into_iter()
+        .flat_map(|responses| responses.keys())
+        .filter_map(|status| status.parse::<u16>().ok())
+        .filter(|status| *status >= 400)
+        .collect()
+}
+
 /// Aggregate observations into the `openapi-runtime-compatibility` report.
 ///
 /// A drift finding is one distinct `(operation, status, kind, schema path)`;
@@ -255,61 +292,110 @@ pub(super) fn unconsumed_response(
 /// the count. Coverage gaps are findings too: `unreached-operation` when no
 /// fully consumed, conformant response exists for a nonexcluded operation, and
 /// `unreached-success-status` for each documented, nonexcluded 2xx/3xx status
-/// that no such response produced.
+/// that no such response produced. A served route absent from the document is
+/// an `undocumented-operation` finding unless a route exclusion (one without
+/// `operation_id`) names its method and path template.
+///
+/// Issue #1010 requires every documented non-error status to be reachable.
+/// Documented error statuses that no conformant response exercised are
+/// reported as `unexercised_error_status_count`, not as drift.
 ///
 /// # Errors
 ///
 /// [`super::ConformanceError::InvalidExclusions`] for a malformed, unknown,
-/// duplicate or redundant exclusion, or one naming an undocumented success
-/// status; [`super::ConformanceError::InvalidObservation`] for an observation
-/// outside the served inventory.
+/// duplicate or redundant exclusion, one naming an undocumented success
+/// status, or a route exclusion naming a documented route;
+/// [`super::ConformanceError::InvalidObservation`] for an observation outside
+/// the served inventory that is not an undocumented-route observation.
 pub fn report(
     spec: &Value,
     observations: &[Observation],
     exclusions: &Value,
 ) -> Result<Value, super::ConformanceError> {
+    use super::ConformanceError::{InvalidExclusions, InvalidObservation};
+
     let inventory = inventory(spec)?;
-    let exclusions: Vec<Exclusion> = serde_json::from_value(exclusions.clone())
-        .map_err(|_| super::ConformanceError::InvalidExclusions)?;
+    let exclusions: Vec<Exclusion> =
+        serde_json::from_value(exclusions.clone()).map_err(|_| InvalidExclusions)?;
     let mut excluded_operations = BTreeSet::new();
     let mut excluded_statuses = BTreeSet::new();
+    let mut excluded_routes = BTreeSet::new();
     for exclusion in &exclusions {
-        let operation = Operation {
-            method: exclusion.method.clone(),
-            path: exclusion.path.clone(),
-            operation_id: exclusion.operation_id.clone(),
-        };
-        let Some(successes) = inventory.get(&operation) else {
-            return Err(super::ConformanceError::InvalidExclusions);
-        };
-        let fresh = match exclusion.status {
-            _ if exclusion.reason.trim().is_empty() => false,
-            None => excluded_operations.insert(operation),
-            Some(status) => {
-                successes.contains(&status) && excluded_statuses.insert((operation, status))
+        if exclusion.reason.trim().is_empty() {
+            return Err(InvalidExclusions);
+        }
+        let route = (exclusion.method.clone(), exclusion.path.clone());
+        let documented = inventory
+            .keys()
+            .any(|operation| operation.method == route.0 && operation.path == route.1);
+        let fresh = match (&exclusion.operation_id, exclusion.status) {
+            (None, None) => !documented && excluded_routes.insert(route),
+            (None, Some(_)) => false,
+            (Some(operation_id), status) => {
+                let operation = Operation {
+                    method: route.0,
+                    path: route.1,
+                    operation_id: operation_id.clone(),
+                };
+                let Some(successes) = inventory.get(&operation) else {
+                    return Err(InvalidExclusions);
+                };
+                match status {
+                    None => excluded_operations.insert(operation),
+                    Some(status) => {
+                        successes.contains(&status) && excluded_statuses.insert((operation, status))
+                    },
+                }
             },
         };
         if !fresh {
-            return Err(super::ConformanceError::InvalidExclusions);
+            return Err(InvalidExclusions);
         }
     }
     if excluded_statuses
         .iter()
         .any(|(operation, _)| excluded_operations.contains(operation))
     {
-        return Err(super::ConformanceError::InvalidExclusions);
+        return Err(InvalidExclusions);
     }
 
     let mut reached: BTreeMap<&Operation, BTreeSet<u16>> = BTreeMap::new();
+    let mut exercised_errors: BTreeMap<&Operation, BTreeSet<u16>> = BTreeMap::new();
     let mut findings: BTreeMap<Finding, usize> = BTreeMap::new();
+    let mut waived_route_cases = 0_usize;
     for observation in observations {
         if !inventory.contains_key(&observation.operation) {
-            return Err(super::ConformanceError::InvalidObservation);
+            let undocumented = observation.operation.operation_id.is_empty()
+                && !observation.findings.is_empty()
+                && observation
+                    .findings
+                    .iter()
+                    .all(|finding| finding.kind == UNDOCUMENTED_OPERATION);
+            if !undocumented {
+                return Err(InvalidObservation);
+            }
+            let route = (
+                observation.operation.method.clone(),
+                observation.operation.path.clone(),
+            );
+            if excluded_routes.contains(&route) {
+                waived_route_cases += 1;
+                continue;
+            }
         }
         for finding in &observation.findings {
             *findings.entry(finding.clone()).or_default() += 1;
         }
-        if observation.body_complete && observation.findings.is_empty() {
+        if !observation.findings.is_empty() {
+            continue;
+        }
+        if observation.status >= 400 {
+            exercised_errors
+                .entry(&observation.operation)
+                .or_default()
+                .insert(observation.status);
+        }
+        if observation.body_complete {
             reached
                 .entry(&observation.operation)
                 .or_default()
@@ -317,6 +403,7 @@ pub fn report(
         }
     }
     let mut coverage_findings = Vec::new();
+    let mut unexercised_errors = Vec::new();
     for (operation, successes) in &inventory {
         if excluded_operations.contains(operation) {
             continue;
@@ -339,6 +426,13 @@ pub fn report(
                     kind: "unreached-success-status".to_owned(),
                     schema_path: response_pointer(operation, Some(status)),
                 });
+            }
+        }
+        let exercised = exercised_errors.get(operation);
+        for status in documented_error_statuses(spec, operation) {
+            if !exercised.is_some_and(|exercised| exercised.contains(&status)) {
+                unexercised_errors
+                    .push(json!({ "operation_id": operation.operation_id, "status": status }));
             }
         }
     }
@@ -380,13 +474,17 @@ pub fn report(
         "served_operation_count": inventory.len(),
         "excluded_operation_count": excluded_operations.len(),
         "excluded_success_status_count": excluded_statuses.len(),
+        "excluded_undocumented_route_count": excluded_routes.len(),
         "exclusions": excluded,
         "observed_case_count": observations.len(),
         "unconsumed_case_count": observations
             .iter()
             .filter(|observation| !observation.body_complete)
             .count(),
+        "waived_undocumented_route_case_count": waived_route_cases,
         "conformant_operation_count": reached.len(),
+        "unexercised_error_status_count": unexercised_errors.len(),
+        "unexercised_error_statuses": unexercised_errors,
         "openapi_runtime_drift_finding_count": findings.len(),
         "findings": findings,
         "complete": findings.is_empty(),

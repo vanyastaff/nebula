@@ -331,6 +331,14 @@ async fn the_report_fails_closed_on_missing_evidence_and_bad_exclusions() {
             "blank reason",
         ),
         (json!([{"operation_id": "health_check"}]), "malformed"),
+        (
+            json!([{"method": health.method, "path": health.path, "reason": "x"}]),
+            "route waiver for a documented route",
+        ),
+        (
+            json!([{"method": "post", "path": "/resume", "status": 200, "reason": "x"}]),
+            "route waiver with a status",
+        ),
     ] {
         assert!(report(&spec, &[], &invalid).is_err(), "{why}");
     }
@@ -348,16 +356,53 @@ async fn the_report_fails_closed_on_missing_evidence_and_bad_exclusions() {
     assert!(report(&spec, &[unknown], &exclusions()).is_err());
 }
 
+/// A served route missing from the document is drift unless a route waiver
+/// names it; documented-but-unexercised error statuses are counted, not drift.
+#[tokio::test]
+async fn undocumented_routes_are_drift_unless_waived() {
+    let app = build_app(common::build_me_state(), &config());
+    let spec = fetch_spec(&app).await;
+    let hidden = Observation {
+        operation: Operation {
+            method: "post".to_owned(),
+            path: "/hidden".to_owned(),
+            operation_id: String::new(),
+        },
+        status: 200,
+        body_complete: false,
+        findings: vec![nebula_api::openapi::conformance::validation::Finding {
+            operation: Operation {
+                method: "post".to_owned(),
+                path: "/hidden".to_owned(),
+                operation_id: String::new(),
+            },
+            status: 200,
+            kind: "undocumented-operation".to_owned(),
+            schema_path: "/paths/~1hidden/post".to_owned(),
+        }],
+    };
+    let unwaived = report(&spec, std::slice::from_ref(&hidden), &json!([])).unwrap();
+    assert!(findings_for(&unwaived, "").contains(&"undocumented-operation".to_owned()));
+    assert!(unwaived["unexercised_error_status_count"].as_u64().unwrap() > 0);
+    let waiver = json!([{"method": "post", "path": "/hidden", "reason": "control"}]);
+    let waived = report(&spec, &[hidden], &waiver).unwrap();
+    assert!(findings_for(&waived, "").is_empty());
+    assert_eq!(waived["waived_undocumented_route_case_count"], 1);
+}
+
 #[test]
 fn every_exclusion_is_enumerated_in_the_crate_readme() {
     let readme = include_str!("../README.md");
     for exclusion in exclusions().as_array().unwrap() {
-        let row = format!(
-            "| `{} {}` (`{}`) |",
+        let route = format!(
+            "`{} {}`",
             exclusion["method"].as_str().unwrap().to_ascii_uppercase(),
             exclusion["path"].as_str().unwrap(),
-            exclusion["operation_id"].as_str().unwrap(),
         );
+        let row = match exclusion["operation_id"].as_str() {
+            Some(operation_id) => format!("| {route} (`{operation_id}`) |"),
+            None => format!("| {route} | undocumented route |"),
+        };
         assert!(readme.contains(&row), "README exclusion table lacks {row}");
     }
 }
@@ -1136,55 +1181,118 @@ fn emit_openapi_runtime_compatibility_report() {
     let directory =
         std::env::var_os("NEBULA_OPENAPI_OBSERVATIONS").expect("producer observation directory");
     let destination = std::env::var_os("NEBULA_OPENAPI_REPORT").expect("producer output path");
-    let entries: Vec<_> = fs::read_dir(directory)
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    assert!(
-        entries.len() <= 20_000,
-        "bounded conformance observation collection"
-    );
-    let mut spec = None;
-    let mut observations = Vec::new();
-    for entry in entries {
-        assert!(
-            entry.file_type().unwrap().is_file(),
-            "only regular observation files"
-        );
-        let name = entry.file_name();
-        let name = name.to_str().unwrap();
-        let bytes = fs::read(entry.path()).unwrap();
-        let json = std::path::Path::new(name)
-            .extension()
-            .is_some_and(|extension| extension == "json");
-        if json && name.starts_with("spec-") {
-            assert!(bytes.len() <= BODY_CAP);
-            let observed: Value = serde_json::from_slice(&bytes).unwrap();
-            if let Some(spec) = &spec {
-                assert_eq!(
-                    spec, &observed,
-                    "served spec must remain identical across fixture states"
-                );
-            } else {
-                spec = Some(observed);
-            }
-        } else if json && name.starts_with("case-") {
-            assert!(bytes.len() <= 16 * 1024);
-            let observation: Observation = serde_json::from_slice(&bytes).unwrap();
-            observations.push(observation);
-        } else {
-            panic!("unknown producer observation file");
-        }
-    }
-    let output = report(
-        &spec.expect("actual served spec"),
-        &observations,
-        &exclusions(),
-    )
-    .unwrap();
+    let output = aggregate(std::path::Path::new(&directory));
     fs::write(destination, serde_json::to_vec_pretty(&output).unwrap()).unwrap();
+    assert!(
+        output["error"].is_null(),
+        "NS15 producer could not aggregate: {}",
+        output["error"]
+    );
     assert_eq!(
         output["openapi_runtime_drift_finding_count"], 0,
-        "NS15 drift findings: {output}"
+        "NS15 drift findings: {}",
+        output["findings"]
+    );
+}
+
+/// Read a producer directory into the report. Problems that make the evidence
+/// unusable become an `error` report rather than a panic, so the artifact
+/// still explains why the gate failed.
+fn aggregate(directory: &std::path::Path) -> Value {
+    let failed = |error: String| {
+        json!({
+            "report_version": 1, "gate_id": "NS15",
+            "artifact_name": "openapi-runtime-compatibility", "kind": "compatibility-report",
+            "error": error, "openapi_runtime_drift_finding_count": null, "complete": false,
+        })
+    };
+    let entries: Vec<_> = match fs::read_dir(directory).and_then(Iterator::collect) {
+        Ok(entries) => entries,
+        Err(_) => return failed("observation directory is unreadable".to_owned()),
+    };
+    if entries.len() > 20_000 {
+        return failed(format!(
+            "{} observation files exceed the bound",
+            entries.len()
+        ));
+    }
+    let mut specs: Vec<Value> = Vec::new();
+    let mut observations = Vec::new();
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let json = std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|extension| extension == "json");
+        let is_file = entry.file_type().is_ok_and(|kind| kind.is_file());
+        let Ok(bytes) = fs::read(entry.path()) else {
+            return failed(format!("{name} is unreadable"));
+        };
+        if is_file && json && name.starts_with("spec-") && bytes.len() <= BODY_CAP {
+            let Ok(spec) = serde_json::from_slice::<Value>(&bytes) else {
+                return failed(format!("{name} is not a JSON document"));
+            };
+            if !specs.contains(&spec) {
+                specs.push(spec);
+            }
+        } else if is_file && json && name.starts_with("case-") && bytes.len() <= 16 * 1024 {
+            match serde_json::from_slice::<Observation>(&bytes) {
+                Ok(observation) => observations.push(observation),
+                Err(_) => return failed(format!("{name} is not an observation")),
+            }
+        } else {
+            return failed(format!("unexpected producer file {name}"));
+        }
+    }
+    match specs.as_slice() {
+        [] => failed("no fixture served an OpenAPI document".to_owned()),
+        [spec] => report(spec, &observations, &exclusions())
+            .unwrap_or_else(|error| failed(format!("{error}"))),
+        variants => {
+            let paths = |spec: &Value| -> std::collections::BTreeSet<String> {
+                spec["paths"]
+                    .as_object()
+                    .map(|paths| paths.keys().cloned().collect())
+                    .unwrap_or_default()
+            };
+            let first = paths(&variants[0]);
+            let differing: std::collections::BTreeSet<String> = variants[1..]
+                .iter()
+                .flat_map(|spec| {
+                    paths(spec)
+                        .symmetric_difference(&first)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            failed(format!(
+                "fixtures served {} different OpenAPI documents; observations cannot be \
+                 attributed to one contract (paths that differ: {differing:?})",
+                variants.len()
+            ))
+        },
+    }
+}
+
+#[test]
+fn aggregation_reports_differing_served_documents_instead_of_panicking() {
+    let directory = tempfile::tempdir().unwrap();
+    for (name, spec) in [
+        ("spec-a.json", json!({"paths": {"/a": {}}})),
+        ("spec-b.json", json!({"paths": {"/a": {}, "/b": {}}})),
+    ] {
+        fs::write(directory.path().join(name), spec.to_string()).unwrap();
+    }
+    let output = aggregate(directory.path());
+    assert_eq!(output["complete"], false);
+    let error = output["error"].as_str().unwrap();
+    assert!(
+        error.contains("2 different OpenAPI documents") && error.contains("/b"),
+        "{error}"
+    );
+
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(
+        aggregate(empty.path())["error"],
+        "no fixture served an OpenAPI document"
     );
 }

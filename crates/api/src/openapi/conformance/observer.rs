@@ -23,7 +23,7 @@ use zeroize::Zeroize;
 use super::{
     ConformanceError,
     validation::{
-        Finding, Observation, Operation, inventory, unconsumed_response,
+        Finding, Observation, Operation, inventory, unconsumed_response, undocumented_operation,
         validate_response_with_length,
     },
 };
@@ -86,24 +86,43 @@ impl Observer {
         }))
     }
 
+    /// Observe one response of a matched route.
+    ///
+    /// - A served route with no operation in the document is an
+    ///   `undocumented-operation` finding (unless the report waives the route).
+    /// - `HEAD` is answered by the `GET` route, so it is checked against the
+    ///   `GET` operation's status and media type; it has no body to validate and
+    ///   never counts toward coverage.
+    /// - A content-encoded body cannot be validated as JSON, so only its status
+    ///   and media type are checked and it never counts toward coverage.
+    /// - Requests that matched no route (the router fallback) serve nothing,
+    ///   and CORS preflights (`OPTIONS` with `Access-Control-Request-Method`)
+    ///   are answered by the CORS layer, not by an operation; neither is
+    ///   observed.
     async fn respond(self: Arc<Self>, request: Request, next: Next) -> Response {
         let method = request.method().as_str().to_ascii_lowercase();
-        let operation = request
+        let preflight = method == "options"
+            && request
+                .headers()
+                .contains_key("access-control-request-method");
+        let matched = request
             .extensions()
             .get::<MatchedPath>()
-            .and_then(|matched| {
-                self.operations.iter().find(|operation| {
-                    operation.method == method && operation.path == matched.as_str()
-                })
-            })
+            .map(|matched| matched.as_str().to_owned());
+        let Some(path) = matched.filter(|_| !preflight) else {
+            return next.run(request).await;
+        };
+        let head = method == "head";
+        let documented_method = if head { "get" } else { method.as_str() };
+        let operation = self
+            .operations
+            .iter()
+            .find(|operation| operation.method == documented_method && operation.path == path)
             .cloned();
         let mut response = next.run(request).await;
         if response.extensions().get::<ObservedResponse>().is_some() {
             return response;
         }
-        let Some(operation) = operation else {
-            return response;
-        };
         response.extensions_mut().insert(ObservedResponse);
         let status = response.status().as_u16();
         let content_type = response
@@ -111,6 +130,31 @@ impl Observer {
             .get("content-type")
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let encoded = response
+            .headers()
+            .get("content-encoding")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|encoding| !encoding.trim().eq_ignore_ascii_case("identity"));
+        let summary = match &operation {
+            None => Some(undocumented_operation(method, path, status)),
+            Some(operation) if head || encoded => Some(unconsumed_response(
+                &self.spec,
+                operation,
+                status,
+                content_type.as_deref(),
+                0,
+            )),
+            Some(_) => None,
+        };
+        if let Some(observation) = summary {
+            if self.retain(&observation).is_err() {
+                fail_closed();
+            }
+            return response;
+        }
+        let Some(operation) = operation else {
+            return response;
+        };
         let (parts, body) = response.into_parts();
         let mut observed = ObservedBody {
             inner: Box::pin(body),
@@ -337,5 +381,113 @@ mod tests {
         assert!(!String::from_utf8_lossy(&encoded).contains("private-body-canary"));
         let observed: Observation = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(observed.findings[0].kind, "unexpected-response-body");
+    }
+
+    /// One documented JSON `GET /doc` plus an undocumented `GET /hidden`,
+    /// observed by a fresh observer; returns the retained observations.
+    async fn observe(request: HttpRequest<Body>) -> Vec<Observation> {
+        let directory = tempfile::tempdir().unwrap();
+        let spec: utoipa::openapi::OpenApi = serde_json::from_value(serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"conformance-control", "version":"1"},
+            "paths":{
+                "/doc":{"get":{"operationId":"doc_control", "responses":{
+                    "200":{"description":"ok", "content":{"application/json":{
+                        "schema":{"$ref":"#/components/schemas/AckResponse"}}}}}}},
+                "/zipped":{"get":{"operationId":"zipped_control", "responses":{
+                    "200":{"description":"ok", "content":{"application/json":{
+                        "schema":{"$ref":"#/components/schemas/AckResponse"}}}}}}}
+            },
+            "components":{"schemas":{"AckResponse":{"type":"object",
+                "required":["ok"], "properties":{"ok":{"type":"boolean"}}}}}
+        }))
+        .unwrap();
+        let observer = Observer::new(directory.path().to_path_buf(), &spec).unwrap();
+        let json = || async { ([("content-type", "application/json")], r#"{"ok":true}"#) };
+        let gzip = || async {
+            (
+                [
+                    ("content-type", "application/json"),
+                    ("content-encoding", "gzip"),
+                ],
+                vec![0x1f_u8, 0x8b, 0x08, 0x00],
+            )
+        };
+        let app = Router::new()
+            .route("/doc", get(json))
+            .route("/hidden", get(json))
+            .route("/zipped", get(gzip))
+            .layer(middleware::from_fn(move |request: Request, next: Next| {
+                let observer = Arc::clone(&observer);
+                async move { observer.respond(request, next).await }
+            }));
+        let response = app.oneshot(request).await.unwrap();
+        let _ = axum::body::to_bytes(response.into_body(), BODY_CAP)
+            .await
+            .unwrap();
+        fs::read_dir(directory.path())
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("case-"))
+            .map(|entry| serde_json::from_slice(&fs::read(entry.path()).unwrap()).unwrap())
+            .collect()
+    }
+
+    fn get_request(uri: &str, method: &str) -> HttpRequest<Body> {
+        HttpRequest::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_served_route_missing_from_the_document_is_a_finding() {
+        let observed = observe(get_request("/hidden", "GET")).await;
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].operation.path, "/hidden");
+        assert_eq!(observed[0].findings[0].kind, "undocumented-operation");
+    }
+
+    #[tokio::test]
+    async fn head_is_checked_as_the_get_operation_without_counting_as_coverage() {
+        let observed = observe(get_request("/doc", "HEAD")).await;
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].operation.operation_id, "doc_control");
+        assert!(
+            observed[0].findings.is_empty(),
+            "{:?}",
+            observed[0].findings
+        );
+        assert!(!observed[0].body_complete);
+    }
+
+    #[tokio::test]
+    async fn an_encoded_body_is_not_misread_as_invalid_json() {
+        let mut request = get_request("/zipped", "GET");
+        request
+            .headers_mut()
+            .insert("accept-encoding", "gzip".parse().unwrap());
+        let observed = observe(request).await;
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].operation.operation_id, "zipped_control");
+        assert!(
+            observed[0].findings.is_empty(),
+            "{:?}",
+            observed[0].findings
+        );
+        assert!(
+            !observed[0].body_complete,
+            "an encoded body is never coverage"
+        );
+        let observed = observe({
+            let mut request = get_request("/doc", "GET");
+            request
+                .headers_mut()
+                .insert("accept-encoding", "gzip".parse().unwrap());
+            request
+        })
+        .await;
+        assert!(observed[0].findings.is_empty());
+        assert!(observed[0].body_complete, "an identity body is validated");
     }
 }
