@@ -350,13 +350,69 @@ jobs:
         working-directory: crates/api-contract
         run: cargo +nightly-2026-04-20 check-external-types --all-features
 
+  # ── OpenAPI runtime conformance (NS15 producer) ───────────────────────────
+  # Runs the whole nebula-api suite with response observation enabled, then
+  # aggregates every observed response against the served OpenAPI document into
+  # the `openapi-runtime-compatibility` report. The aggregation fails on any
+  # drift finding; the report is retained either way so a failure is readable.
+  # Tier 2: skipped on draft PRs.
+  openapi-runtime-conformance:
+    name: OpenAPI runtime conformance
+    needs: [check]
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.draft != true ||
+      contains(github.event.pull_request.labels.*.name, 'run-full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "1.97"
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        with:
+          tool: cargo-nextest@0.9.143
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        with:
+          shared-key: ci-openapi-runtime
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Produce openapi-runtime-compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/target/openapi-runtime"
+          rm -rf "$root"
+          mkdir -p "$root/observations"
+          export NEBULA_OPENAPI_OBSERVATIONS="$root/observations"
+          cargo nextest run -p nebula-api --profile ci
+          NEBULA_OPENAPI_REPORT="$root/openapi-runtime-compatibility.json" \
+            cargo nextest run -p nebula-api --profile ci \
+            --test openapi_runtime_conformance --run-ignored only \
+            -E 'test(emit_openapi_runtime_compatibility_report)'
+      - name: Upload openapi-runtime-compatibility
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: openapi-runtime-compatibility
+          path: target/openapi-runtime/openapi-runtime-compatibility.json
+          if-no-files-found: error
+          retention-days: 14
+
   # ── Required aggregator ───────────────────────────────────────────────────
   # Single required check for branch protection. Treats `skipped` (draft-gated
   # tier 2 jobs) as success, but `failure`/`cancelled` fails the whole suite.
   required:
     name: CI
     if: always()
-    needs: [fmt, check, feature-hygiene, doctests, msrv, doc, deny, test-dep-leak, external-types]
+    needs: [fmt, check, feature-hygiene, doctests, msrv, doc, deny, test-dep-leak, external-types, openapi-runtime-conformance]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -371,12 +427,14 @@ jobs:
           DENY: ${{ needs.deny.result }}
           TEST_DEP_LEAK: ${{ needs.test-dep-leak.result }}
           EXTERNAL_TYPES: ${{ needs.external-types.result }}
+          OPENAPI_RUNTIME: ${{ needs.openapi-runtime-conformance.result }}
         run: |
           set -euo pipefail
           fail=0
           for pair in "fmt=$FMT" "check=$CHECK" "feature-hygiene=$FEATURE_HYGIENE" \
                      "doctests=$DOCTESTS" "msrv=$MSRV" "doc=$DOC" "deny=$DENY" \
-                     "test-dep-leak=$TEST_DEP_LEAK" "external-types=$EXTERNAL_TYPES"; do
+                     "test-dep-leak=$TEST_DEP_LEAK" "external-types=$EXTERNAL_TYPES" \
+                     "openapi-runtime-conformance=$OPENAPI_RUNTIME"; do
             name="${pair%%=*}"
             result="${pair#*=}"
             if [[ "$result" != "success" && "$result" != "skipped" ]]; then

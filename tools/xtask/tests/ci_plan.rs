@@ -896,6 +896,37 @@ fn pre_push_without_any_resolvable_base_uses_the_full_plan() {
     );
 }
 
+#[test]
+fn ci_required_check_depends_on_the_openapi_runtime_compatibility_producer() {
+    let workflow = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
+        .expect("CI workflow is readable");
+
+    assert!(
+        yaml_mapping_value_at_path(&workflow, &["jobs", "openapi-runtime-conformance"]).is_some(),
+        "the NS15 producer must keep its stable job id"
+    );
+    let required_needs = yaml_mapping_value_at_path(&workflow, &["jobs", "required", "needs"])
+        .expect("the required aggregator declares dependencies");
+    assert!(
+        required_needs.contains("openapi-runtime-conformance"),
+        "NS15 binds to ci.yml#required, so the aggregator must depend on the producer"
+    );
+    assert!(
+        workflow.contains("OPENAPI_RUNTIME: ${{ needs.openapi-runtime-conformance.result }}")
+            && workflow.contains("\"openapi-runtime-conformance=$OPENAPI_RUNTIME\""),
+        "the aggregator must inspect the producer result"
+    );
+    for producer_step in [
+        "export NEBULA_OPENAPI_OBSERVATIONS=",
+        "NEBULA_OPENAPI_REPORT=",
+        "test(emit_openapi_runtime_compatibility_report)",
+        "name: openapi-runtime-compatibility",
+        "if-no-files-found: error",
+    ] {
+        assert!(workflow.contains(producer_step), "missing: {producer_step}");
+    }
+}
+
 fn yaml_mapping_value_at_path<'a>(document: &'a str, path: &[&str]) -> Option<&'a str> {
     let mut parents: Vec<(usize, &str)> = Vec::new();
 
