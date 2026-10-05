@@ -23,6 +23,11 @@
 //! expired token returns 404 WITHOUT burning the token (the prior
 //! consume-first handler burned it first, then 404'd — a wart this fixes).
 //!
+//! Steps 1–5 and 11 are transport abuse controls owned here. Steps 6–10 are
+//! the execution-command contract, owned by
+//! `nebula_engine::ExecutionCommandService::resume_webhook`; this handler only
+//! maps its result (`ResumeTokenNotFound` → 404, any other error → 503).
+//!
 //! 1. Body cap → 413
 //! 2. Extract bearer from `Authorization: Bearer <token>` → uniform 404 on
 //!    missing/wrong-scheme/empty (NOT 401 — do not reveal auth was attempted)
@@ -59,8 +64,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use nebula_action::Clock;
-use nebula_storage_port::dto::ResumeTarget;
-use nebula_storage_port::dto::resume_token::{ResumeTokenWaitKind, TokenHash};
+use nebula_storage_port::dto::resume_token::TokenHash;
 use tracing::{debug, warn};
 
 use super::ratelimit::WebhookRateLimiter;
@@ -182,10 +186,10 @@ pub(crate) async fn resume_handler(
         warn!("resume_handler called without ResumeHandlerComponents wired — composition-root bug");
         return (StatusCode::SERVICE_UNAVAILABLE, "").into_response();
     };
-    let Some(resume_producer) = state.resume_producer.as_ref() else {
+    if state.resume_producer.is_none() {
         warn!("resume_handler called without resume_producer wired — composition-root bug");
         return (StatusCode::SERVICE_UNAVAILABLE, "").into_response();
-    };
+    }
 
     // Step 1 — body cap.
     if body.len() > RESUME_BODY_LIMIT_BYTES {
@@ -244,114 +248,31 @@ pub(crate) async fn resume_handler(
         return (StatusCode::INTERNAL_SERVER_ERROR, "").into_response();
     };
 
-    // Step 6 — read-only `peek` (NO burn). The row drives the kind / expiry
-    // checks below; the token is consumed only at step 10, atomically with the
-    // enqueue.
-    let token_row = match resume_producer.peek(&token_hash_value).await {
-        // Storage error → 503 so the caller can retry; the token is NOT burned
-        // on a transient storage fault (abuse-case 15).
-        Err(storage_err) => {
-            warn!(
-                error = %storage_err,
-                "resume: storage error on peek — returning 503 (token not burned)"
-            );
-            return service_unavailable_with_retry_after();
-        },
-        // Absent, forged, or already-consumed → uniform 404.
-        Ok(None) => return uniform_not_found(),
-        Ok(Some(row)) => row,
-    };
-
-    // Step 7 — kind-match (fail-closed, NO burn — wart fixed).
-    // `ResumeTokenWaitKind` is `#[non_exhaustive]`; equality to `Webhook` is
-    // the only admissible kind at this endpoint.  All other variants — Approval,
-    // and any future variant added to the non-exhaustive enum without recompiling
-    // this crate — fall to the `else` branch and return a uniform 404 WITHOUT
-    // consuming the token (the prior consume-first handler burned it first).
-    //
-    // Ordering invariant: kind-match fires BEFORE the consume.  A wrong-kind or
-    // expired token must return 404, never 429 — returning 429 would reveal that
-    // the token was structurally valid (existence oracle).
-    let resume_target = if token_row.wait_kind == ResumeTokenWaitKind::Webhook {
-        ResumeTarget::Webhook {
-            callback_id: token_row.callback_label.clone(),
-        }
-    } else {
-        debug!(
-            execution_id = %token_row.execution_id,
-            wait_kind = ?token_row.wait_kind,
-            "resume: token wait_kind does not match Webhook; returning 404 (fail-closed, no burn)"
-        );
-        return uniform_not_found();
-    };
-
-    // Step 8 — expiry check via injectable clock (fail-closed on parse failure).
-    // Fires BEFORE the consume; expired / malformed → 404 WITHOUT burning.
-    if let Some(expires_at_str) = token_row.expires_at.as_deref() {
-        if let Ok(expiry) = parse_rfc3339_as_system_time(expires_at_str) {
-            let now = components.clock.now();
-            if now >= expiry {
-                debug!(
-                    execution_id = %token_row.execution_id,
-                    expires_at = %expires_at_str,
-                    "resume: token expired (no burn, no enqueue)"
-                );
-                return uniform_not_found();
-            }
-        } else {
-            // Malformed RFC-3339 — fail-closed WITHOUT burning the token.
-            warn!(
-                execution_id = %token_row.execution_id,
-                expires_at = %expires_at_str,
-                "resume: malformed expires_at — fail-closed (no burn, no enqueue)"
-            );
-            return uniform_not_found();
-        }
-    }
-
-    // Step 9 — build the `Resume` control message.
-    // Scope comes FROM the row (never the request); `traceparent` from the
-    // inbound W3C context (set by `trace_context_middleware` into request
-    // extensions). The bearer token NEVER appears here.
-    let traceparent = w3c_trace.map(|Extension(ctx)| ctx.0.traceparent().to_owned());
-    let resume_msg = nebula_storage_port::dto::ControlMsg {
-        id: *uuid::Uuid::new_v4().as_bytes(),
-        execution_id: token_row.execution_id.clone(),
-        command: nebula_storage_port::dto::ControlCommand::Resume,
-        scope: token_row.scope.clone(),
-        w3c_traceparent: traceparent,
-        reclaim_count: 0,
-        resume_target: Some(resume_target),
-    };
-    debug!(
-        execution_id = %token_row.execution_id,
-        scope = ?token_row.scope,
-        has_traceparent = resume_msg.w3c_traceparent.is_some(),
-        wait_kind = "Webhook",
-        "resume: consuming token + enqueuing ControlCommand::Resume (atomic)"
-    );
-
-    // Step 10 — atomic burn + enqueue in ONE transaction. A transient fault
-    // rolls back: the token stays live and no Resume is enqueued, so a retry
-    // succeeds (the durability gap the consume-then-enqueue handler had).
-    match resume_producer
-        .consume_and_enqueue_resume(&token_hash_value, &resume_msg)
+    // Steps 6–10 — the command service performs kind/expiry admission and the
+    // atomic token burn + exact `Resume` enqueue. Scope comes from the row.
+    let scope = match state
+        .execution_commands()
+        .resume_webhook(
+            &token_hash_value,
+            components.clock.now(),
+            w3c_trace.map(|Extension(ctx)| ctx.0),
+        )
         .await
     {
-        // Storage error → 503 (tx rolled back; token LIVE; caller retries).
-        Err(storage_err) => {
+        Ok(scope) => scope,
+        Err(nebula_engine::ExecutionCommandError::ResumeTokenNotFound) => {
+            return uniform_not_found();
+        },
+        // Transient storage fault: the transaction rolled back, so the token
+        // is still live and the caller may retry.
+        Err(error) => {
             warn!(
-                execution_id = %token_row.execution_id,
-                error = %storage_err,
-                "resume: storage error on consume_and_enqueue — 503 (tx rolled back; token live)"
+                error = %error,
+                "resume: command service failed — 503 (token not burned)"
             );
             return service_unavailable_with_retry_after();
         },
-        // Zero rows deleted — raced or replayed between peek and consume.
-        Ok(false) => return uniform_not_found(),
-        // Won the atomic delete: token burned AND Resume enqueued.
-        Ok(true) => {},
-    }
+    };
 
     // Step 11 — per-tenant rate-limit, fired ONLY on the atomic-delete winner.
     // The token is already burned and the Resume already enqueued; a 429 is thus
@@ -359,7 +280,7 @@ pub(crate) async fn resume_handler(
     // token) — byte-identical to the prior post-burn semantics. Running this on
     // the un-burned `peek` row (step 6) would expose a repeatable 429 oracle
     // ("valid token + throttled tenant"); see the module doc.
-    let tenant_key = token_row.scope.credential_owner_id();
+    let tenant_key = scope.credential_owner_id();
     if let Err(exceeded) = components.tenant_rate_limiter.check(&tenant_key).await {
         debug!(
             tenant_id = %tenant_key,
@@ -399,24 +320,6 @@ fn extract_bearer(headers: &HeaderMap) -> Option<String> {
         return None;
     }
     Some(token.to_owned())
-}
-
-/// Parse an RFC-3339 timestamp string to `SystemTime`.
-///
-/// Returns `Err(())` on any parse failure — callers must fail-closed.
-fn parse_rfc3339_as_system_time(ts: &str) -> Result<std::time::SystemTime, ()> {
-    // Use `humantime` which is already in the workspace via nebula-core.
-    // Alternatively parse via chrono which is available workspace-wide.
-    // We use chrono::DateTime::parse_from_rfc3339 → convert to SystemTime.
-    use std::time::{Duration, UNIX_EPOCH};
-    let parsed = chrono::DateTime::parse_from_rfc3339(ts).map_err(|_| ())?;
-    let unix_secs = parsed.timestamp();
-    let unix_nanos = parsed.timestamp_subsec_nanos();
-    if unix_secs < 0 {
-        return Err(());
-    }
-    let duration = Duration::new(unix_secs as u64, unix_nanos);
-    Ok(UNIX_EPOCH + duration)
 }
 
 /// Uniform 404 response — byte-identical for all "not found" cases.

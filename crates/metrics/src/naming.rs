@@ -73,10 +73,11 @@ pub mod control_reclaim_outcome {
     pub const EXHAUSTED: &str = "exhausted";
 }
 
-/// Counter: execution control commands (cancel / terminate) submitted through
+/// Counter: execution control commands submitted through
 /// `ExecutionCommandService`.
 ///
-/// Labeled by `command` (`cancel` / `terminate`) and `outcome` (see
+/// Labeled by `command` (`cancel` / `terminate` / `resume` / `signal`; a
+/// webhook bearer resume counts as `resume`) and `outcome` (see
 /// [`execution_command_outcome`]). Cardinality is bounded by those two static
 /// sets — no execution or tenant id is ever a label.
 pub const NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL: &str = "nebula_engine_execution_command_total";
@@ -89,7 +90,8 @@ pub mod execution_command_outcome {
     pub const DUPLICATE: &str = "duplicate";
     /// The execution was already terminal; the command was refused.
     pub const TERMINAL: &str = "terminal";
-    /// No such execution in the caller's tenant.
+    /// No such execution in the caller's tenant, or no live webhook resume
+    /// token for the bearer.
     pub const NOT_FOUND: &str = "not_found";
     /// The control-queue backend was unavailable; nothing was recorded.
     pub const UNAVAILABLE: &str = "unavailable";
