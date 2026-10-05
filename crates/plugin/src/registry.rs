@@ -347,7 +347,7 @@ impl PluginRegistry {
     /// reported collision does not depend on `HashMap` iteration order.
     fn duplicate_component_key(&self) -> Option<RegistryFreezeError> {
         let mut plugins: Vec<_> = self.plugins.iter().collect();
-        plugins.sort_by(|(left, _), (right, _)| left.cmp(right));
+        plugins.sort_by_key(|(key, _)| *key);
 
         let mut actions = std::collections::HashSet::new();
         let mut credentials = std::collections::HashSet::new();
