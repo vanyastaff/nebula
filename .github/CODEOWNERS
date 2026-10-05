@@ -50,6 +50,7 @@
 
 # ── API / Public layer ────────────────────────────────────────────────────────
 /crates/api/                    @vanyastaff
+/crates/api-contract/           @vanyastaff
 /crates/sdk/                    @vanyastaff
 
 # ── Documentation ─────────────────────────────────────────────────────────────

@@ -64,6 +64,7 @@ pub fn create_routes(state: AppState, _config: &ApiConfig) -> (Router, OpenApi) 
     let api_router = build_openapi_router(&state);
     let (router, mut openapi) = api_router.split_for_parts();
     crate::openapi::add_session_security(&mut openapi);
+    crate::openapi::add_problem_response_contract(&mut openapi);
     crate::access::assert_tenant_access_coverage(&openapi)
         .expect("tenant routes must declare access permissions");
     let router = router.with_state(state);
@@ -175,5 +176,5 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(OpenApiDoc::openapi())
         .merge(health::routes::router())
         .merge(metrics::router())
-        .nest("/api/v1", api_v1)
+        .nest(nebula_api_contract::v1::API_BASE_PATH, api_v1)
 }

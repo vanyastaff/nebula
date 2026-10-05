@@ -15,7 +15,7 @@ use serde_json::json;
 
 use super::{BundleRequest, VerificationError, build};
 use crate::north_star::runtime_authority::{
-    Backend, GateBackend, RunnerIdentity, RuntimeAuthorityGate, semantic, verify,
+    Backend, GateBackend, RunnerIdentity, RuntimeAuthorityGate, loader, semantic, verify,
 };
 
 fn write(root: &Path, relative: &str, value: &serde_json::Value) {
@@ -133,6 +133,7 @@ fn a_complete_observation_root_builds_and_independently_verifies() {
         &workspace,
         &directory.path().join("bundle"),
         &directory.path().join("expected.json"),
+        &loader::digest(&fs::read(directory.path().join("expected.json")).unwrap()),
         &RunnerIdentity {
             source_revision: request.source_revision,
             repository: request.repository,

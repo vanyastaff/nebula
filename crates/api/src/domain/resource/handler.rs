@@ -45,6 +45,7 @@ use crate::{
         shared::PaginationParams,
     },
     error::{ApiError, ApiResult, ProblemDetails},
+    extractors::ApiJson,
     state::AppState,
 };
 
@@ -538,7 +539,7 @@ pub async fn create_resource(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
-    Json(body): Json<CreateResourceRequest>,
+    ApiJson(body): ApiJson<CreateResourceRequest>,
 ) -> ApiResult<(StatusCode, Json<CreateResourceResponse>)> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let store = state.resource_store.as_ref().ok_or_else(|| {
@@ -632,7 +633,7 @@ pub async fn update_resource(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, res)): Path<(String, String, String)>,
-    Json(body): Json<UpdateResourceRequest>,
+    ApiJson(body): ApiJson<UpdateResourceRequest>,
 ) -> ApiResult<Json<UpdateResourceResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let store = state.resource_store.as_ref().ok_or_else(|| {

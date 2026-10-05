@@ -657,3 +657,128 @@ fn registry_all_resources_yields_every_resource() {
     .unwrap();
     assert_eq!(reg.all_resources().count(), 2);
 }
+
+#[test]
+fn mutable_and_frozen_accessors_preserve_component_ownership_across_plugins() {
+    let slack = Arc::new(
+        ResolvedPlugin::from(
+            StubPlugin::new("slack")
+                .with_action("slack.send")
+                .with_credential("slack.oauth2")
+                .with_resource("slack.http_client"),
+        )
+        .unwrap(),
+    );
+    let github = Arc::new(
+        ResolvedPlugin::from(
+            StubPlugin::new("github")
+                .with_action("github.send")
+                .with_credential("github.oauth2"),
+        )
+        .unwrap(),
+    );
+    let http = Arc::new(
+        ResolvedPlugin::from(
+            StubPlugin::new("http")
+                .with_action("http.send")
+                .with_resource("http.client"),
+        )
+        .unwrap(),
+    );
+    let mut registry = PluginRegistry::new();
+    for plugin in [&http, &github, &slack] {
+        registry.register(Arc::clone(plugin)).unwrap();
+    }
+
+    let credential_key = CredentialKey::new("github.oauth2").unwrap();
+    let resource_key = ResourceKey::new("http.client").unwrap();
+    let action_key = ActionKey::new("slack.send").unwrap();
+    assert!(Arc::ptr_eq(
+        &registry.resolve_credential(&credential_key).unwrap(),
+        github.credential(&credential_key).unwrap(),
+    ));
+    assert!(Arc::ptr_eq(
+        &registry.resolve_resource(&resource_key).unwrap(),
+        http.resource(&resource_key).unwrap(),
+    ));
+    assert!(Arc::ptr_eq(
+        &registry.resolve_action(&action_key).unwrap(),
+        slack.action(&action_key).unwrap(),
+    ));
+
+    let frozen = registry
+        .freeze(
+            nebula_core::ArtifactSetDigest::from_bytes([0x31; 32]),
+            "1.0.0".parse().unwrap(),
+        )
+        .unwrap();
+    let mut actions: Vec<_> = frozen
+        .all_actions()
+        .map(|(plugin, action)| {
+            (
+                plugin.to_string(),
+                action.metadata().base().key().to_string(),
+            )
+        })
+        .collect();
+    actions.sort();
+    assert_eq!(
+        actions,
+        [
+            ("github".to_owned(), "github.send".to_owned()),
+            ("http".to_owned(), "http.send".to_owned()),
+            ("slack".to_owned(), "slack.send".to_owned()),
+        ],
+    );
+    let mut credentials: Vec<_> = frozen
+        .all_credentials()
+        .map(|(plugin, credential)| (plugin.to_string(), credential.credential_key().to_owned()))
+        .collect();
+    credentials.sort();
+    assert_eq!(
+        credentials,
+        [
+            ("github".to_owned(), "github.oauth2".to_owned()),
+            ("slack".to_owned(), "slack.oauth2".to_owned()),
+        ],
+    );
+    let mut resources: Vec<_> = frozen
+        .all_resources()
+        .map(|(plugin, resource)| (plugin.to_string(), resource.key().to_string()))
+        .collect();
+    resources.sort();
+    assert_eq!(
+        resources,
+        [
+            ("http".to_owned(), "http.client".to_owned()),
+            ("slack".to_owned(), "slack.http_client".to_owned()),
+        ],
+    );
+    assert!(Arc::ptr_eq(
+        &frozen.resolve_credential(&credential_key).unwrap(),
+        github.credential(&credential_key).unwrap(),
+    ));
+    assert!(Arc::ptr_eq(
+        &frozen.resolve_resource(&resource_key).unwrap(),
+        http.resource(&resource_key).unwrap(),
+    ));
+    assert!(Arc::ptr_eq(
+        &frozen.resolve_action(&action_key).unwrap(),
+        slack.action(&action_key).unwrap(),
+    ));
+    assert!(
+        frozen
+            .resolve_credential(&CredentialKey::new("unknown.oauth2").unwrap())
+            .is_none(),
+    );
+    assert!(
+        frozen
+            .resolve_resource(&ResourceKey::new("unknown.client").unwrap())
+            .is_none(),
+    );
+    assert!(
+        frozen
+            .resolve_action(&ActionKey::new("unknown.send").unwrap())
+            .is_none(),
+    );
+}

@@ -7,10 +7,15 @@ load_pre_commit_plan "$@"
 [[ -n "$pre_commit_plan_json" ]] || exit 0
 
 # Validate extraction success before starting any checks, preserving empty arrays.
-package_lines="$(jq -r '.packages[]' <<< "$pre_commit_plan_json")"
+# Native Windows jq must write LF, so Bash does not retain CR in arguments.
+jq_binary_args=()
+case "${OSTYPE:-}" in
+  msys*|cygwin*) jq_binary_args=(--binary) ;;
+esac
+package_lines="$(jq -r "${jq_binary_args[@]}" '.packages[]' <<< "$pre_commit_plan_json")"
 # A complete fixture includes compile-fail probes, even when only a positive
 # source changed. cargo fmt needs no unpublished dependency resolution.
-manifest_lines="$(jq -r '
+manifest_lines="$(jq -r "${jq_binary_args[@]}" '
   [.standalone_manifests[], .fixtures[].manifest_path] | sort | unique | .[]
 ' <<< "$pre_commit_plan_json")"
 packages=()
@@ -22,14 +27,10 @@ if [[ -n "$manifest_lines" ]]; then
   mapfile -t manifests <<< "$manifest_lines"
 fi
 
-package_args=()
 for package in "${packages[@]}"; do
-  package_args+=(-p "$package")
+  echo "fmt-check (owner): $package"
+  cargo fmt -p "$package" -- --check
 done
-if [[ ${#package_args[@]} -gt 0 ]]; then
-  echo "fmt-check (owners): ${packages[*]}"
-  cargo fmt "${package_args[@]}" -- --check
-fi
 
 for manifest in "${manifests[@]}"; do
   echo "fmt-check (standalone): $manifest"

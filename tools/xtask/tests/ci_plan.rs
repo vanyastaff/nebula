@@ -1,8 +1,14 @@
+#[path = "support/fixture_process.rs"]
+mod fixture_process;
+use fixture_process::fixture_command;
+#[path = "support/git_hook_canary.rs"]
+mod git_hook_canary;
+
 use std::{
     collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Output,
 };
 
 #[cfg(unix)]
@@ -32,6 +38,21 @@ struct PackageSpec<'a> {
     path: &'a str,
     name: &'a str,
     extra_manifest: &'a str,
+}
+
+#[test]
+fn fixture_git_commands_ignore_hook_repository_environment() {
+    git_hook_canary::assert_hook_repository_isolation(
+        "fixture_git_commands_ignore_hook_repository_environment",
+        || {
+            let fixture = workspace_repo(&[package("crates/demo", "fixture-demo", "")]);
+            let base = revision(fixture.path());
+            change_source(fixture.path(), "crates/demo", "isolated_hook");
+            let head = commit_all(fixture.path(), "change isolated fixture");
+            let plan = diff_plan(fixture.path(), &base, &head, "direct");
+            assert_eq!(packages(&plan), vec!["fixture-demo"]);
+        },
+    );
 }
 
 #[test]
@@ -120,7 +141,7 @@ fn live_workspace_full_equals_cargo_metadata_and_has_no_retired_telemetry() {
     let root = workspace_root();
     let output = xtask(&root, &["ci-plan", "full"]);
     let plan = successful_plan(&output);
-    let metadata_output = Command::new("cargo")
+    let metadata_output = fixture_command("cargo")
         .args(["metadata", "--format-version", "1", "--all-features"])
         .current_dir(&root)
         .output()
@@ -575,7 +596,7 @@ fn output_is_stable_and_xtask_has_no_nebula_product_dependencies() {
     assert!(first.status.success());
     assert_eq!(first.stdout, second.stdout);
 
-    let metadata = Command::new("cargo")
+    let metadata = fixture_command("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .current_dir(&root)
         .output()
@@ -896,6 +917,55 @@ fn pre_push_without_any_resolvable_base_uses_the_full_plan() {
     );
 }
 
+#[test]
+fn ci_required_check_depends_on_the_openapi_runtime_compatibility_producer() {
+    let workflow = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
+        .expect("CI workflow is readable");
+
+    assert!(
+        yaml_mapping_value_at_path(&workflow, &["jobs", "openapi-runtime-conformance"]).is_some(),
+        "the NS15 producer must keep its stable job id"
+    );
+    let required_needs = yaml_mapping_value_at_path(&workflow, &["jobs", "required", "needs"])
+        .expect("the required aggregator declares dependencies");
+    assert!(
+        required_needs.contains("openapi-runtime-conformance"),
+        "NS15 binds to ci.yml#required, so the aggregator must depend on the producer"
+    );
+    assert!(
+        workflow.contains("OPENAPI_RUNTIME: ${{ needs.openapi-runtime-conformance.result }}")
+            && workflow.contains("\"openapi-runtime-conformance=$OPENAPI_RUNTIME\""),
+        "the aggregator must inspect the producer result"
+    );
+    for producer_step in [
+        "export NEBULA_OPENAPI_OBSERVATIONS=",
+        "NEBULA_OPENAPI_REPORT=",
+        "test(emit_openapi_runtime_compatibility_report)",
+        "name: openapi-runtime-compatibility",
+        "if-no-files-found: error",
+        "--retries 0 -E \"$filter\"",
+    ] {
+        assert!(workflow.contains(producer_step), "missing: {producer_step}");
+    }
+    // The producer runs a named subset of binaries; each must still exist.
+    let list = workflow
+        .split_once("producer_binaries=(")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(list, _)| list)
+        .expect("the producer names its test binaries");
+    let binaries: Vec<&str> = list.split_whitespace().collect();
+    assert!(binaries.contains(&"openapi_runtime_conformance"));
+    for binary in binaries {
+        assert!(
+            workspace_root()
+                .join("crates/api/tests")
+                .join(format!("{binary}.rs"))
+                .is_file(),
+            "producer binary {binary} no longer exists"
+        );
+    }
+}
+
 fn yaml_mapping_value_at_path<'a>(document: &'a str, path: &[&str]) -> Option<&'a str> {
     let mut parents: Vec<(usize, &str)> = Vec::new();
 
@@ -978,7 +1048,7 @@ fi
         std::iter::once(shim_dir).chain(env::split_paths(&env::var_os("PATH").unwrap_or_default())),
     )
     .expect("shim PATH joins");
-    let output = Command::new("bash")
+    let output = fixture_command("bash")
         .arg(workspace_root().join("scripts/pre-push-crate-diff.sh"))
         .current_dir(repo)
         .env("PATH", path)
@@ -1082,7 +1152,7 @@ fn workspace_repo(specs: &[PackageSpec<'_>]) -> TempDir {
 }
 
 fn cargo_generate_lockfile(repo: &Path) {
-    let output = Command::new("cargo")
+    let output = fixture_command("cargo")
         .arg("generate-lockfile")
         .current_dir(repo)
         .output()
@@ -1198,7 +1268,7 @@ fn copy_tree(source: &Path, destination: &Path) {
 }
 
 fn xtask(repo: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_nebula-xtask"))
+    fixture_command(env!("CARGO_BIN_EXE_nebula-xtask"))
         .args(args)
         .current_dir(repo)
         .output()
@@ -1206,7 +1276,7 @@ fn xtask(repo: &Path, args: &[&str]) -> Output {
 }
 
 fn git(repo: &Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = fixture_command("git")
         .args(args)
         .current_dir(repo)
         .output()
@@ -1219,11 +1289,51 @@ fn git(repo: &Path, args: &[&str]) {
 }
 
 fn git_output(repo: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = fixture_command("git")
         .args(args)
         .current_dir(repo)
         .output()
         .expect("git runs");
     assert!(output.status.success());
     String::from_utf8(output.stdout).expect("git output is UTF-8")
+}
+
+#[test]
+fn runtime_authority_manifest_is_authenticated_through_job_outputs() {
+    let workflow =
+        fs::read_to_string(workspace_root().join(".github/workflows/test-matrix.yml")).unwrap();
+    for required in [
+        "expected-provenance-sha256: ${{ steps.runtime-authority-candidate.outputs.expected-provenance-sha256 }}",
+        "manifest_sha256=$(sha256sum target/runtime-authority-expected.json)",
+        "expected-provenance-sha256=${manifest_sha256%% *}",
+        "EXPECTED_PROVENANCE_SHA256: ${{ needs.postgres-conformance.outputs.expected-provenance-sha256 }}",
+        "--expected-provenance-sha256 \"$EXPECTED_PROVENANCE_SHA256\"",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "missing trusted provenance channel: {required}"
+        );
+    }
+    let producer = workflow
+        .find("cargo xtask north-star-gates build-runtime-authority-bundle")
+        .unwrap();
+    let digest = workflow.find("manifest_sha256=$(sha256sum").unwrap();
+    let upload = workflow
+        .find("- name: Upload successful runtime-authority candidate")
+        .unwrap();
+    assert!(producer < digest && digest < upload);
+    let diagnostic = workflow
+        .split("- name: Upload PostgreSQL and migration diagnostics")
+        .nth(1)
+        .unwrap()
+        .split("- name:")
+        .next()
+        .unwrap();
+    assert!(diagnostic.contains("if: always()"));
+    assert!(diagnostic.contains("name: runtime-authority-diagnostics"));
+    assert!(!diagnostic.contains("name: runtime-authority-candidate"));
+    let candidate = workflow[upload..].split("- name:").nth(1).unwrap();
+    assert!(candidate.contains("if: success()"));
+    assert!(candidate.contains("name: runtime-authority-candidate"));
+    assert!(candidate.contains("if-no-files-found: error"));
 }

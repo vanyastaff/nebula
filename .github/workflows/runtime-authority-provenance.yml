@@ -1,0 +1,265 @@
+name: Protected Runtime Authority Provenance
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  protected-provenance:
+    name: Protected runtime-authority verification and attestation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN_ID: ${{ github.run_id }}
+      SOURCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+      SOURCE_REVISION: ${{ github.sha }}
+      SOURCE_HEAD_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_REF: ${{ github.ref }}
+      SOURCE_WORKFLOW_REF: ${{ github.workflow_ref }}
+      SOURCE_BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before }}
+      CARGO_BUILD_JOBS: "8"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      # This first step belongs to the protected reusable YAML. No checkout,
+      # candidate executable, caller input or caller-supplied policy is loaded.
+      - name: Anchor protected policy and original source context
+        id: anchor
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          from urllib.parse import urlparse
+          from urllib.request import Request, urlopen
+
+          def admit_policy_claims(claims, context):
+              expected = context["repository"] + "/.github/workflows/runtime-authority-provenance.yml@refs/heads/main"
+              if claims.get("iss") != "https://token.actions.githubusercontent.com":
+                  raise ValueError("wrong OIDC issuer")
+              if claims.get("aud") != "nebula-runtime-authority-policy":
+                  raise ValueError("wrong OIDC audience")
+              if claims.get("job_workflow_ref") != expected:
+                  raise ValueError("untrusted reusable workflow ref")
+              for key, field in (("repository", "repository"), ("sha", "source_revision"),
+                                 ("ref", "source_ref"), ("run_id", "run_id"), ("run_attempt", "run_attempt")):
+                  if str(claims.get(key)) != context[field]:
+                      raise ValueError("OIDC source context mismatch: " + key)
+              if claims.get("workflow_ref") != context["source_workflow_ref"]:
+                  raise ValueError("OIDC caller workflow mismatch")
+              policy = claims.get("job_workflow_sha", "")
+              if not re.fullmatch(r"[a-f0-9]{40}", policy):
+                  raise ValueError("missing immutable protected workflow revision")
+              return policy
+
+          def bootstrap():
+              context = {"repository": os.environ["GITHUB_REPOSITORY"],
+                         "run_id": os.environ["SOURCE_RUN_ID"], "run_attempt": os.environ["SOURCE_RUN_ATTEMPT"],
+                         "source_revision": os.environ["SOURCE_REVISION"],
+                         "head_revision": os.environ["SOURCE_HEAD_REVISION"], "source_ref": os.environ["SOURCE_REF"],
+                         "source_workflow_ref": os.environ["SOURCE_WORKFLOW_REF"],
+                         "base_revision": os.environ.get("SOURCE_BASE_REVISION", "")}
+              prefix = context["repository"] + "/"
+              suffix = "@" + context["source_ref"]
+              workflow_ref = context["source_workflow_ref"]
+              if not workflow_ref.startswith(prefix) or not workflow_ref.endswith(suffix):
+                  raise ValueError("untrusted caller workflow ref")
+              context["source_workflow"] = workflow_ref[len(prefix):-len(suffix)]
+              if context["source_workflow"] not in (".github/workflows/test-matrix.yml", ".github/workflows/ci.yml"):
+                  raise ValueError("untrusted caller workflow profile")
+              url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+              parsed = urlparse(url)
+              if parsed.scheme != "https" or not parsed.hostname.endswith(".actions.githubusercontent.com"):
+                  raise ValueError("untrusted OIDC request endpoint")
+              separator = "&" if "?" in url else "?"
+              request = Request(url + separator + "audience=nebula-runtime-authority-policy",
+                                headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})
+              # The response is obtained directly from GitHub's authenticated
+              # runner endpoint over TLS; it never comes from candidate bytes.
+              # The subsequent attestation additionally verifies the signed
+              # certificate against this exact protected signer revision.
+              with urlopen(request, timeout=30) as response:
+                  token = json.load(response)["value"]
+              parts = token.split(".")
+              if len(parts) != 3:
+                  raise ValueError("invalid GitHub OIDC response")
+              claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+              context["policy_revision"] = admit_policy_claims(claims, context)
+              with open(os.environ["RUNNER_TEMP"] + "/source-context.json", "x", encoding="utf-8") as output:
+                  json.dump(context, output)
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("policy-revision=" + context["policy_revision"] + "\n")
+
+          if __name__ == "__main__":
+              bootstrap()
+          PY
+
+      - name: Checkout immutable protected policy
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ steps.anchor.outputs.policy-revision }}
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: 1.97.1
+
+      - name: Test protected provenance boundary
+        run: python3 -m unittest discover -s scripts/tests -p 'test_runtime_authority_provenance.py'
+
+      - name: Authenticate source run and candidate inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          mkdir "$RUNNER_TEMP/source-metadata"
+          cd "$RUNNER_TEMP/source-metadata"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_RUN_ATTEMPT" > run.json
+          source_workflow=$(jq -er '.source_workflow' "$RUNNER_TEMP/source-context.json")
+          case "$source_workflow" in
+            .github/workflows/test-matrix.yml|.github/workflows/ci.yml) ;;
+            *) exit 1 ;;
+          esac
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/${source_workflow##*/}" > workflow.json
+          gh api "repos/$GITHUB_REPOSITORY/branches/main" > branch.json
+          suite_id=$(jq -er '.check_suite_id | select(type == "number" and . > 0)' run.json)
+          [[ "$suite_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/check-suites/$suite_id" > suite.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/attempts/$SOURCE_RUN_ATTEMPT/jobs?per_page=100" > jobs.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" > artifacts.json
+          jq -n --slurpfile run run.json --slurpfile workflow workflow.json \
+            --slurpfile branch branch.json --slurpfile suite suite.json \
+            --slurpfile jobs jobs.json --slurpfile artifacts artifacts.json \
+            --slurpfile context "$RUNNER_TEMP/source-context.json" \
+            '{run:$run[0],workflow:$workflow[0],branch:$branch[0],suite:$suite[0],jobs:$jobs[0],artifacts:$artifacts[0],source_context:$context[0]}' > metadata.json
+          policy=$(jq -er '.policy_revision' "$RUNNER_TEMP/source-context.json")
+          python3 "$GITHUB_WORKSPACE/scripts/runtime-authority-provenance.py" resolve \
+            --metadata metadata.json --repository "$GITHUB_REPOSITORY" \
+            --run-id "$SOURCE_RUN_ID" --run-attempt "$SOURCE_RUN_ATTEMPT" \
+            --policy-revision "$policy" > "$RUNNER_TEMP/source-identity.json"
+
+      - name: Download authenticated candidate bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact=$(jq -er '.artifact_id' "$RUNNER_TEMP/source-identity.json")
+          [[ "$artifact" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > "$RUNNER_TEMP/runtime-authority-candidate.zip"
+          digest=$(jq -er '.artifact_sha256' "$RUNNER_TEMP/source-identity.json")
+          python3 scripts/runtime-authority-provenance.py extract \
+            --archive "$RUNNER_TEMP/runtime-authority-candidate.zip" \
+            --destination "$RUNNER_TEMP/runtime-authority-candidate" \
+            --expected-sha256 "$digest" \
+            --source-workflow "$(jq -er .source_workflow "$RUNNER_TEMP/source-context.json")"
+
+      - name: Verify with protected semantic policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/runtime-authority-candidate"
+          profile=$(jq -er .profile "$RUNNER_TEMP/source-identity.json")
+          if [[ "$profile" == "sdk-release-quality" ]]; then
+            # Only authenticated contents at the immutable original source SHA
+            # provide the feature inventory; candidate TOML is never loaded.
+            gh api "repos/$GITHUB_REPOSITORY/contents/crates/sdk/Cargo.toml?ref=$SOURCE_REVISION" \
+              -H 'Accept: application/vnd.github.raw+json' > "$RUNNER_TEMP/source-sdk-Cargo.toml"
+            gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE_REVISION" > "$RUNNER_TEMP/source-metadata/source-commit.json"
+            base=$(python3 - "$RUNNER_TEMP" <<'PY'
+          import importlib.util
+          import json
+          import sys
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location("provenance", "scripts/runtime-authority-provenance.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          root = Path(sys.argv[1])
+          print(module.compatibility_baseline(json.loads((root / "source-context.json").read_text()),
+                                             json.loads((root / "source-metadata/source-commit.json").read_text())))
+          PY
+            )
+            python3 scripts/sdk-release-quality.py verify --candidate "$candidate" \
+              --sdk-manifest "$RUNNER_TEMP/source-sdk-Cargo.toml" --base-revision "$base" \
+              --source-revision "$SOURCE_REVISION" --repository "$GITHUB_REPOSITORY" \
+              --run-id "$SOURCE_RUN_ID" --run-attempt "$SOURCE_RUN_ATTEMPT" \
+              > "$RUNNER_TEMP/runtime-authority-effective-states.json"
+            exit 0
+          fi
+          [[ "$profile" == "runtime-authority" ]]
+          # NS19 binary files are data. The protected packaging policy checks
+          # the exact metadata-selected archive set and recomputes actual bytes
+          # before any semantic effective state or signature can be emitted.
+          cargo xtask packaging verify-archives \
+            --report "$candidate/NS19/published-manifest-precision/published-manifest-precision.json" \
+            --archive-root "$candidate/NS19/published-manifest-precision/archives" \
+            > "$RUNNER_TEMP/ns19-archive-verification.json"
+          manifest_digest=$(sha256sum "$candidate/runtime-authority-expected.json")
+          # The manifest is an inventory hint under independently authenticated
+          # archive bytes. Protected REGISTRY/POLICY_SOURCE must match exactly.
+          cargo xtask north-star-gates verify-runtime-authority \
+            --artifact-root "$candidate/runtime-authority-bundle" \
+            --expected-provenance "$candidate/runtime-authority-expected.json" \
+            --expected-provenance-sha256 "${manifest_digest%% *}" \
+            --source-revision "$SOURCE_REVISION" --repository "$GITHUB_REPOSITORY" \
+            --run-id "$SOURCE_RUN_ID" --run-attempt "$SOURCE_RUN_ATTEMPT" \
+            > "$RUNNER_TEMP/runtime-authority-effective-states.json"
+
+      - name: Attest independently verified candidate digest
+        id: attest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ runner.temp }}/runtime-authority-candidate.zip
+
+      - name: Verify signature against the protected reusable signer
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          POLICY_REVISION: ${{ steps.anchor.outputs.policy-revision }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh attestation verify "$RUNNER_TEMP/runtime-authority-candidate.zip" \
+            --bundle "$ATTESTATION_BUNDLE" --repo "$GITHUB_REPOSITORY" \
+            --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/runtime-authority-provenance.yml@refs/heads/main" \
+            --signer-digest "$POLICY_REVISION" --source-digest "$SOURCE_REVISION" --source-ref "$SOURCE_REF" \
+            --cert-oidc-issuer https://token.actions.githubusercontent.com \
+            --deny-self-hosted-runners --format json \
+            > "$RUNNER_TEMP/runtime-authority-signature-verification.json"
+          cp "$ATTESTATION_BUNDLE" "$RUNNER_TEMP/runtime-authority-attestation.json"
+
+      - name: Retain independently verified signed evidence
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-authority-protected-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/runtime-authority-candidate.zip
+            ${{ runner.temp }}/source-identity.json
+            ${{ runner.temp }}/runtime-authority-effective-states.json
+            ${{ runner.temp }}/ns19-archive-verification.json
+            ${{ runner.temp }}/runtime-authority-attestation.json
+            ${{ runner.temp }}/runtime-authority-signature-verification.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain protected verification diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-authority-protected-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/source-metadata
+            ${{ runner.temp }}/source-identity.json
+            ${{ runner.temp }}/runtime-authority-effective-states.json
+            ${{ runner.temp }}/ns19-archive-verification.json
+          if-no-files-found: ignore
+          retention-days: 14

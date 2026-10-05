@@ -61,7 +61,9 @@ const POLICY_SOURCE: &str = concat!(
     "\0",
     include_str!("semantic/required_postgresql.rs"),
     "\0",
-    include_str!("semantic/start_authority.rs")
+    include_str!("semantic/start_authority.rs"),
+    "\0",
+    include_str!("../../packaging.rs")
 );
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -74,6 +76,8 @@ pub enum VerificationError {
     ArtifactPath,
     #[error("runtime authority artifact exceeds its byte limit")]
     ArtifactSize,
+    #[error("runtime authority provenance manifest SHA-256 does not match the trusted digest")]
+    ProvenanceDigest,
     #[error("runtime authority artifact SHA-256 does not match the provenance manifest")]
     ArtifactDigest,
     #[error("runtime authority artifact JSON is invalid, ambiguous, or exceeds structural limits")]
@@ -448,9 +452,15 @@ pub(crate) fn verify(
     workspace: &Path,
     artifact_root: &Path,
     expected_path: &Path,
+    expected_sha256: &str,
     runner: &RunnerIdentity,
 ) -> Result<Vec<u8>, VerificationError> {
-    let expected: ExpectedProvenance = json::decode(&loader::bounded_file(expected_path)?)?;
+    let expected_bytes = loader::bounded_file(expected_path)?;
+    if !loader::is_digest(expected_sha256, 64) || loader::digest(&expected_bytes) != expected_sha256
+    {
+        return Err(VerificationError::ProvenanceDigest);
+    }
+    let expected: ExpectedProvenance = json::decode(&expected_bytes)?;
     let root = loader::root(artifact_root)?;
     let expected_canonical = expected_path
         .canonicalize()

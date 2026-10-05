@@ -61,6 +61,7 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
         let key = match INDEX {
             0 => "alpha.db",
             1 => "alpha.internal_resource",
+            2 => "acme.storage.db",
             _ => panic!("resource metadata fixture index {INDEX} is not declared"),
         };
         ResourceKey::new(key).expect("valid fixture resource key")
@@ -95,6 +96,7 @@ fn resource_factory(key: &str) -> Arc<dyn ResourceFactory> {
     match key {
         "alpha.db" => resource_factory_at::<0>(),
         "alpha.internal_resource" => resource_factory_at::<1>(),
+        "acme.storage.db" => resource_factory_at::<2>(),
         _ => panic!("resource factory fixture key `{key}` is not declared"),
     }
 }
@@ -242,11 +244,13 @@ macro_rules! credential_fixture {
 
 credential_fixture!(AlphaAuthCredential, "alpha.auth");
 credential_fixture!(AlphaInternalCredential, "alpha.internal_credential");
+credential_fixture!(AcmeStorageCredential, "acme.storage.auth");
 
 fn test_credential(key: &str) -> Arc<dyn AnyCredential> {
     match key {
         "alpha.auth" => Arc::new(AlphaAuthCredential),
         "alpha.internal_credential" => Arc::new(AlphaInternalCredential),
+        "acme.storage.auth" => Arc::new(AcmeStorageCredential),
         _ => panic!("credential metadata fixture key `{key}` is not declared"),
     }
 }
@@ -827,4 +831,111 @@ fn runtime_contract_parse_error_is_stable_and_classified() {
     );
     assert!(!error.source_error().to_string().is_empty());
     assert_eq!(error.to_string(), "invalid runtime contract version");
+}
+
+#[test]
+fn freeze_refuses_component_key_owned_by_overlapping_plugin_namespaces() {
+    for (kind, key) in [
+        ("action", "acme.storage.run"),
+        ("credential", "acme.storage.auth"),
+        ("resource", "acme.storage.db"),
+    ] {
+        let mut registry = PluginRegistry::new();
+        for owner in ["acme", "acme.storage"] {
+            let mut plugin = empty_plugin(owner, "1.0.0");
+            match kind {
+                "action" => plugin.actions.push(action_factory(key)),
+                "credential" => plugin.credentials.push(test_credential(key)),
+                "resource" => plugin.resources.push(resource_factory(key)),
+                _ => unreachable!("test enumerates supported component kinds"),
+            }
+            // Both namespace checks admit the key, so mutable registration
+            // succeeds. Frozen lookup by full key must have one owner.
+            register(&mut registry, plugin);
+        }
+        let error = registry
+            .freeze(
+                ArtifactSetDigest::from_bytes([0x71; 32]),
+                "1.0.0".parse().unwrap(),
+            )
+            .expect_err("ambiguous component ownership must refuse freeze");
+        match &error {
+            RegistryFreezeError::DuplicateComponentKey {
+                kind: actual_kind,
+                key: actual_key,
+                first,
+                second,
+            } => {
+                assert_eq!(actual_kind.to_string(), kind);
+                assert_eq!(actual_key, key);
+                assert_eq!((first.as_str(), second.as_str()), ("acme", "acme.storage"));
+            },
+            other => panic!("expected DuplicateComponentKey for {kind}, got {other:?}"),
+        }
+        assert_eq!(
+            error.code().as_str(),
+            "PLUGIN_FREEZE:DUPLICATE_COMPONENT_KEY"
+        );
+        assert_eq!(error.category(), nebula_error::ErrorCategory::Validation);
+    }
+}
+
+#[test]
+fn freeze_reports_the_smallest_of_several_ambiguous_keys() {
+    // Each plugin's actions sit in a per-process randomly seeded map, so the
+    // reported key must come from an explicit order, not iteration order.
+    for _ in 0..16 {
+        let mut registry = PluginRegistry::new();
+        for owner in ["acme", "acme.storage"] {
+            let mut plugin = empty_plugin(owner, "1.0.0");
+            for key in ["acme.storage.run", "acme.storage.copy", "acme.storage.move"] {
+                plugin.actions.push(action_factory(key));
+            }
+            register(&mut registry, plugin);
+        }
+        let error = registry
+            .freeze(
+                ArtifactSetDigest::from_bytes([0x72; 32]),
+                "1.0.0".parse().unwrap(),
+            )
+            .expect_err("ambiguous component ownership must refuse freeze");
+        assert_eq!(
+            error.to_string(),
+            "action key `acme.storage.copy` is exposed by both plugin `acme` and plugin `acme.storage`"
+        );
+    }
+}
+
+#[test]
+fn freeze_admits_overlapping_plugin_namespaces_with_distinct_keys() {
+    let mut outer = empty_plugin("acme", "1.0.0");
+    outer.actions.push(action_factory("acme.storage.run"));
+    outer.credentials.push(test_credential("acme.storage.auth"));
+    let mut inner = empty_plugin("acme.storage", "1.0.0");
+    inner.resources.push(resource_factory("acme.storage.db"));
+    let mut registry = PluginRegistry::new();
+    register(&mut registry, outer);
+    register(&mut registry, inner);
+
+    let frozen = freeze(registry, 0x72, "1.0.0");
+    let owner = |key: &str| {
+        frozen
+            .all_actions()
+            .map(|(plugin, action)| (plugin, action.metadata().base().key().to_string()))
+            .chain(
+                frozen
+                    .all_credentials()
+                    .map(|(plugin, credential)| (plugin, credential.credential_key().to_owned())),
+            )
+            .chain(
+                frozen
+                    .all_resources()
+                    .map(|(plugin, resource)| (plugin, resource.key().to_string())),
+            )
+            .find(|(_, component)| component == key)
+            .map(|(plugin, _)| plugin.to_string())
+    };
+    assert_eq!(owner("acme.storage.run").as_deref(), Some("acme"));
+    assert_eq!(owner("acme.storage.auth").as_deref(), Some("acme"));
+    assert_eq!(owner("acme.storage.db").as_deref(), Some("acme.storage"));
 }

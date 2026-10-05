@@ -24,51 +24,7 @@ use super::error::AuthError;
 /// Default TTL for the state store entry (10 minutes).
 pub(super) const OAUTH_STATE_TTL: Duration = Duration::from_mins(10);
 
-/// Supported Plane-A OAuth providers.
-///
-/// Serialize/Deserialize derived so `OAuthProvidersConfig` can use
-/// `HashMap<OAuthProvider, OAuthProviderConfig>` keyed by enum value
-/// (per ADR-0085 D-5). Each variant pins its exact serde and OpenAPI token;
-/// this matters for `GitHub`, whose mechanical snake-case spelling would be
-/// the incompatible `git_hub`. Drift against [`Self::as_str`] and `FromStr`
-/// is covered by a unit test.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
-)]
-#[non_exhaustive]
-pub enum OAuthProvider {
-    /// Sign in with Google.
-    #[serde(rename = "google")]
-    #[schema(rename = "google")]
-    Google,
-    /// Sign in with GitHub.
-    #[serde(rename = "github")]
-    #[schema(rename = "github")]
-    GitHub,
-}
-
-impl std::str::FromStr for OAuthProvider {
-    type Err = AuthError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "google" => Ok(Self::Google),
-            "github" => Ok(Self::GitHub),
-            _ => Err(AuthError::InvalidInput("unknown OAuth provider")),
-        }
-    }
-}
-
-impl OAuthProvider {
-    /// Stable string representation for storage / logging.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Google => "google",
-            Self::GitHub => "github",
-        }
-    }
-}
+pub use nebula_api_contract::v1::auth::OAuthProvider;
 
 /// Stored entry under one `state` key.
 ///

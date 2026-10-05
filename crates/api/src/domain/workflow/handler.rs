@@ -28,6 +28,7 @@ use crate::{
         },
     },
     error::{ApiError, ApiResult, ProblemDetails},
+    extractors::ApiJson,
     state::AppState,
 };
 
@@ -229,7 +230,7 @@ pub async fn get_workflow(
 pub async fn create_workflow(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
-    Json(payload): Json<CreateWorkflowRequest>,
+    ApiJson(payload): ApiJson<CreateWorkflowRequest>,
 ) -> ApiResult<(StatusCode, Json<WorkflowResponse>)> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Validate workflow name
@@ -342,7 +343,7 @@ pub async fn update_workflow(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
-    Json(payload): Json<UpdateWorkflowRequest>,
+    ApiJson(payload): ApiJson<UpdateWorkflowRequest>,
 ) -> ApiResult<Json<WorkflowResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
@@ -589,7 +590,7 @@ pub async fn execute_workflow(
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
     headers: HeaderMap,
-    Json(payload): Json<StartExecutionRequest>,
+    ApiJson(payload): ApiJson<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID

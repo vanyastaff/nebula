@@ -5,6 +5,7 @@
 //! as arena indices, so destroying a rule never recursively drops user-shaped
 //! data.
 
+mod condition;
 pub mod context;
 pub mod deferred;
 mod deserialize;
@@ -20,6 +21,7 @@ mod helpers;
 #[cfg(test)]
 mod tests;
 
+pub use condition::{Condition, ConditionOutcome};
 pub use constructors::RuleOperands;
 pub use context::PredicateContext;
 pub use deferred::DeferredRule;
@@ -394,6 +396,13 @@ impl Rule {
     }
 
     /// Boolean predicate evaluation against a structured context.
+    ///
+    /// This is the strict evaluator behind schema field and root policies:
+    /// `Described` is transparent here because those rules carry operator
+    /// messages, and any pending dependency makes the whole rule unavailable.
+    /// [`Condition`] differs on purpose: it is a message-free grammar (so it
+    /// rejects `Described`) and evaluates with three-valued logic where a
+    /// definite answer wins over pending; see [`ConditionOutcome::Pending`].
     ///
     /// # Errors
     /// Value and deferred rules are invalid in conditions. Pending dependencies
