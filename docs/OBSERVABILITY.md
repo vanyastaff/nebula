@@ -115,6 +115,13 @@ on `nebula_execution_control_observations_unrecorded_total` (same `outcome` ×
 `backend` labels) and logged as a warning, so a journal that under-reports is
 visible.
 
+Known limitation: a `throttled` observation takes its source from the
+execution's single accepted-turn marker for the live lease generation. That
+marker holds only the latest acceptance: a Resume or Restart committed under the
+same lease replaces the Start or job delivery it records. A throttle is therefore
+attributed to the most recent accepted delivery of the owning lease, which may
+not be the delivery that scheduled the refused node.
+
 Telemetry is an observation of the persisted decision, never its source of truth:
 `nebula_execution_control_outcomes_total` counts newly recorded decisions with
 exactly two labels, `outcome` (the six values above) and `backend`

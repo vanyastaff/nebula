@@ -56,6 +56,26 @@ pub(crate) fn record_unrecorded_execution_control_outcome(
     }
 }
 
+/// The observation write failed and was rolled back.
+pub(crate) const CAUSE_WRITE_FAILED: &str = "write_failed";
+/// The observation's commit acknowledgement was lost.
+pub(crate) const CAUSE_ACKNOWLEDGEMENT_LOST: &str = "acknowledgement_lost";
+/// The owner could not be reached to decide or record the refusal.
+pub(crate) const CAUSE_OWNER_UNAVAILABLE: &str = "owner_unavailable";
+
+/// One closed cause vocabulary for a storage error met while recording a
+/// decision, shared by every caller.
+pub(crate) fn unrecorded_cause(error: &nebula_storage_port::StorageError) -> &'static str {
+    if matches!(
+        error,
+        nebula_storage_port::StorageError::AcknowledgementUnknown { .. }
+    ) {
+        CAUSE_ACKNOWLEDGEMENT_LOST
+    } else {
+        CAUSE_OWNER_UNAVAILABLE
+    }
+}
+
 /// Count a decision by whether its observation is durable: a newly recorded
 /// one on the outcome counter, a missing one on the unrecorded counter, and
 /// an already-recorded replay on neither.
@@ -74,14 +94,19 @@ pub(crate) fn observe_execution_control_decision(
         },
         Ack::AlreadyRecorded => {},
         Ack::Unrecorded => {
-            record_unrecorded_execution_control_outcome(metrics, backend, outcome, "write_failed");
+            record_unrecorded_execution_control_outcome(
+                metrics,
+                backend,
+                outcome,
+                CAUSE_WRITE_FAILED,
+            );
         },
         Ack::Unknown => {
             record_unrecorded_execution_control_outcome(
                 metrics,
                 backend,
                 outcome,
-                "acknowledgement_lost",
+                CAUSE_ACKNOWLEDGEMENT_LOST,
             );
         },
     }

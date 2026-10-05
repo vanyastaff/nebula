@@ -266,6 +266,13 @@ fn every_reason_variant_has_a_production_producer() {
         })
         .map(|file| std::fs::read_to_string(file).unwrap_or_default())
         .collect();
+    // The scan matches `ExecutionControlReason::Variant`; an alias or a glob
+    // import would hide a producer, or fake one, so neither is allowed.
+    assert!(
+        !production.contains("ExecutionControlReason as ")
+            && !production.contains("ExecutionControlReason::*"),
+        "name ExecutionControlReason variants by full path in production code"
+    );
     let unproduced: Vec<_> = variants
         .iter()
         .filter(|variant| !production.contains(&format!("ExecutionControlReason::{variant}")))

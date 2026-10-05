@@ -686,9 +686,6 @@ impl Orchestrator {
         }
     }
 
-    /// Increment the handoff-outcome counter. Counter construction failure is
-    /// swallowed (same policy as the dispatch/reclaim counters): metrics must
-    /// never take down the pull loop.
     /// Count a journaled execution-control decision on the closed
     /// outcome × backend counter shared with the engine.
     fn inc_control_outcome(&self, outcome: nebula_execution::ExecutionControlOutcome) {
@@ -708,6 +705,9 @@ impl Orchestrator {
         }
     }
 
+    /// Increment the handoff-outcome counter. Counter construction failure is
+    /// swallowed (same policy as the dispatch/reclaim counters): metrics must
+    /// never take down the pull loop.
     fn inc_handoff(&self, outcome: &'static str) {
         let labels = self.metrics.interner().single("outcome", outcome);
         if let Ok(c) = self

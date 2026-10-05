@@ -87,7 +87,7 @@ pub enum ExecutionControlSource {
 
 /// Framework-authored reasons; no provider text or open string reason enters the journal.
 ///
-/// Decoding goes through [`RecordedExecutionControlReason`]: serde does not
+/// Decoding goes through `RecordedExecutionControlReason`: serde does not
 /// apply `deny_unknown_fields` to unit variants of an internally tagged enum,
 /// so a unit reason would otherwise accept and silently drop extra fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,7 +148,7 @@ pub enum ExecutionControlReason {
     },
 }
 
-/// Durable decoding mirror of [`ExecutionControlReason`]. Every variant is a
+/// Durable decoding mirror of `ExecutionControlReason`. Every variant is a
 /// struct variant, so unknown fields are refused for field-less reasons too.
 #[derive(Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case", deny_unknown_fields)]

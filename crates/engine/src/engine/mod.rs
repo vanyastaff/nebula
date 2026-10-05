@@ -3122,21 +3122,22 @@ impl AdmissionRefusalObserver<'_> {
     ///
     /// The observation never changes the node's failure: the rate-limit refusal
     /// stays the retryable error the error strategy decides on. An owner that
-    /// cannot observe it (no execution store, no accepted-turn marker, a stale
+    /// cannot observe it (no execution lease, no accepted-turn marker, a stale
     /// lease, a backend failure) is counted on
     /// `nebula_execution_control_observations_unrecorded_total` and warned,
-    /// never turned into a new error.
+    /// never turned into a new error. An engine composed without durable
+    /// execution stores has no journal and no backend to label, so it records
+    /// nothing here.
     #[tracing::instrument(name = "record_admission_refusal", skip_all, fields(execution_id = %self.execution_id, org_id = %self.scope.org_id, workspace_id = %self.scope.workspace_id, node_key = %self.node_key, backend = tracing::field::Empty, outcome = tracing::field::Empty, observation_acknowledgement = tracing::field::Empty, reason = "admission_throttled", execution_lease_generation = tracing::field::Empty))]
     async fn record(self) {
         use nebula_execution::ExecutionControlOutcome::Throttled;
         use nebula_storage_port::store::{
             ExecutionAdmissionRefusal, ExecutionAdmissionRefusalOutcome,
         };
-        let (Some(store), Some(fence)) = (self.execution_store, self.fencing) else {
+        let Some(store) = self.execution_store else {
             return;
         };
         let span = tracing::Span::current();
-        span.record("execution_lease_generation", fence.generation());
         let backend = store.backend_kind();
         span.record("backend", backend.as_str());
         span.record("outcome", Throttled.as_str());
@@ -3149,6 +3150,11 @@ impl AdmissionRefusalObserver<'_> {
                 cause,
             );
         };
+        let Some(fence) = self.fencing else {
+            unrecorded("no_execution_lease");
+            return;
+        };
+        span.record("execution_lease_generation", fence.generation());
         let execution_key = self.execution_id.to_string();
         let Some(attempt) = self
             .attempt_generation
@@ -3186,7 +3192,7 @@ impl AdmissionRefusalObserver<'_> {
             Ok(_) => unrecorded("unsupported_outcome"),
             Err(error) => {
                 tracing::warn!(%error, "admission refusal could not be recorded");
-                unrecorded("write_failed");
+                unrecorded(crate::control_metrics::unrecorded_cause(&error));
             },
         }
     }
