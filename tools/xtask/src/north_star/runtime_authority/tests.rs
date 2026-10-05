@@ -97,7 +97,7 @@ impl Fixture {
 
     fn admit_as(&self, runner: &RunnerIdentity) -> Result<(), VerificationError> {
         let expected = json::decode(&serde_json::to_vec(&self.expected).unwrap())?;
-        admit_artifacts(&self.root, &expected, runner)
+        admit_artifacts(&loader::root(&self.root)?, &expected, runner)
     }
 
     fn mutate_artifact(&mut self, index: usize, mutate: impl FnOnce(&mut Value)) {
@@ -209,7 +209,13 @@ fn structurally_complete_synthetic_evidence_fails_semantic_policy() {
     let expected_path = fixture.expected_path();
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     assert_eq!(
-        verify(&workspace, &fixture.root, &expected_path, &runner()),
+        verify(
+            &workspace,
+            &fixture.root,
+            &expected_path,
+            &loader::digest(&fs::read(&expected_path).unwrap()),
+            &runner()
+        ),
         Err(VerificationError::SemanticArtifact {
             gate: <&'static str>::from(ExternalGateId::ExecutionIdentity).to_owned(),
             backend: "in-memory".to_owned(),
@@ -229,6 +235,7 @@ fn failed_provenance_and_semantics_produce_no_effective_state_output() {
             &workspace,
             &semantic_failure.root,
             &semantic_expected,
+            &loader::digest(&fs::read(&semantic_expected).unwrap()),
             &runner(),
         ),
         Err(VerificationError::SemanticArtifact {
@@ -245,6 +252,7 @@ fn failed_provenance_and_semantics_produce_no_effective_state_output() {
             &workspace,
             &provenance_failure.root,
             &provenance_expected,
+            &loader::digest(&fs::read(&provenance_expected).unwrap()),
             &RunnerIdentity {
                 repository: "foreign/repository".to_owned(),
                 ..runner()
@@ -274,7 +282,13 @@ fn semantic_failure_identifies_a_named_sqlite_case() {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
 
     assert_eq!(
-        verify(&workspace, &fixture.root, &expected_path, &runner()),
+        verify(
+            &workspace,
+            &fixture.root,
+            &expected_path,
+            &loader::digest(&fs::read(&expected_path).unwrap()),
+            &runner()
+        ),
         Err(VerificationError::SemanticArtifact {
             gate: <&'static str>::from(ExternalGateId::PersistenceConformance).to_owned(),
             backend: <&'static str>::from(Backend::Sqlite).to_owned(),
@@ -294,7 +308,13 @@ fn semantic_failure_identifies_a_backend_independent_artifact() {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
 
     assert_eq!(
-        verify(&workspace, &fixture.root, &expected_path, &runner()),
+        verify(
+            &workspace,
+            &fixture.root,
+            &expected_path,
+            &loader::digest(&fs::read(&expected_path).unwrap()),
+            &runner()
+        ),
         Err(VerificationError::SemanticArtifact {
             gate: <&'static str>::from(ExternalGateId::ActivationDiagnostics).to_owned(),
             backend: "independent".to_owned(),
@@ -308,7 +328,14 @@ fn complete_verified_inventory_derives_partial_gate_states() {
     let fixture = Fixture::with_verified_observations();
     let expected_path = fixture.expected_path();
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let output = verify(&workspace, &fixture.root, &expected_path, &runner()).unwrap();
+    let output = verify(
+        &workspace,
+        &fixture.root,
+        &expected_path,
+        &loader::digest(&fs::read(&expected_path).unwrap()),
+        &runner(),
+    )
+    .unwrap();
     let summary: Value = serde_json::from_slice(&output).unwrap();
     let expected = vec![
         json!({"gate": ExternalGateId::ExecutionIdentity, "state": "partial"}),
@@ -517,7 +544,13 @@ fn provenance_manifest_must_be_separate_from_the_artifact_root() {
     let path = fixture.root.join("self-asserted.json");
     fs::write(&path, serde_json::to_vec(&fixture.expected).unwrap()).unwrap();
     assert_eq!(
-        verify(Path::new("."), &fixture.root, &path, &runner()),
+        verify(
+            Path::new("."),
+            &fixture.root,
+            &path,
+            &loader::digest(&fs::read(&path).unwrap()),
+            &runner()
+        ),
         Err(VerificationError::ProvenancePath)
     );
 }
@@ -687,4 +720,60 @@ fn required_execution_environment_and_policy_provenance_cannot_be_omitted() {
         .unwrap()
         .remove("verifier_policy_sha256");
     assert_eq!(fixture.admit(), Err(VerificationError::InvalidJson));
+}
+
+#[test]
+fn jointly_rewritten_candidate_and_manifest_cannot_replace_authenticated_bytes() {
+    let mut fixture = Fixture::with_verified_observations();
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let expected_path = fixture.expected_path();
+    let trusted_digest = loader::digest(&fs::read(&expected_path).unwrap());
+    assert!(
+        verify(
+            &workspace,
+            &fixture.root,
+            &expected_path,
+            &trusted_digest,
+            &runner()
+        )
+        .is_ok()
+    );
+
+    // Keep runner labels and semantic observations valid while rewriting both
+    // halves of the candidate. Their mutual consistency cannot authenticate them.
+    fixture.mutate_artifact(0, |artifact| {
+        artifact["environment"]["toolchain"] = "rewritten-toolchain".into();
+    });
+    fixture.expected["artifacts"][0]["environment"]["toolchain"] = "rewritten-toolchain".into();
+    assert_eq!(fixture.admit(), Ok(()));
+    fixture.expected_path();
+    assert_eq!(
+        verify(
+            &workspace,
+            &fixture.root,
+            &expected_path,
+            &trusted_digest,
+            &runner()
+        ),
+        Err(VerificationError::ProvenanceDigest)
+    );
+}
+
+#[test]
+fn missing_or_malformed_manifest_digest_is_rejected_before_json_decode() {
+    let fixture = Fixture::new();
+    let expected_path = fixture.expected_path();
+    fs::write(&expected_path, b"invalid JSON").unwrap();
+    for digest in ["", "not-a-digest", &"A".repeat(64), &"a".repeat(63)] {
+        assert_eq!(
+            verify(
+                Path::new("."),
+                &fixture.root,
+                &expected_path,
+                digest,
+                &runner()
+            ),
+            Err(VerificationError::ProvenanceDigest)
+        );
+    }
 }

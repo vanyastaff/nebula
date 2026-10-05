@@ -9,8 +9,8 @@ use std::{
 
 use nebula_sdk::integration::resource::{
     Cost, Effect, Error, ErrorKind, Operation, OperationCx, OperationError, PinSlots, Provider,
-    Resident, ResidentProvider, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft, SentState,
-    TeardownCx, no_credential_slots, resource_key,
+    Resident, ResidentProvider, ResourceContext, ResourceHandle, ResourceKey,
+    ResourceMetadataDraft, SentState, TeardownCx, no_credential_slots, resource_key,
 };
 use nebula_sdk::prelude::{Deserialize, Serialize};
 
@@ -115,7 +115,8 @@ impl Operation<Logger> for Flush {
     }
 
     async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<usize, OperationError> {
-        cx.call(Cost::FREE, async |sink, ()| Ok(sink.written())).await
+        cx.call(Cost::FREE, async |sink, ()| Ok(sink.written()))
+            .await
     }
 }
 

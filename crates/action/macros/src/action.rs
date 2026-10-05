@@ -13,7 +13,7 @@
 //!   `ResourceHandle<R>` (optionally wrapped in `Option<...>`); a `ResourceGuard<R>` lease is
 //!   refused since 0.27.0.
 //! - `#[credential]` / `#[credential(key = "...")]` — declares a credential slot. Field type must
-//!   be `CredentialGuard<C>` (optionally wrapped in `Option<...>` and/or `Lazy<...>`).
+//!   be `CredentialGuard<C>` (optionally wrapped in `Option<...>`); `Lazy` wrappers are refused.
 
 use nebula_macro_support::{attrs, diag};
 use proc_macro::TokenStream;

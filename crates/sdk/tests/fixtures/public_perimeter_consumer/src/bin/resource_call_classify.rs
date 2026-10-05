@@ -107,7 +107,11 @@ impl Operation<Inventory> for Reserve {
 }
 
 /// What action code does with the inventory's resource handle.
-async fn reserve(inventory: &ResourceHandle<Inventory>, item: &str, quantity: u32) -> Result<u64, Error> {
+async fn reserve(
+    inventory: &ResourceHandle<Inventory>,
+    item: &str,
+    quantity: u32,
+) -> Result<u64, Error> {
     Ok(inventory
         .submit(Reserve {
             item: item.to_owned(),

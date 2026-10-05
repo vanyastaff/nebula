@@ -68,3 +68,8 @@ cargo xtask ci-plan full | jq .
 cargo xtask north-star-gates validate
 cargo xtask runtime-repair-red validate-manifest
 ```
+
+On Windows, the SemVer workflow-script tests can select Git Bash explicitly
+with `NEBULA_TEST_BASH=C:/Program Files/Git/bin/bash.exe` when the default
+`bash` resolves to WSL. The chosen shell must have `jq` on PATH; the override
+changes only the test launcher and preserves every script assertion.
