@@ -158,6 +158,16 @@ fn absolute_rewritable_path_at(trees: &[TokenTree], index: usize) -> Option<&str
     if !is_colon(first) || !is_colon(second) {
         return None;
     }
+    // Only a leading `::crate` is a crate root; the `::serde_json` in
+    // `::sdk::__private::serde_json` follows a path segment and names a
+    // re-export. `<T as ::nebula_schema::X>` still starts a path: `as` is not a
+    // segment because no `::` precedes it.
+    let follows_segment = index.checked_sub(2).is_some_and(|segment| {
+        matches!(trees[segment + 1], TokenTree::Ident(_)) && is_colon(&trees[segment])
+    });
+    if follows_segment {
+        return None;
+    }
 
     let candidate = ident.to_string();
     NEBULA_CRATES
@@ -246,6 +256,30 @@ mod tests {
         };
 
         assert!(resource_factory_path_is_present(&generated));
+    }
+
+    #[test]
+    fn rewrites_only_leading_crate_roots() {
+        let trees = quote!(::nebula_schema::__private::serde_json::Value)
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            absolute_rewritable_path_at(&trees, 0),
+            Some("nebula_schema")
+        );
+        // `::serde_json` after `__private` continues the re-export path.
+        assert_eq!(absolute_rewritable_path_at(&trees, 6), None);
+        let trees = quote!(let value: ::serde_json::Value;)
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(absolute_rewritable_path_at(&trees, 3), Some("serde_json"));
+        let trees = quote!(<T as ::nebula_schema::PropertyType>)
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            absolute_rewritable_path_at(&trees, 3),
+            Some("nebula_schema")
+        );
     }
 
     #[test]
