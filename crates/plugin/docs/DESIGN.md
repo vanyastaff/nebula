@@ -220,7 +220,8 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 ## 8. Forward design / открытые вопросы
 
 1. **Подтвердить Phase-5 end-to-end frozen acceptance.** Production consumption уже есть (§6.2).
-   Статус может уйти из `partial` только после доказательства из §9.
+   Статус может уйти из `partial` только после end-to-end доказательства на Phase-5 плагине:
+   compiler, admission, persisted routing и exact-flavor dispatch (критерии — §9).
 2. **Судьба `plugin_toml` — решено (§6.1).** Парсер остаётся в крейте как маркер для
    pre-compile tooling; документация приведена в соответствие in-process модели.
 3. **Финализировать key-поверхность вслед за credential-rewrite.** Когда

@@ -4068,14 +4068,14 @@ fn mark_node_failed(
 /// log record or grow the durable row without limit.
 ///
 /// **Known residual channels, recorded rather than silently widened in scope.**
-/// Two variants interpolate text the engine did not author into their own
-/// `Display`: `TaskPanicked` carries a task's panic payload (built in
-/// `persistence`), and `PlanningFailed` interpolates the underlying error at
+/// `PlanningFailed` interpolates the underlying error at
 /// several construction sites — `timer_scan`'s `list_all_running`, this module's
 /// `acquire lease`, and `DependencyGraph::from_definition` — so it carries
-/// storage and workflow text, not only a timer-scan message. Their messages are
-/// therefore bounded and escaped but *not* provenance-verified. Closing those
+/// storage and workflow text, not only a timer-scan message. Its messages are
+/// therefore bounded and escaped but *not* provenance-verified. Closing that
 /// needs the construction sites to carry provenance, which is a separate change.
+/// The frontier constructs `TaskPanicked` with engine-authored text, never a
+/// formatted `JoinError` or its foreign panic payload.
 fn durable_error_envelope(error: &EngineError) -> ErrorEnvelope {
     // `source_codes` is deliberately left empty. `EngineError::Action` and
     // `EngineError::Execution` do delegate `Classify::code` straight to their

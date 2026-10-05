@@ -110,7 +110,7 @@ pub async fn register_webhook(
             errors: vec![],
         });
     }
-    body.validate_provider_config_shape()
+    crate::domain::webhook::dto::validate_provider_config_shape(&body)
         .map_err(|detail| ApiError::Unprocessable(detail.to_owned()))?;
 
     // ── Step 1: scope — server-derived, NEVER from request ──────────────────

@@ -36,8 +36,8 @@ use nebula_action::{
 };
 use nebula_core::{Dependencies, NodeKey, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, InProcessRunner, RuntimeError,
-    WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionEvent, InProcessRunner,
+    RuntimeError, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -70,13 +70,18 @@ fn leaky_provider_error() -> EngineError {
     ))))
 }
 
-/// A stateless action that always fails with a provider payload.
+/// A stateless action that fails or panics with a provider payload.
 ///
 /// `ActionError::fatal`'s own `Display` is a constant (`"fatal action failure"`);
 /// the payload it was handed lands behind `#[source] error: ActionErrorSource`.
 /// That source chain — not the top-level `Display` — is the channel a durable
 /// record must never walk.
-struct LeakyProviderAction;
+enum FailureMode {
+    ProviderError,
+    Panic,
+}
+
+struct LeakyProviderAction(FailureMode);
 
 impl Action for LeakyProviderAction {
     type Input = serde_json::Value;
@@ -103,6 +108,9 @@ impl StatelessAction for LeakyProviderAction {
         _input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        if matches!(self.0, FailureMode::Panic) {
+            panic!("provider rejected token {MARKER}");
+        }
         Err(ActionError::fatal(format!(
             "provider rejected token {MARKER}"
         )))
@@ -216,10 +224,10 @@ struct RedactionFixture {
 /// plan is compiled and installed into the flavor catalog, the state is
 /// materialized through the `StartAcceptanceStore` (which acknowledges the Start
 /// command), and the engine is then driven with `resume_execution`.
-async fn leaky_provider_fixture() -> RedactionFixture {
+async fn leaky_provider_fixture(mode: FailureMode) -> RedactionFixture {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(LeakyProviderAction::metadata(), LeakyProviderAction)
+        .register_stateless_instance(LeakyProviderAction::metadata(), LeakyProviderAction(mode))
         .expect("valid test catalog definition");
     let frozen = exact_fixture::freeze_registry(&registry, &[("core", "core.leaky_provider")]);
 
@@ -329,7 +337,7 @@ async fn durable_failure_redaction_keeps_the_marker_out_of_every_surface() {
         "fixture must reach the marker through the source chain: {sources}"
     );
 
-    let fixture = leaky_provider_fixture().await;
+    let fixture = leaky_provider_fixture(FailureMode::ProviderError).await;
     let capturing = capture_sink();
 
     let result = fixture
@@ -446,6 +454,96 @@ async fn durable_failure_redaction_keeps_the_marker_out_of_every_surface() {
          capture-is-real guard, got:\n{captured}"
     );
     assert_marker_absent(&captured, "captured tracing spans and events");
+}
+
+/// Panic payloads must never be republished by the engine. The process's Rust
+/// panic hook is outside this tracing capture and remains the host's policy.
+#[tokio::test]
+async fn panic_payload_stays_out_of_engine_failure_surfaces() {
+    let capturing = capture_sink();
+    let fixture = leaky_provider_fixture(FailureMode::Panic).await;
+    let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
+    let mut events = event_bus.subscribe();
+    let engine = fixture.engine.with_event_bus(event_bus);
+    let result = engine
+        .resume_execution(&fixture.scope, fixture.execution_id)
+        .await
+        .expect("the durable panic turn is admitted and driven");
+    assert_eq!(result.status, ExecutionStatus::Failed);
+    assert_eq!(result.node_errors.len(), 1, "only the real node may fail");
+    let reported = result
+        .node_errors
+        .get(&fixture.node_key)
+        .expect("the panic retains its real node identity");
+    assert!(reported.starts_with("ENGINE:TASK_PANICKED: "));
+    assert_marker_absent(reported, "panic result projection");
+
+    let record = fixture
+        .execution
+        .get(&fixture.scope, &fixture.execution_id.to_string())
+        .await
+        .expect("execution row read succeeds")
+        .expect("the panic has a durable row");
+    assert_eq!(
+        record
+            .state
+            .pointer(&format!("/node_states/{}/state", fixture.node_key))
+            .and_then(serde_json::Value::as_str),
+        Some("failed")
+    );
+    assert_eq!(
+        record
+            .state
+            .pointer(&format!(
+                "/node_states/{}/error_message/code",
+                fixture.node_key
+            ))
+            .and_then(serde_json::Value::as_str),
+        Some("ENGINE:TASK_PANICKED"),
+        "typed panic classification proves the panic fixture ran"
+    );
+    assert_marker_absent(&record.state.to_string(), "panic durable state");
+
+    let journal = fixture
+        .journal
+        .get_journal(&fixture.scope, &fixture.execution_id.to_string())
+        .await
+        .expect("journal read succeeds");
+    for entry in journal {
+        assert_marker_absent(&entry.payload.to_string(), "panic journal payload");
+    }
+
+    let mut failures = 0;
+    while let Some(event) = events.try_recv() {
+        assert_marker_absent(&format!("{event:?}"), "panic execution event");
+        if let ExecutionEvent::NodeFailed {
+            execution_id,
+            node_key,
+            details,
+        } = event
+        {
+            failures += 1;
+            assert_eq!(execution_id, fixture.execution_id);
+            assert_eq!(node_key, fixture.node_key);
+            assert_eq!(details.error_code, "ENGINE:TASK_PANICKED");
+            assert_eq!(details.display_message, "node task panicked");
+        }
+    }
+    assert_eq!(
+        failures, 1,
+        "a real attributed panic event must be observed"
+    );
+    assert_eq!(
+        events.lagged_count(),
+        0,
+        "event capture must not lose events"
+    );
+
+    let captured = capturing.as_string();
+    assert!(captured.contains("node task panicked"));
+    assert!(captured.contains("ENGINE:TASK_PANICKED"));
+    assert!(captured.contains("checkpoint_node_port"));
+    assert_marker_absent(&captured, "panic tracing capture");
 }
 
 /// Load-bearing self-check: the absence assertion must fire on a string that

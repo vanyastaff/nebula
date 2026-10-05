@@ -409,6 +409,15 @@ SDK-level error:
 
 ## Maturity
 
+`TestRuntime` is an in-process single-action harness, not a durable deployment
+runtime. Poll runs cancel their owned start task, allow five seconds for it to
+exit, then abort and join it before bounded stop cleanup. Dropping the harness
+future cancels and aborts that task but cannot await cleanup. Webhook runs attempt
+stop after every successful start, including a failed event, with a five-second
+cleanup bound; an event failure remains primary if cleanup also fails. Dropping
+a webhook run cannot guarantee asynchronous deactivation. These bounds require
+cooperative futures and cannot preempt blocking polls or Drop.
+
 See `docs/MATURITY.md` row for `nebula-sdk`.
 
 - API stability: `partial` — `prelude`, `WorkflowBuilder`, and draft metadata are in active use;

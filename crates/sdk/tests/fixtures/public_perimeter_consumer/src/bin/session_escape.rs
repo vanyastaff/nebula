@@ -10,10 +10,13 @@ where
     R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
 {
     let mut escaped = None;
-    let _unit = row.session(SessionSpec::read("ledger.smuggle").cost(Cost::ONE), |tx, _cx| {
-        escaped = Some(tx);
-        Box::pin(async { Ok(()) })
-    });
+    let _unit = row.session(
+        SessionSpec::read("ledger.smuggle").cost(Cost::ONE),
+        |tx, _cx| {
+            escaped = Some(tx);
+            Box::pin(async { Ok(()) })
+        },
+    );
 }
 
 fn main() {}
