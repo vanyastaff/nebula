@@ -55,12 +55,12 @@ pub struct HttpConfig {
     /// PEM certificates trusted in addition to the platform's roots, for a
     /// private certificate authority.
     #[field(label = "Extra root certificates (PEM)")]
-    #[serde(default)]
+    #[property(input(default = []))]
+    #[serde(default = "Vec::new")]
     pub extra_root_certificates_pem: Vec<String>,
     /// `User-Agent` sent with every request; the HTTP client's own when
     /// absent.
     #[field(label = "User agent")]
-    #[serde(default)]
     pub user_agent: Option<String>,
 }
 

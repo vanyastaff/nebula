@@ -42,16 +42,16 @@ const PASSWORD_2: &str = "row-password-2";
 /// Where the connections go; the role and password come from the slot.
 #[derive(Clone, Debug, serde::Deserialize, nebula_schema::Schema)]
 struct PgConfig {
-    #[serde(default)]
+    #[serde(default = "String::new")]
     #[field(default = "")]
     host: String,
-    #[serde(default)]
+    #[serde(default = "String::new")]
     #[field(default = "")]
     port: String,
-    #[serde(default)]
+    #[serde(default = "String::new")]
     #[field(default = "")]
     database: String,
-    #[serde(default)]
+    #[serde(default = "String::new")]
     #[field(default = "")]
     schema: String,
 }

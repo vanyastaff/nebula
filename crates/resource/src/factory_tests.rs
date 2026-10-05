@@ -39,7 +39,7 @@ impl From<TestError> for ResourceError {
 
 #[derive(Clone, Debug, serde::Deserialize, nebula_schema::Schema)]
 struct TestConfig {
-    #[serde(default)]
+    #[serde(default = "String::new")]
     #[field(default = "")]
     name: String,
 }

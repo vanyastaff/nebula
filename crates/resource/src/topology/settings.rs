@@ -142,7 +142,7 @@ pub enum WarmupSetting {
 /// Operator settings for a [`Pooled`] topology. Absent fields keep the
 /// [`PoolConfig`] defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct PoolSettings {
     /// Warmup target and minimum idle instances.
@@ -276,7 +276,7 @@ impl PoolSettings {
 /// Operator settings for a [`Resident`] topology. Absent fields keep the
 /// [`ResidentConfig`] defaults.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Schema)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct ResidentSettings {
     /// Recreate the shared instance when its liveness check fails.
@@ -336,7 +336,6 @@ pub struct BoundedSettings {
     /// Concurrent lease cap. Required with `mode = capped` (at least 1) and
     /// rejected otherwise.
     #[field(label = "Max concurrent leases", description = "Only with capped mode")]
-    #[serde(default)]
     pub max_concurrent: Option<u32>,
 }
 

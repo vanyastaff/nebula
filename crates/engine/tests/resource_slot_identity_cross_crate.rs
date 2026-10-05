@@ -75,7 +75,7 @@ impl From<XError> for ResourceError {
 
 #[derive(Clone, Debug, serde::Deserialize, nebula_schema::Schema)]
 struct XConfig {
-    #[serde(default)]
+    #[serde(default = "String::new")]
     #[field(default = "")]
     label: String,
 }
