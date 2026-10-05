@@ -13,6 +13,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+nebula-api-contract = { workspace = true, features = ["openapi"] }
 nebula-env = { workspace = true }
 nebula-error = { workspace = true, features = ["derive", "serde"] }
 nebula-storage = { path = "../storage", features = ["credential-in-memory", "sqlite"] }

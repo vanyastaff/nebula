@@ -963,8 +963,7 @@ impl Evaluator {
         ))
     }
 
-    /// Evaluate a binary operation
-    #[inline]
+    /// Evaluate a binary operation without growing the native stack for its left spine.
     fn eval_binary_op(
         &self,
         op: BinaryOp,
@@ -973,10 +972,50 @@ impl Evaluator {
         context: &EvaluationContext,
         frame: &EvalFrame,
     ) -> ExpressionResult<RuntimeValue> {
+        // The root already owns one tick/depth entry. Descendants retain their
+        // logical depth until their RHS completes, just as recursive evaluation
+        // does; only the native call stack is replaced by this bounded worklist.
+        let mut pending = vec![(op, right)];
+        let mut entered = 0;
+        let result = (|| {
+            let mut current = left;
+            while let Expr::Binary { left, op, right } = current {
+                frame.tick()?;
+                frame.enter()?;
+                entered += 1;
+                pending.push((*op, right.as_ref()));
+                current = left;
+            }
+            let mut value = self.eval_borrowed_with_frame(current, context, frame)?;
+            while let Some((op, right)) = pending.pop() {
+                value = Cow::Owned(self.eval_binary_right(op, value, right, context, frame)?);
+                if entered > 0 {
+                    frame.leave();
+                    entered -= 1;
+                }
+            }
+            Ok(value.into_owned())
+        })();
+        // Failed descent, operands, or operators must unwind every depth owned
+        // here; eval_with_frame still releases the root on either result.
+        for _ in 0..entered {
+            frame.leave();
+        }
+        result
+    }
+
+    /// Apply an operator to its evaluated left side, evaluating the RHS only when needed.
+    fn eval_binary_right(
+        &self,
+        op: BinaryOp,
+        left_val: EvalValue<'_>,
+        right: &Expr,
+        context: &EvaluationContext,
+        frame: &EvalFrame,
+    ) -> ExpressionResult<RuntimeValue> {
         // Short-circuit evaluation for logical operators
         match op {
             BinaryOp::And => {
-                let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
                 if !self.coerce_boolean(&left_val, frame)? {
                     // Short-circuit: if left is false, don't evaluate right
                     return Ok(RuntimeValue::Bool(false));
@@ -985,7 +1024,6 @@ impl Evaluator {
                 Ok(RuntimeValue::Bool(self.coerce_boolean(&right_val, frame)?))
             },
             BinaryOp::Or => {
-                let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
                 if self.coerce_boolean(&left_val, frame)? {
                     // Short-circuit: if left is true, don't evaluate right
                     return Ok(RuntimeValue::Bool(true));
@@ -996,7 +1034,6 @@ impl Evaluator {
             BinaryOp::Coalesce => {
                 // `??` returns the left side unless it is nullish. Unlike
                 // `||` it keeps `false`, `0`, and `""`.
-                let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
                 if !left_val.is_nullish() {
                     return Ok(left_val.into_owned());
                 }
@@ -1004,7 +1041,6 @@ impl Evaluator {
             },
             // For all other operators, evaluate both operands
             _ => {
-                let left_val = self.eval_borrowed_with_frame(left, context, frame)?;
                 let right_val = self.eval_borrowed_with_frame(right, context, frame)?;
 
                 match op {

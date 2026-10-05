@@ -20,6 +20,8 @@ through those ports; they do not call a production-installed engine consumer.
 The crate also hosts the `transport::webhook` subsystem, which handles inbound trigger
 delivery and per-endpoint lifecycle management.
 
+Versioned HTTP request/response types and RFC 9457 bodies live in `nebula-api-contract::v1`. This crate consumes its `openapi` feature for the served schemas and retains server-owned conversions and compatibility imports. The contract contains no server framework, persistence adapter or runtime authority.
+
 All routes are tenant-scoped under `/api/v1/orgs/{org}/workspaces/{ws}/…`
 (per spec 05-api-routing). Slugs and ULIDs are accepted interchangeably
 via `nebula-core::Slug`.

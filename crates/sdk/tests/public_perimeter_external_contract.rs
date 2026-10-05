@@ -33,7 +33,7 @@
 use std::{
     ffi::OsString,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 
@@ -392,11 +392,20 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         "resource_http",
         "action_resource_handle",
     ];
-    let output = cargo_clippy_bins(temp.path(), &positives);
+    let output = cargo_positive_bins(temp.path(), "clippy", &positives);
     assert!(
         output.status.success(),
         "positive SDK probes {positives:?} must pass strict clippy:\n{}",
         render_output(&output)
+    );
+
+    // Compile the same fresh runtime binaries together so Cargo can schedule
+    // their code generation concurrently before each existing execution proof.
+    let compiled = cargo_positive_bins(temp.path(), "build", &positives);
+    assert!(
+        compiled.status.success(),
+        "SDK perimeter runtime binaries must compile:\n{}",
+        render_output(&compiled)
     );
 
     let positive = cargo_probe(temp.path(), "run", "positive");
@@ -654,6 +663,23 @@ fn copy_fixture(source_root: &Path, destination_root: &Path) {
     }
 }
 
+fn fixture_target_dir() -> PathBuf {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("target"));
+    let target_root = if target_root.is_absolute() {
+        target_root
+    } else {
+        workspace_root.join(target_root)
+    };
+    // Keep every temporary consumer fresh while retaining Cargo's dependency
+    // fingerprints in a fixture cache separate from the parent build lock.
+    target_root
+        .join("sdk-external-contract")
+        .join("public_perimeter_consumer")
+}
+
 fn cargo_probe(fixture_root: &Path, command: &str, binary: &str) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut invocation = Command::new(cargo);
@@ -670,17 +696,17 @@ fn cargo_probe(fixture_root: &Path, command: &str, binary: &str) -> Output {
     }
     invocation
         .env("CARGO_TERM_COLOR", "never")
-        .env("CARGO_TARGET_DIR", fixture_root.join("target"))
+        .env("CARGO_TARGET_DIR", fixture_target_dir())
         .output()
         .expect("run cargo probe for external SDK perimeter consumer")
 }
 
-/// Strict clippy over several fixture binaries in one cargo invocation.
-fn cargo_clippy_bins(fixture_root: &Path, binaries: &[&str]) -> Output {
+/// Compile or lint the positive fixture binaries in one Cargo invocation.
+fn cargo_positive_bins(fixture_root: &Path, command: &str, binaries: &[&str]) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut invocation = Command::new(cargo);
     invocation.current_dir(fixture_root).args([
-        "clippy",
+        command,
         "--offline",
         "--quiet",
         "--message-format=json",
@@ -688,12 +714,14 @@ fn cargo_clippy_bins(fixture_root: &Path, binaries: &[&str]) -> Output {
     for binary in binaries {
         invocation.args(["--bin", binary]);
     }
+    if command == "clippy" {
+        invocation.args(["--", "-D", "warnings"]);
+    }
     invocation
-        .args(["--", "-D", "warnings"])
         .env("CARGO_TERM_COLOR", "never")
-        .env("CARGO_TARGET_DIR", fixture_root.join("target"))
+        .env("CARGO_TARGET_DIR", fixture_target_dir())
         .output()
-        .expect("run cargo clippy for external SDK perimeter consumer")
+        .expect("compile or lint external SDK perimeter consumer binaries")
 }
 
 fn toml_basic_string(path: &Path) -> String {

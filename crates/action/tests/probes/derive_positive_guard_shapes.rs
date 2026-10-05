@@ -2,8 +2,8 @@
 //! structs without slot fields.
 //!
 //! This is a smoke pass-probe for the derive macro. The full slot-shape
-//! matrix (`CredentialGuard<C>`, `Option<...>`, `Lazy<...>`,
-//! `Option<Lazy<...>>`) is exercised by macro-internal unit tests in
+//! matrix (`CredentialGuard<C>` and `Option<CredentialGuard<C>>`) is exercised
+//! by macro-internal unit tests in
 //! `crates/action/macros/src/field_slots.rs` because the production
 //! `resolve_credential_by_id::<C>` returns `CredentialGuard<C::Scheme>`,
 //! not `CredentialGuard<C>` — the field-type and the resolver-return

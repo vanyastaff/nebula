@@ -175,5 +175,5 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(OpenApiDoc::openapi())
         .merge(health::routes::router())
         .merge(metrics::router())
-        .nest("/api/v1", api_v1)
+        .nest(nebula_api_contract::v1::API_BASE_PATH, api_v1)
 }

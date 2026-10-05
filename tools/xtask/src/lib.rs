@@ -1,6 +1,8 @@
 mod changes;
+mod formatting;
 mod model;
 mod north_star;
+mod packaging;
 mod pre_commit;
 mod runtime_repair_red;
 mod semver;
@@ -20,7 +22,12 @@ use crate::{
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "nebula-xtask", version, about = "Nebula repository automation")]
+#[command(
+    name = "nebula-xtask",
+    bin_name = "nebula-xtask",
+    version,
+    about = "Nebula repository automation"
+)]
 struct Cli {
     #[command(subcommand)]
     command: TopLevelCommand,
@@ -28,6 +35,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum TopLevelCommand {
+    /// Validate the SDK publication closure and verify actual Cargo archives.
+    Packaging {
+        #[command(subcommand)]
+        command: PackagingCommand,
+    },
+    /// Check every local Cargo package in bounded formatter invocations.
+    FmtCheck,
     /// Plan owner-scoped pre-commit checks without changing CI selection.
     PreCommitPlan {
         /// Workspace-relative staged paths, passed after `--`.
@@ -47,6 +61,27 @@ enum TopLevelCommand {
     RuntimeRepairRed {
         #[command(subcommand)]
         command: RuntimeRepairRedCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PackagingCommand {
+    /// Independently verify provenance-admitted actual package archive bytes.
+    VerifyArchives {
+        /// Admitted NS19 publication observation JSON.
+        #[arg(long)]
+        report: PathBuf,
+        /// Admitted directory containing exactly the selected .crate archives.
+        #[arg(long)]
+        archive_root: PathBuf,
+    },
+    /// Resolve every SDK feature through an isolated consumer and validate pins.
+    Plan,
+    /// Package and dry-run publish the full lockstep closure without uploading.
+    Verify {
+        /// New directory for actual package archives, diagnostics, and observation.
+        #[arg(long)]
+        output: PathBuf,
     },
 }
 
@@ -77,6 +112,9 @@ enum CiPlanCommand {
         /// Whether to compare from the merge base or directly between tips.
         #[arg(long, value_enum, default_value_t = ComparisonArg::Direct)]
         comparison: ComparisonArg,
+        /// Apply branded SDK/transport compatibility policy after metadata selection.
+        #[arg(long)]
+        supported_surface: bool,
     },
 }
 
@@ -92,6 +130,9 @@ enum NorthStarGatesCommand {
         /// Trusted runner-supplied provenance, kept outside the artifact directory.
         #[arg(long)]
         expected_provenance: PathBuf,
+        /// Manifest SHA-256 authenticated outside the downloaded artifact channel.
+        #[arg(long)]
+        expected_provenance_sha256: String,
         /// Exact 40-character revision this verifying job is running.
         #[arg(long)]
         source_revision: String,
@@ -186,6 +227,26 @@ where
 
 fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
     match cli.command {
+        TopLevelCommand::Packaging { command } => {
+            let root = find_root(cwd)?;
+            match command {
+                PackagingCommand::VerifyArchives {
+                    report,
+                    archive_root,
+                } => packaging::verify_archive_report(&root, &report, &archive_root)
+                    .map_err(XtaskError::Packaging),
+                PackagingCommand::Plan => {
+                    serde_json::to_vec(&packaging::plan(&root)?).map_err(XtaskError::Json)
+                },
+                PackagingCommand::Verify { output } => {
+                    packaging::verify(&root, &output).map_err(XtaskError::Packaging)
+                },
+            }
+        },
+        TopLevelCommand::FmtCheck => {
+            formatting::check(cwd)?;
+            Ok(Vec::new())
+        },
         TopLevelCommand::PreCommitPlan { paths } => pre_commit::plan(cwd, &paths),
         TopLevelCommand::CiPlan { command } => {
             let workspace = Workspace::load(cwd)?;
@@ -212,8 +273,15 @@ fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
                     base,
                     head,
                     comparison,
+                    supported_surface,
                 } => {
-                    return semver::plan(&workspace, base.trim(), head.trim(), comparison.into());
+                    return semver::plan(
+                        &workspace,
+                        base.trim(),
+                        head.trim(),
+                        comparison.into(),
+                        supported_surface,
+                    );
                 },
             };
             plan.to_json_line()
@@ -228,6 +296,7 @@ fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
                 NorthStarGatesCommand::VerifyRuntimeAuthority {
                     artifact_root,
                     expected_provenance,
+                    expected_provenance_sha256,
                     source_revision,
                     repository,
                     run_id,
@@ -237,6 +306,7 @@ fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
             &find_root(cwd)?,
             &artifact_root,
             &expected_provenance,
+            &expected_provenance_sha256,
             &north_star::RunnerIdentity {
                 source_revision,
                 repository,
@@ -296,6 +366,10 @@ fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
 
 #[derive(Debug, Error)]
 pub enum XtaskError {
+    #[error(transparent)]
+    Packaging(#[from] packaging::PackagingError),
+    #[error(transparent)]
+    Formatting(#[from] formatting::FormattingError),
     #[error(transparent)]
     PreCommit(#[from] PreCommitPlanError),
     #[error("cannot determine current directory: {0}")]

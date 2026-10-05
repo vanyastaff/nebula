@@ -131,6 +131,11 @@ deny = [
     "nebula-worker-bin",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
 
+  # Shared wire data is consumed through the technical API and curated SDK.
+  { crate = "nebula-api-contract", wrappers = [
+    "nebula-api", "nebula-sdk",
+  ], reason = "Transport contract is Core shared infrastructure; supported consumers are API and SDK" },
+
   # nebula-storage-port is the Core-tier storage contract: object-safe
   # repository traits, port-local DTO rows, the plain-data `Scope` value
   # type, `StorageError`, and the `TransitionBatch` unit-of-work. Being a
