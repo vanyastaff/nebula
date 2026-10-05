@@ -90,10 +90,10 @@ pub use policy::{
 };
 pub use proof::Validated;
 pub use rule::{
-    DeferredRule, MAX_RULE_DEPTH, MAX_RULE_JSON_DEPTH, MAX_RULE_JSON_NODES, MAX_RULE_NODES,
-    MAX_RULE_OPERANDS, MAX_RULE_TEXT_BYTES, Predicate, PredicateContext, Rule, RuleBudget,
-    RuleBuildError, RuleChildren, RuleKind, RuleOperands, RulePattern, RuleRef, RuleView,
-    ValueRule,
+    Condition, ConditionOutcome, DeferredRule, MAX_RULE_DEPTH, MAX_RULE_JSON_DEPTH,
+    MAX_RULE_JSON_NODES, MAX_RULE_NODES, MAX_RULE_OPERANDS, MAX_RULE_TEXT_BYTES, Predicate,
+    PredicateContext, Rule, RuleBudget, RuleBuildError, RuleChildren, RuleKind, RuleOperands,
+    RulePattern, RuleRef, RuleView, ValueRule,
 };
 
 // `regex` is re-exported so code emitted by `#[derive(Validator)]` can
