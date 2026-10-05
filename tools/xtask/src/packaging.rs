@@ -184,6 +184,14 @@ fn plan_from_metadata(workspace: &Metadata) -> Result<PublicationPlan, Packaging
                     package.name, dependency.name
                 )));
             }
+            // An exact pin is meaningless if the published crate resolves the
+            // name from another registry instead of the lockstep set.
+            if let Some(registry) = &dependency.registry {
+                return Err(PackagingError::Contract(format!(
+                    "package `{}` dependency `{}` resolves from registry `{registry}`, not the lockstep set",
+                    package.name, dependency.name
+                )));
+            }
             let wanted = format!("={version}");
             if dependency.req.to_string() != wanted {
                 return Err(PackagingError::Contract(format!(
@@ -354,6 +362,14 @@ fn verify_normalized_manifest(
                     .and_then(toml::Value::as_str)
                     .unwrap_or(key);
                 if known_packages.iter().any(|name| name == actual) {
+                    if ["registry", "registry-index", "git"]
+                        .iter()
+                        .any(|source| dependency.get(source).is_some())
+                    {
+                        return Err(PackagingError::Contract(format!(
+                            "normalized dependency `{actual}` resolves outside the lockstep set"
+                        )));
+                    }
                     let version = dependency
                         .get("version")
                         .and_then(toml::Value::as_str)
@@ -362,12 +378,33 @@ fn verify_normalized_manifest(
                                 "normalized dependency `{actual}` has no version"
                             ))
                         })?;
+                    // Compare in metadata's canonical spelling: Cargo keeps the
+                    // authored text in archives (`= 1.0.0`, `cfg(unix )`).
+                    let version = cargo_metadata::semver::VersionReq::parse(version)
+                        .map_err(|_| {
+                            PackagingError::Contract(format!(
+                                "normalized dependency `{actual}` has an invalid version requirement"
+                            ))
+                        })?
+                        .to_string();
+                    let target = target
+                        .map(|target| {
+                            target
+                                .parse::<cargo_metadata::cargo_platform::Platform>()
+                                .map(|platform| platform.to_string())
+                                .map_err(|_| {
+                                    PackagingError::Contract(format!(
+                                        "normalized dependency `{actual}` has an invalid target `{target}`"
+                                    ))
+                                })
+                        })
+                        .transpose()?;
                     found.push(PublicationDependency {
                         package: actual.into(),
                         key: key.clone(),
                         kind: kind.into(),
-                        target: target.map(str::to_owned),
-                        version: version.into(),
+                        target,
+                        version,
                     });
                 }
             }
@@ -587,7 +624,8 @@ fn is_link(metadata: &fs::Metadata) -> bool {
 fn archive_manifest(package: &PublicationPackage, bytes: &[u8]) -> Result<String, PackagingError> {
     let wanted = format!("{}-{}/Cargo.toml", package.name, package.version);
     let mut decoded = Vec::new();
-    flate2::read::MultiGzDecoder::new(bytes)
+    // Cargo and crates.io read only the first gzip member; verify that view.
+    flate2::read::GzDecoder::new(bytes)
         .take(MAX_DECODED_ARCHIVE_BYTES + 1)
         .read_to_end(&mut decoded)?;
     if decoded.len() as u64 > MAX_DECODED_ARCHIVE_BYTES {
@@ -600,7 +638,16 @@ fn archive_manifest(package: &PublicationPackage, bytes: &[u8]) -> Result<String
     let mut normalized = None;
     for entry in archive.entries()? {
         let entry = entry?;
-        if entry.path()?.as_ref() != Path::new(&wanted) {
+        let path = entry.path()?;
+        if path.as_ref() != Path::new(&wanted) {
+            // A case-variant manifest would replace the verified one when the
+            // archive is unpacked on a case-insensitive filesystem.
+            if path.to_string_lossy().eq_ignore_ascii_case(&wanted) {
+                return Err(PackagingError::Contract(format!(
+                    "archive `{}` carries a case-variant manifest",
+                    package.name
+                )));
+            }
             continue;
         }
         if normalized.is_some()
@@ -782,9 +829,91 @@ mod tests {
             format!("{base}path='../leaf'\n"),
             format!("{base}[target.'cfg(windows)'.dependencies.nebula-leaf]\nversion='0.32.0'\n"),
             format!("{base}[dependencies.nebula-sdk]\nversion='=0.32.0'\n"),
+            format!("{base}registry='other'\n"),
+            format!("{base}registry-index='sparse+https://example.invalid/'\n"),
+            format!("{base}git='https://example.invalid/leaf'\n"),
         ] {
             assert!(verify_normalized_manifest(&package, &invalid, &known).is_err());
         }
+    }
+
+    #[test]
+    fn normalized_archive_accepts_authored_spelling_of_metadata_pins() {
+        let package = PublicationPackage {
+            name: "nebula-sdk".into(),
+            version: "0.32.0".into(),
+            manifest: PathBuf::new(),
+            internal_dependencies: vec![PublicationDependency {
+                package: "nebula-leaf".into(),
+                key: "nebula-leaf".into(),
+                kind: "dependencies".into(),
+                // `cargo metadata` re-prints cfg expressions with spacing.
+                target: Some("cfg(target_os = \"linux\")".into()),
+                version: "=0.32.0".into(),
+            }],
+        };
+        let archive = "[package]\nname='nebula-sdk'\nversion='0.32.0'\n[target.'cfg(target_os=\"linux\")'.dependencies.nebula-leaf]\nversion='= 0.32.0'\n";
+        let known = ["nebula-leaf".to_owned(), "nebula-sdk".to_owned()];
+        verify_normalized_manifest(&package, archive, &known)
+            .expect("authored spacing denotes the same exact pin and target");
+    }
+
+    #[test]
+    fn archive_rejects_case_variant_manifest() {
+        use std::io::Write as _;
+        let package = PublicationPackage {
+            name: "nebula-sdk".into(),
+            version: "0.32.0".into(),
+            manifest: PathBuf::new(),
+            internal_dependencies: Vec::new(),
+        };
+        let manifest = "[package]\nname='nebula-sdk'\nversion='0.32.0'\n";
+        let mut builder = tar::Builder::new(Vec::new());
+        for path in [
+            "nebula-sdk-0.32.0/Cargo.toml",
+            "nebula-sdk-0.32.0/cargo.toml",
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(manifest.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, manifest.as_bytes())
+                .expect("manifest entry");
+        }
+        let mut archive = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        archive
+            .write_all(&builder.into_inner().expect("complete tar"))
+            .expect("compressed archive");
+        let error = archive_manifest(&package, &archive.finish().expect("gzip"))
+            .expect_err("a case-variant manifest could shadow the verified one")
+            .to_string();
+        assert!(error.contains("case-variant"), "{error}");
+    }
+
+    #[test]
+    fn foreign_registry_pin_is_not_a_lockstep_dependency() {
+        let root = workspace();
+        fs::create_dir_all(root.path().join(".cargo")).expect("cargo config directory");
+        fs::write(
+            root.path().join(".cargo/config.toml"),
+            "[registries.other]\nindex='sparse+https://example.invalid/'\n",
+        )
+        .expect("registry config");
+        let path = root.path().join("sdk/Cargo.toml");
+        let source = fs::read_to_string(&path).expect("manifest").replace(
+            "path='../leaf',version='=0.32.0'",
+            "path='../leaf',version='=0.32.0',registry='other'",
+        );
+        fs::write(path, source).expect("modified manifest");
+        let error = plan(root.path())
+            .expect_err("foreign registry rejected")
+            .to_string();
+        // Metadata reports the registry by its index URL, not its config name.
+        assert!(
+            error.contains("resolves from registry `sparse+https://example.invalid/`"),
+            "{error}"
+        );
     }
 
     #[test]
