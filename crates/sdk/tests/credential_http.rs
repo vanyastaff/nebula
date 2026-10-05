@@ -318,6 +318,42 @@ async fn implicit_proxy_subprocess_probe() {
     assert_eq!(server.seen().len(), 1);
 }
 
+/// A Nebula problem+json 401 is a definite pre-handler rejection; an empty or
+/// non-problem 401 (for example from a proxy) proves nothing about a mutation.
+#[tokio::test]
+async fn mutation_401_is_known_only_when_nebula_authored_the_problem() {
+    let problem = r#"{"type":"https://nebula.dev/problems/unauthorized","title":"Unauthorized","status":401,"detail":"Authentication required"}"#;
+    for (reply, expected, has_problem) in [
+        (
+            response(401, "application/problem+json", "", problem),
+            HttpErrorKind::Problem,
+            true,
+        ),
+        (
+            response(401, "text/plain", "", ""),
+            HttpErrorKind::OutcomeUnknown,
+            false,
+        ),
+        (
+            response(401, "text/html", "", "<h1>proxy</h1>"),
+            HttpErrorKind::OutcomeUnknown,
+            false,
+        ),
+        (
+            response(401, "application/json", "", problem),
+            HttpErrorKind::OutcomeUnknown,
+            false,
+        ),
+    ] {
+        let server = Server::start(vec![reply]).await;
+        let error = server.client().create(&create_request()).await.unwrap_err();
+        assert_eq!(error.status(), Some(401));
+        assert_eq!(error.kind(), expected);
+        assert_eq!(error.problem().is_some(), has_problem);
+        assert_eq!(server.seen().len(), 1, "a 401 is never replayed");
+    }
+}
+
 #[tokio::test]
 async fn redirects_and_empty_auth_failures_preserve_status_without_following() {
     let destination = Server::start(vec![]).await;

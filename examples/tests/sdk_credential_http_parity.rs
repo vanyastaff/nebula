@@ -402,23 +402,27 @@ async fn sdk_crud_matches_live_api_methods_statuses_and_bearer_authority() {
     );
 }
 
+fn rejected_create() -> CreateCredentialRequest {
+    CreateCredentialRequest {
+        credential_key: "api_key".into(),
+        name: "Rejected".into(),
+        description: None,
+        data: json!({"api_key": SECRET}),
+        tags: None,
+    }
+}
+
+/// Nebula rejects authentication before any handler runs and says so with a
+/// problem document: a known, non-applied outcome that is never replayed.
 #[tokio::test]
-async fn real_empty_auth_failure_retains_status_without_replaying_mutation() {
+async fn real_auth_failure_is_a_known_problem_without_replaying_mutation() {
     let server = Server::start().await;
     let client = server.client("invalid-bearer");
-    let error = client
-        .create(&CreateCredentialRequest {
-            credential_key: "api_key".into(),
-            name: "Rejected".into(),
-            description: None,
-            data: json!({"api_key": SECRET}),
-            tags: None,
-        })
-        .await
-        .unwrap_err();
+    let error = client.create(&rejected_create()).await.unwrap_err();
     assert_eq!(error.status(), Some(401));
-    assert_eq!(error.kind(), HttpErrorKind::OutcomeUnknown);
-    assert!(error.problem().is_none());
+    assert_eq!(error.kind(), HttpErrorKind::Problem);
+    let problem = error.problem().expect("Nebula-authored 401 problem");
+    assert_eq!(problem.problem.status, 401);
     assert_eq!(
         server
             .client(&server.bearer)
@@ -432,7 +436,56 @@ async fn real_empty_auth_failure_retains_status_without_replaying_mutation() {
     assert_eq!(observations.len(), 2);
     assert_eq!(observations[0].method, "POST");
     assert_eq!(observations[0].status, 401);
-    assert!(observations[0].body.is_empty());
+    assert_eq!(
+        observations[0].content_type.as_deref(),
+        Some("application/problem+json")
+    );
+    let body = String::from_utf8_lossy(&observations[0].body);
+    assert!(!body.contains(SECRET) && !body.contains("invalid-bearer"));
+}
+
+/// A 401 that Nebula did not author — empty or not a problem document, as an
+/// intermediary proxy may send — proves nothing about the mutation, so the SDK
+/// keeps it `OutcomeUnknown`, and still never replays it.
+#[tokio::test]
+async fn non_problem_auth_failure_from_an_intermediary_stays_outcome_unknown() {
+    for (content_type, body) in [(None, ""), (Some("text/html"), "<h1>Unauthorized</h1>")] {
+        let seen = Arc::new(Mutex::new(0_usize));
+        let counter = seen.clone();
+        let proxy = axum::Router::new().fallback(move || {
+            let counter = counter.clone();
+            async move {
+                *counter.lock().unwrap() += 1;
+                let mut response = Response::new(Body::from(body));
+                *response.status_mut() = axum::http::StatusCode::UNAUTHORIZED;
+                if let Some(content_type) = content_type {
+                    response
+                        .headers_mut()
+                        .insert("content-type", content_type.parse().unwrap());
+                }
+                response
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::serve(listener, proxy).await.unwrap();
+        });
+        let client = HttpClient::new(
+            &base,
+            BearerToken::new("proxied-bearer").unwrap(),
+            HttpOptions::default(),
+        )
+        .unwrap()
+        .credentials("sdk-org", "sdk-workspace")
+        .unwrap();
+        let error = client.create(&rejected_create()).await.unwrap_err();
+        task.abort();
+        assert_eq!(error.status(), Some(401));
+        assert_eq!(error.kind(), HttpErrorKind::OutcomeUnknown);
+        assert!(error.problem().is_none());
+        assert_eq!(*seen.lock().unwrap(), 1, "a 401 is never replayed");
+    }
 }
 
 #[tokio::test]
@@ -496,7 +549,8 @@ async fn sdk_acquisition_preserves_session_binding_replay_and_existing_identity(
         .await
         .unwrap_err();
     assert_eq!(auth_error.status(), Some(401));
-    assert_eq!(auth_error.kind(), HttpErrorKind::OutcomeUnknown);
+    // Rejected before the handler: the pending continuation stays usable.
+    assert_eq!(auth_error.kind(), HttpErrorKind::Problem);
     let completed_id = match client.continue_resolve(&reauth_continuation).await.unwrap() {
         ResolveCredentialResponse::Complete { credential_id } => credential_id,
         other => panic!("expected complete reauthorization, got {other:?}"),
