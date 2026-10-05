@@ -240,3 +240,42 @@ pub(crate) fn flavor_reason_snapshot(
         None
     }
 }
+
+/// Attach the observation acknowledgement to a decided flavor refusal. An
+/// existing receipt's snapshot, when readable, replaces the live values.
+pub(crate) fn acknowledged_flavor_outcome(
+    decided: nebula_storage_port::store::ControlFlavorRefusalOutcome,
+    acknowledgement: nebula_storage_port::store::ControlObservationAcknowledgement,
+    recorded_snapshot: Option<(
+        nebula_core::WorkerFlavorRevisionId,
+        nebula_core::WorkerFlavorRevisionId,
+    )>,
+) -> nebula_storage_port::store::ControlFlavorRefusalOutcome {
+    use nebula_storage_port::store::ControlFlavorRefusalOutcome as Flavor;
+    match decided {
+        Flavor::FlavorMismatch {
+            expected,
+            actual,
+            backend,
+            ..
+        } => {
+            let (expected, actual) = recorded_snapshot.unwrap_or((expected, actual));
+            Flavor::FlavorMismatch {
+                expected,
+                actual,
+                backend,
+                observation_acknowledgement: acknowledgement,
+            }
+        },
+        Flavor::ClaimFenced {
+            attempted_queue_claim_generation,
+            current_queue_claim_generation,
+            ..
+        } => Flavor::ClaimFenced {
+            attempted_queue_claim_generation,
+            current_queue_claim_generation,
+            observation_acknowledgement: acknowledgement,
+        },
+        other => other,
+    }
+}

@@ -108,23 +108,18 @@ impl<'a> ControlFlavorRefusal<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ControlFlavorRefusalOutcome {
-    /// Fixed mismatch receipt and journal committed together.
-    Recorded {
+    /// The owner decided an exact-flavor mismatch. The decision is definite;
+    /// the acknowledgement says whether its journal observation is durable.
+    /// An existing receipt reports its own immutable snapshot.
+    FlavorMismatch {
         /// Exact flavor retained by the execution aggregate.
         expected: WorkerFlavorRevisionId,
         /// Flavor presented by the refused runtime.
         actual: WorkerFlavorRevisionId,
-        /// Authoritative storage adapter that committed the decision.
+        /// Authoritative storage adapter that decided.
         backend: crate::StorageBackendKind,
-    },
-    /// Existing immutable source receipt acknowledged; no new snapshot is claimed.
-    AlreadyRecorded {
-        /// Exact flavor captured by the existing receipt.
-        expected: WorkerFlavorRevisionId,
-        /// Runtime flavor captured by the existing receipt.
-        actual: WorkerFlavorRevisionId,
-        /// Authoritative storage adapter that holds the receipt.
-        backend: crate::StorageBackendKind,
+        /// New durable decision, existing receipt, or a missing observation.
+        observation_acknowledgement: ControlObservationAcknowledgement,
     },
     /// Scoped stored queue row verified, but its claim generation advanced.
     ClaimFenced {

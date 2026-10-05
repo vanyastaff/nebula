@@ -82,8 +82,9 @@ pub(super) async fn commit(
                 Ok(Ack::AlreadyRecorded) => if let Ok((recorded_expected, recorded_actual)) = read_flavor_receipt(&mut tx, scope, id, commit.claim().row_id(), claim_generation).await {
                     (recorded_expected, recorded_actual, commit_observation(tx, Ack::AlreadyRecorded).await)
                 } else {
+                        // The receipt is durable; only its snapshot is unreadable.
                         drop(tx.rollback().await);
-                        (expected, actual, Ack::Unknown)
+                        (expected, actual, Ack::AlreadyRecorded)
                 },
                 Ok(acknowledgement) => (expected, actual, commit_observation(tx, acknowledgement).await),
                 Err(_) => {
@@ -194,6 +195,8 @@ async fn finish_refusal(
 async fn commit_observation(tx: sqlx::Transaction<'_, sqlx::Sqlite>, acknowledgement: Ack) -> Ack {
     match tx.commit().await {
         Ok(()) => acknowledgement,
+        // An existing receipt wrote nothing here and stays durable.
+        Err(_) if acknowledgement == Ack::AlreadyRecorded => acknowledgement,
         Err(error) => {
             tracing::warn!(%error, "control refusal observation commit was not acknowledged");
             Ack::Unknown
@@ -411,71 +414,95 @@ pub(super) async fn record_flavor(
     } else {
         (
             nebula_execution::ExecutionControlReason::ExactFlavorMismatch { expected, actual },
-            Flavor::Recorded {
+            Flavor::FlavorMismatch {
                 expected,
                 actual,
                 backend,
+                observation_acknowledgement: Ack::Recorded,
             },
         )
     };
+    // The refusal is decided; everything below only observes it and can
+    // never replace it.
     let receipt_outcome = reason.outcome().as_str();
     let snapshot = crate::control_turn::flavor_reason_snapshot(&reason);
-    let timestamp = sqlx::query_scalar::<_, i64>(
-        "SELECT CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)",
-    )
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(backend_error)?;
-    let timestamp = chrono::DateTime::from_timestamp_millis(timestamp)
-        .ok_or_else(|| StorageError::Internal("backend clock is invalid".into()))?;
-    let payload =
-        crate::control_turn::flavor_refusal_payload(request, generation, reason, timestamp)?;
-    let inserted = sqlx::query("INSERT INTO port_execution_control_observation_receipts (execution_id,workspace_id,org_id,source_kind,source_queue_id,source_generation,decision_key,outcome,expected_flavor_id,actual_flavor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(execution_id,workspace_id,org_id,source_kind,source_queue_id,source_generation,decision_key,outcome) DO NOTHING")
-        .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind("control_queue")
-        .bind(request.claim().row_id().as_slice()).bind(source_generation).bind("").bind(receipt_outcome)
-        .bind(snapshot.map(|(expected,_)| expected.as_bytes().to_vec()))
-        .bind(snapshot.map(|(_,actual)| actual.as_bytes().to_vec()))
-        .execute(&mut *tx).await.map_err(backend_error)?.rows_affected()==1;
-    if inserted {
-        append_observation(&mut tx, id, &payload).await?;
-    }
-    let outcome = if inserted {
-        outcome
-    } else {
-        match outcome {
-            Flavor::Recorded { backend, .. } => {
-                let (expected, actual) = read_flavor_receipt(
-                    &mut tx,
-                    scope,
-                    id,
-                    request.claim().row_id(),
-                    source_generation,
-                )
-                .await?;
-                Flavor::AlreadyRecorded {
-                    expected,
-                    actual,
-                    backend,
-                }
-            },
-            Flavor::ClaimFenced {
-                attempted_queue_claim_generation,
-                current_queue_claim_generation,
-                ..
-            } => Flavor::ClaimFenced {
-                attempted_queue_claim_generation,
-                current_queue_claim_generation,
-                observation_acknowledgement: Ack::AlreadyRecorded,
-            },
-            other => other,
-        }
-    };
-    tx.commit()
+    let written = async {
+        let timestamp = sqlx::query_scalar::<_, i64>(
+            "SELECT CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)",
+        )
+        .fetch_one(&mut *tx)
         .await
-        .map_err(|_| StorageError::AcknowledgementUnknown {
-            operation: "control_flavor_refusal",
-        })?;
-    Ok(outcome)
+        .map_err(backend_error)?;
+        let timestamp = chrono::DateTime::from_timestamp_millis(timestamp)
+            .ok_or_else(|| StorageError::Internal("backend clock is invalid".into()))?;
+        let payload =
+            crate::control_turn::flavor_refusal_payload(request, generation, reason, timestamp)?;
+        let inserted = sqlx::query("INSERT INTO port_execution_control_observation_receipts (execution_id,workspace_id,org_id,source_kind,source_queue_id,source_generation,decision_key,outcome,expected_flavor_id,actual_flavor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(execution_id,workspace_id,org_id,source_kind,source_queue_id,source_generation,decision_key,outcome) DO NOTHING")
+            .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind("control_queue")
+            .bind(request.claim().row_id().as_slice()).bind(source_generation).bind("").bind(receipt_outcome)
+            .bind(snapshot.map(|(expected,_)| expected.as_bytes().to_vec()))
+            .bind(snapshot.map(|(_,actual)| actual.as_bytes().to_vec()))
+            .execute(&mut *tx).await.map_err(backend_error)?.rows_affected()==1;
+        if inserted {
+            append_observation(&mut tx, id, &payload).await?;
+        }
+        Ok::<bool, StorageError>(inserted)
+    }
+    .await;
+    let (acknowledgement, recorded_snapshot) = settle_flavor_observation(
+        tx,
+        written,
+        snapshot.is_some(),
+        scope,
+        id,
+        request.claim().row_id(),
+        source_generation,
+    )
+    .await;
+    Ok(crate::control_turn::acknowledged_flavor_outcome(
+        outcome,
+        acknowledgement,
+        recorded_snapshot,
+    ))
+}
+
+/// Commit or roll back a decided flavor refusal's observation. An existing
+/// receipt is durable whatever happens to this transaction; a failed write
+/// rolls back as unrecorded and a lost commit acknowledgement is unknown.
+async fn settle_flavor_observation(
+    mut tx: sqlx::Transaction<'_, sqlx::Sqlite>,
+    written: Result<bool, StorageError>,
+    has_snapshot: bool,
+    scope: &nebula_storage_port::Scope,
+    id: &str,
+    row_id: &[u8; 16],
+    source_generation: i64,
+) -> (
+    Ack,
+    Option<(
+        nebula_core::WorkerFlavorRevisionId,
+        nebula_core::WorkerFlavorRevisionId,
+    )>,
+) {
+    match written {
+        Ok(true) => (commit_observation(tx, Ack::Recorded).await, None),
+        Ok(false) => {
+            let recorded = if has_snapshot {
+                read_flavor_receipt(&mut tx, scope, id, row_id, source_generation)
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            drop(tx.rollback().await);
+            (Ack::AlreadyRecorded, recorded)
+        },
+        Err(error) => {
+            tracing::warn!(%error, "control flavor refusal observation could not be written");
+            drop(tx.rollback().await);
+            (Ack::Unrecorded, None)
+        },
+    }
 }
 
 async fn observation_timestamp(

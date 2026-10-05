@@ -122,20 +122,32 @@ pub(super) async fn run(ports: &Ports) {
     assert_eq!(
         replies
             .iter()
-            .filter(|reply| matches!(reply, Flavor::Recorded { .. }))
+            .filter(|reply| matches!(
+                reply,
+                Flavor::FlavorMismatch {
+                    observation_acknowledgement: Ack::Recorded,
+                    ..
+                }
+            ))
             .count(),
         1
     );
     assert_eq!(
         replies
             .iter()
-            .filter(|reply| matches!(reply, Flavor::AlreadyRecorded { .. }))
+            .filter(|reply| matches!(
+                reply,
+                Flavor::FlavorMismatch {
+                    observation_acknowledgement: Ack::AlreadyRecorded,
+                    ..
+                }
+            ))
             .count(),
         1
     );
     for reply in replies {
         assert!(
-            matches!(reply,Flavor::Recorded { expected,actual:got,.. } | Flavor::AlreadyRecorded { expected,actual:got,.. } if expected==seed.flavor && got==actual)
+            matches!(reply, Flavor::FlavorMismatch { expected, actual: got, .. } if expected == seed.flavor && got == actual)
         );
     }
     let different = ControlFlavorRefusal::new(
@@ -145,7 +157,7 @@ pub(super) async fn run(ports: &Ports) {
     );
     assert!(
         matches!(ports.handoff.record_control_flavor_refusal(&different).await.unwrap(),
-        Flavor::AlreadyRecorded { expected,actual:got,.. } if expected==seed.flavor && got==actual),
+        Flavor::FlavorMismatch { expected, actual: got, observation_acknowledgement: Ack::AlreadyRecorded, .. } if expected == seed.flavor && got == actual),
         "dedup acknowledges original immutable snapshot, never the retry's changed runtime"
     );
     assert_eq!(
@@ -764,6 +776,9 @@ async fn refusal_observations(
 pub(super) enum ObservationFault {
     /// The receipt insert fails inside the refusal transaction.
     FailObservationWrite,
+    /// The journal insert fails after the receipt was already written in the
+    /// same transaction, so the receipt must roll back with it.
+    FailJournalWrite,
     /// The refusal transaction's commit fails, so its acknowledgement is lost.
     LoseCommitAcknowledgement,
     /// Remove every installed fault.
@@ -772,11 +787,13 @@ pub(super) enum ObservationFault {
 
 /// A refusal is decided before its observation is written: a failed
 /// observation write or a lost commit acknowledgement must still return the
-/// definite refusal, and the aggregate and claim must be left untouched.
+/// definite refusal on every refusal branch of both owner seams (control turn
+/// commit and flavor preflight), and leave aggregate and claim untouched.
 pub(super) async fn refusals_survive_observation_faults(
     ports: &Ports,
     inject: impl AsyncFn(ObservationFault),
 ) {
+    use nebula_storage_port::store::{ControlFlavorRefusal, ControlFlavorRefusalOutcome as Flavor};
     let seed = seed(ports).await;
     ports.queue.mark_completed(&seed.claim).await.unwrap();
     let fence = ports
@@ -790,6 +807,7 @@ pub(super) async fn refusals_survive_observation_faults(
         .await
         .unwrap()
         .unwrap();
+    let other_flavor = WorkerFlavorRevisionId::from_bytes([0xb7; 32]);
     let claim = command(ports, &seed, ControlCommand::Restart, None).await;
     let current = ports
         .execution
@@ -798,10 +816,13 @@ pub(super) async fn refusals_survive_observation_faults(
         .unwrap()
         .unwrap();
     let journal_before = control_observations(ports, &seed).await.len();
-    let commit_with = |expected_version: u64, fence: FencingToken| {
+    let commit_with = |claim: &ControlClaimToken,
+                       flavor: WorkerFlavorRevisionId,
+                       expected_version: u64,
+                       fence: FencingToken| {
         ControlTurnCommit::new(
             claim.clone(),
-            seed.flavor,
+            flavor,
             ControlTurnCommand::Restart,
             ControlTurnTransition::Unchanged {
                 scope: &seed.scope,
@@ -811,42 +832,141 @@ pub(super) async fn refusals_survive_observation_faults(
             },
         )
     };
-
-    inject(ObservationFault::FailObservationWrite).await;
-    assert_eq!(
+    let stale_version = commit_with(&claim, seed.flavor, current.version + 7, fence);
+    let stale_fence = commit_with(
+        &claim,
+        seed.flavor,
+        current.version,
+        FencingToken::from_generation(fence.generation() + 1),
+    );
+    let wrong_flavor = commit_with(&claim, other_flavor, current.version, fence);
+    let preflight = ControlFlavorRefusal::new(&claim, &seed.execution, other_flavor);
+    let decide = async |request: &ControlTurnCommit<'_>| {
         ports
             .handoff
-            .commit_control_turn(&commit_with(current.version + 7, fence))
+            .commit_control_turn(request)
             .await
-            .expect("a failed observation write must not replace the version conflict"),
+            .expect("an observation fault must never replace the refusal")
+    };
+    let preflight_decision = async |request: &ControlFlavorRefusal<'_>| {
+        ports
+            .handoff
+            .record_control_flavor_refusal(request)
+            .await
+            .expect("an observation fault must never replace the flavor refusal")
+    };
+    let mismatch = |acknowledgement: Ack| Outcome::FlavorMismatch {
+        expected: seed.flavor,
+        actual: other_flavor,
+        observation_acknowledgement: acknowledgement,
+    };
+    let preflight_mismatch = |acknowledgement: Ack| Flavor::FlavorMismatch {
+        expected: seed.flavor,
+        actual: other_flavor,
+        backend: ports.handoff.backend_kind(),
+        observation_acknowledgement: acknowledgement,
+    };
+
+    // The receipt insert fails: every branch keeps its decision, unrecorded.
+    inject(ObservationFault::FailObservationWrite).await;
+    assert_eq!(
+        decide(&stale_version).await,
         Outcome::VersionConflict {
             actual: current.version,
             observation_acknowledgement: Ack::Unrecorded,
         }
     );
+    assert_eq!(decide(&wrong_flavor).await, mismatch(Ack::Unrecorded));
+    assert_eq!(
+        preflight_decision(&preflight).await,
+        preflight_mismatch(Ack::Unrecorded)
+    );
+    inject(ObservationFault::Clear).await;
+
+    // The receipt lands, then the journal insert fails: both roll back, so a
+    // clean retry records the decision as new rather than as a replay.
+    inject(ObservationFault::FailJournalWrite).await;
+    assert_eq!(
+        decide(&stale_version).await,
+        Outcome::VersionConflict {
+            actual: current.version,
+            observation_acknowledgement: Ack::Unrecorded,
+        }
+    );
+    inject(ObservationFault::Clear).await;
     assert_eq!(
         control_observations(ports, &seed).await.len(),
         journal_before,
-        "the failed observation was rolled back"
+        "nothing from a failed observation is journaled"
+    );
+    assert_eq!(
+        decide(&stale_version).await,
+        Outcome::VersionConflict {
+            actual: current.version,
+            observation_acknowledgement: Ack::Recorded,
+        },
+        "the receipt written before the failed journal insert was rolled back"
     );
 
-    inject(ObservationFault::Clear).await;
+    // The commit acknowledgement is lost: each decision stands, unknown.
     inject(ObservationFault::LoseCommitAcknowledgement).await;
     assert_eq!(
-        ports
-            .handoff
-            .commit_control_turn(&commit_with(
-                current.version,
-                FencingToken::from_generation(fence.generation() + 1),
-            ))
-            .await
-            .expect("a lost observation acknowledgement must not replace the fence"),
+        decide(&stale_fence).await,
         Outcome::FencedOut {
             observation_acknowledgement: Ack::Unknown,
         }
     );
-
+    assert_eq!(decide(&wrong_flavor).await, mismatch(Ack::Unknown));
+    assert_eq!(
+        preflight_decision(&preflight).await,
+        preflight_mismatch(Ack::Unknown)
+    );
     inject(ObservationFault::Clear).await;
+
+    // A redelivery advances the claim: the stale delivery is fenced on both
+    // seams whatever happens to the observation.
+    assert_eq!(
+        ports
+            .queue
+            .reclaim_stuck(Duration::ZERO, 8)
+            .await
+            .unwrap()
+            .reclaimed,
+        1
+    );
+    let replacement = ports
+        .queue
+        .claim_pending_for_flavor(&[0x83; 16], 1, seed.flavor)
+        .await
+        .unwrap();
+    assert_eq!(replacement.len(), 1);
+    let current_claim = replacement[0].token.generation().get();
+    let fenced = |acknowledgement: Ack| Outcome::ClaimFenced {
+        attempted_queue_claim_generation: claim.generation().get(),
+        current_queue_claim_generation: current_claim,
+        observation_acknowledgement: acknowledgement,
+    };
+    let preflight_fenced = |acknowledgement: Ack| Flavor::ClaimFenced {
+        attempted_queue_claim_generation: claim.generation().get(),
+        current_queue_claim_generation: current_claim,
+        observation_acknowledgement: acknowledgement,
+    };
+    let stale_claim = commit_with(&claim, seed.flavor, current.version, fence);
+    inject(ObservationFault::FailObservationWrite).await;
+    assert_eq!(decide(&stale_claim).await, fenced(Ack::Unrecorded));
+    assert_eq!(
+        preflight_decision(&preflight).await,
+        preflight_fenced(Ack::Unrecorded)
+    );
+    inject(ObservationFault::Clear).await;
+    inject(ObservationFault::LoseCommitAcknowledgement).await;
+    assert_eq!(decide(&stale_claim).await, fenced(Ack::Unknown));
+    assert_eq!(
+        preflight_decision(&preflight).await,
+        preflight_fenced(Ack::Unknown)
+    );
+    inject(ObservationFault::Clear).await;
+
     assert_eq!(
         ports
             .execution
@@ -860,13 +980,15 @@ pub(super) async fn refusals_survive_observation_faults(
     );
     assert!(
         matches!(
-            ports
-                .handoff
-                .commit_control_turn(&commit_with(current.version, fence))
-                .await
-                .unwrap(),
+            decide(&commit_with(
+                &replacement[0].token,
+                seed.flavor,
+                current.version,
+                fence
+            ))
+            .await,
             Outcome::Accepted { .. }
         ),
-        "the refused claim stays current and the live owner can still commit it"
+        "the live owner can still commit the current delivery"
     );
 }

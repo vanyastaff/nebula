@@ -82,7 +82,8 @@ pub(super) fn commit(
                         commit.claim().generation().get(),
                     ) {
                         Ok((expected, actual)) => (expected, actual, Ack::AlreadyRecorded),
-                        Err(_) => (expected, actual, Ack::Unknown),
+                        // The receipt is durable; only its snapshot is unreadable.
+                        Err(_) => (expected, actual, Ack::AlreadyRecorded),
                     }
                 } else {
                     (expected, actual, observation_acknowledgement)
@@ -415,10 +416,11 @@ pub(super) fn record_flavor(
     } else {
         (
             nebula_execution::ExecutionControlReason::ExactFlavorMismatch { expected, actual },
-            Flavor::Recorded {
+            Flavor::FlavorMismatch {
                 expected,
                 actual,
                 backend: nebula_storage_port::StorageBackendKind::InMemory,
+                observation_acknowledgement: Ack::Recorded,
             },
         )
     };
@@ -430,39 +432,37 @@ pub(super) fn record_flavor(
         String::new(),
         reason.outcome(),
     );
+    // The refusal is decided; everything below only observes it.
     if state.control_observation_receipts.contains_key(&key) {
-        return Ok(match outcome {
-            Flavor::Recorded { backend, .. } => {
-                let (expected, actual) = read_flavor_receipt(
-                    &state,
-                    &identity,
-                    request.claim().row_id(),
-                    attempted_claim,
-                )?;
-                Flavor::AlreadyRecorded {
-                    expected,
-                    actual,
-                    backend,
-                }
-            },
-            Flavor::ClaimFenced {
-                attempted_queue_claim_generation,
-                current_queue_claim_generation,
-                ..
-            } => Flavor::ClaimFenced {
-                attempted_queue_claim_generation,
-                current_queue_claim_generation,
-                observation_acknowledgement: Ack::AlreadyRecorded,
-            },
-            other => other,
-        });
+        let recorded =
+            read_flavor_receipt(&state, &identity, request.claim().row_id(), attempted_claim)
+                .ok()
+                .filter(|_| matches!(outcome, Flavor::FlavorMismatch { .. }));
+        return Ok(crate::control_turn::acknowledged_flavor_outcome(
+            outcome,
+            Ack::AlreadyRecorded,
+            recorded,
+        ));
     }
     let snapshot = crate::control_turn::flavor_reason_snapshot(&reason);
-    let payload =
-        crate::control_turn::flavor_refusal_payload(request, generation, reason, clock.now())?;
-    append_observation(&mut state, &identity, payload)?;
-    state.control_observation_receipts.insert(key, snapshot);
-    Ok(outcome)
+    let acknowledgement =
+        match crate::control_turn::flavor_refusal_payload(request, generation, reason, clock.now())
+            .and_then(|payload| append_observation(&mut state, &identity, payload))
+        {
+            Ok(()) => {
+                state.control_observation_receipts.insert(key, snapshot);
+                Ack::Recorded
+            },
+            Err(error) => {
+                tracing::warn!(%error, "control flavor refusal observation could not be written");
+                Ack::Unrecorded
+            },
+        };
+    Ok(crate::control_turn::acknowledged_flavor_outcome(
+        outcome,
+        acknowledgement,
+        None,
+    ))
 }
 
 fn read_flavor_receipt(

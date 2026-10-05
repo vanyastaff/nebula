@@ -113,37 +113,29 @@ impl WorkflowEngine {
         let refusal = ControlFlavorRefusal::new(claim, &execution_key, actual);
         let decision = handoff.record_control_flavor_refusal(&refusal).await;
         match decision {
-            Ok(ControlFlavorRefusalOutcome::Recorded {
+            Ok(ControlFlavorRefusalOutcome::FlavorMismatch {
                 expected,
                 actual,
                 backend,
-            }) => {
-                tracing::Span::current().record("observation_acknowledgement", "recorded");
-                tracing::Span::current()
-                    .record("expected_flavor", tracing::field::display(expected));
-                tracing::Span::current().record("actual_flavor", tracing::field::display(actual));
-                if let Err(error) = crate::control_metrics::record_execution_control_outcome(
-                    &self.metrics,
-                    backend,
-                    nebula_execution::ExecutionControlOutcome::FlavorMismatch,
-                ) {
-                    tracing::warn!(%error, "execution flavor refusal metric could not be recorded");
-                }
-                // Keep exact-load validation authoritative for the typed rejection.
-                // Recording the owner's refusal grants no lease or permission to drive.
-                Ok(())
-            },
-            Ok(ControlFlavorRefusalOutcome::AlreadyRecorded {
-                expected,
-                actual,
-                backend,
+                observation_acknowledgement,
             }) => {
                 let span = tracing::Span::current();
-                span.record("observation_acknowledgement", "already_recorded");
+                span.record(
+                    "observation_acknowledgement",
+                    observation_acknowledgement.as_str(),
+                );
                 span.record("expected_flavor", tracing::field::display(expected));
                 span.record("actual_flavor", tracing::field::display(actual));
                 span.record("backend", backend.as_str());
                 span.record("outcome", "flavor-mismatch");
+                crate::control_metrics::observe_execution_control_decision(
+                    &self.metrics,
+                    backend,
+                    nebula_execution::ExecutionControlOutcome::FlavorMismatch,
+                    observation_acknowledgement,
+                );
+                // Keep exact-load validation authoritative for the typed rejection.
+                // Recording the owner's refusal grants no lease or permission to drive.
                 Ok(())
             },
             Ok(ControlFlavorRefusalOutcome::ClaimFenced {
@@ -178,16 +170,13 @@ impl WorkflowEngine {
                 Ok(())
             },
             Err(error) => {
-                tracing::warn!(%error, "flavor refusal observation could not be recorded");
-                let cause = if matches!(
-                    error,
-                    nebula_storage_port::StorageError::AcknowledgementUnknown { .. }
-                ) {
-                    "acknowledgement_lost"
-                } else {
-                    "write_failed"
-                };
-                self.flavor_refusal_unrecorded(handoff.backend_kind(), cause);
+                // The owner could not decide or confirm a refusal; the runtime
+                // still rejects the mismatch at exact load, unjournaled.
+                tracing::warn!(%error, "flavor refusal could not be decided by the owner");
+                self.flavor_refusal_unrecorded(
+                    handoff.backend_kind(),
+                    crate::control_metrics::unrecorded_cause(&error),
+                );
                 Ok(())
             },
         }

@@ -101,6 +101,9 @@ async fn sqlite_refusals_survive_observation_faults() {
             ObservationFault::FailObservationWrite => &[
                 "CREATE TRIGGER fault_fail_receipt BEFORE INSERT ON port_execution_control_observation_receipts BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END",
             ],
+            ObservationFault::FailJournalWrite => &[
+                "CREATE TRIGGER fault_fail_journal BEFORE INSERT ON port_execution_journal BEGIN SELECT RAISE(ABORT, 'injected journal failure'); END",
+            ],
             // A deferred foreign-key violation fails only at COMMIT, after
             // every statement of the refusal transaction succeeded.
             ObservationFault::LoseCommitAcknowledgement => &[
@@ -111,6 +114,7 @@ async fn sqlite_refusals_survive_observation_faults() {
             ObservationFault::Clear => &[
                 "DROP TRIGGER IF EXISTS fault_fail_receipt",
                 "DROP TRIGGER IF EXISTS fault_lose_commit",
+                "DROP TRIGGER IF EXISTS fault_fail_journal",
             ],
         };
         for statement in statements {

@@ -87,6 +87,9 @@ async fn postgres_refusals_survive_observation_faults() {
             ObservationFault::FailObservationWrite => &[
                 "CREATE TRIGGER fault_fail_receipt BEFORE INSERT ON port_execution_control_observation_receipts FOR EACH ROW EXECUTE FUNCTION fault_injected()",
             ],
+            ObservationFault::FailJournalWrite => &[
+                "CREATE TRIGGER fault_fail_journal BEFORE INSERT ON port_execution_journal FOR EACH ROW EXECUTE FUNCTION fault_injected()",
+            ],
             // A deferred constraint trigger fires only at COMMIT, after every
             // statement of the refusal transaction succeeded.
             ObservationFault::LoseCommitAcknowledgement => &[
@@ -95,6 +98,7 @@ async fn postgres_refusals_survive_observation_faults() {
             ObservationFault::Clear => &[
                 "DROP TRIGGER IF EXISTS fault_fail_receipt ON port_execution_control_observation_receipts",
                 "DROP TRIGGER IF EXISTS fault_lose_commit ON port_execution_journal",
+                "DROP TRIGGER IF EXISTS fault_fail_journal ON port_execution_journal",
             ],
         };
         for statement in statements {
