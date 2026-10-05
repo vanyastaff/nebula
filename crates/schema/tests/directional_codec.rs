@@ -236,9 +236,10 @@ fn owned_literal_defaults_and_adjacent_aliases_are_prepared_exactly() {
 }
 
 #[test]
-fn null_default_on_a_bounded_optional_integer_is_admitted_like_runtime_null() {
-    // A bounded integer use carries range rules; admission must skip them for
-    // an admitted null default exactly as runtime validation skips them.
+fn null_allowed_by_option_skips_value_rules_in_admission_and_runtime() {
+    // A bounded integer use carries range rules. A null allowed by Option
+    // skips non-null value rules in admission (the null default) and at
+    // runtime (an omitted or explicit null), per PHASE5_PROPERTY.md.
     let input = nebula_schema::InputContract::for_type::<NullDefault>().unwrap();
     for (data, expected) in [
         (json!({}), None),

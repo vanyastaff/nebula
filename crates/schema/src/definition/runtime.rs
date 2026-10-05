@@ -128,15 +128,6 @@ pub(super) fn validate_literal(
             obligations.push(PendingValidation::Value { path });
             continue;
         }
-        rules(
-            &core.rules,
-            value,
-            context,
-            &path,
-            full,
-            &mut obligations,
-            expression_paths,
-        )?;
         let incomplete = !full
             && expression_paths
                 .iter()
@@ -168,6 +159,17 @@ pub(super) fn validate_literal(
             }
             continue;
         }
+        // An admitted null skips non-null value rules (PHASE5_PROPERTY.md);
+        // admission checks null input defaults the same way.
+        rules(
+            &core.rules,
+            value,
+            context,
+            &path,
+            full,
+            &mut obligations,
+            expression_paths,
+        )?;
         if value.as_str() == Some("")
             && empty_rejected(&core.empty_string, context, &path, full, &mut obligations)?
         {
