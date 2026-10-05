@@ -13,6 +13,7 @@ use crate::{
         shared::AckResponse,
     },
     error::{ApiError, ApiResult, ProblemDetails},
+    extractors::ApiJson,
     state::AppState,
 };
 
@@ -90,7 +91,7 @@ pub async fn upsert_workspace_member(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _workspace, raw_principal)): Path<(String, String, String)>,
-    Json(body): Json<UpsertWorkspaceMemberRequest>,
+    ApiJson(body): ApiJson<UpsertWorkspaceMemberRequest>,
 ) -> ApiResult<Json<WorkspaceMemberSummary>> {
     tenant.require(nebula_core::Permission::WorkspaceMemberManage)?;
     let workspace_id = workspace_id(&tenant)?;

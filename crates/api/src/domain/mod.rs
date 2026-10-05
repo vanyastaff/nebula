@@ -64,6 +64,7 @@ pub fn create_routes(state: AppState, _config: &ApiConfig) -> (Router, OpenApi) 
     let api_router = build_openapi_router(&state);
     let (router, mut openapi) = api_router.split_for_parts();
     crate::openapi::add_session_security(&mut openapi);
+    crate::openapi::add_problem_response_contract(&mut openapi);
     crate::access::assert_tenant_access_coverage(&openapi)
         .expect("tenant routes must declare access permissions");
     let router = router.with_state(state);

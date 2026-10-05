@@ -166,6 +166,123 @@ pub(crate) fn add_session_security(openapi: &mut utoipa::openapi::OpenApi) {
     }
 }
 
+/// Match the served error contract to the shared RFC 9457 runtime.
+///
+/// Handlers declare their own outcomes; this pass adds the failures that
+/// router-wide layers produce before or around any handler, so the document
+/// names every status the live router can return:
+///
+/// - `429` from the global per-IP limiter on every non-probe route;
+/// - `404`/`503` from tenant resolution on every `/orgs/{org}` route;
+/// - `400`/`413`/`415`/`422` from the body limit and [`ApiJson`] decoding on
+///   every operation that takes a JSON request body.
+///
+/// Existing, endpoint-specific descriptions are kept.
+///
+/// [`ApiJson`]: crate::extractors::ApiJson
+pub(crate) fn add_problem_response_contract(openapi: &mut utoipa::openapi::OpenApi) {
+    const TENANT_PREFIX: &str = "/api/v1/orgs/{org}";
+    for (path, item) in &mut openapi.paths.paths {
+        for operation in [
+            &mut item.get,
+            &mut item.head,
+            &mut item.options,
+            &mut item.trace,
+            &mut item.post,
+            &mut item.put,
+            &mut item.patch,
+            &mut item.delete,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            normalize_problem_responses(operation);
+            let mut layer_failures = Vec::new();
+            if !crate::middleware::rate_limit::EXCLUDED_PATHS.contains(&path.as_str()) {
+                layer_failures.push((
+                    "429",
+                    "Global per-IP request quota exceeded; Retry-After carries retry advice.",
+                ));
+            }
+            if path.starts_with(TENANT_PREFIX) {
+                layer_failures.extend([
+                    (
+                        "404",
+                        "Organisation or workspace is unknown or not visible to the caller.",
+                    ),
+                    (
+                        "503",
+                        "Tenant authority is not configured on this instance.",
+                    ),
+                ]);
+            }
+            let takes_json_body = operation
+                .request_body
+                .as_ref()
+                .is_some_and(|body| body.content.contains_key("application/json"));
+            if takes_json_body {
+                layer_failures.extend([
+                    ("400", "Request body is not a valid JSON document."),
+                    ("413", "Request body exceeds the configured body limit."),
+                    ("415", "Request body is not sent as application/json."),
+                    (
+                        "422",
+                        "Request body does not match the operation's request schema.",
+                    ),
+                ]);
+            }
+            for (status, description) in layer_failures {
+                operation
+                    .responses
+                    .responses
+                    .entry(status.to_owned())
+                    .or_insert_with(|| problem_response(description));
+            }
+        }
+    }
+}
+
+fn problem_response(
+    description: &str,
+) -> utoipa::openapi::RefOr<utoipa::openapi::response::Response> {
+    use utoipa::openapi::{ContentBuilder, Ref, ResponseBuilder};
+    ResponseBuilder::new()
+        .description(description)
+        .content(
+            "application/problem+json",
+            ContentBuilder::new()
+                .schema(Some(Ref::from_schema_name("ProblemDetails")))
+                .build(),
+        )
+        .build()
+        .into()
+}
+
+/// RFC 9457 is the runtime error envelope, including honest 501 stubs.
+/// Preserve endpoint-specific error descriptions and the readiness 503 payload.
+fn normalize_problem_responses(operation: &mut Operation) {
+    use utoipa::openapi::{Ref, RefOr};
+    for (status, response) in &mut operation.responses.responses {
+        let RefOr::T(response) = response else {
+            continue;
+        };
+        let is_stub = status == "501";
+        let is_problem = response.content.values().any(|content| {
+            matches!(&content.schema, Some(RefOr::Ref(reference))
+                if reference.ref_location == "#/components/schemas/ProblemDetails")
+        });
+        if !is_stub && !is_problem {
+            continue;
+        }
+        if let Some(mut content) = response.content.shift_remove("application/json") {
+            content.schema = Some(Ref::from_schema_name("ProblemDetails").into());
+            response
+                .content
+                .insert("application/problem+json".to_owned(), content);
+        }
+    }
+}
+
 fn add_session_requirement(operation: &mut Option<Operation>, csrf_required: bool) {
     let Some(operation) = operation else {
         return;

@@ -72,6 +72,7 @@ use crate::{
         shared::AckResponse,
     },
     error::{ApiError, ApiResult, ProblemDetails},
+    extractors::ApiJson,
     state::AppState,
 };
 
@@ -168,7 +169,7 @@ pub async fn get_org(
 pub async fn update_org(
     State(_state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
-    Json(_body): Json<serde_json::Value>,
+    ApiJson(_body): ApiJson<serde_json::Value>,
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::OrgUpdate)?;
     Err(ApiError::NotImplemented(
@@ -287,7 +288,7 @@ pub async fn list_members(
 pub async fn add_member(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
-    Json(body): Json<AddMemberRequest>,
+    ApiJson(body): ApiJson<AddMemberRequest>,
 ) -> ApiResult<(StatusCode, Json<MemberSummary>)> {
     let store = membership_store(&state)?;
     tenant.require(nebula_core::Permission::MemberInvite)?;
@@ -503,7 +504,7 @@ pub async fn list_service_accounts(
 pub async fn create_service_account(
     State(_state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
-    Json(_body): Json<serde_json::Value>,
+    ApiJson(_body): ApiJson<serde_json::Value>,
 ) -> ApiResult<Json<serde_json::Value>> {
     tenant.require(nebula_core::Permission::ServiceAccountManage)?;
     Err(ApiError::NotImplemented(
