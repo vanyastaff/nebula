@@ -24,10 +24,8 @@ pub mod health;
 /// Unsupported operator-only wire vocabulary.
 pub mod internal;
 
-/// Me request and response bodies.
 pub mod me;
 
-/// Org request and response bodies.
 pub mod org;
 
 /// RFC9457 failure bodies and structured diagnostics.
@@ -36,7 +34,6 @@ pub mod problem;
 /// Resource request and response bodies.
 pub mod resource;
 
-/// Cross-domain pagination and role wire vocabulary.
 pub mod shared;
 
 /// Webhook request and response bodies.
