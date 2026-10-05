@@ -591,7 +591,7 @@ fn workflow_pins_revisions_tools_matrix_and_fail_closed_aggregation() {
         ("success", "257", "3", "success", false),
         ("cancelled", "3", "3", "cancelled", false),
     ] {
-        let status = Command::new("bash")
+        let status = test_bash_command()
             .args(["-c", &aggregator])
             .env("PLANNER_RESULT", planner)
             .env("PACKAGE_COUNT", package_count)
@@ -613,7 +613,7 @@ fn run_shard_script(workflow: &str, packages_json: &str) -> Output {
         "Check shard packages against baseline",
     );
     let script = format!("cargo() {{ printf '%s\\n' \"$*\"; }}\n{worker}");
-    Command::new("bash")
+    test_bash_command()
         .args(["-c", &script])
         .env("PACKAGES_JSON", packages_json)
         .env("BASE_REVISION", "base")
@@ -633,7 +633,7 @@ fn run_selector_script(workflow: &str, plan: &str) -> SelectorRun {
     );
     let script = format!("cargo() {{ printf '%s\\n' \"$SEMVER_PLAN\"; }}\n{selector}");
     let github_output = tempfile::NamedTempFile::new().expect("GitHub output file creates");
-    let process = Command::new("bash")
+    let process = test_bash_command()
         .args(["-c", &script])
         .env("SEMVER_PLAN", plan)
         .env("BASE_REVISION", "base")
@@ -946,4 +946,10 @@ fn workflow_step_script(job: &str, step_name: &str) -> String {
         .map(|line| line.strip_prefix("        ").unwrap_or(line))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+// Windows may resolve `bash` to the WSL launcher before PATH. Keep the
+// production scripts unchanged while selecting an available test host shell.
+fn test_bash_command() -> Command {
+    Command::new(std::env::var_os("NEBULA_TEST_BASH").unwrap_or_else(|| "bash".into()))
 }

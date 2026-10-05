@@ -200,6 +200,8 @@ jobs:
 
   postgres-conformance:
     name: PostgreSQL storage conformance
+    outputs:
+      expected-provenance-sha256: ${{ steps.runtime-authority-candidate.outputs.expected-provenance-sha256 }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -386,6 +388,7 @@ jobs:
             -E 'test(records_actual_compiler_and_http_diagnostics)'
 
       - name: Assemble producer-owned runtime-authority candidate
+        id: runtime-authority-candidate
         shell: bash
         run: |
           set -euo pipefail
@@ -400,6 +403,9 @@ jobs:
             --run-id "${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --toolchain "rustc 1.97.1"
+          # Authenticate the manifest through job outputs, outside the upload.
+          manifest_sha256=$(sha256sum target/runtime-authority-expected.json)
+          echo "expected-provenance-sha256=${manifest_sha256%% *}" >> "$GITHUB_OUTPUT"
 
       - name: Upload PostgreSQL and migration observations
         if: always()
@@ -453,6 +459,8 @@ jobs:
           path: target/runtime-authority-candidate
 
       - name: Verify producer-owned runtime-authority bundle
+        env:
+          EXPECTED_PROVENANCE_SHA256: ${{ needs.postgres-conformance.outputs.expected-provenance-sha256 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -462,6 +470,7 @@ jobs:
           cargo xtask north-star-gates verify-runtime-authority \
             --artifact-root target/runtime-authority-candidate/runtime-authority-bundle \
             --expected-provenance target/runtime-authority-candidate/runtime-authority-expected.json \
+            --expected-provenance-sha256 "$EXPECTED_PROVENANCE_SHA256" \
             --source-revision "${{ github.sha }}" \
             --repository "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \

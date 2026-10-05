@@ -4,8 +4,8 @@
 
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
-    CredentialSlot, Effect, Error, Operation, OperationError, Provider, Resident,
-    ResidentProvider, Resource, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft,
+    CredentialSlot, Effect, Error, Operation, OperationError, Provider, Resident, ResidentProvider,
+    Resource, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft,
     http::{
         AsWrite, Authorize, Delete, Get, HttpApi, HttpConfig, HttpTransport, Keyed, Patch, Post,
         Put, Request, open_stream,

@@ -1227,3 +1227,29 @@ fn git_output(repo: &Path, args: &[&str]) -> String {
     assert!(output.status.success());
     String::from_utf8(output.stdout).expect("git output is UTF-8")
 }
+
+#[test]
+fn runtime_authority_manifest_is_authenticated_through_job_outputs() {
+    let workflow =
+        fs::read_to_string(workspace_root().join(".github/workflows/test-matrix.yml")).unwrap();
+    for required in [
+        "expected-provenance-sha256: ${{ steps.runtime-authority-candidate.outputs.expected-provenance-sha256 }}",
+        "manifest_sha256=$(sha256sum target/runtime-authority-expected.json)",
+        "expected-provenance-sha256=${manifest_sha256%% *}",
+        "EXPECTED_PROVENANCE_SHA256: ${{ needs.postgres-conformance.outputs.expected-provenance-sha256 }}",
+        "--expected-provenance-sha256 \"$EXPECTED_PROVENANCE_SHA256\"",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "missing trusted provenance channel: {required}"
+        );
+    }
+    let producer = workflow
+        .find("cargo xtask north-star-gates build-runtime-authority-bundle")
+        .unwrap();
+    let digest = workflow.find("manifest_sha256=$(sha256sum").unwrap();
+    let upload = workflow
+        .find("- name: Upload PostgreSQL and migration observations")
+        .unwrap();
+    assert!(producer < digest && digest < upload);
+}

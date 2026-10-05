@@ -644,10 +644,13 @@ impl WorkflowEngine {
                     // the actually-panicked task (issue #301).
                     let task_id = join_err.id();
                     let panicked_node = ctx.task_nodes.remove(&task_id);
-                    let err_msg = join_err.to_string();
+                    // JoinError's Display includes the foreign panic payload.
+                    // Retain task/node attribution without republishing its text.
+                    let err_msg = "node task panicked".to_owned();
                     tracing::error!(
                         ?task_id,
                         ?panicked_node,
+                        error_code = "ENGINE:TASK_PANICKED",
                         error = %err_msg,
                         "node task panicked"
                     );

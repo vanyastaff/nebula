@@ -87,6 +87,25 @@ fn clippy_propagates_the_owner_contract_failure() {
 }
 
 #[test]
+fn fmt_checks_each_selected_owner_in_a_separate_invocation() {
+    let mut plan = fixture_plan();
+    plan["packages"] = json!([OWNER, "fixture-second-owner"]);
+    let paths = [OWNER_SOURCE];
+    let run = run_hook(FMT, &paths, &plan, Failure::None);
+    assert_success(&run);
+    assert_eq!(
+        run.calls,
+        vec![
+            planner_call(&paths),
+            arguments(&["fmt", "-p", OWNER, "--", "--check"]),
+            arguments(&["fmt", "-p", "fixture-second-owner", "--", "--check"]),
+            arguments(&["fmt", "--manifest-path", FIRST_MANIFEST, "--", "--check"]),
+            arguments(&["fmt", "--manifest-path", SECOND_MANIFEST, "--", "--check"]),
+        ]
+    );
+}
+
+#[test]
 fn fmt_checks_negative_sources_even_when_only_a_positive_source_changed() {
     let mut plan = fixture_plan();
     plan["fixtures"].as_array_mut().unwrap().truncate(1);
