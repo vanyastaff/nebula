@@ -33,7 +33,7 @@ use crate::{
             CreateTokenRequest, CreateTokenResponse, MeResponse, MyOrgsResponse, MyTokensResponse,
             OrgSummary, TokenSummary, UpdateMeRequest,
         },
-        shared::{AckResponse, OrgRoleDto},
+        shared::AckResponse,
     },
     error::{ApiError, ApiResult, ProblemDetails},
     middleware::auth::{AuthContext, AuthMethod},
@@ -243,7 +243,7 @@ pub async fn list_my_orgs(
         .into_iter()
         .map(|(org_id, role)| OrgSummary {
             id: org_id.to_string(),
-            role: OrgRoleDto::from(role),
+            role: crate::domain::shared::org_role_dto(role),
         })
         .collect::<Vec<_>>();
 

@@ -23,7 +23,6 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{TimeDelta, Utc};
 use nebula_core::Principal;
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -758,30 +757,7 @@ pub async fn oauth_callback(
     Ok(response)
 }
 
-/// Query string for the OAuth callback.
-#[derive(Deserialize)]
-#[non_exhaustive]
-pub struct OAuthCallbackParams {
-    /// Opaque state token previously issued by `start_oauth`.
-    pub state: String,
-    /// Authorization code returned by the provider, mutually exclusive with
-    /// `error`.
-    pub code: Option<String>,
-    /// Provider error identifier, mutually exclusive with `code`. Its value
-    /// is validated for shape but never surfaced or logged.
-    pub error: Option<String>,
-}
-
-impl std::fmt::Debug for OAuthCallbackParams {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("OAuthCallbackParams")
-            .field("state", &"[redacted]")
-            .field("code", &"[redacted]")
-            .field("error", &"[redacted]")
-            .finish()
-    }
-}
+pub use nebula_api_contract::v1::auth::OAuthCallbackParams;
 
 #[derive(Clone, Copy)]
 enum ValidatedOAuthCallback<'a> {

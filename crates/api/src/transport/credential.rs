@@ -38,16 +38,20 @@
 //!
 use nebula_storage_port::{CredentialIncidentRef, Scope};
 
+#[cfg(test)]
+use crate::domain::credential::dto::{
+    CredentialReconcileDecisionV1, CredentialReconcileOperationV1,
+};
+
 use crate::{
     domain::credential::dto::{
         ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest,
-        CredentialCapabilities, CredentialReconcileDecisionV1, CredentialReconcileOperationV1,
-        CredentialResponse, CredentialSummary, CredentialTestFailureCodeV1, CredentialTypeInfo,
-        ListCredentialTypesResponse, ListCredentialsQuery, ListCredentialsResponse,
-        ReauthorizeCredentialRequest, ReauthorizeCredentialResponse, ReconcileCredentialRequest,
-        ReconcileCredentialResponse, RefreshCredentialResponse, ResolveCredentialRequest,
-        ResolveCredentialResponse, RevokeCredentialResponse, TestCredentialResponse,
-        UpdateCredentialRequest,
+        CredentialCapabilities, CredentialResponse, CredentialSummary, CredentialTestFailureCodeV1,
+        CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery,
+        ListCredentialsResponse, ReauthorizeCredentialRequest, ReauthorizeCredentialResponse,
+        ReconcileCredentialRequest, ReconcileCredentialResponse, RefreshCredentialResponse,
+        ResolveCredentialRequest, ResolveCredentialResponse, RevokeCredentialResponse,
+        TestCredentialResponse, UpdateCredentialRequest,
     },
     error::{ApiError, ApiResult},
     middleware::auth::AuthenticatedPrincipal,
@@ -295,7 +299,9 @@ fn lifecycle_response(
         CredentialGatewayLifecycleState::RefreshBlocked => CredentialLifecycleState::RefreshBlocked,
         CredentialGatewayLifecycleState::ReauthRequired => CredentialLifecycleState::ReauthRequired,
         CredentialGatewayLifecycleState::OperationInFlight { operation } => {
-            let Some(operation) = CredentialReconcileOperationV1::from_port(operation) else {
+            let Some(operation) =
+                crate::domain::credential::dto::reconcile_operation_from_port(operation)
+            else {
                 return CredentialLifecycleState::ReconciliationRequired {
                     operation: None,
                     incident: None,
@@ -307,7 +313,7 @@ fn lifecycle_response(
             operation,
             incident,
         } => CredentialLifecycleState::ReconciliationRequired {
-            operation: CredentialReconcileOperationV1::from_port(operation),
+            operation: crate::domain::credential::dto::reconcile_operation_from_port(operation),
             incident: incident.map(CredentialIncidentRef::as_uuid),
         },
     }
@@ -678,7 +684,11 @@ pub async fn reconcile_credential(
     cred: &str,
     request: &ReconcileCredentialRequest,
 ) -> ApiResult<ReconcileCredentialResponse> {
-    let decision = request.decision.to_port(request.operation).ok_or_else(|| {
+    let decision = crate::domain::credential::dto::reconcile_decision_to_port(
+        request.decision,
+        request.operation,
+    )
+    .ok_or_else(|| {
         ApiError::validation_message("reconciliation decision does not match operation")
     })?;
     let result = gateway(state)?
@@ -710,15 +720,14 @@ pub async fn reconcile_credential(
     // conflict: the caller's intent is satisfied either way, and the only thing
     // they can act on differently is whether this call wrote.
     Ok(ReconcileCredentialResponse {
-        operation: CredentialReconcileOperationV1::from_port(port_decision.kind()).ok_or_else(
-            || {
-                ApiError::Internal(
-                    "credential gateway returned a legacy reconcile result".to_owned(),
-                )
-            },
-        )?,
+        operation: crate::domain::credential::dto::reconcile_operation_from_port(
+            port_decision.kind(),
+        )
+        .ok_or_else(|| {
+            ApiError::Internal("credential gateway returned a legacy reconcile result".to_owned())
+        })?,
         incident: request.incident,
-        decision: CredentialReconcileDecisionV1::from_port(port_decision),
+        decision: crate::domain::credential::dto::reconcile_decision_from_port(port_decision),
         changed,
         evidence_digest: digest_hex(&evidence_digest),
         message: if changed {

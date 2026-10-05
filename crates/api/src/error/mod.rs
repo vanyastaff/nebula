@@ -515,7 +515,7 @@ impl ApiError {
                 error
                     .diagnostics()
                     .iter()
-                    .map(ValidationFieldError::from)
+                    .map(problem::validation_error_from_diagnostic)
                     .collect(),
             ),
             Self::WorkflowPublicationIndeterminate {
@@ -600,7 +600,7 @@ fn standard_problem(
     title: &'static str,
     detail: Option<&str>,
 ) -> (StatusCode, ProblemDetails) {
-    let problem = ProblemDetails::new(
+    let problem = problem::new_problem_details(
         format!("https://nebula.dev/problems/{problem_type}"),
         title,
         status,
@@ -754,7 +754,7 @@ fn internal_problem(message: &str) -> (StatusCode, ProblemDetails) {
     tracing::error!(error = message, "internal API error");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        ProblemDetails::new(
+        problem::new_problem_details(
             "about:blank",
             "Internal Server Error",
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -890,7 +890,10 @@ fn activation_field_errors(errors: &[nebula_workflow::WorkflowError]) -> Vec<Val
             .flat_map(nebula_workflow::WorkflowError::activation_diagnostics)
             .collect(),
     );
-    diagnostics.iter().map(ValidationFieldError::from).collect()
+    diagnostics
+        .iter()
+        .map(problem::validation_error_from_diagnostic)
+        .collect()
 }
 
 impl From<nebula_engine::WorkflowActivationError> for ApiError {
