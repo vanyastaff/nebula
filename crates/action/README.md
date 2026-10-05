@@ -169,11 +169,14 @@ host-only capability of the resource manager and the engine.
 |---|---|
 | `ResourceHandle<R>` / `CredentialGuard<C::Scheme>` | required (a handle checks nothing out at resolution) |
 | `Option<ResourceHandle<R>>` / `Option<CredentialGuard<C::Scheme>>` | optional |
-| `Lazy<CredentialGuard<C::Scheme>>` | required + lazy (`.get(ctx).await`) — credential slots only |
-| `Option<Lazy<CredentialGuard<C::Scheme>>>` | optional + lazy — credential slots only |
 
-`Lazy<X>` uses `nebula_core::sync::Lazy` (cancel-safe `tokio::sync::OnceCell`). A
-`ResourceHandle<R>` acquires nothing to defer, so `Lazy<ResourceHandle<R>>` is refused;
+Credential slots resolve eagerly during `FromWorkflowNode`. Migrate
+`Lazy<CredentialGuard<S>>` to `CredentialGuard<S>` and
+`Option<Lazy<CredentialGuard<S>>>` to `Option<CredentialGuard<S>>`;
+use the populated guard directly instead of calling `.get(ctx).await`.
+The removed wrappers never deferred resolution: the factory resolved the guard
+before wrapping it. A `ResourceHandle<R>` acquires nothing to defer, so
+`Lazy<ResourceHandle<R>>` is also refused;
 `ResourceGuard<R>` in any wrapper is refused with the 0.27.0 migration hint.
 
 > **Note** — `#[credential]` slot fields hold `CredentialGuard<C::Scheme>` (the projected auth scheme), not `CredentialGuard<C>` (the credential type). The framework projects state→scheme before populating the slot. The `key` attribute names the slot; binding to a concrete `CredentialId` per workflow node uses the ADR-0042 hybrid mechanism (default = slot key, explicit override via `node.slot_bindings`).

@@ -354,7 +354,7 @@ primitive establishes remote-effect atomicity or universal single-effect safety.
 
 1. Runtime control establishes one explicit effect slot for each intended occurrence. Durable
    preparation storage-mints `EffectSlotId` and binds the originating attempt generation,
-   canonical request fingerprint, and runtime-minted `OperationId` **before** provider
+   canonical request fingerprint, and ledger-minted `OperationId` **before** provider
    invocation. Same slot plus same fingerprint reuses the `OperationId`; same slot plus a
    different fingerprint returns typed `OperationMismatch` with no durable delta. Distinct slots
    remain distinct even when their payload bytes are identical.
@@ -377,9 +377,11 @@ primitive establishes remote-effect atomicity or universal single-effect safety.
    closed. Outcome acknowledgement uncertainty permits only ledger reads and an exact frozen-
    evidence recommit under the current fence. Neither path authorizes provider invocation.
 
-ADR-0120 accepts this operation protocol; its runtime implementation remains **planned** until
-the durable ledger, runtime injection, recovery, and fault evidence land. It may converge on one
-known effect only under the complete pinned stable-key or authoritative read-only reconciliation
+ADR-0120 accepts this operation protocol. The durable ledger, runtime injection, and recovery
+are implemented in `nebula-storage` and `nebula-engine`; fault contracts are covered by
+`crates/engine/tests/effect_protocol.rs` and the storage operation-ledger conformance suites.
+Implementation presence is not a passing release gate. It may converge on one known effect
+only under the complete pinned stable-key or authoritative read-only reconciliation
 contract. Only the stable-key variant grants bounded effect-call re-invocation, and the result is
 never described as exactly-once.
 

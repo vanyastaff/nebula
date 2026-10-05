@@ -10,9 +10,10 @@ use super::dto::{UpsertWorkspaceMemberRequest, WorkspaceMemberSummary, Workspace
 use crate::{
     domain::{
         membership_support::{parse_principal, principal_id, store as membership_store},
-        shared::{AckResponse, WorkspaceRoleDto},
+        shared::AckResponse,
     },
     error::{ApiError, ApiResult, ProblemDetails},
+    extractors::ApiJson,
     state::AppState,
 };
 
@@ -54,7 +55,7 @@ pub async fn list_workspace_members(
         .map(|member| {
             Ok(WorkspaceMemberSummary {
                 principal_id: principal_id(&member.principal)?,
-                role: WorkspaceRoleDto::from(member.role),
+                role: crate::domain::shared::workspace_role_dto(member.role),
             })
         })
         .collect::<Result<Vec<_>, ApiError>>()?;
@@ -90,12 +91,12 @@ pub async fn upsert_workspace_member(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _workspace, raw_principal)): Path<(String, String, String)>,
-    Json(body): Json<UpsertWorkspaceMemberRequest>,
+    ApiJson(body): ApiJson<UpsertWorkspaceMemberRequest>,
 ) -> ApiResult<Json<WorkspaceMemberSummary>> {
     tenant.require(nebula_core::Permission::WorkspaceMemberManage)?;
     let workspace_id = workspace_id(&tenant)?;
     let principal = parse_principal(&raw_principal)?;
-    let role = WorkspaceRoleDto::parse(&body.role.0).ok_or_else(|| {
+    let role = crate::domain::shared::parse_workspace_role(&body.role.0).ok_or_else(|| {
         ApiError::validation_message("role must be one of viewer|runner|editor|admin".to_owned())
     })?;
     let store = membership_store(&state)?;
@@ -113,10 +114,10 @@ pub async fn upsert_workspace_member(
     store
         .upsert_workspace_member(tenant.org_id, workspace_id, &principal, role)
         .await?;
-    tracing::info!(org_id = %tenant.org_id, workspace_id = %workspace_id, principal = %raw_principal, role = WorkspaceRoleDto::token(role), "workspace member added or updated");
+    tracing::info!(org_id = %tenant.org_id, workspace_id = %workspace_id, principal = %raw_principal, role = crate::domain::shared::workspace_role_token(role), "workspace member added or updated");
     Ok(Json(WorkspaceMemberSummary {
         principal_id: principal_id(&principal)?,
-        role: WorkspaceRoleDto::from(role),
+        role: crate::domain::shared::workspace_role_dto(role),
     }))
 }
 

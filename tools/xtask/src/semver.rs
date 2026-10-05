@@ -39,10 +39,16 @@ pub(crate) fn plan(
     base: &str,
     head: &str,
     comparison: Comparison,
+    supported_surface: bool,
 ) -> Result<Vec<u8>, XtaskError> {
     let changes = changes::git_diff(workspace.root(), base, head, comparison)?;
     let selection = Selection::from_changes(workspace, changes);
-    let package_names = workspace.semver_package_names(&selection.package_ids)?;
+    let mut package_names = workspace.semver_package_names(&selection.package_ids)?;
+    if supported_surface {
+        // This is compatibility gate policy after metadata selection. It never
+        // changes CI/test matrix membership or guesses ownership from paths.
+        package_names.retain(|name| matches!(name.as_str(), "nebula-sdk" | "nebula-api-contract"));
+    }
     if package_names.len() > MAX_ENTRIES {
         return Err(XtaskError::TooManyEntries {
             count: package_names.len(),

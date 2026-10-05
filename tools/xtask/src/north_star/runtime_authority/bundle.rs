@@ -85,13 +85,16 @@ pub(crate) fn build(request: &BundleRequest) -> Result<Vec<u8>, VerificationErro
     write_new(request.expected_provenance.clone(), &bytes)?;
     // The producer verifies what it just wrote under the same runner identity
     // it recorded, so this leg proves the bundle is internally consistent. The
-    // independent check is the separate `runtime-authority` job, which supplies
-    // its own runner identity and therefore cannot be satisfied by a bundle
-    // built somewhere else.
+    // separate same-run integrity check is the `runtime-authority` job, receiving
+    // the manifest digest through trusted job outputs rather than the candidate.
+    // This authenticates same-run producer bytes; semantic policy checks the
+    // observations under the checked-out policy. Neither this hash nor a PR-owned
+    // policy independently proves a malicious producer reports truthfully.
     super::verify(
         &request.workspace_root,
         &request.artifact_root,
         &request.expected_provenance,
+        &loader::digest(&bytes),
         &super::RunnerIdentity {
             source_revision: request.source_revision.clone(),
             repository: request.repository.clone(),

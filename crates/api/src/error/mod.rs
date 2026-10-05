@@ -302,6 +302,16 @@ pub enum ApiError {
     #[error("Upstream error: {0}")]
     UpstreamError(String),
 
+    /// Request body exceeds the configured REST body limit (413).
+    #[classify(category = "validation", code = "API:PAYLOAD_TOO_LARGE")]
+    #[error("Request body too large")]
+    PayloadTooLarge,
+
+    /// Request body is not declared as `application/json` (415).
+    #[classify(category = "validation", code = "API:UNSUPPORTED_MEDIA_TYPE")]
+    #[error("Unsupported request media type")]
+    UnsupportedMediaType,
+
     /// Storage subsystem is full (507).
     #[classify(category = "internal", code = "API:STORAGE_FULL")]
     #[error("Storage full")]
@@ -515,7 +525,7 @@ impl ApiError {
                 error
                     .diagnostics()
                     .iter()
-                    .map(ValidationFieldError::from)
+                    .map(problem::validation_error_from_diagnostic)
                     .collect(),
             ),
             Self::WorkflowPublicationIndeterminate {
@@ -578,6 +588,18 @@ impl ApiError {
                 "Upstream Error",
                 Some(message),
             ),
+            Self::PayloadTooLarge => standard_problem(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload-too-large",
+                "Payload Too Large",
+                None,
+            ),
+            Self::UnsupportedMediaType => standard_problem(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported-media-type",
+                "Unsupported Media Type",
+                Some("Request body must be sent as application/json."),
+            ),
             Self::StorageFull => standard_problem(
                 StatusCode::INSUFFICIENT_STORAGE,
                 "storage-full",
@@ -600,7 +622,7 @@ fn standard_problem(
     title: &'static str,
     detail: Option<&str>,
 ) -> (StatusCode, ProblemDetails) {
-    let problem = ProblemDetails::new(
+    let problem = problem::new_problem_details(
         format!("https://nebula.dev/problems/{problem_type}"),
         title,
         status,
@@ -754,7 +776,7 @@ fn internal_problem(message: &str) -> (StatusCode, ProblemDetails) {
     tracing::error!(error = message, "internal API error");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        ProblemDetails::new(
+        problem::new_problem_details(
             "about:blank",
             "Internal Server Error",
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -890,7 +912,10 @@ fn activation_field_errors(errors: &[nebula_workflow::WorkflowError]) -> Vec<Val
             .flat_map(nebula_workflow::WorkflowError::activation_diagnostics)
             .collect(),
     );
-    diagnostics.iter().map(ValidationFieldError::from).collect()
+    diagnostics
+        .iter()
+        .map(problem::validation_error_from_diagnostic)
+        .collect()
 }
 
 impl From<nebula_engine::WorkflowActivationError> for ApiError {
@@ -1014,12 +1039,22 @@ impl IntoResponse for ApiError {
             _ => None,
         };
 
-        // Log error
-        tracing::error!(
-            error = ?self,
-            status = status.as_u16(),
-            "API error occurred"
-        );
+        // Only server faults are errors. Client failures (401, 413, 429, ...)
+        // are attacker-reachable at request rate, so logging them at `error`
+        // would turn every rejected request into an alert.
+        if status.is_server_error() {
+            tracing::error!(
+                error = ?self,
+                status = status.as_u16(),
+                "API error occurred"
+            );
+        } else {
+            tracing::debug!(
+                error = ?self,
+                status = status.as_u16(),
+                "API request rejected"
+            );
+        }
 
         // RFC 9457: Content-Type MUST be application/problem+json
         let mut response = (status, Json(problem)).into_response();

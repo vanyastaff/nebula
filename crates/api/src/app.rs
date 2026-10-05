@@ -40,6 +40,8 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // `#[utoipa::path]` would fail to pass through `routes!()` at compile
     // time — drift detection is structural rather than review-time.
     let (api_routes, openapi_spec) = domain::create_routes(state.clone(), config);
+    #[cfg(feature = "test-util")]
+    let observation_spec = openapi_spec.clone();
 
     let path_count = openapi_spec.paths.paths.len();
     // `OpenApiVersion` does not implement `Display`/`Debug`; serde always
@@ -165,6 +167,11 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // gated by `AppState.internal_shared_token`.
     let routes = routes.merge(domain::internal::router(state));
 
+    // The gate observes uncompressed, final route responses. Default builds
+    // contain no observer; test-util requires explicit producer activation.
+    #[cfg(feature = "test-util")]
+    let routes = crate::openapi::conformance::observe_if_enabled(routes, &observation_spec);
+
     // Build per-IP rate limiter from config.
     let rate_limit = RateLimitState::new(config.rate_limit_per_second);
 
@@ -221,7 +228,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // then request_id, then security_headers, then W3C trace extraction
     // (must run before `TraceLayer` inside `middleware_stack`), then the inner stack
     // (`TraceLayer` → response trace inject → compression → CORS).
-    routes
+    let routes = routes
         .layer(middleware_stack)
         .layer(middleware::from_fn(
             crate::middleware::trace_context_middleware,
@@ -233,7 +240,14 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         .layer(middleware::from_fn(move |req, next| {
             let rl = rate_limit.clone();
             async move { rl.handle(req, next).await }
-        }))
+        }));
+
+    // The outer pass observes only responses that bypassed the decoded-body
+    // pass, including global middleware rejections. The marker prevents
+    // double counting and avoids treating compressed JSON as a JSON document.
+    #[cfg(feature = "test-util")]
+    let routes = crate::openapi::conformance::observe_if_enabled(routes, &observation_spec);
+    routes
 }
 
 /// Request ID middleware

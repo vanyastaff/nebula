@@ -7,7 +7,7 @@
 use std::{
     ffi::OsString,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 
@@ -125,6 +125,23 @@ fn copy_fixture(source_root: &Path, destination_root: &Path) {
     }
 }
 
+fn fixture_target_dir() -> PathBuf {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("target"));
+    let target_root = if target_root.is_absolute() {
+        target_root
+    } else {
+        workspace_root.join(target_root)
+    };
+    // Fresh manifests, lockfiles, and sources still exercise the contract;
+    // only Cargo's fingerprinted dependency artifacts survive between runs.
+    target_root
+        .join("sdk-external-contract")
+        .join("test_result_consumer")
+}
+
 fn cargo_probe(fixture_root: &Path, subcommand: &str, binary: &str) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = Command::new(cargo);
@@ -136,7 +153,7 @@ fn cargo_probe(fixture_root: &Path, subcommand: &str, binary: &str) -> Output {
     }
     command
         .env("CARGO_TERM_COLOR", "never")
-        .env("CARGO_TARGET_DIR", fixture_root.join("target"))
+        .env("CARGO_TARGET_DIR", fixture_target_dir())
         .output()
         .expect("run cargo probe for external SDK consumer")
 }

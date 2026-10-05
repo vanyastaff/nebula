@@ -38,6 +38,7 @@ that a value passed validation; the type cannot be constructed without calling `
 - `FieldPath` — validated RFC 6901 pointer, including root and empty-string keys; strict wire parsing via `from_pointer` and serde.
 - `Described` — decorator with `{placeholder}` message templates (replaces per-variant `message: Option<String>` fields).
 - `PredicateContext` — structured value context for predicate evaluation (nested JSON-Pointer sibling lookups).
+- `Condition` — checked predicate/all/any/not refinement of the bounded `Rule` arena. Construction and deserialization reject value, deferred, decorated and empty conditions. The type certifies grammar only: owning schemas must still admit target paths and domains, and `evaluate` accepts any `PredicateContext`, so callers choose which snapshot to evaluate. Evaluation is three-valued (Kleene): a definite answer wins over pending, and `ConditionOutcome::Pending` is an unresolved obligation, never permission to bind a slot.
 - `ExecutionMode` — controls which rule categories run (`StaticOnly`, `Deferred`, `Full`).
 - `EvaluationOutcome` — distinguishes `Satisfied` from explicit deferred obligations.
 - `ValidationErrorKind` — distinguishes input violations, invalid rules, and unavailable evaluation.

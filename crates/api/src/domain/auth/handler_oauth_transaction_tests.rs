@@ -5,7 +5,6 @@ use std::{
 };
 
 use axum::{
-    Json,
     body::to_bytes,
     extract::{OriginalUri, Path, Query, State},
     http::{
@@ -31,6 +30,7 @@ use crate::{
         SESSION_COOKIE, mfa,
     },
     error::ApiError,
+    extractors::ApiJson,
     transport::oauth::{
         OAuthTestProviderProfile,
         test_support::{TestResponse, TlsFixture},
@@ -524,7 +524,7 @@ async fn linked_oauth_user_with_local_mfa_gets_only_a_one_time_challenge() {
     let code = mfa::current_code(&enrollment.secret_base32).expect("current login MFA code");
     let completed = mfa_complete_login(
         State(state.clone()),
-        Json(MfaLoginCompleteRequest {
+        ApiJson(MfaLoginCompleteRequest {
             code: code.clone(),
             challenge_token: challenge_token.clone(),
         }),
@@ -551,7 +551,7 @@ async fn linked_oauth_user_with_local_mfa_gets_only_a_one_time_challenge() {
 
     let replay = mfa_complete_login(
         State(state),
-        Json(MfaLoginCompleteRequest {
+        ApiJson(MfaLoginCompleteRequest {
             code,
             challenge_token,
         }),

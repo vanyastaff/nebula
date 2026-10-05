@@ -2,6 +2,10 @@
 
 #![cfg(unix)]
 
+#[path = "support/fixture_process.rs"]
+mod fixture_process;
+use fixture_process::fixture_command;
+
 use std::{
     env, fs,
     os::unix::fs::PermissionsExt,
@@ -83,6 +87,25 @@ fn clippy_propagates_the_owner_contract_failure() {
             .count(),
         1,
         "the failing contract must actually execute"
+    );
+}
+
+#[test]
+fn fmt_checks_each_selected_owner_in_a_separate_invocation() {
+    let mut plan = fixture_plan();
+    plan["packages"] = json!([OWNER, "fixture-second-owner"]);
+    let paths = [OWNER_SOURCE];
+    let run = run_hook(FMT, &paths, &plan, Failure::None);
+    assert_success(&run);
+    assert_eq!(
+        run.calls,
+        vec![
+            planner_call(&paths),
+            arguments(&["fmt", "-p", OWNER, "--", "--check"]),
+            arguments(&["fmt", "-p", "fixture-second-owner", "--", "--check"]),
+            arguments(&["fmt", "--manifest-path", FIRST_MANIFEST, "--", "--check"]),
+            arguments(&["fmt", "--manifest-path", SECOND_MANIFEST, "--", "--check"]),
+        ]
     );
 }
 
@@ -370,7 +393,7 @@ esac
             .chain(env::split_paths(&env::var_os("PATH").unwrap_or_default())),
     )
     .expect("shim PATH contains valid components");
-    let mut command = Command::new("bash");
+    let mut command = fixture_command("bash");
     command
         .arg(workspace_root().join("scripts").join(script))
         .args(paths)
@@ -409,7 +432,7 @@ esac
 }
 
 fn install_failing_jq(shim_dir: &Path, command: &mut Command, extraction: usize) {
-    let lookup = Command::new("bash")
+    let lookup = fixture_command("bash")
         .args(["-c", "command -v jq"])
         .output()
         .expect("locate real jq before installing the extraction-failure shim");

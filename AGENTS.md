@@ -146,7 +146,7 @@ failures.
 | **API / Surfaces** | `api`, `sdk` |
 | **Exec** | `engine`, `orchestrator`, `worker`, `storage`, `storage-loom-probe` |
 | **Business** | `resource`, `action`, `plugin`, `plugin-core`, `tenancy` |
-| **Core / shared-infra** | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
+| **Core / shared-infra** | `api-contract`, `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
 | **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
 
 `nebula-xtask` is repository tooling, not a product crate or architectural layer. It may

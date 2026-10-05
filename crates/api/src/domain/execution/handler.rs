@@ -17,6 +17,7 @@ use crate::{
         workflow::handler::extract_timestamp,
     },
     error::{ApiError, ApiResult, ProblemDetails},
+    extractors::ApiJson,
     state::AppState,
     trace_capture::w3c_trace_context_for_control_queue,
 };
@@ -299,7 +300,7 @@ pub async fn start_execution(
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, workflow_id)): Path<(String, String, String)>,
     headers: HeaderMap,
-    Json(payload): Json<StartExecutionRequest>,
+    ApiJson(payload): ApiJson<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
@@ -399,6 +400,7 @@ fn start_key(headers: &HeaderMap) -> ApiResult<Option<&str>> {
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
         (status = 500, description = "Failed to enqueue the control command.", body = ProblemDetails),
+        (status = 503, description = "The durable control queue is unavailable; nothing was enqueued.", body = ProblemDetails),
     ),
 )]
 pub async fn cancel_execution(
@@ -555,6 +557,7 @@ pub async fn get_execution_logs(
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
         (status = 500, description = "Failed to enqueue the control command.", body = ProblemDetails),
+        (status = 503, description = "The durable control queue is unavailable; nothing was enqueued.", body = ProblemDetails),
     ),
 )]
 pub async fn terminate_execution(
