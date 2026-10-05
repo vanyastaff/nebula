@@ -390,7 +390,9 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    // Paused time keeps the 260ms checkpoint inside the 400ms lease regardless of
+    // scheduler load, so the lease-expiry path below cannot be reached by accident.
+    #[tokio::test(start_paused = true)]
     async fn nack_warns_once_when_capacity_wait_exceeds_half_the_visibility_timeout() {
         use tracing_subscriber::layer::SubscriberExt;
 
@@ -430,10 +432,12 @@ mod tests {
         assert_eq!(warnings.load(Ordering::SeqCst), 1);
 
         // Free a slot: the same pending send completes and requeues the task.
-        let DequeueResult::Item { .. } = queue.dequeue(Duration::from_millis(50)).await.unwrap()
+        let DequeueResult::Item { payload, .. } =
+            queue.dequeue(Duration::from_millis(50)).await.unwrap()
         else {
             panic!("expected the filler");
         };
+        assert_eq!(payload, serde_json::json!({"task":"filler"}));
         nack_task.await.unwrap().unwrap();
         assert_eq!(warnings.load(Ordering::SeqCst), 1, "warned exactly once");
         let DequeueResult::Item {
