@@ -55,6 +55,7 @@ use nebula_action::{TriggerRuntimeContext, webhook::providers::default_factories
 use nebula_api::{
     ApiConfig, AppState, app,
     domain::webhook::{dto::RegisterWebhookRequest, handler::register_webhook},
+    extractors::ApiJson,
     middleware::auth::AuthenticatedPrincipal,
     ports::credential_service_factory::with_memory_store,
     transport::webhook::{
@@ -549,7 +550,7 @@ async fn register_cross_scope_returns_404() {
         Extension(dummy_user()),
         Extension(tenant_for_scope_b()),
         Path(("org-b".to_string(), "ws-b".to_string())),
-        Json(body),
+        ApiJson(body),
     )
     .await;
 
@@ -596,7 +597,7 @@ async fn register_rejects_inline_provider_authority_before_writes() {
         Extension(dummy_user()),
         Extension(tenant_for_scope_a()),
         Path((TEST_ORG_A.to_owned(), TEST_WS_A.to_owned())),
-        Json(body),
+        ApiJson(body),
     )
     .await
     .expect_err("inline provider authority must fail before any write");
@@ -677,7 +678,7 @@ async fn register_happy_path_secret_not_in_rows() {
         Extension(dummy_user()),
         Extension(tenant),
         Path((TEST_ORG_A.to_string(), TEST_WS_A.to_string())),
-        Json(body),
+        ApiJson(body),
     )
     .await;
 
@@ -770,7 +771,7 @@ async fn register_happy_path_rows_written() {
         Extension(dummy_user()),
         Extension(tenant),
         Path((TEST_ORG_A.to_string(), TEST_WS_A.to_string())),
-        Json(body),
+        ApiJson(body),
     )
     .await
     .expect("happy-path registration must succeed");
@@ -846,7 +847,7 @@ async fn register_rejects_empty_resolved_secret_before_activation() {
         Extension(dummy_user()),
         Extension(tenant_for_scope_a()),
         Path((TEST_ORG_A.to_owned(), TEST_WS_A.to_owned())),
-        Json(RegisterWebhookRequest {
+        ApiJson(RegisterWebhookRequest {
             workflow_id: workflow_id.to_string(),
             trigger_id: trigger_node_key.to_owned(),
             provider: "generic".to_owned(),
@@ -939,7 +940,7 @@ async fn register_without_transport_returns_503() {
         Extension(dummy_user()),
         Extension(tenant_for_scope_a()),
         Path((TEST_ORG_A.to_string(), TEST_WS_A.to_string())),
-        Json(body),
+        ApiJson(body),
     )
     .await;
 
@@ -1087,7 +1088,7 @@ async fn register_compensation_cleans_up_on_activation_failure() {
         Extension(dummy_user()),
         Extension(tenant_for_scope_a()),
         Path((TEST_ORG_A.to_string(), TEST_WS_A.to_string())),
-        Json(body),
+        ApiJson(body),
     )
     .await;
 
@@ -1190,7 +1191,7 @@ async fn register_activation_row_has_node_key_trigger_id_and_spec_link() {
         Extension(dummy_user()),
         Extension(tenant),
         Path((TEST_ORG_A.to_string(), TEST_WS_A.to_string())),
-        Json(body),
+        ApiJson(body),
     )
     .await
     .expect("happy-path registration must succeed");
@@ -1497,7 +1498,7 @@ async fn register_factory_invalid_spec_returns_422() {
         Extension(dummy_user()),
         Extension(tenant_for_scope_a()),
         Path((TEST_ORG_A.to_string(), TEST_WS_A.to_string())),
-        Json(body),
+        ApiJson(body),
     )
     .await;
 

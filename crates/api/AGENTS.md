@@ -41,6 +41,7 @@
 - Versioned wire DTOs live in `nebula-api-contract::v1`; API DTO modules retain compatibility imports, server mappings and tests. Enable its `openapi` feature for the served schemas.
 - DTOs MUST NOT embed `nebula-core`/`-storage`/`-engine`/`-credential` types (ADR-0047 §3); wrap cross-layer types (`OrgRoleDto`/`WorkspaceRoleDto`). DTOs carry only `serde_json::Value`/wrappers.
 - All errors are RFC 9457 `application/problem+json` via a typed `ApiError` variant — never a new ad-hoc 500 for business failures.
+- Read JSON request bodies through `extractors::ApiJson`, not `axum::Json`: its rejections are payload-free problems. Router-wide failures (rate limit, tenancy, body decoding) are added to the served spec by `openapi::add_problem_response_contract`; a new layer that can answer a request must be documented there.
 - §4.5 operational honesty: an unwired capability returns honest 501/503, never a faked success. Drift between router and OpenAPI spec is a compile error (`OpenApiRouter::routes(routes!(...))`).
 - Cancel/terminate signals share the durable `control_queue_repo` outbox (§12.2) — no second in-memory control channel.
 
@@ -112,7 +113,7 @@
 
 | Change | Relevant evidence |
 |--------|-------------------|
-| Routes, DTOs, and public failures | [openapi_spec](tests/openapi_spec.rs), [openapi_canon_compliance](tests/openapi_canon_compliance.rs), [openapi_secret_redaction](tests/openapi_secret_redaction.rs). |
+| Routes, DTOs, and public failures | [openapi_spec](tests/openapi_spec.rs), [openapi_canon_compliance](tests/openapi_canon_compliance.rs), [openapi_secret_redaction](tests/openapi_secret_redaction.rs), [openapi_runtime_conformance](tests/openapi_runtime_conformance.rs) (plus the NS15 producer run described in the README). |
 | Auth and tenant authority | [access_e2e](tests/access_e2e.rs), [auth_mfa_csrf](tests/auth_mfa_csrf.rs), [authority_cache_control](tests/authority_cache_control.rs); PostgreSQL auth needs the backend prerequisites above. |
 | Credential command boundary | [credential_facade_lifecycle_e2e](tests/credential_facade_lifecycle_e2e.rs), [seam_credential_write_path_validation](tests/seam_credential_write_path_validation.rs). |
 | Activation/start | [workflow_activation](tests/workflow_activation.rs), [workflow_start](tests/workflow_start.rs), [activation_diagnostic_contract](tests/activation_diagnostic_contract.rs). |

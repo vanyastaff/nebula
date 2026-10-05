@@ -533,3 +533,49 @@ fn reconcile_refusals_are_distinguishable_fixed_non_retryable_409s() {
         "the conflict problem must carry the recorded pair as extensions"
     );
 }
+
+#[test]
+fn only_server_faults_are_logged_at_error_level() {
+    use std::sync::{Arc, Mutex};
+
+    use axum::response::IntoResponse;
+    use tracing_subscriber::{Layer, layer::SubscriberExt};
+
+    struct Levels(Arc<Mutex<Vec<tracing::Level>>>);
+    impl<S: tracing::Subscriber> Layer<S> for Levels {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            self.0.lock().unwrap().push(*event.metadata().level());
+        }
+    }
+
+    let levels_of = |errors: Vec<ApiError>| {
+        let levels = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(Levels(Arc::clone(&levels)));
+        tracing::subscriber::with_default(subscriber, || {
+            for error in errors {
+                drop(error.into_response());
+            }
+        });
+        levels.lock().unwrap().clone()
+    };
+    let client = levels_of(vec![
+        ApiError::Unauthorized("Authentication required".to_owned()),
+        ApiError::RateLimitExceeded,
+        ApiError::PayloadTooLarge,
+        ApiError::UnsupportedMediaType,
+        ApiError::validation_message("bad"),
+    ]);
+    assert!(!client.is_empty(), "client rejections stay observable");
+    assert!(
+        client
+            .iter()
+            .all(|level| *level != tracing::Level::ERROR && *level != tracing::Level::WARN),
+        "client rejections must not raise error or warn logs: {client:?}"
+    );
+    let server = levels_of(vec![ApiError::Internal("fault".to_owned())]);
+    assert!(server.contains(&tracing::Level::ERROR), "{server:?}");
+}

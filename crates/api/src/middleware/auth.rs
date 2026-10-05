@@ -17,7 +17,7 @@ use axum::{
     extract::{Request, State},
     http::{HeaderName, StatusCode, header},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
@@ -28,6 +28,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     access::{Grant, parse_pat_grant},
     domain::auth::backend::{PAT_PREFIX as AUTH_PAT_PREFIX, SESSION_COOKIE as AUTH_SESSION_COOKIE},
+    error::ApiError,
     state::AppState,
 };
 
@@ -213,7 +214,9 @@ pub enum AuthMethod {
 /// authentication fails closed; it never downgrades to a valid session cookie.
 /// Supplying both explicit mechanisms is rejected as ambiguous.
 ///
-/// At least one must succeed, otherwise 401 is returned.
+/// At least one must succeed, otherwise 401 is returned as an RFC 9457
+/// `application/problem+json` document with a fixed detail: the response never
+/// says which mechanism was tried or why it failed.
 ///
 /// [`AuthenticatedPrincipal`], [`AuthenticatedUser`] (legacy), and
 /// [`AuthContext`] are inserted into request extensions on success.
@@ -221,9 +224,19 @@ pub enum AuthMethod {
 /// [`AuthBackend`]: crate::domain::auth::backend::AuthBackend
 pub async fn auth_middleware(
     State(state): State<AppState>,
-    mut request: Request,
+    request: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Response {
+    match authenticate(&state, request).await {
+        Ok(request) => next.run(request).await,
+        Err(_) => ApiError::Unauthorized("Authentication required".to_owned()).into_response(),
+    }
+}
+
+/// Resolve exactly one Plane-A identity and attach it to `request`.
+///
+/// Every rejection is the same 401; [`auth_middleware`] renders it.
+async fn authenticate(state: &AppState, mut request: Request) -> Result<Request, StatusCode> {
     let has_authorization = request.headers().contains_key(header::AUTHORIZATION);
     let has_api_key = request.headers().contains_key(&X_API_KEY);
     if has_authorization && has_api_key {
@@ -257,7 +270,7 @@ pub async fn auth_middleware(
                 record.user_id.to_string(),
                 authentication_binding,
             );
-            return Ok(next.run(request).await);
+            return Ok(request);
         }
 
         let key = DecodingKey::from_secret(state.jwt_secret.as_bytes());
@@ -266,7 +279,7 @@ pub async fn auth_middleware(
         let token_data = decode::<Claims>(bearer_value, &key, &validation)
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-        let user_id_str = token_data.claims.sub.clone();
+        let user_id_str = token_data.claims.sub;
         let principal = if let Ok(uid) = UserId::from_str(&user_id_str) {
             nebula_core::Principal::User(uid)
         } else {
@@ -283,7 +296,7 @@ pub async fn auth_middleware(
             user_id_str,
             authentication_binding,
         );
-        return Ok(next.run(request).await);
+        return Ok(request);
     }
 
     // ── Path 2: explicit X-API-Key header ────────────────────────────────────
@@ -314,7 +327,7 @@ pub async fn auth_middleware(
             "api_key".to_owned(),
             authentication_binding,
         );
-        return Ok(next.run(request).await);
+        return Ok(request);
     }
 
     // ── Path 3: ambient session cookie ──────────────────────────────────────
@@ -340,7 +353,7 @@ pub async fn auth_middleware(
         user_id,
         pending_authentication_binding("session", &session_id),
     );
-    Ok(next.run(request).await)
+    Ok(request)
 }
 
 fn insert_authenticated_extensions(
