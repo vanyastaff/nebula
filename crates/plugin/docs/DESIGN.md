@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Partial — mutable registry active; default-public frozen identity is consumed by activation, persisted catalogs, server materialization and exact-flavor dispatch; stable freeze acceptance remains open |
+| **Status** | Partial — mutable registry active; default-public frozen identity is consumed by activation, persisted catalogs, server materialization and exact-flavor dispatch; stable freeze acceptance remains open (§9) |
 | **Layer** | Composition / registration unit (in-process; над `nebula-action`/`nebula-credential`/`nebula-resource`) |
 | **Redesign role** | **Затронут косвенно** — чистый потребитель/индексатор credential- и resource-фасадов; собственной credential/resource-логики не содержит, но dyn-поверхность обоих каскадирует сюда. |
 | **Related** | ADR-0091 (out-of-process retired, in-process Plugin Distribution Unit), ADR-0027 (`ResolvedPlugin`, namespace-инвариант, registry-аксессоры), ADR-0092 (credential consolidation), PRODUCT_CANON §3.5 / §7.1 / §13.1 |
@@ -28,7 +28,7 @@ in-memory `PluginRegistry` (`PluginKey -> Arc<ResolvedPlugin>`); таксоно�
 — только хранит и индексирует их trait-объекты; не выполняет process/WASM-изоляцию
 (out-of-process retired, ADR-0091 / canon §12.6); не персистит (registry чисто
 in-memory, durability — в `nebula-storage`); не отвечает за thread-safety
-(`PluginRegistry` без внутреннего лока — `RwLock` навешивает вызывающий, registry.rs:12).
+(`PluginRegistry` без внутреннего лока — `RwLock` навешивает вызывающий, `PluginRegistry` в registry.rs).
 По решению sole-public-sdk (публичен только `nebula-sdk`) крейт **internal** — его
 поверхность можно ломать без внешнего semver-обязательства.
 
@@ -37,20 +37,20 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 | Item | Where |
 |------|-------|
 | `trait Plugin` (object-safe): `manifest()`, `key()`/`version()` форвардят в manifest | `src/plugin.rs:27` |
-| `Plugin::actions() -> Vec<Arc<dyn ActionFactory>>` | `src/plugin.rs:40` |
-| `Plugin::credentials() -> Vec<Arc<dyn AnyCredential>>` | `src/plugin.rs:48` |
-| `Plugin::resources() -> Vec<Arc<dyn ResourceDescriptor>>` | `src/plugin.rs:56` |
-| `Plugin::on_load` / `on_unload` (default no-op) | `src/plugin.rs:69 / 76` |
-| `ResolvedPlugin` + `from(impl Plugin)` (вызывает списки ровно один раз, валидирует префикс + within-plugin дубли) | `src/resolved_plugin.rs:29 / 57` |
-| `ResolvedPlugin::action()/credential()/resource()` — O(1) lookup | `src/resolved_plugin.rs:94..105` |
-| `ResolvedPlugin::actions()/credentials()/resources()` — итераторы | `src/resolved_plugin.rs:109..121` |
-| `PluginRegistry` + `register` (fail при дубле key) | `src/registry.rs:35 / 46` |
-| `PluginRegistry::get/contains/remove/clear/iter/len` | `src/registry.rs:56..83` |
+| `Plugin::actions() -> Vec<Arc<dyn ActionFactory>>` | `src/plugin.rs:39` |
+| `Plugin::credentials() -> Vec<Arc<dyn AnyCredential>>` | `src/plugin.rs:47` |
+| `Plugin::resources() -> Vec<Arc<dyn ResourceFactory>>` | `src/plugin.rs:61` |
+| `Plugin::on_load` / `on_unload` (default no-op) | `src/plugin.rs:74 / 81` |
+| `ResolvedPlugin` + `from(impl Plugin)` (вызывает списки ровно один раз, валидирует префикс + within-plugin дубли) | `src/resolved_plugin.rs` (`ResolvedPlugin`, `ResolvedPlugin::from`) |
+| `ResolvedPlugin::action()/credential()/resource()` — O(1) lookup | `src/resolved_plugin.rs` (`action`/`credential`/`resource`) |
+| `ResolvedPlugin::actions()/credentials()/resources()` — итераторы | `src/resolved_plugin.rs` (`actions`/`credentials`/`resources`) |
+| `PluginRegistry` + `register` (fail при дубле key) | `src/registry.rs` (`PluginRegistry`, `PluginRegistry::register`) |
+| `PluginRegistry::get/contains/remove/clear/iter/len` | `src/registry.rs` (`impl PluginRegistry`) |
 | `PluginRegistry::freeze` / `FrozenPluginRegistry` | `src/registry.rs` |
 | `PluginSet` / `PluginContractDescriptor` / `WorkerFlavorRevision` | `src/flavor.rs` |
 | `WorkerFlavorContext` | `src/flavor_context.rs` |
-| `all_actions/all_credentials/all_resources` (плоские, для bulk-регистрации движком на старте) | `src/registry.rs:95..119` |
-| `resolve_action/credential/resource` по полному ключу (O(plugins); интроспекция/каталог) | `src/registry.rs:126..153` |
+| `all_actions/all_credentials/all_resources` (плоские, для bulk-регистрации движком на старте) | `src/registry.rs` (`PluginRegistry::all_*`) |
+| `resolve_action/credential/resource` по полному ключу (O(plugins); интроспекция/каталог) | `src/registry.rs` (`PluginRegistry::resolve_*`) |
 | `PluginError` (`derive(Classify)`, коды `PLUGIN:*`) + `ComponentKind` | `src/error.rs:28 / 7` |
 | `PluginManifest` / `PluginManifestBuilder` / `ManifestError` — re-export | `src/manifest.rs:10` (канон — `nebula-metadata`) |
 | `PluginKey` — re-export из `nebula-core` | `src/lib.rs:46` |
@@ -126,9 +126,16 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 - **Single source of truth (canon §7.1 / §13.1).** `impl Plugin` — единственный
   runtime-источник того, что регистрируется; нет вторичного манифеста, дублирующего
   `fn actions/credentials/resources`. Списки вызываются ровно один раз
-  (`ResolvedPlugin::from`, resolved_plugin.rs:57).
+  (`ResolvedPlugin::from` в resolved_plugin.rs).
 - **Registry-дедупликация по key.** `register` падает при дубле `PluginKey`
-  (`AlreadyExists`), registry.rs:46.
+  (`AlreadyExists`) в `PluginRegistry::register`.
+- **Единственный владелец ключа компонента в frozen registry.** Namespace-проверка каждого
+  плагина пропускает один и тот же ключ, если неймспейсы плагинов пересекаются
+  (`acme` и `acme.storage` оба допускают `acme.storage.run`). Mutable `register` это не ловит;
+  `freeze` отказывает с `RegistryFreezeError::DuplicateComponentKey`
+  (`PLUGIN_FREEZE:DUPLICATE_COMPONENT_KEY`) и называет обоих владельцев; при нескольких
+  коллизиях выбирается наименьшая (вид, затем ключ). Поэтому `resolve_*` на frozen registry не зависит
+  от порядка итерации `HashMap`.
 - **Cross-plugin dependency rule (in-process, ADR-0091).** Типы чужого плагина
   доступны только через `Cargo.toml [dependencies]`; замкнутость зависимостей
   обеспечивает компилятор на этапе линковки.
@@ -136,12 +143,12 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
   синхронизация — на вызывающем.
 - **Frozen identity — Partial.** API default-public; activation, persisted catalogs,
   server materialization и exact-flavor dispatch уже потребляют frozen epoch (см. §6.2).
-  Stable freeze требует Phase-5 end-to-end доказательства (см. §8.1). `PluginSetId` — independent
+  Stable freeze требует Phase-5 end-to-end доказательства (см. §9). `PluginSetId` — independent
   pin, не proof schema/runtime behavior, authorization или полного frozen registry.
 
 ## 6. Известные напряжения / долг
 
-Сверено с деревом 2026-09-29. Пункты 1–4 и 6 закрыты, пункт 5 принят с обоснованием.
+Сверено с деревом 2026-10-05. Пункты 1–4, 6 и 7 закрыты, пункт 5 принят с обоснованием.
 
 1. **`plugin_toml` vs in-process модель — закрыто.** Решение: парсер остаётся в крейте
    (маркер `plugin.toml` читается без компиляции плагина для pre-compile tooling), а не
@@ -156,7 +163,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
    (`crates/engine/src/daemon/routing.rs`, `control_consumer.rs`, `execution_sink.rs`;
    контрактные тесты в `crates/api/tests/activation_diagnostic_contract*`). Строка статуса в
    `docs/MATURITY.md` не меняется здесь: переход в `stable` требует end-to-end доказательства
-   на Phase-5 плагине и зависит от других задач (см. §8.1).
+   на Phase-5 плагине и зависит от других задач (см. §9).
 3. **README vs сигнатуры — закрыто (устаревший пункт).** README перечисляет
    `actions() -> Vec<Arc<dyn ActionFactory>>`, `credentials() -> Vec<Arc<dyn AnyCredential>>`,
    `resources() -> Vec<Arc<dyn ResourceFactory>>`, что совпадает с `src/plugin.rs`.
@@ -170,6 +177,10 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
    `nebula-credential` и уходит вместе с единым каноническим ключом (см. §7, §8.3).
 6. **`lib.rs` и `PluginManifest` — закрыто.** Модульная документация теперь говорит, что тип
    канонически живёт в `nebula-metadata` и лишь re-export'ится здесь.
+7. **Глобальная уникальность ключей компонентов — закрыто.** Пересекающиеся неймспейсы
+   плагинов позволяли двум плагинам выставить один полный ключ, и `resolve_*` выбирал
+   владельца по порядку `HashMap`. `freeze` теперь отказывает с `DuplicateComponentKey`
+   (см. §5; `tests/frozen_registry.rs`).
 
 ## 7. Роль в пост-0092 credential/resource модели
 
@@ -178,22 +189,21 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 поэтому любой сдвиг этих поверхностей каскадирует сюда механически.
 
 - **Credential seam.** `Plugin::credentials()` отдаёт `Vec<Arc<dyn AnyCredential>>`
-  (`src/plugin.rs:48`); индексы `ResolvedPlugin` ключуют их по `metadata().base.key()`.
+  (`src/plugin.rs:47`); индексы `ResolvedPlugin` ключуют их по типизированному metadata-ключу.
   Пост-ADR-0092 `nebula-credential` стал единым крейтом (contract + runtime + facade +
   builtin; `credential-runtime`/`builtin`/`testutil`/`vault` удалены). Для plugin это
   меняет **источник** dyn-типа, но не контракт регистрации: `AnyCredential` остаётся
   индексируемым trait-объектом. Если rewrite двинет dyn-поверхность (scheme-enum /
   Protocol-модель, судьба `credential_key()`), правки локализованы в
   `plugin.rs` / `resolved_plugin.rs` / `registry.rs` (`all_credentials`/`resolve_credential`).
-- **Key-поверхность.** Уже сегодня крейт сознательно предпочитает типизированный
-  `metadata().base.key()` поверх stringly `credential_key()` (resolved_plugin.rs:157-160).
-  Это **ранний голос** в пользу схлопывания двойной key-поверхности в `nebula-credential`:
-  когда rewrite выберет единственный канонический ключ, plugin уже на правильной стороне шва.
-- **Resource seam.** `Plugin::resources()` отдаёт `Vec<Arc<dyn ResourceDescriptor>>`
-  (`src/plugin.rs:56`). Resource-redesign (Resource = 2 assoc types, per-slot rotation
-  fan-out, SlotCell — всё в `nebula-resource`) plugin **не касается**: он индексирует
-  дескрипторы, а не активирует ресурсы и не участвует в bind-population. Меняется
-  трейт-объект `ResourceDescriptor` — меняются только индексы здесь.
+- **Key-поверхность.** Ключ индекса берётся из типизированного metadata-ключа.
+  Admission отдельно читает `credential_key()`, проверяет его синтаксис и точное равенство
+  metadata-ключу; расхождение возвращает `ComponentKeyMismatch`. Это проверка существующего
+  erased-контракта, а не обещание уже выполненного схлопывания API в `nebula-credential`.
+- **Resource seam.** `Plugin::resources()` отдаёт `Vec<Arc<dyn ResourceFactory>>`
+  (`src/plugin.rs:61`). Plugin сохраняет factory и её проверенный metadata/dependency/type
+  snapshot; он не активирует ресурсы и не участвует в bind-population. Физический lifecycle
+  и per-slot rotation остаются у владельца `nebula-resource`.
 - **Что остаётся неизменным.** Namespace-инвариант, single-source-of-truth-регистрация,
   registry-дедуп и in-process cross-plugin closure (ADR-0091) ортогональны
   credential/resource-rewrite. Plugin остаётся **каталогизатором**: компоненты декларируют
@@ -211,14 +221,43 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 
 1. **Подтвердить Phase-5 end-to-end frozen acceptance.** Production consumption уже есть (§6.2).
    Статус может уйти из `partial` только после end-to-end доказательства на Phase-5 плагине:
-   compiler, admission, persisted routing и exact-flavor dispatch.
+   compiler, admission, persisted routing и exact-flavor dispatch (критерии — §9).
 2. **Судьба `plugin_toml` — решено (§6.1).** Парсер остаётся в крейте как маркер для
    pre-compile tooling; документация приведена в соответствие in-process модели.
 3. **Финализировать key-поверхность вслед за credential-rewrite.** Когда
-   `nebula-credential` схлопнёт двойную key-поверхность, убрать комментарий-обоснование
-   в resolved_plugin.rs:157-160 и зафиксировать единственный канонический ключ.
+   `nebula-credential` схлопнёт двойную key-поверхность, убрать сверку `credential_key()` с
+   metadata-ключом в `ResolvedPlugin::from` и зафиксировать единственный канонический ключ.
 4. **Обрубленные doc-комментарии — очищены (§6.4).** Не оставлять plan-id в коде.
 5. **Риск каскада dyn-поверхностей.** Поскольку три метода `Plugin` буквально возвращают
    `Arc<dyn ...>` нижних крейтов, любой breaking-change их трейт-объектов ломает компиляцию
    здесь. Это приемлемо (крейт internal, sole-public-sdk), но `ResolvedPlugin`/`PluginRegistry`
    тесты должны идти в одном PR с credential/resource dyn-сдвигами.
+
+## 9. Frozen acceptance evidence
+
+`docs/MATURITY.md` keeps the frozen path `partial` until one composed path has retained results
+at a single revision. Registry and compiler tests prove individual contracts; they do not prove
+that path.
+
+Already proven by tests in this crate:
+
+- `ResolvedPlugin::from` namespace and within-plugin duplicate refusals, and credential
+  key-surface agreement (`tests/resolved_plugin.rs`).
+- `all_*` / `resolve_*` ownership across several registered plugins, on both the mutable and the
+  frozen registry (`tests/resolved_plugin.rs`).
+- Freeze refusal of a component key exposed by plugins with overlapping namespaces, with a
+  positive control for distinct keys (`tests/frozen_registry.rs`).
+
+Still required before the row reads `stable` (tracked in issue 1014):
+
+- One SDK-only consumer declares a Phase-5 action, credential, and resource and contributes all
+  three through `#[derive(Plugin)]`. This depends on the Phase-5 derives (issues 997 and 998) and
+  the SDK-only fixture (issue 1001).
+- That plugin resolves, freezes, compiles, and dispatches end to end on SQLite: the frozen plan is
+  admitted, owner-scoped bindings resolve, and the action runs with its resource and projected
+  credential.
+- Persisted plan/flavor records round-trip through their versioned readers, and loading against a
+  changed component version or flavor fails closed.
+
+Signing and `PluginCapabilities` enforcement stay planned (canon §12.6). Plugins are trusted,
+statically linked, in-process code; this acceptance adds no process or WASM isolation.
