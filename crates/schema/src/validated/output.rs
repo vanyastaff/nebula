@@ -37,7 +37,7 @@ impl ValidSchema {
                         .map(|child| (child, path.push(child.key().as_str()))),
                 ),
                 Property::List(list) => {
-                    pending.extend(list.item.as_deref().map(|item| (item, path.push("0"))))
+                    pending.extend(list.item.as_deref().map(|item| (item, path.push("0"))));
                 },
                 Property::Mode(mode) => pending.extend(
                     mode.variants
