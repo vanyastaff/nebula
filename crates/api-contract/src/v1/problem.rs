@@ -35,13 +35,30 @@ pub struct ProblemDetails {
     /// Additional extension members — RFC 9457 allows arbitrary
     /// problem-type-specific keys to be flattened onto the document. utoipa
     /// describes the `Value` payload as an open `Object`.
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        flatten,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "absent_extensions_as_none"
+    )]
     #[cfg_attr(feature = "openapi", schema(value_type = Option<serde_json::Value>))]
     pub extensions: Option<serde_json::Value>,
 
     /// Validation errors
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<Vec<ValidationFieldError>>,
+}
+
+/// A flattened field always receives the leftover members as an object, so a
+/// body without extension members would otherwise decode as `Some({})`.
+fn absent_extensions_as_none<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let members = serde_json::Value::deserialize(deserializer)?;
+    Ok(match &members {
+        serde_json::Value::Object(map) if map.is_empty() => None,
+        _ => Some(members),
+    })
 }
 
 /// One structured validation or activation rejection.

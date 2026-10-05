@@ -151,8 +151,8 @@ pub struct CredentialResponse {
     pub version: u64,
     /// Durable credential availability state.
     pub lifecycle: CredentialLifecycleState,
-    /// User-defined tags.
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    /// User-defined tags. Omitted when empty, so absence decodes as empty.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tags: HashMap<String, String>,
 }
 

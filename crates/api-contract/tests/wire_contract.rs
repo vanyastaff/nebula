@@ -2,7 +2,8 @@ use nebula_api_contract::v1::{
     auth::{LoginRequest, LoginResponse, OAuthCallbackParams, OAuthProvider},
     credential::{
         CredentialLifecycleState, CredentialReconcileDecisionV1, CredentialReconcileOperationV1,
-        ReconcileCredentialRequest, ReconcileCredentialResponse, TestCredentialResponse,
+        CredentialResponse, ReconcileCredentialRequest, ReconcileCredentialResponse,
+        TestCredentialResponse,
     },
     execution::{ExecutionResponse, StartExecutionRequest},
     problem::ProblemDetails,
@@ -52,6 +53,24 @@ fn shared_transport_supports_both_endpoints_without_schema_traits() {
         serde_json::to_value(pagination).unwrap(),
         json!({"page":1,"page_size":10})
     );
+}
+
+#[test]
+fn responses_omitting_empty_collections_decode_from_their_own_output() {
+    // The server skips empty `tags`; a client must still decode that body.
+    round_trip::<CredentialResponse>(json!({
+        "id":"cred_01", "credential_key":"api_key", "name":"Untagged",
+        "auth_pattern":"SecretToken",
+        "capabilities":{"interactive":false,"refreshable":false,"testable":true,"revocable":false},
+        "created_at":"2026-10-05T00:00:00Z", "updated_at":"2026-10-05T00:00:00Z",
+        "version":1, "lifecycle":{"status":"ready"}
+    }));
+    // A problem body without extension members must not decode as `Some({})`.
+    let problem: ProblemDetails = serde_json::from_value(json!({
+        "type":"about:blank", "title":"Not Found", "status":404
+    }))
+    .expect("plain problem decodes");
+    assert!(problem.extensions.is_none());
 }
 
 #[test]
