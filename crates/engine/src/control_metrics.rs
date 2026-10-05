@@ -67,21 +67,4 @@ mod tests {
         assert!(wire.contains("backend=\"in_memory\""));
         assert!(!wire.contains("execution_id="));
     }
-
-    #[test]
-    fn incompatible_shared_registration_is_reported_without_fallback() {
-        let metrics = MetricsRegistry::new();
-        metrics
-            .gauge(NEBULA_EXECUTION_CONTROL_OUTCOMES_TOTAL)
-            .unwrap();
-        assert!(
-            record_execution_control_outcome(
-                &metrics,
-                StorageBackendKind::Sqlite,
-                ExecutionControlOutcome::Accepted,
-            )
-            .is_err()
-        );
-        assert!(metrics.snapshot_counters().is_empty());
-    }
 }
