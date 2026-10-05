@@ -275,11 +275,13 @@ fn literal_matches_use_facets(
     value: &Value,
     purpose: LiteralPurpose,
 ) -> Result<bool, AdmissionIssue> {
+    // An admitted null skips the use-site value rules, exactly as runtime
+    // validation does; the null policy above is its only occurrence check.
     Ok(
         !(purpose == LiteralPurpose::InputDefault && core.expression == ExpressionMode::Required)
             && literal_matches_occurrence_policies(core, value)?
             && !matches!(&core.accepted_domain, AcceptedDomain::Closed(values) if !values.contains(value))
-            && rules_accept(&core.rules, value)?,
+            && (value.is_null() || rules_accept(&core.rules, value)?),
     )
 }
 

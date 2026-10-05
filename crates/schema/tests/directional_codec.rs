@@ -52,6 +52,13 @@ struct Defaults {
 }
 
 #[schema_type(input)]
+#[derive(Debug, PartialEq)]
+struct NullDefault {
+    #[property(input(default = null))]
+    limit: Option<u32>,
+}
+
+#[schema_type(input)]
 struct ExpressionField {
     #[field(expression_required)]
     value: u32,
@@ -226,6 +233,26 @@ fn owned_literal_defaults_and_adjacent_aliases_are_prepared_exactly() {
         .unwrap()
         .validate_data(&json!({"kind":"Record","data":{"value":7}}))
         .unwrap();
+}
+
+#[test]
+fn null_default_on_a_bounded_optional_integer_is_admitted_like_runtime_null() {
+    // A bounded integer use carries range rules; admission must skip them for
+    // an admitted null default exactly as runtime validation skips them.
+    let input = nebula_schema::InputContract::for_type::<NullDefault>().unwrap();
+    for (data, expected) in [
+        (json!({}), None),
+        (json!({"limit": null}), None),
+        (json!({"limit": 5}), Some(5)),
+    ] {
+        let value: NullDefault = input
+            .validate_data(data)
+            .unwrap()
+            .into_typed(&input)
+            .unwrap();
+        assert_eq!(value.limit, expected);
+    }
+    assert!(input.validate_data(json!({"limit": -1})).is_err());
 }
 
 #[test]
