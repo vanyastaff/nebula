@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Partial — mutable registry active; default-public frozen identity is a closed epoch with zero production consumer |
+| **Status** | Partial — mutable registry active; default-public frozen identity is consumed by activation, persisted catalogs, server materialization and exact-flavor dispatch; stable freeze acceptance remains open |
 | **Layer** | Composition / registration unit (in-process; над `nebula-action`/`nebula-credential`/`nebula-resource`) |
 | **Redesign role** | **Затронут косвенно** — чистый потребитель/индексатор credential- и resource-фасадов; собственной credential/resource-логики не содержит, но dyn-поверхность обоих каскадирует сюда. |
 | **Related** | ADR-0091 (out-of-process retired, in-process Plugin Distribution Unit), ADR-0027 (`ResolvedPlugin`, namespace-инвариант, registry-аксессоры), ADR-0092 (credential consolidation), PRODUCT_CANON §3.5 / §7.1 / §13.1 |
@@ -134,8 +134,9 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
   обеспечивает компилятор на этапе линковки.
 - **Thread-safety — НЕ инвариант крейта.** `PluginRegistry` без внутреннего лока;
   синхронизация — на вызывающем.
-- **Frozen identity — Partial.** API default-public, но zero production consumer до end-to-end
-  adoption compiler/admission/persisted routing/exact-flavor dispatch. `PluginSetId` — independent
+- **Frozen identity — Partial.** API default-public; activation, persisted catalogs,
+  server materialization и exact-flavor dispatch уже потребляют frozen epoch (см. §6.2).
+  Stable freeze требует Phase-5 end-to-end доказательства (см. §8.1). `PluginSetId` — independent
   pin, не proof schema/runtime behavior, authorization или полного frozen registry.
 
 ## 6. Известные напряжения / долг
@@ -208,8 +209,9 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 
 ## 8. Forward design / открытые вопросы
 
-1. **Довести frozen epoch до production consumption.** Статус может уйти из `partial` только
-   после end-to-end adoption compiler, admission, persisted routing и exact-flavor dispatch.
+1. **Подтвердить Phase-5 end-to-end frozen acceptance.** Production consumption уже есть (§6.2).
+   Статус может уйти из `partial` только после end-to-end доказательства на Phase-5 плагине:
+   compiler, admission, persisted routing и exact-flavor dispatch.
 2. **Судьба `plugin_toml` — решено (§6.1).** Парсер остаётся в крейте как маркер для
    pre-compile tooling; документация приведена в соответствие in-process модели.
 3. **Финализировать key-поверхность вслед за credential-rewrite.** Когда

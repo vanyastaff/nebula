@@ -1,3 +1,9 @@
+#[path = "support/fixture_process.rs"]
+mod fixture_process;
+use fixture_process::fixture_command;
+#[path = "support/git_hook_canary.rs"]
+mod git_hook_canary;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -23,6 +29,32 @@ struct SemverPlan {
 struct SemverShard {
     shard: usize,
     packages: Vec<String>,
+}
+
+#[test]
+fn semver_fixture_git_commands_ignore_hook_repository_environment() {
+    git_hook_canary::assert_hook_repository_isolation(
+        "semver_fixture_git_commands_ignore_hook_repository_environment",
+        || {
+            let fixture = workspace_repository(&[package(
+                "crates/demo",
+                "fixture-demo",
+                "",
+                TargetLayout::Lib,
+            )]);
+            let base = revision(fixture.path());
+            fs::write(
+                fixture.path().join("crates/demo/src/lib.rs"),
+                "pub fn isolated_hook() {}\n",
+            )
+            .expect("change isolated SemVer fixture");
+            let head = commit_all(fixture.path(), "change isolated fixture");
+            assert_eq!(
+                packages(&semver_plan(fixture.path(), &base, &head)),
+                vec!["fixture-demo"]
+            );
+        },
+    );
 }
 
 #[test]
@@ -591,7 +623,7 @@ fn workflow_pins_revisions_tools_matrix_and_fail_closed_aggregation() {
         ("success", "257", "3", "success", false),
         ("cancelled", "3", "3", "cancelled", false),
     ] {
-        let status = Command::new("bash")
+        let status = test_bash_command()
             .args(["-c", &aggregator])
             .env("PLANNER_RESULT", planner)
             .env("PACKAGE_COUNT", package_count)
@@ -613,7 +645,7 @@ fn run_shard_script(workflow: &str, packages_json: &str) -> Output {
         "Check shard packages against baseline",
     );
     let script = format!("cargo() {{ printf '%s\\n' \"$*\"; }}\n{worker}");
-    Command::new("bash")
+    test_bash_command()
         .args(["-c", &script])
         .env("PACKAGES_JSON", packages_json)
         .env("BASE_REVISION", "base")
@@ -633,7 +665,7 @@ fn run_selector_script(workflow: &str, plan: &str) -> SelectorRun {
     );
     let script = format!("cargo() {{ printf '%s\\n' \"$SEMVER_PLAN\"; }}\n{selector}");
     let github_output = tempfile::NamedTempFile::new().expect("GitHub output file creates");
-    let process = Command::new("bash")
+    let process = test_bash_command()
         .args(["-c", &script])
         .env("SEMVER_PLAN", plan)
         .env("BASE_REVISION", "base")
@@ -821,7 +853,7 @@ fn packages(plan: &SemverPlan) -> Vec<String> {
 }
 
 fn cargo_generate_lockfile(repository: &Path) {
-    let output = Command::new("cargo")
+    let output = fixture_command("cargo")
         .arg("generate-lockfile")
         .current_dir(repository)
         .output()
@@ -846,7 +878,7 @@ fn commit_all(repository: &Path, message: &str) -> String {
 }
 
 fn git(repository: &Path, arguments: &[&str]) {
-    let output = Command::new("git")
+    let output = fixture_command("git")
         .args(arguments)
         .current_dir(repository)
         .output()
@@ -859,7 +891,7 @@ fn git(repository: &Path, arguments: &[&str]) {
 }
 
 fn git_output(repository: &Path, arguments: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = fixture_command("git")
         .args(arguments)
         .current_dir(repository)
         .output()
@@ -869,7 +901,7 @@ fn git_output(repository: &Path, arguments: &[&str]) -> String {
 }
 
 fn xtask(repository: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_nebula-xtask"))
+    fixture_command(env!("CARGO_BIN_EXE_nebula-xtask"))
         .args(arguments)
         .current_dir(repository)
         .output()
@@ -946,4 +978,10 @@ fn workflow_step_script(job: &str, step_name: &str) -> String {
         .map(|line| line.strip_prefix("        ").unwrap_or(line))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+// Windows may resolve `bash` to the WSL launcher before PATH. Keep the
+// production scripts unchanged while selecting an available test host shell.
+fn test_bash_command() -> Command {
+    fixture_command(std::env::var_os("NEBULA_TEST_BASH").unwrap_or_else(|| "bash".into()))
 }

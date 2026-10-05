@@ -589,6 +589,47 @@ fn compiled_left_associative_depth_boundary_evaluates_without_stack_overflow() {
 }
 
 #[test]
+fn binary_left_spine_preserves_operation_order_and_lazy_right_operands() {
+    let engine = ExpressionEngine::new();
+    let context = EvaluationContext::new();
+    let source = format!("1000{}", " - 1 + 2".repeat(127));
+    let program = CompiledProgram::compile_expression(&source).unwrap();
+    assert_eq!(
+        engine.evaluate_compiled(&program, &context).unwrap(),
+        json!(1127)
+    );
+    for (source, expected) in [
+        ("100 - 20 - 5 * 2 / 2", json!(75.0)),
+        ("false && $missing || true || $missing", json!(true)),
+        ("(true || $missing) && false && $missing", json!(false)),
+        ("null ?? 0 ?? $missing", json!(0)),
+        ("null ?? false ?? $missing", json!(false)),
+    ] {
+        assert_eq!(
+            engine.evaluate(source, &context).unwrap(),
+            expected,
+            "{source}"
+        );
+    }
+    assert_matches!(
+        engine.evaluate("1 / 0 + $missing", &context),
+        Err(ExpressionError::DivisionByZero)
+    );
+}
+
+#[test]
+fn binary_left_spine_charges_every_descended_node_to_the_shared_frame() {
+    let source = format!("{}1", "1 + ".repeat(255));
+    let program = CompiledProgram::compile_expression(&source).unwrap();
+    let engine = ExpressionEngine::new()
+        .with_policy(EvaluationPolicy::new().with_max_eval_steps(step_limit(5)));
+    assert_matches!(
+        engine.evaluate_compiled(&program, &EvaluationContext::new()),
+        Err(ExpressionError::StepLimitExceeded { limit: 5, .. })
+    );
+}
+
+#[test]
 fn maybe_template_uses_the_shared_marker_classifier() {
     let malformed = nebula_expression::MaybeTemplate::from_string("{{ incomplete");
     assert!(malformed.is_template());

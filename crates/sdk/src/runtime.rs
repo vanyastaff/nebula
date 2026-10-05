@@ -50,6 +50,19 @@ const DEFAULT_TRIGGER_WINDOW: Duration = Duration::from_secs(2);
 /// Grace period for `start()` to exit after cancellation in poll runs.
 const TRIGGER_STOP_GRACE: Duration = Duration::from_secs(5);
 
+/// Cancels and aborts the owned poll task if the harness future is dropped.
+struct PollTaskOwner {
+    cancellation: tokio_util::sync::CancellationToken,
+    task: tokio::task::AbortHandle,
+}
+
+impl Drop for PollTaskOwner {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        self.task.abort();
+    }
+}
+
 /// Structured outcome of a [`TestRuntime`] run.
 ///
 /// All six fields are populated for every run; unused ones are empty rather
@@ -211,11 +224,16 @@ impl TestRuntime {
 
     /// Run a poll trigger: spawn `start()`, sleep the configured window,
     /// cancel, and return everything captured by the spy emitter.
+    /// Cancellation gives `start()` five seconds to exit, then aborts and
+    /// joins the owned task before bounded `stop()` cleanup. Dropping this
+    /// future cancels and aborts the task; it cannot await asynchronous cleanup.
+    /// These bounds are cooperative and cannot preempt a blocking poll or Drop.
     ///
     /// # Errors
     ///
     /// Never returns an error from the trigger itself — instead captures any
-    /// start-loop failure into the `note` field of the report.
+    /// start-loop and cleanup failures into the `note` field of the report,
+    /// with the start failure first when both fail.
     pub async fn run_poll<A>(self, action: A) -> Result<RunReport, ActionError>
     where
         A: PollAction + Send + Sync + 'static,
@@ -229,27 +247,50 @@ impl TestRuntime {
         let cancel = ctx.cancellation().clone();
         let start = Instant::now();
 
-        let start_handle = {
+        let mut start_handle = {
             let handler = handler.clone();
             let ctx = ctx.clone();
             tokio::spawn(async move { handler.start(&ctx).await })
+        };
+        let task_owner = PollTaskOwner {
+            cancellation: cancel.clone(),
+            task: start_handle.abort_handle(),
         };
 
         tokio::time::sleep(window).await;
         cancel.cancel();
 
-        let start_outcome = tokio::time::timeout(TRIGGER_STOP_GRACE, start_handle).await;
-        let _ = handler.stop(&ctx).await;
-
-        let emitted = spy.inputs();
-        let count = emitted.len() as u32;
-
-        let note = match start_outcome {
+        let start_outcome = tokio::time::timeout(TRIGGER_STOP_GRACE, &mut start_handle).await;
+        let timed_out = start_outcome.is_err();
+        let mut note = match start_outcome {
             Ok(Ok(Ok(()))) => None,
             Ok(Ok(Err(e))) => Some(format!("start() returned error: {e}")),
             Ok(Err(join_err)) => Some(format!("start task panicked: {join_err}")),
             Err(_) => Some("trigger did not exit within grace period".to_owned()),
         };
+
+        // A timed-out JoinHandle must not detach a still-running start loop.
+        // Keep the drop guard armed while joining and while stop is awaited.
+        if timed_out {
+            start_handle.abort();
+            let _ = start_handle.await;
+        }
+        let cleanup_note = match tokio::time::timeout(TRIGGER_STOP_GRACE, handler.stop(&ctx)).await
+        {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(format!("stop() returned error: {error}")),
+            Err(_) => Some("stop() did not exit within grace period".to_owned()),
+        };
+        if let Some(cleanup_note) = cleanup_note {
+            note = Some(match note {
+                Some(primary) => format!("{primary}; {cleanup_note}"),
+                None => cleanup_note,
+            });
+        }
+        drop(task_owner);
+
+        let emitted = spy.inputs();
+        let count = emitted.len() as u32;
 
         let health = ctx.health().snapshot();
 
@@ -270,10 +311,15 @@ impl TestRuntime {
     /// builds a [`WebhookRequest`]; this harness wraps it in a
     /// [`TriggerEvent`] envelope (with `id = None`) before dispatching.
     /// Returns whatever the spy emitter captured during `handle_event`.
+    /// After a successful start, stop is attempted even when event handling
+    /// fails and is bounded to five seconds. Dropping the future cannot await
+    /// deactivation; timeouts cannot preempt blocking polls or Drop.
     ///
     /// # Errors
     ///
     /// Propagates any [`ActionError`] from `start`, `handle_event`, or `stop`.
+    /// The event error takes precedence over a cleanup failure. A cleanup
+    /// timeout is a fatal error when event handling succeeded.
     pub async fn run_webhook<A>(
         self,
         action: A,
@@ -290,8 +336,13 @@ impl TestRuntime {
 
         handler.start(&ctx).await?;
         let event = TriggerEvent::new(None, request);
-        let outcome = handler.handle_event(event, &ctx).await?;
-        handler.stop(&ctx).await?;
+        let outcome = handler.handle_event(event, &ctx).await;
+        let cleanup = tokio::time::timeout(TRIGGER_STOP_GRACE, handler.stop(&ctx))
+            .await
+            .map_err(|_| ActionError::fatal("webhook stop() did not exit within grace period"))
+            .and_then(|result| result);
+        let outcome = outcome?;
+        cleanup?;
 
         let emitted = spy.inputs();
 

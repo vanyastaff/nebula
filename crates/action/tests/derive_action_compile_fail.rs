@@ -11,6 +11,7 @@
 //! - unknown keys inside `#[action(...)]`,
 //! - a value assigned to the `read_only` flag,
 //! - the flag's pre-0.22.0 spelling, refused with a hint,
+//! - required and optional lazy credential guards (historically eager),
 //! - `Lazy<ResourceHandle<R>>` (a resource handle acquires nothing to defer),
 //! - a field spelled with the handle's pre-0.22.0 name, refused with a hint,
 //! - a `ResourceGuard<R>` lease slot in any wrapper, removed in 0.27.0 and
@@ -34,6 +35,8 @@ fn derive_action_compile_fail_probes() {
     t.compile_fail("tests/probes/derive_both_resource_and_credential.rs");
     t.compile_fail("tests/probes/derive_tuple_struct.rs");
     t.compile_fail("tests/probes/derive_lazy_resource_handle.rs");
+    t.compile_fail("tests/probes/derive_lazy_credential_guard.rs");
+    t.compile_fail("tests/probes/derive_optional_lazy_credential_guard.rs");
     t.compile_fail("tests/probes/derive_renamed_resource_handle.rs");
     t.compile_fail("tests/probes/derive_removed_resource_guard.rs");
 }

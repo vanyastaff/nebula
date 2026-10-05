@@ -170,8 +170,8 @@ impl WorkflowBuilder {
     /// Returns an error if the workflow is invalid: a node id that is not a
     /// valid [`NodeKey`] (non-empty after whitespace-trimming, at most 64
     /// characters, ASCII letters, digits, `_`, `-`, `.` only, no trailing
-    /// separator, no consecutive identical separators), a duplicate node id,
-    /// or a reference to a non-existent node.
+    /// separator, no consecutive identical separators), a duplicate node id
+    /// after whitespace-trimming, or a reference to a non-existent node.
     pub fn build(self) -> crate::Result<WorkflowDefinition> {
         use chrono::Utc;
 
@@ -196,26 +196,20 @@ impl WorkflowBuilder {
                  not end in a separator, and have no consecutive identical separators ('__', '--', '..')"
             ))
         };
+        // Graph identity uses normalized keys; connection authoring still
+        // uses the original node ids, including surrounding whitespace.
+        let mut seen_keys = HashSet::new();
+        let mut node_id_by_name = HashMap::new();
         for node in &self.nodes {
-            if NodeKey::new(&node.id).is_err() {
-                return Err(node_key_error(&node.id));
+            let key = NodeKey::new(&node.id).map_err(|_| node_key_error(&node.id))?;
+            if !seen_keys.insert(key.clone()) {
+                return Err(crate::Error::workflow(format!(
+                    "Duplicate node id: {}",
+                    node.id
+                )));
             }
+            node_id_by_name.insert(node.id.clone(), key);
         }
-
-        // Stable mapping between user-facing node ids and typed ids. The
-        // validation loop above rejects every id a `NodeKey::new` could
-        // reject, so this pass cannot fail in practice — but it stays
-        // fallible and propagates through the same error rather than
-        // unwrapping on a fallback.
-        let node_id_by_name: HashMap<String, NodeKey> = self
-            .nodes
-            .iter()
-            .map(|node| {
-                NodeKey::new(&node.id)
-                    .map(|key| (node.id.clone(), key))
-                    .map_err(|_| node_key_error(&node.id))
-            })
-            .collect::<crate::Result<HashMap<_, _>>>()?;
 
         // Validate all edge references.
         for (from, to) in &self.connections {
@@ -361,6 +355,43 @@ mod tests {
             assert_eq!(workflow.nodes[0].id.as_str(), expected_key);
             assert_eq!(workflow.nodes[0].name, id);
         }
+    }
+
+    #[test]
+    fn build_rejects_normalized_node_id_collisions() {
+        for (first, second) in [("extract", " extract "), (" extract ", "extract")] {
+            let error = WorkflowBuilder::new("test")
+                .add_node(first, "core", "echo")
+                .add_node_with_params(second, "core", "echo", HashMap::new())
+                .connect(first, second)
+                .build()
+                .expect_err("distinct author ids must not produce duplicate graph keys");
+            assert!(error.to_string().contains("Duplicate node id"));
+        }
+    }
+
+    #[test]
+    fn build_preserves_raw_connection_ids_and_case_sensitive_keys() {
+        let workflow = WorkflowBuilder::new("test")
+            .add_node(" extract ", "core", "echo")
+            .add_node("Extract", "core", "echo")
+            .connect(" extract ", "Extract")
+            .build()
+            .expect("padded ids and distinct case-sensitive keys remain valid");
+
+        assert_eq!(workflow.nodes[0].id.as_str(), "extract");
+        assert_eq!(workflow.nodes[0].name, " extract ");
+        assert_eq!(workflow.nodes[1].id.as_str(), "Extract");
+        assert_eq!(workflow.connections[0].from_node, workflow.nodes[0].id);
+        assert_eq!(workflow.connections[0].to_node, workflow.nodes[1].id);
+
+        let error = WorkflowBuilder::new("test")
+            .add_node(" extract ", "core", "echo")
+            .add_node("end", "core", "echo")
+            .connect("extract", "end")
+            .build()
+            .expect_err("connection authoring uses the original id");
+        assert!(error.to_string().contains("unknown source node: extract"));
     }
 
     #[test]

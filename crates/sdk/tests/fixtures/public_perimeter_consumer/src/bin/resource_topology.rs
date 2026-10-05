@@ -1,7 +1,7 @@
 use nebula_sdk::integration::resource::{
-    AdmissionPhase, CreatedEntry, Error, HookFault, Load, MaintenanceSchedule,
-    Provider, ResourceContext, ResourceKey, RetainedId, RetainedLease, RetainedStore, TeardownCx,
-    StoreView, Ticket, Topology, Unavailable, no_credential_slots, resource_key,
+    AdmissionPhase, CreatedEntry, Error, HookFault, Load, MaintenanceSchedule, Provider,
+    ResourceContext, ResourceKey, RetainedId, RetainedLease, RetainedStore, StoreView, TeardownCx,
+    Ticket, Topology, Unavailable, no_credential_slots, resource_key,
 };
 
 struct OwnedConnection(String);

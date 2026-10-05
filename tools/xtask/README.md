@@ -4,6 +4,18 @@
 with Cargo's workspace graph. It is a `publish = false` workspace package and
 is deliberately outside Nebula's product dependency layers.
 
+## Full formatting check
+
+`cargo xtask fmt-check` runs the full formatting gate used by `task fmt:check`
+and `task quality`. It reads locked Cargo metadata with all features and checks
+every local package, including local path dependencies outside the workspace.
+Registry and Git sources are excluded, as with `cargo fmt --all`. Each package
+gets its own `cargo fmt --manifest-path ... -p ... -- --check` invocation to
+bound Windows command-line length while preserving Cargo target discovery and
+rustfmt configuration. A failed formatter fails the gate without editing files.
+Pre-commit checks similarly batch selected owners individually and still check
+every source in each selected standalone fixture.
+
 ## CI plan commands
 
 ```bash
@@ -209,8 +221,9 @@ cargo xtask north-star-gates build-runtime-authority-bundle \
   --toolchain "rustc 1.97.1"
 
 cargo xtask north-star-gates verify-runtime-authority \
-  --artifact-root /immutable/observations \
+  --artifact-root /immutable/runtime-authority \
   --expected-provenance /trusted/expected.json \
+  --expected-provenance-sha256 "$TRUSTED_MANIFEST_SHA256" \
   --source-revision "$GIT_SHA" \
   --repository owner/repository \
   --run-id "$RUN_ID" \
@@ -238,7 +251,13 @@ remote-effect contracts; unrelated gates are outside this scope.
 
 The producer supplies `expected.json` as a separate file outside the immutable artifact
 directory in the retained candidate. This prevents artifact-path substitution; it is not an
-independent attestation because both files come from the same job. The verifier compares the
+independent attestation because both files come from the same job. The required
+`--expected-provenance-sha256` authenticates the bounded manifest bytes before JSON
+decoding. Supply that digest through the successful producer job output (the
+workflow uses `needs.postgres-conformance.outputs.expected-provenance-sha256`),
+never by hashing the downloaded candidate or reading a digest from it. This
+establishes same-run producer integrity; it does not independently establish
+producer honesty or trust in a PR-controlled semantic policy. The verifier compares the
 recorded repository, revision, run, and attempt with its own runner context to reject cross-run
 replay. Its closed object contains `provenance_version: 1`,
 `registry_sha256`, `verifier_policy_sha256`, `input`, and `artifacts`. The verifier
@@ -324,3 +343,9 @@ compile-time inputs.
 
 See [`docs/QUALITY_GATES.md`](../../docs/QUALITY_GATES.md) for the workflow and
 local-hook consumer contract.
+
+For Windows workflow-script tests, set `NEBULA_TEST_BASH` to the Git Bash
+executable when the default `bash` resolves to WSL. Native Windows `jq.exe`
+should run with `--binary` in that shell so its output uses the same LF line
+endings as CI. A process-scoped PATH wrapper can select that tool mode without
+changing the workflow scripts or their output assertions.
