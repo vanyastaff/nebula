@@ -187,13 +187,16 @@ error rejects the runtime evidence job rather than skipping NS19.
 Bootstrap integration base is foundation
 `7a8917fd7491fc259df03f1a1a589d6e0beaf1b5`. Its lease-chaos fail-empty gate,
 CI2 trusted manifest hash and CI3 metadata-driven formatting/fixture isolation
-must be retained. This workflow packet does not contain the separately owned
-NS19 packaging policy/CLI, NS11/NS21 semantic predicates and typed bundle
-inventory, or NS20 SDK policy script. Those reviewed policy sources and matching
-producer/registry topology must accompany protected bootstrap deployment before
-activation. In particular the packaging source is included in `POLICY_SOURCE`,
-and the bundle retains the admitted NS19 report and exact metadata-selected
-binary archive inventory at the specified paths. A foundation-only deployment
-of this YAML cannot qualify the new policies and is not a completed bootstrap.
+must be retained. The bootstrap deploys every policy entry point this YAML
+calls: the NS19 packaging policy and `packaging verify-archives` CLI (with
+`packaging.rs` in `POLICY_SOURCE`) and the NS20 `scripts/sdk-release-quality.py`
+policy with its tests. It deliberately does not yet deploy producers: the Test
+Matrix candidate carries no `NS19/` subtree and `ci.yml` has no SDK release
+quality job, so activation must add both alongside the caller.
+
+NS11 and NS21 semantic predicates and their typed bundle inventory are not part
+of this bootstrap. Adding a gate to the runtime-authority inventory makes the
+Test Matrix producer require its observations, so each lands with its own
+producers (#1009, #1013) as a later policy deployment under step 3 above.
 The activation-only structural test travels with caller activation; bootstrap
 updates only the existing CI2 upload ordering/split regression.

@@ -60,6 +60,8 @@ homepage = "https://github.com/vanyastaff/nebula"
 documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = { version = "0.4", default-features = false }
 # Async runtime
 tokio = { version = "1.51.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
 tokio-util = "0.7.18"

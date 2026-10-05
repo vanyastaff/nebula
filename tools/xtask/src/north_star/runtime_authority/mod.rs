@@ -61,7 +61,9 @@ const POLICY_SOURCE: &str = concat!(
     "\0",
     include_str!("semantic/required_postgresql.rs"),
     "\0",
-    include_str!("semantic/start_authority.rs")
+    include_str!("semantic/start_authority.rs"),
+    "\0",
+    include_str!("../../packaging.rs")
 );
 
 #[derive(Debug, Error, PartialEq, Eq)]
