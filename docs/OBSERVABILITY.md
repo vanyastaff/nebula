@@ -107,7 +107,10 @@ control-turn refusal (fenced, deferred, flavor-mismatch) returns its definite
 outcome even when writing the observation fails (`observation_acknowledgement =
 unrecorded`, rolled back) or its commit acknowledgement is lost (`unknown`): the
 refusal changed nothing, so no acceptance is in doubt. A failed flavor-mismatch
-observation leaves the exact-load rejection in charge. An admission refusal is
+observation leaves the exact-load rejection in charge. A redelivered flavor
+mismatch reports the existing receipt's immutable expected/actual snapshot, or
+no snapshot if it cannot be read, never the retrying runtime's values. An
+admission refusal attributed to its owner is settled the same way. An admission refusal is
 gated only by the live lease, never by the aggregate version, and one the owner
 cannot attribute (no accepted-turn marker, stale lease, backend failure) never
 replaces the node's rate-limit error. Every such missing observation is counted

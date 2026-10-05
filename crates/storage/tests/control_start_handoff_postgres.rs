@@ -84,7 +84,7 @@ async fn postgres_refusals_survive_observation_faults() {
     control_turn_oracle::refusals_survive_observation_faults(&ports, async |fault| {
         use control_turn_oracle::ObservationFault;
         let statements: &[&'static str] = match fault {
-            ObservationFault::FailObservationWrite => &[
+            ObservationFault::FailReceiptWrite => &[
                 "CREATE TRIGGER fault_fail_receipt BEFORE INSERT ON port_execution_control_observation_receipts FOR EACH ROW EXECUTE FUNCTION fault_injected()",
             ],
             ObservationFault::FailJournalWrite => &[
@@ -94,6 +94,11 @@ async fn postgres_refusals_survive_observation_faults() {
             // statement of the refusal transaction succeeded.
             ObservationFault::LoseCommitAcknowledgement => &[
                 "CREATE CONSTRAINT TRIGGER fault_lose_commit AFTER INSERT ON port_execution_journal DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fault_injected()",
+            ],
+            // The snapshot stays present but undecodable once its check is gone.
+            ObservationFault::CorruptReceiptSnapshot => &[
+                "ALTER TABLE port_execution_control_observation_receipts DROP CONSTRAINT IF EXISTS port_execution_control_observation_receipts_check",
+                "UPDATE port_execution_control_observation_receipts SET expected_flavor_id = decode('01', 'hex') WHERE outcome = 'flavor-mismatch'",
             ],
             ObservationFault::Clear => &[
                 "DROP TRIGGER IF EXISTS fault_fail_receipt ON port_execution_control_observation_receipts",

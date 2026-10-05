@@ -98,7 +98,7 @@ async fn sqlite_refusals_survive_observation_faults() {
     control_turn_oracle::refusals_survive_observation_faults(&ports, async |fault| {
         use control_turn_oracle::ObservationFault;
         let statements: &[&'static str] = match fault {
-            ObservationFault::FailObservationWrite => &[
+            ObservationFault::FailReceiptWrite => &[
                 "CREATE TRIGGER fault_fail_receipt BEFORE INSERT ON port_execution_control_observation_receipts BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END",
             ],
             ObservationFault::FailJournalWrite => &[
@@ -111,14 +111,25 @@ async fn sqlite_refusals_survive_observation_faults() {
                 "CREATE TABLE IF NOT EXISTS fault_child (parent INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED)",
                 "CREATE TRIGGER fault_lose_commit AFTER INSERT ON port_execution_journal BEGIN INSERT INTO fault_child VALUES (999); END",
             ],
+            // CHECK constraints are bypassed on this one connection only, so
+            // the stored snapshot stays present but undecodable.
+            ObservationFault::CorruptReceiptSnapshot => &[
+                "PRAGMA ignore_check_constraints = ON",
+                "UPDATE port_execution_control_observation_receipts SET expected_flavor_id = X'01' WHERE outcome = 'flavor-mismatch'",
+                "PRAGMA ignore_check_constraints = OFF",
+            ],
             ObservationFault::Clear => &[
                 "DROP TRIGGER IF EXISTS fault_fail_receipt",
                 "DROP TRIGGER IF EXISTS fault_lose_commit",
                 "DROP TRIGGER IF EXISTS fault_fail_journal",
             ],
         };
+        let mut connection = pool.acquire().await.unwrap();
         for statement in statements {
-            sqlx::query(*statement).execute(&pool).await.unwrap();
+            sqlx::query(*statement)
+                .execute(&mut *connection)
+                .await
+                .unwrap();
         }
     })
     .await;

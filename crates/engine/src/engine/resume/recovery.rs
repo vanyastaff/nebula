@@ -114,8 +114,7 @@ impl WorkflowEngine {
         let decision = handoff.record_control_flavor_refusal(&refusal).await;
         match decision {
             Ok(ControlFlavorRefusalOutcome::FlavorMismatch {
-                expected,
-                actual,
+                snapshot,
                 backend,
                 observation_acknowledgement,
             }) => {
@@ -124,8 +123,13 @@ impl WorkflowEngine {
                     "observation_acknowledgement",
                     observation_acknowledgement.as_str(),
                 );
-                span.record("expected_flavor", tracing::field::display(expected));
-                span.record("actual_flavor", tracing::field::display(actual));
+                if let Some(snapshot) = snapshot {
+                    span.record(
+                        "expected_flavor",
+                        tracing::field::display(snapshot.expected),
+                    );
+                    span.record("actual_flavor", tracing::field::display(snapshot.actual));
+                }
                 span.record("backend", backend.as_str());
                 span.record("outcome", "flavor-mismatch");
                 crate::control_metrics::observe_execution_control_decision(

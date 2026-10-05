@@ -76,23 +76,23 @@ pub(super) async fn commit(
         let actual = commit.worker_flavor_revision_id();
         if expected != actual {
             // The mismatch is decided; its observation can only follow it. An
-            // existing receipt reports its own immutable snapshot.
-            let (expected, actual, observation_acknowledgement) = match record_refusal(&mut tx, commit, current_generation,
+            // existing receipt reports its own immutable snapshot, or none.
+            let decided = nebula_storage_port::store::FlavorMismatchSnapshot { expected, actual };
+            let (snapshot, observation_acknowledgement) = match record_refusal(&mut tx, commit, current_generation,
                 nebula_execution::ExecutionControlReason::ExactFlavorMismatch { expected, actual }).await {
-                Ok(Ack::AlreadyRecorded) => if let Ok((recorded_expected, recorded_actual)) = read_flavor_receipt(&mut tx, scope, id, commit.claim().row_id(), claim_generation).await {
-                    (recorded_expected, recorded_actual, commit_observation(tx, Ack::AlreadyRecorded).await)
-                } else {
-                        // The receipt is durable; only its snapshot is unreadable.
-                        drop(tx.rollback().await);
-                        (expected, actual, Ack::AlreadyRecorded)
+                Ok(Ack::AlreadyRecorded) => {
+                    let recorded = crate::control_turn::recorded_flavor_snapshot(
+                        read_flavor_receipt(&mut tx, scope, id, commit.claim().row_id(), claim_generation).await,
+                    );
+                    (recorded, commit_observation(tx, Ack::AlreadyRecorded).await)
                 },
-                Ok(acknowledgement) => (expected, actual, commit_observation(tx, acknowledgement).await),
+                Ok(acknowledgement) => (Some(decided), commit_observation(tx, acknowledgement).await),
                 Err(_) => {
                     drop(tx.rollback().await);
-                    (expected, actual, Ack::Unrecorded)
+                    (Some(decided), Ack::Unrecorded)
                 },
             };
-            return Ok(Outcome::FlavorMismatch { expected, actual, observation_acknowledgement });
+            return Ok(Outcome::FlavorMismatch { snapshot, observation_acknowledgement });
         }
         let holder: Option<String> = row.try_get("lease_holder").map_err(backend_error)?;
         let expiry: Option<i64> = row.try_get("lease_expires_at_ms").map_err(backend_error)?;
@@ -297,25 +297,35 @@ pub(super) async fn record_admission(
         refusal.node_key().as_str(),
         refusal.attempt()
     );
-    let inserted = sqlx::query("INSERT INTO port_execution_control_observation_receipts (execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome, expected_flavor_id, actual_flavor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome) DO NOTHING")
-        .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind(receipt_kind)
-        .bind(row_id.as_slice()).bind(generation).bind(decision_key).bind("throttled")
-        .bind(Option::<Vec<u8>>::None).bind(Option::<Vec<u8>>::None)
-        .execute(&mut *tx).await.map_err(backend_error)?;
-    let recorded = inserted.rows_affected() == 1;
-    if recorded {
-        append_observation(&mut tx, id, &payload).await?;
+    // The owner is verified and the throttle attributed: the observation
+    // below only follows that decision and never replaces it.
+    let written = async {
+        let inserted = sqlx::query("INSERT INTO port_execution_control_observation_receipts (execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome, expected_flavor_id, actual_flavor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome) DO NOTHING")
+            .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind(receipt_kind)
+            .bind(row_id.as_slice()).bind(generation).bind(decision_key).bind("throttled")
+            .bind(Option::<Vec<u8>>::None).bind(Option::<Vec<u8>>::None)
+            .execute(&mut *tx).await.map_err(backend_error)?.rows_affected() == 1;
+        if inserted {
+            append_observation(&mut tx, id, &payload).await?;
+        }
+        Ok::<bool, StorageError>(inserted)
     }
-    tx.commit()
-        .await
-        .map_err(|_| StorageError::AcknowledgementUnknown {
-            operation: "execution_admission_refusal",
-        })?;
-    let backend = nebula_storage_port::StorageBackendKind::Postgres;
-    Ok(if recorded {
-        Admission::Recorded { backend }
-    } else {
-        Admission::AlreadyRecorded { backend }
+    .await;
+    let observation_acknowledgement = match written {
+        Ok(true) => commit_observation(tx, Ack::Recorded).await,
+        Ok(false) => {
+            drop(tx.rollback().await);
+            Ack::AlreadyRecorded
+        },
+        Err(error) => {
+            tracing::warn!(%error, "admission refusal observation could not be written");
+            drop(tx.rollback().await);
+            Ack::Unrecorded
+        },
+    };
+    Ok(Admission::Attributed {
+        backend: nebula_storage_port::StorageBackendKind::Postgres,
+        observation_acknowledgement,
     })
 }
 
@@ -414,8 +424,10 @@ pub(super) async fn record_flavor(
         (
             nebula_execution::ExecutionControlReason::ExactFlavorMismatch { expected, actual },
             Flavor::FlavorMismatch {
-                expected,
-                actual,
+                snapshot: Some(nebula_storage_port::store::FlavorMismatchSnapshot {
+                    expected,
+                    actual,
+                }),
                 backend,
                 observation_acknowledgement: Ack::Recorded,
             },
@@ -475,18 +487,21 @@ async fn settle_flavor_observation(
     source_generation: i64,
 ) -> (
     Ack,
-    Option<(
-        nebula_core::WorkerFlavorRevisionId,
-        nebula_core::WorkerFlavorRevisionId,
-    )>,
+    Option<
+        Result<
+            (
+                nebula_core::WorkerFlavorRevisionId,
+                nebula_core::WorkerFlavorRevisionId,
+            ),
+            StorageError,
+        >,
+    >,
 ) {
     match written {
         Ok(true) => (commit_observation(tx, Ack::Recorded).await, None),
         Ok(false) => {
             let recorded = if has_snapshot {
-                read_flavor_receipt(&mut tx, scope, id, row_id, source_generation)
-                    .await
-                    .ok()
+                Some(read_flavor_receipt(&mut tx, scope, id, row_id, source_generation).await)
             } else {
                 None
             };

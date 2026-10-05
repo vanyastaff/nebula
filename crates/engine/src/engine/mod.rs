@@ -3172,18 +3172,20 @@ impl AdmissionRefusalObserver<'_> {
             attempt,
         );
         match store.record_execution_admission_refusal(&request).await {
-            Ok(ExecutionAdmissionRefusalOutcome::Recorded { backend }) => {
-                span.record("observation_acknowledgement", "recorded");
-                if let Err(error) = crate::control_metrics::record_execution_control_outcome(
+            Ok(ExecutionAdmissionRefusalOutcome::Attributed {
+                backend,
+                observation_acknowledgement,
+            }) => {
+                span.record(
+                    "observation_acknowledgement",
+                    observation_acknowledgement.as_str(),
+                );
+                crate::control_metrics::observe_execution_control_decision(
                     self.metrics,
                     backend,
                     Throttled,
-                ) {
-                    tracing::warn!(%error, "execution admission outcome metric could not be recorded");
-                }
-            },
-            Ok(ExecutionAdmissionRefusalOutcome::AlreadyRecorded { .. }) => {
-                span.record("observation_acknowledgement", "already_recorded");
+                    observation_acknowledgement,
+                );
             },
             Ok(ExecutionAdmissionRefusalOutcome::FencedOut) => unrecorded("fenced_out"),
             Ok(ExecutionAdmissionRefusalOutcome::MissingAcceptedTurn) => {

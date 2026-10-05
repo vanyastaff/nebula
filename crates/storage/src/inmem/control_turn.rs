@@ -73,24 +73,18 @@ pub(super) fn commit(
                 nebula_execution::ExecutionControlReason::ExactFlavorMismatch { expected, actual },
                 clock.now(),
             );
-            let (expected, actual, observation_acknowledgement) =
-                if observation_acknowledgement == Ack::AlreadyRecorded {
-                    match read_flavor_receipt(
-                        &state,
-                        &identity,
-                        commit.claim().row_id(),
-                        commit.claim().generation().get(),
-                    ) {
-                        Ok((expected, actual)) => (expected, actual, Ack::AlreadyRecorded),
-                        // The receipt is durable; only its snapshot is unreadable.
-                        Err(_) => (expected, actual, Ack::AlreadyRecorded),
-                    }
-                } else {
-                    (expected, actual, observation_acknowledgement)
-                };
+            let snapshot = if observation_acknowledgement == Ack::AlreadyRecorded {
+                crate::control_turn::recorded_flavor_snapshot(read_flavor_receipt(
+                    &state,
+                    &identity,
+                    commit.claim().row_id(),
+                    commit.claim().generation().get(),
+                ))
+            } else {
+                Some(nebula_storage_port::store::FlavorMismatchSnapshot { expected, actual })
+            };
             return Ok(Outcome::FlavorMismatch {
-                expected,
-                actual,
+                snapshot,
                 observation_acknowledgement,
             });
         }
@@ -325,19 +319,34 @@ pub(super) fn record_admission(
         nebula_execution::ExecutionControlOutcome::Throttled,
     );
     let backend = nebula_storage_port::StorageBackendKind::InMemory;
-    if state.control_observation_receipts.contains_key(&key) {
-        return Ok(Admission::AlreadyRecorded { backend });
-    }
-    let payload = crate::control_turn::admission_payload(
-        refusal,
-        source_kind,
-        row_id,
-        generation,
-        clock.now(),
-    )?;
-    append_observation(&mut state, &identity, payload)?;
-    state.control_observation_receipts.insert(key, None);
-    Ok(Admission::Recorded { backend })
+    // The owner is verified and the throttle attributed: the observation
+    // below only follows that decision and never replaces it.
+    let observation_acknowledgement = if state.control_observation_receipts.contains_key(&key) {
+        Ack::AlreadyRecorded
+    } else {
+        match crate::control_turn::admission_payload(
+            refusal,
+            source_kind,
+            row_id,
+            generation,
+            clock.now(),
+        )
+        .and_then(|payload| append_observation(&mut state, &identity, payload))
+        {
+            Ok(()) => {
+                state.control_observation_receipts.insert(key, None);
+                Ack::Recorded
+            },
+            Err(error) => {
+                tracing::warn!(%error, "admission refusal observation could not be written");
+                Ack::Unrecorded
+            },
+        }
+    };
+    Ok(Admission::Attributed {
+        backend,
+        observation_acknowledgement,
+    })
 }
 
 /// Internal aggregate-owner append; caller holds the execution state lock.
@@ -417,8 +426,10 @@ pub(super) fn record_flavor(
         (
             nebula_execution::ExecutionControlReason::ExactFlavorMismatch { expected, actual },
             Flavor::FlavorMismatch {
-                expected,
-                actual,
+                snapshot: Some(nebula_storage_port::store::FlavorMismatchSnapshot {
+                    expected,
+                    actual,
+                }),
                 backend: nebula_storage_port::StorageBackendKind::InMemory,
                 observation_acknowledgement: Ack::Recorded,
             },
@@ -434,10 +445,9 @@ pub(super) fn record_flavor(
     );
     // The refusal is decided; everything below only observes it.
     if state.control_observation_receipts.contains_key(&key) {
-        let recorded =
+        let recorded = matches!(outcome, Flavor::FlavorMismatch { .. }).then(|| {
             read_flavor_receipt(&state, &identity, request.claim().row_id(), attempted_claim)
-                .ok()
-                .filter(|_| matches!(outcome, Flavor::FlavorMismatch { .. }));
+        });
         return Ok(crate::control_turn::acknowledged_flavor_outcome(
             outcome,
             Ack::AlreadyRecorded,

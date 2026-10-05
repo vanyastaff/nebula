@@ -75,8 +75,9 @@ pub use turn_handoff::{
     ControlFlavorRefusal, ControlFlavorRefusalOutcome, ControlObservationAcknowledgement,
     ControlStartAcceptance, ControlStartHandoff, ControlTurnCommand, ControlTurnCommit,
     ControlTurnCommitOutcome, ControlTurnTransition, ExecutionAdmissionRefusal,
-    ExecutionAdmissionRefusalOutcome, ExecutionTurnHandoff, RecoverableTurn, RecoverableTurnPage,
-    RecoveryTurnAcceptance, RecoveryTurnHandoff, TurnAcceptance, TurnHandoff, TurnRecovery,
+    ExecutionAdmissionRefusalOutcome, ExecutionTurnHandoff, FlavorMismatchSnapshot,
+    RecoverableTurn, RecoverableTurnPage, RecoveryTurnAcceptance, RecoveryTurnHandoff,
+    TurnAcceptance, TurnHandoff, TurnRecovery,
 };
 pub use webhook::WebhookActivationStore;
 pub use workflow::{WorkflowPublicationError, WorkflowStore, WorkflowVersionStore};

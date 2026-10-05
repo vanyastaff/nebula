@@ -238,12 +238,15 @@ impl WorkflowEngine {
                 holder: "another runtime owner or expired lease".to_owned(),
             }
             .into()),
-            Ok(ControlTurnCommitOutcome::FlavorMismatch {
-                expected, actual, ..
-            }) => {
-                tracing::Span::current()
-                    .record("expected_flavor", tracing::field::display(expected));
-                tracing::Span::current().record("actual_flavor", tracing::field::display(actual));
+            Ok(ControlTurnCommitOutcome::FlavorMismatch { snapshot, .. }) => {
+                if let Some(snapshot) = snapshot {
+                    let span = tracing::Span::current();
+                    span.record(
+                        "expected_flavor",
+                        tracing::field::display(snapshot.expected),
+                    );
+                    span.record("actual_flavor", tracing::field::display(snapshot.actual));
+                }
                 Err(EngineError::InvalidRecordedContract.into())
             },
             Ok(ControlTurnCommitOutcome::VersionConflict { actual, .. }) => {

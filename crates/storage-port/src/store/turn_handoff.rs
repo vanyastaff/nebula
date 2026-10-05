@@ -104,6 +104,15 @@ impl<'a> ControlFlavorRefusal<'a> {
         self.actual_worker_flavor_revision_id
     }
 }
+/// Expected and runtime flavors of one flavor-mismatch decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlavorMismatchSnapshot {
+    /// Exact flavor retained by the execution aggregate.
+    pub expected: WorkerFlavorRevisionId,
+    /// Flavor presented by the refused runtime.
+    pub actual: WorkerFlavorRevisionId,
+}
+
 /// Acknowledged backend decision; no execution lease or queue completion is granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -112,10 +121,11 @@ pub enum ControlFlavorRefusalOutcome {
     /// the acknowledgement says whether its journal observation is durable.
     /// An existing receipt reports its own immutable snapshot.
     FlavorMismatch {
-        /// Exact flavor retained by the execution aggregate.
-        expected: WorkerFlavorRevisionId,
-        /// Flavor presented by the refused runtime.
-        actual: WorkerFlavorRevisionId,
+        /// The decision's expected and runtime flavors: this decision's own
+        /// values, or an existing receipt's immutable snapshot. `None` only
+        /// when a receipt exists but its snapshot could not be read; it is
+        /// never filled from the retrying runtime.
+        snapshot: Option<FlavorMismatchSnapshot>,
         /// Authoritative storage adapter that decided.
         backend: crate::StorageBackendKind,
         /// New durable decision, existing receipt, or a missing observation.
@@ -374,15 +384,14 @@ impl<'a> ExecutionAdmissionRefusal<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ExecutionAdmissionRefusalOutcome {
-    /// The refusal and receipt committed together.
-    Recorded {
+    /// A current owner's refusal was attributed to its accepted turn. The
+    /// acknowledgement says whether its observation is new, already durable,
+    /// or missing; the throttle itself stands either way.
+    Attributed {
         /// Actual authoritative storage adapter.
         backend: crate::StorageBackendKind,
-    },
-    /// The identical node-attempt refusal was already durably recorded.
-    AlreadyRecorded {
-        /// Actual authoritative storage adapter.
-        backend: crate::StorageBackendKind,
+        /// New durable decision, existing receipt, or a missing observation.
+        observation_acknowledgement: ControlObservationAcknowledgement,
     },
     /// Owner is absent, expired, superseded or outside the execution tenant.
     FencedOut,
@@ -421,10 +430,11 @@ pub enum ControlTurnCommitOutcome {
     },
     /// The verified delivery addresses an existing execution of another flavor.
     FlavorMismatch {
-        /// Exact expected flavor captured by the acknowledged immutable decision.
-        expected: WorkerFlavorRevisionId,
-        /// Runtime flavor captured by that same immutable decision.
-        actual: WorkerFlavorRevisionId,
+        /// The decision's expected and runtime flavors: this decision's own
+        /// values, or an existing receipt's immutable snapshot. `None` only
+        /// when a receipt exists but its snapshot could not be read; it is
+        /// never filled from the retrying runtime.
+        snapshot: Option<FlavorMismatchSnapshot>,
         /// New durable decision or acknowledgement of the existing immutable receipt.
         observation_acknowledgement: ControlObservationAcknowledgement,
     },

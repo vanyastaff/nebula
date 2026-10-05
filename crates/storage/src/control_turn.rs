@@ -242,27 +242,30 @@ pub(crate) fn flavor_reason_snapshot(
 }
 
 /// Attach the observation acknowledgement to a decided flavor refusal. An
-/// existing receipt's snapshot, when readable, replaces the live values.
+/// existing receipt answers with its own snapshot, or with none if unreadable.
 pub(crate) fn acknowledged_flavor_outcome(
     decided: nebula_storage_port::store::ControlFlavorRefusalOutcome,
     acknowledgement: nebula_storage_port::store::ControlObservationAcknowledgement,
-    recorded_snapshot: Option<(
-        nebula_core::WorkerFlavorRevisionId,
-        nebula_core::WorkerFlavorRevisionId,
-    )>,
+    recorded: Option<
+        Result<
+            (
+                nebula_core::WorkerFlavorRevisionId,
+                nebula_core::WorkerFlavorRevisionId,
+            ),
+            StorageError,
+        >,
+    >,
 ) -> nebula_storage_port::store::ControlFlavorRefusalOutcome {
     use nebula_storage_port::store::ControlFlavorRefusalOutcome as Flavor;
     match decided {
         Flavor::FlavorMismatch {
-            expected,
-            actual,
-            backend,
-            ..
+            snapshot, backend, ..
         } => {
-            let (expected, actual) = recorded_snapshot.unwrap_or((expected, actual));
+            // An existing receipt answers with its own snapshot or none,
+            // never with this retry's values.
+            let snapshot = recorded.map_or(snapshot, recorded_flavor_snapshot);
             Flavor::FlavorMismatch {
-                expected,
-                actual,
+                snapshot,
                 backend,
                 observation_acknowledgement: acknowledgement,
             }
@@ -277,5 +280,31 @@ pub(crate) fn acknowledged_flavor_outcome(
             observation_acknowledgement: acknowledgement,
         },
         other => other,
+    }
+}
+
+/// The immutable snapshot of an existing flavor-mismatch receipt, or `None`
+/// when it cannot be read. The receipt stays durable either way; the retrying
+/// runtime's values are never substituted for it.
+pub(crate) fn recorded_flavor_snapshot(
+    read: Result<
+        (
+            nebula_core::WorkerFlavorRevisionId,
+            nebula_core::WorkerFlavorRevisionId,
+        ),
+        StorageError,
+    >,
+) -> Option<nebula_storage_port::store::FlavorMismatchSnapshot> {
+    match read {
+        Ok((expected, actual)) => {
+            Some(nebula_storage_port::store::FlavorMismatchSnapshot { expected, actual })
+        },
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "flavor-mismatch receipt is durable but its snapshot could not be read"
+            );
+            None
+        },
     }
 }
