@@ -1458,3 +1458,10 @@ pub const NEBULA_CACHE_SIZE: &str = "nebula_cache_size";
 #[cfg(test)]
 #[path = "naming_tests.rs"]
 mod tests;
+
+/// Counter: authoritative execution-control decisions observed by the runtime.
+///
+/// Labels are the closed six-value execution-control `outcome` vocabulary and
+/// three-value owning `backend` vocabulary. No actor, tenant, execution, node,
+/// generation, key, or free-form reason becomes a metric label.
+pub const NEBULA_EXECUTION_CONTROL_OUTCOMES_TOTAL: &str = "nebula_execution_control_outcomes_total";

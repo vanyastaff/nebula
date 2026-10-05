@@ -263,6 +263,7 @@ impl JournaledNode {
             rate_limiter,
             scope: self.scope.clone(),
             fencing: Some(self.fencing),
+            execution_store: None,
             operation_ledger: Some(Arc::clone(&self.ledger) as Arc<dyn OperationLedger>),
             checkpoints: None,
             clock: Arc::new(SystemClock),
@@ -371,6 +372,42 @@ async fn a_pre_dispatch_exit_with_no_unknown_call_keeps_its_error() {
         "{result:?}"
     );
     assert_eq!(node.slots().await, 0, "nothing was prepared");
+}
+
+/// The lease here was acquired directly, so no accepted-turn marker can
+/// attribute a throttled observation. The unobservable refusal must still
+/// fail the node with the retryable rate-limit error, never a substitute.
+#[tokio::test]
+async fn an_unobservable_admission_refusal_keeps_the_rate_limit_error() {
+    use nebula_storage_port::store::ExecutionJournalReader as _;
+    let node = JournaledNode::new().await;
+    let spent = Arc::new(
+        nebula_resilience::rate_limiter::TokenBucket::new(1, 0.001).expect("token bucket"),
+    );
+    {
+        use nebula_resilience::rate_limiter::RateLimiter;
+        spent.acquire().await.expect("the bucket's only token");
+    }
+    let mut task = node.task(Input::Valid, CancellationToken::new(), None, Some(spent));
+    task.execution_store = Some(Arc::new(node._executions.clone()) as Arc<dyn ExecutionStore>);
+    let (_, result) = task.run().await;
+    assert!(
+        matches!(
+            &result,
+            Err(EngineError::Runtime(crate::runtime::RuntimeError::ActionError(error)))
+                if error.is_retryable()
+        ),
+        "{result:?}"
+    );
+    let journal = nebula_storage::InMemoryJournalReader::new(&node._executions)
+        .get_journal(&node.scope, &node.execution_id.to_string())
+        .await
+        .expect("journal");
+    assert!(
+        journal.is_empty(),
+        "no throttle was fabricated: {journal:?}"
+    );
+    assert_eq!(node.dispatches.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

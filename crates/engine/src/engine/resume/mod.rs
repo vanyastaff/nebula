@@ -267,12 +267,19 @@ impl WorkflowEngine {
             .into());
         }
 
-        let recorded = self
-            .validate_recorded_execution(scope, execution_id, workflow_id, &state)
-            .await?;
         let worker_flavor_revision_id = state
             .worker_flavor_revision_id
             .ok_or(EngineError::MissingRevisionPins)?;
+        self.record_claimed_flavor_refusal(
+            scope,
+            execution_id,
+            worker_flavor_revision_id,
+            lease_source,
+        )
+        .await?;
+        let recorded = self
+            .validate_recorded_execution(scope, execution_id, workflow_id, &state)
+            .await?;
         let elapsed_before_turn = match state.started_at {
             Some(started_at) => turn_started_at
                 .signed_duration_since(started_at)

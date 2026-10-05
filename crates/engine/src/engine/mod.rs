@@ -3052,6 +3052,8 @@ struct NodeTask {
     /// Authenticated execution scope and lease acquired by the driving turn.
     scope: Scope,
     fencing: Option<nebula_storage_port::FencingToken>,
+    /// Execution aggregate owner used to record admission refusals under this live fence.
+    execution_store: Option<Arc<dyn nebula_storage_port::store::ExecutionStore>>,
     /// ADR-0120 operation ledger for durable effect-slot tracking (#978).
     operation_ledger: Option<Arc<dyn nebula_storage_port::store::OperationLedger>>,
     /// Where a journaled stateful action's iteration checkpoints live, from
@@ -3101,6 +3103,120 @@ impl NodeResourceLayers {
 /// Why a journaled action on a run without execution stores has read-only
 /// resource handles.
 const JOURNAL_NEEDS_STORES: &str = "journaled effects need execution stores";
+
+/// The node-attempt identity an admission refusal is observed under, borrowed
+/// field by field so a partially consumed [`NodeTask`] can still report it.
+struct AdmissionRefusalObserver<'a> {
+    execution_store: Option<&'a Arc<dyn nebula_storage_port::store::ExecutionStore>>,
+    fencing: Option<nebula_storage_port::FencingToken>,
+    scope: &'a Scope,
+    execution_id: ExecutionId,
+    node_key: &'a NodeKey,
+    attempt_generation: u64,
+    metrics: &'a MetricsRegistry,
+}
+
+impl AdmissionRefusalObserver<'_> {
+    /// Record the actual pre-dispatch admission refusal before publishing its result.
+    /// The backend validates this owner and derives the retained turn identity.
+    ///
+    /// The observation never changes the node's failure: the rate-limit refusal
+    /// stays the retryable error the error strategy decides on. An owner that
+    /// cannot observe it (no execution store, no accepted-turn marker, a stale
+    /// lease, a backend failure) is reported on the span, not as a new error.
+    #[tracing::instrument(name = "record_admission_refusal", skip_all, fields(execution_id = %self.execution_id, org_id = %self.scope.org_id, workspace_id = %self.scope.workspace_id, node_key = %self.node_key, backend = tracing::field::Empty, outcome = tracing::field::Empty, observation_acknowledgement = tracing::field::Empty, reason = "admission_throttled", execution_lease_generation = tracing::field::Empty))]
+    async fn record(self) {
+        use nebula_storage_port::store::{
+            ExecutionAdmissionRefusal, ExecutionAdmissionRefusalOutcome,
+        };
+        /// Sibling branches may commit between the version read and the
+        /// receipt write; each retry uses the version the backend reported
+        /// under its own lock.
+        const VERSION_RETRIES: usize = 3;
+        let (Some(store), Some(fence)) = (self.execution_store, self.fencing) else {
+            return;
+        };
+        let span = tracing::Span::current();
+        span.record("execution_lease_generation", fence.generation());
+        let execution_key = self.execution_id.to_string();
+        let Some(attempt) = self
+            .attempt_generation
+            .checked_sub(1)
+            .and_then(|attempt| u32::try_from(attempt).ok())
+        else {
+            span.record("observation_acknowledgement", "unobservable");
+            tracing::warn!("admission refusal has no representable node attempt");
+            return;
+        };
+        let mut expected_version = match store.get(self.scope, &execution_key).await {
+            Ok(Some(record)) => record.version,
+            Ok(None) => {
+                span.record("observation_acknowledgement", "unobservable");
+                tracing::warn!("admission refusal execution row is not visible to its owner");
+                return;
+            },
+            Err(error) => {
+                span.record("observation_acknowledgement", "unknown");
+                tracing::warn!(%error, "admission refusal could not read its execution");
+                return;
+            },
+        };
+        for _ in 0..VERSION_RETRIES {
+            let request = ExecutionAdmissionRefusal::new(
+                self.scope,
+                &execution_key,
+                expected_version,
+                fence,
+                self.node_key,
+                attempt,
+            );
+            match store.record_execution_admission_refusal(&request).await {
+                Ok(ExecutionAdmissionRefusalOutcome::Recorded { backend }) => {
+                    span.record("observation_acknowledgement", "recorded");
+                    if let Err(error) = crate::control_metrics::record_execution_control_outcome(
+                        self.metrics,
+                        backend,
+                        nebula_execution::ExecutionControlOutcome::Throttled,
+                    ) {
+                        tracing::warn!(%error, "execution admission outcome metric could not be recorded");
+                    }
+                    return;
+                },
+                Ok(ExecutionAdmissionRefusalOutcome::AlreadyRecorded { backend }) => {
+                    span.record("observation_acknowledgement", "already_recorded");
+                    span.record("backend", backend.as_str());
+                    span.record("outcome", "throttled");
+                    return;
+                },
+                Ok(ExecutionAdmissionRefusalOutcome::VersionConflict { actual }) => {
+                    expected_version = actual;
+                },
+                Ok(ExecutionAdmissionRefusalOutcome::FencedOut) => {
+                    span.record("observation_acknowledgement", "fenced_out");
+                    tracing::warn!("admission refusal owner no longer holds the execution lease");
+                    return;
+                },
+                Ok(ExecutionAdmissionRefusalOutcome::MissingAcceptedTurn) => {
+                    span.record("observation_acknowledgement", "unobservable");
+                    tracing::warn!("admission refusal has no accepted-turn marker to attribute");
+                    return;
+                },
+                Ok(_) => {
+                    span.record("observation_acknowledgement", "unobservable");
+                    tracing::warn!("admission refusal outcome is not understood by this runtime");
+                    return;
+                },
+                Err(error) => {
+                    span.record("observation_acknowledgement", "unknown");
+                    tracing::warn!(%error, "admission refusal could not be recorded");
+                    return;
+                },
+            }
+        }
+        span.record("observation_acknowledgement", "version_contended");
+        tracing::warn!("admission refusal lost every version race with sibling commits");
+    }
+}
 
 impl NodeTask {
     /// The effect journal of this node attempt: built only for a frozen
@@ -3382,6 +3498,19 @@ impl NodeTask {
         if let Some(ref limiter) = self.rate_limiter {
             use nebula_resilience::rate_limiter::RateLimiter;
             if let Err(e) = limiter.acquire().await {
+                // Input and support inputs are already consumed; borrow only
+                // the attempt identity the observation needs.
+                AdmissionRefusalObserver {
+                    execution_store: self.execution_store.as_ref(),
+                    fencing: self.fencing,
+                    scope: &self.scope,
+                    execution_id: self.execution_id,
+                    node_key: &self.node_key,
+                    attempt_generation: self.attempt_generation,
+                    metrics: &self.metrics,
+                }
+                .record()
+                .await;
                 tracing::warn!(
                     node_key = %self.node_key.clone(),
                     action_key = %self.action_key,
