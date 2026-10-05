@@ -140,6 +140,16 @@ static NESTED_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 struct CountedFailure;
 
+impl nebula_schema::PropertyType for CountedFailure {
+    fn define_schema_type(
+        _: &mut nebula_schema::SchemaTypeBuilder,
+    ) -> Result<nebula_schema::SchemaTypeUse, ValidationReport> {
+        Err(ValidationError::builder("nested.construction_failed")
+            .build()
+            .into())
+    }
+}
+
 impl HasSchema for CountedFailure {
     fn schema() -> Result<ValidSchema, ValidationReport> {
         NESTED_CALLS.fetch_add(1, Ordering::SeqCst);

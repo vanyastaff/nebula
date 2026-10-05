@@ -24,6 +24,49 @@ supported downstream API.
 
 ## Role
 
+The directional codec path uses the admitted wire-v3 definition graph:
+
+```text
+PropertyType::definition(direction) -> AdmittedSchemaGraph
+InputContract::for_type::<T>() -> InputContract
+InputContract::validate(AuthoredValue) -> ValidInputValues
+ValidInputValues::resolve(context) -> ResolvedInputValues
+ResolvedInputValues::into_typed::<T>(&retained_contract) -> T
+OutputContract::for_type::<T>() -> OutputContract
+OutputContract::validate_data(&serialized_value) -> ()
+```
+
+`#[schema_type(input)]`, `#[schema_type(output)]`, and `#[schema_type(both)]`
+own the corresponding Serde derives and codec fidelity declarations. Structural
+`PropertyType` alone grants neither codec provenance nor execution admission.
+The graph preserves native nullable roots, arrays, recursive definitions, and
+directional names. `ValidSchema::from_graph` is an exact legacy projection and
+returns an error for shapes the legacy model cannot represent.
+
+Factories compile the typed inbound contract once. Its private runtime type
+identity binds each prepared and resolved token to the retained codec; that
+identity is never persisted. Recorded contracts contain graph evidence,
+direction, codec epoch, and commitments, and require fresh admission before use.
+Static symbolic references retain pending obligations and cannot be resolved or
+decoded into runtime values. Outbound validation checks the serialized literal
+without input preparation and rejects every reachable protected declaration,
+including absent optional fields and inactive union variants.
+
+Root expression authorization is local to the root occurrence: a forbidden root
+rejects a whole-value expression while each field or array element follows its
+declared mode. A forbidden nested property occurrence also forbids expressions
+in its descendants. Input wire decoding never infers expression syntax.
+
+Named condition declarations use canonical prepared inbound paths. Root
+`x-nebula-conditions` and per-definition `x-nebula-local-conditions` carry
+behavior and belong to directional contract identity; presentation extensions
+do not. Every declared condition must pass domain and protection checks, even
+when no slot refers to it.
+Outbound contracts reject these condition tables; owned output definitions omit
+them because output codecs do not execute inbound or slot policies.
+
+The following pipeline describes the retained legacy property model:
+
 The proof pipeline has two distinct kinds of state: the expression capability
 of a tree and the schema checks certified by its wrapper.
 

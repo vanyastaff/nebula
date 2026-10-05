@@ -21,12 +21,19 @@
 
 mod admission;
 mod canonical;
+mod conditions;
+mod directional;
 mod document;
 mod error;
+mod graph_compat;
+mod input;
+mod legacy_graph;
 mod lower;
 mod model;
 mod number;
 mod rule_canonical;
+mod runtime;
+mod sensitive;
 mod view;
 
 pub use admission::{
@@ -34,8 +41,17 @@ pub use admission::{
     DefinitionMemberKey,
 };
 pub use canonical::{AddressSpaceCommitment, SemanticCommitment};
+pub use directional::{
+    DirectionalCommitment, GRAPH_CODEC_VERSION, InputContract, OutputContract,
+    RecordedSchemaContract, SCHEMA_CONTRACT_EVIDENCE_VERSION,
+};
 pub use document::SchemaGraphDocument;
 pub use error::SchemaAdmissionError;
+pub use graph_compat::{
+    GraphReference, GraphReferenceError, GraphRootKind, MAX_GRAPH_COMPARISON_STEPS,
+    explain_graph_assignable, explain_graph_successor,
+};
+pub use input::{ResolvedInputValues, ValidInputValues};
 pub use model::DefinitionKey;
 
 /// Current semantic schema graph wire version.

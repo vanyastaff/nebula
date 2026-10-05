@@ -179,6 +179,14 @@ pub(super) fn validate_input(
     })
 }
 
+pub(super) fn validate_output(
+    schema: ValidSchema,
+    data: Value,
+) -> Result<ResolvedValues, ValidationReport> {
+    let values = ResolvedValue::from_data(data)?;
+    complete(schema, values, &[], Arc::from([]), None)
+}
+
 impl ValidValues {
     /// Schema snapshot this preparation is bound to.
     #[must_use]

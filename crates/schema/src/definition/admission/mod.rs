@@ -1,7 +1,5 @@
 use std::{fmt, sync::Arc};
 
-use serde_json::Value;
-
 use crate::{ValidationError, ValidationReport};
 
 use super::{
@@ -27,6 +25,9 @@ use check::{
     check_productivity, check_reachability, normalize_and_check_local,
 };
 use facets::check_facet_applicability;
+pub(super) fn is_canonical_base64(value: &str) -> bool {
+    facets::is_canonical_base64(value)
+}
 pub use keys::{DeclarationAddress, DeclarationUse, DefinitionMemberKey};
 use parse::parse_document;
 use rules::{address_exists, canonical_numbering};
@@ -71,6 +72,7 @@ impl AdmittedDeclarationAddress {
 }
 
 pub(super) struct AdmittedGraph {
+    pub(super) document: SchemaGraphDocument,
     pub(super) graph: DraftGraph,
     pub(super) lookup: DefinitionLookup,
     pub(super) canonical_numbers: Vec<u32>,
@@ -79,7 +81,7 @@ pub(super) struct AdmittedGraph {
     reference_count: usize,
 }
 
-/// An opaque graph admitted for future `ValidSchema` custody.
+/// An immutable checked structural graph, independent of runtime value custody.
 #[derive(Clone)]
 pub struct AdmittedSchemaGraph(pub(super) Arc<AdmittedGraph>);
 
@@ -94,6 +96,12 @@ impl fmt::Debug for AdmittedSchemaGraph {
 }
 
 impl AdmittedSchemaGraph {
+    /// Retained wire evidence. Readmission is required to recover authority.
+    #[must_use]
+    pub fn to_document(&self) -> SchemaGraphDocument {
+        self.0.document.clone()
+    }
+
     /// Commitment to executable semantics, invariant under definition alpha-renaming.
     #[must_use]
     pub fn semantic_commitment(&self) -> &SemanticCommitment {
@@ -163,7 +171,7 @@ impl AdmittedSchemaGraph {
 pub(super) fn admit(
     document: SchemaGraphDocument,
 ) -> Result<AdmittedSchemaGraph, SchemaAdmissionError> {
-    match admit_inner(document.raw()) {
+    match admit_inner(&document) {
         Ok(graph) => {
             tracing::trace!(
                 definition_count = graph.graph.definitions.len(),
@@ -199,8 +207,8 @@ impl From<AdmissionIssue> for AdmissionFailure {
     }
 }
 
-fn admit_inner(raw: &Value) -> Result<AdmittedGraph, AdmissionFailure> {
-    let mut graph = parse_document(raw)?;
+fn admit_inner(document: &SchemaGraphDocument) -> Result<AdmittedGraph, AdmissionFailure> {
+    let mut graph = parse_document(document.raw())?;
     graph
         .definitions
         .sort_unstable_by(|left, right| left.key.cmp(&right.key));
@@ -215,6 +223,7 @@ fn admit_inner(raw: &Value) -> Result<AdmittedGraph, AdmissionFailure> {
     let (semantic_commitment, address_space_commitment) =
         commitments(&graph, &lookup, &canonical_numbers)?;
     Ok(AdmittedGraph {
+        document: document.clone(),
         graph,
         lookup,
         canonical_numbers,
@@ -223,6 +232,16 @@ fn admit_inner(raw: &Value) -> Result<AdmittedGraph, AdmissionFailure> {
         reference_count,
     })
 }
+
+impl PartialEq for AdmittedSchemaGraph {
+    fn eq(&self, other: &Self) -> bool {
+        self.semantic_commitment() == other.semantic_commitment()
+            && self.address_space_commitment() == other.address_space_commitment()
+            && self.0.document == other.0.document
+    }
+}
+
+impl Eq for AdmittedSchemaGraph {}
 
 impl Definition {
     pub(super) fn edges(&self) -> Result<Vec<Edge>, AdmissionIssue> {

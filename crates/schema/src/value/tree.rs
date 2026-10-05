@@ -16,6 +16,10 @@ use super::{MAX_VALUE_DEPTH, MAX_VALUE_NODES, budget::ValueBudget};
 pub struct ScalarValue(Value);
 
 impl ScalarValue {
+    pub(crate) const fn null() -> Self {
+        Self(Value::Null)
+    }
+
     /// Borrow the scalar without allocating a validator view.
     #[must_use]
     pub const fn as_json(&self) -> &Value {

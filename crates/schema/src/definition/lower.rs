@@ -15,14 +15,14 @@ use super::{
     },
 };
 
-impl AdmittedSchemaGraph {
+impl ValidSchema {
     /// Lower this admitted definition graph to the legacy schema model when the
     /// graph is exactly representable.
     ///
     /// Valid but unrepresentable documents fail closed with
     /// `schema.graph.lower.*` diagnostics.
-    pub fn lower_to_valid_schema(&self) -> Result<ValidSchema, ValidationReport> {
-        Lowerer { graph: self }.lower()
+    pub fn from_graph(graph: &AdmittedSchemaGraph) -> Result<Self, ValidationReport> {
+        Lowerer { graph }.lower()
     }
 }
 

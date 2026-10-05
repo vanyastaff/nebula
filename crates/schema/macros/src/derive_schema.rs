@@ -565,6 +565,60 @@ pub(crate) fn build_field_expr(
     read_aliases: &[String],
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
+    build_field_expr_at(
+        field,
+        kind,
+        field_attr,
+        validate,
+        crate_path,
+        FieldExprSite::Declaration { read_aliases },
+    )
+}
+
+/// Graph use sites retain their real type target; the declaration here supplies
+/// only facets and must never recursively discover the child's legacy schema.
+pub(crate) fn build_graph_field_expr(
+    field: FieldContext<'_>,
+    kind: &FieldKind,
+    field_attr: &FieldAttrs,
+    validate: &ValidateAttrs,
+    crate_path: &TokenStream2,
+    validate_secret_input: bool,
+) -> syn::Result<TokenStream2> {
+    build_field_expr_at(
+        field,
+        kind,
+        field_attr,
+        validate,
+        crate_path,
+        FieldExprSite::GraphUse {
+            validate_secret_input,
+        },
+    )
+}
+
+/// Where a field expression is emitted: a legacy schema declaration, or a
+/// graph use site that contributes only facets to an authoritative graph.
+#[derive(Clone, Copy)]
+enum FieldExprSite<'a> {
+    Declaration { read_aliases: &'a [String] },
+    GraphUse { validate_secret_input: bool },
+}
+
+fn build_field_expr_at(
+    field: FieldContext<'_>,
+    kind: &FieldKind,
+    field_attr: &FieldAttrs,
+    validate: &ValidateAttrs,
+    crate_path: &TokenStream2,
+    site: FieldExprSite<'_>,
+) -> syn::Result<TokenStream2> {
+    let (read_aliases, graph_facets, validate_secret_input) = match site {
+        FieldExprSite::Declaration { read_aliases } => (read_aliases, false, true),
+        FieldExprSite::GraphUse {
+            validate_secret_input,
+        } => (&[][..], true, validate_secret_input),
+    };
     let FieldContext {
         name: field_name,
         ty: field_type,
@@ -579,15 +633,27 @@ pub(crate) fn build_field_expr(
 
     ensure_field_attr_combinations(field_name, kind, field_attr, validate)?;
 
-    let mut property_builder = base_property_expr(
-        &key,
-        key_str,
-        inner,
-        field_attr,
-        field_name,
-        &nested_binding,
-        crate_path,
-    )?;
+    let graph_reference = graph_facets
+        && matches!(inner, FieldKind::UserDefined(_))
+        && !field_attr.secret
+        && !field_attr.enum_select;
+    let mut property_builder = if graph_reference {
+        quote!(#crate_path::Property::dynamic(#key))
+    } else if graph_facets && matches!(inner, FieldKind::List(_)) {
+        // The authoritative graph carries the element type. This declaration
+        // contributes only list facets and must not retrieve a legacy child tree.
+        quote!(#crate_path::Property::list(#key))
+    } else {
+        base_property_expr(
+            &key,
+            key_str,
+            inner,
+            field_attr,
+            field_name,
+            &nested_binding,
+            crate_path,
+        )?
+    };
 
     property_builder = apply_presentation_decorators(property_builder, field_attr);
 
@@ -612,7 +678,7 @@ pub(crate) fn build_field_expr(
     property_builder = apply_alias_decorators(property_builder, field_attr, read_aliases);
 
     let field_property = quote! { #property_builder.into_property() };
-    if field_attr.secret {
+    if field_attr.secret && validate_secret_input {
         let secret_type = secret_leaf_type(field_type);
         return Ok(quote! {{
             fn __nebula_assert_secret_input<T: #crate_path::SecretInput>() {}
@@ -622,6 +688,7 @@ pub(crate) fn build_field_expr(
     }
     if let FieldKind::UserDefined(ty) = inner
         && !field_attr.enum_select
+        && !graph_facets
     {
         // Each branch finishes its concrete builder before joining as a Field.
         return Ok(nested_field_expr(
@@ -921,7 +988,9 @@ fn apply_default_decorator(
 ) -> syn::Result<TokenStream2> {
     let mut property_builder = property_builder;
     if let Some(default) = &field_attr.default {
-        if field_attr.enum_select {
+        if matches!(default, DefaultLit::Null) {
+            property_builder = quote! { #property_builder.default(#crate_path::__private::serde_json::Value::Null) };
+        } else if field_attr.enum_select {
             property_builder =
                 apply_enum_select_default(property_builder, default, field_name, crate_path)?;
         } else {
@@ -1070,6 +1139,21 @@ fn ensure_field_attr_combinations(
     validate: &ValidateAttrs,
 ) -> syn::Result<()> {
     let inner = kind.inner();
+
+    if matches!(field_attr.default, Some(DefaultLit::Null)) && !kind.is_optional() {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "null default requires an Option<T> field",
+        ));
+    }
+    if matches!(field_attr.default, Some(DefaultLit::EmptyArray))
+        && !matches!(inner, FieldKind::List(_))
+    {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "[] default requires a Vec<T> field",
+        ));
+    }
 
     if field_attr.enum_select && field_attr.secret {
         return Err(syn::Error::new_spanned(
@@ -1225,6 +1309,9 @@ fn default_lit_tokens(
         )
     };
     match (inner, lit) {
+        (FieldKind::List(_), DefaultLit::EmptyArray) => Ok(quote! {
+            #crate_path::__private::serde_json::Value::Array(::std::vec::Vec::new())
+        }),
         // String-ish targets accept only string defaults.
         (FieldKind::String, DefaultLit::Str(s)) => Ok(quote! {
             #crate_path::__private::serde_json::Value::String(#s.to_owned())

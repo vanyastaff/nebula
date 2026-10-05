@@ -28,6 +28,13 @@ use serde_json::{Number, Value};
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SchemaIncompat {
+    /// An admitted graph constraint excludes a producer value. Authored values
+    /// and rule contents are intentionally absent from this diagnostic.
+    #[error("schema graph constraint mismatch: {code}")]
+    GraphConstraintMismatch {
+        /// Stable, payload-free constraint category.
+        code: &'static str,
+    },
     /// A consumer field with [`RequiredMode::Always`] has no counterpart in the
     /// producer schema.
     #[error("missing required field `{key}`")]
@@ -370,6 +377,12 @@ pub enum Assignability {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnknownReason {
+    /// A graph constraint requires runtime evidence or exceeded the bounded
+    /// comparison budget. This never proves compatibility.
+    UnprovenGraphConstraint {
+        /// Stable, payload-free constraint category.
+        code: &'static str,
+    },
     /// Historical policy evidence cannot prove a current data contract.
     UnsupportedPolicy,
     /// The producer side is opaque, so it cannot be *proven* to match a typed
@@ -432,6 +445,9 @@ pub enum UnknownReason {
 impl core::fmt::Display for UnknownReason {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::UnprovenGraphConstraint { code } => {
+                write!(f, "schema graph constraint is unproven: {code}")
+            },
             Self::OpaqueProducer => {
                 write!(f, "producer side is opaque (shape unknown)")
             },

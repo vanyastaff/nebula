@@ -20,10 +20,13 @@ use crate::{
     value::{AuthoredValue, ValuePath, ValueTree},
 };
 
+mod output;
 mod preparation;
 mod root;
 mod scalar;
+pub(crate) use scalar::exact_integer;
 mod typed;
+pub(crate) use typed::decode_graph_wire;
 mod validation;
 mod values;
 

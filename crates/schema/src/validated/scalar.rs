@@ -314,7 +314,7 @@ fn type_error(path: &ValuePath) -> ValidationError {
         .build()
 }
 
-fn exact_integer(number: &Number) -> Option<Number> {
+pub(crate) fn exact_integer(number: &Number) -> Option<Number> {
     if number.is_i64() || number.is_u64() {
         return Some(number.clone());
     }

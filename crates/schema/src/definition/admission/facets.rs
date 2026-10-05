@@ -245,6 +245,12 @@ fn literal_matches_use(
                 .ok_or(AdmissionIssue::DanglingReference)?;
             continue;
         }
+        // Null is an occurrence domain. Every alias occurrence has already
+        // checked its null policy, rules and closed domain above; the terminal
+        // non-null body does not remove an explicitly admitted nullable value.
+        if current_value.is_null() {
+            return Ok(true);
+        }
         return literal_matches_body(graph, lookup, body, &current_value, purpose);
     }
 }

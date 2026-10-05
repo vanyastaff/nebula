@@ -2,6 +2,7 @@
 
 use std::{borrow::Cow, collections::HashSet, fmt};
 
+use base64::Engine as _;
 use serde::de::{
     self, DeserializeOwned, DeserializeSeed, EnumAccess, IntoDeserializer, MapAccess, SeqAccess,
     VariantAccess, Visitor, value::BorrowedStrDeserializer,
@@ -63,6 +64,31 @@ pub(super) fn decode<T: DeserializeOwned>(
     };
     let wire = project_root_union_wire(schema, tree);
     T::deserialize(&wire).map_err(|error| {
+        ValidationError::builder("type_mismatch")
+            .message("validated data cannot be decoded as the requested type")
+            .private_source(error)
+            .build()
+    })
+}
+
+/// Decode native graph wire through the same protected borrowing boundary.
+pub(crate) fn decode_graph_wire<T: DeserializeOwned>(
+    values: &ResolvedValue,
+    expose: bool,
+) -> Result<T, ValidationError> {
+    values.check_depth(&ValuePath::root(), 0)?;
+    let disclosure = if expose {
+        SecretDisclosure::Expose
+    } else {
+        SecretDisclosure::Refuse
+    };
+    let tree = build_sensitive_tree_with_encoding(
+        values,
+        disclosure,
+        &ValuePath::root(),
+        SecretByteEncoding::NativeBase64,
+    )?;
+    T::deserialize(&tree).map_err(|error| {
         ValidationError::builder("type_mismatch")
             .message("validated data cannot be decoded as the requested type")
             .private_source(error)
@@ -179,12 +205,27 @@ fn build_sensitive_tree<'a>(
     disclosure: SecretDisclosure,
     path: &ValuePath,
 ) -> Result<SensitiveValue<'a>, ValidationError> {
+    build_sensitive_tree_with_encoding(value, disclosure, path, SecretByteEncoding::LegacyHex)
+}
+
+#[derive(Clone, Copy)]
+enum SecretByteEncoding {
+    LegacyHex,
+    NativeBase64,
+}
+
+fn build_sensitive_tree_with_encoding<'a>(
+    value: &'a ResolvedValue,
+    disclosure: SecretDisclosure,
+    path: &ValuePath,
+    encoding: SecretByteEncoding,
+) -> Result<SensitiveValue<'a>, ValidationError> {
     match value {
         ValueTree::Literal(value) => Ok(borrow_json(value.as_json())),
         ValueTree::Object(values) => values
             .iter()
             .map(|(key, value)| {
-                build_sensitive_tree(value, disclosure, &path.push(key))
+                build_sensitive_tree_with_encoding(value, disclosure, &path.push(key), encoding)
                     .map(|value| (Cow::Borrowed(key.as_str()), value))
             })
             .collect::<Result<_, _>>()
@@ -193,7 +234,12 @@ fn build_sensitive_tree<'a>(
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                build_sensitive_tree(value, disclosure, &path.push(index.to_string()))
+                build_sensitive_tree_with_encoding(
+                    value,
+                    disclosure,
+                    &path.push(index.to_string()),
+                    encoding,
+                )
             })
             .collect::<Result<_, _>>()
             .map(SensitiveValue::List),
@@ -206,7 +252,7 @@ fn build_sensitive_tree<'a>(
                 .at(path.clone())
                 .message("secret-bearing data requires explicit secret access")
                 .build()),
-            SecretDisclosure::Expose => Ok(expose_secret(secret)),
+            SecretDisclosure::Expose => Ok(expose_secret(secret, encoding)),
         },
     }
 }
@@ -227,11 +273,16 @@ fn borrow_json(value: &Value) -> SensitiveValue<'_> {
     }
 }
 
-fn expose_secret(secret: &SecretValue) -> SensitiveValue<'_> {
+fn expose_secret(secret: &SecretValue, encoding: SecretByteEncoding) -> SensitiveValue<'_> {
     match secret {
         SecretValue::String(value) => SensitiveValue::ProtectedText(value.expose()),
         SecretValue::Bytes(value) => {
             let bytes = value.expose();
+            if matches!(encoding, SecretByteEncoding::NativeBase64) {
+                let mut encoded = Zeroizing::new(String::new());
+                base64::engine::general_purpose::STANDARD.encode_string(bytes, &mut encoded);
+                return SensitiveValue::ProtectedOwned(encoded);
+            }
             let mut encoded = Zeroizing::new(String::with_capacity(bytes.len().saturating_mul(2)));
             for byte in bytes {
                 encoded.push(hex_digit(byte >> 4));
@@ -532,5 +583,44 @@ impl<'de, 'a: 'de> VariantAccess<'de> for SensitiveVariantAccess<'de, 'a> {
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
         de::Deserializer::deserialize_map(self.value, visitor)
+    }
+}
+
+#[cfg(test)]
+mod byte_wire_tests {
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[test]
+    fn native_base64_and_legacy_hex_remain_distinct() {
+        for (bytes, base64, hex) in [
+            (vec![], "", ""),
+            (vec![0], "AA==", "00"),
+            (vec![0, 1], "AAE=", "0001"),
+            (vec![0, 1, 255], "AAH/", "0001ff"),
+            (vec![0, 1, 255, 128], "AAH/gA==", "0001ff80"),
+        ] {
+            let value = ResolvedValue::Secret(SecretValue::bytes(bytes));
+            assert_eq!(decode_graph_wire::<String>(&value, true).unwrap(), base64);
+            let legacy =
+                build_sensitive_tree(&value, SecretDisclosure::Expose, &ValuePath::root()).unwrap();
+            assert_eq!(String::deserialize(&legacy).unwrap(), hex);
+            assert!(decode_graph_wire::<String>(&value, false).is_err());
+        }
+    }
+
+    #[test]
+    fn native_byte_encoding_applies_inside_containers() {
+        let value = ResolvedValue::Object(indexmap::IndexMap::from_iter([(
+            "nested".to_owned(),
+            ResolvedValue::List(vec![ResolvedValue::Secret(SecretValue::bytes(vec![
+                0, 1, 255,
+            ]))]),
+        )]));
+        assert_eq!(
+            decode_graph_wire::<Value>(&value, true).unwrap(),
+            serde_json::json!({"nested":["AAH/"]})
+        );
     }
 }

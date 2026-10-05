@@ -3629,6 +3629,7 @@ dependencies = [
 name = "nebula-schema"
 version = "0.32.0"
 dependencies = [
+ "base64",
  "blake3",
  "codspeed-criterion-compat",
  "hex",

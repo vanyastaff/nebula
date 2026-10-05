@@ -4,5 +4,5 @@ error[E0308]: mismatched types
 12 |     let _ = input == output;
    |                      ^^^^^^ expected `DirectedSchema<Input>`, found `DirectedSchema<Output>`
    |
-   = note: expected struct `DirectedSchema<Input>`
+   = note: expected struct `DirectedSchema<nebula_schema::Input>`
               found struct `DirectedSchema<nebula_schema::Output>`

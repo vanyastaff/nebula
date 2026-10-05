@@ -15,6 +15,8 @@ pub mod credential_ref;
 pub mod diag;
 /// Resolve generated Nebula crate paths for leaf-crate and SDK-only consumers.
 pub mod paths;
+/// Strict dependency slot grammar shared by integration derives.
+pub mod slot;
 /// General proc-macro utility functions.
 pub mod utils;
 /// Code generation helpers for validator/config derives.
