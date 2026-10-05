@@ -188,7 +188,12 @@ fn structural_catalog_and_secret_omission_keep_legacy_wrapper_authority() {
     assert!(structural.contains("SecretInput"));
     assert!(structural.contains("Input => __use . allow_null"));
     assert!(structural.contains("Output => __use"));
-    assert!(!structural.contains("< CatalogOnly as"));
+    // The select catalog is read through `HasSelectOptions`; the enum itself
+    // must not be asked for a schema type or a codec.
+    assert!(structural.contains("< CatalogOnly as :: nebula_schema :: HasSelectOptions >"));
+    assert!(!structural.contains("< CatalogOnly as :: nebula_schema :: PropertyType >"));
+    assert!(!structural.contains("Option < CatalogOnly > as"));
+    assert!(!structural.contains("Codec"));
     assert!(!structural.contains("< SecretOnly as"));
     assert!(structural.contains("fn (Option < CatalogOnly >)"));
     let owned = crate::derive_property_type::expand_owned(&input)
@@ -436,7 +441,7 @@ fn select_catalog_field_does_not_grant_the_enum_structural_or_codec_traits() {
 fn annotated_collection_facets_do_not_retrieve_legacy_child_schemas() {
     let input: syn::DeriveInput = syn::parse_quote! {
         struct RecursiveCollections {
-            #[validate(min_items = 1)]
+            #[property(validate(items(min = 1)))]
             children: Vec<RecursiveCollections>,
             #[field(label = "Nested")]
             nested: Vec<Vec<String>>,
@@ -446,6 +451,7 @@ fn annotated_collection_facets_do_not_retrieve_legacy_child_schemas() {
         .unwrap()
         .to_string();
     assert!(expansion.contains("Property :: list"));
+    assert!(expansion.contains("min_items (1u32)"));
     assert!(!expansion.contains("HasSchema"));
     assert!(expansion.contains("PropertyType"));
 }
