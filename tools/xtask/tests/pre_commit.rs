@@ -2,6 +2,10 @@
 
 #![cfg(unix)]
 
+#[path = "support/fixture_process.rs"]
+mod fixture_process;
+use fixture_process::fixture_command;
+
 use std::{
     env, fs,
     os::unix::fs::PermissionsExt,
@@ -389,7 +393,7 @@ esac
             .chain(env::split_paths(&env::var_os("PATH").unwrap_or_default())),
     )
     .expect("shim PATH contains valid components");
-    let mut command = Command::new("bash");
+    let mut command = fixture_command("bash");
     command
         .arg(workspace_root().join("scripts").join(script))
         .args(paths)
@@ -428,7 +432,7 @@ esac
 }
 
 fn install_failing_jq(shim_dir: &Path, command: &mut Command, extraction: usize) {
-    let lookup = Command::new("bash")
+    let lookup = fixture_command("bash")
         .args(["-c", "command -v jq"])
         .output()
         .expect("locate real jq before installing the extraction-failure shim");

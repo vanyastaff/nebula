@@ -1,8 +1,8 @@
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+#[path = "support/fixture_process.rs"]
+mod fixture_process;
+use fixture_process::fixture_command;
+
+use std::{fs, path::Path, process::Output};
 
 use tempfile::TempDir;
 
@@ -24,7 +24,7 @@ fn checks_nondefault_members_and_optional_local_dependencies_outside_workspace()
     for relative in ["first", "second", "local dependency"] {
         let source = fixture.path().join(relative).join("src/lib.rs");
         fs::write(&source, "pub fn example( ){ }\n").expect("write badly formatted source");
-        let old = Command::new("cargo")
+        let old = fixture_command("cargo")
             .current_dir(fixture.path())
             .args(["fmt", "--all", "--", "--check"])
             .output()
@@ -92,7 +92,7 @@ fn fixture_workspace() -> TempDir {
             .expect("write formatted source");
     }
     assert_success(
-        &Command::new("cargo")
+        &fixture_command("cargo")
             .current_dir(fixture.path())
             .args(["generate-lockfile", "--offline"])
             .output()
@@ -102,7 +102,7 @@ fn fixture_workspace() -> TempDir {
 }
 
 fn check(root: &Path) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_nebula-xtask"))
+    fixture_command(env!("CARGO_BIN_EXE_nebula-xtask"))
         .current_dir(root)
         .arg("fmt-check")
         .output()

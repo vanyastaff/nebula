@@ -1,10 +1,10 @@
 //! Real CLI and Cargo-metadata ownership tests, independent of the hook recording double.
 
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+#[path = "support/fixture_process.rs"]
+mod fixture_process;
+use fixture_process::fixture_command;
+
+use std::{fs, path::Path, process::Output};
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -303,7 +303,7 @@ fn workspace_fixture() -> TempDir {
             "#[test]\nfn synthetic_target() {}\n",
         );
     }
-    let output = Command::new("cargo")
+    let output = fixture_command("cargo")
         .args(["generate-lockfile", "--offline"])
         .current_dir(directory.path())
         .output()
@@ -346,7 +346,7 @@ fn planner(root: &Path, paths: &[&str]) -> Output {
 }
 
 fn xtask(root: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_nebula-xtask"))
+    fixture_command(env!("CARGO_BIN_EXE_nebula-xtask"))
         .args(arguments)
         .current_dir(root)
         .output()

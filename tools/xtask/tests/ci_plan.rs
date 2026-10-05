@@ -1,8 +1,14 @@
+#[path = "support/fixture_process.rs"]
+mod fixture_process;
+use fixture_process::fixture_command;
+#[path = "support/git_hook_canary.rs"]
+mod git_hook_canary;
+
 use std::{
     collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Output,
 };
 
 #[cfg(unix)]
@@ -32,6 +38,21 @@ struct PackageSpec<'a> {
     path: &'a str,
     name: &'a str,
     extra_manifest: &'a str,
+}
+
+#[test]
+fn fixture_git_commands_ignore_hook_repository_environment() {
+    git_hook_canary::assert_hook_repository_isolation(
+        "fixture_git_commands_ignore_hook_repository_environment",
+        || {
+            let fixture = workspace_repo(&[package("crates/demo", "fixture-demo", "")]);
+            let base = revision(fixture.path());
+            change_source(fixture.path(), "crates/demo", "isolated_hook");
+            let head = commit_all(fixture.path(), "change isolated fixture");
+            let plan = diff_plan(fixture.path(), &base, &head, "direct");
+            assert_eq!(packages(&plan), vec!["fixture-demo"]);
+        },
+    );
 }
 
 #[test]
@@ -120,7 +141,7 @@ fn live_workspace_full_equals_cargo_metadata_and_has_no_retired_telemetry() {
     let root = workspace_root();
     let output = xtask(&root, &["ci-plan", "full"]);
     let plan = successful_plan(&output);
-    let metadata_output = Command::new("cargo")
+    let metadata_output = fixture_command("cargo")
         .args(["metadata", "--format-version", "1", "--all-features"])
         .current_dir(&root)
         .output()
@@ -575,7 +596,7 @@ fn output_is_stable_and_xtask_has_no_nebula_product_dependencies() {
     assert!(first.status.success());
     assert_eq!(first.stdout, second.stdout);
 
-    let metadata = Command::new("cargo")
+    let metadata = fixture_command("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .current_dir(&root)
         .output()
@@ -978,7 +999,7 @@ fi
         std::iter::once(shim_dir).chain(env::split_paths(&env::var_os("PATH").unwrap_or_default())),
     )
     .expect("shim PATH joins");
-    let output = Command::new("bash")
+    let output = fixture_command("bash")
         .arg(workspace_root().join("scripts/pre-push-crate-diff.sh"))
         .current_dir(repo)
         .env("PATH", path)
@@ -1082,7 +1103,7 @@ fn workspace_repo(specs: &[PackageSpec<'_>]) -> TempDir {
 }
 
 fn cargo_generate_lockfile(repo: &Path) {
-    let output = Command::new("cargo")
+    let output = fixture_command("cargo")
         .arg("generate-lockfile")
         .current_dir(repo)
         .output()
@@ -1198,7 +1219,7 @@ fn copy_tree(source: &Path, destination: &Path) {
 }
 
 fn xtask(repo: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_nebula-xtask"))
+    fixture_command(env!("CARGO_BIN_EXE_nebula-xtask"))
         .args(args)
         .current_dir(repo)
         .output()
@@ -1206,7 +1227,7 @@ fn xtask(repo: &Path, args: &[&str]) -> Output {
 }
 
 fn git(repo: &Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = fixture_command("git")
         .args(args)
         .current_dir(repo)
         .output()
@@ -1219,7 +1240,7 @@ fn git(repo: &Path, args: &[&str]) {
 }
 
 fn git_output(repo: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = fixture_command("git")
         .args(args)
         .current_dir(repo)
         .output()
