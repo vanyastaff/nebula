@@ -335,6 +335,73 @@ fn unchanged_workspace_emits_no_shards() {
 }
 
 #[test]
+fn supported_surface_policy_does_not_apply_internal_baseline_requirements() {
+    let repository =
+        workspace_repository(&[package("crates/sdk", "nebula-sdk", "", TargetLayout::Lib)]);
+    let base = revision(repository.path());
+    add_workspace_member(repository.path(), "crates/internal");
+    write_package(
+        repository.path(),
+        &package(
+            "crates/internal",
+            "fixture-new-internal",
+            "",
+            TargetLayout::Lib,
+        ),
+    );
+    cargo_generate_lockfile(repository.path());
+    let head = commit_all(repository.path(), "add unsupported internal package");
+    assert_missing_baseline_package(repository.path(), &base, &head, "fixture-new-internal");
+    let output = xtask(
+        repository.path(),
+        &[
+            "ci-plan",
+            "semver",
+            "--base",
+            &base,
+            "--head",
+            &head,
+            "--supported-surface",
+        ],
+    );
+    assert_eq!(packages(&parse_successful_plan(&output)), ["nebula-sdk"]);
+}
+
+#[test]
+fn supported_surface_policy_still_requires_transport_compatibility_baseline() {
+    let repository =
+        workspace_repository(&[package("crates/sdk", "nebula-sdk", "", TargetLayout::Lib)]);
+    let base = revision(repository.path());
+    add_workspace_member(repository.path(), "crates/transport");
+    write_package(
+        repository.path(),
+        &package(
+            "crates/transport",
+            "nebula-api-contract",
+            "",
+            TargetLayout::Lib,
+        ),
+    );
+    cargo_generate_lockfile(repository.path());
+    let head = commit_all(repository.path(), "add new supported transport package");
+    let output = xtask(
+        repository.path(),
+        &[
+            "ci-plan",
+            "semver",
+            "--base",
+            &base,
+            "--head",
+            &head,
+            "--supported-surface",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("nebula-api-contract"));
+}
+
+#[test]
 fn output_is_deterministic_and_entry_limit_fails_closed() {
     let repository = workspace_repository(&[
         package("crates/zeta", "fixture-zeta", "", TargetLayout::Lib),

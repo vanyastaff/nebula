@@ -1270,7 +1270,21 @@ fn runtime_authority_manifest_is_authenticated_through_job_outputs() {
         .unwrap();
     let digest = workflow.find("manifest_sha256=$(sha256sum").unwrap();
     let upload = workflow
-        .find("- name: Upload PostgreSQL and migration observations")
+        .find("- name: Upload successful runtime-authority candidate")
         .unwrap();
     assert!(producer < digest && digest < upload);
+    let diagnostic = workflow
+        .split("- name: Upload PostgreSQL and migration diagnostics")
+        .nth(1)
+        .unwrap()
+        .split("- name:")
+        .next()
+        .unwrap();
+    assert!(diagnostic.contains("if: always()"));
+    assert!(diagnostic.contains("name: runtime-authority-diagnostics"));
+    assert!(!diagnostic.contains("name: runtime-authority-candidate"));
+    let candidate = workflow[upload..].split("- name:").nth(1).unwrap();
+    assert!(candidate.contains("if: success()"));
+    assert!(candidate.contains("name: runtime-authority-candidate"));
+    assert!(candidate.contains("if-no-files-found: error"));
 }

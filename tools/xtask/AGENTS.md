@@ -38,6 +38,12 @@ product crate and does not participate in the product layer map.
   count is `min(3, package_count)`. Pull-request CI plans from the checked-out
   synthetic merge commit at `github.sha` against the exact base SHA, so
   base-only changes are not interpreted as pull-request removals.
+  Its optional `--supported-surface` mode applies the independent branded
+  compatibility policy after Cargo metadata selection and before baseline
+  admission: only `nebula-sdk` and `nebula-api-contract` receive SemVer
+  classification. Unsupported internal refactors remain covered by ordinary CI,
+  not branded compatibility checks. Missing selected supported packages remain
+  hard errors; the generic mode retains its original full publishable-library policy.
 - Consumers may name packages in an independent, documented gate policy only
   after plan selection. The current no-default-feature policy names
   `nebula-resilience`, `nebula-log`, `nebula-expression`, `nebula-credential`,
@@ -57,6 +63,16 @@ product crate and does not participate in the product layer map.
   identities, ordinary failures, and exact reason markers from bounded JUnit.
   It never accepts ignored, skipped, retried, timed-out, sentinel, or synthetic
   production evidence.
+- `packaging plan` derives the SDK lockstep publication closure exclusively
+  from Cargo metadata normal/build internal dependencies, including optional
+  and target-specific declarations retained in archives. Every selected
+  package permits publication and pins internal dependencies to the exact SDK
+  version; every other workspace package disables publication. Development
+  dependencies do not select product packages, but retained archive pins are
+  checked. `packaging verify` builds actual archives and runs Cargo's full-set
+  publish dry-run through its temporary registry overlay, without uploading.
+  Failures preserve diagnostics and produce no successful observation. This
+  never substitutes for registry availability in a standalone SDK dry-run.
 
 ## Verification
 

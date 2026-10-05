@@ -52,9 +52,15 @@ pub(crate) fn assert_hook_repository_isolation(test_name: &str, exercise: impl F
         .output()
         .expect("run fixture operations under disposable hook environment");
 
+    let after = parent_snapshot(&git_dir);
     assert!(
-        before == parent_snapshot(&git_dir),
-        "fixture operations changed disposable parent HEAD/config/refs/index/objects"
+        before == after,
+        "fixture operations changed disposable parent HEAD/config/refs/index/objects:\n{}\n\
+         child status: {}\nchild stdout:\n{}\nchild stderr:\n{}",
+        snapshot_difference(&before, &after),
+        child.status,
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
     );
     assert!(
         child.status.success(),
@@ -86,6 +92,40 @@ fn parent_snapshot(git_dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         }
     }
     files
+}
+
+/// Names every added, removed, or changed parent file so a leak is diagnosable
+/// from CI logs; small text files (HEAD, config, refs) also show both sides.
+fn snapshot_difference(
+    before: &BTreeMap<PathBuf, Vec<u8>>,
+    after: &BTreeMap<PathBuf, Vec<u8>>,
+) -> String {
+    let text = |bytes: &[u8]| {
+        if bytes.len() <= 512 && std::str::from_utf8(bytes).is_ok() {
+            format!("{:?}", String::from_utf8_lossy(bytes))
+        } else {
+            format!("<{} bytes>", bytes.len())
+        }
+    };
+    let mut lines = Vec::new();
+    for (path, old) in before {
+        match after.get(path) {
+            None => lines.push(format!("  removed {}", path.display())),
+            Some(new) if new != old => lines.push(format!(
+                "  changed {}: {} -> {}",
+                path.display(),
+                text(old),
+                text(new)
+            )),
+            Some(_) => {},
+        }
+    }
+    for (path, new) in after {
+        if !before.contains_key(path) {
+            lines.push(format!("  added {}: {}", path.display(), text(new)));
+        }
+    }
+    lines.join("\n")
 }
 
 fn snapshot_path(root: &Path, path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {

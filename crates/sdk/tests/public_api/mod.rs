@@ -729,6 +729,68 @@ pub(crate) struct Export {
     pub(crate) line: String,
 }
 
+/// Select a feature view of the canonical union map. Unknown cfg predicates
+/// fail closed so a new platform condition cannot silently broaden a profile.
+pub(crate) fn active_export_lines(lines: &str, features: &BTreeSet<String>) -> Vec<String> {
+    lines
+        .lines()
+        .filter(|line| {
+            let mut remaining = *line;
+            while let Some(start) = remaining.find("[cfg(") {
+                remaining = &remaining[start + 1..];
+                let end = remaining.find(']').expect("cfg tag terminates");
+                let predicate: syn::Meta = syn::parse_str(&remaining[..end])
+                    .expect("snapshot cfg predicate is valid Rust syntax");
+                if !active_cfg(&predicate, features) {
+                    return false;
+                }
+                remaining = &remaining[end + 1..];
+            }
+            true
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+fn active_cfg(predicate: &syn::Meta, features: &BTreeSet<String>) -> bool {
+    use syn::parse::Parser as _;
+
+    match predicate {
+        syn::Meta::NameValue(value) if value.path.is_ident("feature") => {
+            let syn::Expr::Lit(expression) = &value.value else {
+                panic!("feature cfg must be a string literal");
+            };
+            let syn::Lit::Str(feature) = &expression.lit else {
+                panic!("feature cfg must be a string literal");
+            };
+            features.contains(&feature.value())
+        },
+        syn::Meta::Path(path) if path.is_ident("test") || path.is_ident("docsrs") => false,
+        syn::Meta::List(list) => {
+            let children =
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated
+                    .parse2(list.tokens.clone())
+                    .expect("cfg children are valid predicates");
+            if list.path.is_ident("all") {
+                children.iter().all(|child| active_cfg(child, features))
+            } else if list.path.is_ident("any") {
+                children.iter().any(|child| active_cfg(child, features))
+            } else if list.path.is_ident("not") || list.path.is_ident("cfg") {
+                assert_eq!(children.len(), 1, "cfg/not requires one predicate");
+                let active = active_cfg(&children[0], features);
+                if list.path.is_ident("not") {
+                    !active
+                } else {
+                    active
+                }
+            } else {
+                panic!("unsupported cfg predicate: {}", list.path.to_token_stream());
+            }
+        },
+        _ => panic!("unsupported cfg predicate: {}", predicate.to_token_stream()),
+    }
+}
+
 /// Every public path of `krate`, skipping modules named `skip_module`.
 pub(crate) fn exports(workspace: &Workspace, krate: &str, skip_module: &str) -> Vec<Export> {
     let model = workspace.krate(krate);
@@ -1302,4 +1364,29 @@ fn space_between(previous: &Tok, next: &Tok, mode: Mode) -> bool {
             true
         },
     }
+}
+
+#[test]
+fn disabled_feature_and_nested_boolean_gates_have_distinguishing_views() {
+    let map = concat!(
+        "core\n",
+        "http [cfg(feature = \"http\")]\n",
+        "fallback [cfg(not(feature = \"http\"))]\n",
+        "both [cfg(all(feature = \"http\", feature = \"derive\"))]\n",
+        "either [cfg(any(feature = \"http\", feature = \"derive\"))]\n",
+    );
+    assert_eq!(
+        active_export_lines(map, &BTreeSet::new()),
+        ["core", "fallback [cfg(not(feature = \"http\"))]"]
+    );
+    let features = BTreeSet::from(["http".to_owned()]);
+    let active = active_export_lines(map, &features);
+    assert_eq!(active.len(), 3);
+    assert!(active.iter().any(|line| line.starts_with("http ")));
+    assert!(active.iter().any(|line| line.starts_with("either ")));
+    assert!(
+        !active
+            .iter()
+            .any(|line| line.starts_with("fallback ") || line.starts_with("both "))
+    );
 }
