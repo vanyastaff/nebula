@@ -55,7 +55,7 @@ pub struct VersioningConfig {
 impl Default for VersioningConfig {
     fn default() -> Self {
         Self {
-            supported_versions: vec!["v1".to_string()],
+            supported_versions: vec![nebula_api_contract::v1::API_VERSION.to_owned()],
             deprecated_versions: Vec::new(),
         }
     }

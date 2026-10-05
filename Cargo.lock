@@ -3080,6 +3080,7 @@ dependencies = [
  "moka",
  "nebula-action",
  "nebula-api",
+ "nebula-api-contract",
  "nebula-core",
  "nebula-credential",
  "nebula-engine",
@@ -3131,6 +3132,17 @@ dependencies = [
  "utoipa-swagger-ui",
  "uuid",
  "wiremock",
+ "zeroize",
+]
+
+[[package]]
+name = "nebula-api-contract"
+version = "0.32.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "utoipa",
+ "uuid",
  "zeroize",
 ]
 

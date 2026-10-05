@@ -69,7 +69,7 @@ use crate::{
             AddMemberRequest, CreateServiceAccountRequest, CreateServiceAccountResponse,
             MemberSummary, MembersResponse, OrgResponse, ServiceAccountsResponse, UpdateOrgRequest,
         },
-        shared::{AckResponse, OrgRoleDto},
+        shared::AckResponse,
     },
     error::{ApiError, ApiResult, ProblemDetails},
     state::AppState,
@@ -240,7 +240,7 @@ pub async fn list_members(
         .into_iter()
         .map(|m| MemberSummary {
             principal_id: principal_id_string(&m.principal),
-            role: OrgRoleDto::from(m.role),
+            role: crate::domain::shared::org_role_dto(m.role),
         })
         .collect::<Vec<_>>();
 
@@ -296,7 +296,7 @@ pub async fn add_member(
     // Validate the request shape → 400 (not 403): a malformed body is a
     // client error, distinct from a privilege violation.
     let target_principal = parse_principal(&body.principal_id)?;
-    let granted = OrgRoleDto::parse(&body.role.0).ok_or_else(|| {
+    let granted = crate::domain::shared::parse_org_role(&body.role.0).ok_or_else(|| {
         ApiError::validation_message(format!(
             "role must be one of member|billing|admin|owner; got {:?}",
             body.role.0
@@ -308,8 +308,8 @@ pub async fn add_member(
     if granted > caller {
         return Err(ApiError::Forbidden(format!(
             "cannot grant role {} above your own role {}",
-            OrgRoleDto::token(granted),
-            OrgRoleDto::token(caller)
+            crate::domain::shared::org_role_token(granted),
+            crate::domain::shared::org_role_token(caller)
         )));
     }
 
@@ -324,8 +324,8 @@ pub async fn add_member(
     {
         return Err(ApiError::Forbidden(format!(
             "cannot modify a member whose role {} is at or above your own role {}",
-            OrgRoleDto::token(existing),
-            OrgRoleDto::token(caller)
+            crate::domain::shared::org_role_token(existing),
+            crate::domain::shared::org_role_token(caller)
         )));
     }
 
@@ -352,7 +352,7 @@ pub async fn add_member(
     tracing::info!(
         org_id = %tenant.org_id,
         principal = %body.principal_id,
-        role = OrgRoleDto::token(granted),
+        role = crate::domain::shared::org_role_token(granted),
         "org member added/updated"
     );
 
@@ -360,7 +360,7 @@ pub async fn add_member(
         StatusCode::CREATED,
         Json(MemberSummary {
             principal_id: principal_id_string(&target_principal),
-            role: OrgRoleDto::from(granted),
+            role: crate::domain::shared::org_role_dto(granted),
         }),
     ))
 }
@@ -416,8 +416,8 @@ pub async fn remove_member(
     if target_role >= caller && !is_self {
         return Err(ApiError::Forbidden(format!(
             "cannot remove a member whose role {} is at or above your own role {}",
-            OrgRoleDto::token(target_role),
-            OrgRoleDto::token(caller)
+            crate::domain::shared::org_role_token(target_role),
+            crate::domain::shared::org_role_token(caller)
         )));
     }
 
@@ -446,7 +446,7 @@ pub async fn remove_member(
     tracing::info!(
         org_id = %tenant.org_id,
         principal = %principal_id,
-        removed_role = OrgRoleDto::token(target_role),
+        removed_role = crate::domain::shared::org_role_token(target_role),
         self_removal = is_self,
         "org member removed"
     );

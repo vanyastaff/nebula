@@ -165,7 +165,7 @@ pub(super) fn signature_rejected_response(instance_path: &str, reason: &'static 
         },
         other => format!("webhook signature rejected: {other}"),
     };
-    let problem = ProblemDetails::new(
+    let problem = crate::error::problem::new_problem_details(
         "https://nebula.dev/problems/webhook-signature",
         "Webhook Signature Rejected",
         StatusCode::UNAUTHORIZED,
@@ -180,7 +180,7 @@ pub(super) fn signature_rejected_response(instance_path: &str, reason: &'static 
 /// surfaces as a server error so it shows up in dashboards rather than
 /// silently accepting unsigned requests.
 pub(super) fn missing_secret_response(instance_path: &str) -> Response {
-    let problem = ProblemDetails::new(
+    let problem = crate::error::problem::new_problem_details(
         "https://nebula.dev/problems/webhook-signature-misconfigured",
         "Webhook Signature Secret Not Configured",
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -208,7 +208,7 @@ pub(super) fn missing_secret_response(instance_path: &str) -> Response {
 /// policy has an empty secret) so dashboards can separately alert on
 /// "Prod row has no signature policy at all".
 pub(super) fn prod_requires_signature_response(instance_path: &str) -> Response {
-    let problem = ProblemDetails::new(
+    let problem = crate::error::problem::new_problem_details(
         "https://nebula.dev/problems/webhook-prod-requires-signature",
         "Prod Webhook Activation Requires Signature Policy",
         StatusCode::INTERNAL_SERVER_ERROR,

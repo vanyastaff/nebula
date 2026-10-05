@@ -8,19 +8,11 @@
 //! into `/api/v1/openapi.json`.
 
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
-use serde::Serialize;
 
 use crate::state::AppState;
 use crate::transport::webhook::bootstrap_webhook_activations;
 
-/// Body returned by `POST /internal/v1/webhooks/reload`.
-#[derive(Debug, Serialize)]
-pub struct WebhookReloadReport {
-    /// Activations validated from the port store.
-    pub loaded: usize,
-    /// Rows that surfaced a non-storage failure and were skipped.
-    pub skipped: usize,
-}
+pub use nebula_api_contract::v1::internal::WebhookReloadReport;
 
 async fn reload_webhooks(State(state): State<AppState>) -> impl IntoResponse {
     let Some(store) = state.webhook_activation_store.as_ref() else {

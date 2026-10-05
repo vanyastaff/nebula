@@ -303,8 +303,8 @@ jobs:
           done
 
   # ── Public API surface gate (ENGINEERING_2026 Tier 1 §4; iroh/wasmtime) ───
-  # `cargo-check-external-types` asserts the API-boundary crates (`sdk`, `api`)
-  # only expose third-party types from their explicit allowlists
+  # `cargo-check-external-types` asserts the API-boundary crates (`sdk`, `api`,
+  # `api-contract`) only expose third-party types from their explicit allowlists
   # (`[package.metadata.cargo_check_external_types]` in each Cargo.toml).
   # The nightly toolchain is pinned to the rustdoc JSON format the tool's
   # version understands (0.5.x ↔ format 57); bump the two together.
@@ -345,6 +345,9 @@ jobs:
         run: cargo +nightly-2026-04-20 check-external-types --all-features
       - name: Check api public surface
         working-directory: crates/api
+        run: cargo +nightly-2026-04-20 check-external-types --all-features
+      - name: Check api-contract public surface
+        working-directory: crates/api-contract
         run: cargo +nightly-2026-04-20 check-external-types --all-features
 
   # ── Required aggregator ───────────────────────────────────────────────────
