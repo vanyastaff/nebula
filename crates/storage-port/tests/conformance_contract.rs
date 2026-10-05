@@ -21,6 +21,17 @@ struct StubExecutionStore {
 
 #[async_trait::async_trait]
 impl ExecutionStore for StubExecutionStore {
+    async fn record_execution_admission_refusal(
+        &self,
+        _: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        Ok(nebula_storage_port::store::ExecutionAdmissionRefusalOutcome::FencedOut)
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::InMemory
+    }
+
     async fn create(
         &self,
         _scope: &Scope,

@@ -83,6 +83,126 @@ impl std::fmt::Debug for ClaimedStartOutcome {
 }
 
 impl WorkflowEngine {
+    /// Ask the control owner to observe an existing execution's actual runtime mismatch.
+    /// This runs before the exact loader rejects the incompatible frozen registry.
+    #[tracing::instrument(skip_all, fields(%execution_id, org_id = %scope.org_id, workspace_id = %scope.workspace_id, backend = tracing::field::Empty, outcome = tracing::field::Empty, observation_acknowledgement = tracing::field::Empty, expected_flavor = tracing::field::Empty, actual_flavor = tracing::field::Empty))]
+    pub(super) async fn record_claimed_flavor_refusal(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        expected: WorkerFlavorRevisionId,
+        source: &ResumeLeaseSource<'_>,
+    ) -> Result<(), ExactTurnFailure> {
+        use nebula_storage_port::store::{ControlFlavorRefusal, ControlFlavorRefusalOutcome};
+        let Some(context) = self.worker_flavor_context() else {
+            return Ok(());
+        };
+        let actual = context.revision_id();
+        if actual == expected {
+            return Ok(());
+        }
+        let (claim, handoff) = match source {
+            ResumeLeaseSource::ControlStart(request) => (&request.claim, request.handoff),
+            ResumeLeaseSource::Control(request) => (&request.claim, request.handoff.as_ref()),
+            _ => return Ok(()),
+        };
+        if claim.scope() != scope {
+            return Err(EngineError::InvalidRecordedExecution.into());
+        }
+        let execution_key = execution_id.to_string();
+        let refusal = ControlFlavorRefusal::new(claim, &execution_key, actual);
+        let decision = handoff.record_control_flavor_refusal(&refusal).await;
+        match decision {
+            Ok(ControlFlavorRefusalOutcome::FlavorMismatch {
+                snapshot,
+                backend,
+                observation_acknowledgement,
+            }) => {
+                let span = tracing::Span::current();
+                span.record(
+                    "observation_acknowledgement",
+                    observation_acknowledgement.as_str(),
+                );
+                if let Some(snapshot) = snapshot {
+                    span.record(
+                        "expected_flavor",
+                        tracing::field::display(snapshot.expected),
+                    );
+                    span.record("actual_flavor", tracing::field::display(snapshot.actual));
+                }
+                span.record("backend", backend.as_str());
+                span.record("outcome", "flavor-mismatch");
+                crate::control_metrics::observe_execution_control_decision(
+                    &self.metrics,
+                    backend,
+                    nebula_execution::ExecutionControlOutcome::FlavorMismatch,
+                    observation_acknowledgement,
+                );
+                // Keep exact-load validation authoritative for the typed rejection.
+                // Recording the owner's refusal grants no lease or permission to drive.
+                Ok(())
+            },
+            Ok(ControlFlavorRefusalOutcome::ClaimFenced {
+                observation_acknowledgement,
+                ..
+            }) => {
+                let backend = handoff.backend_kind();
+                let span = tracing::Span::current();
+                span.record(
+                    "observation_acknowledgement",
+                    observation_acknowledgement.as_str(),
+                );
+                span.record("backend", backend.as_str());
+                span.record("outcome", "fenced");
+                crate::control_metrics::observe_execution_control_decision(
+                    &self.metrics,
+                    backend,
+                    nebula_execution::ExecutionControlOutcome::Fenced,
+                    observation_acknowledgement,
+                );
+                Err(ExactTurnFailure::ClaimSuperseded)
+            },
+            Ok(ControlFlavorRefusalOutcome::ClaimSuperseded) => {
+                Err(ExactTurnFailure::ClaimSuperseded)
+            },
+            Ok(ControlFlavorRefusalOutcome::NoMismatch) => Ok(()),
+            // Recording is an observation of the mismatch, never the decision:
+            // an unreadable outcome, a storage failure or a lost acknowledgement
+            // leaves the exact-load validation to issue the typed rejection.
+            Ok(_) => {
+                self.flavor_refusal_unrecorded(handoff.backend_kind(), "unsupported_outcome");
+                Ok(())
+            },
+            Err(error) => {
+                // The owner could not decide or confirm a refusal; the runtime
+                // still rejects the mismatch at exact load, unjournaled.
+                tracing::warn!(%error, "flavor refusal could not be decided by the owner");
+                self.flavor_refusal_unrecorded(
+                    handoff.backend_kind(),
+                    crate::control_metrics::unrecorded_cause(&error),
+                );
+                Ok(())
+            },
+        }
+    }
+
+    fn flavor_refusal_unrecorded(
+        &self,
+        backend: nebula_storage_port::StorageBackendKind,
+        cause: &'static str,
+    ) {
+        let span = tracing::Span::current();
+        span.record("observation_acknowledgement", cause);
+        span.record("backend", backend.as_str());
+        span.record("outcome", "flavor-mismatch");
+        crate::control_metrics::record_unrecorded_execution_control_outcome(
+            &self.metrics,
+            backend,
+            nebula_execution::ExecutionControlOutcome::FlavorMismatch,
+            cause,
+        );
+    }
+
     /// Atomically accept a claimed Resume or Restart under its execution owner.
     /// A live owner replies after the command commit, independently of action
     /// duration; a recovered owner commits the intent before continuing work.

@@ -425,6 +425,10 @@ impl WorkflowEngine {
                 attempt_generation,
                 scope: scope.clone(),
                 fencing,
+                execution_store: self
+                    .stores
+                    .as_ref()
+                    .map(|stores| Arc::clone(&stores.execution)),
                 runtime,
                 factory_dispatch,
                 cancel,

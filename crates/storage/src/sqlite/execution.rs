@@ -89,6 +89,17 @@ pub(super) async fn insert_created_execution(
 
 #[async_trait::async_trait]
 impl ExecutionStore for SqliteExecutionStore {
+    async fn record_execution_admission_refusal(
+        &self,
+        refusal: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        super::control_turn::record_admission(&self.pool, refusal).await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::Sqlite
+    }
+
     async fn create(
         &self,
         scope: &Scope,

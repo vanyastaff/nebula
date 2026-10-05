@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use nebula_core::NodeKey;
 use serde::{Deserialize, Serialize};
 
+use crate::control_observation::ExecutionControlObservationV1;
 use crate::error_envelope::ErrorEnvelope;
 use crate::status::ExecutionStatus;
 
@@ -11,6 +12,14 @@ use crate::status::ExecutionStatus;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum JournalEntry {
+    /// An authoritative execution-owner control decision, persisted with its decision.
+    /// Constructing this data grants no journal write authority to a refused actor.
+    ControlObserved {
+        /// Backend/owner timestamp of the decision.
+        timestamp: DateTime<Utc>,
+        /// Closed versioned outcome and retained delivery/recovery identity.
+        observation: ExecutionControlObservationV1,
+    },
     /// The execution was started.
     ExecutionStarted {
         /// When the event occurred.
@@ -95,7 +104,8 @@ impl JournalEntry {
     #[must_use]
     pub fn timestamp(&self) -> DateTime<Utc> {
         match self {
-            Self::ExecutionStarted { timestamp }
+            Self::ControlObserved { timestamp, .. }
+            | Self::ExecutionStarted { timestamp }
             | Self::NodeScheduled { timestamp, .. }
             | Self::NodeStarted { timestamp, .. }
             | Self::NodeCompleted { timestamp, .. }
@@ -116,7 +126,8 @@ impl JournalEntry {
             | Self::NodeCompleted { node_key, .. }
             | Self::NodeFailed { node_key, .. }
             | Self::NodeSkipped { node_key, .. } => Some(node_key.clone()),
-            Self::ExecutionStarted { .. }
+            Self::ControlObserved { .. }
+            | Self::ExecutionStarted { .. }
             | Self::ExecutionCompleted { .. }
             | Self::ExecutionFailed { .. }
             | Self::CancellationRequested { .. } => None,

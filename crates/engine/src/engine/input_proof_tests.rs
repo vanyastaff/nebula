@@ -127,6 +127,7 @@ async fn cancellation_during_program_resolution_never_refreshes_or_executes() {
         scope: crate::store_seam::single_tenant_scope(),
         fencing: None,
         operation_ledger: None,
+        execution_store: None,
         checkpoints: None,
         clock: Arc::new(SystemClock),
         attempt_generation: 1,

@@ -74,6 +74,27 @@ impl ScopedExecutionTurnHandoff {
 
 #[async_trait::async_trait]
 impl ExecutionTurnHandoff for ScopedExecutionTurnHandoff {
+    async fn record_control_flavor_refusal(
+        &self,
+        request: &nebula_storage_port::store::ControlFlavorRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ControlFlavorRefusalOutcome, StorageError> {
+        let claim = nebula_storage_port::store::ControlClaimToken::new(
+            *request.claim().row_id(),
+            request.claim().generation(),
+            self.bound.clone(),
+        );
+        let scoped = nebula_storage_port::store::ControlFlavorRefusal::new(
+            &claim,
+            request.execution_id(),
+            request.actual_worker_flavor_revision_id(),
+        );
+        self.inner.record_control_flavor_refusal(&scoped).await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.inner.backend_kind()
+    }
+
     async fn commit_control_turn(
         &self,
         commit: &ControlTurnCommit<'_>,
