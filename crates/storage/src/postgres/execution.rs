@@ -96,6 +96,10 @@ impl ExecutionStore for PgExecutionStore {
         super::control_turn::record_admission(&self.pool, refusal).await
     }
 
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::Postgres
+    }
+
     async fn create(
         &self,
         scope: &Scope,

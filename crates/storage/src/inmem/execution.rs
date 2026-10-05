@@ -286,6 +286,10 @@ impl ExecutionStore for InMemoryExecutionStore {
         super::control_turn::record_admission(&self.inner, self.clock.as_ref(), refusal)
     }
 
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::InMemory
+    }
+
     async fn create(
         &self,
         scope: &Scope,

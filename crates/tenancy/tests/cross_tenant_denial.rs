@@ -153,6 +153,8 @@ type ExecKey = (String, String, String);
 #[derive(Default)]
 struct MockExecStore {
     rows: Mutex<HashMap<ExecKey, ExecutionRecord>>,
+    /// Scopes that admission refusals reached the backend with.
+    admission_scopes: Mutex<Vec<Scope>>,
 }
 
 fn exec_key(scope: &Scope, id: &str) -> ExecKey {
@@ -171,6 +173,21 @@ impl std::fmt::Debug for MockExecStore {
 
 #[async_trait::async_trait]
 impl ExecutionStore for MockExecStore {
+    async fn record_execution_admission_refusal(
+        &self,
+        refusal: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        self.admission_scopes
+            .lock()
+            .expect("recording lock")
+            .push(refusal.scope().clone());
+        Ok(nebula_storage_port::store::ExecutionAdmissionRefusalOutcome::FencedOut)
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::Sqlite
+    }
+
     async fn create(
         &self,
         scope: &Scope,
@@ -1095,6 +1112,17 @@ impl std::fmt::Debug for TokenCapturingExecStore {
 
 #[async_trait::async_trait]
 impl ExecutionStore for TokenCapturingExecStore {
+    async fn record_execution_admission_refusal(
+        &self,
+        _: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        Ok(nebula_storage_port::store::ExecutionAdmissionRefusalOutcome::FencedOut)
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::InMemory
+    }
+
     async fn create(
         &self,
         _scope: &Scope,
@@ -1601,6 +1629,43 @@ async fn execution_turn_handoff_substitutes_the_bound_scope() {
     assert_eq!(
         inner.observed.lock().expect("recording lock").as_slice(),
         &[scope_a()]
+    );
+}
+
+#[tokio::test]
+async fn execution_store_admission_refusal_substitutes_the_bound_scope() {
+    let inner = Arc::new(MockExecStore::default());
+    let scoped = ScopedExecutionStore::new(inner.clone(), scope_a());
+    let foreign_scope = scope_b();
+    let node = nebula_core::NodeKey::new("throttled").expect("node key");
+    let refusal = nebula_storage_port::store::ExecutionAdmissionRefusal::new(
+        &foreign_scope,
+        "execution",
+        FencingToken::from_generation(3),
+        &node,
+        0,
+    );
+
+    assert_eq!(
+        scoped
+            .record_execution_admission_refusal(&refusal)
+            .await
+            .unwrap(),
+        nebula_storage_port::store::ExecutionAdmissionRefusalOutcome::FencedOut
+    );
+    assert_eq!(
+        inner
+            .admission_scopes
+            .lock()
+            .expect("recording lock")
+            .as_slice(),
+        &[scope_a()],
+        "the decorator must bind the refusal to its own tenant"
+    );
+    assert_eq!(
+        scoped.backend_kind(),
+        nebula_storage_port::StorageBackendKind::Sqlite,
+        "the decorator must report the wrapped backend"
     );
 }
 

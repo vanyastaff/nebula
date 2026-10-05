@@ -395,7 +395,6 @@ pub(super) async fn run(ports: &Ports) {
     let admission = nebula_storage_port::store::ExecutionAdmissionRefusal::new(
         &seed.scope,
         &seed.execution,
-        persisted.version,
         fence,
         &node_a,
         0,
@@ -418,11 +417,32 @@ pub(super) async fn run(ports: &Ports) {
             .unwrap(),
         Admission::AlreadyRecorded { backend }
     );
+    // A sibling checkpoint advances the aggregate version between the throttle
+    // and its observation. The refusal never changes the aggregate, so the
+    // newer version must not stop it from being recorded.
+    let sibling = TransitionBatch::builder()
+        .scope(seed.scope.clone())
+        .execution_id(&seed.execution)
+        .expected_version(persisted.version)
+        .fencing(fence)
+        .new_state(persisted.state.clone())
+        .build()
+        .unwrap();
+    assert!(matches!(
+        ports.execution.commit(sibling).await.unwrap(),
+        nebula_storage_port::TransitionOutcome::Applied { .. }
+    ));
+    // Observations below must leave this sibling-committed aggregate as is.
+    let persisted = ports
+        .execution
+        .get(&seed.scope, &seed.execution)
+        .await
+        .unwrap()
+        .unwrap();
     for (node, attempt) in [(&node_b, 0), (&node_a, 1)] {
         let next = nebula_storage_port::store::ExecutionAdmissionRefusal::new(
             &seed.scope,
             &seed.execution,
-            persisted.version,
             fence,
             node,
             attempt,
@@ -439,7 +459,6 @@ pub(super) async fn run(ports: &Ports) {
     let denied = nebula_storage_port::store::ExecutionAdmissionRefusal::new(
         &foreign,
         &seed.execution,
-        persisted.version,
         fence,
         &node_a,
         2,
@@ -455,7 +474,6 @@ pub(super) async fn run(ports: &Ports) {
     let stale = nebula_storage_port::store::ExecutionAdmissionRefusal::new(
         &seed.scope,
         &seed.execution,
-        persisted.version,
         FencingToken::from_generation(fence.generation() + 1),
         &node_a,
         2,
@@ -739,4 +757,116 @@ async fn refusal_observations(
             )
         })
         .collect()
+}
+
+/// Faults a backend test installs around a decided refusal's observation.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ObservationFault {
+    /// The receipt insert fails inside the refusal transaction.
+    FailObservationWrite,
+    /// The refusal transaction's commit fails, so its acknowledgement is lost.
+    LoseCommitAcknowledgement,
+    /// Remove every installed fault.
+    Clear,
+}
+
+/// A refusal is decided before its observation is written: a failed
+/// observation write or a lost commit acknowledgement must still return the
+/// definite refusal, and the aggregate and claim must be left untouched.
+pub(super) async fn refusals_survive_observation_faults(
+    ports: &Ports,
+    inject: impl AsyncFn(ObservationFault),
+) {
+    let seed = seed(ports).await;
+    ports.queue.mark_completed(&seed.claim).await.unwrap();
+    let fence = ports
+        .execution
+        .acquire_lease(
+            &seed.scope,
+            &seed.execution,
+            "fault-owner",
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let claim = command(ports, &seed, ControlCommand::Restart, None).await;
+    let current = ports
+        .execution
+        .get(&seed.scope, &seed.execution)
+        .await
+        .unwrap()
+        .unwrap();
+    let journal_before = control_observations(ports, &seed).await.len();
+    let commit_with = |expected_version: u64, fence: FencingToken| {
+        ControlTurnCommit::new(
+            claim.clone(),
+            seed.flavor,
+            ControlTurnCommand::Restart,
+            ControlTurnTransition::Unchanged {
+                scope: &seed.scope,
+                execution_id: &seed.execution,
+                expected_version,
+                fence,
+            },
+        )
+    };
+
+    inject(ObservationFault::FailObservationWrite).await;
+    assert_eq!(
+        ports
+            .handoff
+            .commit_control_turn(&commit_with(current.version + 7, fence))
+            .await
+            .expect("a failed observation write must not replace the version conflict"),
+        Outcome::VersionConflict {
+            actual: current.version,
+            observation_acknowledgement: Ack::Unrecorded,
+        }
+    );
+    assert_eq!(
+        control_observations(ports, &seed).await.len(),
+        journal_before,
+        "the failed observation was rolled back"
+    );
+
+    inject(ObservationFault::Clear).await;
+    inject(ObservationFault::LoseCommitAcknowledgement).await;
+    assert_eq!(
+        ports
+            .handoff
+            .commit_control_turn(&commit_with(
+                current.version,
+                FencingToken::from_generation(fence.generation() + 1),
+            ))
+            .await
+            .expect("a lost observation acknowledgement must not replace the fence"),
+        Outcome::FencedOut {
+            observation_acknowledgement: Ack::Unknown,
+        }
+    );
+
+    inject(ObservationFault::Clear).await;
+    assert_eq!(
+        ports
+            .execution
+            .get(&seed.scope, &seed.execution)
+            .await
+            .unwrap()
+            .unwrap()
+            .version,
+        current.version,
+        "refusals never change the aggregate"
+    );
+    assert!(
+        matches!(
+            ports
+                .handoff
+                .commit_control_turn(&commit_with(current.version, fence))
+                .await
+                .unwrap(),
+            Outcome::Accepted { .. }
+        ),
+        "the refused claim stays current and the live owner can still commit it"
+    );
 }

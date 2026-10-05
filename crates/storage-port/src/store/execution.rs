@@ -16,15 +16,22 @@ use crate::scope::Scope;
 #[async_trait::async_trait]
 pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
     /// Record a real runtime-owned admission throttle before provider egress.
-    /// Storage verifies scope, current lease, CAS and retained accepted source.
+    ///
+    /// Storage verifies scope, the live execution lease and the retained
+    /// accepted-turn source. The refusal never changes the aggregate, so no
+    /// expected version gates it. Required of every implementation, decorators
+    /// included, so a wrapper cannot silently drop the observation.
+    ///
+    /// # Errors
+    /// Backend failures and invalid stored representations return bounded errors.
     async fn record_execution_admission_refusal(
         &self,
-        _refusal: &super::ExecutionAdmissionRefusal<'_>,
-    ) -> Result<super::ExecutionAdmissionRefusalOutcome, StorageError> {
-        Err(StorageError::Configuration(
-            "execution admission observation unsupported".into(),
-        ))
-    }
+        refusal: &super::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<super::ExecutionAdmissionRefusalOutcome, StorageError>;
+
+    /// Closed identity of the owning backend, preserved by decorators. Labels
+    /// telemetry for decisions whose observation could not be recorded.
+    fn backend_kind(&self) -> crate::StorageBackendKind;
 
     /// Create a new execution row in `scope`.
     async fn create(

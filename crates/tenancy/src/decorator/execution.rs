@@ -93,7 +93,6 @@ impl ExecutionStore for ScopedExecutionStore {
         let rebound = nebula_storage_port::store::ExecutionAdmissionRefusal::new(
             &self.bound,
             refusal.execution_id(),
-            refusal.expected_version(),
             refusal.fence(),
             refusal.node_key(),
             refusal.attempt(),
@@ -101,6 +100,10 @@ impl ExecutionStore for ScopedExecutionStore {
         self.inner
             .record_execution_admission_refusal(&rebound)
             .await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.inner.backend_kind()
     }
 
     async fn create(

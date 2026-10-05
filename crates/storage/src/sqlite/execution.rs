@@ -96,6 +96,10 @@ impl ExecutionStore for SqliteExecutionStore {
         super::control_turn::record_admission(&self.pool, refusal).await
     }
 
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::Sqlite
+    }
+
     async fn create(
         &self,
         scope: &Scope,

@@ -53,12 +53,11 @@ pub(super) async fn commit(
             .map_err(|_| StorageError::Internal("control claim stored generation is invalid".into()))?;
         let attempted_claim = commit.claim().generation().get();
         if current_claim != attempted_claim {
-            let observation_acknowledgement = record_refusal(&mut tx, commit, current_generation,
+            let observation_acknowledgement = finish_refusal(tx, commit, current_generation,
                 nebula_execution::ExecutionControlReason::ClaimSuperseded {
                     attempted_queue_claim_generation: attempted_claim,
                     current_queue_claim_generation: current_claim,
-                }).await?;
-            tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown { operation: "control_turn_refusal" })?;
+                }).await;
             return Ok(Outcome::ClaimFenced {
                 attempted_queue_claim_generation: attempted_claim,
                 current_queue_claim_generation: current_claim,
@@ -76,12 +75,22 @@ pub(super) async fn commit(
         );
         let actual = commit.worker_flavor_revision_id();
         if expected != actual {
-            let observation_acknowledgement = record_refusal(&mut tx, commit, current_generation,
-                nebula_execution::ExecutionControlReason::ExactFlavorMismatch { expected, actual }).await?;
-            let (expected,actual) = if observation_acknowledgement==Ack::AlreadyRecorded {
-                read_flavor_receipt(&mut tx,scope,id,commit.claim().row_id(),claim_generation).await?
-            } else { (expected,actual) };
-            tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown { operation: "control_turn_refusal" })?;
+            // The mismatch is decided; its observation can only follow it. An
+            // existing receipt reports its own immutable snapshot.
+            let (expected, actual, observation_acknowledgement) = match record_refusal(&mut tx, commit, current_generation,
+                nebula_execution::ExecutionControlReason::ExactFlavorMismatch { expected, actual }).await {
+                Ok(Ack::AlreadyRecorded) => if let Ok((recorded_expected, recorded_actual)) = read_flavor_receipt(&mut tx, scope, id, commit.claim().row_id(), claim_generation).await {
+                    (recorded_expected, recorded_actual, commit_observation(tx, Ack::AlreadyRecorded).await)
+                } else {
+                        drop(tx.rollback().await);
+                        (expected, actual, Ack::Unknown)
+                },
+                Ok(acknowledgement) => (expected, actual, commit_observation(tx, acknowledgement).await),
+                Err(_) => {
+                    drop(tx.rollback().await);
+                    (expected, actual, Ack::Unrecorded)
+                },
+            };
             return Ok(Outcome::FlavorMismatch { expected, actual, observation_acknowledgement });
         }
         let holder: Option<String> = row.try_get("lease_holder").map_err(backend_error)?;
@@ -91,7 +100,7 @@ pub(super) async fn commit(
         let fence = transition.fence();
         if generation <= 0 || u64::try_from(generation).ok() != Some(fence.generation())
             || holder.is_none() || expiry.is_none_or(|expiry| expiry < now) {
-            let observation_acknowledgement = record_refusal(&mut tx, commit, current_generation,
+            let observation_acknowledgement = finish_refusal(tx, commit, current_generation,
                 if current_generation != fence.generation() {
                     nebula_execution::ExecutionControlReason::LeaseFenced {
                         attempted_execution_lease_generation: fence.generation(),
@@ -107,18 +116,16 @@ pub(super) async fn commit(
                         attempted_execution_lease_generation: fence.generation(),
                         current_execution_lease_generation: current_generation,
                     }
-                }).await?;
-            tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown { operation: "control_turn_refusal" })?;
+                }).await;
             return Ok(Outcome::FencedOut { observation_acknowledgement });
         }
         let version = u64::try_from(row.try_get::<i64, _>("version").map_err(backend_error)?)
             .map_err(|_| StorageError::Internal("control turn stored version is invalid".into()))?;
         if version != transition.expected_version() {
-            let observation_acknowledgement = record_refusal(&mut tx, commit, current_generation,
+            let observation_acknowledgement = finish_refusal(tx, commit, current_generation,
                 nebula_execution::ExecutionControlReason::ExecutionVersionConflict {
                     expected_version: transition.expected_version(), actual_version: version,
-                }).await?;
-            tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown { operation: "control_turn_refusal" })?;
+                }).await;
             return Ok(Outcome::VersionConflict { actual: version, observation_acknowledgement });
         }
         let new_version = match transition {
@@ -159,6 +166,39 @@ pub(super) async fn commit(
     }.await;
     crate::control_turn::observe(&result);
     result
+}
+
+/// Record a decided refusal's observation and commit it, never replacing the
+/// decision. A refusal leaves the aggregate, marker and queue untouched, so the
+/// caller's outcome is definite whatever happens to its observation: a failed
+/// receipt or journal write rolls back to [`Ack::Unrecorded`], and a commit
+/// whose acknowledgement is lost reports [`Ack::Unknown`].
+async fn finish_refusal(
+    mut tx: sqlx::Transaction<'_, sqlx::Sqlite>,
+    commit: &ControlTurnCommit<'_>,
+    generation: u64,
+    reason: nebula_execution::ExecutionControlReason,
+) -> Ack {
+    match record_refusal(&mut tx, commit, generation, reason).await {
+        Ok(acknowledgement) => commit_observation(tx, acknowledgement).await,
+        Err(error) => {
+            tracing::warn!(%error, "control refusal observation could not be written");
+            drop(tx.rollback().await);
+            Ack::Unrecorded
+        },
+    }
+}
+
+/// Commit a refusal's observation; a lost acknowledgement leaves only the
+/// observation, never the refusal, in doubt.
+async fn commit_observation(tx: sqlx::Transaction<'_, sqlx::Sqlite>, acknowledgement: Ack) -> Ack {
+    match tx.commit().await {
+        Ok(()) => acknowledgement,
+        Err(error) => {
+            tracing::warn!(%error, "control refusal observation commit was not acknowledged");
+            Ack::Unknown
+        },
+    }
 }
 
 /// Refusal receipt and journal append share the already-held aggregate/claim lock.
@@ -210,7 +250,7 @@ pub(super) async fn record_admission(
         .map_err(backend_error)?;
     let id = refusal.execution_id();
     let scope = refusal.scope();
-    let Some(row) = sqlx::query("SELECT version, fencing_generation, lease_holder, lease_expires_at_ms FROM port_executions WHERE id = ? AND workspace_id = ? AND org_id = ?")
+    let Some(row) = sqlx::query("SELECT fencing_generation, lease_holder, lease_expires_at_ms FROM port_executions WHERE id = ? AND workspace_id = ? AND org_id = ?")
         .bind(id).bind(&scope.workspace_id).bind(&scope.org_id)
         .fetch_optional(&mut *tx).await.map_err(backend_error)? else {
         return Ok(Admission::FencedOut);
@@ -229,11 +269,6 @@ pub(super) async fn record_admission(
         || expiry.is_none_or(|expiry| expiry < now)
     {
         return Ok(Admission::FencedOut);
-    }
-    let version = u64::try_from(row.try_get::<i64, _>("version").map_err(backend_error)?)
-        .map_err(|_| StorageError::Internal("admission execution version is invalid".into()))?;
-    if version != refusal.expected_version() {
-        return Ok(Admission::VersionConflict { actual: version });
     }
     let Some(marker) = sqlx::query("SELECT source_kind, source_queue_id FROM port_execution_turn_acceptances WHERE execution_id = ? AND workspace_id = ? AND org_id = ? AND last_accepted_fencing_generation = ?")
         .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind(generation)

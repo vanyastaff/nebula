@@ -39,6 +39,12 @@ pub enum ControlObservationAcknowledgement {
     Recorded,
     /// The existing immutable receipt was acknowledged without another observation.
     AlreadyRecorded,
+    /// The decision stands, but writing its observation failed and was rolled
+    /// back: the decision is not journaled.
+    Unrecorded,
+    /// The decision stands, but the observation's commit acknowledgement was
+    /// lost: whether it is journaled is unknown.
+    Unknown,
 }
 
 impl ControlObservationAcknowledgement {
@@ -48,7 +54,16 @@ impl ControlObservationAcknowledgement {
         match self {
             Self::Recorded => "recorded",
             Self::AlreadyRecorded => "already_recorded",
+            Self::Unrecorded => "unrecorded",
+            Self::Unknown => "unknown",
         }
+    }
+
+    /// Whether the observation is known to be durable. The decision it
+    /// observes is definite either way.
+    #[must_use]
+    pub const fn is_durable(self) -> bool {
+        matches!(self, Self::Recorded | Self::AlreadyRecorded)
     }
 }
 
@@ -303,11 +318,14 @@ impl fmt::Debug for ControlTurnCommit<'_> {
 }
 
 /// A runtime-owned admission refusal with no caller-selected payload or source.
+///
+/// The refusal is authorized by the live execution lease alone. It never
+/// changes the aggregate, so it carries no expected version: sibling
+/// checkpoints committed meanwhile cannot prevent it from being observed.
 #[derive(Debug)]
 pub struct ExecutionAdmissionRefusal<'a> {
     scope: &'a Scope,
     execution_id: &'a str,
-    expected_version: u64,
     fence: FencingToken,
     node_key: &'a nebula_core::NodeKey,
     attempt: u32,
@@ -318,7 +336,6 @@ impl<'a> ExecutionAdmissionRefusal<'a> {
     pub const fn new(
         scope: &'a Scope,
         execution_id: &'a str,
-        expected_version: u64,
         fence: FencingToken,
         node_key: &'a nebula_core::NodeKey,
         attempt: u32,
@@ -326,7 +343,6 @@ impl<'a> ExecutionAdmissionRefusal<'a> {
         Self {
             scope,
             execution_id,
-            expected_version,
             fence,
             node_key,
             attempt,
@@ -341,11 +357,6 @@ impl<'a> ExecutionAdmissionRefusal<'a> {
     #[must_use]
     pub const fn execution_id(&self) -> &'a str {
         self.execution_id
-    }
-    /// Aggregate version preflighted by its runtime owner.
-    #[must_use]
-    pub const fn expected_version(&self) -> u64 {
-        self.expected_version
     }
     /// Existing execution lease authority, not a queue claim.
     #[must_use]
@@ -380,11 +391,6 @@ pub enum ExecutionAdmissionRefusalOutcome {
     },
     /// Owner is absent, expired, superseded or outside the execution tenant.
     FencedOut,
-    /// Owner must reload before recording a decision against current state.
-    VersionConflict {
-        /// Current version visible only to the matched tenant.
-        actual: u64,
-    },
     /// No retained accepted-turn marker proves the decision source.
     MissingAcceptedTurn,
 }

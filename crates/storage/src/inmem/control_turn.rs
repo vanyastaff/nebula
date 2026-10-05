@@ -52,7 +52,7 @@ pub(super) fn commit(
                     current_queue_claim_generation: current_claim,
                 },
                 clock.now(),
-            )?;
+            );
             return Ok(Outcome::ClaimFenced {
                 attempted_queue_claim_generation: attempted_claim,
                 current_queue_claim_generation: current_claim,
@@ -72,17 +72,21 @@ pub(super) fn commit(
                 current_generation,
                 nebula_execution::ExecutionControlReason::ExactFlavorMismatch { expected, actual },
                 clock.now(),
-            )?;
-            let (expected, actual) = if observation_acknowledgement == Ack::AlreadyRecorded {
-                read_flavor_receipt(
-                    &state,
-                    &identity,
-                    commit.claim().row_id(),
-                    commit.claim().generation().get(),
-                )?
-            } else {
-                (expected, actual)
-            };
+            );
+            let (expected, actual, observation_acknowledgement) =
+                if observation_acknowledgement == Ack::AlreadyRecorded {
+                    match read_flavor_receipt(
+                        &state,
+                        &identity,
+                        commit.claim().row_id(),
+                        commit.claim().generation().get(),
+                    ) {
+                        Ok((expected, actual)) => (expected, actual, Ack::AlreadyRecorded),
+                        Err(_) => (expected, actual, Ack::Unknown),
+                    }
+                } else {
+                    (expected, actual, observation_acknowledgement)
+                };
             return Ok(Outcome::FlavorMismatch {
                 expected,
                 actual,
@@ -114,7 +118,7 @@ pub(super) fn commit(
                 }
             };
             let observation_acknowledgement =
-                record_refusal(&mut state, commit, current_generation, reason, clock.now())?;
+                record_refusal(&mut state, commit, current_generation, reason, clock.now());
             return Ok(Outcome::FencedOut {
                 observation_acknowledgement,
             });
@@ -130,7 +134,7 @@ pub(super) fn commit(
                     actual_version: actual,
                 },
                 clock.now(),
-            )?;
+            );
             return Ok(Outcome::VersionConflict {
                 actual,
                 observation_acknowledgement,
@@ -225,7 +229,26 @@ pub(super) fn commit(
 
 /// Only called after the stored queue claim, target, tenant and execution were
 /// verified under the same lock. Nothing from the refused batch is persisted.
+///
+/// The refusal is already decided; a failed observation write reports
+/// [`Ack::Unrecorded`] and never replaces the decision.
 fn record_refusal(
+    state: &mut super::execution::State,
+    commit: &ControlTurnCommit<'_>,
+    generation: u64,
+    reason: nebula_execution::ExecutionControlReason,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Ack {
+    match try_record_refusal(state, commit, generation, reason, timestamp) {
+        Ok(acknowledgement) => acknowledgement,
+        Err(error) => {
+            tracing::warn!(%error, "control refusal observation could not be written");
+            Ack::Unrecorded
+        },
+    }
+}
+
+fn try_record_refusal(
     state: &mut super::execution::State,
     commit: &ControlTurnCommit<'_>,
     generation: u64,
@@ -278,11 +301,6 @@ pub(super) fn record_admission(
             .is_none_or(|expiry| expiry < clock.now())
     {
         return Ok(Admission::FencedOut);
-    }
-    if row.version != refusal.expected_version() {
-        return Ok(Admission::VersionConflict {
-            actual: row.version,
-        });
     }
     let Some(marker) = state.accepted_turns.get(&identity).filter(|marker| {
         &marker.scope == refusal.scope() && marker.generation == refusal.fence().generation()
