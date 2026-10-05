@@ -89,7 +89,7 @@ and for `flavor-mismatch` the expected and actual worker-flavor revisions.
 |---|---|---|
 | `accepted` | a control turn commits with its checkpoint, marker and queue completion | `control_accepted` |
 | `fenced` | a verified delivery presents a superseded queue claim or execution lease | `claim_superseded`, `lease_fenced`, `lease_expired`, `lease_absent` |
-| `deferred` | the live owner must reload a newer execution version | `execution_version_conflict` (`turn_held`, `wait_not_ready` reserved) |
+| `deferred` | the live owner must reload a newer execution version | `execution_version_conflict` |
 | `throttled` | node admission (rate limit) refuses a leased, accepted turn before provider dispatch | `admission_throttled` |
 | `recovered` | recovery acceptance takes over a retained accepted turn | `accepted_turn_recovered` |
 | `flavor-mismatch` | a claimed delivery addresses an execution pinned to another worker flavor | `exact_flavor_mismatch` |
@@ -97,9 +97,23 @@ and for `flavor-mismatch` the expected and actual worker-flavor revisions.
 Refusals are written by the backend inside the owner transaction that verified the
 delivery, deduplicated by `port_execution_control_observation_receipts` (migration
 0063): a redelivered refusal acknowledges the existing receipt and appends nothing.
-A refused actor never receives journal write authority of its own. An admission
-refusal the owner cannot attribute (no accepted-turn marker, stale lease) is
-reported on its span and never replaces the node's rate-limit error.
+A refused actor never receives journal write authority of its own. A Start or job
+handoff refused before any owner takes the execution (another live lease, a stale
+version, a superseded claim) rolls back and is redelivered; it is not journaled,
+and the vocabulary carries no reason that nothing produces.
+
+The observation never replaces, masks or delays the decision it observes. A
+control-turn refusal (fenced, deferred, flavor-mismatch) returns its definite
+outcome even when writing the observation fails (`observation_acknowledgement =
+unrecorded`, rolled back) or its commit acknowledgement is lost (`unknown`): the
+refusal changed nothing, so no acceptance is in doubt. A failed flavor-mismatch
+observation leaves the exact-load rejection in charge. An admission refusal is
+gated only by the live lease, never by the aggregate version, and one the owner
+cannot attribute (no accepted-turn marker, stale lease, backend failure) never
+replaces the node's rate-limit error. Every such missing observation is counted
+on `nebula_execution_control_observations_unrecorded_total` (same `outcome` ×
+`backend` labels) and logged as a warning, so a journal that under-reports is
+visible.
 
 Telemetry is an observation of the persisted decision, never its source of truth:
 `nebula_execution_control_outcomes_total` counts newly recorded decisions with

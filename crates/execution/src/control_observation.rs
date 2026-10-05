@@ -128,10 +128,6 @@ pub enum ExecutionControlReason {
         /// Historical generation retained after release.
         current_execution_lease_generation: u64,
     },
-    /// Another live execution turn prevents safe acceptance.
-    TurnHeld,
-    /// The persisted wait is not ready for the requested control delivery.
-    WaitNotReady,
     /// The live owner command requires a fresh execution checkpoint version.
     ExecutionVersionConflict {
         /// Execution version supplied by the validated command owner.
@@ -174,8 +170,6 @@ enum RecordedExecutionControlReason {
         attempted_execution_lease_generation: u64,
         current_execution_lease_generation: u64,
     },
-    TurnHeld {},
-    WaitNotReady {},
     ExecutionVersionConflict {
         expected_version: u64,
         actual_version: u64,
@@ -221,8 +215,6 @@ impl From<RecordedExecutionControlReason> for ExecutionControlReason {
                 attempted_execution_lease_generation,
                 current_execution_lease_generation,
             },
-            Recorded::TurnHeld {} => Self::TurnHeld,
-            Recorded::WaitNotReady {} => Self::WaitNotReady,
             Recorded::ExecutionVersionConflict {
                 expected_version,
                 actual_version,
@@ -249,8 +241,6 @@ impl ExecutionControlReason {
             Self::LeaseFenced { .. } => "lease_fenced",
             Self::LeaseExpired { .. } => "lease_expired",
             Self::LeaseAbsent { .. } => "lease_absent",
-            Self::TurnHeld => "turn_held",
-            Self::WaitNotReady => "wait_not_ready",
             Self::ExecutionVersionConflict { .. } => "execution_version_conflict",
             Self::AdmissionThrottled => "admission_throttled",
             Self::AcceptedTurnRecovered => "accepted_turn_recovered",
@@ -267,9 +257,7 @@ impl ExecutionControlReason {
             | Self::LeaseFenced { .. }
             | Self::LeaseExpired { .. }
             | Self::LeaseAbsent { .. } => ExecutionControlOutcome::Fenced,
-            Self::TurnHeld | Self::WaitNotReady | Self::ExecutionVersionConflict { .. } => {
-                ExecutionControlOutcome::Deferred
-            },
+            Self::ExecutionVersionConflict { .. } => ExecutionControlOutcome::Deferred,
             Self::AdmissionThrottled => ExecutionControlOutcome::Throttled,
             Self::AcceptedTurnRecovered => ExecutionControlOutcome::Recovered,
             Self::ExactFlavorMismatch { .. } => ExecutionControlOutcome::FlavorMismatch,

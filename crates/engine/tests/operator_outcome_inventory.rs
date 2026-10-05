@@ -38,8 +38,8 @@ const INVENTORY: &[(&str, &str)] = &[
     ),
     (
         "ExecutionAdmissionRefusalOutcome",
-        "Recorded and AlreadyRecorded -> throttled; FencedOut, VersionConflict and \
-         MissingAcceptedTurn are an owner that cannot attribute the refusal",
+        "Recorded and AlreadyRecorded -> throttled; FencedOut and \
+         MissingAcceptedTurn are an owner that cannot attribute the refusal (counted as unrecorded)",
     ),
     (
         "ClaimedControlTurnOutcome",
@@ -208,5 +208,70 @@ fn the_scanner_recognises_declarations_and_ignores_everything_else() {
         declared_outcome_enum("let x = Some(enum_outcome);"),
         None,
         "only declarations count"
+    );
+}
+
+/// Production sources that may construct a control observation.
+const PRODUCERS: &[&str] = &["crates/storage/src", "crates/engine/src"];
+
+/// Variant names of `ExecutionControlReason`, read from its declaration.
+fn declared_reason_variants() -> Vec<String> {
+    let path = workspace_root().join("crates/execution/src/control_observation.rs");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} must be readable: {error}", path.display()));
+    let body = source
+        .split("pub enum ExecutionControlReason {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}\n").next())
+        .expect("ExecutionControlReason declaration");
+    body.lines()
+        .filter(|line| line.starts_with("    ") && !line.starts_with("     "))
+        .map(str::trim)
+        .filter(|line| !line.starts_with("//") && !line.starts_with('}'))
+        .filter_map(|line| {
+            let name: String = line
+                .chars()
+                .take_while(|character| character.is_alphanumeric())
+                .collect();
+            name.chars()
+                .next()
+                .is_some_and(char::is_uppercase)
+                .then_some(name)
+        })
+        .collect()
+}
+
+/// Vocabulary nothing produces must not ship: every reason variant needs a
+/// constructor in production storage or engine code (test files excluded).
+#[test]
+fn every_reason_variant_has_a_production_producer() {
+    let variants = declared_reason_variants();
+    assert!(
+        variants.len() >= 6,
+        "the reason declaration was not parsed: {variants:?}"
+    );
+    let root = workspace_root();
+    let mut files = Vec::new();
+    for producer in PRODUCERS {
+        rust_sources(&root.join(producer), &mut files);
+    }
+    let production: String = files
+        .iter()
+        .filter(|file| {
+            let name = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            name != "tests.rs" && !name.ends_with("_tests.rs")
+        })
+        .map(|file| std::fs::read_to_string(file).unwrap_or_default())
+        .collect();
+    let unproduced: Vec<_> = variants
+        .iter()
+        .filter(|variant| !production.contains(&format!("ExecutionControlReason::{variant}")))
+        .collect();
+    assert!(
+        unproduced.is_empty(),
+        "ExecutionControlReason variants with no production producer: {unproduced:?}"
     );
 }

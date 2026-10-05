@@ -76,7 +76,13 @@ fn six_outcomes_are_derived_from_closed_reasons_and_roundtrip() {
             },
             "fenced",
         ),
-        (ExecutionControlReason::TurnHeld, "deferred"),
+        (
+            ExecutionControlReason::ExecutionVersionConflict {
+                expected_version: 4,
+                actual_version: 5,
+            },
+            "deferred",
+        ),
         (ExecutionControlReason::AdmissionThrottled, "throttled"),
         (ExecutionControlReason::AcceptedTurnRecovered, "recovered"),
         (
