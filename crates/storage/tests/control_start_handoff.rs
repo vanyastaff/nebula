@@ -18,6 +18,7 @@ async fn in_memory_control_start_handoff() {
     let execution = Arc::new(InMemoryExecutionStore::new());
     let catalog = Arc::new(execution.plan_flavor_catalog());
     oracle(Ports {
+        journal: Arc::new(InMemoryJournalReader::new(&execution)),
         jobs: Arc::new(InMemoryJobDispatchQueue::new(&execution)),
         queue: Arc::new(InMemoryControlQueue::new(&execution)),
         handoff: Arc::new(InMemoryTurnHandoff::new(&execution)),
@@ -50,6 +51,7 @@ async fn sqlite_control_start_handoff() {
         &nebula_metrics::MetricsRegistry::new(),
     ));
     oracle(Ports {
+        journal: Arc::new(SqliteJournalReader::new(pool.clone())),
         jobs: Arc::new(SqliteJobDispatchQueue::new(pool.clone())),
         execution: Arc::new(SqliteExecutionStore::new(pool.clone())),
         queue: Arc::new(SqliteControlQueue::new(pool.clone())),

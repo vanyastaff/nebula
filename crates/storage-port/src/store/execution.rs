@@ -15,6 +15,17 @@ use crate::scope::Scope;
 /// this closes the zombie-runner hole.
 #[async_trait::async_trait]
 pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
+    /// Record a real runtime-owned admission throttle before provider egress.
+    /// Storage verifies scope, current lease, CAS and retained accepted source.
+    async fn record_execution_admission_refusal(
+        &self,
+        _refusal: &super::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<super::ExecutionAdmissionRefusalOutcome, StorageError> {
+        Err(StorageError::Configuration(
+            "execution admission observation unsupported".into(),
+        ))
+    }
+
     /// Create a new execution row in `scope`.
     async fn create(
         &self,

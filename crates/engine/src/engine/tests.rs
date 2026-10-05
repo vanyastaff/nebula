@@ -6550,6 +6550,19 @@ struct OneShotControlHandoff {
 
 #[async_trait::async_trait]
 impl nebula_storage_port::store::ExecutionTurnHandoff for OneShotControlHandoff {
+    async fn record_control_flavor_refusal(
+        &self,
+        _: &nebula_storage_port::store::ControlFlavorRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ControlFlavorRefusalOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "flavor refusal is outside this test boundary".to_owned(),
+        ))
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::InMemory
+    }
+
     async fn commit_control_turn(
         &self,
         commit: &nebula_storage_port::store::ControlTurnCommit<'_>,

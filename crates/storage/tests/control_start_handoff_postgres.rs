@@ -36,6 +36,7 @@ async fn postgres_control_start_handoff() {
         &nebula_metrics::MetricsRegistry::new(),
     ));
     oracle(Ports {
+        journal: Arc::new(PgJournalReader::new(pool.clone())),
         jobs: Arc::new(PgJobDispatchQueue::new(pool.clone())),
         execution: Arc::new(PgExecutionStore::new(pool.clone())),
         queue: Arc::new(PgControlQueue::new(pool.clone())),

@@ -1323,6 +1323,14 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
+    /// Head 0063, on both backends, creates only the empty
+    /// `port_execution_control_observation_receipts` relation, its
+    /// constraints, and a cascading foreign key to the execution row. No
+    /// historical control outcome or source authority is inferred or
+    /// backfilled: receipts are written only by the execution owner together
+    /// with their journal row, and an absent receipt means no refusal was
+    /// observed yet. It is aggregate-neutral and the floor remains at 0040.
+    ///
     /// Head 0062, on both backends, creates only the empty
     /// `port_iteration_checkpoints` relation (fenced iteration checkpoints of
     /// journaled stateful actions), its constraints, and a cascading foreign
@@ -1415,9 +1423,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 62);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 63);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 62);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 63);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

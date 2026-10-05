@@ -3764,6 +3764,7 @@ dependencies = [
  "nebula-credential",
  "nebula-crypto",
  "nebula-env",
+ "nebula-execution",
  "nebula-metrics",
  "nebula-resilience",
  "nebula-storage-port",

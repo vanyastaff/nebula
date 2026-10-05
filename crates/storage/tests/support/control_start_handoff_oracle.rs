@@ -26,6 +26,7 @@ use std::{sync::Arc, time::Duration};
 struct Ports {
     jobs: Arc<dyn nebula_storage_port::store::JobDispatchQueue>,
     execution: Arc<dyn ExecutionStore>,
+    journal: Arc<dyn nebula_storage_port::store::ExecutionJournalReader>,
     queue: Arc<dyn ControlQueue>,
     handoff: Arc<dyn ExecutionTurnHandoff>,
     recovery: Arc<dyn TurnRecovery>,

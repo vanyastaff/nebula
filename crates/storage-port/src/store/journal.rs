@@ -4,8 +4,9 @@ use crate::error::StorageError;
 use crate::scope::Scope;
 
 /// Read-only view over the append-only execution journal. Appends happen
-/// only through [`crate::TransitionBatch`] so the journal can never diverge
-/// from the state it describes.
+/// through [`crate::TransitionBatch`] or a backend-authored, deduplicated control
+/// refusal inside its verified aggregate transaction. Refused actors never
+/// receive independent journal mutation authority.
 #[async_trait::async_trait]
 pub trait ExecutionJournalReader: Send + Sync + std::fmt::Debug {
     /// Full journal for an execution, oldest first.

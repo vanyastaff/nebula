@@ -1140,7 +1140,7 @@ async fn migration_0061_starts_every_row_at_admission_epoch_one_and_changes_noth
             .await?;
 
     MIGRATOR.run(&database.pool).await?;
-    assert_eq!(applied_head(&database.pool).await?, 62);
+    assert_eq!(applied_head(&database.pool).await?, 63);
 
     let after: Vec<String> = sqlx::query_scalar(
         "SELECT (row_to_json(c)::jsonb - 'admission_epoch')::text

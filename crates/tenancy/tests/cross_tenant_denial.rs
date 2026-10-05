@@ -1535,6 +1535,21 @@ impl std::fmt::Debug for ScopeRecordingHandoff {
 
 #[async_trait::async_trait]
 impl ExecutionTurnHandoff for ScopeRecordingHandoff {
+    async fn record_control_flavor_refusal(
+        &self,
+        request: &nebula_storage_port::store::ControlFlavorRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ControlFlavorRefusalOutcome, StorageError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(request.claim().scope().clone());
+        Ok(nebula_storage_port::store::ControlFlavorRefusalOutcome::ClaimSuperseded)
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::Sqlite
+    }
+
     async fn commit_control_turn(
         &self,
         commit: &ControlTurnCommit<'_>,
@@ -1586,6 +1601,39 @@ async fn execution_turn_handoff_substitutes_the_bound_scope() {
     assert_eq!(
         inner.observed.lock().expect("recording lock").as_slice(),
         &[scope_a()]
+    );
+}
+
+#[tokio::test]
+async fn execution_turn_handoff_flavor_refusal_substitutes_the_bound_scope() {
+    let inner = Arc::new(ScopeRecordingHandoff::default());
+    let scoped = ScopedExecutionTurnHandoff::new(inner.clone(), scope_a());
+    let foreign_claim = nebula_storage_port::store::ControlClaimToken::new(
+        [7; 16],
+        ClaimGeneration::new(1),
+        scope_b(),
+    );
+    let request = nebula_storage_port::store::ControlFlavorRefusal::new(
+        &foreign_claim,
+        "execution",
+        WorkerFlavorRevisionId::from_bytes([9; 32]),
+    );
+
+    assert_eq!(
+        scoped
+            .record_control_flavor_refusal(&request)
+            .await
+            .unwrap(),
+        nebula_storage_port::store::ControlFlavorRefusalOutcome::ClaimSuperseded
+    );
+    assert_eq!(
+        inner.observed.lock().expect("recording lock").as_slice(),
+        &[scope_a()]
+    );
+    assert_eq!(
+        scoped.backend_kind(),
+        nebula_storage_port::StorageBackendKind::Sqlite,
+        "the decorator must report the wrapped backend, not a fixed kind"
     );
 }
 

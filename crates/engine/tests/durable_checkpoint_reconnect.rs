@@ -635,6 +635,20 @@ struct LostHandoffAcknowledgement(Arc<dyn nebula_storage_port::ExecutionTurnHand
 
 #[async_trait::async_trait]
 impl nebula_storage_port::ExecutionTurnHandoff for LostHandoffAcknowledgement {
+    async fn record_control_flavor_refusal(
+        &self,
+        request: &nebula_storage_port::store::ControlFlavorRefusal<'_>,
+    ) -> Result<
+        nebula_storage_port::store::ControlFlavorRefusalOutcome,
+        nebula_storage_port::StorageError,
+    > {
+        self.0.record_control_flavor_refusal(request).await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.0.backend_kind()
+    }
+
     async fn commit_control_turn(
         &self,
         request: &nebula_storage_port::store::ControlTurnCommit<'_>,

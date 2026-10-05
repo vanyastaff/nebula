@@ -76,10 +76,30 @@ pub(super) struct QueuedJob {
     pub(super) claim_generation: u64,
 }
 
+/// Receipt identity, mirroring the SQL primary key of
+/// `port_execution_control_observation_receipts`: execution, source kind,
+/// source row, source generation, decision key and outcome.
+pub(super) type ControlReceiptKey = (
+    String,
+    &'static str,
+    [u8; 16],
+    u64,
+    String,
+    nebula_execution::ExecutionControlOutcome,
+);
+
+/// Immutable expected/actual flavor snapshot of a flavor-mismatch receipt.
+pub(super) type FlavorReceiptSnapshot = Option<(
+    nebula_core::WorkerFlavorRevisionId,
+    nebula_core::WorkerFlavorRevisionId,
+)>;
+
 #[derive(Debug, Default)]
 pub(super) struct State {
     pub(super) accepted_turns:
         std::collections::BTreeMap<String, super::turn_recovery::AcceptedTurn>,
+    /// Backend-authored control refusal receipts, sharing the journal lock.
+    pub(super) control_observation_receipts: HashMap<ControlReceiptKey, FlavorReceiptSnapshot>,
     pub(super) operation_ledger: super::operation_ledger::LedgerState,
     /// Fenced iteration checkpoints of journaled stateful actions. Shares the
     /// aggregate lock so a save's lease check and write are one critical
@@ -259,6 +279,13 @@ pub(super) fn insert_created_row(
 
 #[async_trait::async_trait]
 impl ExecutionStore for InMemoryExecutionStore {
+    async fn record_execution_admission_refusal(
+        &self,
+        refusal: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        super::control_turn::record_admission(&self.inner, self.clock.as_ref(), refusal)
+    }
+
     async fn create(
         &self,
         scope: &Scope,

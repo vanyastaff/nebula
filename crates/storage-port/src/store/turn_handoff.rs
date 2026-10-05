@@ -31,6 +31,101 @@ use crate::ids::{FencingToken, WorkerFlavorRevisionId};
 use crate::scope::Scope;
 use crate::store::job_dispatch::JobClaimToken;
 
+/// Backend acknowledgement of a journal-backed operator decision.
+/// Derived from receipt insertion in the same owner transaction; never caller supplied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlObservationAcknowledgement {
+    /// The receipt and its observation were newly committed.
+    Recorded,
+    /// The existing immutable receipt was acknowledged without another observation.
+    AlreadyRecorded,
+}
+
+impl ControlObservationAcknowledgement {
+    /// Static trace vocabulary; replay never denotes another durable decision.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Recorded => "recorded",
+            Self::AlreadyRecorded => "already_recorded",
+        }
+    }
+}
+
+/// Trusted worker request to record a real claimed execution's flavor refusal.
+#[derive(Debug)]
+pub struct ControlFlavorRefusal<'a> {
+    claim: &'a crate::store::ControlClaimToken,
+    execution_id: &'a str,
+    actual_worker_flavor_revision_id: WorkerFlavorRevisionId,
+}
+impl<'a> ControlFlavorRefusal<'a> {
+    /// Bind the persisted claim to the actual frozen runtime flavor.
+    #[must_use]
+    pub const fn new(
+        claim: &'a crate::store::ControlClaimToken,
+        execution_id: &'a str,
+        actual_worker_flavor_revision_id: WorkerFlavorRevisionId,
+    ) -> Self {
+        Self {
+            claim,
+            execution_id,
+            actual_worker_flavor_revision_id,
+        }
+    }
+    /// Stored queue claim identity and tenant boundary.
+    #[must_use]
+    pub const fn claim(&self) -> &'a crate::store::ControlClaimToken {
+        self.claim
+    }
+    /// Real persisted execution linked by the queue row.
+    #[must_use]
+    pub const fn execution_id(&self) -> &'a str {
+        self.execution_id
+    }
+    /// Actual linked runtime flavor; the backend derives the expected flavor.
+    #[must_use]
+    pub const fn actual_worker_flavor_revision_id(&self) -> WorkerFlavorRevisionId {
+        self.actual_worker_flavor_revision_id
+    }
+}
+/// Acknowledged backend decision; no execution lease or queue completion is granted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ControlFlavorRefusalOutcome {
+    /// Fixed mismatch receipt and journal committed together.
+    Recorded {
+        /// Exact flavor retained by the execution aggregate.
+        expected: WorkerFlavorRevisionId,
+        /// Flavor presented by the refused runtime.
+        actual: WorkerFlavorRevisionId,
+        /// Authoritative storage adapter that committed the decision.
+        backend: crate::StorageBackendKind,
+    },
+    /// Existing immutable source receipt acknowledged; no new snapshot is claimed.
+    AlreadyRecorded {
+        /// Exact flavor captured by the existing receipt.
+        expected: WorkerFlavorRevisionId,
+        /// Runtime flavor captured by the existing receipt.
+        actual: WorkerFlavorRevisionId,
+        /// Authoritative storage adapter that holds the receipt.
+        backend: crate::StorageBackendKind,
+    },
+    /// Scoped stored queue row verified, but its claim generation advanced.
+    ClaimFenced {
+        /// Generation presented by the refused delivery.
+        attempted_queue_claim_generation: u64,
+        /// Current stored generation of that same verified delivery source.
+        current_queue_claim_generation: u64,
+        /// New durable decision or acknowledgement of the existing immutable receipt.
+        observation_acknowledgement: ControlObservationAcknowledgement,
+    },
+    /// No current supported scoped execution/queue link was verified.
+    ClaimSuperseded,
+    /// The actual runtime agrees with the backend's retained exact flavor.
+    NoMismatch,
+}
+
 /// Supported command semantics accepted by the existing execution owner.
 #[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -207,7 +302,95 @@ impl fmt::Debug for ControlTurnCommit<'_> {
     }
 }
 
-/// Rejections leave checkpoint, marker and queue untouched.
+/// A runtime-owned admission refusal with no caller-selected payload or source.
+#[derive(Debug)]
+pub struct ExecutionAdmissionRefusal<'a> {
+    scope: &'a Scope,
+    execution_id: &'a str,
+    expected_version: u64,
+    fence: FencingToken,
+    node_key: &'a nebula_core::NodeKey,
+    attempt: u32,
+}
+impl<'a> ExecutionAdmissionRefusal<'a> {
+    /// Describe the actual pre-provider admission refusal of a current owner.
+    #[must_use]
+    pub const fn new(
+        scope: &'a Scope,
+        execution_id: &'a str,
+        expected_version: u64,
+        fence: FencingToken,
+        node_key: &'a nebula_core::NodeKey,
+        attempt: u32,
+    ) -> Self {
+        Self {
+            scope,
+            execution_id,
+            expected_version,
+            fence,
+            node_key,
+            attempt,
+        }
+    }
+    /// Tenant of the existing execution.
+    #[must_use]
+    pub const fn scope(&self) -> &'a Scope {
+        self.scope
+    }
+    /// Existing execution identity.
+    #[must_use]
+    pub const fn execution_id(&self) -> &'a str {
+        self.execution_id
+    }
+    /// Aggregate version preflighted by its runtime owner.
+    #[must_use]
+    pub const fn expected_version(&self) -> u64 {
+        self.expected_version
+    }
+    /// Existing execution lease authority, not a queue claim.
+    #[must_use]
+    pub const fn fence(&self) -> FencingToken {
+        self.fence
+    }
+    /// Exact node receiving the admission decision.
+    #[must_use]
+    pub const fn node_key(&self) -> &'a nebula_core::NodeKey {
+        self.node_key
+    }
+    /// Node attempt, distinct from every lease/claim generation.
+    #[must_use]
+    pub const fn attempt(&self) -> u32 {
+        self.attempt
+    }
+}
+
+/// Recording a refusal never grants execution authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ExecutionAdmissionRefusalOutcome {
+    /// The refusal and receipt committed together.
+    Recorded {
+        /// Actual authoritative storage adapter.
+        backend: crate::StorageBackendKind,
+    },
+    /// The identical node-attempt refusal was already durably recorded.
+    AlreadyRecorded {
+        /// Actual authoritative storage adapter.
+        backend: crate::StorageBackendKind,
+    },
+    /// Owner is absent, expired, superseded or outside the execution tenant.
+    FencedOut,
+    /// Owner must reload before recording a decision against current state.
+    VersionConflict {
+        /// Current version visible only to the matched tenant.
+        actual: u64,
+    },
+    /// No retained accepted-turn marker proves the decision source.
+    MissingAcceptedTurn,
+}
+
+/// Rejections leave checkpoint, marker and queue untouched. Verified backend
+/// refusals may append their own deduplicated execution-control observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 #[non_exhaustive]
@@ -221,12 +404,35 @@ pub enum ControlTurnCommitOutcome {
     },
     /// Claim, command, scope, target or exact live reference no longer matches.
     ClaimSuperseded,
+    /// A verified scoped command's stale claim was refused and observed durably.
+    ClaimFenced {
+        /// Generation presented by the refused delivery.
+        attempted_queue_claim_generation: u64,
+        /// Current stored generation of that same verified delivery source.
+        current_queue_claim_generation: u64,
+        /// New durable decision or acknowledgement of the existing immutable receipt.
+        observation_acknowledgement: ControlObservationAcknowledgement,
+    },
     /// Owner lease was absent, expired or superseded.
-    FencedOut,
+    FencedOut {
+        /// New durable decision or acknowledgement of the existing immutable receipt.
+        observation_acknowledgement: ControlObservationAcknowledgement,
+    },
+    /// The verified delivery addresses an existing execution of another flavor.
+    FlavorMismatch {
+        /// Exact expected flavor captured by the acknowledged immutable decision.
+        expected: WorkerFlavorRevisionId,
+        /// Runtime flavor captured by that same immutable decision.
+        actual: WorkerFlavorRevisionId,
+        /// New durable decision or acknowledgement of the existing immutable receipt.
+        observation_acknowledgement: ControlObservationAcknowledgement,
+    },
     /// Runtime must reload and preflight the current aggregate.
     VersionConflict {
         /// Current version within the matched tenant only.
         actual: u64,
+        /// New durable decision or acknowledgement of the existing immutable receipt.
+        observation_acknowledgement: ControlObservationAcknowledgement,
     },
 }
 
@@ -765,6 +971,22 @@ pub enum TurnAcceptance {
 /// exists to make unreachable.
 #[async_trait::async_trait]
 pub trait ExecutionTurnHandoff: Send + Sync + fmt::Debug {
+    /// Record a fixed flavor refusal before exact plan loading, under one owner transaction.
+    ///
+    /// Backend verifies the scoped real execution and persisted Processing command/target
+    /// before deriving expected flavor. No caller payload, lease, or queue acknowledgement
+    /// is accepted. Unknown commit acknowledgement grants no execution authority.
+    ///
+    /// # Errors
+    /// Backend failures and invalid stored representations return bounded errors.
+    async fn record_control_flavor_refusal(
+        &self,
+        request: &ControlFlavorRefusal<'_>,
+    ) -> Result<ControlFlavorRefusalOutcome, StorageError>;
+
+    /// Closed identity of the owning backend, preserved by decorators.
+    fn backend_kind(&self) -> crate::StorageBackendKind;
+
     /// Commit an existing owner's checkpoint, recovery marker and queue completion.
     ///
     /// All three writes share one atomic boundary. No lease is acquired here.
@@ -829,6 +1051,9 @@ pub trait ExecutionTurnHandoff: Send + Sync + fmt::Debug {
 /// capability without also receiving a global enumeration surface.
 #[async_trait::async_trait]
 pub trait TurnRecovery: Send + Sync + fmt::Debug {
+    /// Closed identity of the backend that owns recovery acceptance.
+    fn backend_kind(&self) -> crate::StorageBackendKind;
+
     /// Scan at most `limit` accepted markers with live references for this exact flavor.
     ///
     /// `limit` must be in `1..=256`. Apply flavor and exclusive cursor before the

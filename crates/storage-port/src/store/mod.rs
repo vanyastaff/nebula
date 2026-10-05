@@ -72,10 +72,11 @@ pub use start_acceptance::{
     StartRevisionRejection,
 };
 pub use turn_handoff::{
+    ControlFlavorRefusal, ControlFlavorRefusalOutcome, ControlObservationAcknowledgement,
     ControlStartAcceptance, ControlStartHandoff, ControlTurnCommand, ControlTurnCommit,
-    ControlTurnCommitOutcome, ControlTurnTransition, ExecutionTurnHandoff, RecoverableTurn,
-    RecoverableTurnPage, RecoveryTurnAcceptance, RecoveryTurnHandoff, TurnAcceptance, TurnHandoff,
-    TurnRecovery,
+    ControlTurnCommitOutcome, ControlTurnTransition, ExecutionAdmissionRefusal,
+    ExecutionAdmissionRefusalOutcome, ExecutionTurnHandoff, RecoverableTurn, RecoverableTurnPage,
+    RecoveryTurnAcceptance, RecoveryTurnHandoff, TurnAcceptance, TurnHandoff, TurnRecovery,
 };
 pub use webhook::WebhookActivationStore;
 pub use workflow::{WorkflowPublicationError, WorkflowStore, WorkflowVersionStore};
