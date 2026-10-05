@@ -5,6 +5,7 @@
 //! as arena indices, so destroying a rule never recursively drops user-shaped
 //! data.
 
+mod condition;
 pub mod context;
 pub mod deferred;
 mod deserialize;
@@ -20,6 +21,7 @@ mod helpers;
 #[cfg(test)]
 mod tests;
 
+pub use condition::{Condition, ConditionOutcome};
 pub use constructors::RuleOperands;
 pub use context::PredicateContext;
 pub use deferred::DeferredRule;
