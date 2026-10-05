@@ -51,6 +51,11 @@ use utoipa::{
 
 use crate::domain::auth::backend::{CSRF_HEADER, SESSION_COOKIE};
 
+/// Unsupported, explicitly activated runtime conformance instrumentation.
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub mod conformance;
+
 /// Root OpenAPI 3.1 document for `nebula-api`.
 ///
 /// Materialized via [`OpenApiDoc::openapi()`] (provided by the

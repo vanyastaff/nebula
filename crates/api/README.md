@@ -1074,3 +1074,64 @@ above for the enforcement guarantee.
 | `POST`   | `/webhooks/{trigger_uuid}/{nonce}`                                         | Inbound webhook trigger (mounted when `webhook_transport` is set)          |
 | `GET`    | `/api/v1/openapi.json`                                                    | OpenAPI 3.1 specification document                                         |
 | `GET`    | `/api/v1/docs/`                                                           | Swagger UI (self-hosted)                                                   |
+
+### Served OpenAPI runtime conformance (NS15)
+
+`tests/openapi_runtime_conformance.rs` checks the production router from
+`build_app` against the OpenAPI document it serves at `/api/v1/openapi.json`.
+Requests are built from `nebula-api-contract::v1` types. Each live response is
+checked independently for a documented status, a documented media type, JSON
+Schema 2020-12 conformance against the served schema, and decoding into the
+shared contract type. Any violation is a drift finding keyed by `operationId`,
+status, finding kind and schema path.
+
+Router-wide failures are part of the served contract: `429` from the per-IP
+limiter on every non-probe route, `404`/`503` from tenant resolution on every
+`/orgs/{org}` route, and `400`/`413`/`415`/`422` from the body limit and JSON
+decoding on every JSON-body operation. All of them, including authentication
+`401`, are RFC 9457 `application/problem+json` with fixed, payload-free details.
+
+**Producer.** With the unsupported `test-util` feature, setting
+`NEBULA_OPENAPI_OBSERVATIONS` to a fresh directory makes every router built by
+`build_app` record each response's operation, status and findings. Run the
+complete API test suite with it, then the ignored
+`emit_openapi_runtime_compatibility_report` test with the same directory and
+`NEBULA_OPENAPI_REPORT` set to the output file:
+
+```bash
+export NEBULA_OPENAPI_OBSERVATIONS="$PWD/target/openapi-runtime/observations"
+cargo nextest run -p nebula-api
+NEBULA_OPENAPI_REPORT="$PWD/target/openapi-runtime/openapi-runtime-compatibility.json" \
+  cargo nextest run -p nebula-api --test openapi_runtime_conformance \
+  --run-ignored only -E 'test(emit_openapi_runtime_compatibility_report)'
+```
+
+The report (`openapi-runtime-compatibility`, kind `compatibility-report`) counts
+distinct findings in `openapi_runtime_drift_finding_count`. Its denominator is
+the served inventory: every nonexcluded operation needs at least one fully
+consumed, conformant response, and every documented, nonexcluded 2xx/3xx status
+needs one too; each gap is an `unreached-operation` or
+`unreached-success-status` finding. The aggregation writes the report and then
+fails on a nonzero count. CI runs it in the `OpenAPI runtime conformance` job
+of `ci.yml` and uploads the report.
+
+Observations hold operation keys, statuses, fixed finding codes and schema
+paths only — never request headers, URIs, queries, credentials or response
+payloads. JSON buffering is bounded and zeroized; frames, headers and status
+pass through unchanged. An explicitly activated evidence-write failure ends the
+fixture process with exit code 86 so lost evidence cannot pass. Mutation
+controls (a dropped response schema, a renamed contract field, a renamed wire
+field, an undocumented status) prove the count becomes nonzero.
+
+**Exclusions** live in `tests/openapi_runtime_conformance/exclusions.json` and
+are copied into the report. An exclusion names an exact operation and either
+removes it from the coverage denominator or, with `status`, waives one
+documented success status. Observed responses of excluded operations are still
+validated. Unknown, duplicate, redundant or blank-reason entries fail the
+aggregation.
+
+| Operation | Waived | Reason |
+|---|---|---|
+| `GET /api/v1/auth/oauth/{provider}/callback` (`oauth_callback`) | whole operation | Success needs a provider-issued one-time code, the original browser transaction state and provider egress; faking it would bypass the production identity policy. Authorization-URL initiation (`oauth_start`) is covered offline. |
+| `POST /api/v1/orgs/{org}/workspaces/{ws}/resources` (`create_resource`) | `201` | Success needs a resource-kind registrar built from a `nebula-resource` factory, and `deny.toml` forbids `nebula-api` from depending on `nebula-resource`. The fail-closed branches are covered. |
+| `PUT /api/v1/orgs/{org}/workspaces/{ws}/resources/{res}` (`update_resource`) | `200` | Same registrar constraint as `create_resource`. |
