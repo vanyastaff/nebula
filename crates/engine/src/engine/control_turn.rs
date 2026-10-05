@@ -2,8 +2,8 @@
 
 use super::*;
 use nebula_storage_port::store::{
-    ControlClaimToken, ControlTurnCommand, ControlTurnCommit, ControlTurnCommitOutcome,
-    ControlTurnTransition,
+    ControlClaimToken, ControlObservationAcknowledgement, ControlTurnCommand, ControlTurnCommit,
+    ControlTurnCommitOutcome, ControlTurnTransition,
 };
 
 /// Current Resume or Restart claim and its atomic execution-owner capability.
@@ -95,7 +95,7 @@ impl WorkflowEngine {
     }
 
     /// Publish an arm only with acknowledgement of checkpoint, marker and queue completion together.
-    #[tracing::instrument(skip_all, fields(%execution_id, outcome = tracing::field::Empty))]
+    #[tracing::instrument(skip_all, fields(%execution_id, org_id = %scope.org_id, workspace_id = %scope.workspace_id, backend = tracing::field::Empty, outcome = tracing::field::Empty, observation_acknowledgement = tracing::field::Empty, expected_flavor = tracing::field::Empty, actual_flavor = tracing::field::Empty))]
     pub(super) async fn commit_claimed_control(
         &self,
         scope: &Scope,
@@ -165,6 +165,54 @@ impl WorkflowEngine {
                 transition,
             ))
             .await;
+        let observation = match &decision {
+            Ok(ControlTurnCommitOutcome::Accepted {
+                fence: accepted, ..
+            }) if *accepted == fence => Some((
+                nebula_execution::ExecutionControlOutcome::Accepted,
+                ControlObservationAcknowledgement::Recorded,
+            )),
+            Ok(
+                ControlTurnCommitOutcome::FencedOut {
+                    observation_acknowledgement,
+                }
+                | ControlTurnCommitOutcome::ClaimFenced {
+                    observation_acknowledgement,
+                    ..
+                },
+            ) => Some((
+                nebula_execution::ExecutionControlOutcome::Fenced,
+                *observation_acknowledgement,
+            )),
+            Ok(ControlTurnCommitOutcome::FlavorMismatch {
+                observation_acknowledgement,
+                ..
+            }) => Some((
+                nebula_execution::ExecutionControlOutcome::FlavorMismatch,
+                *observation_acknowledgement,
+            )),
+            Ok(ControlTurnCommitOutcome::VersionConflict {
+                observation_acknowledgement,
+                ..
+            }) => Some((
+                nebula_execution::ExecutionControlOutcome::Deferred,
+                *observation_acknowledgement,
+            )),
+            _ => None,
+        };
+        if let Some((outcome, acknowledgement)) = observation {
+            let backend = request.handoff.backend_kind();
+            let span = tracing::Span::current();
+            span.record("backend", backend.as_str());
+            span.record("outcome", outcome.as_str());
+            span.record("observation_acknowledgement", acknowledgement.as_str());
+            crate::control_metrics::observe_execution_control_decision(
+                &self.metrics,
+                backend,
+                outcome,
+                acknowledgement,
+            );
+        }
         match decision {
             Ok(ControlTurnCommitOutcome::Accepted {
                 fence: accepted_fence,
@@ -179,18 +227,29 @@ impl WorkflowEngine {
                 if let Some(candidate) = candidate {
                     *exec_state = candidate;
                 }
-                tracing::Span::current().record("outcome", "accepted");
                 Ok(armed)
             },
-            Ok(ControlTurnCommitOutcome::ClaimSuperseded) => {
-                Err(ControlCommitFailure::ClaimSuperseded)
-            },
-            Ok(ControlTurnCommitOutcome::FencedOut) => Err(EngineError::Leased {
+            Ok(
+                ControlTurnCommitOutcome::ClaimSuperseded
+                | ControlTurnCommitOutcome::ClaimFenced { .. },
+            ) => Err(ControlCommitFailure::ClaimSuperseded),
+            Ok(ControlTurnCommitOutcome::FencedOut { .. }) => Err(EngineError::Leased {
                 execution_id,
                 holder: "another runtime owner or expired lease".to_owned(),
             }
             .into()),
-            Ok(ControlTurnCommitOutcome::VersionConflict { actual }) => {
+            Ok(ControlTurnCommitOutcome::FlavorMismatch { snapshot, .. }) => {
+                if let Some(snapshot) = snapshot {
+                    let span = tracing::Span::current();
+                    span.record(
+                        "expected_flavor",
+                        tracing::field::display(snapshot.expected),
+                    );
+                    span.record("actual_flavor", tracing::field::display(snapshot.actual));
+                }
+                Err(EngineError::InvalidRecordedContract.into())
+            },
+            Ok(ControlTurnCommitOutcome::VersionConflict { actual, .. }) => {
                 Err(EngineError::ControlTurnVersionConflict {
                     expected: *repo_version,
                     actual,

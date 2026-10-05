@@ -1458,3 +1458,20 @@ pub const NEBULA_CACHE_SIZE: &str = "nebula_cache_size";
 #[cfg(test)]
 #[path = "naming_tests.rs"]
 mod tests;
+
+/// Counter: authoritative execution-control decisions observed by the runtime.
+///
+/// Labels are the closed six-value execution-control `outcome` vocabulary and
+/// three-value owning `backend` vocabulary. No actor, tenant, execution, node,
+/// generation, key, or free-form reason becomes a metric label.
+pub const NEBULA_EXECUTION_CONTROL_OUTCOMES_TOTAL: &str = "nebula_execution_control_outcomes_total";
+
+/// Counter: execution-control decisions whose durable observation is missing.
+///
+/// Incremented when an owner decision stands but its journal observation was
+/// not written, its commit acknowledgement was lost, or the owner could not
+/// attribute it. Same closed `outcome` × `backend` labels as
+/// [`NEBULA_EXECUTION_CONTROL_OUTCOMES_TOTAL`]; a non-zero rate means the
+/// journal under-reports operator outcomes.
+pub const NEBULA_EXECUTION_CONTROL_OBSERVATIONS_UNRECORDED_TOTAL: &str =
+    "nebula_execution_control_observations_unrecorded_total";

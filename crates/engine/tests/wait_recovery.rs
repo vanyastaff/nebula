@@ -100,6 +100,17 @@ struct FaultInjectingExecutionStore {
 
 #[async_trait::async_trait]
 impl ExecutionStore for FaultInjectingExecutionStore {
+    async fn record_execution_admission_refusal(
+        &self,
+        refusal: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        self.inner.record_execution_admission_refusal(refusal).await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.inner.backend_kind()
+    }
+
     async fn create(
         &self,
         scope: &Scope,

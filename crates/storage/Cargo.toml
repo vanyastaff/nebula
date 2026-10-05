@@ -13,6 +13,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+nebula-execution = { path = "../execution" }
 nebula-core = { path = "../core" }
 nebula-env = { workspace = true }
 nebula-credential = { path = "../credential" }

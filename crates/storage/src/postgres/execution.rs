@@ -89,6 +89,17 @@ fn normalized_ttl(ttl: Duration) -> Duration {
 ///
 #[async_trait::async_trait]
 impl ExecutionStore for PgExecutionStore {
+    async fn record_execution_admission_refusal(
+        &self,
+        refusal: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        super::control_turn::record_admission(&self.pool, refusal).await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::Postgres
+    }
+
     async fn create(
         &self,
         scope: &Scope,

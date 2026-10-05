@@ -101,6 +101,10 @@ impl OperationLedger for PauseAfterBeforeBoundary {
 
 #[async_trait::async_trait]
 impl TurnRecovery for FailingDiscovery {
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.owner.backend_kind()
+    }
+
     async fn list_recoverable_turns(
         &self,
         _flavor: nebula_core::WorkerFlavorRevisionId,
@@ -122,6 +126,17 @@ impl TurnRecovery for FailingDiscovery {
 }
 #[async_trait::async_trait]
 impl ExecutionTurnHandoff for LostAcknowledgement {
+    async fn record_control_flavor_refusal(
+        &self,
+        request: &nebula_storage_port::store::ControlFlavorRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ControlFlavorRefusalOutcome, StorageError> {
+        self.owner.record_control_flavor_refusal(request).await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.owner.backend_kind()
+    }
+
     async fn commit_control_turn(
         &self,
         request: &nebula_storage_port::store::ControlTurnCommit<'_>,

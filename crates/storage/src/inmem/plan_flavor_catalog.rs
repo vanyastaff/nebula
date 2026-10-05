@@ -113,6 +113,18 @@ pub(super) struct RevisionCatalogState {
     references: HashMap<RevisionReferenceOwner, RevisionReferenceRow>,
 }
 
+/// Read the existing execution's live flavor under the aggregate owner lock.
+pub(super) fn execution_live_flavor(
+    catalog: &RevisionCatalogState,
+    execution_id: ExecutionId,
+) -> Option<WorkerFlavorRevisionId> {
+    catalog
+        .references
+        .get(&RevisionReferenceOwner::for_execution(execution_id))
+        .filter(|row| matches!(row.state, RevisionReferenceState::Live))
+        .map(|row| row.reference.ids.worker_flavor())
+}
+
 pub(super) fn execution_matches_live_flavor(
     catalog: &RevisionCatalogState,
     execution_id: ExecutionId,

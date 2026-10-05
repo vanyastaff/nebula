@@ -52,6 +52,7 @@ pub(super) enum LeasePreparation {
 }
 
 impl WorkflowEngine {
+    #[tracing::instrument(skip_all, fields(execution_id = %request.execution_id, org_id = %request.scope.org_id, workspace_id = %request.scope.workspace_id, backend = tracing::field::Empty, outcome = tracing::field::Empty, reason = tracing::field::Empty, execution_lease_generation = tracing::field::Empty))]
     pub(super) async fn prepare_resume_lease(
         &self,
         request: ResumeLeaseRequest<'_>,
@@ -183,6 +184,15 @@ impl WorkflowEngine {
                     },
                     Err(source) => return Err(EngineError::RecoveryHandoff { source }.into()),
                 };
+                tracing::Span::current().record("reason", "accepted_turn_recovered");
+                tracing::Span::current().record("execution_lease_generation", fence.generation());
+                if let Err(error) = crate::control_metrics::record_execution_control_outcome(
+                    &self.metrics,
+                    request.handoff.backend_kind(),
+                    nebula_execution::ExecutionControlOutcome::Recovered,
+                ) {
+                    tracing::warn!(%error, "execution recovery outcome metric could not be recorded");
+                }
                 tracing::info!(
                     %execution_id,
                     fence_generation = fence.generation(),
@@ -248,6 +258,15 @@ impl WorkflowEngine {
                     },
                     Err(source) => return Err(EngineError::ControlStartHandoff { source }.into()),
                 };
+                tracing::Span::current().record("reason", "control_accepted");
+                tracing::Span::current().record("execution_lease_generation", fence.generation());
+                if let Err(error) = crate::control_metrics::record_execution_control_outcome(
+                    &self.metrics,
+                    request.handoff.backend_kind(),
+                    nebula_execution::ExecutionControlOutcome::Accepted,
+                ) {
+                    tracing::warn!(%error, "execution acceptance outcome metric could not be recorded");
+                }
                 tracing::info!(
                     %execution_id,
                     fence_generation = fence.generation(),

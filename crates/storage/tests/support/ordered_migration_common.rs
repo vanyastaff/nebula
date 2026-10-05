@@ -7,9 +7,9 @@ use std::io::Write;
 pub(crate) use serde_json::{Value, json};
 
 pub(crate) const PREVIOUS_SUPPORTED: i64 = 45;
-/// Both catalogs end at 0062. PostgreSQL carries a migration SQLite reserves
+/// Both catalogs end at 0063. PostgreSQL carries a migration SQLite reserves
 /// (0060 rate limits), so the SQLite ledger skips it on the way to the head.
-const CURRENT_HEAD: i64 = 62;
+const CURRENT_HEAD: i64 = 63;
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
