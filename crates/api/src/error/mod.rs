@@ -1039,12 +1039,22 @@ impl IntoResponse for ApiError {
             _ => None,
         };
 
-        // Log error
-        tracing::error!(
-            error = ?self,
-            status = status.as_u16(),
-            "API error occurred"
-        );
+        // Only server faults are errors. Client failures (401, 413, 429, ...)
+        // are attacker-reachable at request rate, so logging them at `error`
+        // would turn every rejected request into an alert.
+        if status.is_server_error() {
+            tracing::error!(
+                error = ?self,
+                status = status.as_u16(),
+                "API error occurred"
+            );
+        } else {
+            tracing::debug!(
+                error = ?self,
+                status = status.as_u16(),
+                "API request rejected"
+            );
+        }
 
         // RFC 9457: Content-Type MUST be application/problem+json
         let mut response = (status, Json(problem)).into_response();
