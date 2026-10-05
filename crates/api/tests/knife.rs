@@ -594,8 +594,9 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
     // the workflow/execution under) so the decorator binds engine reads,
     // the API-enqueued `Start`, and the seeded rows to the same
     // tenant. The echo node never checkpoints or replays, so a fresh
-    // in-memory checkpoint/idempotency pair suffices for the two
-    // `ExecutionStores` fields `AppState` does not expose.
+    // in-memory idempotency guard suffices for that `ExecutionStores`
+    // field `AppState` does not expose; checkpoints share the harness's
+    // execution store, whose leases fence them.
     let s = knife_scope();
     let scoped_exec: Arc<dyn nebula_storage_port::store::ExecutionStore> = Arc::new(
         nebula_tenancy::ScopedExecutionStore::new(Arc::clone(&state.execution_store), s.clone()),
@@ -618,7 +619,7 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
                     Arc::clone(&state.node_result_store),
                     s.clone(),
                 )),
-                checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
+                checkpoints: handles.checkpoint_store(),
                 idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
                 resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
                 operation_ledger: handles.operation_ledger(),

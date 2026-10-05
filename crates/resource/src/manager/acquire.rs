@@ -308,7 +308,7 @@ impl Manager {
     /// The per-unit checkout facade of the row of `R` registered for `ctx`'s
     /// scope: every attempt of a unit submitted on it checks out an
     /// instance of its own only after its quota and row-gate waits (see
-    /// [`ManagedRow`](crate::call::ManagedRow)).
+    /// [`ResourceHandle`](crate::call::ResourceHandle)).
     ///
     /// Latches the row's rate-limit profile to
     /// [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt).
@@ -322,13 +322,13 @@ impl Manager {
     ///
     /// As the acquire lookup: [`NotFound`](crate::ErrorKind::NotFound),
     /// [`Ambiguous`](crate::ErrorKind::Ambiguous) (use
-    /// [`managed_row_for_identity`](Self::managed_row_for_identity)),
+    /// [`handle_for_identity`](Self::handle_for_identity)),
     /// [`Cancelled`](crate::ErrorKind::Cancelled) while shutting down,
     /// [`Revoked`](crate::ErrorKind::Revoked) for a tainted row.
-    pub fn managed_row<R: Provider + crate::call::PinSlots>(
+    pub fn handle<R: Provider + crate::call::PinSlots>(
         &self,
         ctx: &ResourceContext,
-    ) -> Result<crate::call::ManagedRow<R>, Error> {
+    ) -> Result<crate::call::ResourceHandle<R>, Error> {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         Ok(Self::row_facade(managed, self.acquire.clone(), ctx))
     }
@@ -338,41 +338,41 @@ impl Manager {
         managed: Arc<ManagedResource<R>>,
         link: super::AcquireLink,
         ctx: &ResourceContext,
-    ) -> crate::call::ManagedRow<R> {
-        crate::call::ManagedRow::new(managed, link, ctx).with_unit_scope(
+    ) -> crate::call::ResourceHandle<R> {
+        crate::call::ResourceHandle::new(managed, link, ctx).with_unit_scope(
             crate::call::UnitScope::from_parts(ctx, &AcquireOptions::default()),
         )
     }
 
-    /// [`managed_row`](Self::managed_row) pinned to the **collision-free
+    /// [`handle`](Self::handle) pinned to the **collision-free
     /// structural** resolved per-slot credential identity.
     ///
     /// # Errors
     ///
     /// [`NotFound`](crate::ErrorKind::NotFound) if no row of type `R`
     /// matches `(scope, slot_identity)`; otherwise as
-    /// [`managed_row`](Self::managed_row).
-    pub fn managed_row_for_identity<R: Provider + crate::call::PinSlots>(
+    /// [`handle`](Self::handle).
+    pub fn handle_for_identity<R: Provider + crate::call::PinSlots>(
         &self,
         ctx: &ResourceContext,
         slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<crate::call::ManagedRow<R>, Error> {
+    ) -> Result<crate::call::ResourceHandle<R>, Error> {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         Ok(Self::row_facade(managed, self.acquire.clone(), ctx))
     }
 
-    /// The type-erased [`managed_row_for_identity`](Self::managed_row_for_identity):
-    /// a boxed [`ManagedRow<R>`](crate::call::ManagedRow) for the row
+    /// The type-erased [`handle_for_identity`](Self::handle_for_identity):
+    /// a boxed [`ResourceHandle<R>`](crate::call::ResourceHandle) for the row
     /// registered under `key` for `(ctx`'s scope, `slot_identity)`, for a
     /// caller that knows the row only by its key (the engine's resource
-    /// accessor). The caller downcasts it to the `ManagedRow<R>` it expects.
+    /// accessor). The caller downcasts it to the `ResourceHandle<R>` it expects.
     ///
     /// Synchronous and checks out nothing: the row's capacity is each
     /// attempt's to wait for, so a pool saturated by plain leases still
     /// yields a facade. Latches the row's rate-limit profile to
     /// [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt).
     /// The facade's units inherit `ctx`'s cancellation token and
-    /// `options.deadline` (see [`ManagedRow`](crate::call::ManagedRow)).
+    /// `options.deadline` (see [`ResourceHandle`](crate::call::ResourceHandle)).
     ///
     /// # Errors
     ///
@@ -383,14 +383,14 @@ impl Manager {
     /// [`Ambiguous`](crate::ErrorKind::Ambiguous),
     /// [`Cancelled`](crate::ErrorKind::Cancelled) while shutting down,
     /// [`Revoked`](crate::ErrorKind::Revoked) for a tainted row.
-    pub fn managed_row_any(
+    pub fn handle_any(
         &self,
         key: &ResourceKey,
         ctx: &ResourceContext,
         options: &AcquireOptions,
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<Box<dyn Any + Send + Sync>, Error> {
-        self.managed_row_any_with_scope(
+        self.handle_any_with_scope(
             key,
             ctx,
             slot_identity,
@@ -405,20 +405,20 @@ impl Manager {
     /// [`Effect::Idempotent`](crate::call::Effect::Idempotent) or
     /// [`Effect::Write`](crate::call::Effect::Write) is refused before its
     /// first provider attempt. Library callers that own effect semantics use
-    /// [`managed_row_any`](Self::managed_row_any).
+    /// [`handle_any`](Self::handle_any).
     ///
     /// # Errors
     ///
     /// Returns the same lookup and lifecycle errors as
-    /// [`managed_row_any`](Self::managed_row_any).
-    pub fn managed_row_any_read_only(
+    /// [`handle_any`](Self::handle_any).
+    pub fn handle_any_read_only(
         &self,
         key: &ResourceKey,
         ctx: &ResourceContext,
         options: &AcquireOptions,
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<Box<dyn Any + Send + Sync>, Error> {
-        self.managed_row_any_with_scope(
+        self.handle_any_with_scope(
             key,
             ctx,
             slot_identity,
@@ -426,39 +426,66 @@ impl Manager {
         )
     }
 
-    /// The type-erased managed row of an action with effect-owner
-    /// authority: reads run as on any row, effects only through
-    /// [`ManagedRow::submit_effect`](crate::call::ManagedRow::submit_effect)
-    /// and [`ManagedRow::session_effect`](crate::call::ManagedRow::session_effect),
-    /// prepared, granted and recorded by `owner` (see the
-    /// [`owner`](crate::call::owner) module). A plain
-    /// [`submit`](crate::call::ManagedRow::submit) or
-    /// [`session`](crate::call::ManagedRow::session) of an effect is refused
-    /// before its first provider attempt. The owner binds effects to
-    /// `slot_identity`.
+    /// The type-erased managed row restricted to read-only operations, like
+    /// [`handle_any_read_only`](Self::handle_any_read_only), whose refused
+    /// effects carry `detail` — why this caller has no effect authority
+    /// (the engine says a journaled action without execution stores, for
+    /// example). The refusal stays `Permanent` / `NotSent`.
     ///
     /// # Errors
     ///
     /// Returns the same lookup and lifecycle errors as
-    /// [`managed_row_any`](Self::managed_row_any).
-    pub fn managed_row_any_owned(
+    /// [`handle_any`](Self::handle_any).
+    pub fn handle_any_read_only_because(
         &self,
         key: &ResourceKey,
         ctx: &ResourceContext,
         options: &AcquireOptions,
         slot_identity: &crate::dedup::SlotIdentity,
-        owner: Arc<dyn crate::call::owner::UnitEffectOwner>,
+        detail: &'static str,
     ) -> Result<Box<dyn Any + Send + Sync>, Error> {
-        self.managed_row_any_with_scope(
+        self.handle_any_with_scope(
             key,
             ctx,
             slot_identity,
-            crate::call::UnitScope::from_parts(ctx, options).owned(owner, slot_identity.clone()),
+            crate::call::UnitScope::from_parts(ctx, options).read_only_because(detail),
+        )
+    }
+
+    /// The type-erased managed row of an action with effect-owner
+    /// authority: reads run as on any row, and every `Idempotent` or
+    /// `Write` unit — an operation through
+    /// [`ResourceHandle::submit`](crate::call::ResourceHandle::submit) or a
+    /// session through
+    /// [`ResourceHandle::session`](crate::call::ResourceHandle::session) — is
+    /// prepared, granted and recorded by `owner` (see the
+    /// [`journal`](crate::call::journal) module). A streamed effect is
+    /// refused before its first provider attempt. The owner binds effects
+    /// to `slot_identity`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same lookup and lifecycle errors as
+    /// [`handle_any`](Self::handle_any).
+    pub fn handle_any_journaled(
+        &self,
+        key: &ResourceKey,
+        ctx: &ResourceContext,
+        options: &AcquireOptions,
+        slot_identity: &crate::dedup::SlotIdentity,
+        owner: Arc<dyn crate::call::journal::EffectJournal>,
+    ) -> Result<Box<dyn Any + Send + Sync>, Error> {
+        self.handle_any_with_scope(
+            key,
+            ctx,
+            slot_identity,
+            crate::call::UnitScope::from_parts(ctx, options)
+                .journaled(owner, slot_identity.clone()),
         )
     }
 
     /// Resolves one erased row under the supplied unit authority.
-    fn managed_row_any_with_scope(
+    fn handle_any_with_scope(
         &self,
         key: &ResourceKey,
         ctx: &ResourceContext,
@@ -477,12 +504,12 @@ impl Manager {
                     target: "nebula.resource",
                     %key,
                     ?slot_identity,
-                    "managed_row_any: row facade resolved"
+                    "handle_any: row facade resolved"
                 );
-                managed.managed_row_any(self.acquire.clone(), ctx, unit_scope)
+                managed.resource_handle_any(self.acquire.clone(), ctx, unit_scope)
             },
             AcquireLookupOutcome::NotFound => {
-                tracing::debug!(target: "nebula.resource", %key, "managed_row_any: not found");
+                tracing::debug!(target: "nebula.resource", %key, "handle_any: not found");
                 Err(Error::not_found(key))
             },
             AcquireLookupOutcome::Ambiguous { rows } => {
@@ -490,7 +517,7 @@ impl Manager {
                     target: "nebula.resource",
                     %key,
                     rows,
-                    "managed_row_any: ambiguous scope/slot identity"
+                    "handle_any: ambiguous scope/slot identity"
                 );
                 Err(Self::ambiguous_row_error(key, rows))
             },

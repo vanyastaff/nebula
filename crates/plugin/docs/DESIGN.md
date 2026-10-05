@@ -140,29 +140,35 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 
 ## 6. Известные напряжения / долг
 
-1. **`plugin_toml` vs in-process модель (противоречие).** Doc-комментарий
-   `src/plugin_toml.rs:8-10` говорит про «spawning the plugin binary», IPC round-trip,
-   wire protocol — наследие out-of-process модели, retired ADR-0091. README:51 при
-   этом заявляет «Not responsible for `plugin.toml` parsing… belongs to pre-compile
-   tooling (`cargo-nebula`)» — прямое противоречие с наличием `pub mod plugin_toml`
-   в этом же крейте. Нужно решение: либо парсер уезжает в tooling, либо doc/README выправляются.
-2. **Frozen epoch ещё не operational.** Identity/immutability vocabulary default-public, но
-   compiler, admission, persisted routing и exact-flavor dispatch пока не потребляют его end to
-   end; поэтому общий статус остаётся `partial`.
-3. **README vs сигнатуры.** README:32 пишет `actions() -> Vec<Arc<dyn Action>>` и
-   `resources() -> Vec<Arc<dyn AnyResource>>`; в коде — `ActionFactory`
-   (`src/plugin.rs:40`) и `ResourceDescriptor` (`src/plugin.rs:56`). Документация
-   отстаёт от фактических dyn-поверхностей.
-4. **Обрубленные doc-комментарии** (следы вычищенных ссылок на план):
-   `src/plugin_toml.rs:1` «parsing per» (оборвано), `src/plugin.rs:37-39`
-   («per …\n\n is `Sized`…»), `src/resolved_plugin.rs:10` «See and `docs/pitfalls.md`»,
-   `src/manifest.rs:1` «canonical in `nebula-metadata` ( follow-up,».
-5. **Двойная stringly-поверхность ключа credential.** `resolved_plugin.rs:157-160`
-   сознательно игнорирует `AnyCredential::credential_key()` (`&str` из `KEY` const)
-   в пользу типизированного `metadata().base.key()` — две поверхности ключа сосуществуют
-   в `nebula-credential` (см. §7).
-6. **`lib.rs:16-17`** описывает `PluginManifest` как локальный тип с builder API,
-   не упоминая, что это re-export — мелочь, но вводит в заблуждение.
+Сверено с деревом 2026-09-29. Пункты 1–4 и 6 закрыты, пункт 5 принят с обоснованием.
+
+1. **`plugin_toml` vs in-process модель — закрыто.** Решение: парсер остаётся в крейте
+   (маркер `plugin.toml` читается без компиляции плагина для pre-compile tooling), а не
+   уезжает в отдельный крейт: у него нет runtime-потребителей, он небольшой и покрыт
+   `tests/plugin_toml_parse.rs`. Doc-комментарии `src/plugin_toml.rs` и README переписаны под
+   in-process реальность (ADR-0091): нет spawn процесса, IPC и wire-протокола; парсинг —
+   не подпись и не аутентификация (canon §12.6). Ни один крейт больше не заявляет non-goal,
+   который реализует.
+2. **Frozen epoch — «ещё не operational» устарело.** Замороженный реестр уже потребляется
+   downstream-крейтами: `FrozenPluginRegistry` / `WorkerFlavorRevision` используются activation, persisted
+   plan/flavor каталогами, server-материализацией и exact-flavor dispatch
+   (`crates/engine/src/daemon/routing.rs`, `control_consumer.rs`, `execution_sink.rs`;
+   контрактные тесты в `crates/api/tests/activation_diagnostic_contract*`). Строка статуса в
+   `docs/MATURITY.md` не меняется здесь: переход в `stable` требует end-to-end доказательства
+   на Phase-5 плагине и зависит от других задач (см. §8.1).
+3. **README vs сигнатуры — закрыто (устаревший пункт).** README перечисляет
+   `actions() -> Vec<Arc<dyn ActionFactory>>`, `credentials() -> Vec<Arc<dyn AnyCredential>>`,
+   `resources() -> Vec<Arc<dyn ResourceFactory>>`, что совпадает с `src/plugin.rs`.
+4. **Обрубленные doc-комментарии — закрыто.** Оборванные заголовки `src/plugin_toml.rs:1` и
+   `src/manifest.rs:1` восстановлены; `src/plugin.rs` и `src/resolved_plugin.rs` уже были
+   исправлены ранее.
+5. **Двойная поверхность ключа credential — принято, схлопнется с credential-rewrite.**
+   `ResolvedPlugin::from` теперь читает обе поверхности (`credential_key()` и типизированный
+   `metadata().base.key()`) и **сверяет** их: расхождение — `PluginError::ComponentKeyMismatch`.
+   Дрейф между поверхностями невозможен молча; сама двойная поверхность живёт в
+   `nebula-credential` и уходит вместе с единым каноническим ключом (см. §7, §8.3).
+6. **`lib.rs` и `PluginManifest` — закрыто.** Модульная документация теперь говорит, что тип
+   канонически живёт в `nebula-metadata` и лишь re-export'ится здесь.
 
 ## 7. Роль в пост-0092 credential/resource модели
 
@@ -204,15 +210,12 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 
 1. **Довести frozen epoch до production consumption.** Статус может уйти из `partial` только
    после end-to-end adoption compiler, admission, persisted routing и exact-flavor dispatch.
-2. **Судьба `plugin_toml`.** Решить противоречие §6.1: либо парсер `plugin.toml`
-   переезжает в pre-compile tooling (`cargo-nebula`) согласно README/canon §7.1, либо
-   doc-комментарий с IPC/wire-наследием переписывается под in-process реальность.
-   Сейчас `pub mod plugin_toml` существует вопреки заявленному non-goal.
+2. **Судьба `plugin_toml` — решено (§6.1).** Парсер остаётся в крейте как маркер для
+   pre-compile tooling; документация приведена в соответствие in-process модели.
 3. **Финализировать key-поверхность вслед за credential-rewrite.** Когда
    `nebula-credential` схлопнёт двойную key-поверхность, убрать комментарий-обоснование
    в resolved_plugin.rs:157-160 и зафиксировать единственный канонический ключ.
-4. **Очистить обрубленные doc-комментарии** (§6.4) — следы вычищенных plan-ссылок,
-   ломают rustdoc-читаемость; не оставлять plan-id в коде.
+4. **Обрубленные doc-комментарии — очищены (§6.4).** Не оставлять plan-id в коде.
 5. **Риск каскада dyn-поверхностей.** Поскольку три метода `Plugin` буквально возвращают
    `Arc<dyn ...>` нижних крейтов, любой breaking-change их трейт-объектов ломает компиляцию
    здесь. Это приемлемо (крейт internal, sole-public-sdk), но `ResolvedPlugin`/`PluginRegistry`

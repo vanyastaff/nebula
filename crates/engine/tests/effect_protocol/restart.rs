@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy)]
-enum Backend {
+pub(super) enum Backend {
     Memory,
     Sqlite,
     Postgres,
@@ -9,7 +9,7 @@ enum Backend {
 
 /// Wall clock plus a test-controlled offset, so an in-memory lease can be
 /// aged past its TTL without waiting while everything else keeps real time.
-struct OffsetClock(parking_lot::Mutex<chrono::Duration>);
+pub(super) struct OffsetClock(parking_lot::Mutex<chrono::Duration>);
 
 impl nebula_core::accessor::Clock for OffsetClock {
     fn now(&self) -> chrono::DateTime<chrono::Utc> {
@@ -21,7 +21,7 @@ impl nebula_core::accessor::Clock for OffsetClock {
     }
 }
 
-enum Database {
+pub(super) enum Database {
     Memory {
         core: Arc<nebula_storage::InMemoryExecutionStore>,
         clock: Arc<OffsetClock>,
@@ -38,7 +38,7 @@ enum Database {
 }
 
 impl Database {
-    async fn open(backend: Backend) -> Option<Self> {
+    pub(super) async fn open(backend: Backend) -> Option<Self> {
         Some(match backend {
             Backend::Memory => {
                 let clock = Arc::new(OffsetClock(parking_lot::Mutex::new(
@@ -93,14 +93,14 @@ impl Database {
             },
         })
     }
-    fn ports(&self) -> Ports {
+    pub(super) fn ports(&self) -> Ports {
         match self {
             Self::Memory { core, .. } => Ports::memory_core(core.clone()),
             Self::Sqlite { pool, .. } => Ports::sqlite(pool.clone()),
             Self::Postgres { pool, .. } => Ports::postgres(pool.clone()),
         }
     }
-    async fn reconnect(&mut self) -> Ports {
+    pub(super) async fn reconnect(&mut self) -> Ports {
         match self {
             Self::Memory { .. } => {},
             Self::Sqlite { pool, options, .. } => {
@@ -129,7 +129,7 @@ impl Database {
     /// the wall clock: the backend's own lease clock decides liveness, so the
     /// deadline itself is moved into the past (the in-memory store's clock is
     /// moved forward instead). A released lease is untouched.
-    async fn expire_abandoned_leases(&self) {
+    pub(super) async fn expire_abandoned_leases(&self) {
         match self {
             Self::Memory { clock, .. } => {
                 let ttl =

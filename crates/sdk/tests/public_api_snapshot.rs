@@ -148,14 +148,14 @@ fn sdk_resource_signatures() {
 }
 
 /// The managed call facade reaches the instance only through a granted
-/// attempt: neither the facade nor a unit derefs.
+/// attempt: a submission does not deref.
 #[test]
-fn managed_and_unit_have_no_deref() {
+fn submission_has_no_deref() {
     let text = resource_signatures(&workspace());
-    for (item, method) in [
-        ("nebula_resource::call::managed::Managed", "pub fn submit<"),
-        ("nebula_resource::call::managed::Unit", "pub fn cancel("),
-    ] {
+    for (item, method) in [(
+        "nebula_resource::call::managed::Submission",
+        "pub fn cancel(",
+    )] {
         let lines = section(&text, item);
         assert!(
             lines.iter().any(|line| line.contains(method)),
@@ -173,19 +173,19 @@ fn managed_and_unit_have_no_deref() {
 /// The per-unit checkout facade holds no instance: it neither derefs nor
 /// exposes one, and sessions borrow theirs only inside the body.
 #[test]
-fn managed_row_has_no_deref() {
+fn resource_handle_has_no_deref() {
     let text = resource_signatures(&workspace());
-    let lines = section(&text, "nebula_resource::call::row::ManagedRow");
+    let lines = section(&text, "nebula_resource::call::row::ResourceHandle");
     for method in ["pub fn submit<", "pub fn session<"] {
         assert!(
             lines.iter().any(|line| line.contains(method)),
-            "ManagedRow's `{method}` must be rendered: {lines:#?}"
+            "ResourceHandle's `{method}` must be rendered: {lines:#?}"
         );
     }
     for line in &lines {
         assert!(
             !(line.starts_with("impl") && line.contains("Deref")),
-            "ManagedRow must not deref: {line}"
+            "ResourceHandle must not deref: {line}"
         );
     }
 }
@@ -220,45 +220,79 @@ fn the_http_adapter_leaks_no_client_type() {
     );
 }
 
-/// Pins the walker to the facts the snapshot exists to show.
+/// Raw leases are host-only since 0.27.0: neither `ResourceGuard` (nor its
+/// `ReleaseOutcome`) nor the `Lease` facade is exported, and no exported
+/// signature names one — the streamed HTTP exchange takes a resource handle.
 #[test]
-fn limited_has_no_deref_and_marks_interim_calls() {
-    let text = resource_signatures(&workspace());
-    let limited = section(&text, "nebula_resource::rate_limit::Limited");
-    assert!(
-        limited
-            .iter()
-            .any(|line| line.contains("pub async fn run<")),
-        "Limited's inherent methods must be rendered: {limited:#?}"
-    );
-    for line in &limited {
-        assert!(
-            !(line.starts_with("impl") && line.contains("Deref")),
-            "Limited must not deref to its client: {line}"
-        );
+fn raw_leases_are_not_exported() {
+    let workspace = workspace();
+    let exported = export_map(&workspace);
+    for module in ["integration::resource", "prelude"] {
+        for removed in ["ResourceGuard", "ReleaseOutcome", "Lease"] {
+            let path = format!("nebula_sdk::{module}::{removed} ");
+            assert!(
+                !exported.lines().any(|line| line.starts_with(&path)),
+                "`{module}::{removed}` must no longer be exported"
+            );
+        }
     }
-    assert!(
-        text.contains("\n## struct nebula_resource::rate_limit::Limited [interim]\n"),
-        "Limited itself is documented as interim surface"
-    );
-    assert!(
-        limited.iter().any(|line| line.starts_with("#[deprecated")),
-        "Limited is deprecated in favour of the managed call facade: {limited:#?}"
-    );
-    for method in [
-        "fn run<",
-        "fn run_until<",
-        "fn run_for<",
-        "fn run_for_until<",
-        "fn unlimited(",
+    let text = resource_signatures(&workspace);
+    for removed in ["ResourceGuard<", "Lease<"] {
+        // A whole identifier only: `RetainedLease<` is a topology type.
+        let named = text
+            .match_indices(removed)
+            .any(|(at, _)| at == 0 || !text.as_bytes()[at - 1].is_ascii_alphanumeric());
+        assert!(!named, "no exported signature may name `{removed}`");
+    }
+    for item in [
+        "nebula_sdk::integration::resource::http::stream::open_stream",
+        "nebula_sdk::integration::resource::http::stream::open_stream_until",
     ] {
-        let line = limited
-            .iter()
-            .find(|line| line.contains(method))
-            .unwrap_or_else(|| panic!("Limited has no `{method}`"));
+        let lines = section(&text, item);
         assert!(
-            line.ends_with("[interim]"),
-            "{method} must be [interim]: {line}"
+            lines
+                .iter()
+                .any(|line| line.contains("handle: &ResourceHandle<R>")),
+            "{item} must take a resource handle: {lines:#?}"
         );
     }
+}
+
+/// The `Limited` closure family is removed (MIGRATION P10): nothing of it is
+/// exported, and the limiter no longer wraps a client.
+#[test]
+fn the_limited_closure_family_is_gone() {
+    let workspace = workspace();
+    let exported = export_map(&workspace);
+    for removed in [
+        "Limited",
+        "LimitedError",
+        "Throttle",
+        "NoThrottle",
+        "OnError",
+        "on_error",
+        "Verdict",
+    ] {
+        let path = format!("nebula_sdk::integration::resource::{removed} ");
+        assert!(
+            !exported.lines().any(|line| line.starts_with(&path)),
+            "`{removed}` must no longer be exported"
+        );
+    }
+    let text = resource_signatures(&workspace);
+    let limiter = section(&text, "nebula_resource::rate_limit::ResourceLimiter");
+    assert!(
+        limiter
+            .iter()
+            .any(|line| line.contains("pub async fn ready(")),
+        "ResourceLimiter's inherent methods must be rendered: {limiter:#?}"
+    );
+    assert!(
+        !limiter.iter().any(|line| line.contains("fn wrap")),
+        "ResourceLimiter must not wrap a client: {limiter:#?}"
+    );
+    assert!(
+        !text.contains("[interim]"),
+        "no resource surface is interim any more"
+    );
 }

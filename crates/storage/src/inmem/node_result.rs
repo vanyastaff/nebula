@@ -1,8 +1,7 @@
-//! In-memory `NodeResultStore` + `CheckpointStore`.
+//! In-memory `NodeResultStore`.
 //!
-//! These back the engine's resume seam (node outputs/results +
-//! workflow input) and the stateful-action checkpoint optimisation
-//! (spec-16 §11.5). Each is its own `parking_lot::Mutex`-guarded map keyed
+//! This backs the engine's resume seam (node outputs/results + workflow
+//! input). Each slot is a `parking_lot::Mutex`-guarded map keyed
 //! by `(scope, execution_id, node_id)` so a cross-tenant read can never
 //! observe another tenant's payload — the same isolation predicate the SQL
 //! backends enforce with `WHERE workspace_id = ? AND org_id = ?`.
@@ -19,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nebula_storage_port::dto::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
-use nebula_storage_port::store::{CheckpointStore, NodeResultStore};
+use nebula_storage_port::store::NodeResultStore;
 use nebula_storage_port::{Scope, StorageError};
 use parking_lot::Mutex;
 
@@ -226,52 +225,5 @@ impl NodeResultStore for InMemoryNodeResultStore {
             },
             None => Ok(None),
         }
-    }
-}
-
-/// In-memory stateful-action checkpoint store.
-///
-/// Best-effort by contract: a missing checkpoint means "replay from the
-/// last committed state", never data loss — the authoritative state is the
-/// execution row written through the transition batch.
-#[derive(Debug, Default, Clone)]
-pub struct InMemoryCheckpointStore {
-    inner: Arc<Mutex<HashMap<NodeKey, serde_json::Value>>>,
-}
-
-impl InMemoryCheckpointStore {
-    /// Create an empty store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-#[async_trait::async_trait]
-impl CheckpointStore for InMemoryCheckpointStore {
-    async fn save_stateful_checkpoint(
-        &self,
-        scope: &Scope,
-        execution_id: &str,
-        node_id: &str,
-        checkpoint: serde_json::Value,
-    ) -> Result<(), StorageError> {
-        self.inner
-            .lock()
-            .insert(node_key(scope, execution_id, node_id), checkpoint);
-        Ok(())
-    }
-
-    async fn load_stateful_checkpoint(
-        &self,
-        scope: &Scope,
-        execution_id: &str,
-        node_id: &str,
-    ) -> Result<Option<serde_json::Value>, StorageError> {
-        Ok(self
-            .inner
-            .lock()
-            .get(&node_key(scope, execution_id, node_id))
-            .cloned())
     }
 }

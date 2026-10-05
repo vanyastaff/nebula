@@ -78,6 +78,8 @@ impl OperationLedger for ScopedOperationLedger {
             destination: binding.destination,
             contract: binding.contract,
             provider_key: binding.provider_key,
+            concurrent_with: binding.concurrent_with,
+            observation: binding.observation,
         };
         self.inner.prepare(&scoped_binding, fencing).await
     }

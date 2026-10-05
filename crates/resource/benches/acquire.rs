@@ -430,30 +430,33 @@ fn bench_strict_credential_admission(c: &mut Criterion) {
     group.finish();
 }
 
-/// One free attempt on the bound resident, settled `Sent`.
+/// One free answered call on the bound resident.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OneAttempt;
 
 impl nebula_resource::call::Operation<BoundResident> for OneAttempt {
     type Output = u64;
+    const KEY: &'static str = "bench.one_attempt";
 
     async fn run(
         self,
-        cx: &mut nebula_resource::call::OpCx<'_, BoundResident>,
-    ) -> Result<u64, nebula_resource::call::OpError> {
-        let attempt = cx.attempt(nebula_resource::call::Cost::FREE).await?;
-        let instance = *attempt.instance();
-        attempt.settle(nebula_resource::call::SentState::Sent);
-        Ok(instance)
+        cx: &mut nebula_resource::call::OperationCx<'_, BoundResident>,
+    ) -> Result<u64, nebula_resource::call::OperationError> {
+        cx.call(nebula_resource::call::Cost::FREE, async |instance, _| {
+            Ok(*instance)
+        })
+        .await
     }
 }
 
-/// `attempt_bound_interim` vs `attempt_bound_strict`: one managed unit of
-/// one free attempt on a lease already turned into a facade, on an interim
+/// `handle_attempt_bound_interim` vs `handle_attempt_bound_strict`: one
+/// managed unit of one free attempt on a row handle of a warm resident (each
+/// attempt checks the resident out and releases it), on an interim
 /// manager (lock-free registration, no read) and on a strict one (a read
 /// through an in-memory observer that answers at once, then registration
 /// under `Manager.admission`). The difference is the per-attempt strict
-/// overhead beyond the read itself; the unit's own task spawn is common to
-/// both.
+/// overhead beyond the read itself; the unit's own task spawn and its
+/// per-attempt checkout are common to both.
 fn bench_strict_attempt_admission(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -473,10 +476,10 @@ fn bench_strict_attempt_admission(c: &mut Criterion) {
             })
             .expect("register bound resident");
         let managed = manager
-            .acquire_resident::<BoundResident>(&bench_ctx(), &AcquireOptions::default())
-            .await
-            .expect("bound resident acquire")
-            .into_managed();
+            .handle::<BoundResident>(&bench_ctx())
+            .expect("bound resident handle");
+        // Warm the resident so the measured attempts never create it.
+        managed.submit(OneAttempt).await.expect("warm the resident");
         (manager, managed)
     };
     let (interim, strict) = rt.block_on(async {
@@ -490,8 +493,8 @@ fn bench_strict_attempt_admission(c: &mut Criterion) {
     });
 
     for (name, (_manager, managed)) in [
-        ("attempt_bound_interim", &interim),
-        ("attempt_bound_strict", &strict),
+        ("handle_attempt_bound_interim", &interim),
+        ("handle_attempt_bound_strict", &strict),
     ] {
         group.bench_function(name, |b| {
             b.to_async(&rt).iter(|| async {
@@ -504,39 +507,40 @@ fn bench_strict_attempt_admission(c: &mut Criterion) {
     group.finish();
 }
 
-/// One free attempt on the keep-pool, settled `Sent`.
+/// One free answered call on the keep-pool.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PooledAttempt;
 
 impl nebula_resource::call::Operation<KeepPool> for PooledAttempt {
     type Output = u64;
+    const KEY: &'static str = "bench.pooled_attempt";
 
     async fn run(
         self,
-        cx: &mut nebula_resource::call::OpCx<'_, KeepPool>,
-    ) -> Result<u64, nebula_resource::call::OpError> {
-        let attempt = cx.attempt(nebula_resource::call::Cost::FREE).await?;
-        let instance = *attempt.instance();
-        attempt.settle(nebula_resource::call::SentState::Sent);
-        Ok(instance)
+        cx: &mut nebula_resource::call::OperationCx<'_, KeepPool>,
+    ) -> Result<u64, nebula_resource::call::OperationError> {
+        cx.call(nebula_resource::call::Cost::FREE, async |instance, ()| {
+            Ok(*instance)
+        })
+        .await
     }
 }
 
-/// `lease_pooled_attempt` vs `row_pooled_attempt`: one managed unit of one
-/// free attempt on a one-connection pool, through a lease facade (the
-/// connection stays checked out between units) and through a row facade
-/// (each attempt passes the row gate, runs the acquire pipeline's
-/// admission — `Manager.admission` held for lock #1 only — checks out the
-/// idle connection and releases it when the attempt ends). The difference
-/// is the price of holding no connection between attempts.
+/// `row_pooled_attempt`: one managed unit of one free attempt on a
+/// one-connection pool through a row facade: each attempt passes the row
+/// gate, runs the acquire pipeline's admission — `Manager.admission` held
+/// for lock #1 only — checks out the idle connection and releases it when
+/// the attempt ends. Compare with `resource/acquire/pooled_hit` for the
+/// facade's overhead over a bare host checkout.
 fn bench_row_attempt(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()
         .expect("bench runtime");
     let mut group = c.benchmark_group("resource/attempt");
-    let one_connection = || {
-        let manager = Manager::new();
-        manager
+    let (row_manager, row) = rt.block_on(async {
+        let row_manager = Manager::new();
+        row_manager
             .register(RegistrationSpec {
                 resource: KeepPool,
                 config: BenchCfg,
@@ -554,36 +558,21 @@ fn bench_row_attempt(c: &mut Criterion) {
                 rate_limit: None,
             })
             .expect("register keep pool");
-        manager
-    };
-    let (lease_manager, lease, row_manager, row) = rt.block_on(async {
-        let lease_manager = one_connection();
-        let lease = lease_manager
-            .acquire_pooled::<KeepPool>(&bench_ctx(), &AcquireOptions::default())
-            .await
-            .expect("pooled acquire")
-            .into_managed();
-        let row_manager = one_connection();
         let row = row_manager
-            .managed_row::<KeepPool>(&bench_ctx())
+            .handle::<KeepPool>(&bench_ctx())
             .expect("row facade");
         // Warm the row's one connection into the idle queue.
         row.submit(PooledAttempt).await.expect("warm the row");
-        (lease_manager, lease, row_manager, row)
+        (row_manager, row)
     });
 
-    group.bench_function("lease_pooled_attempt", |b| {
-        b.to_async(&rt).iter(|| async {
-            black_box(lease.submit(PooledAttempt).await.expect("granted"));
-        });
-    });
     group.bench_function("row_pooled_attempt", |b| {
         b.to_async(&rt).iter(|| async {
             black_box(row.submit(PooledAttempt).await.expect("granted"));
         });
     });
     group.finish();
-    drop((lease, lease_manager, row, row_manager));
+    drop((row, row_manager));
 }
 
 criterion_group!(

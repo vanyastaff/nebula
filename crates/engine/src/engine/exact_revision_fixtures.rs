@@ -86,7 +86,7 @@ pub(super) fn snapshot_registry_counted(
     output: &'static str,
 ) -> (Arc<FrozenPluginRegistry>, Arc<AtomicU32>) {
     let metadata = SnapshotHandler::metadata()
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects);
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly);
     let executions = Arc::new(AtomicU32::new(0));
     runtime_registry
         .register_stateless_instance(

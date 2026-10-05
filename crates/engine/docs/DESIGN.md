@@ -206,8 +206,8 @@ slot/tenant authority; semantic decoupling требует будущей version
 ## 8. Forward design / открытые вопросы
 
 - **Удалить shim-слой (P1).** `credential/mod.rs` уже удалён. Остаётся: при возвращении
-  `rotation.rs` — прямая миграция импортов на канонические пути и удаление shim'а. Память
-  feedback_no_shims прямо требует «replace the wrong thing directly».
+  `rotation.rs` — прямая миграция импортов на канонические пути и удаление shim'а: канон
+  (`docs/PRODUCT_CANON.md`, таблица *is / is not*) не допускает compatibility shims.
 - **Активация сохранённых ресурсов (2026-09-23).** `StoredResourceActivator`
   (`src/resource/activation.rs`, подключается `with_stored_resources`) лениво, по одной строке,
   регистрирует в `Manager` строки `ResourceStore`, которые называет манифест привязок durable-хода:

@@ -20,8 +20,227 @@ fn current_schema_policy_uses_its_own_plan_envelope() {
 }
 
 #[test]
-fn current_compiler_epoch_identifies_property_semantics() {
-    assert_eq!(PlanEpoch::CURRENT.compiler_version(), 5);
+fn a_frozen_read_only_effect_record_keeps_its_wire_tag() {
+    use crate::plan_effect::RecordedActionEffectV1;
+
+    let frozen = json!("NoExternalEffects");
+    let decoded: RecordedActionEffectV1 = serde_json::from_value(frozen.clone()).unwrap();
+    assert!(decoded == RecordedActionEffectV1::ReadOnly);
+    assert_eq!(serde_json::to_value(&decoded).unwrap(), frozen);
+    assert!(serde_json::from_value::<RecordedActionEffectV1>(json!("ReadOnly")).is_err());
+}
+
+#[test]
+fn a_journaled_effect_record_round_trips_and_rejects_unknown_protocols() {
+    use crate::plan_effect::RecordedActionEffectV1;
+    use nebula_action::{JournalProtocol, effect::ActionEffectContract};
+
+    let contract = ActionEffectContract::Journaled(JournalProtocol::V1);
+    let recorded = RecordedActionEffectV1::project(&contract).unwrap();
+    let wire = serde_json::to_value(&recorded).unwrap();
+    assert_eq!(wire, json!({ "Journaled": { "protocol_version": 1 } }));
+    let decoded: RecordedActionEffectV1 = serde_json::from_value(wire).unwrap();
+    assert!(decoded == recorded);
+    assert_eq!(decoded.checked_contract().unwrap(), contract);
+
+    let future: RecordedActionEffectV1 =
+        serde_json::from_value(json!({ "Journaled": { "protocol_version": 2 } })).unwrap();
+    assert!(future.checked_contract().is_err());
+    assert!(
+        serde_json::from_value::<RecordedActionEffectV1>(
+            json!({ "Journaled": { "protocol_version": 1, "extra": true } })
+        )
+        .is_err()
+    );
+    assert!(serde_json::from_value::<RecordedActionEffectV1>(json!("Undeclared")).is_err());
+}
+
+#[test]
+fn current_compiler_epoch_identifies_property_semantics_with_journaled_effects_and_agents() {
+    assert_eq!(PlanEpoch::CURRENT.compiler_version(), 7);
+    assert_eq!(PlanEpoch::CURRENT.canonical_hash_version(), 3);
+    assert!(PlanEpoch::CURRENT.records_journaled_effects());
+    assert!(PlanEpoch::CURRENT.records_agent_kind());
+    assert!(!PlanEpoch::GraphV5.records_journaled_effects());
+    assert!(PlanEpoch::GraphV6.records_journaled_effects());
+    for epoch in [
+        PlanEpoch::GraphV1,
+        PlanEpoch::GraphV3,
+        PlanEpoch::GraphV4Legacy,
+        PlanEpoch::GraphV4,
+        PlanEpoch::GraphV5,
+        PlanEpoch::GraphV6,
+    ] {
+        assert!(!epoch.records_agent_kind());
+    }
+    assert_eq!(
+        PlanEpoch::from_record(COMPILER_VERSION_GRAPH_V5, CANONICAL_HASH_VERSION_V3),
+        Some(PlanEpoch::GraphV5),
+        "epoch-5 records stay readable"
+    );
+    assert_eq!(
+        PlanEpoch::from_record(COMPILER_VERSION_GRAPH_V6, CANONICAL_HASH_VERSION_V3),
+        Some(PlanEpoch::GraphV6),
+        "epoch-6 records stay readable"
+    );
+}
+
+/// `effect_epoch_record` with its action recorded as an agent.
+fn agent_epoch_record(
+    epoch: PlanEpoch,
+    effect: crate::plan_effect::RecordedActionEffectV1,
+) -> RecordedExecutablePlanRevisionV1 {
+    let mut record = effect_epoch_record(epoch, effect);
+    record.content.actions[0].kind = RecordedActionKindV1::Agent;
+    reseal(&mut record);
+    record
+}
+
+#[test]
+fn only_the_agent_epoch_admits_an_agent_kind_record() {
+    use crate::plan_effect::RecordedActionEffectV1;
+
+    let journaled = || RecordedActionEffectV1::Journaled {
+        protocol_version: 1,
+    };
+    let current = agent_epoch_record(PlanEpoch::GraphV7, journaled());
+    assert_eq!(
+        current.claimed_id.to_string(),
+        "27547dbf08a4053e91f9c5795fadd8901310f6a84233dd4b1d834418e697eaff",
+        "the epoch-7 Agent record identity is a frozen golden vector"
+    );
+    let encoded = serde_json::to_vec(&current).unwrap();
+    let loaded =
+        ExecutablePlanRevision::try_from_recorded_v1(serde_json::from_slice(&encoded).unwrap())
+            .expect("epoch 7 records agent kinds");
+    assert_eq!(loaded.id(), current.claimed_id);
+    assert_eq!(
+        serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&loaded)).unwrap(),
+        encoded
+    );
+
+    // Earlier epochs froze a kind grammar without Agent: an agent record
+    // relabelled as one of them is never reinterpreted, even with a valid
+    // seal and an effect the epoch's grammar holds.
+    for (epoch, effect) in [
+        (PlanEpoch::GraphV5, RecordedActionEffectV1::ReadOnly),
+        (PlanEpoch::GraphV6, RecordedActionEffectV1::ReadOnly),
+        (PlanEpoch::GraphV6, journaled()),
+    ] {
+        assert_matches!(
+            ExecutablePlanRevision::try_from_recorded_v1(agent_epoch_record(epoch, effect)),
+            Err(ExecutablePlanIntegrityError::NonCanonical {
+                section: "actions.kind"
+            })
+        );
+    }
+    ExecutablePlanRevision::try_from_recorded_v1(agent_epoch_record(
+        PlanEpoch::GraphV7,
+        RecordedActionEffectV1::ReadOnly,
+    ))
+    .expect("epoch 7 records a read-only agent");
+
+    // An agent runs only without capability gating; no compiler records one.
+    let mut gated = agent_epoch_record(PlanEpoch::GraphV7, journaled());
+    gated.content.actions[0].isolation = RecordedIsolationV1::CapabilityGated;
+    reseal(&mut gated);
+    assert_matches!(
+        ExecutablePlanRevision::try_from_recorded_v1(gated),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "actions.isolation"
+        })
+    );
+}
+
+/// `fixture_record` at `epoch` with its action's effect replaced by `effect`.
+fn effect_epoch_record(
+    epoch: PlanEpoch,
+    effect: crate::plan_effect::RecordedActionEffectV1,
+) -> RecordedExecutablePlanRevisionV1 {
+    let mut record = fixture_record();
+    record.compiler_version = epoch.compiler_version();
+    record.canonical_hash_version = epoch.canonical_hash_version();
+    record.content.actions[0].effect_contract = Some(effect);
+    reseal(&mut record);
+    record
+}
+
+#[test]
+fn only_the_journaled_epoch_admits_a_journaled_effect_record() {
+    use crate::plan_effect::RecordedActionEffectV1;
+
+    let journaled = || RecordedActionEffectV1::Journaled {
+        protocol_version: 1,
+    };
+    let current = effect_epoch_record(PlanEpoch::GraphV6, journaled());
+    assert_eq!(
+        current.claimed_id.to_string(),
+        "61ef9b245b264410fe697345dfd5c82571d89bce16ba83372bbf180be41bd607",
+        "the epoch-6 Journaled record identity is a frozen golden vector"
+    );
+    let encoded = serde_json::to_vec(&current).unwrap();
+    let loaded =
+        ExecutablePlanRevision::try_from_recorded_v1(serde_json::from_slice(&encoded).unwrap())
+            .expect("epoch 6 records Journaled effects");
+    assert_eq!(loaded.id(), current.claimed_id);
+    assert_eq!(
+        serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&loaded)).unwrap(),
+        encoded
+    );
+
+    // Epoch 5 froze a grammar without Journaled: the same bytes relabelled
+    // as epoch 5 are never reinterpreted, even with a valid seal.
+    let relabelled = effect_epoch_record(PlanEpoch::GraphV5, journaled());
+    assert_matches!(
+        ExecutablePlanRevision::try_from_recorded_v1(relabelled),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "actions.effects"
+        })
+    );
+
+    // Epoch 5 records read exactly as before.
+    let legacy = effect_epoch_record(PlanEpoch::GraphV5, RecordedActionEffectV1::ReadOnly);
+    let loaded = ExecutablePlanRevision::try_from_recorded_v1(legacy.clone())
+        .expect("an epoch-5 read-only record stays readable");
+    assert_eq!(loaded.id(), legacy.claimed_id);
+}
+
+#[test]
+fn the_epoch_header_refuses_unknown_epochs_before_the_body() {
+    let header = |record: &RecordedExecutablePlanRevisionV1| {
+        serde_json::from_value::<RecordedPlanEpochV1>(serde_json::to_value(record).unwrap())
+            .unwrap()
+    };
+    for epoch in [PlanEpoch::GraphV5, PlanEpoch::GraphV6, PlanEpoch::GraphV7] {
+        let record =
+            effect_epoch_record(epoch, crate::plan_effect::RecordedActionEffectV1::ReadOnly);
+        header(&record).check().unwrap();
+    }
+
+    // A future epoch whose body carries an effect variant this reader's
+    // closed grammar cannot decode is refused by its header alone.
+    let mut future = serde_json::to_value(effect_epoch_record(
+        PlanEpoch::GraphV7,
+        crate::plan_effect::RecordedActionEffectV1::ReadOnly,
+    ))
+    .unwrap();
+    future["compiler_version"] = json!(COMPILER_VERSION_GRAPH_V7 + 1);
+    future["content"]["actions"][0]["effect_contract"] = json!({ "FutureEffect": {} });
+    assert!(serde_json::from_value::<RecordedExecutablePlanRevisionV1>(future.clone()).is_err());
+    let header = serde_json::from_value::<RecordedPlanEpochV1>(future).unwrap();
+    assert_matches!(
+        header.check(),
+        Err(ExecutablePlanIntegrityError::UnsupportedFormat)
+    );
+
+    let mut legacy = fixture_record();
+    legacy.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    assert_matches!(
+        serde_json::from_value::<RecordedPlanEpochV1>(serde_json::to_value(&legacy).unwrap())
+            .unwrap()
+            .check(),
+        Err(ExecutablePlanIntegrityError::UnsupportedSchemaPolicy)
+    );
 }
 
 #[test]
@@ -231,7 +450,7 @@ fn empty_dependencies() -> RecordedDependenciesV1 {
 
 fn minimal_action(dependencies: RecordedDependenciesV1) -> RecordedActionV1 {
     RecordedActionV1 {
-        effect_contract: Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects),
+        effect_contract: Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly),
         key: "demo.echo".into(),
         plugin_key: "demo".into(),
         version: recorded_semver(1, 0, 0),
@@ -510,9 +729,7 @@ fn effect_lookup_distinguishes_current_declarations_from_unknown_actions() {
     assert_eq!(
         plan.action_effect_contract(&ActionKey::new("demo.echo").unwrap())
             .unwrap(),
-        PlanActionEffectContract::Declared(
-            nebula_action::effect::ActionEffectContract::NoExternalEffects
-        )
+        PlanActionEffectContract::Declared(nebula_action::effect::ActionEffectContract::ReadOnly)
     );
     assert_eq!(
         plan.action_effect_contract(&ActionKey::new("demo.missing").unwrap())
@@ -562,6 +779,8 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
         COMPILER_VERSION_GRAPH_V3,
         COMPILER_VERSION_GRAPH_V4,
         COMPILER_VERSION_GRAPH_V5,
+        COMPILER_VERSION_GRAPH_V6,
+        COMPILER_VERSION_GRAPH_V7,
     ] {
         for hash in [
             CANONICAL_HASH_VERSION_V1,
@@ -572,11 +791,15 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
                 let mut record = fixture_record();
                 record.compiler_version = compiler;
                 record.canonical_hash_version = hash;
-                record.content.actions[0].effect_contract = declared
-                    .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+                record.content.actions[0].effect_contract =
+                    declared.then_some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
                 reseal(&mut record);
-                let expected = compiler == COMPILER_VERSION_GRAPH_V5
-                    && hash == CANONICAL_HASH_VERSION_V3
+                let expected = matches!(
+                    compiler,
+                    COMPILER_VERSION_GRAPH_V5
+                        | COMPILER_VERSION_GRAPH_V6
+                        | COMPILER_VERSION_GRAPH_V7
+                ) && hash == CANONICAL_HASH_VERSION_V3
                     && declared;
                 assert_eq!(
                     ExecutablePlanRevision::try_from(record.clone()).is_ok(),
@@ -601,7 +824,7 @@ fn scalar_aware_compiler_epoch_preserves_legacy_schema_bytes() {
     record.compiler_version = COMPILER_VERSION_GRAPH_V4;
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     reseal(&mut record);
     let encoded = serde_json::to_vec(&record).unwrap();
     let decoded: RecordedExecutablePlanRevisionV1 = serde_json::from_slice(&encoded).unwrap();
@@ -630,7 +853,7 @@ fn legacy_empty_record_never_decodes_as_null() {
         (
             COMPILER_VERSION_GRAPH_V3,
             CANONICAL_HASH_VERSION_V2,
-            Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects),
+            Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly),
         ),
     ] {
         let mut record = historical_fixture_record();
@@ -678,8 +901,8 @@ fn scalar_schema_envelopes_require_current_policy_at_every_contract_site() {
                 };
                 record.compiler_version = compiler;
                 record.canonical_hash_version = compiler_epoch_hash(compiler);
-                record.content.actions[0].effect_contract = (compiler != 1)
-                    .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+                record.content.actions[0].effect_contract =
+                    (compiler != 1).then_some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
                 let contract = match site {
                     "input" => &mut record.content.actions[0].input_schema,
                     "output" => &mut record.content.actions[0].output_schema,
@@ -779,7 +1002,7 @@ fn scalar_compiler_does_not_relabel_legacy_record_any_or_union_schema_wire() {
             record.canonical_hash_version = epoch.canonical_hash_version();
             record.content.actions[0].effect_contract = epoch
                 .records_effect_contract()
-                .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+                .then_some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
             record.content.actions[0].output_schema = RecordedSchemaV1::new(schema.clone());
             assert_eq!(
                 record.content.actions[0].output_schema.schema_wire_version,
@@ -834,7 +1057,7 @@ fn effect_plan_hash_uses_new_domain_and_complete_record_projection() {
     record.compiler_version = COMPILER_VERSION_GRAPH_V3;
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V2;
     record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     reseal(&mut record);
     let mut projected = serde_json::to_value(&record).unwrap();
     projected.as_object_mut().unwrap().remove("claimed_id");
@@ -930,7 +1153,7 @@ fn intrinsic_error_edges_cannot_name_a_support_port() {
 fn resealed_error_references_cannot_read_success_only_fields() {
     let mut record = fixture_record();
     record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     record.content.actions[0].input_schema.schema =
         nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
             .expect("valid test catalog definition");
@@ -1038,7 +1261,7 @@ fn unsupported_versions_and_profile_fail_closed() {
     for mutate in [
         |record: &mut RecordedExecutablePlanRevisionV1| record.record_version += 1,
         |record: &mut RecordedExecutablePlanRevisionV1| {
-            record.compiler_version = COMPILER_VERSION_GRAPH_V5 + 1;
+            record.compiler_version = COMPILER_VERSION_GRAPH_V7 + 1;
         },
         |record: &mut RecordedExecutablePlanRevisionV1| record.canonical_hash_version += 1,
     ] {
@@ -1322,7 +1545,7 @@ fn root_rule_record(
     record.canonical_hash_version = epoch.canonical_hash_version();
     record.content.actions[0].effect_contract = epoch
         .records_effect_contract()
-        .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        .then_some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     record.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
             .property(
@@ -1358,6 +1581,8 @@ fn static_root_rules_are_proved_in_current_plans_without_changing_legacy_epochs(
         PlanEpoch::GraphV3,
         PlanEpoch::GraphV4,
         PlanEpoch::GraphV5,
+        PlanEpoch::GraphV6,
+        PlanEpoch::GraphV7,
     ] {
         for value in [json!([]), json!([1])] {
             let record = root_rule_record(
@@ -1369,7 +1594,10 @@ fn static_root_rules_are_proved_in_current_plans_without_changing_legacy_epochs(
             let checked = ExecutablePlanRevision::try_from_recorded_v1(
                 serde_json::from_slice(&encoded).unwrap(),
             );
-            if epoch == PlanEpoch::GraphV5 {
+            if matches!(
+                epoch,
+                PlanEpoch::GraphV5 | PlanEpoch::GraphV6 | PlanEpoch::GraphV7
+            ) {
                 let checked = checked.expect("current plans prove pure root presence predicates");
                 assert_eq!(checked.id(), record.claimed_id);
                 assert_eq!(
@@ -1959,7 +2187,7 @@ fn current_binding_records_distinguish_defaults_from_overrides_without_prefix_in
     default_record.compiler_version = COMPILER_VERSION_GRAPH_V5;
     default_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     default_record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     default_record.bindings[0].slot_key = "auth".into();
     default_record.bindings[0].selector = "auth".into();
     default_record.bindings[0].selector_provenance =
@@ -1971,7 +2199,7 @@ fn current_binding_records_distinguish_defaults_from_overrides_without_prefix_in
     override_record.compiler_version = COMPILER_VERSION_GRAPH_V5;
     override_record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     override_record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     override_record.bindings[0].selector_provenance =
         Some(RecordedBindingSelectorProvenanceV1::CredentialIdOverride);
     reseal(&mut override_record);
@@ -1995,7 +2223,7 @@ fn current_binding_record_rejects_cross_kind_selector_provenance() {
     record.compiler_version = COMPILER_VERSION_GRAPH_V5;
     record.canonical_hash_version = CANONICAL_HASH_VERSION_V3;
     record.content.actions[0].effect_contract =
-        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+        Some(crate::plan_effect::RecordedActionEffectV1::ReadOnly);
     record.bindings[0].selector_provenance =
         Some(RecordedBindingSelectorProvenanceV1::ResourceIdOverride);
     reseal(&mut record);

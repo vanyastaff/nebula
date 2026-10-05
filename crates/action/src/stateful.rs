@@ -34,6 +34,34 @@ use crate::{
 ///
 /// Cancellation is enforced by the runtime (same as
 /// [`StatelessAction`](crate::stateless::StatelessAction)).
+///
+/// # Journaled effects and determinism
+///
+/// Under the default
+/// [`Journaled`](crate::effect::ActionEffectContract::Journaled) contract, on
+/// a durable engine turn, every `Idempotent` or `Write` unit an iteration
+/// submits through a resource handle is recorded in the node's effect
+/// journal under its iteration and position (`it{n}/unit/v1/#{k:06}`). All
+/// iterations run inside one node attempt, and a resumed or retried attempt
+/// replays them from the first: a recorded effect replays its outcome
+/// without a provider call, and the next iteration starts only once the
+/// previous one's units finished.
+///
+/// That makes a journaled stateful action subject to a **determinism
+/// contract**: replayed from [`init_state`](Self::init_state), each
+/// iteration must submit the same effects (operation, version, request,
+/// key part) in the same order. Inputs a replay does not reproduce —
+/// clocks, randomness, reads whose answers changed — diverge from the
+/// recorded effects, and the divergence halts the node as an occurrence
+/// mismatch before a recorded effect is sent again: a changed effect at a
+/// recorded position is refused unsent, a fresh effect below a recorded
+/// one, or above one the replay passed by, is refused unsent, and an
+/// iteration that ends without meeting every effect recorded in it stops
+/// the iterations. Only effects past everything recorded — new work — are
+/// sent. Keep such inputs out of the effects, or
+/// derive them from the state and the recorded outputs. An iteration that
+/// leaves an effect's outcome unknown — even one whose error it swallows —
+/// stops the iterations: no later iteration runs.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not implement StatefulAction",
     note = "implement `init_state` and `execute` methods with matching Input/Output/State types"
@@ -528,19 +556,22 @@ where
     /// Returns [`ActionError::Validation`] if state decoding fails, or propagates
     /// errors from the underlying action.
     ///
-    /// # State checkpointing invariant
+    /// # State write-back
     ///
     /// State mutations performed by the typed action are flushed back to
-    /// `state` **before** any error from `action.execute()` is propagated.
-    /// If the typed action increments a counter or advances a cursor and
-    /// then returns [`ActionError::Retryable`], the engine checkpoints the
-    /// new state — retries resume from the mutated position instead of
-    /// replaying completed work (which would duplicate API calls, double
-    /// charges, and double emits).
+    /// `state` **before** any error from `action.execute()` is propagated,
+    /// so the caller always holds the state the action last wrote. The only
+    /// path that leaves `state` untouched is `Validation` raised while
+    /// deserializing state — in that case `typed_state` was never created
+    /// and cannot have been mutated.
     ///
-    /// The only path that does NOT checkpoint is `Validation` raised while
-    /// deserializing state — in that case `typed_state` was never created and
-    /// cannot have been mutated.
+    /// The engine does **not** checkpoint the state of a failed iteration:
+    /// an iteration that returns an error, `Retryable` included, records
+    /// nothing, and a retry of the node starts from the last iteration that
+    /// returned `Continue` and passed its effect barrier (a journaled
+    /// action's iteration checkpoint), or from `init_state` without one.
+    /// Effects a failed iteration already sent are kept from repeating by
+    /// the node's effect journal, not by its state.
     async fn dispatch(
         &self,
         input: &PreparedActionInput,

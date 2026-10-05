@@ -48,9 +48,7 @@ macro_rules! variant_a_action {
 
             fn metadata() -> ActionMetadataDraft {
                 ActionMetadataDraft::new($key, nebula_action::metadata_name!($name), $desc)
-                    .with_effect_contract(
-                        nebula_action::effect::ActionEffectContract::NoExternalEffects,
-                    )
+                    .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -300,7 +298,7 @@ async fn engine_and_runtime_share_metrics_registry() {
 fn meta(key: ActionKey) -> ActionMetadataDraft {
     let name = key.clone().into();
     ActionMetadataDraft::new(key, name, "integration test handler")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 // ---------------------------------------------------------------------------

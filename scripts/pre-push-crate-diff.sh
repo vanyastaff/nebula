@@ -82,8 +82,10 @@ done
 # package. Test-only feature metadata is intentionally not consulted here.
 cargo check "${package_args[@]}" --all-features --all-targets --quiet
 
+# Mirror the CI Documentation job: default features and private items, so a
+# broken intra-doc link in a private item fails here and not only in CI.
 echo "lefthook: rustdoc -D warnings for selected packages"
-RUSTDOCFLAGS="-D warnings" cargo doc "${package_args[@]}" --no-deps --quiet
+RUSTDOCFLAGS="-D warnings" cargo doc "${package_args[@]}" --no-deps --document-private-items --quiet
 
 package_selected() {
   local wanted="$1"

@@ -254,8 +254,8 @@ jobs:
 
 ## See Also
 
-- [docs/workflow.md](../docs/workflow.md) — Development workflow
-- [docs/contributing.md](../docs/contributing.md) — Contribution standards
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — Contribution standards and commit/PR guidelines
+- [AGENTS.md](../AGENTS.md) — Repository rules, commands, and git workflow
 
 ---
 

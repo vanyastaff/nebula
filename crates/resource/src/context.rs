@@ -27,34 +27,6 @@ impl ResourceAccessor for NoopResourceAccessor {
     fn has(&self, _key: &nebula_core::ResourceKey) -> bool {
         false
     }
-    fn acquire_any(
-        &self,
-        _key: &nebula_core::ResourceKey,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Box<dyn Any + Send + Sync>, nebula_core::CoreError>>
-                + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async {
-            Err(nebula_core::CoreError::CredentialNotConfigured(
-                "resource capability is not configured in ResourceContext".to_owned(),
-            ))
-        })
-    }
-    fn try_acquire_any(
-        &self,
-        _key: &nebula_core::ResourceKey,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Option<Box<dyn Any + Send + Sync>>, nebula_core::CoreError>>
-                + Send
-                + '_,
-        >,
-    > {
-        Box::pin(async { Ok(None) })
-    }
 }
 
 /// No-op [`CredentialAccessor`] for contexts that don't need credential access.
@@ -109,6 +81,9 @@ pub struct ResourceContext {
     /// The limit of the row being created; set by the manager around
     /// `Provider::create` and the topology hooks.
     limits: Option<Arc<ResourceLimiter>>,
+    /// The fingerprint stored with the row's admitted configuration that
+    /// the manager hands a topology hook beside it; set with the limits.
+    config_fingerprint: Option<u64>,
 }
 
 impl ResourceContext {
@@ -123,16 +98,18 @@ impl ResourceContext {
             resources,
             credentials,
             limits: None,
+            config_fingerprint: None,
         }
     }
 
     /// The rate limit of the resource row being created.
     ///
-    /// Wrap the client built in [`Provider::create`](crate::Provider::create)
-    /// with [`ResourceLimiter::wrap`] so every call through it is paced and a
-    /// provider's "slow down" pauses the whole quota. Outside a manager-driven
-    /// create (a hand-built context in a test) this is a detached limiter that
-    /// only honours the pauses it records itself.
+    /// Calls are paced by the managed call facade, not through this handle;
+    /// use it only to
+    /// [`penalize`](ResourceLimiter::penalize) on a signal that does not come
+    /// back from a call. Outside a manager-driven create (a hand-built
+    /// context in a test) this is a detached limiter that only honours the
+    /// pauses it records itself.
     #[must_use]
     pub fn limits(&self) -> Arc<ResourceLimiter> {
         self.limits
@@ -140,14 +117,24 @@ impl ResourceContext {
             .unwrap_or_else(ResourceLimiter::detached)
     }
 
-    /// This context with `limits` attached; shares everything else.
-    pub(crate) fn with_limits(&self, limits: &Arc<ResourceLimiter>) -> Self {
+    /// This context with the row's `limits` and the fingerprint stored with
+    /// the admitted configuration the hooks receive beside it attached;
+    /// shares everything else.
+    pub(crate) fn for_row(&self, limits: &Arc<ResourceLimiter>, config_fingerprint: u64) -> Self {
         Self {
             base: Arc::clone(&self.base),
             resources: Arc::clone(&self.resources),
             credentials: Arc::clone(&self.credentials),
             limits: Some(Arc::clone(limits)),
+            config_fingerprint: Some(config_fingerprint),
         }
+    }
+
+    /// The fingerprint of the configuration a manager-driven topology hook
+    /// received, stored when that configuration was admitted; `None` on a
+    /// hand-built context, where the hook computes it from the config.
+    pub(crate) fn admitted_config_fingerprint(&self) -> Option<u64> {
+        self.config_fingerprint
     }
 
     /// Creates a minimal context for cases that only need scope + cancellation
@@ -166,6 +153,7 @@ impl ResourceContext {
             resources: Arc::new(NoopResourceAccessor),
             credentials: Arc::new(NoopCredentialAccessor),
             limits: None,
+            config_fingerprint: None,
         }
     }
 
@@ -198,7 +186,7 @@ impl ResourceContext {
     /// this returned a [`minimal`](Self::minimal) context, which silently
     /// clobbered the principal to [`Principal::System`], dropped the trace, and
     /// substituted no-op accessors — breaking authz checks, span parentage, and
-    /// nested `ctx.resource::<R>()` calls during creation.
+    /// nested resource or credential lookups during creation.
     ///
     /// The clock is not forwarded — it is not part of the identity and
     /// `BaseContext` is not `Clone` (its clock is boxed); a fresh `SystemClock`
@@ -218,6 +206,7 @@ impl ResourceContext {
             resources: Arc::clone(&self.resources),
             credentials: Arc::clone(&self.credentials),
             limits: self.limits.clone(),
+            config_fingerprint: self.config_fingerprint,
         }
     }
 }
@@ -400,38 +389,6 @@ mod tests {
         impl ResourceAccessor for AlwaysHasAccessor {
             fn has(&self, _key: &nebula_core::ResourceKey) -> bool {
                 true
-            }
-            fn acquire_any(
-                &self,
-                _key: &nebula_core::ResourceKey,
-            ) -> Pin<
-                Box<
-                    dyn Future<Output = Result<Box<dyn Any + Send + Sync>, nebula_core::CoreError>>
-                        + Send
-                        + '_,
-                >,
-            > {
-                Box::pin(async {
-                    Err(nebula_core::CoreError::RegistryInvariant(
-                        "test accessor never resolves",
-                    ))
-                })
-            }
-            fn try_acquire_any(
-                &self,
-                _key: &nebula_core::ResourceKey,
-            ) -> Pin<
-                Box<
-                    dyn Future<
-                            Output = Result<
-                                Option<Box<dyn Any + Send + Sync>>,
-                                nebula_core::CoreError,
-                            >,
-                        > + Send
-                        + '_,
-                >,
-            > {
-                Box::pin(async { Ok(None) })
             }
         }
 

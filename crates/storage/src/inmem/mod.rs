@@ -11,8 +11,10 @@
 mod control_queue;
 mod control_turn;
 mod execution;
+mod execution_fence;
 mod idempotency_store;
 mod identity;
+mod iteration_checkpoint;
 mod job_dispatch;
 mod journal;
 mod node_result;
@@ -35,9 +37,10 @@ pub use identity::{
     InMemoryOrgStore, InMemoryQuotaStore, InMemoryResourceStore, InMemoryTriggerStore,
     InMemoryUserStore, InMemoryWorkspaceStore,
 };
+pub use iteration_checkpoint::InMemoryCheckpointStore;
 pub use job_dispatch::InMemoryJobDispatchQueue;
 pub use journal::InMemoryJournalReader;
-pub use node_result::{InMemoryCheckpointStore, InMemoryNodeResultStore};
+pub use node_result::InMemoryNodeResultStore;
 pub use operation_ledger::InMemoryOperationLedger;
 pub use plan_flavor_catalog::InMemoryPlanFlavorCatalog;
 pub use resource_runtime::InMemoryResourceRuntime;

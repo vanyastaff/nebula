@@ -93,7 +93,7 @@ impl Action for PipelineWitness {
             nebula_action::metadata_name!("PipelineWitness"),
             "Phase 9 e2e pipeline witness",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -251,7 +251,7 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
 fn meta(key: ActionKey) -> ActionMetadataDraft {
     let name = key.clone().into();
     ActionMetadataDraft::new(key, name, "phase9 e2e pipeline test handler")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

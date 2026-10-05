@@ -106,7 +106,7 @@ Action structs hold **only slot fields** (resources + credentials). User-facing 
 ```rust
 use nebula_action::{Action, StatelessAction};
 use nebula_credential::CredentialGuard;
-use nebula_resource::ResourceGuard;
+use nebula_resource::call::ResourceHandle;
 use nebula_schema::Schema;
 use serde::{Deserialize, Serialize};
 
@@ -133,7 +133,7 @@ struct MessageId(i64);
 )]
 struct SendTelegram {
     #[resource(key = "bot")]
-    bot: ResourceGuard<TelegramBot>,
+    bot: ResourceHandle<TelegramBot>,
     #[credential(key = "auth")]
     token: CredentialGuard<<TelegramCredential as nebula_credential::Credential>::Scheme>,
 }
@@ -144,11 +144,22 @@ impl StatelessAction for SendTelegram {
         input: SendTelegramInput,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<nebula_action::ActionResult<MessageId>, nebula_action::ActionError> {
-        let id = self.bot.send(input.chat_id, &input.text, &self.token).await?;
+        // `SendMessage` is the bot's `Operation` (`EFFECT = Effect::Write`): the
+        // unit checks out the client per attempt and the engine journals it.
+        let id = self
+            .bot
+            .submit(SendMessage { chat_id: input.chat_id, text: input.text })
+            .await?;
         Ok(nebula_action::ActionResult::ok(MessageId(id)))
     }
 }
 ```
+
+A `#[resource]` field holds a `ResourceHandle<R>` (or `Option<ResourceHandle<R>>`) —
+since 0.27.0 the only resource capability an action can name. A `ResourceGuard<R>`
+slot is refused at compile time ("`ResourceGuard<T>` slots were removed in 0.27.0;
+hold `ResourceHandle<T>` — a lease bypasses the effect journal"); raw leases stay a
+host-only capability of the resource manager and the engine.
 
 **Why slots-only on `Self`?** Eliminates `self.text` vs `input.text` ambiguity at compile time. `Self` carries deps; `Self::Input` carries form data. Single source of truth per field.
 
@@ -156,12 +167,14 @@ impl StatelessAction for SendTelegram {
 
 | Field type | Semantics |
 |---|---|
-| `ResourceGuard<R>` / `CredentialGuard<C::Scheme>` | required + eager |
-| `Option<ResourceGuard<R>>` / `Option<CredentialGuard<C::Scheme>>` | optional + eager |
-| `Lazy<ResourceGuard<R>>` / `Lazy<CredentialGuard<C::Scheme>>` | required + lazy (`.get(ctx).await`) |
-| `Option<Lazy<…>>` | optional + lazy |
+| `ResourceHandle<R>` / `CredentialGuard<C::Scheme>` | required (a handle checks nothing out at resolution) |
+| `Option<ResourceHandle<R>>` / `Option<CredentialGuard<C::Scheme>>` | optional |
+| `Lazy<CredentialGuard<C::Scheme>>` | required + lazy (`.get(ctx).await`) — credential slots only |
+| `Option<Lazy<CredentialGuard<C::Scheme>>>` | optional + lazy — credential slots only |
 
-`Lazy<X>` uses `nebula_core::sync::Lazy` (cancel-safe `tokio::sync::OnceCell`).
+`Lazy<X>` uses `nebula_core::sync::Lazy` (cancel-safe `tokio::sync::OnceCell`). A
+`ResourceHandle<R>` acquires nothing to defer, so `Lazy<ResourceHandle<R>>` is refused;
+`ResourceGuard<R>` in any wrapper is refused with the 0.27.0 migration hint.
 
 > **Note** — `#[credential]` slot fields hold `CredentialGuard<C::Scheme>` (the projected auth scheme), not `CredentialGuard<C>` (the credential type). The framework projects state→scheme before populating the slot. The `key` attribute names the slot; binding to a concrete `CredentialId` per workflow node uses the ADR-0042 hybrid mechanism (default = slot key, explicit override via `node.slot_bindings`).
 
@@ -180,7 +193,7 @@ pub trait FromWorkflowNode: Sized + Send + 'static {
 }
 ```
 
-`#[derive(Action)]` emits the body — read `node.resource_binding(slot)` / `node.credential_binding(slot)` (falling back to the slot's `default_id`), call `ctx.acquire_resource_by_id::<R>(id)` / `ctx.resolve_credential_by_id::<C>(id)`, assemble `Self`. Plugin authors never write the body by hand.
+`#[derive(Action)]` emits the body — read `node.resource_binding(slot)` / `node.credential_binding(slot)` (an unbound resource slot falls back to the provider's contract key, a credential slot resolves by its slot key), call `ctx.resource_handle_by_id::<R>(id)` (`try_resource_handle_by_id` for an optional slot) / `ctx.resolve_credential_by_id::<C>(id)`, assemble `Self`. Plugin authors never write the body by hand.
 
 ### Engine-side dispatch — `ActionFactory` + `ActionHandle`
 
@@ -191,7 +204,7 @@ Because `Action: Sized` is not object-safe, the engine's registry holds `Arc<dyn
 | `StatelessHandle` | `StatelessHandler` (legacy) |
 | `StatefulHandle`  | `StatefulActionAdapter<A>` |
 | `TriggerHandle`   | `TriggerHandler` |
-| `ResourceHandle`  | `ResourceHandler` |
+| `ResourceActionHandle` | `ResourceHandler` |
 | `ControlHandle`   | dyn control flow |
 
 Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, …) wrap any `A: Action + FromWorkflowNode + StatelessAction` (etc.) into an `ActionFactory` automatically — see `crates/action/src/factory.rs`.
@@ -206,11 +219,11 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 - `ActionResult` — execution result with flow-control intent (Success, Skip, Branch, Wait, Stop, Fail).
 - `ActionOutput` — first-class output type: inline value, blob ref, stream.
 - `ActionError`, `RetryHintCode` — typed error distinguishing retryable from fatal.
-- `Context`, `ActionContext`, `TriggerContext`, `ActionContextExt` — execution context traits + extension helpers (`acquire_resource_by_id`, `resolve_credential_by_id`).
+- `Context`, `ActionContext`, `TriggerContext`, `ActionContextExt` — execution context traits + extension helpers (`resource_handle_by_id`, `try_resource_handle_by_id`, `resolve_credential_by_id`). `ActionRuntimeContext::has_resource` checks a key; there is no raw resource accessor on the context since 0.27.0.
 - `Dependencies`, `SlotField`, `SlotKind` (re-exported from `nebula-core`) — declarative slot metadata.
 - `WebhookConfig`, `SignaturePolicy`, `RequiredPolicy`, `SignatureScheme` — ADR-0022 signature enforcement.
 - `IsolationLevel`, `ActionKind` — in-process capability gating and node-taxonomy classification (also drives UI grouping / validation / audit).
-- `TestContextBuilder`, `StatefulTestHarness`, `TriggerTestHarness`, `SpyEmitter`, `SpyLogger`, `SpyScheduler` — testing utilities.
+- `TestContextBuilder`, `StatefulTestHarness`, `TriggerTestHarness`, `SpyEmitter`, `SpyLogger`, `SpyScheduler` — testing utilities. To unit-test an action with resource slots, register the rows on a real `nebula_resource::Manager` and pass it to `TestContextBuilder::with_resource_manager`: the built context serves `ResourceHandle<R>`s by key (unbound slot identity, bound to the context's cancellation). Test handles carry library effect semantics — every unit runs, unjournaled; assert the engine's journaled / read-only routing in an engine test.
 
 ### Macros
 
@@ -220,7 +233,7 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 
 ## Migration recipe (pre-v4 → v4)
 
-The v4 surface is a hard break per `feedback_no_shims.md` / `feedback_hard_breaking_changes.md`. There is no automated codemod; migrate by hand:
+The v4 surface is a hard break: no compatibility shims preserve the old shapes (see the *Nebula is / is not* table in [`docs/PRODUCT_CANON.md`](../../docs/PRODUCT_CANON.md)). There is no automated codemod; migrate by hand:
 
 1. **Split form data off `Self`.** Move `#[field]`-bearing fields off the action struct into a `<Name>Input: HasSchema + Deserialize` companion struct. Add `type Input = <Name>Input` to the `Action` impl (or `input = <Name>Input` to the derive's struct attribute).
 2. **Drop `metadata()` boilerplate from `Self`.** The derive emits fallible `metadata()` from the `#[action(key, version, …)]` arguments and the associated input/output schemas. Generic factories cache the admission result. Delete the manual `impl Action::metadata` block.
@@ -247,9 +260,24 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
 - **[L1-§3.5]** The action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`) is the typed dispatch surface. Adding a new trait requires a canon revision (§0.2). The engine routes by trait, not by `ActionKind` — that field is metadata for UI, validation, and audit only.
 - **[L2-§11.3]** Remote effects are not atomic with Nebula's database. The current
   `IdempotencyKey` / `check_and_mark` path is a local replay/dedup oracle only; it does not prove
-  whether a provider accepted an effect. Durable compilation requires an explicit
-  `ActionEffectContract`: `NoExternalEffects` or `Remote(RemoteEffectDescriptor)`;
-  the default `Undeclared` is rejected. A remote stateless factory exposes
+  whether a provider accepted an effect. Every compiled action carries an
+  `ActionEffectContract`: the default `Journaled(JournalProtocol::V1)`, `ReadOnly`, or
+  `Remote(RemoteEffectDescriptor)`. `Journaled` covers only effects routed through
+  resource handles; a side channel the action opens itself is invisible to the engine
+  and is never journaled (nor is a lease-facade unit). A `Journaled` action runs on the
+  engine's node dispatch only. When the turn has execution stores, a stateless one (or a
+  stateful one, per iteration, or an agent, per turn — experimental: journaled turns,
+  under the determinism contract of `AgentAction`) gets
+  resource handles under its node attempt's effect journal: every `Idempotent` /
+  `Write` unit is prepared, granted and recorded in the operation ledger, replayed on
+  retry or resume, and an unknown outcome fails the node even if the action swallowed
+  the unit's error. Without execution stores (refusal detail "journaled effects need
+  execution stores"), for control actions (which decide flow and must not cause
+  effects), and for stream actions, the handles are read-only: reads run and writes are refused
+  before any provider call, with a detail saying why. `ReadOnly` and `Remote` actions
+  likewise get read-only handles only. No contract reaches a raw lease: since 0.27.0 the action surface has no lease route
+  (`ResourceGuard<R>` slots and `acquire_resource_by_id` are removed), because a lease would
+  bypass the journal. A remote stateless factory exposes
   `RemoteEffectFactory`; generic action dispatch cannot invoke it. Preparation produces
   bounded canonical request and destination-binding bytes without invocation authority.
   Only the execution owner issues an `EffectInvocationContext` after the ledger
@@ -268,9 +296,12 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
   `ReadOnlyEffectQuery` capability. Known applied outputs are replayed from bounded
   persisted evidence; oversized or unsupported outputs become `OutputUnavailable`
   without another effect call.
-- **Derived no-effect actions.** `#[action(no_external_effects)]` is an
-  explicit author attestation and emits `ActionEffectContract::NoExternalEffects`.
-  Omitting the flag keeps the safe `Undeclared` default. The flag never grants
+- **Derived no-effect actions.** `#[action(read_only)]` is an
+  explicit author attestation and emits `ActionEffectContract::ReadOnly`
+  (serialized with its frozen `"NoExternalEffects"` tag, so recorded plans stay
+  readable). Omitting the flag keeps the `Journaled(JournalProtocol::V1)` default
+  (serialized as `{"Journaled":"V1"}`); the old `Undeclared` tag was removed and no
+  longer decodes. The flag never grants
   remote-effect authority: effecting adapters still use the execution-owned
   preparation, operation-ledger, invocation, and recovery protocol above.
 - **[L2-§13.4]** For `TriggerAction`-backed workflow starts, tests must cover the declared delivery contract (at-least-once): no silent drop, and duplicate delivery is handled via stable event identity and dedup/idempotency. Seam: `TriggerAction::start`, `TriggerEvent`.
@@ -339,5 +370,5 @@ See `docs/MATURITY.md` row for `nebula-action`.
 - ADR-0081 (M6 binding cascade — consolidates ADR-0042/0043/0044/0045).
 - Integration model: `docs/INTEGRATION_MODEL.md` §`nebula-action` (checkpoint and retry contracts).
 - In-process plugin registry: `crates/plugin/README.md` — `Plugin` trait + `PluginRegistry` (ADR-0091).
-- Siblings: `nebula-schema` (`ValidSchema` + `#[derive(Schema)]` for `Self::Input`), `nebula-credential` (`CredentialGuard` slot fields), `nebula-resource` (`ResourceGuard` slot fields, `ResourceAction`), `nebula-resilience` (retry/timeout/circuit-breaker inside actions).
+- Siblings: `nebula-schema` (`ValidSchema` + `#[derive(Schema)]` for `Self::Input`), `nebula-credential` (`CredentialGuard` slot fields), `nebula-resource` (`ResourceHandle` slot fields, `ResourceAction`), `nebula-resilience` (retry/timeout/circuit-breaker inside actions).
 - Resource sharing across nodes/workflows: see `crates/resource/README.md` "Shared resource pattern" — when multiple actions or workflows acquire the same `Resource` at the same scope, the manager dedupes by `(R::key(), ScopeLevel)` so a single `Resource::create` call serves every acquirer (e.g. one `TelegramBot` client for ten workflows).

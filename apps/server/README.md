@@ -168,12 +168,17 @@ and emits a `tracing::warn!` at startup when `NEBULA_ENV` is not `dev` / `develo
 
 ### NodeResult and Checkpoint stores
 
-`NodeResultStore` and `CheckpointStore` always use in-memory adapters regardless
-of `API_EXECUTION_BACKEND`. These stores hold transient per-execution data (node
-output slots and stateful action checkpoints) that are written and read within a
-single execution lifetime. Durability is provided by the `ExecutionStore` state
-machine (one JSON blob per execution row); on a crash the reclaim sweep re-delivers
-the job and the engine re-executes affected nodes from the last persisted state.
+`NodeResultStore` always uses an in-memory adapter regardless of
+`API_EXECUTION_BACKEND`. It holds transient per-execution node output slots that
+are written and read within a single execution lifetime. Durability is provided by
+the `ExecutionStore` state machine (one JSON blob per execution row); on a crash the
+reclaim sweep re-delivers the job and the engine re-executes affected nodes from the
+last persisted state.
+
+`CheckpointStore` follows the execution backend (`SqliteCheckpointStore`,
+`PgCheckpointStore`, or the in-memory reference model sharing the in-memory
+execution store): iteration checkpoints of journaled stateful actions are fenced by
+the execution lease, so they live beside the execution row (migration `0062`).
 
 ### Example: SQLite single-process production
 

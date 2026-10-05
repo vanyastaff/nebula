@@ -5,7 +5,7 @@ use std::sync::Arc;
 use nebula_action::{
     ActionFactory,
     effect::{
-        ActionEffectContract, RemoteDestinationGuarantee, RemoteEffectDescriptor,
+        ActionEffectContract, JournalProtocol, RemoteDestinationGuarantee, RemoteEffectDescriptor,
         RemoteEffectPolicy,
     },
 };
@@ -14,7 +14,11 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum RecordedActionEffectV1 {
-    NoExternalEffects,
+    /// Wire tag frozen as `"NoExternalEffects"`.
+    #[serde(rename = "NoExternalEffects")]
+    ReadOnly,
+    /// Handle-routed effects journaled by the engine at the recorded protocol.
+    Journaled { protocol_version: u16 },
     Remote {
         contract_id: String,
         canonicalization_version: u16,
@@ -45,7 +49,10 @@ pub(crate) struct InvalidEffectContract;
 impl RecordedActionEffectV1 {
     pub(crate) fn project(contract: &ActionEffectContract) -> Result<Self, InvalidEffectContract> {
         match contract {
-            ActionEffectContract::NoExternalEffects => Ok(Self::NoExternalEffects),
+            ActionEffectContract::ReadOnly => Ok(Self::ReadOnly),
+            ActionEffectContract::Journaled(JournalProtocol::V1) => Ok(Self::Journaled {
+                protocol_version: 1,
+            }),
             ActionEffectContract::Remote(descriptor) => {
                 descriptor.validate().map_err(|_| InvalidEffectContract)?;
                 let policy = descriptor.policy();
@@ -77,7 +84,11 @@ impl RecordedActionEffectV1 {
 
     pub(crate) fn checked_contract(&self) -> Result<ActionEffectContract, InvalidEffectContract> {
         match self {
-            Self::NoExternalEffects => Ok(ActionEffectContract::NoExternalEffects),
+            Self::ReadOnly => Ok(ActionEffectContract::ReadOnly),
+            Self::Journaled {
+                protocol_version: 1,
+            } => Ok(ActionEffectContract::Journaled(JournalProtocol::V1)),
+            Self::Journaled { .. } => Err(InvalidEffectContract),
             Self::Remote {
                 contract_id,
                 canonicalization_version,
@@ -132,9 +143,7 @@ pub(crate) fn validate_factory_effect(
             }
             Ok(())
         },
-        (ActionEffectContract::NoExternalEffects | ActionEffectContract::Undeclared, None) => {
-            Ok(())
-        },
+        (ActionEffectContract::ReadOnly | ActionEffectContract::Journaled(_), None) => Ok(()),
         _ => Err(InvalidEffectContract),
     }
 }

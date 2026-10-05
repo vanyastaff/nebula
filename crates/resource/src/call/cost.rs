@@ -6,7 +6,7 @@ use std::{fmt, num::NonZeroU32};
 /// What one provider attempt costs against the row's rate limit.
 ///
 /// The facade books the cost when it grants the attempt
-/// ([`OpCx::attempt`](super::OpCx::attempt)), never at acquire: a lease that
+/// ([`OperationCx::attempt`](super::OperationCx::attempt)), never at acquire: a lease that
 /// makes three calls books three costs (Design QUOTA-DX.md:32).
 ///
 /// ```
@@ -107,8 +107,33 @@ impl fmt::Debug for Cost {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum Effect {
-    /// Reads only; sending it twice changes nothing.
+    /// Reads only; sending it twice changes nothing. Never recorded: under
+    /// an execution journal a replay asks the provider again, and an answer
+    /// that changed since — and steers the program's later effects — makes
+    /// the replay diverge, which halts it as an occurrence mismatch.
     Read,
+    /// A read whose answer steers the program — a model's completion, a
+    /// retrieval or search whose result decides what runs next — recorded
+    /// under an execution journal so every replay observes the answer the
+    /// program observed.
+    ///
+    /// Only for a call with **no provider-side effect**: the provider
+    /// changes nothing it would not change for a plain read. A call that
+    /// runs hosted tools (web search, a code interpreter), stores a
+    /// response, appends to a server-side conversation or uploads a file is
+    /// not a read: declare it [`Idempotent`](Self::Idempotent) or
+    /// [`Write`](Self::Write), whose unknown outcomes are recovered as
+    /// effects. Nothing can detect the difference at runtime: the
+    /// declaration is the author's attestation.
+    ///
+    /// Under a journal the unit is prepared, granted and settled like an
+    /// effect, with its output recorded (at most 1 MiB; never digest-only:
+    /// [`Operation::RECORD_OUTPUT`](super::Operation::RECORD_OUTPUT) must
+    /// stay `true`) before the caller sees it, and a replay yields the
+    /// recorded answer without a provider call. Its outcome is never
+    /// unknown: an unanswered call may be asked again. Without a journal
+    /// (a library or read-only row) it runs as a plain [`Read`](Self::Read).
+    RecordedRead,
     /// Changes provider state, but a repeat is absorbed (an idempotency key,
     /// a PUT of the same value, a flush).
     Idempotent,
@@ -123,14 +148,16 @@ impl Effect {
     /// apply its effect twice.
     #[must_use]
     pub const fn is_replay_safe(self) -> bool {
-        matches!(self, Self::Read | Self::Idempotent)
+        matches!(self, Self::Read | Self::RecordedRead | Self::Idempotent)
     }
 
-    /// Stable lowercase name: `read`, `idempotent` or `write`.
+    /// Stable lowercase name: `read`, `recorded_read`, `idempotent` or
+    /// `write`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Read => "read",
+            Self::RecordedRead => "recorded_read",
             Self::Idempotent => "idempotent",
             Self::Write => "write",
         }
@@ -139,7 +166,9 @@ impl Effect {
 
 /// Whether a unit's provider attempts reached the provider.
 ///
-/// The author settles each attempt ([`Attempt::settle`](super::Attempt::settle));
+/// Each attempt is finished from its call's classified result
+/// ([`Attempt::finish`](super::Attempt::finish), which
+/// [`OperationCx::call`](super::OperationCx::call) runs);
 /// the runtime folds them into the unit's state. Ordered by how much it
 /// commits the caller: `NotSent < Sent < MaybeSent`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -24,7 +24,7 @@ use super::{Manager, ManagerConfig, RegistrationSpec};
 use crate::{
     Bounded, Error, ErrorKind, PinSlots, PoolConfig, Pooled, Provider, Resident, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell, SlotIdentity, SlotInstallError, SlotUpdate,
-    call::{OpError, SessionBinding, SessionClosed, SessionEnd, SessionProvider},
+    call::{OperationError, SessionBinding, SessionClosed, SessionEnd, SessionProvider},
     resource::{HasCredentialSlots, ResourceMetadataDraft},
     runtime::managed::ManagedResource,
     topology::{
@@ -43,8 +43,20 @@ pub(crate) fn config(version: u64) -> Config {
     Config { version }
 }
 
+thread_local! {
+    /// How many times this thread computed a [`Config`] fingerprint.
+    static FINGERPRINTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times this thread computed a [`Config`] fingerprint: a
+/// current-thread test runtime counts every computation of its manager.
+pub(crate) fn fingerprints_computed() -> usize {
+    FINGERPRINTS.with(std::cell::Cell::get)
+}
+
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {
+        FINGERPRINTS.with(|computed| computed.set(computed.get() + 1));
         self.version
     }
 }
@@ -98,10 +110,14 @@ impl Probe {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(closed);
     }
 
-    fn open<'c>(&self, instance: &'c mut u64, slots: &PinnedEpochs) -> Result<Tx<'c>, OpError> {
+    fn open<'c>(
+        &self,
+        instance: &'c mut u64,
+        slots: &PinnedEpochs,
+    ) -> Result<Tx<'c>, OperationError> {
         self.opens.fetch_add(1, Ordering::SeqCst);
         if self.fail_next_open.swap(false, Ordering::SeqCst) {
-            return Err(OpError::new(ErrorKind::Transient, "open refused"));
+            return Err(OperationError::new(ErrorKind::Transient, "open refused"));
         }
         self.opened
             .lock()
@@ -151,6 +167,17 @@ impl Probe {
 /// Material epoch each declared slot held when a unit pinned it, in slot
 /// order; `None` for an unbound or revoked slot.
 pub(crate) type PinnedEpochs = Vec<(&'static str, Option<u64>)>;
+
+/// [`PinnedEpochs`] as a unit's output, which must deserialize: owned.
+pub(crate) type OwnedEpochs = Vec<(String, Option<u64>)>;
+
+/// `pinned` as a unit's output.
+pub(crate) fn owned_epochs(pinned: &[(&'static str, Option<u64>)]) -> OwnedEpochs {
+    pinned
+        .iter()
+        .map(|(slot, epoch)| ((*slot).to_owned(), *epoch))
+        .collect()
+}
 
 /// A provider per topology with declared credential slots (`db`, and
 /// optionally `cache`) that implement the projection port. `PinSlots` pins
@@ -356,7 +383,7 @@ impl SessionProvider for StrictPooled {
         &'c self,
         instance: &'c mut u64,
         slots: &'c PinnedEpochs,
-    ) -> Result<Tx<'c>, OpError> {
+    ) -> Result<Tx<'c>, OperationError> {
         self.probe.open(instance, slots)
     }
 
@@ -374,7 +401,7 @@ impl SessionProvider for StrictPooledSession {
         &'c self,
         instance: &'c mut u64,
         slots: &'c PinnedEpochs,
-    ) -> Result<Tx<'c>, OpError> {
+    ) -> Result<Tx<'c>, OperationError> {
         self.probe.open(instance, slots)
     }
 
@@ -583,7 +610,8 @@ mod tests {
 
     use super::{
         PinSlots, RotatingPin, ScriptedObserver, StrictResident, StrictTwoSlot, bind,
-        cache_credential_id, context, credential_id, resident, seen, strict_manager, tenant,
+        cache_credential_id, context, credential_id, fingerprints_computed, resident, seen,
+        strict_manager, tenant,
     };
     use crate::AcquireOptions;
 
@@ -636,5 +664,49 @@ mod tests {
             .expect("admitted");
         drop(guard);
         assert_eq!(observer.calls(), 1);
+    }
+
+    /// Every resident acquire compares the master's build fingerprint with
+    /// the current config's: it reads the one stored at admission, never
+    /// recomputing it, and a reload computes the new one once.
+    #[tokio::test]
+    async fn a_resident_acquire_reads_the_fingerprint_stored_at_admission() {
+        let observer = ScriptedObserver::answering(seen(1, 1, CredentialAvailability::Available));
+        let manager = strict_manager(
+            Arc::clone(&observer) as Arc<dyn CredentialAvailabilityObserver>,
+            &Arc::default(),
+        );
+        let before = fingerprints_computed();
+        let resource = resident(&manager);
+        bind(&resource.db, credential_id(), 1, 1);
+        assert_eq!(fingerprints_computed(), before + 1, "admission computes it");
+
+        let (ctx, options, identity) = (context(), AcquireOptions::default(), tenant());
+        let acquire = || manager.acquire_for_identity::<StrictResident>(&ctx, &options, &identity);
+        for _ in 0..4 {
+            drop(acquire().await.expect("admitted"));
+        }
+        assert_eq!(
+            fingerprints_computed(),
+            before + 1,
+            "no acquire recomputes it"
+        );
+
+        manager
+            .reload_config::<StrictResident>(super::config(2), &nebula_core::ScopeLevel::Global)
+            .expect("reloaded");
+        assert_eq!(
+            fingerprints_computed(),
+            before + 2,
+            "a reload computes it once"
+        );
+        for _ in 0..4 {
+            drop(acquire().await.expect("admitted"));
+        }
+        assert_eq!(fingerprints_computed(), before + 2);
+        assert_eq!(
+            super::row::<StrictResident>(&manager).config_fingerprint(),
+            2
+        );
     }
 }

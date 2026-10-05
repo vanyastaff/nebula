@@ -231,29 +231,55 @@ Resource authoring types, traits, and derives are in the prelude and the explici
 
 | Surface | What you use |
 |--------|----------------|
-| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `ResourceMetadataDraft`, `ResourceContext`, `ResourceGuard`, `ReleaseOutcome`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
+| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `ResourceMetadataDraft`, `ResourceContext`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
 | **Derives** | `Resource` and `ResourceConfig` are covered by the SDK-only derive compile contract. Manual `Provider` authoring, including a consuming `destroy` over a non-Clone instance using `TeardownCx` and `TeardownReason`, is separately compile-checked through the prelude plus the general-purpose `async-trait` crate. |
 
 **Managed call facade:** `nebula_sdk::integration::resource` (not the prelude —
-the facade is not frozen) re-exports `Managed`, `Operation`, `OpCx`, `Attempt`,
-`Unit`, `Cost`, `Effect`, `SentState`, `OpError` and `PinSlots`.
-`ResourceGuard::into_managed()` turns a lease into a `Managed` facade without
-`Deref`; provider calls are `Operation`s whose attempts are admitted and
-booked per `Cost`, and a failed unit's `OpError` says whether a retry is safe.
-The SDK-only fixture compiles a logger authored against it
-(`resource_managed_logger`) and proves `Managed` does not deref
-(`managed_no_deref`); runtime behaviour is tested in the resource crate. See
-the resource README, "Managed call facade". Streaming units (`StreamOperation`,
-`StreamSink`, `Streaming`, `ConsumerGone`) run through the same facade with
-`Managed::submit_streaming`, or per-attempt checkout with
-`ManagedRow::submit_streaming`.
+the facade is not frozen) re-exports `ResourceHandle`, `Operation`, `OperationCx`,
+`Attempt`, `Submission`, `Cost`, `Effect`, `SentState`, `OperationError` and
+`PinSlots` (hidden from the rendered docs; the derive emits it).
+A `ResourceHandle` has no `Deref`; provider calls are `Operation`s that call the provider through
+`OperationCx::call(cost, async move |client, credentials| ..)`, each attempt
+admitted and booked per `Cost`. The closure classifies its answer once with
+an `OperationError` constructor (`throttled`, `throttled_key`, `unreachable`,
+`interrupted`, `rejected`, …) and the runtime derives the attempt's sent
+state, the rate limit's verdict, a journal's record and any re-attempt
+(within `max_attempts`) from it; a failed unit's `OperationError` says
+whether a retry is safe, and an attempt cannot be settled by hand
+(`attempt_settle_private`; `resource_call_classify` shows a classified call
+with the SDK alone). An `Operation` declares a `KEY` (unique within the resource) and is
+`Serialize + DeserializeOwned` with a serializable `Output` — with the SDK
+alone, `#[derive(Serialize, Deserialize)]` from the prelude plus
+`#[serde(crate = "nebula_sdk::serde")]` — so an execution journal can record
+and replay it. The SDK-only fixture compiles a logger authored against it
+(`resource_managed_logger`); runtime behaviour is tested in the resource
+crate. See the resource README, "Managed call facade". Streaming units
+(`StreamOperation`, `StreamSink`, `Streaming`, `ConsumerGone`) run through
+the same facade with `ResourceHandle::submit_streaming`.
+
+**Raw leases are not exported (0.27.0):** `ResourceGuard`, `ReleaseOutcome`
+and the `Lease` facade are gone from the prelude and from
+`integration::resource` — a lease bypasses the effect journal, so it stays a
+host-only capability of the engine. An action names a resource only as a
+`#[resource]` field of type `ResourceHandle<R>`; `http::open_stream` /
+`open_stream_until` take `&ResourceHandle<R>`. The negative fixtures
+`removed_resource_guard` and `removed_lease` and the snapshot test
+`raw_leases_are_not_exported` pin the absence.
+
+| Before (≤ 0.26) | Now |
+|---|---|
+| `#[resource] db: ResourceGuard<Db>` | `#[resource] db: ResourceHandle<Db>` |
+| `lease.submit(op)` / `guard.into_lease().submit(op)` | `handle.submit(op)` |
+| `open_stream(&lease, request)` | `open_stream(&handle, request)` |
+| `*guard` (direct client calls) | an `Operation` calling the client through `OperationCx::call` |
 
 **Credentialed resources:** `integration::resource` re-exports `CredentialSlot`
 and `CredentialGuard`, and `integration::credential` (and the prelude)
 `BearerTokenCredential`, so a `#[derive(Resource)]` struct with
 `#[credential(key = "token")] token: CredentialSlot<BearerTokenCredential>`
 compiles against the SDK alone (`resource_credentialed` fixture). A unit reads
-the slot only through its pinned snapshot, `attempt.slots().token()`.
+the slot only through its pinned snapshot, the `credentials` a call hands its
+closure (`credentials.token()`).
 
 **HTTP resource adapter (feature `resource-http`):**
 `nebula_sdk::integration::resource::http` (not the prelude) turns HTTP calls
@@ -264,9 +290,19 @@ client retries, no proxy, referer or cookies, platform TLS verification.
 A resource implements `HttpApi::authorize`, applying its pinned slots through
 `Authorize` (`bearer`, `basic`, `api_key_header`) after the attempt is granted.
 `Request::get` / `post` / … are `Operation`s whose method marker fixes the
-`Effect` (`Keyed<Post>` with an idempotency key, `AsWrite<Put>` for a
-non-idempotent provider); `send` classifies one attempt's answer, and
-`open_stream` returns a `ResponseStream` for a chunked body. No URL, header
+`Effect` and the operation key (`http.get`, …; `Keyed<Post>` —
+`http.post.keyed` — with an idempotency key, `AsWrite<Put>` for a
+non-idempotent provider). A `Request` and its `Response` serialize (paths,
+query, headers, base64 bodies; cost and attempt budget are policy and are
+not serialized). A keyed request's `idempotency_key(part)` is the developer
+part: the `Idempotency-Key` header carries the key the unit derives from it
+(the journal's, or a local base64url SHA-256 of resource, operation, version
+and part), not the part itself. Every exchange classifies its answer once
+(connect failure `unreachable`, lost connection or `5xx` `interrupted`, `429`
+`throttled`, other `4xx` `rejected`); a `Request` runs through `cx.call`, so
+it is re-attempted only as that classification allows and a `Write` that may
+have been sent never is. `send` runs one exchange on an attempt a custom
+operation holds and finishes it, and `open_stream` returns a `ResponseStream` for a chunked body. No URL, header
 value or transport error reaches `Debug`, errors or logs. The SDK-only fixture
 compiles a GitHub-style resource against it (`resource_http`) and proves the
 raw client is private (`http_no_raw_client`); `tests/resource_http.rs` drives
@@ -274,26 +310,22 @@ it against a raw TCP server through a real `Manager`. Out of scope: following
 next-page URLs, query-parameter keys, mTLS, a generic `Http<C>` resource,
 streaming request bodies and a `401` / `403` credential signal.
 
-**Managed row and sessions:** the same persona re-exports `ManagedRow` — the
-facade without a lease, checking out an instance per attempt after its quota
-and row-gate waits — and the session vocabulary `SessionProvider`,
-`SessionSpec`, `SessionCx`, `SessionEnd`, `SessionClosed`, `SessionBinding`
-and `SessionFuture`. `ManagedRow::session` runs several native calls on one
-pooled connection as one unit, committed or rolled back by the provider.
-A `ManagedRow` is obtained from the engine-owned manager (reaching it from
-action code is a follow-up), so the SDK-only fixture compiles a session
+**Resource handle and sessions:** the same persona re-exports
+`ResourceHandle` — the facade checking out an instance per
+attempt after its quota and row-gate waits — and the session vocabulary
+`SessionProvider`, `SessionSpec`, `SessionCx`, `SessionEnd`, `SessionClosed`,
+`SessionBinding` and `SessionFuture`. `ResourceHandle::session` runs several
+native calls on one pooled connection as one unit, committed or rolled back
+by the provider; its `SessionSpec` names the session and carries its request
+(`SessionSpec::read(name)`, `::idempotent(name, &request)`,
+`::write(name, &request)`). A `ResourceHandle` is obtained from the engine-owned manager
+or, in an action, through a derived `#[resource]` field
+(`action_resource_handle`), so the SDK-only fixture compiles a session
 provider and the action-side call (`resource_session`), proves a
-`ManagedRow` does not deref (`managed_row_no_deref`) and that a body cannot
-keep its borrowed session (`session_escape`); the runtime is tested in the
-resource crate and on real PostgreSQL in the engine. See the resource
-README, "Managed row facade and sessions".
-
-**Release migration:** `ResourceGuard::release()` now returns
-`Result<ReleaseOutcome, Error>` instead of `Result<(), Error>`. Match
-`ReleaseOutcome::Completed`, `ReleaseOutcome::Deferred`, and `_` because the
-enum is non-exhaustive. A deferred release has consumed the guard and
-transferred ownership to bounded, best-effort queue cleanup; never retry it,
-and do not interpret it as proof that the provider hook will run.
+`ResourceHandle` does not deref (`resource_handle_no_deref`) and that a body
+cannot keep its borrowed session (`session_escape`); the runtime is tested in
+the resource crate and on real PostgreSQL in the engine. See the resource
+README, "Resource handle and sessions".
 
 **Custom topology authoring:** `nebula_sdk::integration::resource` curates the open
 `Topology` contract, built-in provider hooks, terminal context, and store vocabulary.

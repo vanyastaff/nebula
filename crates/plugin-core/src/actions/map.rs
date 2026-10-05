@@ -160,7 +160,7 @@ impl nebula_action::action::Action for MapAction {
              pick/omit/rename/flatten)",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

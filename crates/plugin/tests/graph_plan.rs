@@ -30,7 +30,7 @@ impl ContractAction {
             "demo.echo",
             input_schema,
             ValidSchema::empty(),
-            nebula_action::effect::ActionEffectContract::NoExternalEffects,
+            nebula_action::effect::ActionEffectContract::ReadOnly,
             None,
         )
     }
@@ -304,7 +304,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
             .property(Property::string(field_key!("success_only")).required())
             .build()
             .unwrap(),
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         Some(source_outputs),
     );
     let target = ContractAction::with_contract(
@@ -312,7 +312,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
         nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
             .expect("valid test catalog definition"),
         ValidSchema::empty(),
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         None,
     );
     let incompatible = ContractAction::with_contract(
@@ -322,7 +322,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
             .build()
             .unwrap(),
         ValidSchema::empty(),
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         None,
     );
     let mut plugins = PluginRegistry::new();
@@ -472,7 +472,7 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         "demo.echo",
         ValidSchema::empty(),
         ValidSchema::empty(),
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         None,
     );
     plugin.action = action;
@@ -491,7 +491,7 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         .compile_graph_v1(WorkflowVersionId::new(), &workflow)
         .unwrap();
     let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-    assert_eq!(record["compiler_version"], 5);
+    assert_eq!(record["compiler_version"], 7);
     assert_eq!(record["canonical_hash_version"], 3);
     assert_eq!(
         record["content"]["actions"][0]["effect_contract"],
@@ -510,7 +510,7 @@ fn scalar_contracts_roundtrip_under_the_new_epoch_without_named_parameters() {
             .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
             .unwrap();
         let wire = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-        assert_eq!(wire["compiler_version"], 5);
+        assert_eq!(wire["compiler_version"], 7);
         assert_eq!(wire["canonical_hash_version"], 3);
         assert_eq!(
             wire["content"]["actions"][0]["input_schema"],
@@ -564,13 +564,13 @@ fn null_and_empty_record_contracts_have_distinct_plan_identities_and_exact_admis
 }
 
 #[test]
-fn undeclared_effects_cannot_be_compiled_for_durable_execution() {
+fn the_default_effect_contract_compiles_and_records_journaled_v1() {
     let mut plugin = ContractPlugin::new(ValidSchema::empty());
     let action = ContractAction::with_contract(
         "demo.echo",
         ValidSchema::empty(),
         ValidSchema::empty(),
-        nebula_action::effect::ActionEffectContract::Undeclared,
+        nebula_action::effect::ActionEffectContract::default(),
         None,
     );
     plugin.action = action;
@@ -584,10 +584,107 @@ fn undeclared_effects_cannot_be_compiled_for_durable_execution() {
             "1.0.0".parse().unwrap(),
         )
         .unwrap();
-    let error = registry
+    let plan = registry
         .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
-        .expect_err("undeclared effects must fail before durable activation");
-    assert!(!error.diagnostics().is_empty());
+        .expect("the default journaled contract compiles");
+    plan.validate_against(&registry).unwrap();
+    let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+    assert_eq!(
+        record["content"]["actions"][0]["effect_contract"],
+        serde_json::json!({ "Journaled": { "protocol_version": 1 } })
+    );
+    assert_eq!(
+        plan.action_effect_contract(&ActionKey::new("demo.echo").unwrap())
+            .unwrap(),
+        nebula_plugin::PlanActionEffectContract::Declared(
+            nebula_action::effect::ActionEffectContract::Journaled(
+                nebula_action::JournalProtocol::V1
+            )
+        )
+    );
+}
+
+/// An agent action of the default (`Journaled`) contract (experimental:
+/// journaled turns).
+struct EchoAgent;
+
+impl Action for EchoAgent {
+    type Input = Value;
+    type Output = Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            nebula_core::action_key!("demo.echo"),
+            nebula_action::metadata_name!("Echo agent"),
+            "Graph-v1 agent fixture",
+        )
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
+    }
+}
+
+impl nebula_action::AgentAction for EchoAgent {
+    type Turn = u32;
+
+    fn init_turn(&self, _input: &Value) -> u32 {
+        0
+    }
+
+    async fn step(
+        &self,
+        _turn: &mut u32,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Value>, ActionError> {
+        Ok(ActionResult::break_completed(Value::Null))
+    }
+}
+
+impl nebula_action::FromWorkflowNode for EchoAgent {
+    type Error = ActionError;
+
+    async fn from_workflow_node(
+        _node: &NodeDefinition,
+        _context: &dyn ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(EchoAgent)
+    }
+}
+
+#[test]
+fn an_agent_action_compiles_into_a_plan_that_records_its_kind() {
+    let mut plugin = ContractPlugin::new(ValidSchema::empty());
+    plugin.action =
+        Arc::new(nebula_action::GenericAgentFactory::<EchoAgent>::new().expect("agent admits"));
+    let mut registry = PluginRegistry::new();
+    registry
+        .register(Arc::new(ResolvedPlugin::from(plugin).unwrap()))
+        .unwrap();
+    let registry = registry
+        .freeze(
+            ArtifactSetDigest::from_bytes([0x9a; 32]),
+            "1.0.0".parse().unwrap(),
+        )
+        .unwrap();
+    let plan = registry
+        .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
+        .expect("an agent node compiles");
+    plan.validate_against(&registry).unwrap();
+    let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+    assert_eq!(record["compiler_version"], 7);
+    assert_eq!(record["content"]["actions"][0]["kind"], "agent");
+    assert_eq!(
+        record["content"]["actions"][0]["effect_contract"],
+        serde_json::json!({ "Journaled": { "protocol_version": 1 } })
+    );
+    let loaded = ExecutablePlanRevision::try_from(
+        serde_json::from_value::<RecordedExecutablePlanRevisionV1>(record).unwrap(),
+    )
+    .expect("the record roundtrips");
+    assert_eq!(loaded.id(), plan.id());
+    loaded.validate_against(&registry).unwrap();
 }
 
 #[test]
@@ -835,7 +932,7 @@ fn execution_graph_preserves_parameter_variants_and_canonical_reference_ports() 
         "demo.echo",
         schema.clone(),
         schema,
-        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        nebula_action::effect::ActionEffectContract::ReadOnly,
         None,
     );
     let plugin = ContractPlugin {

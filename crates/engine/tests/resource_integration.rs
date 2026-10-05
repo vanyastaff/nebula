@@ -1,11 +1,11 @@
-//! End-to-end integration test: action acquires a resource through the engine.
+//! End-to-end integration test: action reaches a resource through the engine.
 //!
 //! Proves the full chain:
 //!   register(MockResource) in Manager
 //!     -> Engine holds Manager
-//!       -> Action calls ctx.resource("mock")
-//!         -> gets ResourceHandle
-//!           -> downcasts to the concrete instance type
+//!       -> Action resolves a `ResourceHandle<R>` (a slot field or
+//!          `ActionContextExt::resource_handle_by_id`)
+//!         -> submits a unit, which checks out the instance per attempt
 
 use std::{
     collections::HashMap,
@@ -60,7 +60,7 @@ impl Action for ResourceConsumerHandler {
             nebula_action::metadata_name!("ResourceConsumer"),
             "static",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -74,7 +74,7 @@ impl StatelessAction for ResourceConsumerHandler {
         _input: <Self as Action>::Input,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
-        // Smoke-path action: does NOT call ctx.resource(). The
+        // Smoke-path action: resolves no resource. The
         // attached-manager tests (below) verify that engine dispatch
         // still works with a resource manager wired in; a parallel
         // handler (`ResourceProbeHandler`) exercises the actual
@@ -85,50 +85,35 @@ impl StatelessAction for ResourceConsumerHandler {
     }
 }
 
-/// Handler that actually acquires a resource through the
-/// [`ActionContext`]. Used by the no-manager failure test to pin the
-/// contract that `ctx.resource(..)` returns an error when the engine
-/// was not wired with a resource manager.
-struct ResourceProbeHandler;
-
-impl Action for ResourceProbeHandler {
-    type Input = serde_json::Value;
-    type Output = serde_json::Value;
-
-    fn metadata() -> ActionMetadataDraft {
-        ActionMetadataDraft::new(
-            action_key!("test.resource_probe.static"),
-            nebula_action::metadata_name!("ResourceProbe"),
-            "static",
-        )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
-    }
-    fn dependencies() -> &'static Dependencies {
-        static D: OnceLock<Dependencies> = OnceLock::new();
-        D.get_or_init(Dependencies::new)
-    }
+/// Action holding a `ResourceHandle<R>` field. Used by the no-manager
+/// failure test to pin the contract that slot resolution fails closed when
+/// the engine was not wired with a resource manager.
+#[derive(nebula_action::Action)]
+#[action(
+    key = "test.resource_probe.handle",
+    name = "ResourceProbe",
+    description = "holds a resource handle field",
+    input = serde_json::Value,
+    output = serde_json::Value,
+    read_only
+)]
+struct ResourceProbeHandler {
+    #[resource]
+    probe: nebula_resource::call::ResourceHandle<IntegrationProbeResource>,
 }
+
+/// Times [`ResourceProbeHandler`]'s body ran.
+static PROBE_BODIES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 impl StatelessAction for ResourceProbeHandler {
     async fn execute(
         &self,
         _input: <Self as Action>::Input,
-        ctx: &(impl nebula_action::ActionContext + ?Sized),
+        _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
-        // Let ctx.resource() return its natural error when the accessor
-        // is the no-op default (no manager attached) — the engine then
-        // translates the action failure into a failed workflow run.
-        use nebula_core::ResourceKey;
-        let key = ResourceKey::new("mock")
-            .map_err(|e| ActionError::fatal(format!("invalid key: {e}")))?;
-        let _instance = ctx
-            .resources()
-            .acquire_any(&key)
-            .await
-            .map_err(ActionError::from)?;
-        Ok(ActionResult::success(
-            serde_json::json!({ "resource_value": "acquired" }),
-        ))
+        PROBE_BODIES.fetch_add(1, Ordering::SeqCst);
+        let value = self.probe.submit(ReadProbe).await?;
+        Ok(ActionResult::success(serde_json::json!({ "read": value })))
     }
 }
 
@@ -160,15 +145,15 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
 fn meta(key: ActionKey) -> ActionMetadataDraft {
     let name = key.clone().into();
     ActionMetadataDraft::new(key, name, "resource integration test")
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Single-node workflow where the action acquires a resource from the manager
-/// via `ctx.resource("mock")` and returns the instance value as output.
+/// Single-node workflow with a resource manager attached; the smoke action
+/// resolves no resource and returns a fixed value as output.
 #[tokio::test]
 async fn action_acquires_resource_through_engine() {
     // 1. Create an empty resource manager (no mock resource registered yet because the v2 API
@@ -371,7 +356,7 @@ impl Action for IntegrationAcquireHandler {
             nebula_action::metadata_name!("IntegrationAcquire"),
             "static",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -386,17 +371,33 @@ impl StatelessAction for IntegrationAcquireHandler {
         _input: <Self as Action>::Input,
         ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
+        // A read-only action reaches the row through a read-only handle.
+        use nebula_action::ActionContextExt as _;
+
         let key = IntegrationProbeResource::key();
-        let boxed = ctx
-            .resources()
-            .acquire_any(&key)
-            .await
-            .map_err(ActionError::from)?;
-        let guard = boxed
-            .downcast::<nebula_resource::ResourceGuard<IntegrationProbeResource>>()
-            .map_err(|_| ActionError::fatal("expected ResourceGuard downcast"))?;
-        let value = guard.load(Ordering::Relaxed);
-        Ok(ActionResult::success(serde_json::json!({ "lease": value })))
+        let handle = ctx.resource_handle_by_id::<IntegrationProbeResource>(key.as_str())?;
+        let value = handle.submit(ReadProbe).await?;
+        Ok(ActionResult::success(serde_json::json!({ "read": value })))
+    }
+}
+
+/// Reads the probe's value in one free attempt.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ReadProbe;
+
+impl nebula_resource::call::Operation<IntegrationProbeResource> for ReadProbe {
+    type Output = u64;
+    const KEY: &'static str = "probe.read";
+    const EFFECT: nebula_resource::call::Effect = nebula_resource::call::Effect::Read;
+
+    async fn run(
+        self,
+        cx: &mut nebula_resource::call::OperationCx<'_, IntegrationProbeResource>,
+    ) -> Result<u64, nebula_resource::call::OperationError> {
+        cx.call(nebula_resource::call::Cost::FREE, async |value, ()| {
+            Ok(value.load(Ordering::Relaxed))
+        })
+        .await
     }
 }
 
@@ -468,7 +469,7 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
     assert!(result.is_success(), "workflow should succeed");
     let output = result.node_output(&node).expect("node output");
     assert_eq!(
-        output.get("lease").and_then(serde_json::Value::as_u64),
+        output.get("read").and_then(serde_json::Value::as_u64),
         Some(7)
     );
 }
@@ -592,7 +593,7 @@ async fn durable_turn_acquires_the_executions_workspace_row() {
         execution: execution.clone(),
         journal: Arc::new(nebula_storage::InMemoryJournalReader::new(&execution)),
         node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
         idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
         resume_tokens: Arc::new(execution.resume_token_store()),
         operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
@@ -653,24 +654,25 @@ async fn durable_turn_acquires_the_executions_workspace_row() {
     assert_eq!(
         result
             .node_output(&node)
-            .and_then(|output| output.get("lease"))
+            .and_then(|output| output.get("read"))
             .and_then(serde_json::Value::as_u64),
         Some(7)
     );
 }
 
-/// Verify that `ctx.resource()` returns a fatal error when no resource
+/// Verify that a `ResourceHandle<R>` slot fails closed when no resource
 /// manager is attached to the engine.
 ///
 /// Uses [`ResourceProbeHandler`] (unlike the smoke tests above) so the
-/// handler actually calls `ctx.resources().acquire_any(..)` — exercising
-/// the engine's default [`NoopResourceAccessor`] fallback and surfacing
-/// its fail-closed error as a failed workflow run.
+/// derived factory actually resolves its handle field — exercising the
+/// engine's default `NoopResourceAccessor` fallback, which serves no
+/// resource handles, and surfacing its fail-closed error as a failed
+/// workflow run before the action body runs.
 #[tokio::test]
 async fn action_resource_fails_without_manager() {
     let registry = Arc::new(ActionRegistry::new());
     registry
-        .register_stateless_instance(meta(action_key!("resource-probe")), ResourceProbeHandler)
+        .register_stateless_factory::<ResourceProbeHandler>()
         .expect("valid test catalog definition");
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -690,7 +692,9 @@ async fn action_resource_fails_without_manager() {
 
     let node = node_key!("test");
     let wf = make_workflow(vec![
-        NodeDefinition::new(node, "A", "core", "resource-probe").unwrap(),
+        NodeDefinition::new(node.clone(), "A", "core", "test.resource_probe.handle")
+            .unwrap()
+            .with_resource_binding("probe", IntegrationProbeResource::key().as_str()),
     ]);
 
     let result = engine
@@ -707,6 +711,16 @@ async fn action_resource_fails_without_manager() {
     assert!(
         result.is_failure(),
         "workflow should fail without resource manager"
+    );
+    let error = result.node_errors.get(&node).expect("the node failed");
+    assert!(
+        error.starts_with("ACTION:FATAL"),
+        "a missing row never heals: {error}"
+    );
+    assert_eq!(
+        PROBE_BODIES.load(Ordering::SeqCst),
+        0,
+        "slot resolution failed before the body"
     );
 }
 
@@ -1301,10 +1315,10 @@ mod shared_resource {
 }
 
 // ---------------------------------------------------------------------------
-// Managed rows: derived actions reach ManagedRow<R> fields through the engine
+// Resource handles: derived actions reach ResourceHandle<R> fields through the engine
 // ---------------------------------------------------------------------------
 
-mod managed_row {
+mod resource_handle {
     use std::{
         num::NonZeroU32,
         sync::{Mutex, atomic::AtomicU32},
@@ -1317,8 +1331,8 @@ mod managed_row {
     use nebula_resource::{
         ErrorKind, PoolConfig, PoolProvider, Pooled,
         call::{
-            Cost, Effect, ManagedRow, OpCx, OpError, Operation, SentState, SessionClosed,
-            SessionEnd, SessionProvider, SessionSpec, UNIT_DEADLINE_CAP,
+            Cost, Effect, OPERATION_DEADLINE_CAP, Operation, OperationCx, OperationError,
+            ResourceHandle, SentState, SessionClosed, SessionEnd, SessionProvider, SessionSpec,
         },
         rate_limit::{Rate, RowLimit},
     };
@@ -1348,13 +1362,13 @@ mod managed_row {
         type Topology = Resident<Self>;
 
         fn key() -> ResourceKey {
-            resource_key!("test.managed_row.svc")
+            resource_key!("test.resource_handle.svc")
         }
 
         fn metadata() -> ResourceMetadataDraft {
             ResourceMetadataDraft::new(
                 Self::key(),
-                nebula_resource::metadata_name!("ManagedRowSvc"),
+                nebula_resource::metadata_name!("ResourceHandleSvc"),
                 "",
             )
         }
@@ -1385,18 +1399,28 @@ mod managed_row {
         calls
     }
 
+    /// A deserialized test operation costs one permit.
+    fn one() -> Cost {
+        Cost::ONE
+    }
+
     /// One provider call costing `cost`: counts it and yields the count.
-    struct Call(Cost);
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Call {
+        #[serde(skip, default = "one")]
+        cost: Cost,
+    }
 
     impl Operation<Svc> for Call {
         type Output = u64;
+        const KEY: &'static str = "svc.call";
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<u64, OpError> {
-            let attempt = cx.attempt(self.0).await?;
-            let calls = attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1;
-            attempt.settle(SentState::Sent);
-            Ok(calls)
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<u64, OperationError> {
+            cx.call(self.cost, async |svc, ()| {
+                Ok(svc.0.fetch_add(1, Ordering::SeqCst) + 1)
+            })
+            .await
         }
     }
 
@@ -1426,13 +1450,13 @@ mod managed_row {
         type Topology = Pooled<Self>;
 
         fn key() -> ResourceKey {
-            resource_key!("test.managed_row.ledger")
+            resource_key!("test.resource_handle.ledger")
         }
 
         fn metadata() -> ResourceMetadataDraft {
             ResourceMetadataDraft::new(
                 Self::key(),
-                nebula_resource::metadata_name!("ManagedRowLedger"),
+                nebula_resource::metadata_name!("ResourceHandleLedger"),
                 "",
             )
         }
@@ -1449,7 +1473,11 @@ mod managed_row {
     impl SessionProvider for Ledger {
         type Session<'c> = Tx<'c>;
 
-        async fn open<'c>(&'c self, conn: &'c mut Conn, (): &'c ()) -> Result<Tx<'c>, OpError> {
+        async fn open<'c>(
+            &'c self,
+            conn: &'c mut Conn,
+            (): &'c (),
+        ) -> Result<Tx<'c>, OperationError> {
             Ok(Tx {
                 conn,
                 pending: Vec::new(),
@@ -1470,7 +1498,7 @@ mod managed_row {
     // ── engine plumbing ──────────────────────────────────────────────────
 
     /// A derived stateless action holding one required
-    /// `ManagedRow<$provider>` field and explicitly declaring that its body
+    /// `ResourceHandle<$provider>` field and explicitly declaring that its body
     /// performs no external business effects. The engine consequently serves
     /// a row facade that admits `Effect::Read` only.
     macro_rules! row_action {
@@ -1479,39 +1507,49 @@ mod managed_row {
             #[action(
                                                     key = $key,
                                                     name = $key,
-                                                    description = "managed row integration action",
+                                                    description = "resource handle integration action",
                                                     input = serde_json::Value,
                                                     output = serde_json::Value,
-                                                    no_external_effects
+                                                    read_only
                                                 )]
             struct $ty {
                 #[resource]
-                $field: ManagedRow<$provider>,
+                $field: ResourceHandle<$provider>,
             }
         };
     }
 
+    /// No `read_only` attestation: the default `Journaled(V1)` contract.
     #[derive(nebula_action::Action)]
     #[action(
-        key = "test.managed_row.undeclared",
-        name = "Undeclared managed row",
-        description = "safe-default integration action",
+        key = "test.resource_handle.journaled",
+        name = "Journaled managed row",
+        description = "default-contract integration action",
         input = serde_json::Value,
         output = serde_json::Value
     )]
-    struct UndeclaredRow {
+    struct JournaledRow {
         #[resource]
-        svc: ManagedRow<Svc>,
+        svc: ResourceHandle<Svc>,
     }
 
-    impl StatelessAction for UndeclaredRow {
+    impl StatelessAction for JournaledRow {
         async fn execute(
             &self,
             _input: serde_json::Value,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-            let calls = self.svc.submit(Call(Cost::ONE)).await?;
-            Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
+            let calls = self.svc.submit(Call { cost: Cost::ONE }).await?;
+            let refused = self
+                .svc
+                .submit(LostWrite)
+                .await
+                .expect_err("a storeless run has no effect journal");
+            Ok(ActionResult::success(serde_json::json!({
+                "calls": calls,
+                "write_sent": refused.sent().as_str(),
+                "write_detail": refused.detail(),
+            })))
         }
     }
 
@@ -1564,27 +1602,261 @@ mod managed_row {
     // ── (a) a unit runs on the row ───────────────────────────────────────
 
     #[tokio::test]
-    async fn a_derived_action_without_effect_attestation_is_rejected_before_instantiation() {
+    async fn a_storeless_journaled_action_reads_but_its_writes_are_refused_before_the_provider() {
         let manager = Arc::new(Manager::new());
         let calls = register_svc(&manager, None);
         let engine = engine(manager, |registry| {
             registry
-                .register_stateless_factory::<UndeclaredRow>()
+                .register_stateless_factory::<JournaledRow>()
                 .expect("register");
         });
 
         let result = run(
             &engine,
-            node_of("test.managed_row.undeclared", "svc", &Svc::key()),
+            node_of("test.resource_handle.journaled", "svc", &Svc::key()),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
         .await;
-        assert!(!result.is_success());
-        assert_eq!(calls.count(), 0, "the action was never instantiated");
+        assert!(result.is_success(), "{result:?}");
+        assert_eq!(output(&result)["calls"], 1, "the read ran");
+        assert_eq!(output(&result)["write_sent"], "not_sent");
+        assert_eq!(
+            output(&result)["write_detail"],
+            "journaled effects need execution stores",
+            "the refusal says why the write has no journal"
+        );
+        assert_eq!(
+            calls.count(),
+            1,
+            "only the read reached the provider; the write made zero provider calls"
+        );
     }
 
-    row_action!(ReadSvc, "test.managed_row.read", svc: Svc);
+    /// A default-contract (`Journaled`) agent action: one turn that reads,
+    /// then tries a write.
+    #[derive(nebula_action::Action)]
+    #[action(
+        key = "test.resource_handle.journaled_agent",
+        name = "Journaled agent",
+        description = "default-contract agent integration action",
+        input = serde_json::Value,
+        output = serde_json::Value
+    )]
+    struct JournaledAgent {
+        #[resource]
+        svc: ResourceHandle<Svc>,
+    }
+
+    impl nebula_action::AgentAction for JournaledAgent {
+        type Turn = u32;
+
+        fn init_turn(&self, _input: &serde_json::Value) -> u32 {
+            0
+        }
+
+        async fn step(
+            &self,
+            _turn: &mut u32,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let calls = self.svc.submit(Call { cost: Cost::ONE }).await?;
+            let refused = self
+                .svc
+                .submit(LostWrite)
+                .await
+                .expect_err("a storeless agent has no effect journal");
+            Ok(ActionResult::break_completed(serde_json::json!({
+                "calls": calls,
+                "write_kind": refused.kind().to_string(),
+                "write_sent": refused.sent().as_str(),
+                "write_detail": refused.detail(),
+            })))
+        }
+    }
+
+    /// An agent's turns are journaled on a durable turn (the effect
+    /// protocol suite's `journal_agent` covers its writes); a storeless run
+    /// has no journal, and says so.
+    #[tokio::test]
+    async fn a_storeless_journaled_agent_reads_but_its_writes_are_refused_saying_why() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_agent_factory::<JournaledAgent>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            node_of("test.resource_handle.journaled_agent", "svc", &Svc::key()),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(result.is_success(), "{result:?}");
+        assert_eq!(output(&result)["calls"], 1, "the read ran");
+        assert_eq!(output(&result)["write_kind"], "permanent");
+        assert_eq!(output(&result)["write_sent"], "not_sent");
+        assert_eq!(
+            output(&result)["write_detail"],
+            "journaled effects need execution stores",
+            "the refusal says why a storeless agent's write has no journal"
+        );
+        assert_eq!(calls.count(), 1, "the write made zero provider calls");
+    }
+
+    /// A `read_only` action that reads, then tries a write: since 0.27.0
+    /// it has no raw-lease route around its read-only handle.
+    #[derive(nebula_action::Action)]
+    #[action(
+        key = "test.resource_handle.read_only_write",
+        name = "Read-only write attempt",
+        description = "read-only action attempting a write",
+        input = serde_json::Value,
+        output = serde_json::Value,
+        read_only
+    )]
+    struct ReadOnlyWrite {
+        #[resource]
+        svc: ResourceHandle<Svc>,
+    }
+
+    impl StatelessAction for ReadOnlyWrite {
+        async fn execute(
+            &self,
+            _input: serde_json::Value,
+            _ctx: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            let calls = self.svc.submit(Call { cost: Cost::ONE }).await?;
+            let refused = self
+                .svc
+                .submit(LostWrite)
+                .await
+                .expect_err("a read-only action has no effect authority");
+            Ok(ActionResult::success(serde_json::json!({
+                "calls": calls,
+                "write_kind": refused.kind().to_string(),
+                "write_sent": refused.sent().as_str(),
+            })))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_read_only_action_reads_but_its_write_is_refused_before_the_provider() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let engine = engine(manager, |registry| {
+            registry
+                .register_stateless_factory::<ReadOnlyWrite>()
+                .expect("register");
+        });
+
+        let result = run(
+            &engine,
+            node_of("test.resource_handle.read_only_write", "svc", &Svc::key()),
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
+        assert!(result.is_success(), "{result:?}");
+        assert_eq!(output(&result)["calls"], 1, "the read ran");
+        assert_eq!(
+            output(&result)["write_kind"],
+            ErrorKind::Permanent.to_string()
+        );
+        assert_eq!(output(&result)["write_sent"], "not_sent");
+        assert_eq!(
+            calls.count(),
+            1,
+            "only the read reached the provider; the write made zero provider calls"
+        );
+    }
+
+    type Erased = Box<dyn std::any::Any + Send + Sync>;
+
+    /// A caller-built accessor whose row facades carry full write authority.
+    struct WriteEnabled(Arc<Manager>);
+
+    impl WriteEnabled {
+        fn ctx() -> ResourceContext {
+            ResourceContext::minimal(
+                nebula_core::scope::Scope::default(),
+                tokio_util::sync::CancellationToken::new(),
+            )
+        }
+    }
+
+    impl nebula_core::accessor::ResourceAccessor for WriteEnabled {
+        fn has(&self, _key: &ResourceKey) -> bool {
+            true
+        }
+
+        fn resource_handle_any(&self, key: &ResourceKey) -> Result<Erased, nebula_core::CoreError> {
+            self.0
+                .handle_any(
+                    key,
+                    &Self::ctx(),
+                    &nebula_resource::AcquireOptions::default(),
+                    &SlotIdentity::Unbound,
+                )
+                .map_err(|error| error.to_core_error())
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_dispatch_of_a_journaled_action_cannot_write_through_a_caller_accessor() {
+        let manager = Arc::new(Manager::new());
+        let calls = register_svc(&manager, None);
+        let registry = Arc::new(ActionRegistry::new());
+        registry
+            .register_stateless_factory::<JournaledRow>()
+            .expect("register");
+        let runtime = ActionRuntime::try_new(
+            registry,
+            Arc::new(InProcessRunner::new()),
+            DataPassingPolicy::default(),
+            MetricsRegistry::new(),
+        )
+        .expect("runtime");
+        let accessor = Arc::new(WriteEnabled(Arc::clone(&manager)));
+        let ctx = nebula_action::testing::TestContextBuilder::new()
+            .build()
+            .with_resources(Arc::clone(&accessor) as _);
+
+        let result = runtime
+            .execute_action_with_node(
+                &node_of("test.resource_handle.journaled", "svc", &Svc::key()),
+                None,
+                serde_json::json!(null),
+                &ctx,
+                None,
+            )
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(nebula_engine::RuntimeError::EffectRequiresOwner)
+            ),
+            "{result:?}"
+        );
+        assert_eq!(calls.count(), 0, "the action body never ran");
+
+        // The accessor really is write-enabled: its facade reaches the
+        // provider with a write.
+        let row = nebula_core::accessor::ResourceAccessor::resource_handle_any(
+            accessor.as_ref(),
+            &Svc::key(),
+        )
+        .expect("facade")
+        .downcast::<ResourceHandle<Svc>>()
+        .expect("a ResourceHandle<Svc>");
+        let _ = row.submit(LostWrite).await;
+        assert_eq!(calls.count(), 1, "the write reached the provider");
+    }
+
+    row_action!(ReadSvc, "test.resource_handle.read", svc: Svc);
 
     impl StatelessAction for ReadSvc {
         async fn execute(
@@ -1592,13 +1864,13 @@ mod managed_row {
             _input: serde_json::Value,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-            let calls = self.svc.submit(Call(Cost::ONE)).await?;
+            let calls = self.svc.submit(Call { cost: Cost::ONE }).await?;
             Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
         }
     }
 
     #[tokio::test]
-    async fn an_action_runs_a_unit_on_its_managed_row_field() {
+    async fn an_action_runs_a_unit_on_its_resource_handle_field() {
         let manager = Arc::new(Manager::new());
         let calls = register_svc(&manager, None);
         let engine = engine(manager, |registry| {
@@ -1609,7 +1881,7 @@ mod managed_row {
 
         let result = run(
             &engine,
-            NodeDefinition::new(node_key!("row"), "Row", "core", "test.managed_row.read")
+            NodeDefinition::new(node_key!("row"), "Row", "core", "test.resource_handle.read")
                 .expect("valid projected node"),
             serde_json::json!(null),
             ExecutionBudget::default(),
@@ -1622,7 +1894,7 @@ mod managed_row {
 
     // ── (b) a session commits or rolls back ──────────────────────────────
 
-    row_action!(Book, "test.managed_row.book", ledger: Ledger);
+    row_action!(Book, "test.resource_handle.book", ledger: Ledger);
 
     impl StatelessAction for Book {
         async fn execute(
@@ -1632,14 +1904,15 @@ mod managed_row {
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
             let entry = input["entry"].as_str().unwrap_or_default().to_owned();
             let fail = input["fail"].as_bool().unwrap_or(false);
+            let spec = SessionSpec::write("ledger.book", &entry).cost(Cost::ONE);
             let booked = self
                 .ledger
-                .session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
+                .session(spec, move |tx, _cx| {
                     Box::pin(async move {
                         SESSION_BODIES.fetch_add(1, Ordering::SeqCst);
                         tx.pending.push(entry);
                         if fail {
-                            return Err(OpError::new(ErrorKind::Transient, "body failed"));
+                            return Err(OperationError::new(ErrorKind::Transient, "body failed"));
                         }
                         Ok(())
                     })
@@ -1679,7 +1952,7 @@ mod managed_row {
 
         let result = run(
             &engine,
-            node_of("test.managed_row.book", "ledger", &Ledger::key()),
+            node_of("test.resource_handle.book", "ledger", &Ledger::key()),
             serde_json::json!({ "entry": "a", "fail": false }),
             ExecutionBudget::default(),
         )
@@ -1702,19 +1975,21 @@ mod managed_row {
     static CANCEL_SETTLED: Notify = Notify::const_new();
 
     /// Asks for one attempt, recording the refusal it gets.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Queued;
 
     impl Operation<Svc> for Queued {
         type Output = u64;
+        const KEY: &'static str = "svc.queued";
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<u64, OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<u64, OperationError> {
             CANCEL_WAITING.notify_one();
             let refused = match cx.attempt(Cost::ONE).await {
                 Ok(attempt) => {
-                    let calls = attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1;
-                    attempt.settle(SentState::Sent);
-                    return Ok(calls);
+                    let calls = Ok(attempt.instance().0.fetch_add(1, Ordering::SeqCst) + 1);
+                    attempt.finish(&calls).await;
+                    return calls;
                 },
                 Err(refused) => refused,
             };
@@ -1725,7 +2000,7 @@ mod managed_row {
         }
     }
 
-    row_action!(Twice, "test.managed_row.twice", svc: Svc);
+    row_action!(Twice, "test.resource_handle.twice", svc: Svc);
 
     impl StatelessAction for Twice {
         async fn execute(
@@ -1733,7 +2008,7 @@ mod managed_row {
             _input: serde_json::Value,
             ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<serde_json::Value>, ActionError> {
-            self.svc.submit(Call(Cost::ONE)).await?;
+            self.svc.submit(Call { cost: Cost::ONE }).await?;
             *CANCEL_EXECUTION.lock().expect("execution slot") = ctx.scope().execution_id;
             let calls = self.svc.submit(Queued).await?;
             Ok(ActionResult::success(serde_json::json!({ "calls": calls })))
@@ -1758,7 +2033,7 @@ mod managed_row {
             async move {
                 run(
                     &engine,
-                    node_of("test.managed_row.twice", "svc", &Svc::key()),
+                    node_of("test.resource_handle.twice", "svc", &Svc::key()),
                     serde_json::json!(null),
                     ExecutionBudget::default(),
                 )
@@ -1790,16 +2065,18 @@ mod managed_row {
 
     // ── (d) the execution budget bounds the unit deadline ────────────────
 
-    row_action!(UnitDeadline, "test.managed_row.deadline", svc: Svc);
+    row_action!(UnitDeadline, "test.resource_handle.deadline", svc: Svc);
 
     /// Yields the seconds left until the unit's deadline.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Remaining;
 
     impl Operation<Svc> for Remaining {
         type Output = f64;
+        const KEY: &'static str = "svc.remaining";
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<f64, OpError> {
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<f64, OperationError> {
             Ok(cx
                 .deadline()
                 .saturating_duration_since(Instant::now())
@@ -1829,7 +2106,7 @@ mod managed_row {
                 .register_stateless_factory::<UnitDeadline>()
                 .expect("register");
         });
-        let node = || node_of("test.managed_row.deadline", "svc", &Svc::key());
+        let node = || node_of("test.resource_handle.deadline", "svc", &Svc::key());
         let remaining = |result: &nebula_engine::ExecutionResult| {
             output(result)["remaining"]
                 .as_f64()
@@ -1854,7 +2131,7 @@ mod managed_row {
         )
         .await;
         let left = remaining(&unbudgeted);
-        let cap = UNIT_DEADLINE_CAP.as_secs_f64();
+        let cap = OPERATION_DEADLINE_CAP.as_secs_f64();
         assert!(left <= cap && left > cap - 10.0, "the unit cap: {left}");
     }
 
@@ -1864,14 +2141,16 @@ mod managed_row {
     static HINTED_STARTS: Mutex<Vec<Instant>> = Mutex::new(Vec::new());
 
     /// Refused by the provider's quota before anything was sent.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Throttled;
 
     impl Operation<Svc> for Throttled {
         type Output = ();
+        const KEY: &'static str = "svc.throttled";
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, _cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
-            Err(OpError::new(
+        async fn run(self, _cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
+            Err(OperationError::new(
                 ErrorKind::Exhausted {
                     retry_after: Some(Duration::from_millis(300)),
                 },
@@ -1880,7 +2159,7 @@ mod managed_row {
         }
     }
 
-    row_action!(Hinted, "test.managed_row.hinted", svc: Svc);
+    row_action!(Hinted, "test.resource_handle.hinted", svc: Svc);
 
     impl StatelessAction for Hinted {
         async fn execute(
@@ -1911,7 +2190,7 @@ mod managed_row {
                 .register_stateless_factory::<Hinted>()
                 .expect("register");
         });
-        let mut node = node_of("test.managed_row.hinted", "svc", &Svc::key());
+        let mut node = node_of("test.resource_handle.hinted", "svc", &Svc::key());
         node.retry_policy = Some(nebula_workflow::RetryConfig::exponential(3, 1, 10_000));
 
         let result = run(
@@ -1934,21 +2213,24 @@ mod managed_row {
     // ── (f) replay-safe mutation still requires effect-owner authority ───
 
     /// A provider mutation that claims repeats are absorbed.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct AbsorbedWrite;
 
     impl Operation<Svc> for AbsorbedWrite {
         type Output = ();
+        const KEY: &'static str = "svc.absorbed_write";
         const EFFECT: Effect = Effect::Idempotent;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
-            let attempt = cx.attempt(Cost::ONE).await?;
-            attempt.instance().0.fetch_add(1, Ordering::SeqCst);
-            attempt.settle(SentState::Sent);
-            Ok(())
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
+            cx.call(Cost::ONE, async |svc, ()| {
+                svc.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
         }
     }
 
-    row_action!(IdempotentWrite, "test.managed_row.idempotent", svc: Svc);
+    row_action!(IdempotentWrite, "test.resource_handle.idempotent", svc: Svc);
 
     impl StatelessAction for IdempotentWrite {
         async fn execute(
@@ -1977,7 +2259,7 @@ mod managed_row {
 
         let result = run(
             &engine,
-            node_of("test.managed_row.idempotent", "svc", &Svc::key()),
+            node_of("test.resource_handle.idempotent", "svc", &Svc::key()),
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
@@ -1992,21 +2274,24 @@ mod managed_row {
     static UNKNOWN_DISPATCHES: AtomicU32 = AtomicU32::new(0);
 
     /// A write whose provider call may have been applied.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct LostWrite;
 
     impl Operation<Svc> for LostWrite {
         type Output = ();
+        const KEY: &'static str = "svc.lost_write";
         const EFFECT: Effect = Effect::Write;
 
-        async fn run(self, cx: &mut OpCx<'_, Svc>) -> Result<(), OpError> {
-            let attempt = cx.attempt(Cost::ONE).await?;
-            attempt.instance().0.fetch_add(1, Ordering::SeqCst);
-            attempt.settle(SentState::MaybeSent);
-            Err(OpError::new(ErrorKind::Transient, "connection reset"))
+        async fn run(self, cx: &mut OperationCx<'_, Svc>) -> Result<(), OperationError> {
+            cx.call(Cost::ONE, async |svc, ()| {
+                svc.0.fetch_add(1, Ordering::SeqCst);
+                Err(OperationError::interrupted("connection reset"))
+            })
+            .await
         }
     }
 
-    row_action!(UnknownWrite, "test.managed_row.unknown", svc: Svc);
+    row_action!(UnknownWrite, "test.resource_handle.unknown", svc: Svc);
 
     impl StatelessAction for UnknownWrite {
         async fn execute(
@@ -2030,7 +2315,7 @@ mod managed_row {
                 .register_stateless_factory::<UnknownWrite>()
                 .expect("register");
         });
-        let mut node = node_of("test.managed_row.unknown", "svc", &Svc::key());
+        let mut node = node_of("test.resource_handle.unknown", "svc", &Svc::key());
         node.retry_policy = Some(nebula_workflow::RetryConfig::exponential(3, 1, 10));
 
         let result = run(

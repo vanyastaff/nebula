@@ -113,7 +113,7 @@ macro_rules! input_contract {
                     )
                     .with_version(nebula_action::MetadataVersion::new(1, 0, 0))
                     .with_effect_contract(
-                        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+                        nebula_action::effect::ActionEffectContract::ReadOnly,
                     ),
                     LegacySchemaAction,
                 )

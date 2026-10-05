@@ -3,10 +3,10 @@
 //! calls. Cancellation observation goes through the borrowed token —
 //! no proxied `is_cancelled` wrapper on the context.
 
-use std::{any::Any, future::Future, pin::Pin, sync::Arc};
+use std::sync::Arc;
 
 use nebula_core::{
-    BaseContext, CoreError, ResourceKey,
+    BaseContext, ResourceKey,
     accessor::ResourceAccessor,
     scope::{Principal, Scope},
 };
@@ -18,27 +18,6 @@ struct NoopResourceAccessor;
 impl ResourceAccessor for NoopResourceAccessor {
     fn has(&self, _: &ResourceKey) -> bool {
         false
-    }
-
-    fn acquire_any(
-        &self,
-        _: &ResourceKey,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send + Sync>, CoreError>> + Send + '_>>
-    {
-        Box::pin(async {
-            Err(CoreError::CredentialNotConfigured(
-                "noop resource accessor".into(),
-            ))
-        })
-    }
-
-    fn try_acquire_any(
-        &self,
-        _: &ResourceKey,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> + Send + '_>,
-    > {
-        Box::pin(async { Ok(None) })
     }
 }
 

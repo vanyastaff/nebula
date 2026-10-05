@@ -871,3 +871,135 @@ fn webhook_rate_limit_tier_labels_are_closed_set() {
         );
     }
 }
+
+#[test]
+fn effect_journal_names_and_labels_are_closed_and_registry_safe() {
+    use super::{
+        NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL, NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL,
+        NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL, effect_journal_checkpoint_outcome,
+        effect_journal_resume_outcome,
+    };
+    use super::{
+        NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL, NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+        NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL, effect_journal_prepare_phase, effect_journal_refusal,
+        effect_journal_step, effect_journal_verdict,
+    };
+
+    let registry = MetricsRegistry::new();
+    let names = [
+        NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL,
+        NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL,
+        NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL,
+        NEBULA_EFFECT_JOURNAL_CHECKPOINTS_TOTAL,
+        NEBULA_EFFECT_JOURNAL_RESUMES_TOTAL,
+        NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL,
+    ];
+    let mut unique = HashSet::new();
+    for name in names {
+        assert!(name.starts_with("nebula_effect_journal_") && name.ends_with("_total"));
+        assert!(unique.insert(name));
+    }
+
+    // Closed label sets: adding a value permanently inflates cardinality;
+    // this test is the gate.
+    let phases = [
+        effect_journal_prepare_phase::RUNNABLE,
+        effect_journal_prepare_phase::REPLAY,
+        effect_journal_prepare_phase::UNKNOWN,
+        effect_journal_prepare_phase::OBSERVATION,
+    ];
+    let steps = [
+        effect_journal_step::SUBMIT,
+        effect_journal_step::PREPARE,
+        effect_journal_step::GRANT,
+        effect_journal_step::EXPLAIN,
+        effect_journal_step::SETTLE,
+        effect_journal_step::RECORD_LEAKED_CALL,
+    ];
+    let refusals = [
+        effect_journal_refusal::UNAVAILABLE,
+        effect_journal_refusal::ACKNOWLEDGEMENT_UNKNOWN,
+        effect_journal_refusal::MISMATCH,
+        effect_journal_refusal::CLOSED,
+        effect_journal_refusal::LEASE_LOST,
+        effect_journal_refusal::UNKNOWN,
+        effect_journal_refusal::SLOT_CAP_EXCEEDED,
+        effect_journal_refusal::BETWEEN_RUNS,
+        effect_journal_refusal::SUPERSEDED,
+        effect_journal_refusal::CONCURRENCY_LIMIT,
+    ];
+    let verdicts = [
+        effect_journal_verdict::OK,
+        effect_journal_verdict::DEFERRED,
+        effect_journal_verdict::OUTCOME_UNKNOWN,
+        effect_journal_verdict::OCCURRENCE_MISMATCH,
+        effect_journal_verdict::INVALID_CONTRACT,
+        effect_journal_verdict::INVALID_EVIDENCE,
+        effect_journal_verdict::LEDGER,
+        effect_journal_verdict::SLOT_CAP_EXCEEDED,
+        effect_journal_verdict::ITERATION_BARRIER,
+        effect_journal_verdict::CONCURRENCY_LIMIT,
+        effect_journal_verdict::ITERATION_CHECKPOINT,
+    ];
+    let checkpoints = [
+        effect_journal_checkpoint_outcome::RECORDED,
+        effect_journal_checkpoint_outcome::ALREADY_RECORDED,
+        effect_journal_checkpoint_outcome::OVERSIZE,
+        effect_journal_checkpoint_outcome::UNSETTLED,
+        effect_journal_checkpoint_outcome::UNAVAILABLE,
+        effect_journal_checkpoint_outcome::LEASE_REJECTED,
+        effect_journal_checkpoint_outcome::REFUSED,
+    ];
+    let resumes = [
+        effect_journal_resume_outcome::RESUMED,
+        effect_journal_resume_outcome::ABSENT,
+        effect_journal_resume_outcome::DEFERRED,
+        effect_journal_resume_outcome::INVALID,
+    ];
+    for (set, expected) in [
+        (&phases[..], 4),
+        (&steps[..], 6),
+        (&refusals[..], 10),
+        (&verdicts[..], 11),
+        (&checkpoints[..], 7),
+        (&resumes[..], 4),
+    ] {
+        let unique: HashSet<_> = set.iter().collect();
+        assert_eq!(unique.len(), expected);
+        assert!(
+            set.iter()
+                .all(|label| label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'))
+        );
+    }
+
+    let labels = registry
+        .interner()
+        .single("phase", effect_journal_prepare_phase::REPLAY);
+    let prepares = registry
+        .counter_labeled(NEBULA_EFFECT_JOURNAL_PREPARES_TOTAL, &labels)
+        .unwrap();
+    prepares.inc();
+    assert_eq!(prepares.get(), 1);
+    let labels = registry.interner().label_set(&[
+        ("step", effect_journal_step::GRANT),
+        ("refusal", effect_journal_refusal::LEASE_LOST),
+    ]);
+    let refused = registry
+        .counter_labeled(NEBULA_EFFECT_JOURNAL_REFUSALS_TOTAL, &labels)
+        .unwrap();
+    refused.inc();
+    assert_eq!(refused.get(), 1);
+    let labels = registry
+        .interner()
+        .single("code", effect_journal_verdict::OUTCOME_UNKNOWN);
+    let verdict = registry
+        .counter_labeled(NEBULA_EFFECT_JOURNAL_VERDICTS_TOTAL, &labels)
+        .unwrap();
+    verdict.inc();
+    assert_eq!(verdict.get(), 1);
+    let bytes = registry
+        .counter(NEBULA_EFFECT_JOURNAL_RECORDED_READ_BYTES_TOTAL)
+        .unwrap();
+    bytes.inc_by(1024);
+    assert_eq!(bytes.get(), 1024);
+}

@@ -1,6 +1,7 @@
-//! Streaming units: item order, the error after the items, backpressure,
-//! and every way a stream ends early — drop, cancel, deadline, lease
-//! closing. Paused time; no transport.
+//! Streaming units on a [`ResourceHandle`](super::ResourceHandle): item
+//! order, the error after the items, backpressure, and every way a stream
+//! ends early — drop, cancel, deadline, row closing. Paused time; no
+//! transport.
 
 use std::{
     num::NonZeroUsize,
@@ -17,9 +18,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::{StreamOperation, StreamSink};
 use crate::{
-    AcquireOptions, Error, ErrorKind, Manager, Provider, RegistrationSpec, Resident,
-    ResidentConfig, ResourceConfig, ResourceContext, SlotIdentity,
-    call::{Cost, Effect, Managed, OpCx, OpError, SentState},
+    Error, ErrorKind, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
+    ResourceConfig, ResourceContext, SlotIdentity,
+    call::{Cost, Effect, OperationCx, OperationError, ResourceHandle, SentState},
     resource::ResourceMetadataDraft,
     runtime::managed::ManagedResource,
     topology::ResidentProvider,
@@ -65,7 +66,7 @@ impl ResidentProvider for Feed {}
 
 crate::no_credential_slots!(Feed);
 
-async fn feed(manager: &Manager) -> Managed<Feed> {
+fn feed(manager: &Manager) -> ResourceHandle<Feed> {
     manager
         .register(RegistrationSpec {
             resource: Feed,
@@ -78,13 +79,10 @@ async fn feed(manager: &Manager) -> Managed<Feed> {
         })
         .expect("register");
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-    manager
-        .acquire::<Feed>(&context, &AcquireOptions::default())
-        .await
-        .expect("acquire")
-        .into_managed()
+    manager.handle::<Feed>(&context).expect("row handle")
 }
 
+/// Leases (checkouts included) the row has out.
 fn leases(manager: &Manager) -> u64 {
     manager
         .lookup_any_for_slot_identity_structural(
@@ -120,11 +118,14 @@ struct Probe {
 }
 
 /// After one granted `Sent` attempt: sends `items` values, then waits as
-/// `wait` says, and ends with `end`.
+/// `wait` says, and ends with `end`. The attempt is finished before the
+/// items flow — its checkout released — unless `hold` keeps it (and its
+/// checkout) until the operation ends.
 struct Emit {
     items: u64,
     wait: Wait,
     end: Result<u64, ErrorKind>,
+    hold: bool,
     probe: Probe,
 }
 
@@ -133,8 +134,8 @@ enum Wait {
     Nothing,
     /// Waits for the consumer to go away, as while reading a provider.
     ConsumerGone,
-    /// Waits for the lease to close.
-    LeaseClosing,
+    /// Waits for the unit's row generation to close.
+    Closing,
     /// Never returns: the unit hits its deadline.
     Forever,
 }
@@ -142,13 +143,23 @@ enum Wait {
 impl StreamOperation<Feed> for Emit {
     type Item = u64;
     type Output = u64;
+    const KEY: &'static str = "test.emit";
     const EFFECT: Effect = Effect::Write;
 
-    async fn run(self, cx: &mut OpCx<'_, Feed>, mut sink: StreamSink<u64>) -> Result<u64, OpError> {
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, Feed>,
+        mut sink: StreamSink<u64>,
+    ) -> Result<u64, OperationError> {
         self.probe.started.fetch_add(1, Ordering::SeqCst);
         let closing = cx.closing();
         let attempt = cx.attempt(Cost::FREE).await?;
-        attempt.settle(SentState::Sent);
+        let held = if self.hold {
+            Some(attempt)
+        } else {
+            attempt.finish(&Ok::<(), OperationError>(())).await;
+            None
+        };
         self.probe.granted.notify_one();
         let ended = EndGuard(Arc::clone(&self.probe.ended));
         for value in 0..self.items {
@@ -159,17 +170,20 @@ impl StreamOperation<Feed> for Emit {
             Wait::Nothing => {},
             Wait::ConsumerGone => {
                 sink.closed().await;
-                return Err(OpError::new(ErrorKind::Cancelled, "consumer gone"));
+                return Err(OperationError::new(ErrorKind::Cancelled, "consumer gone"));
             },
-            Wait::LeaseClosing => {
+            Wait::Closing => {
                 closing.closed().await;
-                return Err(OpError::new(ErrorKind::Cancelled, "lease closing"));
+                return Err(OperationError::new(ErrorKind::Cancelled, "row closing"));
             },
             Wait::Forever => std::future::pending::<()>().await,
         }
+        if let Some(attempt) = held {
+            attempt.finish(&Ok::<(), OperationError>(())).await;
+        }
         drop(ended);
         self.end
-            .map_err(|kind| OpError::new(kind, "provider failed mid-stream"))
+            .map_err(|kind| OperationError::new(kind, "provider failed mid-stream"))
     }
 }
 
@@ -189,6 +203,7 @@ fn emit(items: u64, wait: Wait, end: Result<u64, ErrorKind>) -> (Emit, Probe) {
             items,
             wait,
             end,
+            hold: false,
             probe: probe.clone(),
         },
         probe,
@@ -200,7 +215,7 @@ fn emit(items: u64, wait: Wait, end: Result<u64, ErrorKind>) -> (Emit, Probe) {
 #[tokio::test(start_paused = true)]
 async fn items_arrive_in_order_then_the_stream_ends_with_the_output() {
     let manager = Manager::new();
-    let managed = feed(&manager).await;
+    let managed = feed(&manager);
     let (operation, _) = emit(5, Wait::Nothing, Ok(42));
     let mut stream = managed.submit_streaming(operation, capacity(2));
 
@@ -216,7 +231,7 @@ async fn items_arrive_in_order_then_the_stream_ends_with_the_output() {
 #[tokio::test(start_paused = true)]
 async fn buffered_items_come_before_the_units_error_which_comes_once() {
     let manager = Manager::new();
-    let managed = feed(&manager).await;
+    let managed = feed(&manager);
     let (operation, probe) = emit(3, Wait::Nothing, Err(ErrorKind::Transient));
     let mut stream = managed.submit_streaming(operation, capacity(8));
 
@@ -245,7 +260,7 @@ async fn buffered_items_come_before_the_units_error_which_comes_once() {
 #[tokio::test(start_paused = true)]
 async fn a_slow_consumer_holds_the_operation_at_the_buffer() {
     let manager = Manager::new();
-    let managed = feed(&manager).await;
+    let managed = feed(&manager);
     let (operation, probe) = emit(10, Wait::Nothing, Ok(0));
     let mut stream = managed.submit_streaming(operation, capacity(2));
 
@@ -262,7 +277,7 @@ async fn a_slow_consumer_holds_the_operation_at_the_buffer() {
 #[tokio::test(start_paused = true)]
 async fn a_stream_dropped_before_its_first_poll_never_runs() {
     let manager = Manager::new();
-    let managed = feed(&manager).await;
+    let managed = feed(&manager);
     let (operation, probe) = emit(1, Wait::Nothing, Ok(0));
     drop(managed.submit_streaming(operation, capacity(1)));
     settle_tasks().await;
@@ -272,7 +287,7 @@ async fn a_stream_dropped_before_its_first_poll_never_runs() {
 #[tokio::test(start_paused = true)]
 async fn a_cancel_before_the_grant_settles_cancelled_not_sent() {
     let manager = Manager::new();
-    let managed = feed(&manager).await;
+    let managed = feed(&manager);
     let (operation, probe) = emit(1, Wait::Nothing, Ok(0));
     let mut stream = managed.submit_streaming(operation, capacity(1));
     stream.cancel();
@@ -291,7 +306,7 @@ async fn a_cancel_before_the_grant_settles_cancelled_not_sent() {
 #[tokio::test(start_paused = true)]
 async fn a_cancel_after_the_grant_closes_the_sink() {
     let manager = Manager::new();
-    let managed = feed(&manager).await;
+    let managed = feed(&manager);
     let (operation, probe) = emit(1, Wait::ConsumerGone, Ok(0));
     let mut stream = managed.submit_streaming(operation, capacity(4));
 
@@ -304,17 +319,23 @@ async fn a_cancel_after_the_grant_closes_the_sink() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_dropped_consumer_ends_the_operation_and_releases_the_lease() {
+async fn a_dropped_consumer_ends_the_operation_and_releases_its_checkout() {
     // More items than the buffer: the operation ends at a failed send.
-    // One item: it ends while it waits on the provider.
+    // One item: it ends while it waits on the provider. Its attempt stays
+    // alive while the items flow, so its checkout is held meanwhile.
     for (items, wait) in [(4, Wait::Nothing), (1, Wait::ConsumerGone)] {
         let manager = Manager::new();
-        let managed = feed(&manager).await;
-        let (operation, probe) = emit(items, wait, Ok(0));
+        let managed = feed(&manager);
+        let (mut operation, probe) = emit(items, wait, Ok(0));
+        operation.hold = true;
         let mut stream = managed.submit_streaming(operation, capacity(1));
         assert_eq!(stream.next().await.map(Result::ok), Some(Some(0)));
         drop(managed);
-        assert_eq!(leases(&manager), 1, "the running unit holds the lease");
+        assert_eq!(
+            leases(&manager),
+            1,
+            "the running unit's attempt holds its checkout"
+        );
 
         drop(stream);
         settle_tasks().await;
@@ -326,7 +347,7 @@ async fn a_dropped_consumer_ends_the_operation_and_releases_the_lease() {
 #[tokio::test(start_paused = true)]
 async fn a_deadline_mid_stream_is_maybe_sent() {
     let manager = Manager::new();
-    let managed = feed(&manager).await;
+    let managed = feed(&manager);
     let (operation, probe) = emit(1, Wait::Forever, Ok(0));
     let mut stream = managed
         .submit_streaming(operation, capacity(1))
@@ -349,10 +370,10 @@ async fn a_deadline_mid_stream_is_maybe_sent() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_closing_lease_ends_a_stream_that_selects_on_it() {
+async fn a_closing_row_ends_a_stream_that_selects_on_it() {
     let manager = Manager::new();
-    let managed = feed(&manager).await;
-    let (operation, probe) = emit(0, Wait::LeaseClosing, Ok(0));
+    let managed = feed(&manager);
+    let (operation, probe) = emit(0, Wait::Closing, Ok(0));
     let stream = managed.submit_streaming(operation, capacity(1));
     let running = tokio::spawn(stream.finish());
     probe.granted.notified().await;

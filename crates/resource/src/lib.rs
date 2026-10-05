@@ -5,8 +5,10 @@
 //!
 //! The engine is the owner of the resource lifecycle: acquire, health-check,
 //! hot-reload via `ReloadOutcome`, and scope-bounded release. Action code
-//! receives a `ResourceGuard` that derefs to `R::Instance` and releases on
-//! drop. Three built-in topologies cover the integration space: `Pooled`
+//! receives a [`ResourceHandle<R>`](call::ResourceHandle) and submits units
+//! on it; each unit checks out an instance per attempt and its effects are
+//! journaled. A [`ResourceGuard`] that derefs to `R::Instance` is a
+//! host-only lease (manager, engine, tests) — never an action route. Three built-in topologies cover the integration space: `Pooled`
 //! (N interchangeable instances), `Resident` (one shared master at a time,
 //! cloned per acquire), and `Bounded` (a concurrency cap with no warm idle pool).
 //!
@@ -81,9 +83,10 @@
 //! ```
 //!
 //! See [`Manager::register`] / [`Manager::acquire_pooled`] for the full
-//! error and cancel-safety contract. Action code running inside the engine
-//! does not usually call [`Manager`] directly — see the `ext` module for the
-//! `ctx.resource::<R>().await?` access surface instead.
+//! error and cancel-safety contract. The guard above is the host-side lease:
+//! action code running inside the engine never reaches [`Manager`] or a
+//! [`ResourceGuard`]. It declares a `#[resource]` field of type
+//! [`ResourceHandle<R>`](call::ResourceHandle) instead (see [`Manager::handle`]).
 //!
 //! ## Choosing a topology
 //!
@@ -135,7 +138,8 @@
 //! |------|---------|
 //! | `Provider` | Lifecycle trait — `Config`/`Instance` + lifecycle + slot-rotation hooks |
 //! | `Resource` | Derive macro — emits slot plumbing (`HasCredentialSlots`, accessors) |
-//! | `ResourceGuard` | RAII instance guard with Owned/Guarded modes |
+//! | `ResourceHandle` | The action-facing row facade: submit units, each checks out per attempt |
+//! | `ResourceGuard` | Host-only RAII lease with Owned/Guarded modes — never an action route |
 //! | `Manager` | Central registry with acquire dispatch and shutdown |
 //! | `ReleaseQueue` | Background worker pool for async cleanup (best-effort on crash) |
 //! | `DrainTimeoutPolicy` | Drain operation timeout policy |
@@ -234,6 +238,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 pub mod call;
+mod config_fingerprint;
 pub mod context;
 #[cfg(feature = "rotation")]
 pub mod credential_fanout;
@@ -241,7 +246,6 @@ pub(crate) mod deadline;
 pub mod dedup;
 pub mod error;
 pub mod events;
-pub mod ext;
 pub mod factory;
 pub mod guard;
 pub(crate) mod hook_guard;
@@ -255,7 +259,6 @@ pub mod registry;
 pub mod release_queue;
 pub mod reload;
 pub mod resource;
-pub mod resource_ref;
 pub(crate) mod runtime;
 pub mod slot;
 pub mod state;
@@ -263,17 +266,16 @@ pub mod topology;
 pub mod topology_tag;
 
 pub use call::{
-    Attempt, Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart,
-    Managed, OccurrenceLabel, OpCx, OpError, Operation, OperationKey, PinSlots, Recorded,
-    SentState, Unit,
+    Attempt, Cost, Effect, IdempotencyKey, Operation, OperationCx, OperationError, PinSlots,
+    SentState, Submission,
 };
+pub use config_fingerprint::{ConfigFingerprint, ConfigFingerprintError};
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
 pub use dedup::{DedupKey, SlotIdentity};
 pub use error::{CredentialUnavailableReason, Error, ErrorKind};
 pub use events::{ResourceEvent, RetirementFailureStage, RetirementOrigin};
-pub use ext::HasResourcesExt;
 pub use guard::{LeaseClosing, ReleaseOutcome, ResourceGuard};
 pub use manager::{
     CredentialAdmissionProfile, CredentialGateTicket, CredentialObservedAt,
@@ -405,7 +407,6 @@ pub use resource::{
     RecordedResourceMetadata, ResourceConfig, ResourceMetadata, ResourceMetadataDraft, TeardownCx,
     TeardownReason,
 };
-pub use resource_ref::ResourceRef;
 pub use slot::{CredentialSlot, SlotCell, SlotInstallError, SlotUpdate};
 // Runtime types — the framework topologies needed for `Manager::register()`.
 pub use runtime::managed::ManagedResource;

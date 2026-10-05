@@ -9,23 +9,22 @@
 //! CONTRACT.md:40-41, QUOTA-DX.md:33). The two phases are the acquire
 //! path's (`manager::strict_admission`, invariant I7):
 //!
-//! 1. [`ManagedLease::read_credentials`] reads outside every lock, through
-//!    the manager's join-next reads, bounded by the unit's deadline and the
-//!    read timeout, raced against the lease's generation and the unit's
-//!    cancel.
-//! 2. [`ManagedLease::register`] takes `Manager.admission` (through the
-//!    row's [`AdmissionLink`](crate::manager::AdmissionLink)), re-checks
-//!    taint and shutdown, applies the reading to the row's gate, checks the
-//!    row's suspension, the lease's generation and the unit's pin, and
-//!    grants under the lock. Lock order: `Manager.admission`, the row's
-//!    gate, each slot's writer lock.
+//! 1. [`read_credentials`] reads outside every lock, through the manager's
+//!    join-next reads, bounded by the unit's deadline and the read timeout,
+//!    raced against the unit's generation and the unit's cancel.
+//! 2. [`register_grant`] takes `Manager.admission` (through the row's
+//!    [`AdmissionLink`](crate::manager::AdmissionLink)), re-checks taint and
+//!    shutdown, applies the reading to the row's gate, checks the row's
+//!    suspension, the checkout's generation and the unit's pin, and grants
+//!    under the lock. Lock order: `Manager.admission`, the row's gate, each
+//!    slot's writer lock.
 //!
 //! Interim managers and rows with no bound slot read nothing and register
 //! lock-free. An outage refuses `CheckUnavailable` and changes no gate
 //! state (CONTRACT.md:77). Readmission at the installed material with an
 //! advanced use revision publishes a fresh generation without closing the
-//! lease, so the lease's later attempts are admitted too (the residual of
-//! I6).
+//! old one, so a unit started under it keeps being admitted (the residual
+//! of I6).
 //!
 //! # Pin
 //!
@@ -46,8 +45,8 @@
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    error::OpError,
-    managed::{ManagedLease, UnitShared, cancelled_before_grant, generation_refusal},
+    error::OperationError,
+    managed::{UnitShared, cancelled_before_grant, generation_refusal},
     pin::PinSlots,
 };
 use crate::{
@@ -149,44 +148,13 @@ pub(crate) fn pin_is_current<R: Provider, P>(
     pin.stable && slot_generations(&managed.resource) == pin.generations
 }
 
-impl<R: Provider + PinSlots> ManagedLease<R> {
-    /// Step 4 of an attempt: the strict per-attempt credential read, outside
-    /// every lock, raced against the lease's generation (see
-    /// [`read_credentials`]).
-    pub(super) async fn read_credentials(
-        &self,
-        deadline: tokio::time::Instant,
-        cancel: Option<&CancellationToken>,
-    ) -> Result<Option<StrictReading>, OpError> {
-        read_credentials(&self.managed, &self.generation, deadline, cancel).await
-    }
-
-    /// Step 6 of an attempt: registers it and grants it under the lease's
-    /// generation (see [`register_grant`]). Strict when the attempt read.
-    pub(super) fn register(
-        &self,
-        reading: Option<&StrictReading>,
-        pin: &UnitPin<R::Pinned>,
-        shared: &UnitShared,
-    ) -> Result<(), OpError> {
-        register_grant(
-            &self.managed,
-            reading.is_some(),
-            reading,
-            &self.generation,
-            pin,
-            shared,
-        )
-    }
-}
-
 /// The strict per-attempt credential read of `managed`, outside every lock.
 /// `None` — zero reads — on an interim manager and for a row with no bound
 /// slot.
 ///
 /// The read is bounded by `deadline` (and by the read's own timeout) and
 /// raced, closing first, against `generation` (the unit's) and, until the
-/// unit's first grant, against [`Unit::cancel`](super::Unit::cancel).
+/// unit's first grant, against [`Submission::cancel`](super::Submission::cancel).
 ///
 /// # Cancel safety
 ///
@@ -196,7 +164,7 @@ pub(super) async fn read_credentials<R: Provider>(
     generation: &AdmissionGeneration,
     deadline: tokio::time::Instant,
     cancel: Option<&CancellationToken>,
-) -> Result<Option<StrictReading>, OpError> {
+) -> Result<Option<StrictReading>, OperationError> {
     if managed.credential_reads.is_none() {
         return Ok(None);
     }
@@ -230,7 +198,7 @@ pub(super) fn register_grant<R: Provider, P>(
     generation: &AdmissionGeneration,
     pin: &UnitPin<P>,
     shared: &UnitShared,
-) -> Result<(), OpError> {
+) -> Result<(), OperationError> {
     let (true, Some(reads)) = (strict, managed.credential_reads.as_deref()) else {
         generation_refusal(managed, generation)?;
         return shared.grant();
@@ -239,23 +207,23 @@ pub(super) fn register_grant<R: Provider, P>(
     let link = reads.link();
     let _admission = link.lock();
     if managed.is_tainted() {
-        return Err(OpError::new(
+        return Err(OperationError::new(
             ErrorKind::Revoked,
             "resource tainted by a credential revoke; new attempts refused",
         ));
     }
     link.shutdown_guard().map_err(|_| {
-        OpError::new(
+        OperationError::new(
             ErrorKind::Cancelled,
             "manager shutting down; attempt refused",
         )
     })?;
     if let Some(reading) = reading {
         link.apply_strict_reading_under_admission(&key, managed, reading, reads)
-            .map_err(OpError::from)?;
+            .map_err(OperationError::from)?;
     }
     if let Some(suspension) = managed.admission.suspension() {
-        return Err(OpError::new(
+        return Err(OperationError::new(
             ErrorKind::CredentialUnavailable {
                 reason: suspension.reason(),
             },
@@ -271,7 +239,7 @@ pub(super) fn register_grant<R: Provider, P>(
             resource.key = %key,
             "credential slots rotated since the unit pinned them; attempt refused"
         );
-        return Err(OpError::new(
+        return Err(OperationError::new(
             ErrorKind::CredentialUnavailable {
                 reason: CredentialUnavailableReason::Rebinding,
             },

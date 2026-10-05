@@ -56,9 +56,7 @@ macro_rules! placeholder_action_impl {
                     nebula_action::metadata_name!($name),
                     $desc,
                 )
-                .with_effect_contract(
-                    nebula_action::effect::ActionEffectContract::NoExternalEffects,
-                )
+                .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -325,7 +323,7 @@ async fn wait_node_gates_downstream_until_timer_then_resumes() {
                 nebula_action::metadata_name!("Waiter"),
                 "parks for 60ms",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             WaitingHandler {
                 wait_for: Duration::from_millis(60),
                 partial_output: serde_json::json!({ "stage": "parked" }),
@@ -339,7 +337,7 @@ async fn wait_node_gates_downstream_until_timer_then_resumes() {
                 nebula_action::metadata_name!("Downstream"),
                 "echo",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             EchoHandler {
                 invocations: Arc::clone(&downstream_calls),
             },
@@ -455,7 +453,7 @@ async fn wait_until_condition_gates_and_resumes() {
                 nebula_action::metadata_name!("WaiterUntil"),
                 "parks Until",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             WaitUntilHandler {
                 wake_at,
                 partial_output: serde_json::json!("from_wait"),
@@ -469,7 +467,7 @@ async fn wait_until_condition_gates_and_resumes() {
                 nebula_action::metadata_name!("DsUntil"),
                 "downstream echo",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             EchoHandler {
                 invocations: Arc::clone(&downstream_calls),
             },
@@ -531,7 +529,7 @@ async fn parked_wait_node_holds_no_worker_sibling_completes() {
                 nebula_action::metadata_name!("SlowWaiter"),
                 "parks for 150ms",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             WaitingHandler {
                 wait_for: Duration::from_millis(150),
                 partial_output: serde_json::json!(null),
@@ -545,7 +543,7 @@ async fn parked_wait_node_holds_no_worker_sibling_completes() {
                 nebula_action::metadata_name!("Sibling"),
                 "completes immediately",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             EchoHandler {
                 invocations: Arc::clone(&sibling_calls),
             },
@@ -606,7 +604,7 @@ async fn cancel_during_wait_drains_heap() {
                 nebula_action::metadata_name!("LongWaiter"),
                 "parks for 1 min",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             WaitingHandler {
                 wait_for: Duration::from_mins(1),
                 partial_output: serde_json::json!(null),
@@ -698,7 +696,7 @@ async fn webhook_wait_condition_parks_execution_as_paused() {
                 nebula_action::metadata_name!("WebhookWaiter"),
                 "parks on webhook callback",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             WebhookWaitHandler,
         )
         .expect("valid test catalog definition");
@@ -709,7 +707,7 @@ async fn webhook_wait_condition_parks_execution_as_paused() {
                 nebula_action::metadata_name!("DsWebhook"),
                 "downstream echo",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             EchoHandler {
                 invocations: Arc::clone(&downstream_calls),
             },
@@ -807,7 +805,7 @@ async fn explicit_timeout_on_timer_wait_returns_unsupported_error() {
                 nebula_action::metadata_name!("TimeoutWaiter"),
                 "parks with an explicit timeout",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             WaitWithTimeoutHandler {
                 wait_for: Duration::from_mins(1),
                 timeout: Duration::from_secs(5),
@@ -882,7 +880,7 @@ async fn oversized_partial_output_fails_node_not_parks_downstream_blocked() {
                 nebula_action::metadata_name!("OversizedWaiter"),
                 "parks with an oversized partial output",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             WaitWithOversizedOutputHandler {
                 wait_for: Duration::from_millis(60),
                 output: big_output,
@@ -896,7 +894,7 @@ async fn oversized_partial_output_fails_node_not_parks_downstream_blocked() {
                 nebula_action::metadata_name!("DsOversized"),
                 "downstream echo",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             EchoHandler {
                 invocations: Arc::clone(&downstream_calls),
             },

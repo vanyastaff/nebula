@@ -168,7 +168,7 @@ fn pure_metadata(
     description: impl Into<String>,
 ) -> ActionMetadataDraft {
     ActionMetadataDraft::new(key, name, description)
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
 }
 
 fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> WorkflowDefinition {
@@ -271,10 +271,10 @@ impl TestStores {
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = nebula_storage::InMemoryWorkflowVersionStore::new();
         Self {
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
         }
@@ -1627,6 +1627,9 @@ mod checkpoint_tests;
 
 #[path = "input_proof_tests.rs"]
 mod input_proof_tests;
+
+#[path = "journal_exit_tests.rs"]
+mod journal_exit_tests;
 
 struct QualifiedFixturePlugin {
     manifest: nebula_plugin::PluginManifest,
@@ -3474,7 +3477,7 @@ async fn version_pinned_node_uses_specified_handler() {
                 nebula_action::metadata_name!("V1"),
                 "v1 handler",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
             .with_version(v1.clone()),
             V1Handler,
         )

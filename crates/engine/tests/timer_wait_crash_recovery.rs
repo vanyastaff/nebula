@@ -70,7 +70,7 @@ mod exact_fixture;
 macro_rules! pure_action_metadata {
     ($key:expr, $name:expr, $description:expr $(,)?) => {
         nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     };
 }
 
@@ -167,10 +167,10 @@ impl CrashRecoveryStores {
         let versions = InMemoryWorkflowVersionStore::new();
         Self {
             frozen: Mutex::new(None),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
         }

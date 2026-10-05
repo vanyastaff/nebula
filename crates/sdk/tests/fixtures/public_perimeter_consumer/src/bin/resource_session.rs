@@ -1,10 +1,10 @@
 //! An SDK-only session provider: a pooled ledger whose transactions borrow
 //! their connection, and the action-side code that runs one through a
-//! managed row, all through `nebula_sdk::integration::resource`.
+//! resource handle, all through `nebula_sdk::integration::resource`.
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ManagedRow, OpError, PoolProvider, Pooled, Provider, ResourceContext,
-    ResourceKey, ResourceMetadataDraft, SessionBinding, SessionClosed, SessionEnd,
+    Cost, Effect, Error, OperationError, PoolProvider, Pooled, Provider, ResourceContext,
+    ResourceHandle, ResourceKey, ResourceMetadataDraft, SessionBinding, SessionClosed, SessionEnd,
     SessionProvider, SessionSpec, no_credential_slots, resource_key,
 };
 
@@ -59,7 +59,7 @@ impl PoolProvider for Ledger {}
 impl SessionProvider for Ledger {
     type Session<'c> = Tx<'c>;
 
-    async fn open<'c>(&'c self, conn: &'c mut Conn, _slots: &'c ()) -> Result<Tx<'c>, OpError> {
+    async fn open<'c>(&'c self, conn: &'c mut Conn, _slots: &'c ()) -> Result<Tx<'c>, OperationError> {
         Ok(Tx {
             conn,
             pending: Vec::new(),
@@ -77,9 +77,9 @@ impl SessionProvider for Ledger {
 }
 
 /// What action code does with a managed row: one transaction, booked once.
-async fn transfer(ledger: &ManagedRow<Ledger>) -> Result<u64, Error> {
+async fn transfer(ledger: &ResourceHandle<Ledger>) -> Result<u64, Error> {
     let rows = ledger
-        .session(SessionSpec::new(Cost::ONE), |tx, cx| {
+        .session(SessionSpec::write("ledger.transfer", &1_u64), |tx, cx| {
             let key = cx.resource_key().clone();
             Box::pin(async move {
                 let debit = tx.execute("update accounts set balance = balance - 1");
@@ -95,9 +95,11 @@ async fn transfer(ledger: &ManagedRow<Ledger>) -> Result<u64, Error> {
 fn main() {
     let _action_code = transfer;
     assert_eq!(Ledger::BINDING, SessionBinding::Connection);
-    let spec = SessionSpec::new(Cost::ONE);
-    assert_eq!(spec.effect(), Effect::Write, "a session is a write by default");
-    assert_eq!(spec.cost().permits(), 1);
-    let read = SessionSpec::new(Cost::FREE).with_effect(Effect::Read);
+    let spec = SessionSpec::write("ledger.transfer", &1_u64).cost(Cost::ONE);
+    assert_eq!(spec.effect(), Effect::Write);
+    let idempotent = SessionSpec::idempotent("ledger.settle", &("alice", 1_u64))
+        .idempotency_key("settle-alice-1");
+    assert_eq!(idempotent.effect(), Effect::Idempotent);
+    let read = SessionSpec::read("ledger.balance").cost(Cost::FREE);
     assert!(read.effect().is_replay_safe());
 }

@@ -64,7 +64,7 @@ use crate::{
 };
 
 /// Why an admission span closed, when something other than retirement closed
-/// it. Read by the hand-out refusal and by `Limited` waits so the caller
+/// it. Read by the hand-out refusal and by managed quota waits so the caller
 /// learns the credential reason rather than a bare cancellation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CloseCause {

@@ -6,7 +6,7 @@
 //! rest to [`AcquireLink::acquire_admitted`]: the in-flight count, the
 //! admission checks under `Manager.admission` (lock #1), the recovery gate,
 //! the dispatch and the hand-out check. A managed row facade
-//! ([`ManagedRow`](crate::call::ManagedRow)) checks out one instance per
+//! ([`ResourceHandle`](crate::call::ResourceHandle)) checks out one instance per
 //! attempt long after it was built, after its own quota and row-gate waits,
 //! through the same function — so an acquire and a row attempt are admitted
 //! by one body. [`AcquireLink::dispatch_checkout`] is the guarded framework

@@ -1,5 +1,5 @@
 //! Credential admission profiles: chosen at registration, latched per
-//! attempt when a strict row's lease becomes a managed call facade, visible
+//! attempt when a strict row first serves a managed call facade, visible
 //! in the health snapshot, the erased view and the erased handle; a strict
 //! manager refuses a row it cannot observe.
 
@@ -52,12 +52,10 @@ fn profile_names_are_stable() {
     assert!(!CredentialAdmissionProfile::Unbound.is_interim());
 }
 
-async fn into_managed<R: Provider + crate::PinSlots>(manager: &Manager) -> crate::call::Managed<R> {
+fn facade<R: Provider + crate::PinSlots>(manager: &Manager) -> crate::call::ResourceHandle<R> {
     manager
-        .acquire_for_identity::<R>(&context(), &AcquireOptions::default(), &tenant())
-        .await
-        .expect("acquire")
-        .into_managed()
+        .handle_for_identity::<R>(&context(), &tenant())
+        .expect("row handle")
 }
 
 /// The profile as the health snapshot, the erased view and the erased
@@ -77,7 +75,7 @@ fn reported<R: Provider>(manager: &Manager) -> CredentialAdmissionProfile {
 }
 
 #[tokio::test]
-async fn a_strict_row_reports_per_attempt_once_a_lease_becomes_a_facade() {
+async fn a_strict_row_reports_per_attempt_once_it_serves_a_facade() {
     let metrics = Arc::new(nebula_metrics::MetricsRegistry::new());
     let manager = strict_manager(observer(), &metrics);
     let resource = resident(&manager);
@@ -98,7 +96,8 @@ async fn a_strict_row_reports_per_attempt_once_a_lease_becomes_a_facade() {
         CredentialAdmissionProfile::StrictPerAcquire,
         "a plain lease leaves the row per acquire"
     );
-    let managed = guard.into_managed();
+    drop(guard);
+    let managed = facade::<StrictResident>(&manager);
     assert_eq!(
         reported::<StrictResident>(&manager),
         CredentialAdmissionProfile::StrictPerAttempt
@@ -115,7 +114,7 @@ async fn a_strict_row_reports_per_attempt_once_a_lease_becomes_a_facade() {
     assert!(format!("{view:?}").contains("credential_admission_profile: StrictPerAttempt"));
 
     // A slot-less row stays unbound through the facade.
-    drop(into_managed::<UnboundRow>(&manager).await);
+    drop(facade::<UnboundRow>(&manager));
     assert_eq!(
         reported::<UnboundRow>(&manager),
         CredentialAdmissionProfile::Unbound
@@ -127,7 +126,7 @@ async fn an_interim_row_stays_on_the_row_gate_through_the_facade() {
     let manager = Manager::new();
     let resource = resident(&manager);
     bind(&resource.db, credential_id(), 1, 1);
-    drop(into_managed::<StrictResident>(&manager).await);
+    drop(facade::<StrictResident>(&manager));
     assert_eq!(
         reported::<StrictResident>(&manager),
         CredentialAdmissionProfile::InterimRowGate

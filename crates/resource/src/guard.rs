@@ -1,7 +1,16 @@
-//! Resource guard — the value callers hold while using a resource.
+//! Resource guard — the host-side lease over a checked-out instance.
 //!
 //! A manager-owned lease borrows its topology entry through `Deref`.
 //! Explicit release and Drop both transfer that same entry to the cleanup queue.
+//!
+//! A guard is a host-only capability (the manager, the engine, and tests).
+//! It is never an action route: no action context serves one, the
+//! `#[derive(Action)]` macro refuses `ResourceGuard<R>` slots, and
+//! `nebula-sdk` does not export it, and it never becomes a managed call
+//! facade. Actions hold
+//! [`ResourceHandle<R>`](crate::call::ResourceHandle) instead, whose units
+//! check out per attempt and are journaled — a lease bypasses the effect
+//! journal.
 
 use std::{
     ops::Deref,
@@ -17,7 +26,6 @@ use nebula_eventbus::EventBus;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
 
 use crate::{
-    call::{Managed, PinSlots},
     context::ResourceContext,
     events::ResourceEvent,
     metrics::ResourceOpsMetrics,
@@ -67,6 +75,10 @@ pub(crate) type DrainTracker = Arc<(AtomicU64, Notify)>;
 pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 
 /// A manager-owned lease over a resource instance.
+///
+/// Host-only: action code reaches a resource through
+/// [`ResourceHandle<R>`](crate::call::ResourceHandle), never a guard (see the
+/// [module docs](self)).
 ///
 /// Dereferences to the instance inside the actual topology entry; the framework
 /// never clones that instance or transfers it outside lifecycle cleanup. Both explicit
@@ -305,39 +317,6 @@ impl<R: Provider> ResourceGuard<R> {
         &self.admission
     }
 
-    /// The row this lease came from.
-    pub(crate) fn managed(&self) -> &Arc<ManagedResource<R>> {
-        &self.managed
-    }
-
-    /// The manager's operation counters, when configured.
-    pub(crate) fn metrics(&self) -> Option<&ResourceOpsMetrics> {
-        self.metrics.as_ref()
-    }
-
-    /// The manager's event bus, when attached.
-    pub(crate) fn event_bus(&self) -> Option<&Arc<EventBus<ResourceEvent>>> {
-        self.event_bus.as_ref()
-    }
-
-    /// Turns this lease into a managed call facade: provider calls go
-    /// through [`Managed::submit`] as admitted,
-    /// budgeted units of work, and the lease is released when the facade and
-    /// every unit it started are gone.
-    ///
-    /// Latches the row's rate-limit profile to
-    /// [`RateLimitProfile::PerAttempt`](crate::RateLimitProfile::PerAttempt):
-    /// from now on each granted attempt books its cost, and acquires of the
-    /// row only honour pauses.
-    ///
-    /// See the [`call`](crate::call) module for the contract.
-    pub fn into_managed(self) -> Managed<R>
-    where
-        R: PinSlots,
-    {
-        Managed::from_guard(self)
-    }
-
     /// Attaches the manager's event bus so this guard emits
     /// [`ResourceEvent::Released`] on drop. Wired by
     /// [`Manager::run_acquire`](crate::manager::Manager) right after the
@@ -425,13 +404,12 @@ impl<R: Provider> ResourceGuard<R> {
 
     /// The row's limit.
     ///
-    /// A resource that wraps its client in `create` with
-    /// [`wrap`](crate::rate_limit::ResourceLimiter::wrap) is paced per call:
-    /// each [`Limited`](crate::rate_limit::Limited) call books one permit,
-    /// and an acquire only honours pauses. Without a wrapped client, each
-    /// acquire books one permit. Use this handle only to
-    /// [`penalize`](crate::rate_limit::ResourceLimiter::penalize) on a signal
-    /// that does not come back from a call.
+    /// Until the managed call facade serves the row, each acquire books one
+    /// permit; from then on each granted attempt books its declared
+    /// [`Cost`](crate::call::Cost) and an acquire only honours pauses (see
+    /// [`RateLimitProfile`](crate::RateLimitProfile)). Use this handle only
+    /// to [`penalize`](crate::rate_limit::ResourceLimiter::penalize) on a
+    /// signal that does not come back from a call.
     pub fn limits(&self) -> &Arc<crate::rate_limit::ResourceLimiter> {
         &self.managed.rate_limiter
     }

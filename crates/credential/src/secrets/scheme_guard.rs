@@ -58,9 +58,9 @@ use crate::{Credential, error::CredentialError};
 ///   (rebase onto П2 rotation L2 dispatch):** an earlier hardening iteration added a
 ///   `_thread_marker: PhantomData<*const ()>` field to make the guard `!Send`; that conflicted
 ///   structurally with `nebula-resource` П2's `ResourceDispatcher::dispatch_refresh` (`Pin<Box<dyn
-///   Future<...> + Send>>` per #613). Per `feedback_adr_revisable.md` («if following an ADR forces
-///   workarounds, supersede it») the П2 dispatch infrastructure won; the SEC-06 thread-marker was
-///   reverted. The N10 retention vector remains closed by `!Clone` + `'a`-lifetime-pinning +
+///   Future<...> + Send>>` per #613). A hardening that forces workarounds around an accepted
+///   design is superseded, not worked around, so the П2 dispatch infrastructure won; the SEC-06
+///   thread-marker was reverted. The N10 retention vector remains closed by `!Clone` + `'a`-lifetime-pinning +
 ///   `ZeroizeOnDrop`; the residual `spawn_blocking`-move concern is mitigated by the lifetime-bound
 ///   to `&'a CredentialContext`, which the borrow checker tracks across spawn boundaries.
 ///
@@ -257,6 +257,6 @@ impl<C: Credential> std::fmt::Debug for SchemeFactory<C> {
 // make it `!Send + !Sync`. That structural protection conflicted with
 // `nebula-resource` П2's `ResourceDispatcher::dispatch_refresh` signature
 // (#613) which requires `+ Send` on the dispatch future for cross-task
-// dispatch. Per `feedback_adr_revisable.md`, the canonical П2 dispatch
-// infrastructure wins; the thread-marker was reverted. The N10 retention
+// dispatch. The canonical П2 dispatch infrastructure wins over the
+// hardening; the thread-marker was reverted. The N10 retention
 // vector remains closed by lifetime pinning + `!Clone` + `ZeroizeOnDrop`.

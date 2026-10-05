@@ -153,17 +153,20 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
     nebula_macro_support::paths::resolve_generated_crate_paths(slots::derive(input).into()).into()
 }
 
-/// Derive macro that generates `impl ResourceConfig` with a deterministic structural
+/// Derive macro that generates `impl ResourceConfig` with a stable content
 /// fingerprint and an optional default `impl HasSchema`.
 ///
 /// ## What is emitted
 ///
 /// - `impl nebula_resource::ResourceConfig` with:
-///   - `fn fingerprint(&self) -> u64` — structural hash over all fields that implement
-///     [`std::hash::Hash`]. Fields tagged `#[config(skip_fingerprint)]` are excluded.
-///   - `fn validate(&self) -> Result<(), Error>` — only emitted if
-///     `#[config(validate = path)]` is specified; otherwise the trait default (`Ok(())`)
-///     applies.
+///   - `fn fingerprint(&self) -> u64` — `nebula_resource::ConfigFingerprint` over every
+///     field, each of which must implement `serde::Serialize`: SHA-256 of the fields'
+///     canonical JSON keyed by name, identical in every build and on every platform
+///     (the effect journal records it). Fields tagged `#[config(skip_fingerprint)]`
+///     are excluded; a fieldless config returns `0`.
+///   - `fn validate(&self) -> Result<(), Error>` — refuses a config whose fields have
+///     no stable fingerprint, then delegates to `#[config(validate = path)]` when
+///     specified. A fieldless config without `validate` keeps the trait default.
 /// - `impl nebula_schema::HasSchema` returning a null schema for unit structs,
 ///   or an empty-record schema for empty-braced structs. Every nonempty or tuple
 ///   struct requires `#[config(schema = external)]` and a real `HasSchema`
@@ -179,8 +182,14 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 ///
 /// ## Field attribute (`#[config(skip_fingerprint)]`)
 ///
-/// Excludes the annotated field from the fingerprint hash fold. The field type is not
-/// required to implement [`std::hash::Hash`] when skipped.
+/// Excludes the annotated field from the fingerprint. The field type is not
+/// required to implement `serde::Serialize` when skipped.
+///
+/// A fingerprinted field must serialize identically for equal values in every
+/// process: a field whose type names a hash-ordered set (`HashSet` and its
+/// aliases such as `FxHashSet`) is a compile error — use `BTreeSet`, a sorted
+/// `Vec`, or skip it. `HashMap` is accepted: object keys are sorted. A NaN or
+/// infinite float is refused by the emitted `validate`.
 ///
 /// ## Example
 ///

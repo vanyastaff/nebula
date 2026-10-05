@@ -13,9 +13,9 @@ use nebula_credential::{
     SecretString, SecretToken, StaticResolveResult,
 };
 use nebula_resource::{
-    AcquireOptions, CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident,
-    ResidentConfig, Resource, ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
-    call::{Cost, Effect, OpCx, OpError, Operation, SentState},
+    CredentialSlot, Error, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig, Resource,
+    ResourceConfig, ResourceContext, ScopeLevel, SlotCell, SlotIdentity,
+    call::{Cost, Effect, Operation, OperationCx, OperationError},
     resource::{Provider, ResourceMetadataDraft},
     topology::ResidentProvider,
 };
@@ -103,20 +103,22 @@ impl Credential for ApiToken {
 }
 
 /// Reports which slots the unit pinned.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct ReadSlots;
 
 impl Operation<Mailer> for ReadSlots {
     type Output = (bool, bool);
+    const KEY: &'static str = "mailer.read_slots";
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, Mailer>) -> Result<Self::Output, OpError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        let smtp: Option<&CredentialGuard<ApiToken>> = attempt.slots().smtp();
-        // The alias slot pins the credential's projected scheme.
-        let api: Option<&CredentialGuard<SecretToken>> = attempt.slots().api();
-        let pinned = (smtp.is_some(), api.is_some());
-        attempt.settle(SentState::Sent);
-        Ok(pinned)
+    async fn run(self, cx: &mut OperationCx<'_, Mailer>) -> Result<Self::Output, OperationError> {
+        cx.call(Cost::FREE, async |(), credentials| {
+            let smtp: Option<&CredentialGuard<ApiToken>> = credentials.smtp();
+            // The alias slot pins the credential's projected scheme.
+            let api: Option<&CredentialGuard<SecretToken>> = credentials.api();
+            Ok((smtp.is_some(), api.is_some()))
+        })
+        .await
     }
 }
 
@@ -177,11 +179,7 @@ async fn a_unit_reads_the_derived_pin_through_its_attempt() {
         })
         .expect("register");
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
-    let managed = manager
-        .acquire::<Mailer>(&ctx, &AcquireOptions::default())
-        .await
-        .expect("acquire")
-        .into_managed();
+    let managed = manager.handle::<Mailer>(&ctx).expect("row handle");
     assert_eq!(
         managed.submit(ReadSlots).await.expect("read"),
         (true, false)

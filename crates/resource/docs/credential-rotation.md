@@ -211,7 +211,7 @@ instead every row bound to the credential is **suspended**
 (`Manager::suspend_credential_row`, reason
 `CredentialUnavailableReason::{ReauthRequired, OperationBlocked}`):
 
-- New acquires, `Manager::until_accepting` and `Limited` waits end with
+- New acquires, `Manager::until_accepting` and managed units' quota waits end with
   `ErrorKind::CredentialUnavailable` (retryable; 30 s hint for
   reauthentication, 1 s for an operation block). It never trips the recovery
   gate.
@@ -374,27 +374,30 @@ manager.
 
 ### Strict per-attempt admission (managed call facade)
 
-A lease turned into a managed call facade (`ResourceGuard::into_managed`)
-makes each provider call an attempt of a unit (`OpCx::attempt`). On a strict
+The managed call facade (`ResourceHandle`, built by `Manager::handle`)
+makes each provider call an attempt of a unit (`OperationCx::attempt`). On a strict
 manager every attempt on a credential-bound row is a new credentialed unit
 of work and reads its credentials the same way, with the same two functions:
 
-1. Budget and the lease's own admission (a closed lease refuses before any
-   read), then the attempt's quota booking.
+1. Budget and the row's lock-free pre-check (a closed generation or a
+   suspended row refuses before any read), then the attempt's quota booking
+   and the row gate, nothing checked out.
 2. After every wait of the attempt, outside every lock: the strict read
    above — join-next, shared with acquires and other attempts of the same
    credential lane, bounded by the unit's deadline and 2 s, and raced against
-   the lease's generation and the unit's cancel (a lease that closes or a unit
-   cancelled before its first grant ends the read, unsent). `Cost::FREE`
+   the unit's generation and the unit's cancel (a generation that closes or a
+   unit cancelled before its first grant ends the read, unsent). `Cost::FREE`
    attempts read too.
-3. At the unit's first grant only: pin the slots (`PinSlots::pin_slots`),
+3. On the unit's first attempt only: pin the slots (`PinSlots::pin_slots`),
    bracketed by the slots' generations and retaken (up to three times) when
    a rotation raced the pin.
-4. Under `Manager.admission` (reached through the row's `AdmissionLink`):
+4. The attempt's own checkout through the acquire pipeline's admission; a
+   checkout that created its instance reads once more (below).
+5. Under `Manager.admission` (reached through the row's `AdmissionLink`):
    taint (`Revoked`) and shutdown (`Cancelled`) re-checked; the reading
    decided and applied exactly as the table above (a block suspends the row
-   and closes its leases, this one included); the row's suspension and the
-   lease's generation checked; the unit's pin checked current — a pin whose
+   and closes its generation); the row's suspension and the checkout's
+   generation checked; the unit's pin checked current — a pin whose
    slot generations moved since it was taken refuses `Rebinding`; then the
    grant, still under the lock.
 
@@ -405,8 +408,9 @@ later attempt whose pin a rotation superseded is refused `Rebinding` (retry
 after 1 s) rather than switching material mid-unit; the unit's settled
 outcome decides the retry — `Read` / `Idempotent` units are retryable, a
 `Write` whose earlier attempt was sent ends `OutcomeUnknown`. The next unit
-pins the new material. A pooled `Managed` lease stays checked out while its
-units wait for quota and read; a `ManagedRow` checks out per attempt (below).
+pins the new material. A `ResourceHandle` checks out per attempt, after the
+attempt's waits and its first read (below); a raw `ResourceGuard` never
+becomes a facade.
 Interim managers and slot-less rows read nothing and register without the
 lock.
 
@@ -420,7 +424,7 @@ engine that does not yet act on the refusals' backoff hints.
 
 ### Sessions and connection-bound pools
 
-A `ManagedRow` (`Manager::managed_row`) holds no lease: each attempt books
+A `ResourceHandle` (`Manager::handle`) holds no lease: each attempt books
 its quota and waits for the row gate with nothing checked out, then reads
 (R1) outside every lock, pins the unit's slots on its first attempt, and
 checks out through the acquire pipeline's own admission (lock #1: the read

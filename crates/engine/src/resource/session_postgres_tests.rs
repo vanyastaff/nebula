@@ -21,10 +21,9 @@ use nebula_credential::{BasicAuthCredential, CredentialGuard, scheme::IdentityPa
 use nebula_resource::{
     PoolConfig, Pooled, TeardownCx,
     call::{
-        Cost, ManagedRow, OpError, SentState, SessionClosed, SessionEnd, SessionProvider,
-        SessionSpec,
+        Cost, OperationError, ResourceHandle, SentState, SessionClosed, SessionEnd,
+        SessionProvider, SessionSpec,
     },
-    rate_limit::Verdict,
     topology::pooled::{PoolProvider, RecycleDecision},
 };
 use sqlx::{
@@ -294,9 +293,9 @@ impl SessionProvider for PgRow {
         &'c self,
         connection: &'c mut PgConnection,
         _slots: &'c Self::Pinned,
-    ) -> Result<Self::Session<'c>, OpError> {
+    ) -> Result<Self::Session<'c>, OperationError> {
         connection.begin().await.map_err(|_| {
-            OpError::new(
+            OperationError::new(
                 nebula_resource::ErrorKind::Transient,
                 "postgres begin failed",
             )
@@ -313,12 +312,12 @@ impl SessionProvider for PgRow {
         match session.commit().await {
             Ok(()) => SessionClosed::Committed,
             Err(error) if server_refused(&error) => SessionClosed::RolledBack {
-                refused: Some(OpError::new(
+                refused: Some(OperationError::new(
                     nebula_resource::ErrorKind::Permanent,
                     "postgres refused the commit",
                 )),
             },
-            Err(_) => SessionClosed::Unknown(OpError::new(
+            Err(_) => SessionClosed::Unknown(OperationError::new(
                 nebula_resource::ErrorKind::Transient,
                 "postgres connection lost during the commit",
             )),
@@ -339,8 +338,8 @@ fn server_refused(error: &sqlx::Error) -> bool {
     }
 }
 
-fn query_failed(_: sqlx::Error) -> OpError {
-    OpError::new(
+fn query_failed(_: sqlx::Error) -> OperationError {
+    OperationError::new(
         nebula_resource::ErrorKind::Transient,
         "postgres query failed",
     )
@@ -497,7 +496,7 @@ impl Pg {
     }
 
     /// The facade of the activated row.
-    fn row(&self, activated: &ActivatedResource) -> ManagedRow<PgRow> {
+    fn row(&self, activated: &ActivatedResource) -> ResourceHandle<PgRow> {
         let workspace = WorkspaceId::parse(&self.fixture.scope.workspace_id).expect("workspace id");
         let ctx = ResourceContext::minimal(
             nebula_core::scope::Scope {
@@ -508,7 +507,7 @@ impl Pg {
         );
         self.fixture
             .manager
-            .managed_row_for_identity::<PgRow>(&ctx, &activated.slot_identity)
+            .handle_for_identity::<PgRow>(&ctx, &activated.slot_identity)
             .expect("the row facade")
     }
 
@@ -518,7 +517,7 @@ impl Pg {
         &self,
         activated: &ActivatedResource,
         cancel: &CancellationToken,
-    ) -> ManagedRow<PgRow> {
+    ) -> ResourceHandle<PgRow> {
         use nebula_action::ActionContextExt as _;
         action_context(
             &self.fixture.manager,
@@ -527,13 +526,18 @@ impl Pg {
             &activated.slot_identity,
             cancel,
         )
-        .managed_row_by_id::<PgRow>(self.key.as_str())
+        .resource_handle_by_id::<PgRow>(self.key.as_str())
         .expect("the action's row facade")
     }
 
     /// Commits `insert into ledger values (id)`; yields the backend pid.
-    fn insert(&self, row: &ManagedRow<PgRow>, id: i32) -> nebula_resource::call::Unit<i32> {
-        row.session(SessionSpec::new(Cost::ONE), move |tx, _cx| {
+    fn insert(
+        &self,
+        row: &ResourceHandle<PgRow>,
+        id: i32,
+    ) -> nebula_resource::call::Submission<i32> {
+        let spec = SessionSpec::write("ledger.insert", &id).cost(Cost::ONE);
+        row.session(spec, move |tx, _cx| {
             Box::pin(async move {
                 sqlx::query("INSERT INTO ledger (id) VALUES ($1)")
                     .bind(id)
@@ -690,18 +694,21 @@ async fn a_failed_body_leaves_nothing_behind() {
     let row = pg.row(&pg.activated);
 
     let error = row
-        .session(SessionSpec::new(Cost::ONE), |tx, _cx| {
-            Box::pin(async move {
-                sqlx::query("INSERT INTO ledger (id) VALUES (2)")
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(query_failed)?;
-                Err::<(), _>(OpError::new(
-                    nebula_resource::ErrorKind::Permanent,
-                    "the body gave up",
-                ))
-            })
-        })
+        .session(
+            SessionSpec::write("ledger.insert", &2).cost(Cost::ONE),
+            |tx, _cx| {
+                Box::pin(async move {
+                    sqlx::query("INSERT INTO ledger (id) VALUES (2)")
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(query_failed)?;
+                    Err::<(), _>(OperationError::new(
+                        nebula_resource::ErrorKind::Permanent,
+                        "the body gave up",
+                    ))
+                })
+            },
+        )
         .await
         .expect_err("rolled back");
     assert_eq!(error.sent(), SentState::NotSent);
@@ -775,7 +782,7 @@ async fn a_backend_lost_during_commit_is_an_unknown_outcome() {
     );
     let mut unknown = 0;
     while let Some(event) = events.try_recv() {
-        if matches!(event, ResourceEvent::UnitOutcomeUnknown { .. }) {
+        if matches!(event, ResourceEvent::OperationOutcomeUnknown { .. }) {
             unknown += 1;
         }
     }
@@ -879,7 +886,9 @@ async fn a_session_waiting_for_quota_holds_no_connection() {
     let Some(pg) = setup().await else { return };
     let row = pg.row(&pg.activated);
     pg.insert(&row, 1).await.expect("warms one connection");
-    row.submit(Throttle).await.expect("the pause is reported");
+    row.submit(Throttle)
+        .await
+        .expect_err("the provider throttled the read; the pause is reported");
 
     let mut unit = pg.insert(&row, 2);
     assert!(futures::poll!(&mut unit).is_pending());
@@ -911,35 +920,33 @@ async fn a_session_waiting_for_quota_holds_no_connection() {
 }
 
 /// Reports an hour-long provider pause on the row's quota.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Throttle;
 
 impl Operation<PgRow> for Throttle {
     type Output = ();
+    const KEY: &'static str = "pg.throttle";
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, PgRow>) -> Result<(), OpError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        attempt
-            .report(Verdict::Throttled {
-                retry_after: Some(Duration::from_hours(1)),
-            })
-            .await;
-        attempt.settle(SentState::NotSent);
-        Ok(())
+    async fn run(self, cx: &mut OperationCx<'_, PgRow>) -> Result<(), OperationError> {
+        cx.call(Cost::FREE, async |_, _| {
+            Err(OperationError::throttled(Some(Duration::from_hours(1))))
+        })
+        .await
     }
 }
 
 /// Checks out an authenticated backend without producing a business effect.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct CheckoutRead;
 
 impl Operation<PgRow> for CheckoutRead {
     type Output = ();
+    const KEY: &'static str = "pg.checkout_read";
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, PgRow>) -> Result<(), OpError> {
-        let attempt = cx.attempt(Cost::ONE).await?;
-        attempt.settle(SentState::NotSent);
-        Ok(())
+    async fn run(self, cx: &mut OperationCx<'_, PgRow>) -> Result<(), OperationError> {
+        cx.call(Cost::ONE, async |_, _| Ok(())).await
     }
 }
 
@@ -953,19 +960,22 @@ async fn a_session_past_its_deadline_is_cut_off_and_applies_nothing() {
 
     let started = std::time::Instant::now();
     let error = row
-        .session(SessionSpec::new(Cost::ONE), |tx, _cx| {
-            Box::pin(async move {
-                sqlx::query("INSERT INTO ledger (id) VALUES (7)")
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(query_failed)?;
-                sqlx::query("SELECT pg_sleep(10)")
-                    .execute(&mut **tx)
-                    .await
-                    .map_err(query_failed)?;
-                Ok(())
-            })
-        })
+        .session(
+            SessionSpec::write("ledger.insert", &7).cost(Cost::ONE),
+            |tx, _cx| {
+                Box::pin(async move {
+                    sqlx::query("INSERT INTO ledger (id) VALUES (7)")
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(query_failed)?;
+                    sqlx::query("SELECT pg_sleep(10)")
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(query_failed)?;
+                    Ok(())
+                })
+            },
+        )
         .with_deadline(std::time::Instant::now() + Duration::from_millis(200))
         .await
         .expect_err("cut off at the deadline");
@@ -1011,7 +1021,7 @@ async fn an_action_row_is_read_only_and_cancellation_starts_no_backend() {
     holder_row
         .submit(Throttle)
         .await
-        .expect("the row reports a provider pause");
+        .expect_err("the provider throttled the read; the row reports the pause");
 
     // A second action's read waits for quota, then its execution is
     // cancelled.

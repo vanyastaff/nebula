@@ -10,24 +10,19 @@ use chrono::{DateTime, Utc};
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Dyn-safe resource accessor. Impl in nebula-engine.
+///
+/// The accessor serves the managed row facade (the resource crate's
+/// `ResourceHandle<R>`) and nothing else: since 0.27.0 it has no raw-lease
+/// route. A lease bypasses the effect journal, so checking out an instance
+/// directly stays a host-only capability of the resource manager.
 pub trait ResourceAccessor: Send + Sync {
     /// Check if a resource is available.
     fn has(&self, key: &crate::ResourceKey) -> bool;
-    /// Acquire a resource by key.
-    fn acquire_any(
-        &self,
-        key: &crate::ResourceKey,
-    ) -> BoxFuture<'_, Result<Box<dyn std::any::Any + Send + Sync>, crate::CoreError>>;
-    /// Try to acquire a resource by key, returning `None` if not found.
-    fn try_acquire_any(
-        &self,
-        key: &crate::ResourceKey,
-    ) -> BoxFuture<'_, Result<Option<Box<dyn std::any::Any + Send + Sync>>, crate::CoreError>>;
     /// The managed row facade of the resource `key`, type-erased.
     ///
-    /// Unlike [`acquire_any`](Self::acquire_any) this checks nothing out:
-    /// an implementation that serves managed rows returns the resource
-    /// crate's `ManagedRow<R>` boxed, for the caller to downcast, and each
+    /// This checks nothing out: an implementation that serves managed rows
+    /// returns the resource
+    /// crate's `ResourceHandle<R>` boxed, for the caller to downcast, and each
     /// unit submitted on it checks out an instance per attempt. The facade
     /// is bound to the calling context: its units are cancelled with it
     /// until their first grant and bounded by its deadline.
@@ -39,7 +34,7 @@ pub trait ResourceAccessor: Send + Sync {
     ///
     /// Whatever the implementation's lookup refuses; the default always
     /// refuses.
-    fn managed_row_any(
+    fn resource_handle_any(
         &self,
         key: &crate::ResourceKey,
     ) -> Result<Box<dyn std::any::Any + Send + Sync>, crate::CoreError> {
@@ -62,7 +57,7 @@ pub trait ResourceAccessor: Send + Sync {
     ///
     /// Whatever the implementation's lookup refuses; the default never
     /// errors.
-    fn try_managed_row_any(
+    fn try_resource_handle_any(
         &self,
         _key: &crate::ResourceKey,
     ) -> Result<Option<Box<dyn std::any::Any + Send + Sync>>, crate::CoreError> {
@@ -184,41 +179,25 @@ impl RefreshToken {
 
 #[cfg(test)]
 mod tests {
-    use super::{BoxFuture, RefreshToken, ResourceAccessor};
+    use super::{RefreshToken, ResourceAccessor};
     use crate::{CoreError, ResourceKey};
 
     /// An accessor that implements only the required methods.
-    struct LeasesOnly;
+    struct HasOnly;
 
-    impl ResourceAccessor for LeasesOnly {
+    impl ResourceAccessor for HasOnly {
         fn has(&self, _key: &ResourceKey) -> bool {
             true
-        }
-
-        fn acquire_any(
-            &self,
-            key: &ResourceKey,
-        ) -> BoxFuture<'_, Result<Box<dyn std::any::Any + Send + Sync>, CoreError>> {
-            let key = key.to_string();
-            Box::pin(async move { Err(CoreError::resource_unavailable(key, "unused", true, None)) })
-        }
-
-        fn try_acquire_any(
-            &self,
-            _key: &ResourceKey,
-        ) -> BoxFuture<'_, Result<Option<Box<dyn std::any::Any + Send + Sync>>, CoreError>>
-        {
-            Box::pin(async { Ok(None) })
         }
     }
 
     #[test]
-    fn the_default_accessor_serves_no_managed_rows() {
+    fn the_default_accessor_serves_no_resource_handles() {
         use nebula_error::Classify;
 
         let key = ResourceKey::new("postgres").expect("valid key");
-        let error = LeasesOnly
-            .managed_row_any(&key)
+        let error = HasOnly
+            .resource_handle_any(&key)
             .expect_err("no managed rows by default");
         assert!(!error.is_retryable(), "a missing capability never heals");
         assert_eq!(error.category(), nebula_error::ErrorCategory::Unavailable);
@@ -228,8 +207,8 @@ mod tests {
                 if key == "postgres" && detail.contains("serves no managed rows")
         ));
         assert!(
-            LeasesOnly
-                .try_managed_row_any(&key)
+            HasOnly
+                .try_resource_handle_any(&key)
                 .expect("the default try lookup is infallible")
                 .is_none()
         );

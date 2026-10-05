@@ -11,6 +11,484 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Journaled agent turns and recorded reads (experimental); development
+  packages advance to 0.32.0 in lockstep.** A default-contract
+  (`Journaled`) agent action on a durable turn now runs under its node's
+  effect journal, one positional run per turn (`turn{n}/unit/v1/#{k:06}`):
+  its writes execute and are recorded in the operation ledger **instead of
+  being refused `NotSent`**, and its turn state is checkpointed after every
+  turn that returned `Continue` (the iteration checkpoint store, unchanged).
+  Model calls are ordinary resource operations declared with the new
+  `Effect::RecordedRead`: their answer is recorded before the agent sees it
+  and replayed on recovery without a provider call (invariants S10, S11).
+  Agents stay out of the stable SDK and API (canon §6.2).
+  - `nebula-resource`: `Effect::RecordedRead` (`as_str` `recorded_read`,
+    replay safe) and `Recovery::Observation` (both on `#[non_exhaustive]`
+    enums). `RecordedRead` is only for calls with **no provider-side
+    effect** (hosted tools, stored responses, server-side conversation
+    appends and uploads are `Idempotent` or `Write`). Under a journal its
+    answer is recorded before return (≤ 1 MiB less 1 KiB, never
+    digest-only), an unrecorded answer is withheld (`Transient` /
+    `MaybeSent`), and a spent ceiling fails `Exhausted` — never
+    `OutcomeUnknown`; `RECORD_OUTPUT = false` with it fails the build and is
+    refused at submit; a streamed one is refused under a journal; without
+    a journal it runs as a plain read.
+  - `nebula-storage-port`: `EffectSlotBinding::observation` (a new public
+    field: struct literals must set it, `false` for an effect);
+    `OperationProtocolRecord::is_observation` and
+    `admits_unsent_failure`; `RecordUnsentFailure` is also admitted on an
+    observation slot after a crossing. The record carries an optional
+    `observation: true` field — absent for effects, so their records stay
+    byte-identical; no SQL migration. **Rollback hazard**: the record is
+    `deny_unknown_fields`, so a build from before 0.32.0 refuses to decode
+    an observation's record.
+  - `nebula-plugin`: agent nodes compile into Graph-v1 plans (kind
+    `agent`) under the new plan epoch **compiler 7** / hash 3, the first
+    whose action kind grammar includes `Agent`; the
+    `UNSUPPORTED_NODE_KIND` expected value is
+    `stateless|stateful|control|agent`. Every new plan is recorded at
+    epoch 7, so **plan revision ids change** for newly compiled plans
+    (the same workflow compiled by 0.31 and 0.32 gets different ids).
+    Epoch 5 and 6 records decode exactly as before; an `Agent` kind under
+    them, or a capability-gated agent under any epoch, is non-canonical
+    even with a valid seal. **Rollback hazard**: a build from before
+    0.32.0 refuses every epoch-7 plan by its `RecordedPlanEpochV1` header
+    (`UnsupportedFormat`), not only those holding an agent node.
+  - `nebula-action`: metadata admission refuses an agent declared with
+    `IsolationLevel::CapabilityGated` (new
+    `ActionPackageValidationError::CapabilityGatedAgent`, on a
+    `#[non_exhaustive]` enum): the runtime never runs one, so it fails
+    when its factory is built instead of at every dispatch.
+  - `nebula-engine`: `RuntimeError::AgentTurnCapExceeded`
+    (`RUNTIME:AGENT_TURN_CAP_EXCEEDED`): a `max_turns()` above 10 000 is
+    refused before turn 0, never clamped. A turn past its timeout stays
+    retryable and its retry replays the turn. New counter
+    `nebula_effect_journal_recorded_read_bytes_total` and the
+    `observation` phase of `nebula_effect_journal_prepares_total`.
+  - Model answers are kept as plaintext JSON evidence with their execution
+    and may contain user data (see the storage durability matrix); prompts
+    are digested, never stored.
+  - Migration:
+
+    | Before (≤ 0.31) | 0.32.0 |
+    |---|---|
+    | a model / retrieval operation declared `Effect::Read` whose answer steers a later effect | `Effect::RecordedRead` (keep `RECORD_OUTPUT` true; only with no provider-side effect) |
+    | a `Journaled` agent relying on its writes being refused | declare the agent `#[action(read_only)]`, or make its writes journal-safe (determinism contract in `nebula_action::agent`) |
+    | `EffectSlotBinding { .., concurrent_with }` | `EffectSlotBinding { .., concurrent_with, observation: false }` |
+    | an agent with `max_turns()` above 10 000 | at most 10 000 |
+    | an agent with `IsolationLevel::CapabilityGated` | `IsolationLevel::None` (the runtime never ran a gated agent) |
+
+- **`CheckpointStore` becomes the fenced, version-bound store of journaled
+  stateful actions' iteration checkpoints; development packages advance to
+  0.31.0 in lockstep.** A journaled stateful node now resumes at its last
+  iteration checkpoint instead of replaying every iteration: after each
+  `Continue` whose effect barrier passed, the engine saves the next
+  iteration, the state (canonical JSON, ≤ 1 MiB) and its SHA-256, the delay
+  and the attested ledger-position count under the execution lease; a resume
+  verifies the digest and the count against the operation ledger and halts
+  (`ENGINE:EFFECT_ITERATION_CHECKPOINT`) on any contradiction, or defers when
+  the store does not answer. Attested iterations never run again (invariant
+  S9); a divergence inside them is no longer detected — the accepted
+  narrowing. Paired migration `0062_port_iteration_checkpoints` is
+  aggregate-neutral (the catalog floor stays at 0040).
+  - `nebula-storage-port`: `CheckpointStore::{save,load}_stateful_checkpoint`
+    are replaced by `load_iteration_checkpoint(&IterationCheckpointKey)` and
+    `save_iteration_checkpoint(&IterationCheckpointKey, &IterationCheckpoint,
+    FencingToken) -> CheckpointSaved`; new `IterationCheckpoint`,
+    `IterationCheckpointKey`, `IterationCheckpointError`, `CheckpointSaved`
+    and the `MAX_*` bounds.
+  - `nebula-storage`: `InMemoryCheckpointStore::new` takes the
+    `&InMemoryExecutionStore` whose leases fence it; new
+    `SqliteCheckpointStore` and `PgCheckpointStore`. The worker and server
+    composition roots use the SQL adapters (checkpoints are no longer
+    in-memory on SQLite/PostgreSQL deployments).
+  - `nebula-tenancy`: `ScopedCheckpointStore` re-addresses the key under its
+    bound scope and passes the fence through.
+  - `nebula-engine`: `EffectExecutionError::IterationCheckpoint`; the
+    `ExecutionStores.checkpoints` field is now read. New counters
+    `nebula_effect_journal_checkpoints_total{outcome}` and
+    `nebula_effect_journal_resumes_total{outcome}`, and the
+    `iteration_checkpoint` verdict code.
+  - Migration:
+
+    | Before (≤ 0.30) | 0.31.0 |
+    |---|---|
+    | `InMemoryCheckpointStore::new()` | `InMemoryCheckpointStore::new(&execution_store)` (the in-memory execution store the other in-memory ports share) |
+    | `ExecutionStores { checkpoints: Arc::new(InMemoryCheckpointStore::new()), .. }` on a SQLite / PostgreSQL deployment | `SqliteCheckpointStore::new(pool)` / `PgCheckpointStore::new(pool)` over the execution store's pool |
+    | `store.save_stateful_checkpoint(&scope, exec, node, json)` | `store.save_iteration_checkpoint(&IterationCheckpointKey::new(&scope, exec, node, action_key, version)?, &IterationCheckpoint::new(..)?, fencing)` |
+    | `store.load_stateful_checkpoint(&scope, exec, node)` | `store.load_iteration_checkpoint(&key)` |
+    | journaled stateful node replays from iteration 0 on every attempt | resumes at its last verified checkpoint; replays from 0 only without one |
+
+- **`nebula-resource` removes the `Lease` managed-call facade; development
+  packages advance to 0.30.0 in lockstep.** `call::ResourceHandle<R>`
+  (`Manager::handle`, `handle_for_identity` and the erased `handle_any*`
+  family) is the only managed call facade: every attempt checks out an
+  instance of its own after its quota and row-gate waits, so no unit holds a
+  connection while it waits. Holding one instance across several units
+  belongs to a future, qualified explicit-session profile, not to an
+  unbounded escape hatch.
+  - Removed: `call::Lease<R>` (and its root re-export `nebula_resource::Lease`),
+    `ResourceGuard::into_lease`, `impl From<ResourceGuard<R>> for Lease<R>`,
+    `Lease::submit` / `submit_streaming` / `closing` / `is_closing` /
+    `resource_key`, and the per-lease unit caps (one unit at a time on a
+    `Pooled` / `Bounded` lease, 64 on a shared one) — a handle's units queue
+    at the row gate, sized to the topology's capacity, instead.
+  - `ResourceGuard` and `Manager::acquire*` stay as host-only capabilities of
+    the manager, the engine and tests; a guard no longer becomes a facade.
+    `OperationCx::closing` is the closing notice of the row generation the
+    unit started under.
+  - `nebula-sdk` is unaffected: it stopped exporting `Lease` in 0.27.0.
+  - Migration:
+
+    | Before (≤ 0.29) | 0.30.0 |
+    |---|---|
+    | `manager.acquire::<R>(&ctx, &opts).await?.into_lease()` (or `Lease::from(guard)`) | `manager.handle::<R>(&ctx)?` (`handle_for_identity` for a pinned slot identity) |
+    | `lease.submit(op)` / `lease.submit_streaming(op, n)` | `handle.submit(op)` / `handle.submit_streaming(op, n)` |
+    | `lease.closing()` / `lease.is_closing()` | `OperationCx::closing()` inside the operation; the row's suspension or removal shows as the unit's refusal |
+    | several units sharing one held instance | one unit per attempt, or a `ResourceHandle::session` on a pooled `SessionProvider` for several native calls on one connection |
+
+- **`nebula-storage-port`: `EffectSlotBinding` gains `concurrent_with:
+  Option<&[PositionRange]>`; development packages advance to 0.29.0 in
+  lockstep.** The lower positions of an occurrence's run whose unit was
+  still open when it was first prepared — the exact set, never truncated,
+  as canonical runs (`PositionRange`: `first..=last`, persisted
+  `[first, last]`; ascending, disjoint, not adjacent; `coalesce` builds them
+  from ascending positions, `any_contains` tests one), at most
+  `OperationProtocolRecord::MAX_CONCURRENT_RANGES` (64) runs — are
+  persisted with the first preparation inside the protocol record
+  (`OperationProtocolRecord::concurrent_with() -> Option<&[PositionRange]>`,
+  builder `concurrent_with`; a non-canonical list or one of more runs is an
+  invalid record), never part of the natural key or the prepare identity.
+  The engine refuses a fresh effect whose open lower units would need more
+  runs, unsent: `JournalRefusal::ConcurrencyLimit` (`concurrency_limit`,
+  `Permanent` / `NotSent`, "too many interleaved concurrent effects") and
+  the verdict `EffectExecutionError::JournalConcurrencyLimit`
+  (`ENGINE:EFFECT_JOURNAL_CONCURRENCY_LIMIT`; metric labels
+  `refusal="concurrency_limit"` and `code="concurrency_limit"`). `Some([])`
+  ("nothing ran concurrently") is persisted as an explicit `[]`; `None`
+  ("unknown": an owner that records no concurrency, or a record written
+  before the field existed) leaves it out. No schema migration: the
+  protocol is a JSON payload, and records written without the field read
+  back unchanged (`None`). A struct literal must name the field (`None` for
+  a binding without positional runs). The engine's effect journal records
+  it for every fresh slot and uses it to replay
+  concurrent units after a crash instead of halting;
+  `nebula_resource::call::journal::EffectJournal` gains a defaulted
+  `finish_occurrence(&str)`, called by the unit runtime when a unit
+  settles (whether or not its caller keeps the handle), and when its owned
+  state is dropped as a fallback — once.
+- **Unsent failures are recorded, and a superseded effect replays them.**
+  `nebula-storage-port`: `OperationCommand::RecordUnsentFailure { failure:
+  UnsentFailureCode }` (new; `UnsentFailureCode` is an owner's secret-free
+  token, 1 to 64 bytes of `[a-z0-9_@.]`) keeps how a slot's unit failed
+  while sending nothing, in the protocol record
+  (`OperationProtocolRecord::unsent_failure()`, builder `unsent_failure`;
+  absent unless recorded, so older records read back unchanged). Permitted
+  only while the slot is `Prepared` or `BeforeBoundary` (`ProtocolConflict`
+  otherwise); a later classification replaces it and any later call or
+  outcome clears it; a record carrying one in another phase is invalid.
+  All adapters share the transition (in-memory, SQLite, Postgres; no
+  migration). `nebula-resource`: `JournalRefusal::Superseded` now carries
+  `Option<UnsentFailure>`; `UnsentFailure` (new: an `ErrorKind` with its
+  payload — `of`, `kind`, `code`, `parse`), `ErrorKindCode::parse`, and a
+  defaulted `EffectJournal::record_unsent_failure(slot, failure)` the unit
+  runtime awaits when a prepared unit settles failing with nothing
+  crossed, before the failure reaches the program. A superseded effect
+  then fails with the recorded kind (e.g. `Exhausted { retry_after }` for a
+  throttle) instead of `Permanent`, so a program that branched on it
+  replays the same branch; a slot written before classifications existed
+  still fails `Permanent`. The engine fails closed when the record does
+  not land: the position turns uncertain (no fresh effect above it is
+  prepared in that attempt) and the node defers, so a retry meets the slot
+  again and records it.
+- **A replay keeps the recorded order of calls, and a gated run observes
+  cancellation while its handle is built.** Before granting a call, the
+  engine's effect journal now waits until every lower unit of the slot's
+  run open in the attempt that the slot's recorded `concurrent_with` does
+  not name has settled, so two recorded slots that both sent nothing are
+  not applied in reverse when a replay polls them together (listed units
+  stay concurrent; a slot without a list waits on nothing; a wait past the
+  unit's budget refuses the grant deferring, nothing sent). A stateful run
+  under an iteration barrier races the factory's handle build against
+  cancellation and closes admission at once, so work the build detached
+  cannot turn the cancellation into a barrier failure. No API change.
+
+- **A stable resource configuration fingerprint advances development packages
+  to 0.28.0 in lockstep.** `ResourceConfig::fingerprint` is durable: the effect
+  journal binds every recorded effect's destination to it, yet the derive and
+  the SDK `HttpConfig` computed it with `std::hash::Hash` folded into
+  `DefaultHasher`, whose output is stable neither between compiler versions
+  nor across platforms — after a toolchain update every in-flight journaled
+  slot would have failed as a contract mismatch. The trait signature is
+  unchanged (`-> u64`); its contract and the derive change:
+  - `nebula-resource`: new `ConfigFingerprint` builder and
+    `ConfigFingerprintError` (also exported from
+    `nebula_sdk::integration::resource`). The fingerprint is the first eight
+    bytes, big-endian, of `SHA-256("nebula-resource/config-fingerprint/v1" ||
+    0x00 || canonical JSON)`, where the canonical JSON is an object of the
+    fingerprinted fields keyed by name, each written by its `Serialize` impl
+    with every object's keys sorted (a duplicate key refused, 1 MiB per
+    field). Declaration order and map iteration order do not change it; a
+    field rename does. The trait docs now require a pure function of the
+    configuration's content and forbid `Hash`/`DefaultHasher`.
+  - `#[derive(ResourceConfig)]`: every fingerprinted field must implement
+    `serde::Serialize` instead of `std::hash::Hash` (skip a field with
+    `#[config(skip_fingerprint)]`). The derive now always emits `validate`
+    for a config with fingerprinted fields, refusing a config whose fields
+    have no stable fingerprint (`Error::permanent`, traced as a `warn` event
+    with the field name and the failed invariant, never the value, under a
+    `resource.config.validate` span carrying the resource key) before
+    delegating to `#[config(validate = path)]`. Fieldless configs still
+    return `0`. A fingerprinted field whose type names a hash-ordered set
+    (`HashSet`, `FxHashSet`, …) is a compile error — its array order follows
+    the per-process hash seed; use `BTreeSet`, a sorted `Vec` or
+    `#[config(skip_fingerprint)]` (`HashMap` is fine: object keys are
+    sorted). A NaN or infinite float is refused
+    (`ConfigFingerprintError::NonFiniteFloat`) instead of aliasing `null`;
+    operation-request canonicalization is unchanged.
+  - The manager computes a row's fingerprint once, when its configuration
+    is registered or reloaded, and stores it with the configuration behind
+    the same atomic swap; unit binding, grants and topology acquires read
+    the stored value instead of re-encoding the configuration.
+  - Canonical JSON (fingerprints and operation requests alike) keeps a raw
+    JSON number's exact decimal value — a `RawValue`'s numbers, and a
+    `serde_json::Number` should a dependency enable `arbitrary_precision`
+    — instead of collapsing it through an `f64`. Canonical bytes change
+    only for raw numbers an `f64` cannot hold (integers outside
+    `i64`/`u64`, decimals with more digits than an `f64` keeps): such a
+    request recorded by an earlier build resolves as a mismatch once,
+    nothing sent.
+  - Every fingerprint value changes once: a hot reload compares values within
+    one process and is unaffected; journaled slots recorded by an earlier
+    build under a fingerprint of the old scheme resolve as a contract
+    mismatch once (nothing is sent).
+  - Migration: replace a hand-written `DefaultHasher` fingerprint with
+    `ConfigFingerprint::new().field("name", &self.name)….finish()` and call
+    `try_finish()?` from `validate`; give derived configs' field types a
+    `Serialize` impl.
+
+- **A single action route to resources advances development packages to
+  0.27.0 in lockstep.** `ResourceHandle<R>` is now the only resource
+  capability an action context can name; a raw lease (`ResourceGuard<R>`,
+  `call::Lease<R>`, `Manager::acquire*`) stays a host-only capability of
+  `nebula-resource` and the engine, because a lease bypasses the effect
+  journal:
+  - `nebula-core`: `ResourceAccessor::acquire_any` and `try_acquire_any` are
+    removed; the accessor serves `resource_handle_any` /
+    `try_resource_handle_any` (and `has`) only.
+  - `nebula-action`: `ActionContextExt::acquire_resource_by_id`,
+    `ActionRuntimeContext::resource` (keep `has_resource`), the
+    `pub use nebula_resource::ResourceRef` re-export and the raw
+    `TestContextBuilder::with_resource(key, value)` are removed.
+    `TestContextBuilder::with_resource_manager(Arc<Manager>)` replaces the
+    test path: it serves `ResourceHandle<R>`s for the rows registered on a
+    real manager (unbound slot identity, the context's cancellation; library
+    effect semantics, no journal).
+  - `#[derive(Action)]`: a `#[resource]` field must be `ResourceHandle<R>` or
+    `Option<ResourceHandle<R>>`. `ResourceGuard<R>` in any wrapper (`Option`,
+    `Lazy`, `Option<Lazy<..>>`) fails with "`ResourceGuard<T>` slots were
+    removed in 0.27.0; hold `ResourceHandle<T>` — a lease bypasses the
+    effect journal". `Lazy` stays credential-only.
+  - `nebula-resource`: `HasResourcesExt` (`ctx.resource::<R>()`,
+    `try_resource`) and `ResourceRef<R>` are deleted. `ResourceGuard` and
+    `call::Lease` are documented host-only (`Lease` is removed in a later
+    release).
+  - `nebula-engine`: the raw `acquire_any` routes of `EngineResourceAccessor`
+    and `LayeredResourceAccessor` and the `JournaledResourceAccessor`
+    refusal wrapper are gone. A key a branch scope holds still fails closed
+    for a handle (`CoreError::ScopeViolation`), so a branch-scoped payload is
+    no longer reachable from an action context at all.
+  - `nebula-sdk`: `ResourceGuard`, `ReleaseOutcome` and `Lease` are no longer
+    exported from the prelude or `integration::resource`;
+    `http::open_stream` / `open_stream_until` take `&ResourceHandle<R>`.
+  - **Behaviour change:** `ReadOnly` and `Remote` actions used to be able to
+    check out a raw lease; they now reach a resource only through a
+    read-only handle — a `Read` unit runs, an `Idempotent` / `Write` unit is
+    refused `Permanent` / `NotSent` before any provider call.
+  - Migration:
+
+    | Before (≤ 0.26) | 0.27.0 |
+    |---|---|
+    | `#[resource] db: ResourceGuard<Db>` (or `Option` / `Lazy`) | `#[resource] db: ResourceHandle<Db>` (or `Option<..>`); move provider calls into an `Operation` and `self.db.submit(op)` |
+    | `ctx.acquire_resource_by_id::<R>(id).await` | `ctx.resource_handle_by_id::<R>(id)` (`try_resource_handle_by_id` for an optional one) |
+    | `ctx.resource(key).await` / `ctx.resources().acquire_any(&key)` | `ActionContextExt::resource_handle_by_id::<R>`, or `resource_handle_any` on the accessor |
+    | `ctx.resource::<R>()` / `try_resource::<R>()` (`HasResourcesExt`), `ResourceRef<R>::resolve` | a `#[resource]` `ResourceHandle<R>` field |
+    | `impl ResourceAccessor { fn acquire_any / try_acquire_any }` | delete both; implement `resource_handle_any` / `try_resource_handle_any` if the accessor serves rows |
+    | `TestContextBuilder::with_resource(key, value)` | register the row on a `Manager`, `TestContextBuilder::with_resource_manager(manager)` |
+    | `nebula_sdk::…::{ResourceGuard, ReleaseOutcome, Lease}` | `ResourceHandle` (host code that truly needs a lease depends on `nebula-resource` directly) |
+    | `open_stream(&lease, request)` | `open_stream(&handle, request)` |
+
+- **The removal of the `Limited` closure family advances development
+  packages to 0.26.0 in lockstep** (MIGRATION P10):
+  - Removed from `nebula_resource::rate_limit` and the SDK's
+    `integration::resource`: `Limited` (`run`, `run_until`, `run_for`,
+    `run_for_until`, `unlimited`, `limits`), `LimitedError`,
+    `ResourceLimiter::wrap`, the `Throttle` trait, `NoThrottle`, `OnError`
+    and `on_error`. `Verdict` is crate-private: the managed call facade
+    derives it from a call's `OperationError`, so it is no longer exported.
+  - `RateLimitProfile::InterimPerClosure` and `RateLimitProfile::is_interim`
+    are removed; a row reports `PausesOnly`, `PerAcquire` or `PerAttempt`
+    (`as_str`: `pauses_only`, `per_acquire`, `per_attempt`).
+  - `ResourceLimiter` keeps its pacing and pause API (`rate`, `profile`,
+    `ready`, `ready_for`, `penalize`, `penalize_for`), and
+    `ResourceContext::limits` / `ResourceGuard::limits` stay for a pause
+    signalled outside a call.
+  - Migration: return the client itself as the provider's instance and make
+    each provider call through the managed call facade — a
+    `Manager::handle` (or a derived `#[resource] ResourceHandle<R>` action
+    field) and `ResourceHandle::submit(op)`, with one
+    `OperationCx::call(cost, ..)` per provider call. `run` becomes
+    `cx.call(Cost::ONE, ..)`, `run_for` becomes `Cost::keyed(dimension,
+    value)`, `run_until` becomes `Submission::with_deadline`, a `Throttle`
+    becomes a call returning `OperationError::throttled` /
+    `throttled_key`, `LimitedError` becomes `OperationError`, and
+    `unlimited` has no replacement by design. A unit's quota wait ends unsent
+    when its row is revoked, suspended or shut down, as a `Limited` wait did,
+    and a reload still does not end it.
+
+- **The Journaled action effect default advances development packages to
+  0.25.0 in lockstep.** An action that declares no effect contract is no
+  longer refused; it may perform effects, but only through resource handles:
+  - `ActionEffectContract::Undeclared` is removed. The default is now
+    `ActionEffectContract::Journaled(JournalProtocol::V1)`, serialized as
+    `{"Journaled":"V1"}`; the old `"Undeclared"` tag no longer decodes.
+    `JournalProtocol` (non-exhaustive, `V1`) is re-exported from
+    `nebula_action` and its prelude. `ReadOnly` keeps its frozen
+    `"NoExternalEffects"` wire tag and `#[action(read_only)]` remains the
+    only effect flag; `Remote(..)` is unchanged and stays stateless-only.
+  - The Graph-v1 compiler no longer raises
+    `PLUGIN_PLAN_GRAPH_V1:UNDECLARED_EFFECTS` (and its activation diagnostic
+    and remediation are gone). New plans record the default as
+    `{"Journaled":{"protocol_version":1}}`; an unknown protocol version fails
+    the plan's integrity check. Because the closed effect grammar grew a
+    variant, new plans use compiler epoch 6 (canonical hash version 3), so
+    their plan revision ids differ from epoch-5 ids for the same workflow.
+    Epoch-5 records stay readable exactly as before and reject a `Journaled`
+    effect as non-canonical. `nebula_plugin::RecordedPlanEpochV1` decodes a
+    record's version header so a reader refuses an unknown epoch
+    (`UnsupportedFormat`) before decoding its body; the engine's plan loader
+    does. A reader from before this release decodes the body first, so it
+    refuses an epoch-6 record either as an unsupported format or, when an
+    action records `Journaled`, as a record decode error — never as a
+    readable plan. A plan recorded without an effect field stays
+    `PlanActionEffectContract::LegacyUndeclared` and is still refused — it is
+    never reinterpreted as `Journaled`.
+  - Only handle-routed effects are journaled; a side channel an action opens
+    itself is invisible to the engine. Until the engine effect journal lands
+    (it now has, for stateless actions — see "Changed"),
+    a `Journaled` action of any kind runs with read-only handle authority:
+    reads run, and a write through a handle is refused as `NotSent` before
+    any provider call. A `Journaled` action cannot take a raw lease: a
+    `ResourceGuard<R>` slot, `acquire_resource_by_id` or a raw
+    `acquire_any` / `try_acquire_any` fails with a non-retryable
+    `CoreError::ResourceUnavailable` pointing at `ResourceHandle<R>`
+    (superseded in 0.27.0: those routes no longer exist for any action).
+  - The public `ActionRuntime` entry points (`execute_action*`,
+    `execute_action_with_node`) still run only explicitly `ReadOnly`
+    actions and refuse a `Journaled` one with `EffectRequiresOwner`, as they
+    refused `Undeclared`: a caller-supplied context may carry any resource
+    accessor. `Journaled` actions run through the engine's node dispatch.
+
+- **One outcome classification for managed calls advances development
+  packages to 0.24.0 in lockstep.** A provider call's result is classified
+  once and the runtime derives the attempt's sent state, the rate limit's
+  verdict, the journal crossing and any re-attempt from it:
+  - `OperationError` gains `throttled(retry_after)` (`Exhausted`, `Sent`;
+    pauses the quota), `throttled_key(retry_after)` (pauses only the
+    attempt's `Cost::keyed` key), `unreachable(detail)` /
+    `unreachable_as(kind, detail)` (`NotSent`), `interrupted(detail)`
+    (`Transient`, `MaybeSent`), `rejected(detail)` and
+    `rejected_as(kind, detail)` (`Sent`, definitive; a retryable kind is
+    recorded `Permanent`). `OperationError::new` and a converted `Error`
+    are unclassified: `MaybeSent`, and nothing reaches the rate limit.
+  - `OperationCx::call(cost, async move |instance, credentials| ..)` makes a
+    provider call per attempt and re-attempts only what the classification
+    allows — a throttle or an unreachable provider always, an interrupted
+    call only for a replay-safe `EFFECT`, a rejection never — within
+    `max_attempts` (one by default: no hidden retry) and the unit deadline;
+    a throttle's pause is waited out by the next quota booking, never a
+    sleep. The closure owns its captures (`'static`).
+  - `Attempt::finish(&result)` is the low-level path (a stream finished at
+    its head, several steps on one attempt). Removed from the public API:
+    `Attempt::settle(SentState)` and `Attempt::report(Verdict)`; `Verdict`,
+    `Throttle` and the deprecated `Limited` family stayed in `rate_limit`,
+    their migration notes pointing at `OperationError::throttled`, until
+    their removal in 0.26.0.
+  - `unreachable` and `interrupted` never reset a backoff in progress; a
+    unit's folded sent state ignores a throttled attempt that was not its
+    last (the provider applied nothing).
+  - The SDK HTTP adapter's hand-written retry loop is gone: each exchange
+    classifies its answer (connect failure `unreachable`; a lost connection,
+    `408` / `425` / `5xx` or a failed body read `interrupted`; `429`, or
+    `503` with `Retry-After`, `throttled`; other `4xx` or a body over budget
+    `rejected`) and `Request::run` uses `cx.call`. A `5xx` and a body read
+    that failed after the head now settle `MaybeSent` instead of `Sent`; a
+    `Write` is still `OutcomeUnknown` and a `Read` / `Idempotent` request
+    still retryable. `http::send` finishes its attempt itself.
+
+- **The unified resource `Operation` advances development packages to 0.23.0
+  in lockstep.** An operation declares only what an execution journal needs,
+  and the runtime derives the rest:
+  - `Operation` is now `Serialize + DeserializeOwned` with a serializable
+    `Output`, and gains `KEY` (required: 1–64 bytes of `[A-Za-z0-9_.-]`,
+    alphanumeric at both ends, unique within the resource), `VERSION`
+    (default 1), `KEY_WINDOW` (default 24 h, non-zero for `Idempotent`),
+    `RECORD_OUTPUT` (default `true`) and `idempotency_key()` (the developer
+    part, default `None`). A malformed declaration fails the build at
+    `submit` and is refused `Permanent` / `NotSent` at runtime.
+    `StreamOperation` gains `KEY`, `VERSION` and `idempotency_key()`, without
+    serde bounds.
+  - Removed: `EffectOperation`, `EffectContract`, `EffectRecovery`,
+    `Recorded`, `IdempotencyKeyPart` (now a `String`), `OccurrenceLabel`,
+    `ResourceHandle::submit_effect` / `session_effect`, and
+    `SessionSpec::new` / `with_effect` / the `cost()` getter. One `submit`
+    and one `session` route each unit by effect and caller authority: a
+    journaled row drives `Idempotent` / `Write` units through its
+    `EffectJournal` (streamed effects are refused), a read-only row refuses
+    them, a library row or `Lease` runs them.
+  - Sessions are declared with `SessionSpec::read(name)`,
+    `::idempotent(name, &request)` or `::write(name, &request)` plus
+    `.cost(..)`, `.idempotency_key(..)`, `.key_window(..)`, `.version(..)`;
+    `ResourceHandle::session`'s output is `Serialize + DeserializeOwned`.
+  - The journal seam: `EffectRecovery` → `call::journal::Recovery`;
+    `JournalIntent` carries `kind` (`UnitKind`), `operation`, `version`,
+    `record_output` and a `&str` key part instead of the contract, recovery
+    declaration and `Recorded`; `EffectJournal::next_ordinal()`;
+    occurrences are one node-wide positional sequence, `unit/v1/#{n:06}`
+    (see "Changed"), with the key-sorted JSON of the operation as canonical request. An output
+    over 1 MiB is recorded digest-only.
+  - `OperationCx::idempotency_key()` (and the new
+    `Attempt::idempotency_key()`) also returns a local key — base64url
+    SHA-256 of resource, operation key, version and developer part — for an
+    unjournaled unit that declares a part. The unit's span names its
+    operation by `KEY` (or the session name), not its Rust type.
+  - SDK HTTP adapter: `Method::OPERATION_KEY` (`http.get`, `http.post.keyed`,
+    …); `Request` and `Response` serialize; the `Idempotency-Key` header of a
+    `Keyed` request now carries the key derived from the developer part, not
+    the raw part, so its bytes on the wire change.
+
+  Every `Operation` implementation must add `KEY` and serde derives
+  (non-intent fields `#[serde(skip)]`; with the SDK alone,
+  `#[serde(crate = "nebula_sdk::serde")]`).
+- **The managed call facade renames advance development packages to 0.22.0 in
+  lockstep.** The resource facade is renamed to its approved names:
+  - `ManagedRow` → `ResourceHandle<R>` (`Manager::handle*`) and
+    `Managed`/`into_managed` → `Lease`/`into_lease`;
+  - `OpCx` → `OperationCx`, `Unit` → `Submission`, `OpError` →
+    `OperationError`, `UNIT_DEADLINE_CAP` → `OPERATION_DEADLINE_CAP`,
+    `OperationKey` → `IdempotencyKey`, `Attempt::slots` → `credentials`;
+  - the effect owner seam → `call::journal` (`EffectJournal`).
+
+  On the action side:
+  - the sealed dispatch trait `nebula_action::ResourceHandle` →
+    `ResourceActionHandle`;
+  - `managed_row_by_id` → `resource_handle_by_id`;
+  - `#[action(no_external_effects)]` → `#[action(read_only)]` and
+    `ActionEffectContract::NoExternalEffects` → `ReadOnly`, keeping the
+    `"NoExternalEffects"` serde tag so stored plan records still decode.
+
+  Behaviour is unchanged. The derive refuses the old field type and flag
+  with a hint naming the new spelling.
 - **The credential admission epoch advances development packages to 0.21.0 in
   lockstep.** `CredentialOperationStatus::Open` carries `admission_epoch`, the
   contract's use revision: a use admitted at one epoch must not continue at
@@ -527,6 +1005,49 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **Journaled requests canonicalize without losing or hiding members.** The
+  canonical request of an `Operation` was built from `serde_json::to_value`,
+  which keeps only the last member of an object that writes one key twice (a
+  `#[serde(flatten)]` collision, a hand-written impl), so two different
+  requests could share canonical bytes and a changed effect would replay
+  instead of reporting a mismatch; the 1 MiB cap was also checked only after
+  the whole request had been materialized twice. A streaming serializer now
+  writes the canonical form directly, refuses a duplicate key (`Permanent`,
+  nothing echoed) and stops as soon as the output crosses the cap. The bytes
+  of every valid request are unchanged. A `serde_json::value::RawValue` in a
+  request is canonicalized as its text is parsed, under the same duplicate-key
+  refusal and cap, instead of being parsed into a JSON value first. The HTTP
+  adapter's `Request` also
+  sorts its headers by name in its journaled intent (a repeated name keeps its
+  values in order), so the same request built in another header order no
+  longer resumes as a mismatch.
+
+- **`OperationCx::call` no longer turns definite outcomes into ambiguous
+  ones.** A retry refused by the execution owner (an unknown outcome once a
+  stable-key window expired, a closed owner, a mismatch) ended the call with
+  the retryable error of the previous attempt, letting a caller resubmit; it
+  now ends with the owner's refusal, and a throttle before it no longer folds
+  the unit `Sent` (which turned a `Write`'s retryable owner refusal into an
+  unknown outcome). And a throttle whose rate-limit report
+  a stalling shared limit store held until the unit deadline settled the unit
+  as ended abnormally (`MaybeSent`, an unknown outcome for a `Write`, an
+  ambiguous journal crossing); it now settles as the throttle it was.
+
+- **An effect that was provably never sent no longer spends its invocation
+  budget or expires into `OutcomeUnknown`.** The operation ledger counted every
+  grant against `max_invocations` and checked the recovery and stable-key
+  windows on every re-grant, so a budget-one `Write` became `OutcomeUnknown`
+  after a single local refusal recorded as `BeforeBoundary`, and a slot that
+  never crossed expired although nothing had reached the provider. Now only
+  calls that may have crossed spend the budget, and the windows bind only once
+  a call may have crossed; a never-crossed slot stays grantable at any age,
+  bounded by a total of `OperationProtocolRecord::GRANT_CEILING` (10 000)
+  grants whose refusal is `RecoveryExhausted` with no state change. Applies to
+  every ledger backend and to the remote-effect driver, whose first possibly
+  crossing call now takes its deadline from its own grant. Remaining
+  limitation: after a late first crossing the windows are still measured from
+  preparation, so such a slot fails closed early.
+
 - **A resource lease is no longer handed out after a revoke that straddled
   its create.** A resident or bounded acquire whose create was in flight when
   `taint_slot`/`revoke_slot` returned now fails with `Revoked` (or `Cancelled`
@@ -665,19 +1186,82 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Added
 
+- **`EffectJournal::next_occurrence()` and a node slot cap.**
+  `nebula_resource::call::journal::EffectJournal` gains a defaulted
+  `next_occurrence()` (`unit/v1/#{next_ordinal:06}`), which the resource
+  runtime now takes a unit's occurrence label from; an owner whose units run
+  in several positional runs overrides it (the engine labels a stateful
+  iteration's units `it{n}/…`). A defaulted `release_occurrence(&str)`
+  tells the owner a unit stopped preparing — prepared, refused, or given
+  up before reaching it — which the resource runtime now calls once per
+  occurrence; the engine waits for it before deciding whether a recorded
+  position below a fresh effect was met. A defaulted `admit()` (the
+  in-flight ticket, or a refusal) is how the resource runtime now submits a
+  unit: the engine admits a stateful node's units only while an iteration
+  is open, in one transition with the iteration rollover, and refuses a
+  unit submitted between iterations `JournalRefusal::BetweenRuns` (new;
+  `between_runs`, `Permanent` / `NotSent`), recording
+  `ENGINE:EFFECT_ITERATION_BARRIER`. `JournalRefusal::SlotCapExceeded` (new;
+  `slot_cap_exceeded`) refuses a unit `Permanent` / `NotSent`: one node
+  attempt prepares at most 10 000 fresh journaled effects — replays of
+  recorded positions do not count, so a node whose ledger already holds
+  more stays replayable — and the node then fails
+  `EffectExecutionError::JournalSlotCapExceeded`
+  (`ENGINE:EFFECT_JOURNAL_SLOT_CAP`). New metric labels:
+  `nebula_effect_journal_refusals_total{refusal="slot_cap_exceeded"}` (at
+  `step="prepare"`), `{step="submit", refusal="between_runs"}` and
+  `nebula_effect_journal_verdicts_total{code="slot_cap_exceeded" |
+  "iteration_barrier"}`. Additive: no version bump.
+- **`JournalRefusal::Superseded` and the effect journal's final ordering
+  model.** A recorded journaled effect that changed nothing (only prepared,
+  or every call explained not crossed) and that a later applied effect of
+  the node is ordered after (a later iteration, or not recorded as
+  concurrent with it) is refused `superseded` (`NotSent`, with the failure
+  recorded when its unit settled — see the Breaking entry — or `Permanent`
+  without one; `nebula_effect_journal_refusals_total{step="prepare",
+  refusal="superseded"}`) with no failure of the journal's own, instead of
+  halting the node as an occurrence mismatch: a deterministic program that
+  handled that failure before replays on. A deferring failure no longer
+  masks an unknown outcome: the verdict reads the node's occurrences first
+  (bounded) and halts on one. A lower stable-key effect whose
+  call crossed without an outcome is recorded unknown instead of being
+  granted again after the later one. A position a unit gave up on before its
+  ledger prepare answered defers the next fresh effect above it (and the
+  barrier past a recorded one) instead of a mismatch, so the retry meets it
+  again; only a fresh prepare leaves its position uncertain. A noted
+  non-halting failure no longer lets a node failing past a skipped recorded
+  effect be routed. A cancellation during an iteration barrier's drain
+  cancels the iteration at once. The engine README and the
+  `effect_driver::journal` module docs state the invariants (S1–S8). The
+  metric's refusal label set grows to ten values (`superseded`,
+  `concurrency_limit`), its verdict set to ten (`concurrency_limit`).
+  A recorded slot only prepared (or whose calls all stayed before the
+  boundary) now counts like any other recorded effect for divergence: a
+  fresh prepare above it, an iteration returning `Ok` past it, or a node
+  about to succeed without meeting it — and any node that met a later
+  position of the family — fails `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with
+  nothing sent, instead of silently dropping an effect the program
+  intended; a failing node that stopped before it keeps its own failure,
+  and a unit of the attempt giving a position up at or below it defers. A
+  prepare refused definitively (a mismatch, the slot cap, the concurrency
+  limit, an unrecordable contract) resolves its position instead of
+  leaving it abandoned, so a later submission is not deferred in place of
+  that verdict; a later deferral never displaces a noted terminal failure,
+  and a halting one displaces any other. Additive: no version bump.
 - **Execution-owned managed-row effects (resource side; engine wiring
   pending).** `nebula_resource::call` gains the author surface
   `EffectOperation` (an `Operation` declaring an `EffectContract`, an
   `EffectRecovery` that must agree with its effect — `Idempotent` with
   `StableKey { window }`, `Write` with `Opaque` — what is `Recorded` of a
   success, its canonical request, and optionally an `IdempotencyKeyPart` and
-  an `OccurrenceLabel`) and the owner-derived `OperationKey`, exposed by
-  `OpCx::operation_key` and `SessionCx::operation_key`. The public seam
-  `call::owner::UnitEffectOwner` (with `UnitIntent`, `UnitSlot`, `SlotPhase`,
-  `RecordedOutcome`, `UnitCall`, `Crossing`, `UnitOutcome`, `OwnerRefusal`,
-  `OwnerTicket`, `ErrorKindCode`) is what the engine will implement over the
-  operation ledger. `Manager::managed_row_any_owned` builds a row carrying an
-  owner: `ManagedRow::submit_effect` and `ManagedRow::session_effect` prepare
+  an `OccurrenceLabel`) and the owner-derived `IdempotencyKey`, exposed by
+  `OperationCx::idempotency_key` and `SessionCx::idempotency_key`. The public
+  seam `call::journal::EffectJournal` (with `JournalIntent`, `JournalSlot`,
+  `SlotPhase`, `RecordedOutcome`, `CallGrant`, `Crossing`, `CallOutcome`,
+  `JournalRefusal`, `InFlight`, `ErrorKindCode`) is what the engine will
+  implement over the operation ledger. `Manager::handle_any_journaled` builds
+  a handle carrying a journal: `ResourceHandle::submit_effect` and
+  `ResourceHandle::session_effect` prepare
   the effect under `unit/v1/{resource_key}/{contract_id}/{label}` before any
   quota, checkout or credential read (a recorded success replays with no
   provider call; a recorded rejection, a digest-only success or an unknown
@@ -685,8 +1269,8 @@ let admitted = recorded.readmit_against(fresh)?;
   after the checkout and reads, and record the unit's last call before it
   settles; a plain `submit`/`session` of an effect on such a row is refused
   `Permanent` / `NotSent`. On a library row `submit_effect` runs as `submit`.
-  An `OpError` of kind `OutcomeUnknown` now counts as an unknown outcome (span
-  field, `UnitOutcomeUnknown` event). Not SDK-exported yet.
+  An `OperationError` of kind `OutcomeUnknown` now counts as an unknown
+  outcome (span field, `OperationOutcomeUnknown` event). Not SDK-exported yet.
 
 - **The operation ledger is ready for many effects per node.**
   `OperationLedger::read_occurrences(scope, execution_id, node_key)` lists
@@ -702,14 +1286,16 @@ let admitted = recorded.readmit_against(fresh)?;
   `PreparedOperation::provider_key` so a resumed owner reads it back. A retry
   must reuse the key.
 
-- **Actions reach managed rows.** A `#[derive(Action)]` `#[resource]` field
-  may hold `ManagedRow<R>` or `Option<ManagedRow<R>>` (`Lazy<ManagedRow<R>>`
-  is rejected: resolution checks nothing out); the factory resolves it
-  synchronously through the new `ActionContextExt::managed_row_by_id`, over
-  the provided `nebula_core::accessor::ResourceAccessor::managed_row_any`
-  seam (the default refuses: an accessor serves no rows unless it opts in).
+- **Actions reach resource handles.** A `#[derive(Action)]` `#[resource]`
+  field may hold `ResourceHandle<R>` or `Option<ResourceHandle<R>>`
+  (`Lazy<ResourceHandle<R>>` is rejected: resolution checks nothing out; the
+  former `ManagedRow` spelling is refused with a hint); the factory resolves
+  it synchronously through the new `ActionContextExt::resource_handle_by_id`,
+  over the provided
+  `nebula_core::accessor::ResourceAccessor::resource_handle_any` seam (the
+  default refuses: an accessor serves no rows unless it opts in).
   The engine's `EngineResourceAccessor` serves it with the new read-only
-  `Manager::managed_row_any_read_only` under the node's recorded slot identity; the
+  `Manager::handle_any_read_only` under the node's recorded slot identity; the
   layered accessor fails closed for a key a branch scope holds. The facade's
   units inherit the node's cancellation token — a unit not granted yet
   settles `Cancelled` / `NotSent`, a granted one runs on to its deadline —
@@ -717,14 +1303,18 @@ let admitted = recorded.readmit_against(fresh)?;
   (`EngineResourceAccessor::with_deadline`) bounds every unit's deadline.
   Accepted through the engine end to end, over encrypted SQLite (F7) and on
   real PostgreSQL (PG9); the SDK perimeter proves the derived field
-  (`action_managed_row`). `#[action(no_external_effects)]` explicitly emits
-  the no-effect contract; omitting it remains fail-closed `Undeclared`.
+  (`action_resource_handle`). `#[action(read_only)]` explicitly emits the
+  no-effect contract, `ActionEffectContract::ReadOnly` (its serde tag stays
+  `"NoExternalEffects"`, so frozen plan records still decode; the former
+  `no_external_effects` flag is refused with a hint); omitting it remains
+  fail-closed `Undeclared`. The engine-side sealed dispatch trait for
+  graph-scoped resource actions is `ResourceActionHandle`.
   Action-scoped rows admit `Effect::Read` only: idempotent/write operations
   and write sessions are refused `NotSent` before provider code because their
   business effects require execution-owner authority. No public ad-hoc
   accessor or SDK testing hook builds a row.
-- **Managed row facade and sessions.** `Manager::managed_row` /
-  `managed_row_for_identity` return `nebula_resource::call::ManagedRow<R>`:
+- **Resource handle and sessions.** `Manager::handle` /
+  `handle_for_identity` return `nebula_resource::call::ResourceHandle<R>`:
   the managed call facade without a lease. Each attempt of a submitted
   `Operation` books its quota and waits on a FIFO row gate (sized to the
   topology's capacity) with nothing checked out, reads its bound credentials
@@ -734,7 +1324,7 @@ let admitted = recorded.readmit_against(fresh)?;
   granted under `Manager.admission`. Refusals are unsent and a refused
   checkout returns to the pool. On a pooled provider implementing
   `call::SessionProvider` (`open` / `close` over a `Session<'c>` borrowing
-  the instance), `ManagedRow::session(SessionSpec, body)` runs one
+  the instance), `ResourceHandle::session(SessionSpec, body)` runs one
   transaction per unit: the cost is booked once, the unannotated
   higher-ranked body borrows the session (`SessionFuture`, `SessionCx`), and
   `close` commits or rolls back (`SessionEnd`); `SessionClosed::Committed` is
@@ -744,12 +1334,12 @@ let admitted = recorded.readmit_against(fresh)?;
   `nebula_resource_row_checkouts_total{created}` and
   `nebula_resource_sessions_total{outcome}`, reported in
   `ResourceOpsSnapshot::{row_checkouts, sessions}`. The SDK curates
-  `ManagedRow` and the session vocabulary in
+  `ResourceHandle` and the session vocabulary in
   `nebula_sdk::integration::resource` (not the prelude). The engine accepts
   sessions on real PostgreSQL connections (PG1–PG8, run by the PostgreSQL
   CI job). Interim: `Pooled`-only sessions, the 5-minute unit deadline (no
   `LISTEN` / `NOTIFY` or IMAP `IDLE`); actions reach a row through a
-  derived field (see "Actions reach managed rows").
+  derived field (see "Actions reach resource handles").
 - **HTTP resource adapter in the SDK (feature `resource-http`).**
   `nebula_sdk::integration::resource::http` sends HTTP calls as managed
   units: `HttpConfig` (https, or http for a loopback host; timeouts, byte
@@ -772,11 +1362,11 @@ let admitted = recorded.readmit_against(fresh)?;
   header value or transport error reaches `Debug`, errors or logs.
 - **Streaming units in the managed call facade.** `nebula-resource`
   `call::{StreamOperation, StreamSink, Streaming, ConsumerGone}` and
-  `Managed::submit_streaming` run an operation that yields items as one
+  `Lease::submit_streaming` run an operation that yields items as one
   ordinary unit, through a bounded buffer; the unit's error follows the
   items once, and a dropped or cancelled consumer ends the operation. The
   SDK re-exports the family in `integration::resource`.
-  `ManagedRow::submit_streaming` runs one on a managed row: each attempt
+  `ResourceHandle::submit_streaming` runs one on a resource handle: each attempt
   waits for quota and the row gate with nothing checked out, and a consumer
   gone mid-stream releases the attempt's checkout and gate permit.
 - **SDK-only credentialed resources.** `integration::resource` re-exports
@@ -811,34 +1401,35 @@ let admitted = recorded.readmit_against(fresh)?;
   rows stay on the interim row gate with a one-time warning; the default
   becomes strict before the API freeze.
 
-- **Managed call facade.** `ResourceGuard::into_managed` turns a lease into
-  `nebula_resource::call::Managed<R>` (no `Deref`): each provider call is an
-  `Operation` submitted as a lazy, runtime-owned `Unit`, and
-  `OpCx::attempt(Cost)` admits, books and grants one provider `Attempt`
+- **Managed call facade.** `ResourceGuard::into_lease` turns a lease into
+  `nebula_resource::call::Lease<R>` (no `Deref`): each provider call is an
+  `Operation` submitted as a lazy, runtime-owned `Submission`, and
+  `OperationCx::attempt(Cost)` admits, books and grants one provider `Attempt`
   against the lease (budget, lease admission, quota at the attempt's cost
-  raced against the lease closing and `Unit::cancel`, final admission). Each
-  attempt settles a `SentState`; a failed unit's `OpError` decides retry
+  raced against the lease closing and `Submission::cancel`, final admission).
+  Each attempt settles a `SentState`; a failed unit's `OperationError` decides retry
   safety from the unit's sent state and the operation's `Effect`
   (`Read` / `Idempotent` / `Write`). New `ErrorKind::OutcomeUnknown`
   (`RESOURCE:OUTCOME_UNKNOWN`, never retried) is what a retry-unsafe unit
-  becomes as a resource `Error`, with `ResourceEvent::UnitOutcomeUnknown`.
-  `PinSlots` pins credential slots once per unit; `#[derive(Resource)]` emits
-  it (with a generated `<Name>PinnedSlots` for credentialed structs), as does
+  becomes as a resource `Error`, with `ResourceEvent::OperationOutcomeUnknown`.
+  `PinSlots` (hidden from the rendered docs) pins credential slots once per
+  unit, read through `Attempt::credentials`; `#[derive(Resource)]` emits it
+  (with a generated `<Name>PinnedSlots` for credentialed structs), as does
   `no_credential_slots!`. A row used this way reports
   `RateLimitProfile::PerAttempt`, and its acquires only honour pauses.
   Metrics: `nebula_resource_call_attempts_total{outcome}` and
   `nebula_resource_call_units_settled_total{sent}`; a `nebula.resource.unit`
-  span per unit. `nebula-action` converts `OpError` into `ActionError`
+  span per unit. `nebula-action` converts `OperationError` into `ActionError`
   (backoff hint kept, unknown outcome fatal). The SDK re-exports the facade
   from `integration::resource`, not the prelude: it is not frozen. Interim
   defaults (5-minute unit deadline cap, one unit per exclusive lease and 64
   per shared one, no refund on cancel) are listed in the resource README.
 
 - **Strict per-attempt credential admission for managed calls.** On a
-  manager with a credential availability observer, every `OpCx::attempt` on
+  manager with a credential availability observer, every `OperationCx::attempt` on
   a credential-bound row reads the bound credentials' availability after
   the attempt's quota wait — outside every lock, join-next shared with
-  acquires, raced against the lease closing and `Unit::cancel` — and is
+  acquires, raced against the lease closing and `Submission::cancel` — and is
   registered under `Manager.admission`: taint and shutdown re-checked, the
   reading applied to the row (a block suspends it and closes its leases, an
   outage refuses `CheckUnavailable` without changing it, uninstalled
@@ -1082,9 +1673,9 @@ let admitted = recorded.readmit_against(fresh)?;
 - **The `Limited` closure family is deprecated since 0.21.0** in favour of
   the managed call facade: `ResourceLimiter::wrap`, `Limited` (`run`,
   `run_until`, `run_for`, `run_for_until`, `unlimited`) and `LimitedError`.
-  Migrate each call to an `Operation` on `ResourceGuard::into_managed`: `run`
-  becomes `OpCx::attempt(Cost::ONE)`, `run_for` becomes `Cost::keyed`,
-  `run_until` becomes `Unit::with_deadline`, a `Throttle` becomes
+  Migrate each call to an `Operation` on `ResourceGuard::into_lease`: `run`
+  becomes `OperationCx::attempt(Cost::ONE)`, `run_for` becomes `Cost::keyed`,
+  `run_until` becomes `Submission::with_deadline`, a `Throttle` becomes
   `Attempt::report(Verdict)`, and `unlimited` has no replacement by design.
   They still work and stay re-exported by the SDK until their removal before
   the API freeze; the resource README carries the migration table.
@@ -1246,6 +1837,189 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Changed
 
+- **Stateful `Journaled` actions get journaled resource effects, per
+  iteration.** On a durable turn the engine now runs a frozen stateful
+  `Journaled` action under its node attempt's `NodeEffectJournal` too
+  (`JournalShape::Iterated` is journaled; the "stateful effects are
+  journaled per iteration in a later release" refusal is gone — a stateful
+  action without execution stores still reports "journaled effects need
+  execution stores"). Its effects are labelled `it{n}/unit/v1/#{k:06}` (`n`
+  the iteration in decimal without leading zeros, 0 to 9999; `k` restarting
+  per iteration; stateless labels stay `unit/v1/#{k:06}`). Every node
+  attempt replays the iterations from iteration 0: a journaled stateful
+  action takes no checkpoint sink (the runtime refuses both together). The
+  runtime keeps a barrier around every iteration: it starts only with no
+  unit of the node in flight, and after it returned (`Ok` or `Err`) its
+  units drain within the node drain limit; the loop stops
+  (`RuntimeError::EffectJournal`, new, which the engine replaces with the
+  journal's verdict) when the journal holds a failure — an unknown outcome
+  of the iteration (even one the action swallowed), an occurrence mismatch,
+  a deferring ledger or lease failure, an effect an earlier attempt recorded
+  in a succeeding iteration (or before it) that this attempt never met — or
+  a unit is in flight at the barrier
+  (`EffectExecutionError::IterationUnitsOutstanding`, new,
+  `ENGINE:EFFECT_ITERATION_BARRIER`; when the unit outlived the drain the
+  journal closes, and if it had been granted a call the verdict records the
+  call as ambiguous and the node fails `ENGINE:EFFECT_OUTCOME_UNKNOWN`
+  instead). Units are admitted only while an iteration is open, in one
+  transition with the rollover; one submitted between iterations is refused
+  unsent and recorded the same way; every journaled node (stateless too)
+  closes admission when its conclusion begins, so a detached task's later
+  submission is refused unsent and the drain waits for a fixed set; a node
+  cancelled mid-iteration or during
+  the delay between iterations ends the iteration at once, so a later
+  detached submission is refused closed (the node stays cancelled) and
+  the conclusion does not wait for it. Effects keep their order within a
+  family: a fresh slot above a position whose ledger prepare never answered
+  in the same attempt (cancelled or past its deadline mid-call, or the
+  acknowledgement lost — its row may exist) is refused as a deferring
+  `AcknowledgementUnknown` with nothing sent, and a recorded slot that
+  changed nothing yet is refused as an occurrence mismatch when an earlier
+  attempt recorded an effect that may have been applied (a success, or a
+  call that may have crossed with no recorded outcome — a definitive
+  rejection applied nothing and orders nothing) at a higher position of
+  its family that the program ran after it — in a later iteration, or one
+  that does not list it as concurrent. Each fresh slot records, at its
+  first prepare, the exact lower positions of its iteration whose unit was
+  still open (handed out and not yet settled). Units awaited together are
+  concurrent, so a recovery replays the unsettled one under its recorded
+  provider key (at least once) instead of halting; a slot recorded without
+  the list (by the journal before this rule) orders nothing, so an upgraded
+  node recovers as before. Fresh prepares of a family run in position
+  order — a higher slot is never written while a lower prepare may or may
+  not have written its row — while provider calls stay concurrent. A
+  replay that has not reached its frontier —
+  an earlier attempt recorded an effect in a later iteration — skips the
+  `Continue` delays it already waited once; from the frontier on every
+  delay is honoured (an iteration that recorded no effect cannot tell, so
+  the delay before it is waited again). A barrier that reads the node's
+  occurrences does so within what is left of the drain limit (at least
+  5 s) and defers the node when the ledger does not answer. One verdict per
+  node attempt still decides the node. Positions
+  order by `(iteration, ordinal)`, and a fresh slot — stateless or
+  stateful — is refused as a mismatch with nothing written or sent when it
+  lies below a recorded position of its family, above a recorded one the
+  attempt has not met (passed by on another path, or taken by a unit that
+  gave up before reaching the journal — previously such a slot was
+  prepared under a new provider key and the effect could be sent twice),
+  or when an earlier attempt recorded labels of the other family (flat
+  versus `it{n}/`); labels are parsed strictly. **Determinism contract**
+  (documented on `StatefulAction`): a replayed iteration must submit the
+  same effects in the same order; inputs a replay does not reproduce
+  diverge and halt the node `ENGINE:EFFECT_OCCURRENCE_MISMATCH` before any
+  recorded effect is sent again.
+  `JournalProtocol::V1` is unchanged. Additive: no version bump.
+- **A refused write through a non-journaled action's resource handle says
+  why.** Only stateless `Journaled` actions run under a node effect journal.
+  A `Journaled` action of another kind keeps read-only handles (reads run,
+  writes are refused `Permanent` / `NotSent` before any provider call), and
+  the refusal now names the reason: "control actions decide flow and must
+  not cause effects; move effects to a stateless action", "stateful effects
+  are journaled per iteration in a later release", "agent effects are not
+  journaled; the agent profile is planned", or "effects of this action kind
+  are not journaled" (stream and others). The kind's reason takes
+  precedence over "journaled effects need execution stores", which a
+  stateless action without execution stores still reports. `ReadOnly`
+  control actions (the built-in If, Switch, Filter) are unchanged. A
+  crate-private `JournalShape` (`Flat` / `Iterated` / `None`) maps each kind
+  to how it is journaled. Additive: no version bump.
+- **Stateless `Journaled` actions get journaled resource effects.** On a
+  durable turn (operation ledger and execution fence present), the engine
+  runs a frozen, stateless `Journaled` action under one `NodeEffectJournal`
+  per node attempt, and its resource handles drive every `Idempotent` /
+  `Write` unit through it: each effect is one operation-ledger slot under the
+  natural key `(scope, execution, node, occurrence)`, prepared lazily (no
+  ledger write until the first effect; reads are never prepared; concluding
+  always reads the node's occurrences once, since a crash before an attempt
+  was recorded leaves the next one at the same generation), granted per
+  provider call and settled or explained. A grant carries what is left of the
+  ledger's window for the call (`CallGrant::with_budget` / `budget`, new):
+  the resource runtime shrinks the unit's deadline to it, so no call starts
+  after a stable key's deduplication window, and a grant with nothing left is
+  withheld. A slot's contract identity binds the destination — resource key,
+  credential slot identity and the row's configuration fingerprint
+  (`JournalIntent::config_fingerprint`, new) — and `RECORD_OUTPUT`; a reload
+  between a unit's submit and its grant refuses the attempt unsent.
+  Occurrences are positional, `unit/v1/#{n:06}`, one sequence for all of
+  a node attempt's effect units — every resource, operations and sessions
+  (`EffectJournal::next_ordinal()` takes no arguments; the resource key and
+  unit kind join the operation in the contract identity, so effects of
+  different resources or kinds reordered also fail as a mismatch) — in
+  the order units start preparing:
+  the ordinal is taken by a unit's first poll, not at submit, so a
+  submission dropped unpolled takes no position and cannot shift later
+  effects onto unrecorded ones. Units prepared in another order, or an
+  effect added or removed before recorded ones, meet other intents' slots
+  and fail as a mismatch (identical intents are interchangeable); before
+  its first prepare the journal reads the node's earlier occurrences once
+  and refuses a fresh slot at a position an earlier attempt left empty
+  below one it recorded. The operation key and version are
+  bound by the contract identity, not the occurrence, so a redeploy that
+  changes the operation at a recorded position without an action version
+  bump fails `ENGINE:EFFECT_OCCURRENCE_MISMATCH` with nothing sent instead of
+  preparing a fresh slot that would send the effect again under another
+  provider key (the run-part provider keys, which frame the occurrence,
+  differ from the earlier unreleased format). Occurrences restart per node
+  attempt, so a retry or resume replays a settled effect's recorded output
+  with no provider call, refuses an unknown one and re-grants a retryable
+  failure within `Operation::max_attempts`; the `it{n}/` occurrence prefix is
+  reserved for stateful iterations. The provider receives the key recorded at
+  prepare, `base64url(SHA-256(...))` over the tenant, resource, operation,
+  version and the developer key part (or execution, node and occurrence) —
+  never an attempt number. The journal's verdict overrides the node's
+  result on every exit — after the action returns and on each exit before
+  it runs (cancellation, input resolution, credential refresh, rate limit),
+  so an earlier dispatch's unknown call is never reported as a retryable
+  failure: any slot whose call may have crossed without a recorded outcome
+  (unknown, outstanding, ambiguous, or held past the drain limit by a stuck
+  unit) fails the node `ENGINE:EFFECT_OUTCOME_UNKNOWN` (even when the action
+  swallowed the unit's error), a changed request, binding, configuration or
+  recording policy under a recorded occurrence fails it with the new
+  `ENGINE:EFFECT_OCCURRENCE_MISMATCH` (`EffectExecutionError::OccurrenceMismatch`,
+  plus `JournalOutcomeUnknown`) — as does a node about to succeed although
+  an earlier attempt recorded an effect (settled, or a call that crossed)
+  this attempt never met again —; these verdicts, a remote effect's
+  unknown outcome and unreadable effect evidence
+  (`EffectExecutionError::halts_execution`, new) take no error strategy:
+  the node fails and the execution stops even under `IgnoreErrors` or
+  `ContinueOnError`, and no OnError edge is routed. A node that fails before
+  meeting such an earlier effect again keeps its own error, wrapped in the
+  new `EngineError::SkippedJournaledEffect`: its retry policy may
+  re-dispatch it (the retry replays the effect), but a final failure halts
+  the execution the same way; and a lost lease (or a final occurrence
+  read that does not answer within the verdict budget, at least 5 s)
+  releases the turn without
+  finalizing. Raw leases stay refused; only handle-routed effects are
+  journaled (lease-facade units and raw egress are outside the journal).
+  A journaled node's accessor keeps the node's branch-scoped layer in front
+  of its journaled rows, so a key a scope shadows is refused as a scope
+  violation rather than served by the global row.
+  Without execution stores a journaled node keeps read-only handles whose
+  refused writes say "journaled effects need execution stores"
+  (`Manager::handle_any_read_only_because` is new); stateful, control and
+  agent `Journaled` actions stay read-only until their iterations are
+  journaled. A unit that fails locally (non-retryable) after its call
+  succeeded — or a session the provider committed although its body
+  failed — records the effect applied without output, never a provider
+  rejection; only a call classified `rejected` records one. A grant whose
+  budget the attempt's registration (the strict admission lock and
+  reading) spent is explained not crossed and the attempt refused unsent;
+  an expired unit deadline wins before the operation is polled again. New counters: `nebula_effect_journal_prepares_total{phase}`,
+  `nebula_effect_journal_refusals_total{step,refusal}`,
+  `nebula_effect_journal_verdicts_total{code}`.
+
+- **`OperationProtocolRecord` counts not-crossed calls.** The record gains
+  `not_crossed` (with `not_crossed()`, `crossed_invocations()`, the builder
+  setter `not_crossed`, and the constant `GRANT_CEILING`). It lives in the
+  existing protocol JSON payload, so no migration is needed: it is omitted when
+  zero, keeping such records byte-identical, and a record written before it
+  existed decodes with one not-crossed call when its latest disposition was
+  `BeforeBoundary`, zero otherwise. `validate()` now requires
+  `not_crossed <= invocations <= GRANT_CEILING`, bounds only the
+  possibly-crossed calls by `max_invocations`, and rejects a `BeforeBoundary`
+  disposition without a not-crossed call or an outstanding/ambiguous call
+  counted as not crossed.
+
 - **Breaking (workspace-internal): `EffectSlotBinding` gains `provider_key`.**
   The public-field struct now carries `provider_key:
   Option<ProviderIdempotencyKey>`; every struct literal must set it (the
@@ -1254,19 +2028,20 @@ let admitted = recorded.readmit_against(fresh)?;
   `OperationLedgerError` gains `InvalidOccurrence`. `OperationMismatch` now
   also covers a differing provider key.
 
-- **A managed row is bound to the caller that built it.**
-  `Manager::managed_row` / `managed_row_for_identity` link the context's
+- **A resource handle is bound to the caller that built it.**
+  `Manager::handle` / `handle_for_identity` link the context's
   cancellation token: once it fires, a unit whose first attempt was not
   granted yet (queued for quota, the row gate, a strict read or its
   checkout, or not started) settles `Cancelled` / `NotSent`, and the grant
-  re-checks it; after the first grant it is ignored. `Unit::with_deadline`
-  still only shortens a unit's deadline. The derive's error for a
-  `#[resource]` field of another type now lists `ManagedRow<T>`.
+  re-checks it; after the first grant it is ignored.
+  `Submission::with_deadline` still only shortens a unit's deadline. The
+  derive's error for a `#[resource]` field of another type now lists
+  `ResourceHandle<T>`.
 - **A managed unit pins its credential slots at its first grant**, not when
   it starts: the first attempt runs on the binding its final admission (and,
   on a strict manager, its credential read) validated. The pin is bracketed
   by the slots' generations and retaken when a rotation races it; a refused
-  first attempt keeps no pin. `Attempt::slots()` is unchanged for every
+  first attempt keeps no pin. `Attempt::credentials()` is unchanged for every
   attempt of a unit. The SDK's `integration::resource` docs now lead with
   the managed call facade.
 

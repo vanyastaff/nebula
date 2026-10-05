@@ -19,7 +19,7 @@ impl Action for UnionEcho {
             nebula_action::metadata_name!("Union echo"),
             "Preserve declared union input",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {

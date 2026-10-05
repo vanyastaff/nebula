@@ -1,15 +1,16 @@
-//! An SDK-only action whose resource slots are managed rows: a required
-//! `#[resource] ManagedRow<Directory>` field, an optional pooled
-//! `Option<ManagedRow<Ledger>>`, a custom read `Operation`, and `?` from a
-//! unit's `OpError` into `ActionError` — all through `nebula_sdk`.
+//! An SDK-only action whose resource slots are resource handles: a required
+//! `#[resource] ResourceHandle<Directory>` field, an optional pooled
+//! `Option<ResourceHandle<Ledger>>`, a custom read `Operation`, and `?` from a
+//! unit's `OperationError` into `ActionError` — all through `nebula_sdk`.
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ManagedRow, OpCx, OpError, Operation, PoolProvider, Pooled, Provider,
-    Resident, ResidentProvider, ResourceContext, ResourceKey, ResourceMetadataDraft, SentState,
-    no_credential_slots, resource_key,
+    Cost, Effect, Error, Operation, OperationCx, OperationError, PoolProvider, Pooled, Provider,
+    Resident, ResidentProvider, ResourceContext, ResourceHandle, ResourceKey,
+    ResourceMetadataDraft, no_credential_slots, resource_key,
 };
 use nebula_sdk::prelude::{
-    Action, ActionContext, ActionError, ActionResult, StatelessAction, metadata_name,
+    Action, ActionContext, ActionError, ActionResult, Deserialize, Serialize, StatelessAction,
+    metadata_name,
 };
 
 /// A shared directory client counting its lookups.
@@ -39,17 +40,17 @@ impl Provider for Directory {
 impl ResidentProvider for Directory {}
 
 /// Looks a user up: one read attempt.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct Lookup;
 
 impl Operation<Directory> for Lookup {
     type Output = u64;
+    const KEY: &'static str = "directory.lookup";
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, Directory>) -> Result<u64, OpError> {
-        let attempt = cx.attempt(Cost::ONE).await?;
-        let found = *attempt.instance();
-        attempt.settle(SentState::Sent);
-        Ok(found)
+    async fn run(self, cx: &mut OperationCx<'_, Directory>) -> Result<u64, OperationError> {
+        cx.call(Cost::ONE, async |found, ()| Ok(*found)).await
     }
 }
 
@@ -81,20 +82,20 @@ impl Provider for Ledger {
 
 impl PoolProvider for Ledger {}
 
-/// Looks a user up through an action-scoped, read-only managed row.
+/// Looks a user up through an action-scoped, read-only resource handle.
 #[derive(Action)]
 #[action(
     key = "example.audit_lookup",
     name = "Audit lookup",
     input = u64,
     output = u64,
-    no_external_effects
+    read_only
 )]
 struct AuditLookup {
     #[resource]
-    directory: ManagedRow<Directory>,
+    directory: ResourceHandle<Directory>,
     #[resource]
-    ledger: Option<ManagedRow<Ledger>>,
+    ledger: Option<ResourceHandle<Ledger>>,
 }
 
 impl StatelessAction for AuditLookup {
@@ -104,7 +105,7 @@ impl StatelessAction for AuditLookup {
         _ctx: &(impl ActionContext + ?Sized),
     ) -> Result<ActionResult<u64>, ActionError> {
         let found = self.directory.submit(Lookup).await?;
-        let _optional_row = self.ledger.as_ref().map(ManagedRow::resource_key);
+        let _optional_row = self.ledger.as_ref().map(ResourceHandle::resource_key);
         Ok(ActionResult::success(found))
     }
 }

@@ -7,7 +7,7 @@ async fn exact_turn_rejects_factory_effect_or_version_drift_before_instantiation
     for change_version in [false, true] {
         let original_runtime_registry = Arc::new(ActionRegistry::new());
         let metadata = SnapshotHandler::metadata()
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects);
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly);
         let (frozen, executions) =
             snapshot_registry_counted(&original_runtime_registry, "must-not-run");
         let stores = TestStores::new();
@@ -17,7 +17,9 @@ async fn exact_turn_rejects_factory_effect_or_version_drift_before_instantiation
         let changed_draft = if change_version {
             metadata.with_version(semver::Version::new(99, 0, 0))
         } else {
-            metadata.with_effect_contract(nebula_action::effect::ActionEffectContract::Undeclared)
+            metadata.with_effect_contract(nebula_action::effect::ActionEffectContract::Journaled(
+                nebula_action::JournalProtocol::V1,
+            ))
         };
         let changed_runtime_registry = Arc::new(ActionRegistry::new());
         changed_runtime_registry

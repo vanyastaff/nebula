@@ -355,7 +355,7 @@ impl nebula_action::action::Action for DateTimeAction {
             "Offset-aware RFC3339 timestamp formatting, parsing, arithmetic, and diff",
         )
         .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

@@ -77,10 +77,10 @@ impl TestStores {
         let workflow =
             nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions, &execution);
         Self {
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             workflow: Arc::new(workflow),
             versions: Arc::new(versions),
@@ -223,7 +223,7 @@ impl Action for EchoHandler {
             nebula_action::metadata_name!("Echo"),
             "echo",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -270,7 +270,7 @@ async fn make_engine_with_plugins(
                 nebula_action::metadata_name!("Echo"),
                 "echo",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             EchoHandler {
                 count: count.clone(),
             },

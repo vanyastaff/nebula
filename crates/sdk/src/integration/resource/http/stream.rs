@@ -6,14 +6,17 @@ use bytes::Bytes;
 use http::{HeaderMap, HeaderName, StatusCode};
 use nebula_resource::{
     ErrorKind,
-    call::{Effect, Managed, OpCx, OpError, SentState, StreamOperation, StreamSink, Streaming},
+    call::{
+        Effect, OperationCx, OperationError, ResourceHandle, SentState, StreamOperation,
+        StreamSink, Streaming,
+    },
 };
 use tracing::Instrument as _;
 
 use super::{
     auth::HttpApi,
     config::HttpTransport,
-    exchange::{admit_head, exchange_span, execute, prepare, settle},
+    exchange::{admit_head, exchange_span, execute, failed, prepare},
     request::{Method, Request},
 };
 
@@ -36,8 +39,8 @@ struct StreamExchange<M: Method> {
     request: Request<M>,
 }
 
-fn stopped(detail: &'static str) -> OpError {
-    OpError::new(ErrorKind::Cancelled, detail)
+fn stopped(detail: &'static str) -> OperationError {
+    OperationError::new(ErrorKind::Cancelled, detail)
 }
 
 impl<R, M> StreamOperation<R> for StreamExchange<M>
@@ -48,53 +51,76 @@ where
 {
     type Item = Frame;
     type Output = ();
+    const KEY: &'static str = M::OPERATION_KEY;
     const EFFECT: Effect = M::EFFECT;
 
-    async fn run(self, cx: &mut OpCx<'_, R>, mut sink: StreamSink<Frame>) -> Result<(), OpError> {
+    fn idempotency_key(&self) -> Option<String> {
+        self.request.key_part().map(str::to_owned)
+    }
+
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, R>,
+        mut sink: StreamSink<Frame>,
+    ) -> Result<(), OperationError> {
         let request = self.request;
-        request.check()?;
         let closing = cx.closing();
+        let key = cx.idempotency_key().copied();
         let attempt = cx.attempt(request.cost_value().clone()).await?;
         let span = exchange_span(M::METHOD, Some(1));
         async {
             let transport = attempt.instance().as_ref().clone();
+            let budget = request.body_budget(transport.limits().max_stream_bytes);
             // No total timeout: the unit's deadline bounds the exchange and
             // the transport's read idle timeout bounds a stall.
-            let outgoing = match prepare(&attempt, &transport, &request, None) {
+            let outgoing = prepare::<R, M>(
+                &transport,
+                attempt.credentials(),
+                key.as_ref(),
+                &request,
+                None,
+                &span,
+            );
+            let outgoing = match outgoing {
                 Ok(outgoing) => outgoing,
                 Err(error) => {
-                    settle(attempt, SentState::NotSent, &span);
-                    return Err(error);
+                    let head: Result<(), OperationError> = Err(error);
+                    attempt.finish(&head).await;
+                    return head;
                 },
             };
-            let head = tokio::select! {
+            let response = tokio::select! {
                 biased;
                 () = closing.closed() => None,
                 () = sink.closed() => None,
-                head = execute(attempt, &transport, outgoing, &span) => Some(head),
+                response = execute(&transport, outgoing, &span) => Some(response),
             };
-            // Dropping `execute` above drops its attempt unsettled:
-            // `MaybeSent`, as the request may be on the wire.
-            let Some(head) = head else {
+            let Some(response) = response else {
+                // Dropped unfinished: `MaybeSent`, as the request may be on
+                // the wire.
+                drop(attempt);
                 return Err(stopped("stream stopped before its response head"));
             };
-            let (attempt, mut response) = head.map_err(|failure| failure.error)?;
+            // The attempt is finished at the head: what follows is the
+            // unit's, not the call's.
+            let head = response.and_then(|response| {
+                admit_head(&response, request.accepts(response.status()), &span)?;
+                if response
+                    .content_length()
+                    .is_some_and(|length| length > budget)
+                {
+                    return Err(failed(
+                        &span,
+                        SentState::Sent,
+                        OperationError::rejected("streamed body exceeds its byte budget"),
+                    ));
+                }
+                span.record("sent", SentState::Sent.as_str());
+                Ok(response)
+            });
+            attempt.finish(&head).await;
+            let mut response = head?;
             let status = response.status();
-            let attempt = admit_head(attempt, &response, request.accepts(status), &span)
-                .await
-                .map_err(|failure| failure.error)?;
-            let budget = request.body_budget(transport.limits().max_stream_bytes);
-            if response
-                .content_length()
-                .is_some_and(|length| length > budget)
-            {
-                settle(attempt, SentState::Sent, &span);
-                return Err(OpError::new(
-                    ErrorKind::Permanent,
-                    "streamed body exceeds its byte budget",
-                ));
-            }
-            settle(attempt, SentState::Sent, &span);
             let headers = std::mem::take(response.headers_mut());
             sink.send(Frame::Head { status, headers }).await?;
 
@@ -110,7 +136,7 @@ where
                     Ok(Some(chunk)) => chunk,
                     Ok(None) => return Ok(()),
                     Err(_) => {
-                        return Err(OpError::new(
+                        return Err(OperationError::new(
                             ErrorKind::Transient,
                             "reading the response stream failed",
                         ));
@@ -118,7 +144,7 @@ where
                 };
                 streamed = streamed.saturating_add(chunk.len() as u64);
                 if streamed > budget {
-                    return Err(OpError::new(
+                    return Err(OperationError::new(
                         ErrorKind::Permanent,
                         "streamed body exceeds its byte budget",
                     ));
@@ -165,10 +191,10 @@ impl ResponseStream {
     /// # Cancel safety
     ///
     /// Cancel safe, as [`Streaming::next`].
-    pub async fn next(&mut self) -> Option<Result<Bytes, OpError>> {
+    pub async fn next(&mut self) -> Option<Result<Bytes, OperationError>> {
         match self.frames.next().await? {
             Ok(Frame::Chunk(chunk)) => Some(Ok(chunk)),
-            Ok(Frame::Head { .. }) => Some(Err(OpError::new(
+            Ok(Frame::Head { .. }) => Some(Err(OperationError::new(
                 ErrorKind::Permanent,
                 "response stream repeated its head",
             ))),
@@ -201,23 +227,26 @@ impl fmt::Debug for ResponseStream {
 /// classifies them. A body over the transport's stream budget (or the
 /// request's [`max_bytes`](Request::max_bytes)) fails `Permanent`; a body
 /// read failure `Transient`; the unit's deadline mid-body `MaybeSent` (a
-/// `Write` then has an unknown outcome). The lease closing stops the body
-/// (`Cancelled`), and so does dropping or cancelling the stream. At most 8
-/// chunks are buffered; past them the exchange stops reading.
+/// `Write` then has an unknown outcome). The checked-out instance closing
+/// stops the body (`Cancelled`), and so does dropping or cancelling the
+/// stream. At most 8 chunks are buffered; past them the exchange stops
+/// reading. The unit runs under `handle`'s effect authority: a streamed
+/// effect on a read-only or journaled handle is refused before its first
+/// provider attempt.
 ///
 /// # Errors
 ///
 /// The unit's error when it failed before the head.
 pub async fn open_stream<R, M>(
-    managed: &Managed<R>,
+    handle: &ResourceHandle<R>,
     request: Request<M>,
-) -> Result<ResponseStream, OpError>
+) -> Result<ResponseStream, OperationError>
 where
     R: HttpApi,
     R::Instance: AsRef<HttpTransport>,
     M: Method,
 {
-    first_frame(managed.submit_streaming(StreamExchange { request }, STREAM_CAPACITY)).await
+    first_frame(handle.submit_streaming(StreamExchange { request }, STREAM_CAPACITY)).await
 }
 
 /// [`open_stream`] with the unit's deadline shortened to `deadline`.
@@ -226,34 +255,34 @@ where
 ///
 /// As [`open_stream`].
 pub async fn open_stream_until<R, M>(
-    managed: &Managed<R>,
+    handle: &ResourceHandle<R>,
     request: Request<M>,
     deadline: Instant,
-) -> Result<ResponseStream, OpError>
+) -> Result<ResponseStream, OperationError>
 where
     R: HttpApi,
     R::Instance: AsRef<HttpTransport>,
     M: Method,
 {
-    let frames = managed
+    let frames = handle
         .submit_streaming(StreamExchange { request }, STREAM_CAPACITY)
         .with_deadline(deadline);
     first_frame(frames).await
 }
 
-async fn first_frame(mut frames: Streaming<Frame, ()>) -> Result<ResponseStream, OpError> {
+async fn first_frame(mut frames: Streaming<Frame, ()>) -> Result<ResponseStream, OperationError> {
     match frames.next().await {
         Some(Ok(Frame::Head { status, headers })) => Ok(ResponseStream {
             status,
             headers,
             frames,
         }),
-        Some(Ok(Frame::Chunk(_))) => Err(OpError::new(
+        Some(Ok(Frame::Chunk(_))) => Err(OperationError::new(
             ErrorKind::Permanent,
             "response stream sent a chunk before its head",
         )),
         Some(Err(error)) => Err(error),
-        None => Err(OpError::new(
+        None => Err(OperationError::new(
             ErrorKind::Permanent,
             "response stream ended before its head",
         )),

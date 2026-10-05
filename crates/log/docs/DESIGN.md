@@ -5,7 +5,7 @@
 | **Status** | Stable — cross-cutting init layer (не затронут redesign'ом) |
 | **Layer** | Cross-cutting (leaf; единственная workspace-зависимость — `nebula-error`) |
 | **Redesign role** | **Not touched** — без deps на credential/resource; даёт только `tracing`-pipeline. Касание чисто косвенное (см. §7) |
-| **Related** | PRODUCT_CANON §12.5 (no secrets in logs), AGENTS.md:21, `feedback_observability_as_completion` |
+| **Related** | PRODUCT_CANON §12.5 (no secrets in logs), AGENTS.md:21, AGENTS.md §Conventions (observability с каждым новым state/error/hot path) |
 
 ---
 
@@ -116,7 +116,7 @@ file-watch через feature `async`), task-local контекст-пропаг
 касается. Косвенные стыки: (1) §12.5 «no secrets in logs» — enforcement на call-sites credential-кода,
 крейт лишь даёт pipeline; (2) `LoggerResource`/`ResourceAwareHook` — легаси-«resource»-модель, не
 проходящая через `nebula-resource`, кандидат на ревизию при unified in-process registry pivot;
-(3) `feedback_observability_as_completion` (trace span как DoD) опирается на `tracing` напрямую, не на хуки
+(3) правило «observability — часть DoD» (AGENTS.md §Conventions: trace span с каждым новым state/error/hot path) опирается на `tracing` напрямую, не на хуки
 этого крейта.
 
 ## 8. Forward design / открытые вопросы

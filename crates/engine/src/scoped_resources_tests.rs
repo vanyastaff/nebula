@@ -76,50 +76,22 @@ impl ResourceAccessor for TestGlobalAccessor {
         key == &self.registered
     }
 
-    fn acquire_any(&self, key: &ResourceKey) -> BoxFut<'_, Result<ScopedLookup, CoreError>> {
-        let key_owned = key.clone();
-        Box::pin(async move {
-            if key_owned == self.registered {
-                self.hits.fetch_add(1, Ordering::SeqCst);
-                Ok(Box::new(self.payload_marker) as ScopedLookup)
-            } else {
-                Err(CoreError::credential_not_found(
-                    CredentialKey::new(key_owned.as_str())
-                        .expect("ResourceKey format is CredentialKey-compatible"),
-                ))
-            }
-        })
-    }
-
-    fn try_acquire_any(
-        &self,
-        key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Option<ScopedLookup>, CoreError>> {
-        let key_owned = key.clone();
-        Box::pin(async move {
-            if key_owned == self.registered {
-                Ok(Some(Box::new(self.payload_marker) as ScopedLookup))
-            } else {
-                Ok(None)
-            }
-        })
-    }
-
-    fn managed_row_any(&self, key: &ResourceKey) -> Result<ScopedLookup, CoreError> {
+    fn resource_handle_any(&self, key: &ResourceKey) -> Result<ScopedLookup, CoreError> {
         if key == &self.registered {
             self.hits.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(self.payload_marker) as ScopedLookup)
         } else {
-            Err(CoreError::resource_unavailable(
-                key.as_str(),
-                "not registered",
-                false,
-                None,
+            Err(CoreError::credential_not_found(
+                CredentialKey::new(key.as_str())
+                    .expect("ResourceKey format is CredentialKey-compatible"),
             ))
         }
     }
 
-    fn try_managed_row_any(&self, key: &ResourceKey) -> Result<Option<ScopedLookup>, CoreError> {
+    fn try_resource_handle_any(
+        &self,
+        key: &ResourceKey,
+    ) -> Result<Option<ScopedLookup>, CoreError> {
         if key == &self.registered {
             self.hits.fetch_add(1, Ordering::SeqCst);
             Ok(Some(Box::new(self.payload_marker) as ScopedLookup))
@@ -355,64 +327,73 @@ async fn dash_lookup_bounded_by_max_ancestor_depth() {
 
 // ── Layered accessor (Phase 6 contract preservation) ─────────────────
 
-#[tokio::test]
-async fn scoped_only_hit_returns_scoped_payload() {
+#[test]
+fn a_scoped_only_key_refuses_a_handle_without_a_lookup() {
     let key = rk("postgres");
     let scoped = Arc::new(OneKeyScopedMap::new(key.clone(), 0xaaaa));
     let global = Arc::new(TestGlobalAccessor::new(rk("redis"), 0xbbbb));
     let layered = LayeredResourceAccessor::new(scoped.clone(), global.clone());
 
-    let payload = layered.acquire_any(&key).await.unwrap();
-    assert_eq!(marker(payload), 0xaaaa);
-    assert_eq!(scoped.hits.load(Ordering::SeqCst), 1);
+    let refused = layered
+        .resource_handle_any(&key)
+        .expect_err("a branch-scoped payload is no resource handle");
+    assert!(
+        matches!(refused, CoreError::ScopeViolation { .. }),
+        "expected ScopeViolation, got {refused:?}"
+    );
+    assert_eq!(scoped.hits.load(Ordering::SeqCst), 0, "no payload served");
     assert_eq!(global.hits.load(Ordering::SeqCst), 0);
 }
 
-#[tokio::test]
-async fn global_only_hit_falls_through() {
+#[test]
+fn a_global_only_key_falls_through() {
     let scoped_key = rk("postgres");
     let global_key = rk("redis");
     let scoped = Arc::new(OneKeyScopedMap::new(scoped_key, 0xaaaa));
     let global = Arc::new(TestGlobalAccessor::new(global_key.clone(), 0xbbbb));
     let layered = LayeredResourceAccessor::new(scoped.clone(), global.clone());
 
-    let payload = layered.acquire_any(&global_key).await.unwrap();
-    assert_eq!(marker(payload), 0xbbbb);
+    let row = layered.resource_handle_any(&global_key).unwrap();
+    assert_eq!(marker(row), 0xbbbb);
     assert_eq!(global.hits.load(Ordering::SeqCst), 1);
+    assert_eq!(scoped.hits.load(Ordering::SeqCst), 0);
 }
 
-#[tokio::test]
-async fn scoped_wins_over_global_at_same_key() {
+#[test]
+fn a_scoped_key_shadows_the_global_row_at_the_same_key() {
     let key = rk("postgres");
     let scoped = Arc::new(OneKeyScopedMap::new(key.clone(), 0xaaaa));
     let global = Arc::new(TestGlobalAccessor::new(key.clone(), 0xbbbb));
-    let layered = LayeredResourceAccessor::new(scoped.clone(), global.clone());
+    let layered = LayeredResourceAccessor::new(scoped, global.clone());
 
-    let payload = layered.acquire_any(&key).await.unwrap();
-    assert_eq!(marker(payload), 0xaaaa, "scoped layer must win");
-    assert_eq!(global.hits.load(Ordering::SeqCst), 0);
+    assert!(
+        layered.resource_handle_any(&key).is_err(),
+        "the scoped layer must win, failing closed"
+    );
+    assert!(layered.try_resource_handle_any(&key).is_err());
+    assert_eq!(global.hits.load(Ordering::SeqCst), 0, "never bypassed");
 }
 
-#[tokio::test]
-async fn missing_in_both_returns_error() {
+#[test]
+fn missing_in_both_returns_error() {
     let scoped = Arc::new(OneKeyScopedMap::new(rk("postgres"), 0xaaaa));
     let global = Arc::new(TestGlobalAccessor::new(rk("redis"), 0xbbbb));
     let layered = LayeredResourceAccessor::new(scoped, global);
 
-    let result = layered.acquire_any(&rk("kafka")).await;
+    let result = layered.resource_handle_any(&rk("kafka"));
     assert!(
         matches!(result, Err(CoreError::CredentialNotFound { .. })),
         "expected CredentialNotFound, got {result:?}"
     );
 }
 
-#[tokio::test]
-async fn try_acquire_any_returns_none_when_missing_in_both() {
+#[test]
+fn try_resource_handle_any_returns_none_when_missing_in_both() {
     let scoped = Arc::new(OneKeyScopedMap::new(rk("postgres"), 0xaaaa));
     let global = Arc::new(TestGlobalAccessor::new(rk("redis"), 0xbbbb));
     let layered = LayeredResourceAccessor::new(scoped, global);
 
-    let result = layered.try_acquire_any(&rk("kafka")).await.unwrap();
+    let result = layered.try_resource_handle_any(&rk("kafka")).unwrap();
     assert!(result.is_none());
 }
 
@@ -428,13 +409,13 @@ fn has_walks_both_layers() {
 }
 
 #[test]
-fn a_scoped_key_refuses_a_managed_row_and_a_global_one_forwards() {
+fn a_scoped_key_refuses_a_resource_handle_and_a_global_one_forwards() {
     let scoped = Arc::new(OneKeyScopedMap::new(rk("postgres"), 0xaaaa));
     let global = Arc::new(TestGlobalAccessor::new(rk("postgres"), 0xbbbb));
     let layered = LayeredResourceAccessor::new(scoped.clone(), global.clone());
 
     let refused = layered
-        .managed_row_any(&rk("postgres"))
+        .resource_handle_any(&rk("postgres"))
         .expect_err("a scoped payload serves no managed row");
     assert!(
         matches!(refused, CoreError::ScopeViolation { .. }),
@@ -446,13 +427,13 @@ fn a_scoped_key_refuses_a_managed_row_and_a_global_one_forwards() {
     let global = Arc::new(TestGlobalAccessor::new(rk("redis"), 0xbbbb));
     let layered = LayeredResourceAccessor::new(scoped, global.clone());
     let row = layered
-        .managed_row_any(&rk("redis"))
+        .resource_handle_any(&rk("redis"))
         .expect("forwarded to the global accessor");
     assert_eq!(marker(row), 0xbbbb);
     assert_eq!(global.hits.load(Ordering::SeqCst), 1);
 
     let optional = layered
-        .try_managed_row_any(&rk("redis"))
+        .try_resource_handle_any(&rk("redis"))
         .expect("optional lookup forwards to the global accessor")
         .expect("the global row exists");
     assert_eq!(marker(optional), 0xbbbb);
@@ -462,7 +443,7 @@ fn a_scoped_key_refuses_a_managed_row_and_a_global_one_forwards() {
     let global = Arc::new(TestGlobalAccessor::new(rk("postgres"), 0xbbbb));
     let layered = LayeredResourceAccessor::new(scoped, global.clone());
     let refused = layered
-        .try_managed_row_any(&rk("postgres"))
+        .try_resource_handle_any(&rk("postgres"))
         .expect_err("an optional row cannot bypass a scoped payload");
     assert!(matches!(refused, CoreError::ScopeViolation { .. }));
     assert_eq!(global.hits.load(Ordering::SeqCst), 0, "never bypassed");

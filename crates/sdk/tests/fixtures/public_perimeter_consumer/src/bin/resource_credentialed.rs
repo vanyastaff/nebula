@@ -7,10 +7,10 @@ use std::sync::Arc;
 use nebula_sdk::integration::credential::BearerTokenCredential;
 use nebula_sdk::integration::resource::{
     Cost, CredentialGuard, CredentialSlot, CredentialUnavailableReason, Effect, Error, ErrorKind,
-    Managed, OpCx, OpError, Operation, PinSlots, Provider, Resident, ResidentProvider, Resource,
-    ResourceContext, ResourceKey, ResourceMetadataDraft, SentState, resource_key,
+    Operation, OperationCx, OperationError, PinSlots, Provider, Resident, ResidentProvider,
+    Resource, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft, resource_key,
 };
-use nebula_sdk::prelude::{SecretString, SecretToken};
+use nebula_sdk::prelude::{Deserialize, SecretString, SecretToken, Serialize};
 
 const TOKEN: &str = "ghp_fixture_secret";
 
@@ -46,31 +46,34 @@ impl Provider for GitHub {
 impl ResidentProvider for GitHub {}
 
 /// Reads the pinned token's length; never the live slot.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct TokenLength;
 
 impl Operation<GitHub> for TokenLength {
     type Output = usize;
+    const KEY: &'static str = "github.token_length";
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, GitHub>) -> Result<usize, OpError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        let token: Option<&CredentialGuard<SecretToken>> = attempt.slots().token();
-        let Some(token) = token else {
-            attempt.settle(SentState::NotSent);
-            return Err(OpError::new(
-                ErrorKind::CredentialUnavailable {
-                    reason: CredentialUnavailableReason::Absent,
-                },
-                "no bearer token bound",
-            ));
-        };
-        let length = token.token().expose_secret().len();
-        attempt.settle(SentState::Sent);
-        Ok(length)
+    async fn run(self, cx: &mut OperationCx<'_, GitHub>) -> Result<usize, OperationError> {
+        cx.call(Cost::FREE, async |(), credentials| {
+            let token: Option<&CredentialGuard<SecretToken>> = credentials.token();
+            let Some(token) = token else {
+                // Nothing was sent: the refusal keeps its kind.
+                return Err(OperationError::unreachable_as(
+                    ErrorKind::CredentialUnavailable {
+                        reason: CredentialUnavailableReason::Absent,
+                    },
+                    "no bearer token bound",
+                ));
+            };
+            Ok(token.token().expose_secret().len())
+        })
+        .await
     }
 }
 
-async fn action_code(github: &Managed<GitHub>) -> Result<usize, Error> {
+async fn action_code(github: &ResourceHandle<GitHub>) -> Result<usize, Error> {
     Ok(github.submit(TokenLength).await?)
 }
 

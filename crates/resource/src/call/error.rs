@@ -11,7 +11,7 @@ use crate::{
     rate_limit::DEFAULT_MAX_PENALTY,
 };
 
-/// The error of a managed unit ([`Unit`](super::Unit)).
+/// The error of a managed unit ([`Submission`](super::Submission)).
 ///
 /// Carries an [`ErrorKind`], a static detail, and — once the runtime settled
 /// the unit — the unit's [`SentState`] and its operation's [`Effect`]. From
@@ -31,18 +31,69 @@ use crate::{
 /// | yes | `Sent` | any, kind `Exhausted` | yes (the provider refused; nothing applied) | its kind |
 /// | yes | `Sent` / `MaybeSent` | `Read` / `Idempotent` | yes | its kind |
 /// | yes | `Sent` / `MaybeSent` | `Write` | no | [`ErrorKind::OutcomeUnknown`] |
+///
+/// # Classifying a provider call
+///
+/// A provider call made through [`OperationCx::call`](super::OperationCx::call)
+/// (or finished with [`Attempt::finish`](super::Attempt::finish)) returns one
+/// of the classified errors below, and the runtime derives everything else
+/// from it: the attempt's [`SentState`], what the rate limit is told, how an
+/// execution journal records the call, and whether `call` takes another
+/// attempt (within [`Operation::max_attempts`](super::Operation::max_attempts)
+/// and the unit's deadline).
+///
+/// | Error | Sent | Rate limit | Journal | Retried inside `call` |
+/// |---|---|---|---|---|
+/// | (success) | `Sent` | pass | applied | — |
+/// | [`throttled`](Self::throttled) / [`throttled_key`](Self::throttled_key) | `Sent` (kind `Exhausted`) | throttled: the quota / the cost's key pauses | not crossed | yes |
+/// | [`unreachable`](Self::unreachable) / [`unreachable_as`](Self::unreachable_as) | `NotSent` | nothing | not crossed | yes (`unreachable_as`: a retryable kind only) |
+/// | [`interrupted`](Self::interrupted) | `MaybeSent` | nothing | ambiguous | only a replay-safe effect |
+/// | [`rejected`](Self::rejected) / [`rejected_as`](Self::rejected_as) | `Sent` | pass | rejected | no |
+/// | unclassified ([`new`](Self::new), `?` on an [`Error`]) | `MaybeSent` | nothing | ambiguous | only a replay-safe effect with a retryable kind |
+///
+/// Neither `unreachable` nor `interrupted` tells the rate limit anything,
+/// so a failure never resets a backoff in progress. The throttle's pause is
+/// waited out by the next attempt's quota booking; nothing sleeps.
 #[derive(Debug, Clone)]
-pub struct OpError {
+pub struct OperationError {
     kind: ErrorKind,
     detail: &'static str,
     sent: SentState,
     effect: Effect,
     resource_key: Option<ResourceKey>,
+    signal: Signal,
+    /// An execution owner refused a step of the unit: authoritative, never
+    /// masked by an earlier attempt's error.
+    owner_refusal: bool,
 }
 
-impl OpError {
+/// What a provider call's error says about the call, as its constructor
+/// classified it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Signal {
+    /// Not classified: [`OperationError::new`] or a converted [`Error`].
+    Unclassified,
+    /// The provider asked to slow down; `per_key` pauses only the
+    /// attempt's keyed cost.
+    Throttled {
+        /// Only the attempt's [`Cost::keyed`](super::Cost::keyed) key pauses.
+        per_key: bool,
+    },
+    /// Provably not sent.
+    Unreachable,
+    /// May have been sent.
+    Interrupted,
+    /// Sent and definitively refused.
+    Rejected,
+}
+
+impl OperationError {
     /// An error of `kind` with a static, secret-free `detail`. Its sent
     /// state and effect are set by the runtime when the unit settles.
+    ///
+    /// Returned from a provider call it is unclassified: the call may have
+    /// been sent (see the type docs). Prefer a classifying constructor
+    /// there.
     #[must_use]
     pub fn new(kind: ErrorKind, detail: &'static str) -> Self {
         Self {
@@ -51,7 +102,136 @@ impl OpError {
             sent: SentState::NotSent,
             effect: Effect::Write,
             resource_key: None,
+            signal: Signal::Unclassified,
+            owner_refusal: false,
         }
+    }
+
+    fn classified(kind: ErrorKind, detail: &'static str, signal: Signal) -> Self {
+        Self {
+            signal,
+            ..Self::new(kind, detail)
+        }
+    }
+
+    /// The provider asked to slow down (an HTTP `429`): it applied nothing.
+    /// Kind [`ErrorKind::Exhausted`] with the provider's hint; the whole
+    /// quota of the row pauses for `retry_after` (capped by the policy), or
+    /// for a backoff when the provider named no time.
+    #[must_use]
+    pub fn throttled(retry_after: Option<Duration>) -> Self {
+        Self::classified(
+            ErrorKind::Exhausted { retry_after },
+            "provider throttled the call",
+            Signal::Throttled { per_key: false },
+        )
+    }
+
+    /// As [`throttled`](Self::throttled), for a limit on the one key the
+    /// attempt's [`Cost::keyed`](super::Cost::keyed) named — a chat's own
+    /// flood limit: only that key pauses. An attempt whose cost named no key
+    /// pauses the quota.
+    #[must_use]
+    pub fn throttled_key(retry_after: Option<Duration>) -> Self {
+        Self::classified(
+            ErrorKind::Exhausted { retry_after },
+            "provider throttled the call's key",
+            Signal::Throttled { per_key: true },
+        )
+    }
+
+    /// The call provably never reached the provider (no connection, a
+    /// refused request built before sending). Kind
+    /// [`ErrorKind::Transient`], sent state `NotSent`: safe to retry for
+    /// any effect.
+    #[must_use]
+    pub fn unreachable(detail: &'static str) -> Self {
+        Self::classified(ErrorKind::Transient, detail, Signal::Unreachable)
+    }
+
+    /// As [`unreachable`](Self::unreachable), with a `kind` that says more
+    /// about why nothing was sent: a local buffer full
+    /// ([`ErrorKind::Backpressure`]), a client already shut down
+    /// ([`ErrorKind::Cancelled`]). Sent state `NotSent`; retried inside a
+    /// call only when the kind is retryable.
+    #[must_use]
+    pub fn unreachable_as(kind: ErrorKind, detail: &'static str) -> Self {
+        Self::classified(kind, detail, Signal::Unreachable)
+    }
+
+    /// The call may have reached the provider, and no answer says whether
+    /// it applied (a connection lost mid-request, a gateway timeout). Kind
+    /// [`ErrorKind::Transient`], sent state `MaybeSent`: retried only for a
+    /// replay-safe effect; a `Write` ends with an unknown outcome.
+    #[must_use]
+    pub fn interrupted(detail: &'static str) -> Self {
+        Self::classified(ErrorKind::Transient, detail, Signal::Interrupted)
+    }
+
+    /// The provider answered and definitively refused the call (an HTTP
+    /// `4xx`): kind [`ErrorKind::Permanent`], sent state `Sent`, never
+    /// retried.
+    #[must_use]
+    pub fn rejected(detail: &'static str) -> Self {
+        Self::classified(ErrorKind::Permanent, detail, Signal::Rejected)
+    }
+
+    /// As [`rejected`](Self::rejected), with a non-retryable `kind` that
+    /// says more ([`ErrorKind::NotFound`], a refused credential). A kind
+    /// that invites a retry is recorded [`ErrorKind::Permanent`]: a
+    /// definitive refusal is never retried.
+    #[must_use]
+    pub fn rejected_as(kind: ErrorKind, detail: &'static str) -> Self {
+        let kind = if kind.is_default_retryable() {
+            ErrorKind::Permanent
+        } else {
+            kind
+        };
+        Self::classified(kind, detail, Signal::Rejected)
+    }
+
+    /// What the error says about the provider call.
+    pub(crate) fn signal(&self) -> Signal {
+        self.signal
+    }
+
+    /// The sent state of the attempt that returned this error.
+    pub(crate) fn attempt_sent(&self) -> SentState {
+        match self.signal {
+            Signal::Throttled { .. } | Signal::Rejected => SentState::Sent,
+            Signal::Unreachable => SentState::NotSent,
+            Signal::Interrupted | Signal::Unclassified => SentState::MaybeSent,
+        }
+    }
+
+    /// Whether [`OperationCx::call`](super::OperationCx::call) takes another
+    /// attempt after an attempt of an `effect` operation returned this error
+    /// (budget and deadline permitting).
+    pub(crate) fn retried_in_call(&self, effect: Effect) -> bool {
+        match self.signal {
+            Signal::Throttled { .. } => true,
+            Signal::Unreachable => self.kind.is_default_retryable(),
+            Signal::Interrupted => effect.is_replay_safe(),
+            Signal::Rejected => false,
+            Signal::Unclassified => effect.is_replay_safe() && self.kind.is_default_retryable(),
+        }
+    }
+
+    /// Marks the error as an execution owner's refusal of a step.
+    pub(crate) fn refused_by_owner(mut self) -> Self {
+        self.owner_refusal = true;
+        self
+    }
+
+    /// Whether a refused retry inside
+    /// [`OperationCx::call`](super::OperationCx::call) ends the call with
+    /// this refusal rather than the error of the attempt it would have
+    /// retried: an execution owner's refusal (the outcome is unknown, the
+    /// owner closed, the occurrence mismatched, …) or an unknown outcome is
+    /// authoritative; a local refusal (the attempt budget, the deadline, the
+    /// lease closing) says nothing new about the call.
+    pub(crate) fn supersedes_retried(&self) -> bool {
+        self.owner_refusal || self.kind == ErrorKind::OutcomeUnknown
     }
 
     /// The error kind.
@@ -138,7 +318,7 @@ impl OpError {
     }
 }
 
-impl From<Error> for OpError {
+impl From<Error> for OperationError {
     /// Keeps the kind and the resource key; drops the message and source,
     /// which may carry provider or request data.
     fn from(error: Error) -> Self {
@@ -148,16 +328,18 @@ impl From<Error> for OpError {
             sent: SentState::NotSent,
             effect: Effect::Write,
             resource_key: error.resource_key().cloned(),
+            signal: Signal::Unclassified,
+            owner_refusal: false,
         }
     }
 }
 
-impl From<OpError> for Error {
+impl From<OperationError> for Error {
     /// A retry-unsafe unit becomes [`ErrorKind::OutcomeUnknown`], so no
     /// caller retries an effect that may have been applied; any other keeps
     /// its kind, with an `Exhausted` hint capped as
-    /// [`OpError::retry_after`] caps it.
-    fn from(error: OpError) -> Self {
+    /// [`OperationError::retry_after`] caps it.
+    fn from(error: OperationError) -> Self {
         let converted = if error.is_outcome_unknown() {
             Error::outcome_unknown(format!(
                 "{} ({}; {} effect {}; outcome unknown)",
@@ -183,7 +365,7 @@ impl From<OpError> for Error {
     }
 }
 
-impl fmt::Display for OpError {
+impl fmt::Display for OperationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(key) = &self.resource_key {
             write!(formatter, "[{key}] ")?;
@@ -192,4 +374,4 @@ impl fmt::Display for OpError {
     }
 }
 
-impl std::error::Error for OpError {}
+impl std::error::Error for OperationError {}

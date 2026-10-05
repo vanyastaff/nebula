@@ -8,10 +8,11 @@ use std::{
 };
 
 use nebula_sdk::integration::resource::{
-    Cost, Effect, Error, ErrorKind, Managed, OpCx, OpError, Operation, PinSlots, Provider,
-    Resident, ResidentProvider, ResourceContext, ResourceKey, ResourceMetadataDraft, SentState,
+    Cost, Effect, Error, ErrorKind, Operation, OperationCx, OperationError, PinSlots, Provider,
+    Resident, ResidentProvider, ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft, SentState,
     TeardownCx, no_credential_slots, resource_key,
 };
+use nebula_sdk::prelude::{Deserialize, Serialize};
 
 /// The logger's instance: an in-memory sink with a bounded buffer.
 struct LogSink {
@@ -73,52 +74,53 @@ impl Provider for Logger {
 impl ResidentProvider for Logger {}
 
 /// A line accepted by the sink.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct Enqueued(usize);
 
 /// Appends one line; appending twice writes it twice.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct Write {
     line: String,
 }
 
 impl Operation<Logger> for Write {
     type Output = Enqueued;
+    const KEY: &'static str = "logger.write";
 
-    async fn run(self, cx: &mut OpCx<'_, Logger>) -> Result<Enqueued, OpError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        match attempt.instance().enqueue(self.line) {
-            Some(seq) => {
-                attempt.settle(SentState::Sent);
-                Ok(Enqueued(seq))
-            },
-            None => {
-                attempt.settle(SentState::NotSent);
-                Err(OpError::new(ErrorKind::Backpressure, "log buffer full"))
-            },
-        }
+    async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<Enqueued, OperationError> {
+        let line = self.line;
+        cx.call(Cost::FREE, async move |sink, ()| {
+            sink.enqueue(line.clone()).map(Enqueued).ok_or_else(|| {
+                OperationError::unreachable_as(ErrorKind::Backpressure, "log buffer full")
+            })
+        })
+        .await
     }
 }
 
 /// Reports how many lines are written; safe to repeat.
+#[derive(Serialize, Deserialize)]
+#[serde(crate = "nebula_sdk::serde")]
 struct Flush;
 
 impl Operation<Logger> for Flush {
     type Output = usize;
+    const KEY: &'static str = "logger.flush";
     const EFFECT: Effect = Effect::Idempotent;
 
     fn max_attempts(&self) -> NonZeroU32 {
         NonZeroU32::MIN.saturating_add(1)
     }
 
-    async fn run(self, cx: &mut OpCx<'_, Logger>) -> Result<usize, OpError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        let written = attempt.instance().written();
-        attempt.settle(SentState::Sent);
-        Ok(written)
+    async fn run(self, cx: &mut OperationCx<'_, Logger>) -> Result<usize, OperationError> {
+        cx.call(Cost::FREE, async |sink, ()| Ok(sink.written())).await
     }
 }
 
-/// What action code does with a managed lease.
-async fn log_and_flush(logger: &Managed<Logger>) -> Result<usize, Error> {
+/// What action code does with its resource handle.
+async fn log_and_flush(logger: &ResourceHandle<Logger>) -> Result<usize, Error> {
     let Enqueued(_seq) = logger
         .submit(Write {
             line: "hello".to_owned(),
@@ -133,7 +135,7 @@ fn main() {
     assert_eq!(<Write as Operation<Logger>>::EFFECT, Effect::Write);
     assert!(<Flush as Operation<Logger>>::EFFECT.is_replay_safe());
     assert_eq!(Cost::FREE.permits(), 0);
-    let refused = OpError::new(ErrorKind::Backpressure, "log buffer full");
+    let refused = OperationError::unreachable_as(ErrorKind::Backpressure, "log buffer full");
     assert!(refused.is_retryable(), "nothing was sent");
     assert_eq!(refused.sent(), SentState::NotSent);
 }

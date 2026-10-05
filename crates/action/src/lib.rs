@@ -121,9 +121,10 @@ pub use control::{ControlAction, ControlActionAdapter, ControlOutcome};
 pub use effect::{
     ActionEffectContract, EffectContractError, EffectFailureCode, EffectInvocationContext,
     EffectInvocationOutcome, EffectPreparationContext, EffectPreparationError, EffectQueryContext,
-    EffectReconciliationOutcome, PreparedEffectAdapter, PreparedRemoteEffect, ReadOnlyEffectQuery,
-    RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDescriptor, RemoteEffectFactory,
-    RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError, StableKeyGuarantee,
+    EffectReconciliationOutcome, JournalProtocol, PreparedEffectAdapter, PreparedRemoteEffect,
+    ReadOnlyEffectQuery, RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDescriptor,
+    RemoteEffectFactory, RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError,
+    StableKeyGuarantee,
 };
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
@@ -135,8 +136,8 @@ pub use factory::{
 };
 pub use from_workflow_node::FromWorkflowNode;
 pub use handle::{
-    ActionHandle, AgentHandle, ControlHandle, ResourceHandle, StatefulHandle, StatelessHandle,
-    StreamHandle, TriggerHandle,
+    ActionHandle, AgentHandle, ControlHandle, ResourceActionHandle, StatefulHandle,
+    StatelessHandle, StreamHandle, TriggerHandle,
 };
 pub use idempotency::IdempotencyKey;
 pub use input::{ActionInput, PreparedActionInput};
@@ -157,7 +158,6 @@ pub use nebula_credential::{CredentialGuard, CredentialRef};
 pub use nebula_metadata::{
     Icon, MetadataBuildError, MetadataError, MetadataName, MetadataVersion, metadata_name,
 };
-pub use nebula_resource::ResourceRef;
 pub use nebula_schema::{Property, Schema, ValidSchema, field_key};
 pub use output::{
     ActionOutput, BinaryData, BinaryStorage, CacheInfo, Cost, DataReference, DeferredOutput,

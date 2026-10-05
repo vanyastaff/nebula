@@ -1,0 +1,110 @@
+//! The journal's verdict and the authority boundaries of journaled actions.
+
+use std::sync::atomic::Ordering;
+
+use super::{journal_fixture::*, *};
+
+#[tokio::test]
+async fn no_error_strategy_continues_past_a_journal_verdict() {
+    for strategy in [
+        nebula_workflow::ErrorStrategy::IgnoreErrors,
+        nebula_workflow::ErrorStrategy::ContinueOnError,
+    ] {
+        let fixture = JournalFixture::with_error_strategy(Ports::memory(), strategy).await;
+        // The write's answer is lost, and the action swallows the error and
+        // succeeds: the verdict is an unknown outcome.
+        fixture.gateway.lose_first.store(1, Ordering::SeqCst);
+        let execution = fixture
+            .start(&[write("order-11:7")], json!({ "swallow": true }))
+            .await;
+        let result = fixture.run(execution).await.unwrap();
+        assert_eq!(
+            result.status,
+            ExecutionStatus::Failed,
+            "{strategy:?}: {result:?}"
+        );
+        assert!(
+            node_error(&result).starts_with("ENGINE:EFFECT_OUTCOME_UNKNOWN"),
+            "{strategy:?}: {}",
+            node_error(&result)
+        );
+        assert!(
+            !result.node_outputs.contains_key(&node_key!("charge")),
+            "{strategy:?}: no output stands for the node"
+        );
+        assert_eq!(fixture.gateway.call_count(), 1);
+    }
+}
+
+#[tokio::test]
+async fn the_journal_waits_for_a_unit_its_action_did_not_await() {
+    let fixture = JournalFixture::new(Ports::memory()).await;
+    let gate = Arc::new(Gate::default());
+    *fixture.gateway.hold_next.lock() = Some(Arc::clone(&gate));
+    let execution = fixture
+        .start(&[write("order-10:7")], json!({ "leak": true }))
+        .await;
+    let engine = fixture.engine();
+    let scope = fixture.scope.clone();
+    let turn = tokio::spawn(async move { engine.resume_execution(&scope, execution).await });
+    tokio::time::timeout(HANG_GUARD, gate.entered.notified())
+        .await
+        .unwrap();
+    // The action already returned; the node is not finished while its unit
+    // is in flight.
+    tokio::task::yield_now().await;
+    assert!(!turn.is_finished());
+    gate.release.notify_one();
+    let result = tokio::time::timeout(HANG_GUARD, turn)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.status, ExecutionStatus::Completed, "{result:?}");
+    assert_eq!(
+        receipts(&result),
+        json!([]),
+        "the action returned without it"
+    );
+    let slot = fixture.slots(execution).await.remove(0);
+    assert_eq!(phase(&slot), EffectPhase::Resolved, "the unit was recorded");
+    assert_eq!(fixture.gateway.call_count(), 1);
+}
+
+#[tokio::test]
+async fn generic_dispatch_refuses_a_journaled_action() {
+    let fixture = JournalFixture::new(Ports::memory()).await;
+    let factory = fixture
+        .frozen
+        .resolve_action(&action_key!("journal.charge"))
+        .expect("the fixture's action");
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_factory(factory);
+    let runtime = ActionRuntime::try_new(
+        registry,
+        Arc::new(InProcessRunner::new()),
+        DataPassingPolicy::default(),
+        MetricsRegistry::new(),
+    )
+    .unwrap();
+    let node =
+        NodeDefinition::new(node_key!("charge"), "Charge", "journal", "journal.charge").unwrap();
+    let context = nebula_action::testing::TestContextBuilder::new().build();
+    let result = runtime
+        .execute_action_with_node(
+            &node,
+            None,
+            json!({ "units": [write("order-13:7")] }),
+            &context,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(nebula_engine::RuntimeError::EffectRequiresOwner)
+        ),
+        "{result:?}"
+    );
+    assert_eq!(fixture.gateway.call_count(), 0);
+}

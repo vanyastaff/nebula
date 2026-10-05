@@ -1,6 +1,6 @@
-//! `PluginManifest` is canonical in `nebula-metadata` ( follow-up,
-//! moved there in slice B of the plugin load-path stabilization). This module
-//! re-exports the type for source compatibility of callers that still write
+//! `PluginManifest` is canonical in `nebula-metadata` (it moved there in slice B
+//! of the plugin load-path stabilization). This module re-exports the type for
+//! source compatibility of callers that still write
 //! `use nebula_plugin::PluginManifest;`.
 //!
 //! New code should import directly from `nebula_metadata::PluginManifest`.

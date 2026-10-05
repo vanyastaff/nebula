@@ -36,12 +36,20 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
   `WorkflowVersionId` and `WorkflowDefinition` into an opaque
   `ExecutablePlanRevision`. The compiler selects the registry's own exact plugin set/flavor,
   validates the closed Graph-v1 contract, and leaves resource/credential selectors abstract.
-  New plans use compiler version 5 and canonical hash version 3 inside the unchanged v1
+  New plans use compiler version 7 and canonical hash version 3 inside the unchanged v1
   record framing. They pin effect declarations, binding-selector provenance, and schema
-  property policy v2. Historical compiler 1/hash 1, compiler 3/hash 2, and compiler 4/hash 2
+  property policy v2. Compiler 7 is the first epoch whose action kind grammar includes
+  `Agent` (only without capability gating); compiler 6 is the first whose effect grammar
+  includes `Journaled`. Compiler 6/hash 3 and 5/hash 3 records remain checked plans and
+  reject an `Agent` kind as non-canonical; compiler 5 also rejects a `Journaled` effect.
+  Readers decode `RecordedPlanEpochV1` and `check` it before the
+  record body, so an unknown epoch is refused before its grammar is decoded. Historical compiler 1/hash 1, compiler 3/hash 2, and compiler 4/hash 2
   or 3 records retain their original bytes and hashes as untrusted evidence. They cannot
   mint a current checked plan; recompile against freshly admitted component definitions.
-  An undeclared factory cannot produce a new durable plan.
+  Every new plan records the action's effect contract; the default `Journaled` contract
+  (handle-routed effects only) compiles like `ReadOnly`. A historical record without an
+  effect field stays legacy-undeclared and is refused at execution, never reinterpreted
+  as `Journaled`.
 - `ExecutablePlanRevision` / `RecordedExecutablePlanRevisionV1` — immutable checked plan and its
   persistable v1 projection. A recorded value becomes trusted only through the fallible integrity
   check; `validate_against` separately proves exact compatibility with a frozen registry.
@@ -57,7 +65,7 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
 ## Contract
 
 - **[L1-§7.1]** Plugin is the unit of **registration**, not the unit of size. Full plugins and micro-plugins use the same contract. No secondary manifest duplicating `fn actions()` / `fn credentials()` / `fn resources()` — `impl Plugin` is the single runtime source of truth for what is registered.
-- **[L2-§7.1]** Three sources of truth, no drift: `Cargo.toml` (Rust package identity + dependency graph), `plugin.toml` (trust + compatibility boundary, read without compiling), `impl Plugin + PluginManifest` (runtime registration and bundle metadata). This crate owns the `impl Plugin` surface; `plugin.toml` parsing belongs to tooling.
+- **[L2-§7.1]** Three sources of truth, no drift: `Cargo.toml` (Rust package identity + dependency graph), `plugin.toml` (trust + compatibility boundary, read without compiling), `impl Plugin + PluginManifest` (runtime registration and bundle metadata). This crate owns the `impl Plugin` surface and ships the small `plugin_toml` marker parser for pre-compile tooling; it reads the marker without compiling the plugin and neither spawns a plugin process nor speaks any wire protocol (ADR-0091).
 - **[L2-§13.1]** Plugin load → registry: a plugin loads; Actions / Resources / Credentials from `impl Plugin` appear in the catalog without a second manifest that duplicates `fn actions()` / `fn resources()` / `fn credentials()`. Seam: `PluginRegistry::register(Arc<ResolvedPlugin>)` — construction of `ResolvedPlugin` enforces the `{plugin.key()}.` namespace invariant and rejects within-plugin duplicate keys before the entry reaches the registry. Test: unit tests in `crates/plugin/`.
 - **Cross-plugin dependency rule** — types from another plugin come in only via `Cargo.toml
   [dependencies]` on the provider plugin crate, while the provider plugin is also declared in the

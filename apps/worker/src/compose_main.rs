@@ -7,12 +7,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use nebula_storage::InMemoryNodeResultStore;
 use nebula_storage::sqlite::{
-    SqliteControlQueue, SqliteExecutionStore, SqliteIdempotencyGuard, SqliteJournalReader,
-    SqliteOperationLedger, SqliteResourceRuntime, SqliteResumeTokenStore, SqliteTurnHandoff,
-    SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
+    SqliteCheckpointStore, SqliteControlQueue, SqliteExecutionStore, SqliteIdempotencyGuard,
+    SqliteJournalReader, SqliteOperationLedger, SqliteResourceRuntime, SqliteResumeTokenStore,
+    SqliteTurnHandoff, SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
 };
-use nebula_storage::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -177,10 +177,10 @@ async fn build_stores(
     let execution_store = Arc::new(SqliteExecutionStore::new(pool.clone()));
     let journal_reader = Arc::new(SqliteJournalReader::new(pool.clone()));
     let node_results = Arc::new(InMemoryNodeResultStore::new());
-    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
-    tracing::warn!(
-        "node-result and checkpoint stores are in-memory; authoritative execution state is SQLite"
-    );
+    // Iteration checkpoints are fenced by the execution lease, so they share
+    // the execution store's pool.
+    let checkpoints = Arc::new(SqliteCheckpointStore::new(pool.clone()));
+    tracing::warn!("the node-result store is in-memory; authoritative execution state is SQLite");
     let idempotency = Arc::new(SqliteIdempotencyGuard::new(pool.clone()));
     let resume_tokens = Arc::new(SqliteResumeTokenStore::new(pool.clone()));
     let turn_handoff = Arc::new(SqliteTurnHandoff::new(pool.clone()));
@@ -253,8 +253,8 @@ async fn build_pg_stores(
     WorkerRunError,
 > {
     use nebula_storage::postgres::{
-        PgControlQueue, PgExecutionStore, PgIdempotencyGuard, PgJournalReader, PgOperationLedger,
-        PgResourceRuntime, PgResumeTokenStore, PgTurnHandoff, PgWorkflowStore,
+        PgCheckpointStore, PgControlQueue, PgExecutionStore, PgIdempotencyGuard, PgJournalReader,
+        PgOperationLedger, PgResourceRuntime, PgResumeTokenStore, PgTurnHandoff, PgWorkflowStore,
         PgWorkflowVersionStore, init_schema as pg_init_schema,
     };
     use sqlx::postgres::PgPoolOptions;
@@ -274,13 +274,15 @@ async fn build_pg_stores(
     // connections internally (max_connections(8)).
     let execution_store = Arc::new(PgExecutionStore::new(pool.clone()));
     let journal_reader = Arc::new(PgJournalReader::new(pool.clone()));
-    // NodeResult and Checkpoint have no PG implementation — they store
-    // transient in-process data (node output slots and stateful checkpoints)
-    // within a single execution lifetime. Same rationale as the SQLite path.
+    // NodeResult has no PG implementation — it stores transient in-process
+    // node output slots within a single execution lifetime. Same rationale as
+    // the SQLite path.
     let node_results = Arc::new(InMemoryNodeResultStore::new());
-    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    // Iteration checkpoints are fenced by the execution lease, so they share
+    // the execution store's pool.
+    let checkpoints = Arc::new(PgCheckpointStore::new(pool.clone()));
     tracing::warn!(
-        "node-result and checkpoint stores are in-memory (not persisted across restarts); \
+        "the node-result store is in-memory (not persisted across restarts); \
          crash-recovery re-executes affected nodes via the reclaim sweep — \
          authoritative execution state is the Postgres execution row"
     );

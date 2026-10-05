@@ -38,19 +38,21 @@ pub use dto::credential::{
 };
 pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use dto::{
-    AttemptGeneration, BeginDrainOutcome, DestinationCapability, DestinationCapabilityParseError,
-    EffectOccurrenceKey, EffectOccurrenceRecord, EffectSlotBinding, EffectSlotId,
-    ExecutablePlanRecordFormat, KnownOutcome, MAX_OCCURRENCE_LABEL_BYTES,
-    MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES, OccurrenceLabelViolation, OperationLedgerError,
-    OperationProtocolViolation, OperationRecord, OperationState, PlanFlavorRevisionIds,
-    PlanFlavorRevisionRecord, PlanFlavorRevisionTarget, PrepareOutcome, PreparedEffectContract,
-    PreparedEffectPolicy, PreparedEffectPolicyBuilder, PreparedOperation, ProviderIdempotencyKey,
-    ProviderIdempotencyKeyError, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
-    RefreshRetryDelayError, RefreshRetryDiagnosticCode, RefreshRetryDiagnosticCodeError,
-    RefreshRetryEvidence, RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase,
-    RefreshRetryProjection, RefreshRetrySnapshot, RefreshRetryTransition, RequestFingerprint,
-    RevisionCatalogError, RevisionInsertOutcome, RevisionRecordBytes, RevisionReferenceCounts,
-    WorkerFlavorRecordFormat, WorkerFlavorRevisionRecord,
+    AttemptGeneration, BeginDrainOutcome, CheckpointSaved, DestinationCapability,
+    DestinationCapabilityParseError, EffectOccurrenceKey, EffectOccurrenceRecord,
+    EffectSlotBinding, EffectSlotId, ExecutablePlanRecordFormat, IterationCheckpoint,
+    IterationCheckpointError, IterationCheckpointKey, KnownOutcome, MAX_CHECKPOINT_ITERATION,
+    MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES, MAX_ITERATION_CHECKPOINT_STATE_BYTES,
+    MAX_OCCURRENCE_LABEL_BYTES, MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES, OccurrenceLabelViolation,
+    OperationLedgerError, OperationProtocolViolation, OperationRecord, OperationState,
+    PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget, PrepareOutcome,
+    PreparedEffectContract, PreparedEffectPolicy, PreparedEffectPolicyBuilder, PreparedOperation,
+    ProviderIdempotencyKey, ProviderIdempotencyKeyError, RefreshRetryAdmission, RefreshRetryBlock,
+    RefreshRetryDelay, RefreshRetryDelayError, RefreshRetryDiagnosticCode,
+    RefreshRetryDiagnosticCodeError, RefreshRetryEvidence, RefreshRetryGate, RefreshRetryKind,
+    RefreshRetryPhase, RefreshRetryProjection, RefreshRetrySnapshot, RefreshRetryTransition,
+    RequestFingerprint, RevisionCatalogError, RevisionInsertOutcome, RevisionRecordBytes,
+    RevisionReferenceCounts, WorkerFlavorRecordFormat, WorkerFlavorRevisionRecord,
 };
 pub use error::StorageError;
 pub use ids::{CredentialId, FencingToken, OperationCallId, OperationId};

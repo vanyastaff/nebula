@@ -540,30 +540,9 @@ async fn lock_execution(
     execution_id: &str,
     fencing: Option<FencingToken>,
 ) -> Result<(), OperationLedgerError> {
-    let row = sqlx::query("SELECT fencing_generation, lease_holder, lease_expires_at_ms FROM port_executions WHERE id = ? AND workspace_id = ? AND org_id = ?")
-        .bind(execution_id).bind(&scope.workspace_id).bind(&scope.org_id).fetch_optional(&mut **tx).await.map_err(driver_did_not_commit)?
-        .ok_or(OperationLedgerError::ExecutionLeaseRejected)?;
-    if let Some(fencing) = fencing {
-        let now: i64 = sqlx::query_scalar(
-            "SELECT CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)",
-        )
-        .fetch_one(&mut **tx)
+    super::execution_fence::lock_execution(tx, scope, execution_id, fencing)
         .await
-        .map_err(driver_did_not_commit)?;
-        let generation: i64 = row
-            .try_get("fencing_generation")
-            .map_err(driver_did_not_commit)?;
-        let holder: Option<String> = row.try_get("lease_holder").map_err(driver_did_not_commit)?;
-        let expires: Option<i64> = row
-            .try_get("lease_expires_at_ms")
-            .map_err(driver_did_not_commit)?;
-        crate::operation_ledger::require_live_lease(
-            fencing,
-            u64::try_from(generation).map_err(|_| OperationLedgerError::ExecutionLeaseRejected)?,
-            holder.is_some() && expires.is_some_and(|deadline| deadline > now),
-        )?;
-    }
-    Ok(())
+        .map_err(OperationLedgerError::from)
 }
 
 async fn lock_slot_owner(

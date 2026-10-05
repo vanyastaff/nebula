@@ -4,8 +4,9 @@
 //!
 //! - 3-hop nested shadowing (root → branch1 → branch2: scoped at branch1 wins for branch2).
 //! - Cancellation mid-branch: cleanup still runs.
-//! - Cleanup-uses-global: cleanup hook can call `ctx.resource::<R>()` to access a global resource
-//!   while the scoped one is being torn down.
+//! - Cleanup-uses-global: once a branch is popped, a resource handle lookup for the key reaches
+//!   the global row again; while the branch holds the key, the layered accessor fails closed (a
+//!   scoped payload is no resource handle, and since 0.27.0 there is no raw-lease route to it).
 //! - Scope conflicts: same resource key registered at two levels → closest wins.
 //! - Cleanup timeout: Provider::destroy that blocks > budget triggers
 //!   `ScopedResourceCleanupTimeout` event.
@@ -20,8 +21,6 @@
 //! frontier branch) is deferred.
 
 use std::{
-    future::Future,
-    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -75,72 +74,64 @@ impl FakeGlobalAccessor {
     }
 }
 
-type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
 impl ResourceAccessor for FakeGlobalAccessor {
     fn has(&self, key: &ResourceKey) -> bool {
         self.table.contains_key(key)
     }
 
-    fn acquire_any(
+    /// Stands in for a row's resource handle: the row's `u64` marker.
+    fn resource_handle_any(
         &self,
         key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Box<dyn std::any::Any + Send + Sync>, CoreError>> {
-        let key = key.clone();
-        Box::pin(async move {
-            self.hits.fetch_add(1, Ordering::SeqCst);
-            self.table
-                .get(&key)
-                .map(|v| Box::new(*v.value()) as Box<dyn std::any::Any + Send + Sync>)
-                .ok_or_else(|| {
-                    CoreError::credential_not_found(
-                        CredentialKey::new(key.as_str())
-                            .expect("ResourceKey format is CredentialKey-compatible"),
-                    )
-                })
-        })
+    ) -> Result<Box<dyn std::any::Any + Send + Sync>, CoreError> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        self.table
+            .get(key)
+            .map(|v| Box::new(*v.value()) as Box<dyn std::any::Any + Send + Sync>)
+            .ok_or_else(|| {
+                CoreError::credential_not_found(
+                    CredentialKey::new(key.as_str())
+                        .expect("ResourceKey format is CredentialKey-compatible"),
+                )
+            })
     }
 
-    fn try_acquire_any(
+    fn try_resource_handle_any(
         &self,
         key: &ResourceKey,
-    ) -> BoxFut<'_, Result<Option<Box<dyn std::any::Any + Send + Sync>>, CoreError>> {
-        let key = key.clone();
-        Box::pin(async move {
-            Ok(self
-                .table
-                .get(&key)
-                .map(|v| Box::new(*v.value()) as Box<dyn std::any::Any + Send + Sync>))
-        })
+    ) -> Result<Option<Box<dyn std::any::Any + Send + Sync>>, CoreError> {
+        self.hits.fetch_add(1, Ordering::SeqCst);
+        Ok(self
+            .table
+            .get(key)
+            .map(|v| Box::new(*v.value()) as Box<dyn std::any::Any + Send + Sync>))
     }
 }
 
-/// Downcast helper. Layered lookups against `DashScopedResourceMap` hand
-/// back `Box<Arc<dyn Any>>`; lookups against `FakeGlobalAccessor` hand back
-/// `Box<u64>`. We probe both shapes.
-fn into_marker(boxed: Box<dyn std::any::Any + Send + Sync>) -> u64 {
-    if let Ok(arc) = boxed.downcast::<Arc<dyn std::any::Any + Send + Sync>>() {
-        let v: &u64 = arc
-            .downcast_ref::<u64>()
-            .expect("scoped Arc payload must be u64 in tests");
-        return *v;
-    }
-    panic!(
-        "expected Arc<u64> from scoped layer; tests with global only must downcast to u64 explicitly"
-    )
-}
-
+/// The marker of a global row's stand-in handle.
 fn into_global_marker(boxed: Box<dyn std::any::Any + Send + Sync>) -> u64 {
-    // `Box::downcast` consumes self; on miss we get the original Box back.
-    match boxed.downcast::<u64>() {
-        Ok(v) => *v,
-        Err(boxed) => {
-            let arc = boxed
-                .downcast::<Arc<dyn std::any::Any + Send + Sync>>()
-                .expect("payload neither u64 nor Arc<u64>");
-            *arc.downcast_ref::<u64>().unwrap()
-        },
-    }
+    *boxed
+        .downcast::<u64>()
+        .expect("the fake global accessor serves u64 markers")
+}
+
+/// Asserts that a key a branch scope holds fails closed instead of
+/// reaching the global row.
+fn assert_shadowed(layered: &dyn ResourceAccessor, key: &ResourceKey) {
+    let refused = layered
+        .resource_handle_any(key)
+        .expect_err("a branch-scoped payload is no resource handle");
+    assert!(
+        matches!(refused, CoreError::ScopeViolation { .. }),
+        "expected ScopeViolation, got {refused:?}"
+    );
+    assert!(
+        matches!(
+            layered.try_resource_handle_any(key),
+            Err(CoreError::ScopeViolation { .. })
+        ),
+        "an optional lookup cannot bypass the scope either"
+    );
 }
 
 // ── Task 7.5 #1 — 3-hop nested shadowing ───────────────────────────────────
@@ -286,9 +277,10 @@ async fn cleanup_can_access_global_after_scoped_drained() {
         Arc::clone(&global) as Arc<dyn ResourceAccessor>,
     ));
 
-    // During branch lifetime: scoped wins.
-    let payload = layered.acquire_any(&rk("postgres")).await.unwrap();
-    assert_eq!(into_marker(payload), 0xbeef);
+    // During branch lifetime: the scope shadows the global row, failing
+    // closed — the global row is never reached.
+    assert_shadowed(layered.as_ref(), &rk("postgres"));
+    assert_eq!(global.hits.load(Ordering::SeqCst), 0, "never bypassed");
 
     // Branch ends — engine pops and runs cleanup. After pop, the trait
     // lookup falls through to global (per plan §"Resolution precedence").
@@ -296,8 +288,8 @@ async fn cleanup_can_access_global_after_scoped_drained() {
     assert_eq!(drained.len(), 1);
     scoped.set_current_branch(None);
 
-    // Now `cleanup()` calling `ctx.resource::<R>()` must reach the global.
-    let payload = layered.acquire_any(&rk("postgres")).await.unwrap();
+    // Now a handle lookup for the key must reach the global row.
+    let payload = layered.resource_handle_any(&rk("postgres")).unwrap();
     assert_eq!(into_global_marker(payload), 0xcafe);
     assert!(
         global.hits.load(Ordering::SeqCst) >= 1,
@@ -509,18 +501,18 @@ async fn use_case_temporary_test_database_round_trip() {
         Arc::clone(&scoped) as Arc<dyn nebula_engine::ScopedResourceMap>,
         Arc::clone(&global) as Arc<dyn ResourceAccessor>,
     ));
-    let global_payload = layered_pre.acquire_any(&rk("postgres")).await.unwrap();
+    let global_payload = layered_pre.resource_handle_any(&rk("postgres")).unwrap();
     assert_eq!(into_global_marker(global_payload), 0x00c0_ffee);
 
-    // Now push the scoped pool, set current branch, downstream sees scoped.
+    // Now push the scoped pool, set current branch: downstream handle
+    // lookups for the key fail closed rather than reach the global pool.
     scoped.push(
         test_branch.clone(),
         rk("postgres"),
         Arc::new(0x00c0_ffee_u64),
     );
     scoped.set_current_branch(Some(test_branch.clone()));
-    let scoped_payload = layered_pre.acquire_any(&rk("postgres")).await.unwrap();
-    assert_eq!(into_marker(scoped_payload), 0x00c0_ffee); // both happen to share marker
+    assert_shadowed(layered_pre.as_ref(), &rk("postgres"));
 
     // Branch ends. Engine drives cleanup: pop FIRST (so the cleanup hook
     // sees global, not the scoped pool that's about to die), then run
@@ -530,7 +522,7 @@ async fn use_case_temporary_test_database_round_trip() {
     assert_eq!(drained.len(), 1);
 
     // cleanup() now accesses the global pool — must succeed.
-    let cleanup_payload = layered_pre.acquire_any(&rk("postgres")).await.unwrap();
+    let cleanup_payload = layered_pre.resource_handle_any(&rk("postgres")).unwrap();
     assert_eq!(into_global_marker(cleanup_payload), 0x00c0_ffee);
 }
 
@@ -724,25 +716,32 @@ async fn layered_accessor_with_dash_storage_walks_ancestors() {
     scoped.register_branch(root.clone(), None);
     scoped.register_branch(leaf.clone(), Some(root.clone()));
 
-    scoped.push(root.clone(), rk("postgres"), Arc::new(0xbeef_u64));
-    scoped.set_current_branch(Some(leaf.clone()));
+    scoped.push(root, rk("postgres"), Arc::new(0xbeef_u64));
+    scoped.set_current_branch(Some(leaf));
 
     let layered: Arc<dyn ResourceAccessor> = Arc::new(LayeredResourceAccessor::new(
         Arc::clone(&scoped) as Arc<dyn nebula_engine::ScopedResourceMap>,
         Arc::clone(&global) as Arc<dyn ResourceAccessor>,
     ));
 
-    // postgres: scoped at root, leaf walks to root and finds it.
-    let p = layered.acquire_any(&rk("postgres")).await.unwrap();
-    assert_eq!(into_marker(p), 0xbeef);
+    // postgres: scoped at root, leaf walks to root and finds it — so the
+    // handle lookup fails closed.
+    assert!(layered.has(&rk("postgres")));
+    assert_shadowed(layered.as_ref(), &rk("postgres"));
 
     // redis: not scoped, falls through to global.
-    let r = layered.acquire_any(&rk("redis")).await.unwrap();
+    let r = layered.resource_handle_any(&rk("redis")).unwrap();
     assert_eq!(into_global_marker(r), 0xcafe);
 
-    // unknown key: error from global layer.
-    let result = layered.acquire_any(&rk("kafka")).await;
+    // unknown key: error from global layer; the optional lookup is absent.
+    let result = layered.resource_handle_any(&rk("kafka"));
     assert!(matches!(result, Err(CoreError::CredentialNotFound { .. })));
+    assert!(
+        layered
+            .try_resource_handle_any(&rk("kafka"))
+            .expect("lookup")
+            .is_none()
+    );
 }
 
 // ── Per-execution credential scope (Task 7.3) ──────────────────────────────

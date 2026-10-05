@@ -14,7 +14,7 @@ use nebula_sdk::{
     integration::credential::{TestFailureCode, TestResult},
     prelude::{
         Action, ActionMetadataDraft, ActionResult, AuthoredValue, Deserialize, Error, Expression,
-        PoolProvider, Pooled, ProgramSyntax, Provider, ReleaseOutcome, RemoteDestinationGuarantee,
+        PoolProvider, Pooled, ProgramSyntax, Provider, RemoteDestinationGuarantee,
         RemoteEffectPolicy, Resource, ResourceContext, ResourceKey, Schema, Serialize, TeardownCx,
         TeardownReason, TriggerHealthSnapshot, Value, WorkflowBuilder, metadata_name,
         no_credential_slots, resource_key,
@@ -299,11 +299,6 @@ fn main() {
         OrgId,
         WorkspaceId,
     ) -> EffectPreparationContext = EffectPreparationContext::new;
-    let release_completed = match ReleaseOutcome::Completed {
-        ReleaseOutcome::Completed => true,
-        ReleaseOutcome::Deferred => false,
-        _ => false,
-    };
     let manual_metadata = ActionMetadataDraft::new(
         nebula_sdk::prelude::action_key!("example.perimeter"),
         metadata_name!("Perimeter action"),
@@ -325,7 +320,6 @@ fn main() {
 
     let _: ActionMetadataDraft = metadata;
     let _: ActionMetadataDraft = manual_metadata;
-    assert!(release_completed);
     assert_eq!(workflow.nodes.len(), 1);
     assert_eq!(effect_policy.max_invocations(), 1);
     assert_eq!(

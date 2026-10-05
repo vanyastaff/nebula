@@ -116,7 +116,8 @@ impl PreparedEffectPolicy {
     pub const fn capability(&self) -> DestinationCapability {
         self.capability
     }
-    /// Total permitted effect calls, including the first call.
+    /// Total permitted effect calls that may cross the provider boundary,
+    /// including the first; calls proven not to cross are not counted.
     pub const fn max_invocations(&self) -> u32 {
         self.max_invocations
     }
@@ -135,7 +136,8 @@ impl PreparedEffectPolicy {
 }
 
 impl PreparedEffectPolicyBuilder {
-    /// Set the total permitted provider invocations, including the first call.
+    /// Set the total permitted provider invocations that may cross the
+    /// boundary, including the first call.
     pub const fn maximum_invocations(mut self, maximum: u32) -> Self {
         self.max_invocations = Some(maximum);
         self
@@ -446,7 +448,173 @@ impl std::fmt::Debug for FrozenOutcomeEvidence {
     }
 }
 
+/// An inclusive run `first..=last` of positions of an owner's positional
+/// run, persisted as `[first, last]`.
+///
+/// A record's [`concurrent_with`](OperationProtocolRecord::concurrent_with)
+/// is a list of them: any set of positions, compact for the contiguous runs
+/// units awaited together leave open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "[u32; 2]", into = "[u32; 2]")]
+pub struct PositionRange {
+    first: u32,
+    last: u32,
+}
+
+impl PositionRange {
+    /// The positions `first..=last`; `None` when `first > last`.
+    #[must_use]
+    pub const fn new(first: u32, last: u32) -> Option<Self> {
+        if first > last {
+            return None;
+        }
+        Some(Self { first, last })
+    }
+
+    /// The lowest position of the run.
+    #[must_use]
+    pub const fn first(self) -> u32 {
+        self.first
+    }
+
+    /// The highest position of the run.
+    #[must_use]
+    pub const fn last(self) -> u32 {
+        self.last
+    }
+
+    /// Whether `position` is in the run.
+    #[must_use]
+    pub const fn contains(self, position: u32) -> bool {
+        self.first <= position && position <= self.last
+    }
+
+    /// The fewest runs covering exactly `positions`, which must be strictly
+    /// ascending; `None` when they are not.
+    #[must_use]
+    pub fn coalesce(positions: impl IntoIterator<Item = u32>) -> Option<Vec<Self>> {
+        let mut ranges: Vec<Self> = Vec::new();
+        for position in positions {
+            match ranges.last_mut() {
+                Some(range) if position <= range.last => return None,
+                Some(range) if Some(position) == range.last.checked_add(1) => {
+                    range.last = position;
+                },
+                _ => ranges.push(Self {
+                    first: position,
+                    last: position,
+                }),
+            }
+        }
+        Some(ranges)
+    }
+
+    /// Whether any of `ranges` — canonical: ascending, disjoint and not
+    /// adjacent — contains `position`.
+    #[must_use]
+    pub fn any_contains(ranges: &[Self], position: u32) -> bool {
+        let candidate = ranges.partition_point(|range| range.last < position);
+        ranges
+            .get(candidate)
+            .is_some_and(|range| range.contains(position))
+    }
+
+    /// Whether `ranges` are canonical: ascending, disjoint and not adjacent
+    /// (two adjacent runs are one).
+    fn are_canonical(ranges: &[Self]) -> bool {
+        ranges
+            .windows(2)
+            .all(|pair| u64::from(pair[0].last) + 1 < u64::from(pair[1].first))
+    }
+}
+
+impl TryFrom<[u32; 2]> for PositionRange {
+    type Error = &'static str;
+
+    fn try_from([first, last]: [u32; 2]) -> Result<Self, Self::Error> {
+        Self::new(first, last).ok_or("a position range must not end before it starts")
+    }
+}
+
+impl From<PositionRange> for [u32; 2] {
+    fn from(range: PositionRange) -> Self {
+        [range.first, range.last]
+    }
+}
+
+/// An owner's secret-free classification of the failure a unit settled
+/// with when it sent nothing (or the provider applied nothing): visible
+/// lowercase ASCII — `a-z`, `0-9`, `_`, `@`, `.` — of 1 to
+/// [`MAX_LEN`](Self::MAX_LEN) bytes. Its vocabulary is the owner's; the
+/// ledger only bounds and keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct UnsentFailureCode(String);
+
+impl UnsentFailureCode {
+    /// Longest code, in bytes.
+    pub const MAX_LEN: usize = 64;
+
+    /// `code`, when it is 1 to [`MAX_LEN`](Self::MAX_LEN) bytes of `a-z`,
+    /// `0-9`, `_`, `@` or `.`.
+    #[must_use]
+    pub fn new(code: &str) -> Option<Self> {
+        let valid = !code.is_empty()
+            && code.len() <= Self::MAX_LEN
+            && code.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_@.".contains(&byte)
+            });
+        valid.then(|| Self(code.to_owned()))
+    }
+
+    /// The code.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for UnsentFailureCode {
+    type Error = &'static str;
+
+    fn try_from(code: String) -> Result<Self, Self::Error> {
+        Self::new(&code).ok_or("an unsent failure code must be 1 to 64 bytes of [a-z0-9_@.]")
+    }
+}
+
+impl From<UnsentFailureCode> for String {
+    fn from(code: UnsentFailureCode) -> Self {
+        code.0
+    }
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+const fn is_zero(count: &u32) -> bool {
+    *count == 0
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+const fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
 /// Read-only durable protocol projection. Deserializing never grants invocation authority.
+///
+/// # Budget accounting
+///
+/// `invocations` counts every issued permit; `not_crossed` counts the permits
+/// whose call was durably proven not to cross the provider boundary
+/// ([`InvocationDisposition::BeforeBoundary`]). Only the difference — the calls
+/// that *may* have reached the provider — spends the pinned
+/// [`PreparedEffectPolicy::max_invocations`] budget, and the recovery and
+/// stable-key windows constrain a slot only once at least one call may have
+/// crossed. Total permits stay bounded by [`Self::GRANT_CEILING`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationProtocolRecord {
@@ -456,6 +624,11 @@ pub struct OperationProtocolRecord {
     phase: EffectPhase,
     prepared_at_ms: i64,
     invocations: u32,
+    /// Absent (not `0`) when no permit was proven not crossed, so such a
+    /// record serializes byte-identically to one written before the counter
+    /// existed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    not_crossed: u32,
     queries: u32,
     invocation: Option<OperationCallId>,
     disposition: Option<InvocationDisposition>,
@@ -466,6 +639,24 @@ pub struct OperationProtocolRecord {
     /// serializes byte-identically to one written before keys existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_key: Option<ProviderIdempotencyKey>,
+    /// `None` (absent from the payload) for a record written without the
+    /// list — by an owner that does not record it, or before it existed:
+    /// its concurrency is unknown. `Some([])` (persisted as `[]`) when the
+    /// owner recorded that nothing ran concurrently with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    concurrent_with: Option<Vec<PositionRange>>,
+    /// Absent unless the owner recorded how a unit that sent nothing
+    /// failed, so a record without it serializes byte-identically to one
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unsent_failure: Option<UnsentFailureCode>,
+    /// The slot records an observation — a read whose answer its owner
+    /// replays — rather than an effect; see
+    /// [`is_observation`](Self::is_observation). Absent (not `false`) for an
+    /// effect, so an effect's record serializes byte-identically to one
+    /// written before the field existed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    observation: bool,
 }
 
 #[derive(Deserialize)]
@@ -477,6 +668,10 @@ struct OperationProtocolRecordWire {
     phase: EffectPhase,
     prepared_at_ms: i64,
     invocations: u32,
+    /// Absent both for a zero counter and for a record written before the
+    /// counter existed; see [`legacy_not_crossed`].
+    #[serde(default)]
+    not_crossed: Option<u32>,
     queries: u32,
     invocation: Option<OperationCallId>,
     disposition: Option<InvocationDisposition>,
@@ -485,9 +680,42 @@ struct OperationProtocolRecordWire {
     adjudication_audit_digest: Option<[u8; 32]>,
     #[serde(default)]
     provider_key: Option<ProviderIdempotencyKey>,
+    #[serde(default)]
+    concurrent_with: Option<Vec<PositionRange>>,
+    #[serde(default)]
+    unsent_failure: Option<UnsentFailureCode>,
+    #[serde(default)]
+    observation: bool,
+}
+
+/// The not-crossed count of a record that does not carry the counter.
+///
+/// A current record omits the counter only when it is zero, and a current
+/// record whose latest call is `BeforeBoundary` always counts at least that
+/// call — so an absent counter beside a `BeforeBoundary` disposition can only
+/// be a record written before the counter existed. Its latest call was proven
+/// not to cross, so counting exactly that one is truthful; earlier calls stay
+/// counted as possibly crossed, which is the conservative reading.
+fn legacy_not_crossed(disposition: Option<InvocationDisposition>) -> u32 {
+    u32::from(disposition == Some(InvocationDisposition::BeforeBoundary))
 }
 
 impl OperationProtocolRecord {
+    /// Total invocation permits one slot may ever be issued, crossed or not.
+    ///
+    /// Calls proven not to cross the provider boundary do not spend the
+    /// policy budget, so this ceiling is what keeps a slot whose every call is
+    /// refused locally from being granted forever.
+    pub const GRANT_CEILING: u32 = 10_000;
+
+    /// Most runs of lower positions one record may list as concurrent with
+    /// it ([`concurrent_with`](Self::concurrent_with)). Any number of
+    /// positions fits when they form at most this many runs; an owner whose
+    /// open positions would need more must not prepare the record — a list
+    /// is never truncated, since a dropped position would read as ordered
+    /// before the record.
+    pub const MAX_CONCURRENT_RANGES: usize = 64;
+
     /// Begin a validated record with no issued permits.
     pub fn prepared(
         contract: PreparedEffectContract,
@@ -501,6 +729,7 @@ impl OperationProtocolRecord {
                 phase: EffectPhase::Prepared,
                 prepared_at_ms,
                 invocations: 0,
+                not_crossed: 0,
                 queries: 0,
                 invocation: None,
                 disposition: None,
@@ -508,7 +737,27 @@ impl OperationProtocolRecord {
                 evidence: None,
                 adjudication_audit_digest: None,
                 provider_key: None,
+                concurrent_with: None,
+                unsent_failure: None,
+                observation: false,
             },
+        }
+    }
+
+    /// Whether a record in `phase` may carry an unsent failure
+    /// ([`OperationCommand::RecordUnsentFailure`]): one nothing of which is
+    /// in flight or settled — `Prepared` or `BeforeBoundary` — or, for an
+    /// [observation](Self::is_observation), any phase without an answer or
+    /// a call in flight (`Ambiguous` and `OutcomeUnknown` too): an
+    /// observation changed nothing whatever crossed, and its owner keeps
+    /// how it failed so a later run that must not ask again fails the same
+    /// way.
+    #[must_use]
+    pub const fn admits_unsent_failure(observation: bool, phase: EffectPhase) -> bool {
+        match phase {
+            EffectPhase::Prepared | EffectPhase::BeforeBoundary => true,
+            EffectPhase::Ambiguous | EffectPhase::OutcomeUnknown => observation,
+            _ => false,
         }
     }
 
@@ -523,13 +772,41 @@ impl OperationProtocolRecord {
     ///
     /// # Errors
     /// Returns a specific [`OperationProtocolViolation`] when any field is
-    /// inconsistent with the pinned policy or durable phase.
+    /// inconsistent with the pinned policy or durable phase:
+    /// [`OperationProtocolViolation::CounterLimit`] when `not_crossed` exceeds
+    /// `invocations`, `invocations` exceeds [`Self::GRANT_CEILING`], the
+    /// possibly-crossed calls exceed the policy's invocation budget, or
+    /// queries exceed theirs; [`OperationProtocolViolation::InconsistentState`]
+    /// when the phase, disposition and counters disagree (for example a
+    /// `Prepared` record with a not-crossed call, or a `BeforeBoundary`
+    /// disposition without one).
     pub fn validate(&self) -> Result<(), OperationLedgerError> {
         self.contract.validate()?;
         if self.version != 1 {
             return Err(violation(OperationProtocolViolation::UnsupportedVersion));
         }
-        if self.invocations > self.contract.policy().max_invocations()
+        if self.concurrent_with.as_ref().is_some_and(|ranges| {
+            ranges.len() > Self::MAX_CONCURRENT_RANGES || !PositionRange::are_canonical(ranges)
+        }) {
+            return Err(violation(OperationProtocolViolation::InconsistentState));
+        }
+        // An unsent failure describes a slot nothing of which is in flight
+        // or settled (or an observation without an answer): any later call
+        // or outcome supersedes it.
+        if self.unsent_failure.is_some()
+            && !Self::admits_unsent_failure(self.observation, self.phase)
+        {
+            return Err(violation(OperationProtocolViolation::InconsistentState));
+        }
+        // An observation is asked again by a stable key: never opaque.
+        if self.observation
+            && self.contract.policy().capability() != DestinationCapability::StableKey
+        {
+            return Err(violation(OperationProtocolViolation::InconsistentState));
+        }
+        if self.not_crossed > self.invocations
+            || self.invocations > Self::GRANT_CEILING
+            || self.crossed_invocations() > self.contract.policy().max_invocations()
             || self.queries > self.contract.policy().max_queries()
         {
             return Err(violation(OperationProtocolViolation::CounterLimit));
@@ -556,17 +833,27 @@ impl OperationProtocolRecord {
                         EffectPhase::OutcomeUnknown | EffectPhase::Resolved
                     )
             })
+            // Recording a `BeforeBoundary` disposition always counts its call.
+            && (self.disposition != Some(InvocationDisposition::BeforeBoundary)
+                || self.not_crossed >= 1)
             && match self.phase {
-                EffectPhase::Prepared => self.invocations == 0 && self.disposition.is_none(),
+                EffectPhase::Prepared => {
+                    self.invocations == 0 && self.not_crossed == 0 && self.disposition.is_none()
+                },
+                // The outstanding call is unexplained, so it counts as crossed.
                 EffectPhase::InvocationOutstanding => {
-                    self.invocations > 0 && self.disposition.is_none()
+                    self.invocations > 0
+                        && self.not_crossed < self.invocations
+                        && self.disposition.is_none()
                 },
                 EffectPhase::BeforeBoundary => {
                     self.invocations > 0
+                        && self.not_crossed >= 1
                         && self.disposition == Some(InvocationDisposition::BeforeBoundary)
                 },
                 EffectPhase::Ambiguous => {
                     self.invocations > 0
+                        && self.not_crossed < self.invocations
                         && self.disposition == Some(InvocationDisposition::Ambiguous)
                         && self.contract.policy().capability() == DestinationCapability::StableKey
                 },
@@ -611,9 +898,19 @@ impl OperationProtocolRecord {
     pub const fn prepared_at_ms(&self) -> i64 {
         self.prepared_at_ms
     }
-    /// Consumed invocation permits.
+    /// Issued invocation permits, whether or not their call crossed.
     pub const fn invocations(&self) -> u32 {
         self.invocations
+    }
+    /// Issued permits whose call was durably proven not to cross the provider
+    /// boundary; they spend no policy budget.
+    pub const fn not_crossed(&self) -> u32 {
+        self.not_crossed
+    }
+    /// Issued permits whose call may have reached the provider, including an
+    /// outstanding one; these spend the policy's invocation budget.
+    pub const fn crossed_invocations(&self) -> u32 {
+        self.invocations.saturating_sub(self.not_crossed)
     }
     /// Consumed reconciliation permits.
     pub const fn queries(&self) -> u32 {
@@ -643,6 +940,37 @@ impl OperationProtocolRecord {
     pub const fn provider_key(&self) -> Option<ProviderIdempotencyKey> {
         self.provider_key
     }
+    /// The lower positions of the owner's run still open when this record
+    /// was first prepared
+    /// ([`EffectSlotBinding::concurrent_with`](super::EffectSlotBinding::concurrent_with)),
+    /// as canonical runs — ascending, disjoint, not adjacent; immutable
+    /// afterwards. `None` for a record written without the list (its
+    /// concurrency is unknown), `Some(&[])` when the owner recorded that
+    /// nothing ran concurrently with it.
+    pub fn concurrent_with(&self) -> Option<&[PositionRange]> {
+        self.concurrent_with.as_deref()
+    }
+    /// How the slot's unit last failed while sending nothing
+    /// ([`OperationCommand::RecordUnsentFailure`]), as its owner classified
+    /// it; `None` when not recorded (a record written before the field
+    /// existed, or by an owner that does not record it). Cleared by any
+    /// later call or outcome.
+    pub const fn unsent_failure(&self) -> Option<&UnsentFailureCode> {
+        self.unsent_failure.as_ref()
+    }
+    /// Whether the slot records an observation — a read whose answer its
+    /// owner records and replays, with no provider-side effect — rather
+    /// than an effect
+    /// ([`EffectSlotBinding::observation`](super::EffectSlotBinding::observation));
+    /// immutable afterwards. Always a
+    /// [`StableKey`](DestinationCapability::StableKey) slot. The ledger
+    /// keeps its protocol as for any stable-key slot, except that an unsent
+    /// failure may also be recorded once a call crossed
+    /// ([`admits_unsent_failure`](Self::admits_unsent_failure)); what an
+    /// unanswered or exhausted observation means is its owner's.
+    pub const fn is_observation(&self) -> bool {
+        self.observation
+    }
 }
 
 impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
@@ -656,6 +984,9 @@ impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
             phase: wire.phase,
             prepared_at_ms: wire.prepared_at_ms,
             invocations: wire.invocations,
+            not_crossed: wire
+                .not_crossed
+                .unwrap_or_else(|| legacy_not_crossed(wire.disposition)),
             queries: wire.queries,
             invocation: wire.invocation,
             disposition: wire.disposition,
@@ -663,6 +994,9 @@ impl TryFrom<OperationProtocolRecordWire> for OperationProtocolRecord {
             evidence: wire.evidence,
             adjudication_audit_digest: wire.adjudication_audit_digest,
             provider_key: wire.provider_key,
+            concurrent_with: wire.concurrent_with,
+            unsent_failure: wire.unsent_failure,
+            observation: wire.observation,
         };
         record.validate()?;
         Ok(record)
@@ -703,6 +1037,11 @@ impl OperationProtocolRecordBuilder {
         self.record.invocation = call;
         self
     }
+    /// Set how many issued permits were durably proven not to cross.
+    pub const fn not_crossed(mut self, count: u32) -> Self {
+        self.record.not_crossed = count;
+        self
+    }
     /// Set reconciliation consumption and its most recent identity.
     pub const fn queries(mut self, count: u32, call: Option<OperationCallId>) -> Self {
         self.record.queries = count;
@@ -730,6 +1069,32 @@ impl OperationProtocolRecordBuilder {
     /// transition rebuilds from the stored record and so retains it.
     pub const fn provider_key(mut self, provider_key: Option<ProviderIdempotencyKey>) -> Self {
         self.record.provider_key = provider_key;
+        self
+    }
+    /// Set the lower positions still open when the record was first
+    /// prepared: canonical runs, at most
+    /// [`OperationProtocolRecord::MAX_CONCURRENT_RANGES`].
+    ///
+    /// Adapters set it only when the record is first prepared; every later
+    /// transition rebuilds from the stored record and so retains it.
+    pub fn concurrent_with(mut self, concurrent_with: Option<&[PositionRange]>) -> Self {
+        self.record.concurrent_with = concurrent_with.map(<[PositionRange]>::to_vec);
+        self
+    }
+    /// Set how the slot's unit last failed while sending nothing; only a
+    /// record that
+    /// [admits one](OperationProtocolRecord::admits_unsent_failure) may
+    /// carry it.
+    pub fn unsent_failure(mut self, unsent_failure: Option<UnsentFailureCode>) -> Self {
+        self.record.unsent_failure = unsent_failure;
+        self
+    }
+    /// Mark the record an observation (a stable-key slot only).
+    ///
+    /// Adapters set it only when the record is first prepared; every later
+    /// transition rebuilds from the stored record and so retains it.
+    pub const fn observation(mut self, observation: bool) -> Self {
+        self.record.observation = observation;
         self
     }
     /// Finish construction only when the complete record is coherent.
@@ -775,6 +1140,20 @@ pub enum OperationCommand {
         /// Last acknowledged protocol revision.
         expected_revision: u64,
     },
+    /// The slot's unit settled failing with nothing in flight and nothing
+    /// applied: keep the owner's classification of that failure, so a later
+    /// run that must not send the effect again can fail the same way.
+    /// Permitted only while the slot is `Prepared` or `BeforeBoundary` —
+    /// for an [observation](OperationProtocolRecord::is_observation) also
+    /// `Ambiguous` or `OutcomeUnknown`, whatever crossed
+    /// ([`OperationProtocolRecord::admits_unsent_failure`]) — and a
+    /// [`ProtocolConflict`](super::OperationLedgerError::ProtocolConflict)
+    /// otherwise; replaces an earlier classification, and any later call
+    /// or outcome clears it. Grants nothing.
+    RecordUnsentFailure {
+        /// The owner's secret-free classification.
+        failure: UnsentFailureCode,
+    },
 }
 
 /// Successful transition projection. Only a fresh acknowledged grant response
@@ -807,6 +1186,122 @@ pub enum OperationAdvance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_observation_is_flagged_only_when_set_and_admits_a_failure_after_a_crossing() {
+        let stable = PreparedEffectContract::new(
+            RequestFingerprint::new(1, [1; 32]),
+            PreparedEffectPolicy::builder(DestinationCapability::StableKey)
+                .maximum_invocations(2)
+                .maximum_queries(0)
+                .recovery_window(Duration::from_mins(1))
+                .stable_key_window(Duration::from_mins(1))
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        let ambiguous = |observation| {
+            OperationProtocolRecord::prepared(stable.clone(), 0)
+                .revision(2)
+                .phase(EffectPhase::Ambiguous)
+                .invocations(1, Some(OperationCallId::from_bytes([7; 16])))
+                .disposition(Some(InvocationDisposition::Ambiguous))
+                .observation(observation)
+                .unsent_failure(UnsentFailureCode::new("transient"))
+                .build()
+        };
+        let observed = ambiguous(true).expect("an observation keeps its failure");
+        assert!(observed.is_observation());
+        assert!(
+            ambiguous(false).is_err(),
+            "an effect that crossed keeps none"
+        );
+        let encoded = serde_json::to_value(&observed).unwrap();
+        assert_eq!(encoded["observation"], serde_json::json!(true));
+        let decoded: OperationProtocolRecord = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded, observed);
+        // Absent for an effect, and an absent flag decodes as an effect.
+        let effect = OperationProtocolRecord::prepared(stable.clone(), 0)
+            .build()
+            .unwrap();
+        let encoded = serde_json::to_value(&effect).unwrap();
+        assert!(encoded.get("observation").is_none());
+        assert!(
+            !serde_json::from_value::<OperationProtocolRecord>(encoded)
+                .unwrap()
+                .is_observation()
+        );
+        for (phase, effect, observation) in [
+            (EffectPhase::Prepared, true, true),
+            (EffectPhase::BeforeBoundary, true, true),
+            (EffectPhase::Ambiguous, false, true),
+            (EffectPhase::OutcomeUnknown, false, true),
+            (EffectPhase::InvocationOutstanding, false, false),
+            (EffectPhase::Resolved, false, false),
+        ] {
+            assert_eq!(
+                OperationProtocolRecord::admits_unsent_failure(false, phase),
+                effect,
+                "{phase:?}"
+            );
+            assert_eq!(
+                OperationProtocolRecord::admits_unsent_failure(true, phase),
+                observation,
+                "{phase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn position_ranges_cover_any_set_exactly_and_canonically() {
+        let positions: Vec<u32> = (0..100).chain([150, 152, 153]).collect();
+        let ranges = PositionRange::coalesce(positions.iter().copied()).unwrap();
+        assert_eq!(
+            ranges,
+            [
+                PositionRange::new(0, 99).unwrap(),
+                PositionRange::new(150, 150).unwrap(),
+                PositionRange::new(152, 153).unwrap(),
+            ]
+        );
+        assert!(PositionRange::are_canonical(&ranges));
+        for position in 0..200 {
+            assert_eq!(
+                PositionRange::any_contains(&ranges, position),
+                positions.contains(&position),
+                "{position}"
+            );
+        }
+        assert_eq!(PositionRange::coalesce([1, 1]), None, "not ascending");
+        assert_eq!(PositionRange::coalesce([2, 1]), None, "not ascending");
+        assert_eq!(PositionRange::coalesce([u32::MAX]).unwrap().len(), 1);
+        assert_eq!(PositionRange::new(3, 2), None);
+        assert_eq!(
+            serde_json::to_value(&ranges).unwrap(),
+            serde_json::json!([[0, 99], [150, 150], [152, 153]])
+        );
+        assert!(serde_json::from_value::<PositionRange>(serde_json::json!([3, 2])).is_err());
+        // Adjacent or overlapping runs are not canonical.
+        assert!(!PositionRange::are_canonical(&[
+            PositionRange::new(0, 1).unwrap(),
+            PositionRange::new(2, 3).unwrap(),
+        ]));
+        assert!(!PositionRange::are_canonical(&[
+            PositionRange::new(0, 4).unwrap(),
+            PositionRange::new(2, 3).unwrap(),
+        ]));
+    }
+
+    #[test]
+    fn unsent_failure_codes_are_bounded_tokens() {
+        assert!(UnsentFailureCode::new("exhausted@1500").is_some());
+        assert!(UnsentFailureCode::new("credential_unavailable@reauth_required").is_some());
+        assert!(UnsentFailureCode::new("").is_none());
+        assert!(UnsentFailureCode::new("Transient").is_none());
+        assert!(UnsentFailureCode::new("a b").is_none());
+        assert!(UnsentFailureCode::new(&"a".repeat(65)).is_none());
+        assert!(serde_json::from_value::<UnsentFailureCode>(serde_json::json!("x y")).is_err());
+    }
 
     #[test]
     fn frozen_evidence_is_bounded_exact_and_payload_redacted() {
@@ -904,5 +1399,144 @@ mod tests {
 
         let error = serde_json::from_value::<OperationProtocolRecord>(encoded).unwrap_err();
         assert!(error.to_string().contains("phase and retained evidence"));
+    }
+
+    fn opaque_contract(max_invocations: u32) -> PreparedEffectContract {
+        let policy = PreparedEffectPolicy::builder(DestinationCapability::Opaque)
+            .maximum_invocations(max_invocations)
+            .maximum_queries(0)
+            .recovery_window(Duration::from_secs(1))
+            .build()
+            .unwrap();
+        PreparedEffectContract::new(RequestFingerprint::new(1, [7; 32]), policy).unwrap()
+    }
+
+    fn before_boundary(invocations: u32, not_crossed: u32) -> OperationProtocolRecordBuilder {
+        OperationProtocolRecord::prepared(opaque_contract(1), 0)
+            .revision(u64::from(invocations) * 2)
+            .phase(EffectPhase::BeforeBoundary)
+            .invocations(invocations, Some(OperationCallId::from_bytes([1; 16])))
+            .not_crossed(not_crossed)
+            .disposition(Some(InvocationDisposition::BeforeBoundary))
+    }
+
+    #[test]
+    fn a_zero_not_crossed_counter_serializes_as_before_it_existed() {
+        let record = OperationProtocolRecord::prepared(opaque_contract(1), 0)
+            .build()
+            .unwrap();
+        let encoded = serde_json::to_value(&record).unwrap();
+        assert!(encoded.get("not_crossed").is_none());
+        assert!(encoded.get("provider_key").is_none());
+        let mut fields: Vec<&str> = encoded
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            [
+                "adjudication_audit_digest",
+                "contract",
+                "disposition",
+                "evidence",
+                "invocation",
+                "invocations",
+                "phase",
+                "prepared_at_ms",
+                "queries",
+                "query",
+                "revision",
+                "version",
+            ],
+            "a record with no not-crossed call keeps the pre-counter wire shape"
+        );
+
+        let counted = before_boundary(3, 2).build().unwrap();
+        let encoded = serde_json::to_value(&counted).unwrap();
+        assert_eq!(encoded["not_crossed"], serde_json::json!(2));
+        assert_eq!(
+            serde_json::from_value::<OperationProtocolRecord>(encoded).unwrap(),
+            counted
+        );
+    }
+
+    #[test]
+    fn a_record_written_before_the_counter_decodes_from_its_disposition() {
+        let ambiguous_contract = {
+            let policy = PreparedEffectPolicy::builder(DestinationCapability::StableKey)
+                .maximum_invocations(2)
+                .maximum_queries(0)
+                .recovery_window(Duration::from_secs(1))
+                .stable_key_window(Duration::from_secs(1))
+                .build()
+                .unwrap();
+            PreparedEffectContract::new(RequestFingerprint::new(1, [7; 32]), policy).unwrap()
+        };
+        let ambiguous = OperationProtocolRecord::prepared(ambiguous_contract, 0)
+            .revision(2)
+            .phase(EffectPhase::Ambiguous)
+            .invocations(1, Some(OperationCallId::from_bytes([1; 16])))
+            .disposition(Some(InvocationDisposition::Ambiguous))
+            .build()
+            .unwrap();
+        let prepared = OperationProtocolRecord::prepared(opaque_contract(1), 0)
+            .build()
+            .unwrap();
+        for record in [prepared, ambiguous] {
+            let encoded = serde_json::to_string(&record).unwrap();
+            assert!(!encoded.contains("not_crossed"));
+            let decoded = serde_json::from_str::<OperationProtocolRecord>(&encoded).unwrap();
+            assert_eq!(decoded.not_crossed(), 0);
+            assert_eq!(serde_json::to_string(&decoded).unwrap(), encoded);
+        }
+
+        // A legacy BeforeBoundary record carries no counter, yet its latest
+        // call was proven not sent: it decodes with exactly that one.
+        let mut legacy = serde_json::to_value(before_boundary(1, 1).build().unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("not_crossed");
+        let decoded = serde_json::from_value::<OperationProtocolRecord>(legacy).unwrap();
+        assert_eq!(decoded.not_crossed(), 1);
+        assert_eq!(decoded.crossed_invocations(), 0);
+    }
+
+    #[test]
+    fn validate_rejects_inconsistent_not_crossed_counters() {
+        let counter_limit = Err(violation(OperationProtocolViolation::CounterLimit));
+        let inconsistent = Err(violation(OperationProtocolViolation::InconsistentState));
+
+        assert_eq!(before_boundary(1, 2).build().map(drop), counter_limit);
+        // Budget 1 admits any number of not-crossed calls, but only one crossed.
+        assert!(before_boundary(5, 4).build().is_ok());
+        assert_eq!(before_boundary(5, 3).build().map(drop), counter_limit);
+        assert_eq!(
+            before_boundary(
+                OperationProtocolRecord::GRANT_CEILING + 1,
+                OperationProtocolRecord::GRANT_CEILING
+            )
+            .build()
+            .map(drop),
+            counter_limit
+        );
+        assert_eq!(before_boundary(1, 0).build().map(drop), inconsistent);
+        assert_eq!(
+            OperationProtocolRecord::prepared(opaque_contract(1), 0)
+                .not_crossed(1)
+                .build()
+                .map(drop),
+            counter_limit,
+            "no call was issued, so none can be not-crossed"
+        );
+        assert_eq!(
+            before_boundary(2, 2)
+                .phase(EffectPhase::InvocationOutstanding)
+                .disposition(None)
+                .build()
+                .map(drop),
+            inconsistent,
+            "an outstanding call is unexplained and counts as crossed"
+        );
     }
 }

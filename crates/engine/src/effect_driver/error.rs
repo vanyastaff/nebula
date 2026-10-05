@@ -2,7 +2,7 @@
 
 use nebula_action::effect::{EffectFailureCode, EffectPreparationError};
 use nebula_core::OperationId;
-use nebula_storage_port::dto::OperationLedgerError;
+use nebula_storage_port::dto::{IterationCheckpointError, OperationLedgerError};
 
 /// A durable remote effect could not produce an acknowledged, usable result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -46,6 +46,60 @@ pub enum EffectExecutionError {
     /// Persisted evidence cannot be interpreted without guessing.
     #[error("remote effect evidence is invalid")]
     InvalidEvidence,
+    /// A journaled effect differs from the one recorded under its
+    /// occurrence: its operation, version, request, key part or credential
+    /// binding changed between node attempts, or one occurrence was
+    /// submitted twice in one node attempt. Nothing was sent.
+    #[error("journaled effect differs from the effect recorded under its occurrence")]
+    OccurrenceMismatch,
+    /// At least one journaled effect of the node has an unknown outcome.
+    /// The node fails even when its action returned a result (or swallowed
+    /// the unit's error): only reconciliation can establish what happened.
+    #[error(
+        "journaled effect outcome is unknown for {unresolved} slot(s) of the node, first {slot_id}"
+    )]
+    JournalOutcomeUnknown {
+        /// The first slot whose outcome is unknown (all are logged).
+        slot_id: nebula_storage_port::dto::EffectSlotId,
+        /// How many slots of the node have an unknown outcome.
+        unresolved: u32,
+    },
+    /// The node attempt already prepared as many journaled effects as one
+    /// attempt may: no further effect was prepared or sent.
+    #[error("the node attempt reached its cap of {cap} journaled effects")]
+    JournalSlotCapExceeded {
+        /// The cap: journaled effects one node attempt may prepare.
+        cap: u32,
+    },
+    /// A fresh journaled effect was refused because the lower effects of
+    /// its run still open formed more separate runs of positions than one
+    /// slot records: recording fewer would misorder them on recovery. No
+    /// further effect was prepared or sent at that position.
+    #[error(
+        "journaled effects too interleaved: the open lower effects form more than {limit} runs"
+    )]
+    JournalConcurrencyLimit {
+        /// Most runs of open lower positions one slot records.
+        limit: u32,
+    },
+    /// A stateful action's iteration ended with effect units of the node
+    /// still in flight past the drain limit — or the next one was about to
+    /// begin with one in flight: the iterations stop. After a drain that
+    /// ran out the journal closes, so the unit records nothing more, and a
+    /// call it was granted is recorded ambiguous by the node's verdict
+    /// (which then fails the node unknown instead).
+    #[error("effect units of stateful iteration {iteration} were still in flight at its barrier")]
+    IterationUnitsOutstanding {
+        /// The iteration whose barrier failed.
+        iteration: u32,
+    },
+    /// A journaled stateful action's iteration checkpoint could not be
+    /// loaded or saved. An unavailable store, a lost acknowledgement or a
+    /// lost lease defers the node; a checkpoint that contradicts its digest
+    /// or the node's ledger, or a save the store refused as a conflict or a
+    /// regression, halts the execution. Nothing was sent past it.
+    #[error("iteration checkpoint failed: {0}")]
+    IterationCheckpoint(IterationCheckpointError),
 }
 
 impl EffectExecutionError {
@@ -58,12 +112,41 @@ impl EffectExecutionError {
             Self::InvalidContract => "ENGINE:EFFECT_INVALID_CONTRACT",
             Self::Preparation(_) => "ENGINE:EFFECT_PREPARATION",
             Self::Ledger(_) => "ENGINE:EFFECT_LEDGER",
-            Self::OutcomeUnknown { .. } => "ENGINE:EFFECT_OUTCOME_UNKNOWN",
+            Self::OutcomeUnknown { .. } | Self::JournalOutcomeUnknown { .. } => {
+                "ENGINE:EFFECT_OUTCOME_UNKNOWN"
+            },
+            Self::OccurrenceMismatch => "ENGINE:EFFECT_OCCURRENCE_MISMATCH",
             Self::OutputUnavailable { .. } => "ENGINE:EFFECT_OUTPUT_UNAVAILABLE",
             Self::Rejected { .. } => "ENGINE:EFFECT_REJECTED",
             Self::InvalidEvidence => "ENGINE:EFFECT_INVALID_EVIDENCE",
+            Self::JournalSlotCapExceeded { .. } => "ENGINE:EFFECT_JOURNAL_SLOT_CAP",
+            Self::JournalConcurrencyLimit { .. } => "ENGINE:EFFECT_JOURNAL_CONCURRENCY_LIMIT",
+            Self::IterationUnitsOutstanding { .. } => "ENGINE:EFFECT_ITERATION_BARRIER",
+            Self::IterationCheckpoint(_) => "ENGINE:EFFECT_ITERATION_CHECKPOINT",
         }
     }
+    /// Whether the failure leaves the effect's durable state unknown or
+    /// contradicting the node — an unknown outcome, an occurrence mismatch,
+    /// evidence that cannot be read, an iteration checkpoint that
+    /// contradicts the ledger or the store. No error strategy may recover the node
+    /// or route past it: the node fails and the execution stops, for
+    /// reconciliation.
+    #[must_use]
+    pub const fn halts_execution(self) -> bool {
+        matches!(
+            self,
+            Self::OutcomeUnknown { .. }
+                | Self::JournalOutcomeUnknown { .. }
+                | Self::OccurrenceMismatch
+                | Self::InvalidEvidence
+                | Self::IterationCheckpoint(
+                    IterationCheckpointError::InvalidRecord
+                        | IterationCheckpointError::Conflict
+                        | IterationCheckpointError::Regressed { .. }
+                )
+        )
+    }
+
     /// Whether the turn must relinquish its lease without finalizing the node.
     ///
     /// Recovery may read the ledger again; this is not provider retry authority.
@@ -77,6 +160,11 @@ impl EffectExecutionError {
                         | OperationLedgerError::AcknowledgementUnknown
                         | OperationLedgerError::ExecutionLeaseRejected
                         | OperationLedgerError::ProtocolConflict
+                )
+                | Self::IterationCheckpoint(
+                    IterationCheckpointError::Unavailable
+                        | IterationCheckpointError::AcknowledgementUnknown
+                        | IterationCheckpointError::ExecutionLeaseRejected
                 )
         )
     }

@@ -350,6 +350,32 @@ pub struct EffectSlotBinding<'a> {
     /// key back from [`PreparedOperation::provider_key`] instead of
     /// recomputing it.
     pub provider_key: Option<ProviderIdempotencyKey>,
+    /// The lower positions of this occurrence's positional run whose unit
+    /// was still open when this one was first prepared: they ran
+    /// concurrently with it. Every other lower position had finished before
+    /// it began. Canonical runs ([`PositionRange`](super::PositionRange):
+    /// ascending, disjoint, not adjacent), at most
+    /// [`OperationProtocolRecord::MAX_CONCURRENT_RANGES`](super::OperationProtocolRecord::MAX_CONCURRENT_RANGES):
+    /// the exact set, never truncated — a longer list is an invalid
+    /// protocol. `Some(&[])` when none was; `None` when the owner records no
+    /// concurrency — the record's concurrency is then unknown.
+    ///
+    /// Persisted with the first preparation only, read back from
+    /// [`OperationProtocolRecord::concurrent_with`](super::OperationProtocolRecord::concurrent_with).
+    /// Never part of the natural key or of the prepare identity: re-preparing
+    /// with another list replays the recorded slot unchanged.
+    pub concurrent_with: Option<&'a [super::PositionRange]>,
+    /// The slot records an observation — a read whose answer the owner
+    /// records and replays, with no provider-side effect — rather than an
+    /// effect. Only a [`DestinationCapability::StableKey`] slot may be one
+    /// (an invalid protocol otherwise).
+    ///
+    /// Persisted with the first preparation, read back from
+    /// [`OperationProtocolRecord::is_observation`](super::OperationProtocolRecord::is_observation),
+    /// and part of the prepare identity: re-preparing an occurrence as an
+    /// observation where an effect was recorded, or the reverse, is
+    /// [`OperationLedgerError::OperationMismatch`] with no durable change.
+    pub observation: bool,
 }
 
 impl EffectSlotBinding<'_> {
@@ -725,7 +751,10 @@ pub enum OperationLedgerError {
     /// Protocol revision, outstanding call or disposition no longer matches.
     #[error("operation protocol transition is not permitted")]
     ProtocolConflict,
-    /// Recovery count or backend-clock deadline has been exhausted.
+    /// Recovery count or backend-clock deadline has been exhausted: a
+    /// read-only query beyond its budget or window, or an invocation grant
+    /// beyond the slot's total grant ceiling. Nothing was authorized and no
+    /// state changed, so the refused call is known not sent.
     #[error("operation recovery budget is exhausted")]
     RecoveryExhausted,
     /// Attempt provenance exceeds the portable durable integer range.

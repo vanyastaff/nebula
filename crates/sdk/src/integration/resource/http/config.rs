@@ -1,15 +1,9 @@
 //! Operator configuration of an HTTP resource and the auth-neutral transport
 //! built from it.
 
-use std::{
-    fmt,
-    hash::{DefaultHasher, Hash, Hasher},
-    net::IpAddr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fmt, net::IpAddr, sync::Arc, time::Duration};
 
-use nebula_resource::{Error, ResourceConfig};
+use nebula_resource::{ConfigFingerprint, Error, ResourceConfig};
 use reqwest::{Url, header::HeaderValue};
 use serde::Deserialize;
 
@@ -263,13 +257,39 @@ impl ResourceConfig for HttpConfig {
         }
         self.extra_roots()?;
         self.user_agent_header()?;
+        self.fingerprinted().try_finish()?;
         Ok(())
     }
 
+    /// Stable across builds: the effect journal binds recorded effects to
+    /// it. Every field is operationally significant.
     fn fingerprint(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
+        self.fingerprinted().finish()
+    }
+}
+
+impl HttpConfig {
+    /// Every field, by its wire name, for the stable fingerprint.
+    fn fingerprinted(&self) -> ConfigFingerprint {
+        let Self {
+            base_url,
+            connect_timeout_ms,
+            request_timeout_ms,
+            read_idle_timeout_ms,
+            max_response_bytes,
+            max_stream_bytes,
+            extra_root_certificates_pem,
+            user_agent,
+        } = self;
+        ConfigFingerprint::new()
+            .field("base_url", base_url)
+            .field("connect_timeout_ms", connect_timeout_ms)
+            .field("request_timeout_ms", request_timeout_ms)
+            .field("read_idle_timeout_ms", read_idle_timeout_ms)
+            .field("max_response_bytes", max_response_bytes)
+            .field("max_stream_bytes", max_stream_bytes)
+            .field("extra_root_certificates_pem", extra_root_certificates_pem)
+            .field("user_agent", user_agent)
     }
 }
 
@@ -473,6 +493,23 @@ mod tests {
             }))
             .is_err(),
             "unknown fields are rejected"
+        );
+    }
+
+    /// The fingerprint is durable — the effect journal binds recorded
+    /// effects to it — so its exact value is pinned. Computed independently
+    /// as the first eight bytes of
+    /// `printf 'nebula-resource/config-fingerprint/v1\0{...}' | sha256sum`
+    /// over the canonical JSON of the defaults below.
+    #[test]
+    fn the_fingerprint_matches_its_golden_vector() {
+        // {"base_url":"https://api.example.com","connect_timeout_ms":5000,
+        //  "extra_root_certificates_pem":[],"max_response_bytes":1048576,
+        //  "max_stream_bytes":67108864,"read_idle_timeout_ms":30000,
+        //  "request_timeout_ms":30000,"user_agent":null}
+        assert_eq!(
+            HttpConfig::new("https://api.example.com").fingerprint(),
+            0xde40_1b4a_6cad_0a61
         );
     }
 

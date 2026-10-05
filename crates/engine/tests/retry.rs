@@ -57,9 +57,7 @@ macro_rules! placeholder_action_impl {
                     nebula_action::metadata_name!($name),
                     $desc,
                 )
-                .with_effect_contract(
-                    nebula_action::effect::ActionEffectContract::NoExternalEffects,
-                )
+                .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -253,7 +251,7 @@ async fn persistent_engine_refuses_a_direct_fresh_start() {
                 nebula_action::metadata_name!("DirectStart"),
                 "test action",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             FlakyHandler {
                 fail_count: 0,
                 invocations: Arc::new(AtomicU32::new(0)),
@@ -265,7 +263,7 @@ async fn persistent_engine_refuses_a_direct_fresh_start() {
         execution: execution.clone(),
         journal: Arc::new(nebula_storage::InMemoryJournalReader::new(&execution)),
         node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
         idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
         resume_tokens: Arc::new(execution.resume_token_store()),
         operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
@@ -314,7 +312,7 @@ async fn retry_succeeds_on_attempt_2() {
                 nebula_action::metadata_name!("Flaky"),
                 "fails once",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             FlakyHandler {
                 fail_count: 1,
                 invocations: Arc::clone(&invocations),
@@ -356,7 +354,7 @@ async fn retry_exhausts_max_attempts() {
                 nebula_action::metadata_name!("Doomed"),
                 "always fails",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             AlwaysFailingHandler {
                 invocations: Arc::clone(&invocations),
             },
@@ -448,7 +446,7 @@ async fn cancel_during_retry_wait() {
                 nebula_action::metadata_name!("FlakyLong"),
                 "fails forever",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             AlwaysFailingHandler {
                 invocations: Arc::clone(&invocations),
             },
@@ -533,7 +531,7 @@ async fn terminate_during_retry_wait() {
                 nebula_action::metadata_name!("FlakyT"),
                 "fails forever",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             AlwaysFailingHandler {
                 invocations: Arc::clone(&invocations),
             },
@@ -546,7 +544,7 @@ async fn terminate_during_retry_wait() {
                 nebula_action::metadata_name!("Term"),
                 "terminates",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             TerminateHandler,
         )
         .expect("valid test catalog definition");
@@ -622,7 +620,7 @@ async fn execution_budget_max_total_retries_caps_globally() {
                 nebula_action::metadata_name!("DoomedG"),
                 "always fails",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             AlwaysFailingHandler {
                 invocations: Arc::clone(&invocations),
             },
@@ -668,7 +666,7 @@ async fn idempotency_key_differentiates_attempts() {
                 nebula_action::metadata_name!("FlakyIdem"),
                 "fails once",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             FlakyHandler {
                 fail_count: 1,
                 invocations: Arc::clone(&invocations),
@@ -684,7 +682,7 @@ async fn idempotency_key_differentiates_attempts() {
         execution: execution.clone(),
         journal,
         node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
         idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
         resume_tokens: Arc::new(execution.resume_token_store()),
         operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
@@ -767,7 +765,7 @@ async fn per_node_retry_policy_overrides_workflow_default() {
                 nebula_action::metadata_name!("FlakyO"),
                 "fails twice then succeeds",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             FlakyHandler {
                 fail_count: 2,
                 invocations: Arc::clone(&invocations),
@@ -816,7 +814,7 @@ async fn workflow_default_applies_when_node_has_none() {
                 nebula_action::metadata_name!("FlakyD"),
                 "fails once",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             FlakyHandler {
                 fail_count: 1,
                 invocations: Arc::clone(&invocations),
@@ -865,7 +863,7 @@ async fn no_retry_policy_means_one_shot_failure() {
                 nebula_action::metadata_name!("OneShot"),
                 "fails",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             AlwaysFailingHandler {
                 invocations: Arc::clone(&invocations),
             },
@@ -944,7 +942,7 @@ async fn run_hinted(
                 nebula_action::metadata_name!("Hinted"),
                 "asks for a delay once",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             HintedHandler {
                 hint,
                 starts: Arc::clone(&starts),

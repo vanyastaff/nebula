@@ -227,10 +227,10 @@ impl WtStores {
         let versions = InMemoryWorkflowVersionStore::new();
         Self {
             frozen: Arc::new(std::sync::Mutex::new(None)),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
         }
@@ -343,7 +343,7 @@ fn build_registry(
                 nebula_action::metadata_name!("WebhookWaitWithTimeout"),
                 "wait_timeout stub",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             WebhookWaitWithTimeout { timeout },
         )
         .expect("valid test catalog definition");
@@ -354,7 +354,7 @@ fn build_registry(
                 nebula_action::metadata_name!("CountingEcho"),
                 "wait_timeout stub",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             CountingEcho {
                 invocations: Arc::clone(main_count),
             },
@@ -367,7 +367,7 @@ fn build_registry(
                 nebula_action::metadata_name!("CountingError"),
                 "wait_timeout stub",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             CountingError {
                 invocations: Arc::clone(error_count),
             },
@@ -581,7 +581,7 @@ fn build_registry_with_blocker(
                 nebula_action::metadata_name!("DurationWaitBlocker"),
                 "wait_timeout stub",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             DurationWaitBlocker {
                 duration: blocker_for,
             },
@@ -2003,7 +2003,7 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
                 execution: Arc::clone(&fenced) as Arc<dyn ExecutionStore>,
                 journal,
                 node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-                checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+                checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&inner)),
                 idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
                 resume_tokens: Arc::new(inner.resume_token_store()),
                 operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(

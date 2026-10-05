@@ -4,12 +4,15 @@
 //! a future-friendly `get_or_init` flow. Two paths are supported:
 //!
 //! 1. **Pre-populated** via [`Lazy::with_value`] — used when the framework eagerly resolves a slot
-//! before passing it to action code (the common case for `Lazy<ResourceGuard<R>>` fields the
+//! before passing it to action code (the common case for `Lazy<CredentialGuard<C>>` fields the
 //! macro emits).
 //! 2. **Deferred** via [`Lazy::new`] + [`Lazy::get_or_try_init`] — used when an action wants to
 //! resolve a dependency only on the path that needs it. The initializer is provided per
 //! `.get_or_try_init` call so callers can plug in the right async resolver (typed
-//! `ResourceRef::resolve` or `CredentialRef::resolve` ).
+//! `CredentialRef::resolve`).
+//!
+//! Resource slots are never lazy: a `ResourceHandle<R>` checks nothing out when it is
+//! resolved, so there is nothing to defer.
 //!
 //! See ) for the
 //! place this primitive occupies in the dependency-redesign cascade.
@@ -30,7 +33,7 @@ use tokio::sync::OnceCell;
 ///
 /// `Lazy<X>` is the canonical wrapper for "resolve this dependency on first use,
 /// not at action construction time". The macro emits this around
-/// `ResourceGuard<R>` / `CredentialGuard<C::Scheme>` slot fields whose attribute
+/// `CredentialGuard<C::Scheme>` slot fields whose attribute
 /// declares lazy resolution; eager slots are resolved by the framework before
 /// `execute()` runs.
 ///

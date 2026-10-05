@@ -26,7 +26,7 @@ mod qualified_runtime;
 macro_rules! pure_action_metadata {
     ($key:expr, $name:expr, $description:expr $(,)?) => {
         nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     };
 }
 
@@ -144,7 +144,7 @@ impl MintHarness {
             execution: execution.clone(),
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens: Arc::new(execution.resume_token_store()),
             operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(

@@ -56,7 +56,7 @@ impl Action for Echo {
             nebula_action::metadata_name!("Echo"),
             "pure payload echo",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -88,7 +88,7 @@ impl Action for Park {
             nebula_action::metadata_name!("Park"),
             "durable signal wait",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         Echo::dependencies()
@@ -187,7 +187,7 @@ fn in_memory(core: &Arc<nebula_storage::InMemoryExecutionStore>) -> Ports {
             execution: core.clone(),
             journal: Arc::new(nebula_storage::InMemoryJournalReader::new(core)),
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(core)),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens: Arc::new(core.resume_token_store()),
             operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(core)),
@@ -214,7 +214,7 @@ fn sqlite(pool: sqlx::SqlitePool) -> Ports {
             execution: Arc::new(SqliteExecutionStore::new(pool.clone())),
             journal: Arc::new(SqliteJournalReader::new(pool.clone())),
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            checkpoints: Arc::new(SqliteCheckpointStore::new(pool.clone())),
             idempotency: Arc::new(SqliteIdempotencyGuard::new(pool.clone())),
             resume_tokens: Arc::new(SqliteResumeTokenStore::new(pool.clone())),
             operation_ledger: Arc::new(SqliteOperationLedger::new(pool.clone())),
@@ -239,7 +239,7 @@ fn postgres(pool: sqlx::PgPool) -> Ports {
             execution: Arc::new(PgExecutionStore::new(pool.clone())),
             journal: Arc::new(PgJournalReader::new(pool.clone())),
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            checkpoints: Arc::new(PgCheckpointStore::new(pool.clone())),
             idempotency: Arc::new(PgIdempotencyGuard::new(pool.clone())),
             resume_tokens: Arc::new(PgResumeTokenStore::new(pool.clone())),
             operation_ledger: Arc::new(PgOperationLedger::new(pool.clone())),

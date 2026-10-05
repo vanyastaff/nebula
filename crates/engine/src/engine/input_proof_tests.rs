@@ -29,7 +29,7 @@ impl Action for CancelProbe {
             nebula_action::metadata_name!("Cancel input"),
             "Observe input cancellation before execution",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -127,8 +127,12 @@ async fn cancellation_during_program_resolution_never_refreshes_or_executes() {
         scope: crate::store_seam::single_tenant_scope(),
         fencing: None,
         operation_ledger: None,
+        checkpoints: None,
         clock: Arc::new(SystemClock),
         attempt_generation: 1,
+        engine_resources: None,
+        execution_deadline: None,
+        metrics: MetricsRegistry::new(),
     };
     let (_, result) = task.run().await;
     let _ = CANCEL

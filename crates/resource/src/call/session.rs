@@ -10,39 +10,49 @@
 //! ```compile_fail
 //! use nebula_resource::{
 //!     PoolProvider, Pooled, Provider,
-//!     call::{Cost, ManagedRow, SessionProvider, SessionSpec},
+//!     call::{Cost, ResourceHandle, SessionProvider, SessionSpec},
 //! };
 //!
-//! fn smuggle<R>(row: &ManagedRow<R>)
+//! fn smuggle<R>(row: &ResourceHandle<R>)
 //! where
 //!     R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
 //! {
 //!     let mut escaped = None;
-//!     let _unit = row.session(SessionSpec::new(Cost::ONE), |tx, _cx| {
+//!     let _unit = row.session(SessionSpec::read("smuggle").cost(Cost::ONE), |tx, _cx| {
 //!         escaped = Some(tx);
 //!         Box::pin(async { Ok(()) })
 //!     });
 //! }
 //! ```
 //!
-//! Sessions run on a [`ManagedRow`](super::ManagedRow): each checks out its
+//! Sessions run on a [`ResourceHandle`](super::ResourceHandle): each checks out its
 //! own connection after its quota wait (see
-//! [`ManagedRow::session`](super::ManagedRow::session) for the settled
+//! [`ResourceHandle::session`](super::ResourceHandle::session) for the settled
 //! outcomes). Long-lived subscriptions (`LISTEN`/`NOTIFY`, IMAP `IDLE`) do
 //! not fit a session: a unit's deadline is capped at
-//! [`UNIT_DEADLINE_CAP`](super::UNIT_DEADLINE_CAP).
+//! [`OPERATION_DEADLINE_CAP`](super::OPERATION_DEADLINE_CAP).
 
-use std::{fmt, future::Future, marker::PhantomData, pin::Pin, time::Instant};
+use std::{
+    fmt,
+    future::Future,
+    marker::PhantomData,
+    num::NonZeroU32,
+    pin::Pin,
+    time::{Duration, Instant},
+};
 
 use nebula_core::ResourceKey;
+use serde::{Serialize, de::DeserializeOwned};
 
 use super::{
-    Operation,
     cost::{Cost, Effect, SentState},
-    effect::OperationKey,
-    error::OpError,
-    managed::{OpCx, UnitHost},
+    declaration::{IdempotencyKey, canonical_json, is_valid_operation_key},
+    error::OperationError,
+    journal::UnitKind,
+    managed::OperationCx,
+    owned::OutputCodec,
     pin::PinSlots,
+    work::{Declared, UnitWork},
 };
 use crate::{
     error::ErrorKind,
@@ -54,7 +64,8 @@ use crate::{
 
 /// The future a session body returns: boxed, `Send`, and borrowing only the
 /// session and its [`SessionCx`] for `'s`.
-pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> + Send + 's>>;
+pub type SessionFuture<'s, T> =
+    Pin<Box<dyn Future<Output = Result<T, OperationError>> + Send + 's>>;
 
 /// A provider whose instance can host a session: several native calls run as
 /// one admitted, settled unit on one checked-out instance.
@@ -71,7 +82,7 @@ pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> 
 /// use nebula_resource::{
 ///     Error, Manager, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec, Resource,
 ///     ResourceContext, ResourceMetadataDraft, SlotIdentity, metadata_name,
-///     call::{Cost, OpError, SessionClosed, SessionEnd, SessionProvider, SessionSpec},
+///     call::{Cost, OperationError, SessionClosed, SessionEnd, SessionProvider, SessionSpec},
 /// };
 ///
 /// /// A connection that applies statements only when a transaction commits.
@@ -87,7 +98,7 @@ pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> 
 /// }
 ///
 /// impl Tx<'_> {
-///     async fn execute(&mut self, statement: &str) -> Result<u64, OpError> {
+///     async fn execute(&mut self, statement: &str) -> Result<u64, OperationError> {
 ///         self.pending.push(statement.to_owned());
 ///         Ok(1)
 ///     }
@@ -120,7 +131,7 @@ pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> 
 /// impl SessionProvider for Ledger {
 ///     type Session<'c> = Tx<'c>;
 ///
-///     async fn open<'c>(&'c self, conn: &'c mut Conn, _slots: &'c ()) -> Result<Tx<'c>, OpError> {
+///     async fn open<'c>(&'c self, conn: &'c mut Conn, _slots: &'c ()) -> Result<Tx<'c>, OperationError> {
 ///         Ok(Tx { conn, pending: Vec::new() })
 ///     }
 ///
@@ -151,12 +162,15 @@ pub type SessionFuture<'s, T> = Pin<Box<dyn Future<Output = Result<T, OpError>> 
 ///     nebula_core::scope::Scope::default(),
 ///     tokio_util::sync::CancellationToken::new(),
 /// );
-/// let row = manager.managed_row::<Ledger>(&ctx)?;
+/// let row = manager.handle::<Ledger>(&ctx)?;
 ///
 /// // The body needs no annotations: it borrows the session and returns a
 /// // boxed future. A failed body rolls back; a committed one is `Sent`.
+/// // The spec names the session and carries its request, which a
+/// // journaled row records it under.
+/// let spec = SessionSpec::write("ledger.insert", &1_u64).cost(Cost::ONE);
 /// let rows = row
-///     .session(SessionSpec::new(Cost::ONE), |tx, _cx| {
+///     .session(spec, |tx, _cx| {
 ///         Box::pin(async move {
 ///             let rows = tx.execute("insert into ledger values (1)").await?;
 ///             Ok(rows)
@@ -182,7 +196,7 @@ pub trait SessionProvider: Provider + PinSlots {
         &'c self,
         instance: &'c mut Self::Instance,
         slots: &'c Self::Pinned,
-    ) -> impl Future<Output = Result<Self::Session<'c>, OpError>> + Send + 'c;
+    ) -> impl Future<Output = Result<Self::Session<'c>, OperationError>> + Send + 'c;
 
     /// Ends `session` as `end` asks and reports what the provider said.
     fn close<'c>(
@@ -227,42 +241,136 @@ pub enum SessionClosed {
     /// for a rollback the body asked for.
     RolledBack {
         /// The provider's refusal of a commit, if it refused one.
-        refused: Option<OpError>,
+        refused: Option<OperationError>,
     },
     /// The provider did not say whether the session's effects were applied
     /// (the connection dropped during the commit): the unit's outcome is
     /// unknown and the instance is not reused.
-    Unknown(OpError),
+    Unknown(OperationError),
 }
 
-/// What one session unit costs and what repeating it does.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What one session unit is: its name, what repeating it does, what it
+/// costs and — for an effect — the request a journal records it under.
+///
+/// A session is declared like an [`Operation`](super::Operation): the
+/// `name` follows the operation key rules (1 to 64 bytes of
+/// `[A-Za-z0-9_.-]`, starting and ending alphanumeric) and is unique among
+/// the resource's sessions; an `Idempotent` or `Write` session carries its
+/// logical request, canonicalized here, so a journaled row can tell a
+/// resumed session from a different one. A name that breaks the rules or a
+/// request that does not canonicalize (or is over 1 MiB) is kept as a
+/// defect and refuses the session at submit, `Permanent` / `NotSent`.
+///
+/// Defaults: [`Cost::ONE`], version 1, a 24-hour key window, no developer
+/// key part.
+///
+/// ```
+/// use std::time::Duration;
+///
+/// use nebula_resource::call::{Cost, Effect, SessionSpec};
+///
+/// let read = SessionSpec::read("ledger.balance");
+/// assert_eq!(read.effect(), Effect::Read);
+///
+/// let transfer = SessionSpec::idempotent("ledger.transfer", &("alice", "bob", 10))
+///     .cost(Cost::FREE)
+///     .idempotency_key("transfer-42")
+///     .key_window(Duration::from_secs(3600));
+/// assert_eq!(transfer.effect(), Effect::Idempotent);
+/// ```
+#[derive(Clone, PartialEq, Eq)]
 pub struct SessionSpec {
-    cost: Cost,
+    name: &'static str,
     effect: Effect,
+    cost: Cost,
+    version: u32,
+    key_window: Duration,
+    key_part: Option<String>,
+    /// The canonical request of an effect; empty for a read.
+    canonical_request: Vec<u8>,
+    defect: Option<&'static str>,
 }
 
 impl SessionSpec {
-    /// A session booked at `cost` whose effect is [`Effect::Write`].
-    #[must_use]
-    pub fn new(cost: Cost) -> Self {
+    fn declare(name: &'static str, effect: Effect) -> Self {
+        let defect = (!is_valid_operation_key(name)).then_some(
+            "session name must be 1..=64 bytes of [A-Za-z0-9_.-], starting and ending alphanumeric",
+        );
         Self {
-            cost,
-            effect: Effect::Write,
+            name,
+            effect,
+            cost: Cost::ONE,
+            version: 1,
+            key_window: Duration::from_hours(24),
+            key_part: None,
+            canonical_request: Vec::new(),
+            defect,
         }
     }
 
-    /// Declares what repeating the session does to the provider.
-    #[must_use]
-    pub fn with_effect(mut self, effect: Effect) -> Self {
-        self.effect = effect;
+    fn with_request(mut self, request: &(impl Serialize + ?Sized)) -> Self {
+        match canonical_json(request) {
+            Ok(canonical) => self.canonical_request = canonical,
+            Err(error) => {
+                self.defect.get_or_insert_with(|| error.detail());
+            },
+        }
         self
     }
 
-    /// The cost booked once, before the checkout.
+    /// A session named `name` that only reads: [`Effect::Read`], never
+    /// recorded by an execution owner.
     #[must_use]
-    pub fn cost(&self) -> &Cost {
-        &self.cost
+    pub fn read(name: &'static str) -> Self {
+        Self::declare(name, Effect::Read)
+    }
+
+    /// A session named `name` whose repeat the provider absorbs
+    /// ([`Effect::Idempotent`]), for `request` — its logical intent, no
+    /// credentials, signatures or timestamps.
+    #[must_use]
+    pub fn idempotent(name: &'static str, request: &(impl Serialize + ?Sized)) -> Self {
+        Self::declare(name, Effect::Idempotent).with_request(request)
+    }
+
+    /// A session named `name` whose repeat applies again
+    /// ([`Effect::Write`]), for `request` — its logical intent, no
+    /// credentials, signatures or timestamps.
+    #[must_use]
+    pub fn write(name: &'static str, request: &(impl Serialize + ?Sized)) -> Self {
+        Self::declare(name, Effect::Write).with_request(request)
+    }
+
+    /// Books `cost` once, before the checkout.
+    #[must_use]
+    pub fn cost(mut self, cost: Cost) -> Self {
+        self.cost = cost;
+        self
+    }
+
+    /// The developer part of the provider idempotency key (1 to 256 bytes
+    /// of visible ASCII), as [`Operation::idempotency_key`](super::Operation::idempotency_key).
+    #[must_use]
+    pub fn idempotency_key(mut self, part: impl Into<String>) -> Self {
+        self.key_part = Some(part.into());
+        self
+    }
+
+    /// How long the provider remembers an idempotency key, as
+    /// [`Operation::KEY_WINDOW`](super::Operation::KEY_WINDOW). Non-zero for
+    /// an `Idempotent` session.
+    #[must_use]
+    pub fn key_window(mut self, window: Duration) -> Self {
+        self.key_window = window;
+        self
+    }
+
+    /// The session's interface version, as
+    /// [`Operation::VERSION`](super::Operation::VERSION). At least 1.
+    #[must_use]
+    pub fn version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
     }
 
     /// The session's effect.
@@ -272,13 +380,29 @@ impl SessionSpec {
     }
 }
 
+impl fmt::Debug for SessionSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SessionSpec")
+            .field("name", &self.name)
+            .field("effect", &self.effect)
+            .field("cost", &self.cost)
+            .field("version", &self.version)
+            .field("key_window", &self.key_window)
+            .field("key_part", &self.key_part.is_some())
+            .field("canonical_request_len", &self.canonical_request.len())
+            .field("defect", &self.defect)
+            .finish()
+    }
+}
+
 /// What a session body sees besides the session: the unit's deadline, the
 /// checkout's closing notice and the row's key.
 pub struct SessionCx {
     deadline: tokio::time::Instant,
     closing: LeaseClosing,
     key: ResourceKey,
-    operation_key: Option<OperationKey>,
+    idempotency_key: Option<IdempotencyKey>,
 }
 
 impl SessionCx {
@@ -291,25 +415,24 @@ impl SessionCx {
             deadline,
             closing,
             key,
-            operation_key: None,
+            idempotency_key: None,
         }
     }
 
-    /// The context of an execution-owned session whose owner derived
-    /// `operation_key`.
-    fn with_operation_key(mut self, operation_key: Option<OperationKey>) -> Self {
-        self.operation_key = operation_key;
+    /// The context of a session presenting `idempotency_key`.
+    fn with_idempotency_key(mut self, idempotency_key: Option<IdempotencyKey>) -> Self {
+        self.idempotency_key = idempotency_key;
         self
     }
 
-    /// The provider idempotency key of a session submitted with
-    /// [`ManagedRow::session_effect`](super::ManagedRow::session_effect) on a
-    /// row with an execution owner (see
-    /// [`OpCx::operation_key`](super::OpCx::operation_key)); `None`
-    /// otherwise.
+    /// The provider idempotency key to send: its execution owner's on a
+    /// journaled row, a local one for a session that declared a developer
+    /// key part elsewhere (see
+    /// [`OperationCx::idempotency_key`](super::OperationCx::idempotency_key));
+    /// `None` otherwise.
     #[must_use]
-    pub fn operation_key(&self) -> Option<&OperationKey> {
-        self.operation_key.as_ref()
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.idempotency_key.as_ref()
     }
 
     /// The unit's deadline: the body is stopped at it and the session's
@@ -360,7 +483,7 @@ pub(super) fn in_session_of(marker: usize) -> bool {
 
 /// A session as the unit runtime runs it: one attempt, never retried
 /// (`max_attempts` is one), open → body → close, settled from what the
-/// provider said (see [`ManagedRow::session`](super::ManagedRow::session)).
+/// provider said (see [`ResourceHandle::session`](super::ResourceHandle::session)).
 pub(super) struct Sessioned<R, F, T> {
     spec: SessionSpec,
     body: F,
@@ -377,36 +500,64 @@ impl<R, F, T> Sessioned<R, F, T> {
     }
 }
 
-impl<R, F, T> Operation<R> for Sessioned<R, F, T>
+impl<R, F, T> UnitWork<R> for Sessioned<R, F, T>
 where
     R: SessionProvider + PoolProvider + Provider<Topology = Pooled<R>> + Clone,
-    T: Send + 'static,
+    T: Serialize + DeserializeOwned + Send + 'static,
     F: for<'c, 's> FnOnce(&'s mut R::Session<'c>, &'s SessionCx) -> SessionFuture<'s, T>
         + Send
         + 'static,
 {
     type Output = T;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<T, OpError> {
+    fn declared(&self) -> Declared {
+        Declared {
+            kind: UnitKind::Session,
+            name: self.spec.name,
+            version: self.spec.version,
+            effect: self.spec.effect,
+            key_window: self.spec.key_window,
+            record_output: true,
+        }
+    }
+
+    fn defect(&self) -> Option<&'static str> {
+        self.spec.defect
+    }
+
+    fn key_part(&self) -> Option<String> {
+        self.spec.key_part.clone()
+    }
+
+    fn canonical_request(&self) -> Result<Vec<u8>, OperationError> {
+        Ok(self.spec.canonical_request.clone())
+    }
+
+    fn codec() -> Option<OutputCodec<T>> {
+        Some(OutputCodec::json())
+    }
+
+    fn max_attempts(&self) -> NonZeroU32 {
+        NonZeroU32::MIN
+    }
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<T, OperationError> {
         let Self { spec, body, .. } = self;
         let deadline = cx.deadline;
-        let marker = match cx.host {
-            UnitHost::Row(row) => Some(row.marker()),
-            UnitHost::Lease(_) => None,
-        };
-        let operation_key = cx.operation_key().copied();
-        let mut attempt = cx.attempt_session(spec.cost().clone()).await?;
+        let marker = cx.host.marker();
+        let idempotency_key = cx.idempotency_key().copied();
+        let mut attempt = cx.attempt_session(spec.cost).await?;
         let ended = match attempt.session_parts() {
             Some((provider, instance, slots, closing)) => {
-                let session_cx =
-                    SessionCx::new(deadline, closing, R::key()).with_operation_key(operation_key);
+                let session_cx = SessionCx::new(deadline, closing, R::key())
+                    .with_idempotency_key(idempotency_key);
                 drive_session(provider, instance, slots, &session_cx, marker, body).await
             },
             None => SessionEnded {
                 sent: SentState::NotSent,
                 keep: false,
                 outcome: SessionOutcome::OpenFailed,
-                result: Err(OpError::new(
+                result: Err(OperationError::new(
                     ErrorKind::Permanent,
                     "session attempt without a checkout",
                 )),
@@ -424,7 +575,7 @@ struct SessionEnded<T> {
     sent: SentState,
     keep: bool,
     outcome: SessionOutcome,
-    result: Result<T, OpError>,
+    result: Result<T, OperationError>,
 }
 
 /// Open, body (inside the nested-session marker), close; settled by
@@ -435,7 +586,7 @@ async fn drive_session<R, F, T>(
     instance: &mut R::Instance,
     slots: &R::Pinned,
     session_cx: &SessionCx,
-    marker: Option<usize>,
+    marker: usize,
     body: F,
 ) -> SessionEnded<T>
 where
@@ -457,7 +608,7 @@ where
         },
     };
     let mut rows = SESSION_ROWS.try_with(Clone::clone).unwrap_or_default();
-    rows.extend(marker);
+    rows.push(marker);
     let result = SESSION_ROWS
         .scope(rows, body(&mut session, session_cx))
         .await;
@@ -472,8 +623,8 @@ where
 
 /// The session's settled state, whether its instance is reused, and the
 /// unit's outcome, from the body's result and what the provider said at
-/// close (the table on [`ManagedRow::session`](super::ManagedRow::session)).
-fn settle_session<T>(result: Result<T, OpError>, closed: SessionClosed) -> SessionEnded<T> {
+/// close (the table on [`ResourceHandle::session`](super::ResourceHandle::session)).
+fn settle_session<T>(result: Result<T, OperationError>, closed: SessionClosed) -> SessionEnded<T> {
     let (sent, keep, outcome, result) = match (result, closed) {
         (Ok(value), SessionClosed::Committed) => {
             (SentState::Sent, true, SessionOutcome::Committed, Ok(value))
@@ -483,7 +634,7 @@ fn settle_session<T>(result: Result<T, OpError>, closed: SessionClosed) -> Sessi
             true,
             SessionOutcome::RolledBack,
             Err(refused.unwrap_or_else(|| {
-                OpError::new(
+                OperationError::new(
                     ErrorKind::Transient,
                     "the provider rolled the commit back without a reason",
                 )
@@ -519,7 +670,9 @@ fn settle_session<T>(result: Result<T, OpError>, closed: SessionClosed) -> Sessi
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use super::{OpError, SessionClosed, SessionCx, SessionEnd, SessionFuture, SessionProvider};
+    use super::{
+        OperationError, SessionClosed, SessionCx, SessionEnd, SessionFuture, SessionProvider,
+    };
     use crate::{
         Provider, call::PinSlots, guard::LeaseClosing, manager::strict_fixtures::StrictPooled,
     };
@@ -532,7 +685,7 @@ mod tests {
         slots: &R::Pinned,
         cx: &SessionCx,
         body: F,
-    ) -> (Result<T, OpError>, SessionClosed)
+    ) -> (Result<T, OperationError>, SessionClosed)
     where
         R: SessionProvider,
         T: Send + 'static,
@@ -618,7 +771,10 @@ mod tests {
         let (result, closed) = drive(&provider, &mut instance, &slots, &cx(), |tx, _cx| {
             Box::pin(async move {
                 tx.pending = 5;
-                Err::<(), _>(OpError::new(crate::ErrorKind::Permanent, "constraint"))
+                Err::<(), _>(OperationError::new(
+                    crate::ErrorKind::Permanent,
+                    "constraint",
+                ))
             })
         })
         .await;

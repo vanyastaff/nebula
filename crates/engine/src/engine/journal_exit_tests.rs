@@ -1,0 +1,607 @@
+//! A journaled node's exits before its action runs, and its resource
+//! layers.
+//!
+//! The ledger seeding writes an earlier dispatch's crash residue directly:
+//! a slot of the node with a granted call that was never explained.
+
+use std::sync::Mutex;
+
+use serde_json::json;
+
+use nebula_core::ResourceKey;
+use nebula_credential::default_credential_accessor;
+use nebula_resource::{
+    Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, SlotIdentity,
+    resource::{Provider, ResourceMetadataDraft},
+    topology::resident::ResidentProvider,
+};
+use nebula_storage_port::{
+    FencingToken,
+    dto::{
+        AttemptGeneration, DestinationCapability, EffectSlotBinding, OperationCommand,
+        PreparedEffectContract, PreparedEffectPolicy, RequestFingerprint,
+    },
+    store::OperationLedger,
+};
+
+use crate::{
+    EffectExecutionError,
+    resolver::NodeInputRequest,
+    scoped_resources::{BranchId, DashScopedResourceMap, EmptyScopedResourceMap},
+};
+
+use super::*;
+
+#[derive(serde::Deserialize, nebula_schema::Schema)]
+struct ProbeInput {
+    #[field(expression_required)]
+    amount: i64,
+}
+
+/// A stateless action with the default (`Journaled`) effect contract that
+/// counts its dispatches.
+struct JournaledProbe(Arc<AtomicU32>);
+
+impl Action for JournaledProbe {
+    type Input = ProbeInput;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            action_key!("test.journaled_probe"),
+            nebula_action::metadata_name!("Journaled probe"),
+            "Counts the dispatches of a journaled node",
+        )
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        EchoHandler::dependencies()
+    }
+}
+
+impl StatelessAction for JournaledProbe {
+    async fn execute(
+        &self,
+        input: ProbeInput,
+        _: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(ActionResult::success(json!({ "amount": input.amount })))
+    }
+}
+
+/// How the node's input resolves.
+#[derive(Debug, Clone, Copy)]
+enum Input {
+    Valid,
+    Failing,
+}
+
+/// One leased execution of node `charge` over an in-memory ledger.
+struct JournaledNode {
+    _executions: nebula_storage::InMemoryExecutionStore,
+    ledger: Arc<nebula_storage::inmem::InMemoryOperationLedger>,
+    scope: Scope,
+    execution_id: ExecutionId,
+    fencing: FencingToken,
+    dispatches: Arc<AtomicU32>,
+    engine: WorkflowEngine,
+    factory: Arc<dyn nebula_action::ActionFactory>,
+}
+
+impl JournaledNode {
+    async fn new() -> Self {
+        let executions = nebula_storage::InMemoryExecutionStore::new();
+        let ledger = Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &executions,
+        ));
+        let scope = Scope::new("workspace-a", "org-a");
+        let execution_id = ExecutionId::new();
+        executions
+            .create(
+                &scope,
+                &execution_id.to_string(),
+                "workflow",
+                json!({"status": "Created"}),
+            )
+            .await
+            .expect("execution row");
+        let fencing = executions
+            .acquire_lease(
+                &scope,
+                &execution_id.to_string(),
+                "runner",
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("lease")
+            .expect("granted");
+        let dispatches = Arc::new(AtomicU32::new(0));
+        let registry = Arc::new(ActionRegistry::new());
+        registry
+            .register_stateless_instance(
+                JournaledProbe::metadata(),
+                JournaledProbe(Arc::clone(&dispatches)),
+            )
+            .expect("register the probe");
+        let (_, factory) = registry
+            .get_factory(&action_key!("test.journaled_probe"))
+            .expect("the probe's factory");
+        let (engine, _) = make_engine(registry);
+        Self {
+            _executions: executions,
+            ledger,
+            scope,
+            execution_id,
+            fencing,
+            dispatches,
+            engine,
+            factory,
+        }
+    }
+
+    /// Writes an earlier dispatch's crash residue: a slot of the node whose
+    /// granted call was never explained.
+    async fn seed_unexplained_call(&self) {
+        let policy = PreparedEffectPolicy::builder(DestinationCapability::Opaque)
+            .recovery_window(nebula_resource::call::OPERATION_DEADLINE_CAP)
+            .maximum_invocations(1)
+            .maximum_queries(0)
+            .build()
+            .expect("policy");
+        let contract = PreparedEffectContract::new(RequestFingerprint::new(1, [1; 32]), policy)
+            .expect("contract");
+        let execution = self.execution_id.to_string();
+        let prepared = self
+            .ledger
+            .prepare(
+                &EffectSlotBinding {
+                    scope: &self.scope,
+                    execution_id: &execution,
+                    node_key: "charge",
+                    occurrence: "unit/v1/#000000",
+                    attempt_generation: AttemptGeneration::new(1),
+                    fingerprint: RequestFingerprint::new(1, [2; 32]),
+                    destination: DestinationCapability::Opaque,
+                    contract: &contract,
+                    provider_key: None,
+                    concurrent_with: None,
+                    observation: false,
+                },
+                self.fencing,
+            )
+            .await
+            .expect("prepare");
+        let slot_id = prepared.operation().slot_id();
+        let record = self
+            .ledger
+            .read_exact(&self.scope, slot_id)
+            .await
+            .expect("record");
+        let revision = record.protocol().expect("protocol").revision();
+        self.ledger
+            .advance(
+                &self.scope,
+                slot_id,
+                self.fencing,
+                &OperationCommand::GrantInvocation {
+                    expected_revision: revision,
+                },
+            )
+            .await
+            .expect("grant");
+    }
+
+    async fn slots(&self) -> usize {
+        self.ledger
+            .read_occurrences(&self.scope, &self.execution_id.to_string(), "charge")
+            .await
+            .expect("occurrences")
+            .len()
+    }
+
+    /// The node's task, with `input`, `cancel`, the credential `refresh`
+    /// hook and the `rate_limiter`.
+    fn task(
+        &self,
+        input: Input,
+        cancel: CancellationToken,
+        credential_refresh: Option<CredentialRefreshFn>,
+        rate_limiter: Option<Arc<nebula_resilience::rate_limiter::TokenBucket>>,
+    ) -> NodeTask {
+        let mut expressions = ExpressionEngine::new();
+        expressions.register_function("fail_input", |_, _, _, _| {
+            Err(nebula_expression::ExpressionError::invalid_argument(
+                "fail_input",
+                "input unavailable",
+            ))
+        });
+        let amount = match input {
+            Input::Valid => "{{ 7 }}",
+            Input::Failing => "{{ fail_input() }}",
+        };
+        let node = NodeDefinition::new(
+            node_key!("charge"),
+            "Charge",
+            "test",
+            "test.journaled_probe",
+        )
+        .expect("node")
+        .with_parameter("amount", nebula_workflow::ParamValue::expression(amount));
+        let prepared = ParamResolver::new(Arc::new(expressions))
+            .prepare(NodeInputRequest {
+                node_key: &node.id,
+                parameters: &node.parameters,
+                predecessor_input: json!(null),
+                outputs: &DashMap::new(),
+                shared_outputs: &DashMap::new(),
+                schema: &nebula_schema::schema_of::<ProbeInput>().expect("schema"),
+                cancellation: cancel.clone(),
+            })
+            .expect("prepared input");
+        let metadata = self.factory.metadata();
+        NodeTask {
+            runtime: self.engine.runtime.clone(),
+            factory_dispatch: NodeFactoryDispatch::Frozen {
+                factory: Arc::clone(&self.factory),
+                effect_contract: metadata.effect_contract().clone(),
+                action_version: metadata.base().version().clone(),
+            },
+            cancel,
+            sem: Arc::new(Semaphore::new(1)),
+            outputs: Arc::new(DashMap::new()),
+            execution_id: self.execution_id,
+            node_key: node.id.clone(),
+            workflow_id: WorkflowId::new(),
+            action_key: node.action_key.to_string(),
+            node: Arc::new(node),
+            input: prepared,
+            support_inputs: HashMap::new(),
+            credentials: default_credential_accessor(),
+            resources: nebula_action::capability::default_resource_accessor(),
+            credential_refresh,
+            rate_limiter,
+            scope: self.scope.clone(),
+            fencing: Some(self.fencing),
+            operation_ledger: Some(Arc::clone(&self.ledger) as Arc<dyn OperationLedger>),
+            checkpoints: None,
+            clock: Arc::new(SystemClock),
+            attempt_generation: 1,
+            engine_resources: None,
+            execution_deadline: None,
+            metrics: MetricsRegistry::new(),
+        }
+    }
+}
+
+/// A credential refresh hook that always fails.
+fn failing_refresh() -> CredentialRefreshFn {
+    Arc::new(|_| Box::pin(async { Err(ActionError::retryable("credential store down")) }))
+}
+
+/// Asserts `result` is the journal's unknown-outcome verdict.
+fn assert_unknown(result: &Result<ActionResult<serde_json::Value>, EngineError>, exit: &str) {
+    assert!(
+        matches!(
+            result,
+            Err(EngineError::Effect(
+                EffectExecutionError::JournalOutcomeUnknown { unresolved: 1, .. }
+            ))
+        ),
+        "{exit}: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn every_pre_dispatch_exit_after_an_unexplained_call_fails_the_node_unknown() {
+    let node = JournaledNode::new().await;
+    node.seed_unexplained_call().await;
+    // A spent bucket: the node's acquire is refused.
+    let spent = Arc::new(
+        nebula_resilience::rate_limiter::TokenBucket::new(1, 0.001).expect("token bucket"),
+    );
+    {
+        use nebula_resilience::rate_limiter::RateLimiter;
+        spent.acquire().await.expect("the bucket's only token");
+    }
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let exits = [
+        (
+            "input resolution",
+            node.task(Input::Failing, CancellationToken::new(), None, None),
+        ),
+        (
+            "credential refresh",
+            node.task(
+                Input::Valid,
+                CancellationToken::new(),
+                Some(failing_refresh()),
+                None,
+            ),
+        ),
+        (
+            "rate limit",
+            node.task(Input::Valid, CancellationToken::new(), None, Some(spent)),
+        ),
+        (
+            "cancellation",
+            node.task(Input::Valid, cancelled, None, None),
+        ),
+    ];
+    for (exit, task) in exits {
+        let (_, result) = task.run().await;
+        assert_unknown(&result, exit);
+    }
+    assert_eq!(
+        node.dispatches.load(Ordering::SeqCst),
+        0,
+        "no exit dispatched the action"
+    );
+    assert_eq!(node.slots().await, 1, "concluding wrote no slot");
+}
+
+#[tokio::test]
+async fn a_pre_dispatch_exit_with_no_unknown_call_keeps_its_error() {
+    let node = JournaledNode::new().await;
+    let (_, result) = node
+        .task(
+            Input::Valid,
+            CancellationToken::new(),
+            Some(failing_refresh()),
+            None,
+        )
+        .run()
+        .await;
+    assert!(
+        matches!(
+            &result,
+            Err(EngineError::Action(
+                ActionError::CredentialRefreshFailed { .. }
+            ))
+        ),
+        "{result:?}"
+    );
+    let (_, result) = node
+        .task(Input::Failing, CancellationToken::new(), None, None)
+        .run()
+        .await;
+    assert!(
+        matches!(&result, Err(EngineError::ParameterResolution { .. })),
+        "{result:?}"
+    );
+    assert_eq!(node.slots().await, 0, "nothing was prepared");
+}
+
+#[tokio::test]
+async fn a_dispatched_node_after_an_unexplained_call_fails_unknown() {
+    let node = JournaledNode::new().await;
+    node.seed_unexplained_call().await;
+    let (_, result) = node
+        .task(Input::Valid, CancellationToken::new(), None, None)
+        .run()
+        .await;
+    assert_unknown(&result, "after the action");
+    assert_eq!(node.dispatches.load(Ordering::SeqCst), 1);
+}
+
+// ── the scoped layer of a journaled node ─────────────────────────────────
+
+#[derive(Clone)]
+struct Payments;
+
+#[async_trait::async_trait]
+impl Provider for Payments {
+    type Config = ();
+    type Instance = Arc<Mutex<u32>>;
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        ResourceKey::new("test.payments").expect("resource key")
+    }
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("ScopedPayments"),
+            "",
+        )
+    }
+
+    async fn create(
+        &self,
+        (): &(),
+        _: &ResourceContext,
+    ) -> Result<Arc<Mutex<u32>>, nebula_resource::error::Error> {
+        Ok(Arc::new(Mutex::new(0)))
+    }
+}
+
+nebula_resource::no_credential_slots!(Payments);
+
+impl ResidentProvider for Payments {}
+
+#[tokio::test]
+async fn a_scope_that_shadows_a_global_row_refuses_the_journaled_handle() {
+    let node = JournaledNode::new().await;
+    let manager = Arc::new(Manager::new());
+    manager
+        .register(RegistrationSpec {
+            resource: Payments,
+            config: (),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::<Payments>::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register the global row");
+    let rows = crate::resource_accessor::EngineResourceAccessor::new(
+        manager,
+        nebula_core::scope::Scope::default(),
+        CancellationToken::new(),
+    );
+    let shadowing = Arc::new(DashScopedResourceMap::new());
+    let branch = BranchId::from_node_key(node_key!("branch"));
+    shadowing.register_branch(branch.clone(), None);
+    assert!(shadowing.push(branch.clone(), Payments::key(), Arc::new(7_u32)));
+    shadowing.set_current_branch(Some(branch));
+
+    for (scoped, shadowed) in [
+        (
+            Arc::new(EmptyScopedResourceMap) as Arc<dyn crate::scoped_resources::ScopedResourceMap>,
+            false,
+        ),
+        (
+            shadowing as Arc<dyn crate::scoped_resources::ScopedResourceMap>,
+            true,
+        ),
+    ] {
+        let mut task = node.task(Input::Valid, CancellationToken::new(), None, None);
+        task.engine_resources = Some(NodeResourceLayers {
+            scoped,
+            rows: rows.clone(),
+        });
+        let journal = task.effect_journal().expect("a journal on a durable turn");
+        let resources = task.journaled_resources(Some(&journal));
+        let handle = resources.resource_handle_any(&Payments::key());
+        if shadowed {
+            let Err(error) = handle else {
+                panic!("a shadowed key must not reach the global row");
+            };
+            assert!(
+                matches!(error, nebula_core::CoreError::ScopeViolation { .. }),
+                "{error:?}"
+            );
+        } else {
+            assert!(handle.is_ok(), "the global row serves an unshadowed key");
+        }
+    }
+    assert_eq!(node.slots().await, 0, "nothing was prepared or sent");
+}
+
+// ── the resource authority of a non-journaled contract ──────────────────
+
+use nebula_resource::call::{
+    Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle, SentState,
+};
+
+/// Reads the payments counter in one free attempt.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ReadPayments;
+
+impl Operation<Payments> for ReadPayments {
+    type Output = u32;
+    const KEY: &'static str = "payments.read";
+    const EFFECT: Effect = Effect::Read;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<u32, OperationError> {
+        cx.call(Cost::FREE, async |counter, ()| {
+            Ok(*counter.lock().expect("payments lock"))
+        })
+        .await
+    }
+}
+
+/// Charges the payments counter: a write the provider would apply.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChargePayments;
+
+impl Operation<Payments> for ChargePayments {
+    type Output = ();
+    const KEY: &'static str = "payments.charge";
+    const EFFECT: Effect = Effect::Write;
+
+    async fn run(self, cx: &mut OperationCx<'_, Payments>) -> Result<(), OperationError> {
+        cx.call(Cost::FREE, async |counter, ()| {
+            *counter.lock().expect("payments lock") += 1;
+            Ok(())
+        })
+        .await
+    }
+}
+
+/// A `Remote` contract over an opaque destination.
+fn remote_contract() -> nebula_action::effect::ActionEffectContract {
+    use nebula_action::effect::{
+        RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectPolicy,
+    };
+    let policy = RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
+        .maximum_invocations(1)
+        .maximum_queries(0)
+        .recovery_window(Duration::from_mins(1))
+        .build()
+        .expect("valid remote policy");
+    let descriptor =
+        RemoteEffectDescriptor::new("test.payments/v1", 1, policy).expect("valid descriptor");
+    nebula_action::effect::ActionEffectContract::Remote(Box::new(descriptor))
+}
+
+/// Since 0.27.0 the action surface has no raw-lease route, so a `ReadOnly`
+/// or `Remote` action — which never gets an effect journal — reaches a
+/// resource only through a read-only handle: a read runs, a write is
+/// refused `Permanent` / `NotSent` before any provider call, whether or not
+/// the node attempt has a journal.
+#[tokio::test]
+async fn read_only_and_remote_contracts_get_read_only_handles_only() {
+    let node = JournaledNode::new().await;
+    let manager = Arc::new(Manager::new());
+    manager
+        .register(RegistrationSpec {
+            resource: Payments,
+            config: (),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::<Payments>::new(ResidentConfig::default()),
+            recovery_gate: None,
+            rate_limit: None,
+        })
+        .expect("register the global row");
+    let rows = crate::resource_accessor::EngineResourceAccessor::new(
+        manager,
+        nebula_core::scope::Scope::default(),
+        CancellationToken::new(),
+    );
+
+    for contract in [
+        nebula_action::effect::ActionEffectContract::ReadOnly,
+        remote_contract(),
+    ] {
+        // As the frontier spawns a node: the layered engine accessor.
+        let mut task = node.task(Input::Valid, CancellationToken::new(), None, None);
+        let layers = NodeResourceLayers {
+            scoped: Arc::new(EmptyScopedResourceMap),
+            rows: rows.clone(),
+        };
+        task.resources = layers.layered(layers.rows.clone());
+        task.engine_resources = Some(layers);
+        let journal = task.effect_journal().expect("a journal on a durable turn");
+
+        for journal in [None, Some(&journal)] {
+            let resources = task.dispatch_resources(&contract, journal);
+            let handle = resources
+                .resource_handle_any(&Payments::key())
+                .expect("the global row is served")
+                .downcast::<ResourceHandle<Payments>>()
+                .expect("a ResourceHandle<Payments>");
+
+            assert_eq!(handle.submit(ReadPayments).await.expect("a read runs"), 0);
+            let refused = handle
+                .submit(ChargePayments)
+                .await
+                .expect_err("a write needs effect authority");
+            assert_eq!(
+                *refused.kind(),
+                nebula_resource::ErrorKind::Permanent,
+                "{contract:?}"
+            );
+            assert_eq!(refused.sent(), SentState::NotSent, "{contract:?}");
+            assert_eq!(
+                handle.submit(ReadPayments).await.expect("a read runs"),
+                0,
+                "the refused write made no provider call ({contract:?})"
+            );
+        }
+    }
+    assert_eq!(node.slots().await, 0, "nothing was prepared or sent");
+}

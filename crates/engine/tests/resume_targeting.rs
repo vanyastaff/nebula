@@ -55,7 +55,7 @@ use nebula_workflow::{
 macro_rules! pure_action_metadata {
     ($key:expr, $name:expr, $description:expr $(,)?) => {
         nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     };
 }
 
@@ -218,10 +218,10 @@ impl Stores {
         let versions = InMemoryWorkflowVersionStore::new();
         Self {
             exact: OnceLock::new(),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
         }

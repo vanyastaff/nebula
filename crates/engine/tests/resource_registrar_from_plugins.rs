@@ -231,7 +231,7 @@ impl Action for NoopHandler {
             nebula_action::metadata_name!("Noop"),
             "static",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         use std::sync::OnceLock;
@@ -259,7 +259,7 @@ fn build_engine(registrars: ResourceActivatorRegistry) -> WorkflowEngine {
                 nebula_action::metadata_name!("Noop"),
                 "noop",
             )
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly),
             NoopHandler,
         )
         .expect("valid test catalog definition");

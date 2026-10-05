@@ -38,6 +38,42 @@ use crate::{
 /// stores and the guard holds for its whole lease.
 pub(crate) type EntryOf<R> = <<R as Provider>::Topology as Topology<R>>::Entry;
 
+/// A row's admitted configuration and its fingerprint, computed once when
+/// the configuration is admitted (registered or reloaded).
+///
+/// The two live in one allocation behind the row's single `ArcSwap`, so a
+/// reader never observes a configuration with another configuration's
+/// fingerprint, and the hot paths (every unit's journal binding and grant,
+/// every acquire of a topology that compares fingerprints) read the stored
+/// value instead of re-encoding and re-digesting the configuration.
+pub(crate) struct AdmittedConfig<C> {
+    config: Arc<C>,
+    fingerprint: u64,
+}
+
+impl<C: crate::resource::ResourceConfig> AdmittedConfig<C> {
+    /// Admits `config`: computes its fingerprint, once.
+    pub(crate) fn new(config: C) -> Self {
+        let fingerprint = config.fingerprint();
+        Self {
+            config: Arc::new(config),
+            fingerprint,
+        }
+    }
+}
+
+impl<C> AdmittedConfig<C> {
+    /// The configuration.
+    pub(crate) fn config(&self) -> &Arc<C> {
+        &self.config
+    }
+
+    /// The configuration's fingerprint, as computed at admission.
+    pub(crate) fn fingerprint(&self) -> u64 {
+        self.fingerprint
+    }
+}
+
 /// The row owns its maintenance task until terminal cleanup has joined it.
 #[derive(Default)]
 pub(crate) struct Maintenance {
@@ -160,8 +196,9 @@ pub struct ManagedResource<R: Provider> {
     /// Pending hook admissions keyed by slot: (material epoch, installed slot generation).
     pub(crate) pending_projection_hooks:
         std::sync::Mutex<std::collections::HashMap<String, crate::registry::ProjectionHookState>>,
-    /// Hot-swappable operational configuration.
-    pub(crate) config: ArcSwap<R::Config>,
+    /// Hot-swappable operational configuration, with the fingerprint
+    /// computed when it was admitted.
+    pub(crate) config: ArcSwap<AdmittedConfig<R::Config>>,
     /// The resource's lease topology, reached monomorphically.
     pub(crate) topology: R::Topology,
     /// Framework-owned idle store the acquire loop fences on every checkout /
@@ -239,7 +276,7 @@ pub struct ManagedResource<R: Provider> {
     /// `None` for a slot-less row and for an interim (row-gate) manager.
     pub(crate) credential_reads: Option<Arc<crate::manager::CredentialReads>>,
     /// The row gate of the managed row facade
-    /// ([`ManagedRow`](crate::call::ManagedRow)): one permit per checkout a
+    /// ([`ResourceHandle`](crate::call::ResourceHandle)): one permit per checkout a
     /// row attempt holds, so attempts queue FIFO for the row's capacity with
     /// nothing checked out rather than failing on a full topology. Sized to
     /// the topology's [`store_capacity`](Topology::store_capacity) at first
@@ -267,6 +304,19 @@ impl<R: Provider> std::fmt::Debug for ManagedResource<R> {
 }
 
 impl<R: Provider> ManagedResource<R> {
+    /// The fingerprint of the row's current configuration: what a reload
+    /// compares, and what an execution journal binds an effect's
+    /// destination to. Computed once at admission, never on this read.
+    pub(crate) fn config_fingerprint(&self) -> u64 {
+        self.config.load().fingerprint()
+    }
+
+    /// The current admitted configuration and its fingerprint, one
+    /// consistent snapshot.
+    pub(crate) fn admitted_config(&self) -> Arc<AdmittedConfig<R::Config>> {
+        self.config.load_full()
+    }
+
     /// Publishes the terminal admission fence before any cleanup suspension.
     pub(crate) fn begin_close(&self) {
         self.store.begin_close();
@@ -368,7 +418,7 @@ impl<R: Provider> ManagedResource<R> {
 
     /// Returns a snapshot of the current configuration.
     pub fn config(&self) -> Arc<R::Config> {
-        self.config.load_full()
+        Arc::clone(self.config.load().config())
     }
 
     /// Atomically replace the lifecycle status with a new phase.

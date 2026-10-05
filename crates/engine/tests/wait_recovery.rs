@@ -182,7 +182,7 @@ impl ExecutionStore for FaultInjectingExecutionStore {
 macro_rules! pure_action_metadata {
     ($key:expr, $name:expr, $description:expr $(,)?) => {
         nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     };
 }
 
@@ -328,10 +328,10 @@ impl RecoveryStores {
         let versions = InMemoryWorkflowVersionStore::new();
         Self {
             frozen: Arc::new(std::sync::Mutex::new(None)),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
         }
@@ -1208,7 +1208,9 @@ async fn transient_store_error_during_resume_defers_not_drops() {
         execution: Arc::clone(&inner_execution),
         journal,
         node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
-        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(
+            &inner_execution,
+        )),
         idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
         versions: Arc::new(versions),
     };

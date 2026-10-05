@@ -9,6 +9,8 @@
 //! - `#[credential(key = "...")]` invalid key literal rejected at the literal span
 //! - `Option<SlotCell<CredentialGuard<C>>>` rejected (must be the bare shape)
 //! - nonempty or tuple configs cannot publish an automatic empty-record schema
+//! - a fingerprinted config field naming a hash-ordered set (`HashSet`) is
+//!   rejected at the type segment; `HashMap` and skipped sets are accepted
 //! - the derive-emitted `<Name>PinnedSlots` keeps its guard `Arc`s private
 //!
 //! The positive probes exercise a clean two-derive expansion:
@@ -69,4 +71,10 @@ fn resource_slots_compile_pass_slot_accessor() {
 fn resource_config_requires_real_schema_for_nonempty_and_tuple_structs() {
     let tests = trybuild::TestCases::new();
     tests.compile_fail("tests/probes/config_missing_schema.rs");
+}
+
+#[test]
+fn resource_config_rejects_hash_ordered_set_fields() {
+    let tests = trybuild::TestCases::new();
+    tests.compile_fail("tests/probes/config_unordered_set_field.rs");
 }

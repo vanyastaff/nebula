@@ -76,7 +76,17 @@ pub trait ResourceConfig: nebula_schema::HasSchema + Send + Sync + Clone + 'stat
         Ok(())
     }
 
-    /// Returns a fingerprint for change-detection during hot-reload.
+    /// Returns a stable fingerprint of the configuration's content.
+    ///
+    /// It is durable data: the effect journal binds every recorded effect's
+    /// destination to it, so a journaled slot recorded under a configuration
+    /// resolves only when the same configuration — rebuilt by another build,
+    /// toolchain or platform — has the same fingerprint. It must therefore
+    /// be a pure function of the configuration's operationally significant
+    /// content. Never derive it from [`std::hash::Hash`] or
+    /// `DefaultHasher`, whose output is not stable between compiler versions
+    /// or platforms; build it with [`ConfigFingerprint`](crate::ConfigFingerprint)
+    /// (canonical JSON digested with SHA-256), which the derive emits.
     ///
     /// Two configs with equal fingerprints are treated as **identical** by the
     /// manager's hot-reload path: a reload where the old and new fingerprints
@@ -87,7 +97,7 @@ pub trait ResourceConfig: nebula_schema::HasSchema + Send + Sync + Clone + 'stat
     /// field differs.** Returning a constant from a struct that has fields is
     /// incorrect — it permanently disables hot-reload change-detection for that
     /// config type. Derive [`ResourceConfig`](nebula_resource_macros::ResourceConfig)
-    /// for a correct structural default:
+    /// for a correct stable default over every `serde::Serialize` field:
     ///
     /// ```
     /// use nebula_resource::{ResourceConfig, Schema};

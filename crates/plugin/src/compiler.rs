@@ -46,7 +46,6 @@ use crate::{FrozenPluginRegistry, ResolvedPlugin};
 
 #[derive(Debug, Clone, Copy)]
 enum DiagnosticCode {
-    UndeclaredEffects,
     UnsupportedEffectKind,
     UnsupportedWorkflowSchema,
     DuplicateNode,
@@ -82,7 +81,6 @@ enum DiagnosticCode {
 impl DiagnosticCode {
     const fn reason(self) -> &'static str {
         match self {
-            Self::UndeclaredEffects => "UNDECLARED_EFFECTS",
             Self::UnsupportedEffectKind => "UNSUPPORTED_EFFECT_KIND",
             Self::UnsupportedWorkflowSchema => "UNSUPPORTED_WORKFLOW_SCHEMA",
             Self::DuplicateNode => "DUPLICATE_NODE",
@@ -123,8 +121,6 @@ impl DiagnosticCode {
 
 #[derive(Debug, Clone, Copy)]
 enum DiagnosticValue<'a> {
-    DeclaredEffects,
-    UndeclaredEffects,
     CurrentWorkflowSchema,
     WorkflowSchema(u32),
     RegisteredPlugin,
@@ -172,8 +168,6 @@ enum DiagnosticValue<'a> {
 impl DiagnosticValue<'_> {
     fn render(self) -> String {
         match self {
-            Self::DeclaredEffects => "<declared-effect-contract>".to_owned(),
-            Self::UndeclaredEffects => "<undeclared-effects>".to_owned(),
             Self::CurrentWorkflowSchema => nebula_workflow::CURRENT_SCHEMA_VERSION.to_string(),
             Self::WorkflowSchema(version) => version.to_string(),
             Self::RegisteredPlugin => "<registered-plugin>".to_owned(),
@@ -188,7 +182,7 @@ impl DiagnosticValue<'_> {
             Self::Missing => "<missing>".to_owned(),
             Self::UniqueNode => "<unique-node-id>".to_owned(),
             Self::UniqueTrigger => "<unique-trigger-id>".to_owned(),
-            Self::GraphNodeKind => "stateless|stateful|control".to_owned(),
+            Self::GraphNodeKind => "stateless|stateful|control|agent".to_owned(),
             Self::TriggerKind => "trigger".to_owned(),
             Self::StatelessKind => "stateless".to_owned(),
             Self::StatefulKind => "stateful".to_owned(),
@@ -222,7 +216,6 @@ impl DiagnosticValue<'_> {
 
 #[derive(Debug, Clone, Copy)]
 enum Remediation {
-    DeclareEffects,
     SelectStatelessEffect,
     UpgradeWorkflowSchema,
     UseUniqueIdentity,
@@ -257,9 +250,6 @@ enum Remediation {
 impl Remediation {
     const fn text(self) -> &'static str {
         match self {
-            Self::DeclareEffects => {
-                "declare reviewed external-effect behavior on the action factory"
-            },
             Self::SelectStatelessEffect => "use a stateless action for one terminal remote effect",
             Self::UpgradeWorkflowSchema => "migrate the workflow to the current schema version",
             Self::UseUniqueIdentity => "use a unique stable identifier",
@@ -514,7 +504,8 @@ fn project_action_kind(kind: ActionKind) -> Result<RecordedActionKindV1, Contrac
         ActionKind::Stateful => Ok(RecordedActionKindV1::Stateful),
         ActionKind::Control => Ok(RecordedActionKindV1::Control),
         ActionKind::Trigger => Ok(RecordedActionKindV1::Trigger),
-        ActionKind::Stream | ActionKind::Agent | ActionKind::Interactive | ActionKind::Resource => {
+        ActionKind::Agent => Ok(RecordedActionKindV1::Agent),
+        ActionKind::Stream | ActionKind::Interactive | ActionKind::Resource => {
             Err(ContractProjectionError::ActionKind)
         },
         _ => Err(ContractProjectionError::ActionKind),
@@ -962,6 +953,7 @@ impl<'a> GraphCompiler<'a> {
                 RecordedActionKindV1::Stateless
                     | RecordedActionKindV1::Stateful
                     | RecordedActionKindV1::Control
+                    | RecordedActionKindV1::Agent
             ) {
                 self.diagnostics.push(
                     DiagnosticCode::UnsupportedNodeKind,
@@ -1175,7 +1167,10 @@ impl<'a> GraphCompiler<'a> {
         if !trigger
             && !matches!(
                 kind,
-                ActionKind::Stateless | ActionKind::Stateful | ActionKind::Control
+                ActionKind::Stateless
+                    | ActionKind::Stateful
+                    | ActionKind::Control
+                    | ActionKind::Agent
             )
         {
             self.diagnostics.push(
@@ -1190,21 +1185,6 @@ impl<'a> GraphCompiler<'a> {
                 } else {
                     Remediation::SelectGraphKind
                 },
-            );
-            return None;
-        }
-        if matches!(
-            snapshot.metadata().effect_contract(),
-            nebula_action::effect::ActionEffectContract::Undeclared
-        ) {
-            self.diagnostics.push(
-                DiagnosticCode::UndeclaredEffects,
-                JsonPointer::root(path_root)
-                    .child(site_id)
-                    .child("action_key"),
-                DiagnosticValue::DeclaredEffects,
-                DiagnosticValue::UndeclaredEffects,
-                Remediation::DeclareEffects,
             );
             return None;
         }
@@ -2113,6 +2093,7 @@ fn recorded_action_kind_value(kind: &RecordedActionKindV1) -> DiagnosticValue<'s
         RecordedActionKindV1::Stateful => DiagnosticValue::StatefulKind,
         RecordedActionKindV1::Control => DiagnosticValue::ControlKind,
         RecordedActionKindV1::Trigger => DiagnosticValue::TriggerKind,
+        RecordedActionKindV1::Agent => DiagnosticValue::AgentKind,
     }
 }
 

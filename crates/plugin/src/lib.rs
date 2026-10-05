@@ -13,8 +13,9 @@
 //! - `Plugin` — base trait every plugin implements; `actions()`, `credentials()`, `resources()`,
 //!   `on_load()`, `on_unload()` (default no-ops). Returns runnable trait objects.
 //! - `PluginManifest` — bundle descriptor with builder API (key, name, semver version, group,
-//!   `Icon`, maturity, deprecation, author/license/homepage/repository metadata). Does **not**
-//!   compose `BaseMetadata<K>` — a plugin is a container, not a schematized leaf.
+//!   `Icon`, maturity, deprecation, author/license/homepage/repository metadata). Canonical in
+//!   `nebula-metadata`; re-exported here for source compatibility. Does **not** compose
+//!   `BaseMetadata<K>` — a plugin is a container, not a schematized leaf.
 //! - `ResolvedPlugin` — per-plugin wrapper with eager component caches; enforces namespace
 //!   invariant at construction.
 //! - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry.
@@ -84,7 +85,7 @@ pub use nebula_plugin_macros::Plugin;
 pub use plan::{
     ExecutablePlanIntegrityError, ExecutablePlanRevision, PlanActionEffectContract,
     PlanBindingContract, PlanBindingRequirement, PlanBindingSelectorProvenance, PlanBindingSite,
-    PlanCompilationError, RecordedExecutablePlanRevisionV1,
+    PlanCompilationError, RecordedExecutablePlanRevisionV1, RecordedPlanEpochV1,
 };
 pub use plugin::Plugin;
 pub use registry::PluginRegistry;

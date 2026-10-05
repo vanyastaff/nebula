@@ -3,10 +3,15 @@
 //! ledger's rules: an opaque effect is granted again only from prepared or
 //! not-crossed, a stable-key one also from ambiguous within its window, an
 //! exhausted budget or an ambiguous opaque call makes the outcome unknown.
+//!
+//! The routing matrix — authority × effect, operations, sessions and
+//! streams — and the declaration the runtime derives (occurrence, contract,
+//! canonical request, key part, recovery, recorded output) are covered
+//! here too.
 
 use std::{
-    collections::HashMap,
-    num::NonZeroU32,
+    collections::{BTreeMap, HashMap},
+    num::{NonZeroU32, NonZeroUsize},
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -14,26 +19,30 @@ use std::{
     time::Duration,
 };
 
-use nebula_core::{ResourceKey, Scope};
+use nebula_core::Scope;
 use nebula_credential::CredentialAvailability;
 use nebula_metrics::MetricsRegistry;
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::super::{
-    Cost, Effect, EffectContract, EffectOperation, EffectRecovery, IdempotencyKeyPart, ManagedRow,
-    OccurrenceLabel, OpCx, OpError, Operation, OperationKey, PinSlots, Recorded, SentState,
-    SessionClosed, SessionSpec,
-    owner::{
-        Crossing, ErrorKindCode, OwnerRefusal, OwnerTicket, RecordedOutcome, SlotPhase, UnitCall,
-        UnitEffectOwner, UnitIntent, UnitOutcome, UnitSlot,
+    Cost, Effect, IdempotencyKey, Operation, OperationCx, OperationError, PinSlots, ResourceHandle,
+    SentState, SessionClosed, SessionSpec, StreamOperation, StreamSink,
+    declaration::local_idempotency_key,
+    journal::{
+        CallGrant, CallOutcome, Crossing, EffectJournal, ErrorKindCode, InFlight, JournalIntent,
+        JournalRefusal, JournalSlot, RecordedOutcome, Recovery, SlotPhase, UnitKind, UnsentFailure,
     },
+    managed::submit_unit,
+    work::Plain,
 };
 use crate::{
     AcquireOptions, ErrorKind, Manager, PoolConfig, Pooled, Provider, RegistrationSpec,
     ResourceContext, SlotIdentity,
     manager::strict_fixtures::{
-        ScriptedObserver, StrictPooled, bind, config, credential_id, seen, strict_manager, tenant,
+        ScriptedObserver, StrictPooled, bind, config, credential_id, fingerprints_computed, seen,
+        strict_manager, tenant,
     },
     rate_limit::{Rate, RowLimit},
     resource::ResourceConfig as _,
@@ -55,21 +64,23 @@ enum Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
     Prepared,
-    Outstanding(UnitCall),
+    Outstanding(CallGrant),
     BeforeBoundary,
     Ambiguous,
     Resolved(RecordedOutcome),
     Unknown,
 }
 
+/// Resource, unit kind, operation, version, canonical request and key part:
+/// what a resumed effect must present again (the contract the engine binds).
+type Fingerprint = (String, UnitKind, String, u32, Vec<u8>, Option<String>);
+
 #[derive(Debug)]
 struct FakeSlot {
     id: [u8; 16],
-    key: OperationKey,
-    /// Contract id, canonical request and key part: what a resumed effect
-    /// must present again.
-    fingerprint: (&'static str, Vec<u8>, Option<String>),
-    recovery: EffectRecovery,
+    key: IdempotencyKey,
+    fingerprint: Fingerprint,
+    recovery: Recovery,
     max_invocations: u32,
     invocations: u32,
     prepared_at: Instant,
@@ -80,21 +91,44 @@ struct FakeSlot {
 #[derive(Debug, Clone)]
 struct SeenIntent {
     occurrence: String,
-    key_part: Option<String>,
+    kind: UnitKind,
+    operation: String,
+    version: u32,
     effect: Effect,
+    recovery: Recovery,
+    record_output: bool,
+    canonical_request: Vec<u8>,
+    key_part: Option<String>,
     max_invocations: u32,
     binding: SlotIdentity,
+    config_fingerprint: u64,
 }
 
 #[derive(Default)]
 struct FakeState {
-    ordinals: HashMap<(ResourceKey, &'static str), u32>,
+    /// The budget every grant carries, when set.
+    grant_budget: Option<Duration>,
+    /// The next position of the owner's one sequence.
+    next_ordinal: u32,
+    /// The run prefix the owner labels its occurrences with, when set (as
+    /// a stateful owner labels an iteration's).
+    run_prefix: Option<String>,
+    /// Occurrences units released, in order.
+    released: Vec<String>,
+    /// Occurrences whose units are gone, in order.
+    finished: Vec<String>,
     slots: HashMap<String, FakeSlot>,
     next_id: u8,
     log: Vec<Step>,
     intents: Vec<SeenIntent>,
-    fail_prepare: Option<OwnerRefusal>,
-    fail_settle: Option<OwnerRefusal>,
+    fail_prepare: Option<JournalRefusal>,
+    fail_settle: Option<JournalRefusal>,
+    fail_explain: Option<JournalRefusal>,
+    fail_grant: Option<JournalRefusal>,
+    /// Unsent failures recorded, as `(occurrence, code)`, in order.
+    unsent: Vec<(String, String)>,
+    /// The next submission is refused with this.
+    fail_admit: Option<JournalRefusal>,
     on_grant: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -143,23 +177,65 @@ impl FakeOwner {
     /// Restarts the ordinals, as the owner of a resumed execution does: its
     /// effects meet the slots the earlier run recorded.
     fn resume(&self) {
-        self.state().ordinals.clear();
+        self.state().next_ordinal = 0;
     }
 
-    fn fail_next_prepare(&self, refusal: OwnerRefusal) {
+    /// Starts a new positional run labelled `prefix`: its ordinals restart.
+    fn begin_run(&self, prefix: &str) {
+        let mut state = self.state();
+        state.run_prefix = Some(prefix.to_owned());
+        state.next_ordinal = 0;
+    }
+
+    fn fail_next_prepare(&self, refusal: JournalRefusal) {
         self.state().fail_prepare = Some(refusal);
     }
 
-    fn fail_next_settle(&self, refusal: OwnerRefusal) {
+    fn fail_next_settle(&self, refusal: JournalRefusal) {
         self.state().fail_settle = Some(refusal);
+    }
+
+    fn fail_next_explain(&self, refusal: JournalRefusal) {
+        self.state().fail_explain = Some(refusal);
+    }
+
+    /// The unsent failures recorded so far, as `(occurrence, code)`.
+    fn unsent(&self) -> Vec<(String, String)> {
+        self.state().unsent.clone()
+    }
+
+    fn grant_with_budget(&self, budget: Duration) {
+        self.state().grant_budget = Some(budget);
+    }
+
+    fn fail_next_grant(&self, refusal: JournalRefusal) {
+        self.state().fail_grant = Some(refusal);
     }
 
     fn on_next_grant(&self, hook: impl FnOnce() + Send + 'static) {
         self.state().on_grant = Some(Box::new(hook));
     }
 
-    /// Records `outcome` under `occurrence` as a finished earlier run did.
-    fn seed(&self, occurrence: &str, fingerprint: (&'static str, &[u8]), phase: Phase) {
+    /// Records `phase` under `occurrence` as a finished earlier run of
+    /// `operation` v1 with `request` on the fixture row did.
+    fn seed(&self, occurrence: &str, operation: &str, request: &[u8], phase: Phase) {
+        self.seed_unit(
+            occurrence,
+            (
+                StrictPooled::key().to_string(),
+                UnitKind::Operation,
+                operation.to_owned(),
+                1,
+                request.to_vec(),
+                None,
+            ),
+            phase,
+        );
+    }
+
+    /// Records `phase` under `occurrence` for an earlier run's effect of
+    /// `fingerprint`.
+    fn seed_unit(&self, occurrence: &str, fingerprint: Fingerprint, phase: Phase) {
         let mut state = self.state();
         state.next_id += 1;
         let id = state.next_id;
@@ -167,9 +243,9 @@ impl FakeOwner {
             occurrence.to_owned(),
             FakeSlot {
                 id: [id; 16],
-                key: OperationKey::new(&format!("key-{id}")).expect("key"),
-                fingerprint: (fingerprint.0, fingerprint.1.to_vec(), None),
-                recovery: EffectRecovery::Opaque,
+                key: IdempotencyKey::new(&format!("key-{id}")).expect("key"),
+                fingerprint,
+                recovery: Recovery::Opaque,
                 max_invocations: 1,
                 invocations: 1,
                 prepared_at: Instant::now(),
@@ -178,8 +254,8 @@ impl FakeOwner {
         );
     }
 
-    fn slot_view(slot: &FakeSlot, phase: SlotPhase) -> UnitSlot {
-        UnitSlot::new(slot.id, slot.key, 1, phase)
+    fn slot_view(slot: &FakeSlot, phase: SlotPhase) -> JournalSlot {
+        JournalSlot::new(slot.id, slot.key, 1, phase)
     }
 
     fn by_id<'s>(state: &'s mut FakeState, id: &[u8; 16]) -> Option<&'s mut FakeSlot> {
@@ -188,21 +264,33 @@ impl FakeOwner {
 }
 
 #[async_trait::async_trait]
-impl UnitEffectOwner for FakeOwner {
-    fn next_ordinal(&self, key: &ResourceKey, contract: EffectContract) -> u32 {
+impl EffectJournal for FakeOwner {
+    fn next_ordinal(&self) -> u32 {
         let mut state = self.state();
-        let ordinal = state
-            .ordinals
-            .entry((key.clone(), contract.id()))
-            .or_insert(0);
-        let next = *ordinal;
-        *ordinal += 1;
+        let next = state.next_ordinal;
+        state.next_ordinal += 1;
         next
     }
 
-    async fn prepare(&self, intent: &UnitIntent<'_>) -> Result<UnitSlot, OwnerRefusal> {
+    fn next_occurrence(&self) -> String {
+        let ordinal = self.next_ordinal();
+        match self.state().run_prefix.clone() {
+            Some(prefix) => format!("{prefix}/unit/v1/#{ordinal:06}"),
+            None => occurrence(ordinal),
+        }
+    }
+
+    fn release_occurrence(&self, occurrence: &str) {
+        self.state().released.push(occurrence.to_owned());
+    }
+
+    fn finish_occurrence(&self, occurrence: &str) {
+        self.state().finished.push(occurrence.to_owned());
+    }
+
+    async fn prepare(&self, intent: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
         if self.is_closed() {
-            return Err(OwnerRefusal::Closed);
+            return Err(JournalRefusal::Closed);
         }
         let mut state = self.state();
         if let Some(refusal) = state.fail_prepare.take() {
@@ -211,28 +299,42 @@ impl UnitEffectOwner for FakeOwner {
         state.log.push(Step::Prepare(intent.occurrence.to_owned()));
         state.intents.push(SeenIntent {
             occurrence: intent.occurrence.to_owned(),
-            key_part: intent.key_part.map(|part| part.as_str().to_owned()),
+            kind: intent.kind,
+            operation: intent.operation.to_owned(),
+            version: intent.version,
             effect: intent.effect,
+            recovery: intent.recovery,
+            record_output: intent.record_output,
+            canonical_request: intent.canonical_request.to_vec(),
+            key_part: intent.key_part.map(str::to_owned),
             max_invocations: intent.max_invocations.get(),
             binding: intent.binding.clone(),
+            config_fingerprint: intent.config_fingerprint,
         });
         let fingerprint = (
-            intent.contract.id(),
+            intent.resource_key.to_string(),
+            intent.kind,
+            intent.operation.to_owned(),
+            intent.version,
             intent.canonical_request.to_vec(),
-            intent.key_part.map(|part| part.as_str().to_owned()),
+            intent.key_part.map(str::to_owned),
         );
         let now = Instant::now();
         if let Some(slot) = state.slots.get_mut(intent.occurrence) {
             if slot.fingerprint != fingerprint {
-                return Err(OwnerRefusal::Mismatch);
+                return Err(JournalRefusal::Mismatch);
             }
             let phase = match (&slot.phase, slot.recovery) {
                 (Phase::Resolved(outcome), _) => SlotPhase::Replay(outcome.clone()),
                 (Phase::Prepared | Phase::BeforeBoundary, _) => SlotPhase::Runnable,
-                (
-                    Phase::Ambiguous | Phase::Outstanding(_),
-                    EffectRecovery::StableKey { window },
-                ) if now < slot.prepared_at + window => {
+                // A recorded read with no answer may be asked again.
+                (Phase::Ambiguous | Phase::Outstanding(_), Recovery::Observation) => {
+                    slot.phase = Phase::Ambiguous;
+                    SlotPhase::Runnable
+                },
+                (Phase::Ambiguous | Phase::Outstanding(_), Recovery::StableKey { window })
+                    if now < slot.prepared_at + window =>
+                {
                     slot.phase = Phase::Ambiguous;
                     SlotPhase::Runnable
                 },
@@ -247,10 +349,16 @@ impl UnitEffectOwner for FakeOwner {
         let id = state.next_id;
         let slot = FakeSlot {
             id: [id; 16],
-            key: OperationKey::new(&format!("key-{id}")).expect("key"),
+            key: IdempotencyKey::new(&format!("key-{id}")).expect("key"),
             fingerprint,
             recovery: intent.recovery,
-            max_invocations: intent.max_invocations.get(),
+            // A recorded read may be asked again up to the owner's own
+            // ceiling (the ledger's), not the unit's attempt budget.
+            max_invocations: if intent.recovery == Recovery::Observation {
+                10_000
+            } else {
+                intent.max_invocations.get()
+            },
             invocations: 0,
             prepared_at: now,
             phase: Phase::Prepared,
@@ -260,29 +368,38 @@ impl UnitEffectOwner for FakeOwner {
         Ok(view)
     }
 
-    async fn grant(&self, slot: &UnitSlot) -> Result<UnitCall, OwnerRefusal> {
+    async fn grant(&self, slot: &JournalSlot) -> Result<CallGrant, JournalRefusal> {
         if self.is_closed() {
-            return Err(OwnerRefusal::Closed);
+            return Err(JournalRefusal::Closed);
         }
         let hook = {
             let mut state = self.state();
+            if let Some(refusal) = state.fail_grant.take() {
+                return Err(refusal);
+            }
             let now = Instant::now();
             let call_id = state.next_id.wrapping_add(100);
             state.next_id += 1;
-            let fake = Self::by_id(&mut state, slot.id()).ok_or(OwnerRefusal::Mismatch)?;
+            let budget = state.grant_budget;
+            let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
             let grantable = match (&fake.phase, fake.recovery) {
-                (Phase::Prepared | Phase::BeforeBoundary, _) => true,
-                (Phase::Ambiguous, EffectRecovery::StableKey { window }) => {
+                (Phase::Prepared | Phase::BeforeBoundary, _)
+                | (Phase::Ambiguous, Recovery::Observation) => true,
+                (Phase::Ambiguous, Recovery::StableKey { window }) => {
                     now < fake.prepared_at + window
                 },
                 _ => false,
             };
             if !grantable || fake.invocations >= fake.max_invocations {
                 fake.phase = Phase::Unknown;
-                return Err(OwnerRefusal::Unknown);
+                return Err(JournalRefusal::Unknown);
             }
             fake.invocations += 1;
-            let call = UnitCall::from_bytes([call_id; 16]);
+            let call = CallGrant::from_bytes([call_id; 16]);
+            let call = match budget {
+                Some(budget) => call.with_budget(budget),
+                None => call,
+            };
             fake.phase = Phase::Outstanding(call);
             state.log.push(Step::Grant);
             (state.on_grant.take(), call)
@@ -296,18 +413,23 @@ impl UnitEffectOwner for FakeOwner {
 
     async fn explain(
         &self,
-        slot: &UnitSlot,
-        call: UnitCall,
+        slot: &JournalSlot,
+        call: CallGrant,
         crossing: Crossing,
-    ) -> Result<(), OwnerRefusal> {
+    ) -> Result<(), JournalRefusal> {
         let mut state = self.state();
-        let fake = Self::by_id(&mut state, slot.id()).ok_or(OwnerRefusal::Mismatch)?;
+        if let Some(refusal) = state.fail_explain.take() {
+            return Err(refusal);
+        }
+        let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
         if fake.phase != Phase::Outstanding(call) {
-            return Err(OwnerRefusal::Mismatch);
+            return Err(JournalRefusal::Mismatch);
         }
         fake.phase = match (crossing, fake.recovery) {
             (Crossing::NotCrossed, _) => Phase::BeforeBoundary,
-            (Crossing::Ambiguous, EffectRecovery::StableKey { .. }) => Phase::Ambiguous,
+            (Crossing::Ambiguous, Recovery::StableKey { .. } | Recovery::Observation) => {
+                Phase::Ambiguous
+            },
             _ => Phase::Unknown,
         };
         state.log.push(Step::Explain(crossing));
@@ -316,36 +438,62 @@ impl UnitEffectOwner for FakeOwner {
 
     async fn settle(
         &self,
-        slot: &UnitSlot,
-        call: UnitCall,
-        outcome: UnitOutcome<'_>,
-    ) -> Result<(), OwnerRefusal> {
+        slot: &JournalSlot,
+        call: CallGrant,
+        outcome: CallOutcome<'_>,
+    ) -> Result<(), JournalRefusal> {
         let mut state = self.state();
         if let Some(refusal) = state.fail_settle.take() {
             return Err(refusal);
         }
-        let fake = Self::by_id(&mut state, slot.id()).ok_or(OwnerRefusal::Mismatch)?;
+        let fake = Self::by_id(&mut state, slot.id()).ok_or(JournalRefusal::Mismatch)?;
         if fake.phase != Phase::Outstanding(call) {
-            return Err(OwnerRefusal::Mismatch);
+            return Err(JournalRefusal::Mismatch);
         }
         let (recorded, step) = match outcome {
-            UnitOutcome::Applied(bytes) => (RecordedOutcome::Succeeded(bytes.to_vec()), "applied"),
-            UnitOutcome::AppliedWithoutOutput => {
+            CallOutcome::Applied(bytes) => (RecordedOutcome::Succeeded(bytes.to_vec()), "applied"),
+            CallOutcome::AppliedWithoutOutput => {
                 (RecordedOutcome::OutputUnavailable, "applied_without_output")
             },
-            UnitOutcome::Rejected(code) => (RecordedOutcome::Failed(code), code.as_str()),
+            CallOutcome::Rejected(code) => (RecordedOutcome::Failed(code), code.as_str()),
         };
         fake.phase = Phase::Resolved(recorded);
         state.log.push(Step::Settle(step));
         Ok(())
     }
 
-    fn track(&self) -> OwnerTicket {
+    async fn record_unsent_failure(
+        &self,
+        slot: &JournalSlot,
+        failure: UnsentFailure,
+    ) -> Result<(), JournalRefusal> {
+        let mut state = self.state();
+        let occurrence = state
+            .slots
+            .iter()
+            .find(|(_, fake)| fake.id == *slot.id())
+            .map(|(occurrence, _)| occurrence.clone())
+            .ok_or(JournalRefusal::Mismatch)?;
+        state.unsent.push((occurrence, failure.code()));
+        Ok(())
+    }
+
+    fn track(&self) -> InFlight {
         self.in_flight.fetch_add(1, Ordering::SeqCst);
         let in_flight = Arc::clone(&self.in_flight);
-        OwnerTicket::new(move || {
+        InFlight::new(move || {
             in_flight.fetch_sub(1, Ordering::SeqCst);
         })
+    }
+
+    fn admit(&self) -> Result<InFlight, JournalRefusal> {
+        if let Some(refusal) = self.state().fail_admit.take() {
+            return Err(refusal);
+        }
+        if self.is_closed() {
+            return Err(JournalRefusal::Closed);
+        }
+        Ok(self.track())
     }
 
     fn is_closed(&self) -> bool {
@@ -358,16 +506,17 @@ impl UnitEffectOwner for FakeOwner {
 /// What one attempt of [`Pay`] does.
 #[derive(Debug, Clone)]
 enum Reply {
-    /// Settled `Sent`; the unit yields the value.
+    /// Finished as answered; the unit yields the value.
     Ok(u64),
-    /// Settled `sent`; the unit fails with `kind` when no attempt is left.
-    Fail(SentState, ErrorKind),
+    /// Finished with the classified error; the unit fails with it when no
+    /// attempt is left.
+    Fail(OperationError),
     /// Dropped unsettled; the unit fails `Transient` when no attempt is
     /// left.
     Unsettled,
 }
 
-/// Provider calls made and the operation key each attempt saw.
+/// Provider calls made and the idempotency key each attempt saw.
 #[derive(Debug, Default)]
 struct Calls {
     made: AtomicUsize,
@@ -385,29 +534,45 @@ impl Calls {
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+
+    fn call(&self, key: Option<&IdempotencyKey>) {
+        self.made.fetch_add(1, Ordering::SeqCst);
+        self.keys
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(key.map(ToString::to_string));
+    }
 }
 
-const PAY: EffectContract = EffectContract::new("billing.pay", 1);
-const REFUND: EffectContract = EffectContract::new("billing.refund", 1);
+/// A deserialized test operation books nothing.
+fn free() -> Cost {
+    Cost::FREE
+}
+
+const PAY: &str = "billing.pay";
+const REFUND: &str = "billing.refund";
 const WINDOW: Duration = Duration::from_mins(1);
 
-/// A payment: `Idempotent` with a stable key when `IDEM`, a `Write`
-/// otherwise; one attempt per reply.
-#[derive(Debug, Clone)]
+/// A payment: `Idempotent` with a one-minute key window when `IDEM`, a
+/// `Write` otherwise; one attempt per reply. Its canonical request is
+/// `{"request":…}`: everything else is not intent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Pay<const IDEM: bool> {
-    request: &'static str,
-    label: Option<&'static str>,
+    request: String,
+    #[serde(skip)]
     key_part: Option<&'static str>,
+    #[serde(skip)]
     replies: Vec<Reply>,
+    #[serde(skip, default = "free")]
     cost: Cost,
+    #[serde(skip)]
     calls: Arc<Calls>,
 }
 
 impl<const IDEM: bool> Pay<IDEM> {
     fn new(calls: &Arc<Calls>, replies: Vec<Reply>) -> Self {
         Self {
-            request: "pay:42",
-            label: None,
+            request: "pay:42".to_owned(),
             key_part: None,
             replies,
             cost: Cost::FREE,
@@ -415,14 +580,205 @@ impl<const IDEM: bool> Pay<IDEM> {
         }
     }
 
-    fn labeled(mut self, label: &'static str) -> Self {
-        self.label = Some(label);
+    fn keyed(mut self, part: &'static str) -> Self {
+        self.key_part = Some(part);
         self
     }
 }
 
 impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Pay<IDEM> {
     type Output = u64;
+    const KEY: &'static str = PAY;
+    const EFFECT: Effect = if IDEM {
+        Effect::Idempotent
+    } else {
+        Effect::Write
+    };
+    const KEY_WINDOW: Duration = WINDOW;
+
+    fn idempotency_key(&self) -> Option<String> {
+        self.key_part.map(str::to_owned)
+    }
+
+    fn max_attempts(&self) -> NonZeroU32 {
+        NonZeroU32::new(u32::try_from(self.replies.len()).expect("few")).expect("a reply")
+    }
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let last = self.replies.len() - 1;
+        for (index, reply) in self.replies.into_iter().enumerate() {
+            // The key is the same for every attempt; it is read while no
+            // attempt borrows the context.
+            let key = cx.idempotency_key().copied();
+            let attempt = cx.attempt(self.cost.clone()).await?;
+            self.calls.call(key.as_ref());
+            match reply {
+                Reply::Ok(value) => {
+                    let result = Ok(value);
+                    attempt.finish(&result).await;
+                    return result;
+                },
+                Reply::Fail(error) => {
+                    let result: Result<u64, OperationError> = Err(error);
+                    attempt.finish(&result).await;
+                    if index == last {
+                        return result;
+                    }
+                },
+                Reply::Unsettled => {
+                    drop(attempt);
+                    if index == last {
+                        return Err(OperationError::new(
+                            ErrorKind::Transient,
+                            "connection reset",
+                        ));
+                    }
+                },
+            }
+        }
+        Err(OperationError::new(
+            ErrorKind::Permanent,
+            "no reply scripted",
+        ))
+    }
+}
+
+/// The canonical request of a [`Pay`] of `request`.
+fn pay_request(request: &str) -> Vec<u8> {
+    format!(r#"{{"request":"{request}"}}"#).into_bytes()
+}
+
+/// A `Write` of another operation, recorded as a digest only.
+#[derive(Serialize, Deserialize)]
+struct Refund {
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl Refund {
+    fn new(calls: &Arc<Calls>) -> Self {
+        Self {
+            calls: Arc::clone(calls),
+        }
+    }
+}
+
+impl<R: Provider + PinSlots> Operation<R> for Refund {
+    type Output = u64;
+    const KEY: &'static str = REFUND;
+    const RECORD_OUTPUT: bool = false;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(7)
+        })
+        .await
+    }
+}
+
+/// A `Write` whose output is `len` bytes of JSON string.
+#[derive(Serialize, Deserialize)]
+struct Export {
+    len: usize,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for Export {
+    type Output = String;
+    const KEY: &'static str = "billing.export";
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<String, OperationError> {
+        let len = self.len;
+        cx.call(Cost::FREE, async move |_, _| Ok("x".repeat(len)))
+            .await
+    }
+}
+
+/// A `Write` of a second version of [`PAY`].
+#[derive(Serialize, Deserialize)]
+struct PayV2 {
+    request: String,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for PayV2 {
+    type Output = u64;
+    const KEY: &'static str = PAY;
+    const VERSION: u32 = 2;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        cx.call(Cost::FREE, async |_, _| Ok(2)).await
+    }
+}
+
+/// A `Write` whose key breaks the rules; submitted around the build-time
+/// assert, it is refused at submit.
+#[derive(Serialize, Deserialize)]
+struct BadKey {
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for BadKey {
+    type Output = ();
+    const KEY: &'static str = "bad key";
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(())
+        })
+        .await
+    }
+}
+
+/// A `Write` whose request has no JSON form (a map with non-string keys).
+#[derive(Serialize, Deserialize)]
+struct Opaque {
+    by_pair: BTreeMap<Vec<u8>, u8>,
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for Opaque {
+    type Output = ();
+    const KEY: &'static str = "billing.opaque";
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(())
+        })
+        .await
+    }
+}
+
+/// An effect made through [`OperationCx::call`]: each attempt answers the
+/// next scripted result, within as many attempts as the script has.
+#[derive(Serialize, Deserialize)]
+struct Called<const IDEM: bool> {
+    request: String,
+    #[serde(skip)]
+    script: Vec<Result<u64, OperationError>>,
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<const IDEM: bool> Called<IDEM> {
+    fn new(calls: &Arc<Calls>, script: Vec<Result<u64, OperationError>>) -> Self {
+        Self {
+            request: "called:1".to_owned(),
+            script,
+            calls: Arc::clone(calls),
+        }
+    }
+}
+
+impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Called<IDEM> {
+    type Output = u64;
+    const KEY: &'static str = "billing.called";
     const EFFECT: Effect = if IDEM {
         Effect::Idempotent
     } else {
@@ -430,142 +786,139 @@ impl<R: Provider + PinSlots, const IDEM: bool> Operation<R> for Pay<IDEM> {
     };
 
     fn max_attempts(&self) -> NonZeroU32 {
-        NonZeroU32::new(u32::try_from(self.replies.len()).expect("few")).expect("a reply")
+        NonZeroU32::new(u32::try_from(self.script.len()).expect("few")).expect("a reply")
     }
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
-        let last = self.replies.len() - 1;
-        for (index, reply) in self.replies.into_iter().enumerate() {
-            // The key is the same for every attempt; it is read while no
-            // attempt borrows the context.
-            let key = cx.operation_key().copied();
-            let attempt = cx.attempt(self.cost.clone()).await?;
-            self.calls.made.fetch_add(1, Ordering::SeqCst);
-            self.calls
-                .keys
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(key.map(|key| key.to_string()));
-            match reply {
-                Reply::Ok(value) => {
-                    attempt.settle(SentState::Sent);
-                    return Ok(value);
-                },
-                Reply::Fail(sent, kind) => {
-                    attempt.settle(sent);
-                    if index == last {
-                        return Err(OpError::new(kind, "provider answered"));
-                    }
-                },
-                Reply::Unsettled => {
-                    drop(attempt);
-                    if index == last {
-                        return Err(OpError::new(ErrorKind::Transient, "connection reset"));
-                    }
-                },
-            }
-        }
-        Err(OpError::new(ErrorKind::Permanent, "no reply scripted"))
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let mut script = std::collections::VecDeque::from(self.script);
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            script.pop_front().unwrap_or(Ok(0))
+        })
+        .await
     }
 }
 
-impl<R: Provider + PinSlots, const IDEM: bool> EffectOperation<R> for Pay<IDEM> {
-    const CONTRACT: EffectContract = PAY;
-    const RECOVERY: EffectRecovery = if IDEM {
-        EffectRecovery::StableKey { window: WINDOW }
-    } else {
-        EffectRecovery::Opaque
-    };
-
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
-        Ok(self.request.as_bytes().to_vec())
-    }
-
-    fn idempotency_key(&self) -> Option<IdempotencyKeyPart> {
-        self.key_part
-            .map(|part| IdempotencyKeyPart::new(part).expect("valid part"))
-    }
-
-    fn occurrence(&self) -> Option<OccurrenceLabel> {
-        self.label
-            .map(|label| OccurrenceLabel::new(label).expect("valid label"))
-    }
+/// A `Write` whose call succeeds and whose response the unit then fails to
+/// use with `local`: a local failure after the provider applied it.
+#[derive(Serialize, Deserialize)]
+struct AppliedThenFailed {
+    #[serde(skip)]
+    local: Option<OperationError>,
+    #[serde(skip)]
+    calls: Arc<Calls>,
 }
 
-/// A `Write` of another contract, recorded as a digest only.
-struct Refund(Arc<Calls>);
-
-impl<R: Provider + PinSlots> Operation<R> for Refund {
+impl<R: Provider + PinSlots> Operation<R> for AppliedThenFailed {
     type Output = u64;
+    const KEY: &'static str = "billing.applied_then_failed";
+    const EFFECT: Effect = Effect::Write;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        self.0.made.fetch_add(1, Ordering::SeqCst);
-        attempt.settle(SentState::Sent);
-        Ok(7)
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let calls = self.calls;
+        let receipt = cx
+            .call(Cost::FREE, async move |_, _| {
+                calls.call(None);
+                Ok(7_u64)
+            })
+            .await?;
+        match self.local {
+            Some(local) => Err(local),
+            None => Ok(receipt),
+        }
     }
 }
 
-impl<R: Provider + PinSlots> EffectOperation<R> for Refund {
-    const CONTRACT: EffectContract = REFUND;
-    const RECOVERY: EffectRecovery = EffectRecovery::Opaque;
-    const RECORDED: Recorded = Recorded::DigestOnly;
+/// An `Idempotent` call the provider never answers.
+#[derive(Serialize, Deserialize)]
+struct Stall {
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
 
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
-        Ok(b"refund".to_vec())
+impl<R: Provider + PinSlots> Operation<R> for Stall {
+    type Output = u64;
+    const KEY: &'static str = "billing.stall";
+    const EFFECT: Effect = Effect::Idempotent;
+    const KEY_WINDOW: Duration = WINDOW;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            std::future::pending::<Result<u64, OperationError>>().await
+        })
+        .await
     }
 }
 
-/// An operation whose declarations are malformed: `EFFECT` is `effect`,
-/// the recovery opaque, the contract `contract`.
-struct Misdeclared<const READ: bool, const BAD_CONTRACT: bool>(Arc<Calls>);
-
-impl<R: Provider + PinSlots, const READ: bool, const BAD_CONTRACT: bool> Operation<R>
-    for Misdeclared<READ, BAD_CONTRACT>
-{
-    type Output = ();
-    const EFFECT: Effect = if READ {
-        Effect::Read
-    } else if BAD_CONTRACT {
-        Effect::Write
-    } else {
-        Effect::Idempotent
-    };
-
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
-        let attempt = cx.attempt(Cost::FREE).await?;
-        self.0.made.fetch_add(1, Ordering::SeqCst);
-        attempt.settle(SentState::Sent);
-        Ok(())
-    }
+/// A read.
+#[derive(Serialize, Deserialize)]
+struct Look {
+    #[serde(skip)]
+    calls: Arc<Calls>,
+    #[serde(skip, default = "free")]
+    cost: Cost,
+    #[serde(skip)]
+    key_part: Option<&'static str>,
 }
 
-impl<R: Provider + PinSlots, const READ: bool, const BAD_CONTRACT: bool> EffectOperation<R>
-    for Misdeclared<READ, BAD_CONTRACT>
-{
-    const CONTRACT: EffectContract = if BAD_CONTRACT {
-        EffectContract::new("bad contract", 1)
-    } else {
-        PAY
-    };
-    const RECOVERY: EffectRecovery = EffectRecovery::Opaque;
-
-    fn canonical_request(&self) -> Result<Vec<u8>, OpError> {
-        Ok(b"x".to_vec())
+impl Look {
+    fn new(calls: &Arc<Calls>, cost: Cost) -> Self {
+        Self {
+            calls: Arc::clone(calls),
+            cost,
+            key_part: None,
+        }
     }
 }
-
-/// A read through the plain `submit`.
-struct Look(Arc<Calls>, Cost);
 
 impl<R: Provider + PinSlots> Operation<R> for Look {
     type Output = ();
+    const KEY: &'static str = "billing.look";
     const EFFECT: Effect = Effect::Read;
 
-    async fn run(self, cx: &mut OpCx<'_, R>) -> Result<(), OpError> {
-        let attempt = cx.attempt(self.1).await?;
-        self.0.made.fetch_add(1, Ordering::SeqCst);
-        attempt.settle(SentState::Sent);
+    fn idempotency_key(&self) -> Option<String> {
+        self.key_part.map(str::to_owned)
+    }
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<(), OperationError> {
+        let key = cx.idempotency_key().copied();
+        let calls = self.calls;
+        cx.call(self.cost, async move |_, _| {
+            calls.call(key.as_ref());
+            Ok(())
+        })
+        .await
+    }
+}
+
+/// A stream of three items: a `Write` when `WRITE`, a read otherwise; its
+/// attempt records the idempotency key it sees.
+struct Ticks<const WRITE: bool>(Arc<Calls>, Option<&'static str>);
+
+impl<R: Provider + PinSlots, const WRITE: bool> StreamOperation<R> for Ticks<WRITE> {
+    type Item = u8;
+    type Output = ();
+    const KEY: &'static str = "billing.ticks";
+    const EFFECT: Effect = if WRITE { Effect::Write } else { Effect::Read };
+
+    fn idempotency_key(&self) -> Option<String> {
+        self.1.map(str::to_owned)
+    }
+
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, R>,
+        mut sink: StreamSink<u8>,
+    ) -> Result<(), OperationError> {
+        let attempt = cx.attempt(Cost::FREE).await?;
+        self.0.call(attempt.idempotency_key());
+        attempt.finish(&Ok::<(), OperationError>(())).await;
+        for tick in 0..3 {
+            sink.send(tick).await?;
+        }
         Ok(())
     }
 }
@@ -625,11 +978,11 @@ impl Fixture {
         ResourceContext::minimal(Scope::default(), self.parent.clone())
     }
 
-    fn owned(&self) -> ManagedRow<StrictPooled> {
-        let owner = Arc::clone(&self.owner) as Arc<dyn UnitEffectOwner>;
+    fn owned(&self) -> ResourceHandle<StrictPooled> {
+        let owner = Arc::clone(&self.owner) as Arc<dyn EffectJournal>;
         *self
             .manager
-            .managed_row_any_owned(
+            .handle_any_journaled(
                 &StrictPooled::key(),
                 &self.ctx(),
                 &AcquireOptions::default(),
@@ -637,35 +990,35 @@ impl Fixture {
                 owner,
             )
             .expect("owned row")
-            .downcast::<ManagedRow<StrictPooled>>()
+            .downcast::<ResourceHandle<StrictPooled>>()
             .expect("typed row")
     }
 
-    fn library(&self) -> ManagedRow<StrictPooled> {
+    fn library(&self) -> ResourceHandle<StrictPooled> {
         *self
             .manager
-            .managed_row_any(
+            .handle_any(
                 &StrictPooled::key(),
                 &self.ctx(),
                 &AcquireOptions::default(),
                 &tenant(),
             )
             .expect("library row")
-            .downcast::<ManagedRow<StrictPooled>>()
+            .downcast::<ResourceHandle<StrictPooled>>()
             .expect("typed row")
     }
 
-    fn read_only(&self) -> ManagedRow<StrictPooled> {
+    fn read_only(&self) -> ResourceHandle<StrictPooled> {
         *self
             .manager
-            .managed_row_any_read_only(
+            .handle_any_read_only(
                 &StrictPooled::key(),
                 &self.ctx(),
                 &AcquireOptions::default(),
                 &tenant(),
             )
             .expect("read-only row")
-            .downcast::<ManagedRow<StrictPooled>>()
+            .downcast::<ResourceHandle<StrictPooled>>()
             .expect("typed row")
     }
 
@@ -679,12 +1032,18 @@ impl Fixture {
     }
 }
 
-/// The occurrence label of `label` for `contract` on the fixture row.
-fn occurrence(contract: EffectContract, label: &str) -> String {
-    format!("unit/v1/{}/{}/{label}", StrictPooled::key(), contract.id())
+/// The occurrence label of the owner's `ordinal`th effect unit, whatever
+/// its resource, kind or operation.
+fn occurrence(ordinal: u32) -> String {
+    format!("unit/v1/#{ordinal:06}")
 }
 
-fn assert_unsent(error: &OpError, kind: &ErrorKind) {
+/// The occurrence label of the `ordinal`th effect unit, such as a [`Pay`].
+fn pay(ordinal: u32) -> String {
+    occurrence(ordinal)
+}
+
+fn assert_unsent(error: &OperationError, kind: &ErrorKind) {
     assert_eq!(error.kind(), kind, "{error}");
     assert_eq!(error.sent(), SentState::NotSent, "{error}");
 }
@@ -694,9 +1053,776 @@ fn assert_unsent(error: &OpError, kind: &ErrorKind) {
 #[test]
 fn the_owner_is_object_safe_and_an_owned_row_crosses_threads() {
     fn send_sync_clone<T: Send + Sync + Clone>() {}
-    let _: Option<Arc<dyn UnitEffectOwner>> = None;
-    send_sync_clone::<Arc<dyn UnitEffectOwner>>();
-    send_sync_clone::<ManagedRow<StrictPooled>>();
+    let _: Option<Arc<dyn EffectJournal>> = None;
+    send_sync_clone::<Arc<dyn EffectJournal>>();
+    send_sync_clone::<ResourceHandle<StrictPooled>>();
+}
+
+// ── the derived declaration ──────────────────────────────────────────────
+
+#[tokio::test(start_paused = true)]
+async fn the_intent_carries_the_derived_declaration() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    row.submit(Pay::<true>::new(&calls, vec![Reply::Ok(1)]).keyed("order-123"))
+        .await
+        .expect("keyed");
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1), Reply::Ok(2)]))
+        .await
+        .expect("unkeyed");
+    row.submit(Refund::new(&calls)).await.expect("refund");
+
+    let intents = fixture.owner.intents();
+    let keyed = &intents[0];
+    assert_eq!(keyed.occurrence, pay(0));
+    assert_eq!(keyed.kind, UnitKind::Operation);
+    assert_eq!(keyed.operation, PAY);
+    assert_eq!(keyed.version, 1);
+    assert_eq!(keyed.effect, Effect::Idempotent);
+    assert_eq!(keyed.recovery, Recovery::StableKey { window: WINDOW });
+    assert!(keyed.record_output);
+    assert_eq!(keyed.canonical_request, pay_request("pay:42"));
+    assert_eq!(keyed.key_part.as_deref(), Some("order-123"));
+    assert_eq!(keyed.max_invocations, 1);
+    assert_eq!(keyed.binding, tenant());
+    assert_eq!(keyed.config_fingerprint, config(1).fingerprint());
+
+    let unkeyed = &intents[1];
+    assert_eq!(unkeyed.occurrence, pay(1));
+    assert_eq!(unkeyed.effect, Effect::Write);
+    assert_eq!(unkeyed.recovery, Recovery::Opaque);
+    assert_eq!(unkeyed.key_part, None);
+    assert_eq!(unkeyed.max_invocations, 2);
+
+    let refund = &intents[2];
+    assert_eq!(
+        refund.occurrence,
+        pay(2),
+        "the third operation on the row, whatever its key"
+    );
+    assert_eq!(refund.operation, REFUND);
+    assert!(!refund.record_output, "RECORD_OUTPUT = false");
+    assert_eq!(refund.canonical_request, b"{}", "every field skipped");
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Settle("applied_without_output"))
+    );
+}
+
+/// An owner that only hands out ordinals: every durable step is refused.
+#[derive(Debug, Default)]
+struct OrdinalOnly(Mutex<u32>);
+
+#[async_trait::async_trait]
+impl EffectJournal for OrdinalOnly {
+    fn next_ordinal(&self) -> u32 {
+        let mut next = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let ordinal = *next;
+        *next += 1;
+        ordinal
+    }
+
+    async fn prepare(&self, _: &JournalIntent<'_>) -> Result<JournalSlot, JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    async fn grant(&self, _: &JournalSlot) -> Result<CallGrant, JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    async fn explain(
+        &self,
+        _: &JournalSlot,
+        _: CallGrant,
+        _: Crossing,
+    ) -> Result<(), JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    async fn settle(
+        &self,
+        _: &JournalSlot,
+        _: CallGrant,
+        _: CallOutcome<'_>,
+    ) -> Result<(), JournalRefusal> {
+        Err(JournalRefusal::Closed)
+    }
+
+    fn track(&self) -> InFlight {
+        InFlight::new(|| {})
+    }
+
+    fn is_closed(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_unit_its_owner_does_not_admit_is_refused_unsent() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    fixture.owner.state().fail_admit = Some(JournalRefusal::BetweenRuns);
+    let refused = row
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+        .await
+        .expect_err("between the owner's runs");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(
+        refused.detail(),
+        "effect submitted while its owner has no open run (between stateful iterations); unit \
+         refused"
+    );
+    assert!(
+        fixture.owner.intents().is_empty(),
+        "nothing reached the owner"
+    );
+    assert_eq!(calls.made(), 0);
+    // The default admission refuses only a closed owner.
+    assert_eq!(
+        OrdinalOnly::default().admit().map(|_| ()),
+        Err(JournalRefusal::Closed)
+    );
+}
+
+#[test]
+fn the_default_occurrence_is_the_flat_positional_label() {
+    let owner = OrdinalOnly::default();
+    assert_eq!(owner.next_occurrence(), "unit/v1/#000000");
+    assert_eq!(owner.next_occurrence(), "unit/v1/#000001");
+    assert_eq!(owner.next_ordinal(), 2, "one sequence underneath");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_owner_labels_each_run_and_a_slot_cap_refusal_sends_nothing() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    fixture.owner.begin_run("it0");
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+        .await
+        .expect("first run");
+    fixture.owner.begin_run("it1");
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]))
+        .await
+        .expect("second run");
+    let occurrences: Vec<String> = fixture
+        .owner
+        .intents()
+        .into_iter()
+        .map(|intent| intent.occurrence)
+        .collect();
+    assert_eq!(
+        occurrences,
+        ["it0/unit/v1/#000000", "it1/unit/v1/#000000"],
+        "the owner's label, its ordinal restarted per run"
+    );
+
+    fixture
+        .owner
+        .fail_next_prepare(JournalRefusal::SlotCapExceeded);
+    let refused = row
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(3)]))
+        .await
+        .expect_err("over the owner's cap");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(
+        refused.detail(),
+        "effect journal slot cap reached; unit refused"
+    );
+    assert_eq!(calls.made(), 2, "nothing sent past the cap");
+}
+
+#[tokio::test(start_paused = true)]
+async fn every_position_handed_out_is_released_even_when_the_unit_gives_up() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Polled only past its deadline: the unit takes a position and gives up
+    // before reaching the owner.
+    let late = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
+    tokio::time::advance(crate::call::OPERATION_DEADLINE_CAP + Duration::from_secs(1)).await;
+    let gave_up = late.await.expect_err("past its deadline");
+    assert_unsent(&gave_up, &ErrorKind::Backpressure);
+    assert!(
+        fixture.owner.intents().is_empty(),
+        "never reached the owner"
+    );
+    assert_eq!(fixture.owner.state().released, [pay(0)]);
+
+    assert_eq!(
+        fixture.owner.state().finished,
+        [pay(0)],
+        "the unit that gave up is gone"
+    );
+
+    // A unit's position stays open from its first poll until the unit is
+    // gone, past its prepare.
+    let unit = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]));
+    let unit = tokio::spawn(unit);
+    unit.await
+        .expect("the unit task")
+        .expect("prepared and run");
+    assert_eq!(
+        fixture.owner.state().released,
+        [pay(0), pay(1)],
+        "released once its prepare returned"
+    );
+    assert_eq!(fixture.owner.state().finished, [pay(0), pay(1)]);
+    assert_eq!(calls.made(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_position_is_finished_when_its_unit_settles_even_if_its_handle_is_kept() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    let mut first = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
+    (&mut first).await.expect("applied");
+    // The action keeps the completed handle: the unit settled all the same,
+    // and holds no in-flight ticket.
+    assert_eq!(fixture.owner.state().finished, [pay(0)]);
+    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
+    row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]))
+        .await
+        .expect("the next one");
+    drop(first);
+    assert_eq!(
+        fixture.owner.state().finished,
+        [pay(0), pay(1)],
+        "finished once each"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_unit_refused_before_its_first_poll_releases_its_ticket() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    // Cancelled before its first poll: refused before reaching the owner.
+    let mut cancelled = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]));
+    cancelled.cancel();
+    let refused = (&mut cancelled).await.expect_err("cancelled");
+    assert_unsent(&refused, &ErrorKind::Cancelled);
+    // The handle is kept: the settled unit holds no in-flight ticket.
+    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
+    assert!(
+        fixture.owner.intents().is_empty(),
+        "never reached the owner"
+    );
+    assert_eq!(calls.made(), 0);
+    drop(cancelled);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_position_is_finished_only_once_its_unit_is_gone() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    // The call stalls: the unit is prepared and released, not finished.
+    let unit = tokio::spawn(row.submit(Stall {
+        calls: Arc::clone(&calls),
+    }));
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(calls.made(), 1, "the call is in flight");
+    assert_eq!(fixture.owner.state().released, [pay(0)]);
+    assert!(fixture.owner.state().finished.is_empty(), "still open");
+    assert_eq!(
+        fixture.owner.in_flight.load(Ordering::SeqCst),
+        1,
+        "the unit may still reach the provider: its ticket is held"
+    );
+    // Dropping the waiter does not end a unit whose call is in flight: its
+    // position stays open while it may still reach the provider.
+    unit.abort();
+    let _ = unit.await;
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert!(fixture.owner.state().finished.is_empty(), "still in flight");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_grant_budget_bounds_the_unit_and_a_spent_one_sends_nothing() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Nearly expired: the call is cut at the grant's budget, long before
+    // the unit's own deadline.
+    fixture.owner.grant_with_budget(Duration::from_secs(2));
+    let started = Instant::now();
+    let cut = row
+        .submit(Stall {
+            calls: Arc::clone(&calls),
+        })
+        .await
+        .expect_err("cut at the budget");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(2) && elapsed < Duration::from_secs(3),
+        "{elapsed:?}"
+    );
+    assert_eq!(cut.sent(), SentState::MaybeSent, "{cut}");
+    assert_eq!(calls.made(), 1);
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Explain(Crossing::Ambiguous))
+    );
+
+    // Spent: the grant is explained not crossed and no call is made.
+    fixture.owner.grant_with_budget(Duration::ZERO);
+    let refused = row
+        .submit(Called::<true>::new(&calls, vec![Ok(1)]))
+        .await
+        .expect_err("no budget left");
+    assert_unsent(&refused, &ErrorKind::Backpressure);
+    assert_eq!(calls.made(), 1, "no second call");
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Explain(Crossing::NotCrossed))
+    );
+}
+
+// Real time: the registration blocks on the admission lock a thread holds.
+#[tokio::test]
+async fn a_grant_that_expires_during_registration_sends_nothing() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    fixture.owner.grant_with_budget(Duration::from_millis(50));
+    // While the owner grants, another thread takes the admission lock the
+    // strict registration needs and holds it past the grant's budget.
+    let lock = fixture.manager.admission_lock_for_tests();
+    let (held, holding) = std::sync::mpsc::channel();
+    let holder = Arc::new(Mutex::new(None));
+    let holder_slot = Arc::clone(&holder);
+    fixture.owner.on_next_grant(move || {
+        let thread = std::thread::spawn(move || {
+            let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            held.send(()).expect("signal");
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        holding.recv().expect("the lock is held");
+        *holder_slot.lock().expect("holder") = Some(thread);
+    });
+
+    let refused = row
+        .submit(Called::<false>::new(&calls, vec![Ok(1)]))
+        .await
+        .expect_err("the grant expired while the attempt registered");
+    assert_unsent(&refused, &ErrorKind::Backpressure);
+    assert_eq!(
+        refused.detail(),
+        "effect grant expired during registration; attempt refused"
+    );
+    assert_eq!(calls.made(), 0, "no provider call");
+    assert_eq!(
+        fixture.owner.log(),
+        vec![
+            Step::Prepare(pay(0)),
+            Step::Grant,
+            Step::Explain(Crossing::NotCrossed)
+        ]
+    );
+    let thread = holder.lock().expect("holder").take();
+    thread.expect("the holder ran").join().expect("joined");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_after_submit_refuses_the_grant_and_sends_nothing() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    let unit = row.submit(Called::<true>::new(&calls, vec![Ok(1)]));
+    assert_eq!(
+        fixture
+            .manager
+            .reload_config::<StrictPooled>(config(2), &nebula_core::ScopeLevel::Global)
+            .expect("reloaded"),
+        crate::reload::ReloadOutcome::SwappedImmediately
+    );
+    let refused = unit.await.expect_err("the row points elsewhere now");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(calls.made(), 0);
+    assert_eq!(
+        fixture.owner.log(),
+        vec![Step::Prepare(pay(0))],
+        "prepared against the old configuration, never granted"
+    );
+    assert_eq!(
+        fixture.owner.intents()[0].config_fingerprint,
+        config(1).fingerprint()
+    );
+
+    // A unit submitted after the reload binds the new configuration.
+    row.submit(Called::<true>::new(&calls, vec![Ok(2)]))
+        .await
+        .expect("runs");
+    assert_eq!(
+        fixture.owner.intents()[1].config_fingerprint,
+        config(2).fingerprint()
+    );
+    assert_eq!(calls.made(), 1);
+}
+
+/// A unit binds (at submit) and grants (before its call) the configuration
+/// fingerprint: both read the value stored when the configuration was
+/// admitted, so no unit re-encodes and re-digests the configuration; a
+/// reload computes the new one once.
+#[tokio::test(start_paused = true)]
+async fn units_read_the_fingerprint_stored_at_admission() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    let admitted = fingerprints_computed();
+
+    for reply in 1..=3 {
+        row.submit(Called::<true>::new(&calls, vec![Ok(reply)]))
+            .await
+            .expect("runs");
+    }
+    assert_eq!(fingerprints_computed(), admitted, "no unit recomputes it");
+
+    fixture
+        .manager
+        .reload_config::<StrictPooled>(config(2), &nebula_core::ScopeLevel::Global)
+        .expect("reloaded");
+    assert_eq!(
+        fingerprints_computed(),
+        admitted + 1,
+        "a reload computes it once"
+    );
+    row.submit(Called::<true>::new(&calls, vec![Ok(4)]))
+        .await
+        .expect("runs");
+    assert_eq!(fingerprints_computed(), admitted + 1);
+
+    let bound: Vec<u64> = fixture
+        .owner
+        .intents()
+        .iter()
+        .map(|intent| intent.config_fingerprint)
+        .collect();
+    assert_eq!(bound, vec![1, 1, 1, 2]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn ordinals_are_one_sequence_in_prepare_order() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Ordinals are taken when a unit starts preparing and are positional:
+    // operations, versions and sessions share the owner's one sequence.
+    let first = row.submit(Pay::<true>::new(&calls, vec![Reply::Ok(1)]));
+    let second = row.submit(Pay::<false>::new(&calls, vec![Reply::Ok(2)]));
+    let refund = row.submit(Refund::new(&calls));
+    let v2 = row.submit(PayV2 {
+        request: "pay:42".to_owned(),
+    });
+    // A session takes the next position too.
+    let session = row.session(
+        SessionSpec::write(PAY, &"pay:42").cost(Cost::FREE),
+        |tx, _cx| {
+            Box::pin(async move {
+                tx.pending += 1;
+                Ok(0_u64)
+            })
+        },
+    );
+    second.await.expect("second");
+    first.await.expect("first");
+    refund.await.expect("refund");
+    v2.await.expect("v2");
+    session.await.expect("session");
+
+    let mut seen: Vec<_> = fixture
+        .owner
+        .intents()
+        .into_iter()
+        .map(|intent| (intent.occurrence, intent.operation, intent.version))
+        .collect();
+    seen.sort();
+    let mut expected = vec![
+        (pay(0), PAY.to_owned(), 1),
+        (pay(1), PAY.to_owned(), 1),
+        (pay(2), REFUND.to_owned(), 1),
+        (pay(3), PAY.to_owned(), 2),
+        (occurrence(4), PAY.to_owned(), 1),
+    ];
+    expected.sort();
+    assert_eq!(seen, expected);
+}
+
+/// A `Pay` of `request`.
+fn pay_of(calls: &Arc<Calls>, request: &str) -> Pay<false> {
+    Pay {
+        request: request.to_owned(),
+        ..Pay::new(calls, vec![Reply::Ok(1)])
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_submission_dropped_before_its_first_poll_takes_no_position() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    // An earlier run settled `B` at the first position — the run in which
+    // a branch built another submission and dropped it unpolled.
+    fixture.owner.seed(
+        &pay(0),
+        PAY,
+        &pay_request("pay:B"),
+        Phase::Resolved(RecordedOutcome::Succeeded(b"7".to_vec())),
+    );
+    fixture.owner.resume();
+
+    drop(row.submit(pay_of(&calls, "pay:dropped")));
+    let replayed = row
+        .submit(pay_of(&calls, "pay:B"))
+        .await
+        .expect("replayed at the first position");
+
+    assert_eq!(replayed, 7, "the recorded output");
+    assert_eq!(calls.made(), 0, "no second provider call");
+    assert_eq!(
+        fixture.owner.log(),
+        vec![Step::Prepare(pay(0))],
+        "the dropped submission never reached the owner"
+    );
+    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn units_prepared_in_another_order_fail_safe() {
+    // An earlier run settled `A` at #0 and `B` at #1; a resumed run polls
+    // `B` first. Positions follow the prepare order, so `B` meets `A`'s
+    // slot: a mismatch with nothing sent, never a fresh effect.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    for (ordinal, request) in [(0, "pay:A"), (1, "pay:B")] {
+        fixture.owner.seed(
+            &pay(ordinal),
+            PAY,
+            &pay_request(request),
+            Phase::Resolved(RecordedOutcome::Succeeded(b"1".to_vec())),
+        );
+    }
+    fixture.owner.resume();
+    let a = row.submit(pay_of(&calls, "pay:A"));
+    let b = row.submit(pay_of(&calls, "pay:B"));
+    let b = b.await.expect_err("B prepared at A's position");
+    let a = a.await.expect_err("A prepared at B's position");
+    for error in [&a, &b] {
+        assert_unsent(error, &ErrorKind::Permanent);
+        assert_eq!(error.detail(), "effect occurrence mismatch");
+    }
+    assert_eq!(calls.made(), 0, "nothing sent");
+
+    // Identical intents are interchangeable: either order replays both.
+    let fixture = Fixture::new(None);
+    let row = fixture.owned();
+    for ordinal in [0, 1] {
+        fixture.owner.seed(
+            &pay(ordinal),
+            PAY,
+            &pay_request("pay:same"),
+            Phase::Resolved(RecordedOutcome::Succeeded(
+                format!("{}", ordinal + 10).into_bytes(),
+            )),
+        );
+    }
+    fixture.owner.resume();
+    let first = row.submit(pay_of(&calls, "pay:same"));
+    let second = row.submit(pay_of(&calls, "pay:same"));
+    assert_eq!(second.await.expect("replayed"), 10);
+    assert_eq!(first.await.expect("replayed"), 11);
+    assert_eq!(calls.made(), 0, "nothing sent");
+}
+
+#[tokio::test(start_paused = true)]
+async fn effects_of_other_kinds_or_resources_reordered_fail_safe() {
+    // An earlier run settled an operation first; the resumed path opens a
+    // session first. One node-wide sequence: the session meets the
+    // operation's slot — a mismatch, its body never runs.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    fixture.owner.seed(
+        &occurrence(0),
+        PAY,
+        &pay_request("pay:A"),
+        Phase::Resolved(RecordedOutcome::Succeeded(b"1".to_vec())),
+    );
+    fixture.owner.resume();
+    let opened = Arc::new(AtomicBool::new(false));
+    let body_opened = Arc::clone(&opened);
+    let refused = row
+        .session(
+            SessionSpec::write(PAY, &"pay:A").cost(Cost::FREE),
+            move |tx, _cx| {
+                body_opened.store(true, Ordering::SeqCst);
+                Box::pin(async move {
+                    tx.pending += 1;
+                    Ok(0_u64)
+                })
+            },
+        )
+        .await
+        .expect_err("a session where an operation was recorded");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(refused.detail(), "effect occurrence mismatch");
+    assert!(!opened.load(Ordering::SeqCst), "no session opened");
+
+    // An earlier run's first effect was on another resource; the resumed
+    // path reaches this row first: a mismatch, nothing sent.
+    let fixture = Fixture::new(None);
+    let row = fixture.owned();
+    fixture.owner.seed_unit(
+        &occurrence(0),
+        (
+            "billing.other".to_owned(),
+            UnitKind::Operation,
+            PAY.to_owned(),
+            1,
+            pay_request("pay:A"),
+            None,
+        ),
+        Phase::Resolved(RecordedOutcome::Succeeded(b"1".to_vec())),
+    );
+    fixture.owner.resume();
+    let refused = row
+        .submit(pay_of(&calls, "pay:A"))
+        .await
+        .expect_err("an effect recorded for another resource");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(refused.detail(), "effect occurrence mismatch");
+
+    // The same order replays.
+    let fixture = Fixture::new(None);
+    let row = fixture.owned();
+    fixture.owner.seed(
+        &occurrence(0),
+        PAY,
+        &pay_request("pay:A"),
+        Phase::Resolved(RecordedOutcome::Succeeded(b"1".to_vec())),
+    );
+    fixture.owner.resume();
+    assert_eq!(
+        row.submit(pay_of(&calls, "pay:A")).await.expect("replayed"),
+        1
+    );
+    assert_eq!(calls.made(), 0, "nothing sent");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_changed_operation_at_a_recorded_position_is_a_mismatch() {
+    // A settled `Pay` v1 at the row's first position; a redeploy (with no
+    // action-version bump) then submits another operation — or the same key
+    // at another version — first. The position is the occurrence, the
+    // operation its contract: a mismatch, nothing sent, never a fresh
+    // effect.
+    for drifted in ["version", "operation"] {
+        let fixture = Fixture::new(None);
+        let calls = Arc::new(Calls::default());
+        let row = fixture.owned();
+        fixture.owner.seed(
+            &pay(0),
+            PAY,
+            &pay_request("pay:42"),
+            Phase::Resolved(RecordedOutcome::Succeeded(b"99".to_vec())),
+        );
+        let error = if drifted == "version" {
+            row.submit(PayV2 {
+                request: "pay:42".to_owned(),
+            })
+            .await
+            .expect_err("another version under the recorded occurrence")
+        } else {
+            row.submit(Refund::new(&calls))
+                .await
+                .expect_err("another operation under the recorded occurrence")
+        };
+        assert_unsent(&error, &ErrorKind::Permanent);
+        assert_eq!(error.detail(), "effect occurrence mismatch", "{drifted}");
+        assert_eq!(calls.made(), 0, "{drifted}");
+        assert_eq!(
+            fixture.owner.log(),
+            vec![Step::Prepare(pay(0))],
+            "{drifted}: prepared under the recorded occurrence, never granted"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_invalid_key_part_or_request_is_refused_at_submit() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    let part = row
+        .submit(Pay::<true>::new(&calls, vec![Reply::Ok(1)]).keyed("has space"))
+        .await
+        .expect_err("not visible ASCII");
+    assert_unsent(&part, &ErrorKind::Permanent);
+    assert_eq!(
+        part.detail(),
+        "idempotency key part must be 1..=256 bytes of visible ASCII"
+    );
+
+    let opaque = || Opaque {
+        by_pair: BTreeMap::from([(vec![1], 1)]),
+        calls: Arc::clone(&calls),
+    };
+    let request = row.submit(opaque()).await.expect_err("no JSON form");
+    assert_unsent(&request, &ErrorKind::Permanent);
+    assert_eq!(
+        request.detail(),
+        "operation request does not serialize to JSON"
+    );
+    assert_eq!(calls.made(), 0);
+    assert!(fixture.owner.log().is_empty(), "nothing reached the owner");
+    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
+
+    // Unjournaled, the request is never canonicalized.
+    fixture
+        .library()
+        .submit(opaque())
+        .await
+        .expect("a library row runs it");
+    assert_eq!(calls.made(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_invalid_operation_key_is_refused_at_submit() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    for row in [fixture.owned(), fixture.library()] {
+        // `submit` would fail the build; the runtime refuses the same
+        // declaration when it gets past it.
+        let error = submit_unit(
+            row.unit_host(),
+            row.unit_scope(),
+            Plain(BadKey {
+                calls: Arc::clone(&calls),
+            }),
+        )
+        .await
+        .expect_err("refused");
+        assert_unsent(&error, &ErrorKind::Permanent);
+        assert!(error.detail().starts_with("operation key must be"));
+    }
+    assert_eq!(calls.made(), 0);
+    assert!(fixture.owner.log().is_empty());
 }
 
 // ── replay ───────────────────────────────────────────────────────────────
@@ -709,16 +1835,16 @@ async fn a_recorded_success_replays_without_quota_checkout_read_or_call() {
             .expect("rate"),
     )));
     let calls = Arc::new(Calls::default());
-    let label = occurrence(PAY, "charge");
     fixture.owner.seed(
-        &label,
-        (PAY.id(), b"pay:42"),
+        &pay(0),
+        PAY,
+        &pay_request("pay:42"),
         Phase::Resolved(RecordedOutcome::Succeeded(b"99".to_vec())),
     );
     let row = fixture.owned();
 
     let replayed = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]).labeled("charge"))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await
         .expect("replayed");
 
@@ -731,10 +1857,10 @@ async fn a_recorded_success_replays_without_quota_checkout_read_or_call() {
     );
     assert_eq!(fixture.resource.probe.creates(), 0, "no checkout");
     assert_eq!(fixture.observer.calls(), 0, "no credential read");
-    assert_eq!(fixture.owner.log(), vec![Step::Prepare(label)]);
+    assert_eq!(fixture.owner.log(), vec![Step::Prepare(pay(0))]);
     // The quota's only permit is still there: a read books it at once.
     let started = Instant::now();
-    row.submit(Look(Arc::clone(&calls), Cost::ONE))
+    row.submit(Look::new(&calls, Cost::ONE))
         .await
         .expect("read");
     assert_eq!(started.elapsed(), Duration::ZERO);
@@ -746,14 +1872,16 @@ async fn recorded_rejections_and_digests_replay_without_a_call() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
     let row = fixture.owned();
+    let request = pay_request("pay:42");
 
     fixture.owner.seed(
-        &occurrence(PAY, "rejected"),
-        (PAY.id(), b"pay:42"),
+        &pay(0),
+        PAY,
+        &request,
         Phase::Resolved(RecordedOutcome::Failed(ErrorKindCode::Permanent)),
     );
     let rejected = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]).labeled("rejected"))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await
         .expect_err("the recorded rejection");
     assert_eq!(*rejected.kind(), ErrorKind::Permanent);
@@ -762,23 +1890,25 @@ async fn recorded_rejections_and_digests_replay_without_a_call() {
 
     // A retryable code is final once recorded.
     fixture.owner.seed(
-        &occurrence(PAY, "throttled"),
-        (PAY.id(), b"pay:42"),
+        &pay(1),
+        PAY,
+        &request,
         Phase::Resolved(RecordedOutcome::Failed(ErrorKindCode::Transient)),
     );
     let final_error = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]).labeled("throttled"))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await
         .expect_err("recorded");
     assert!(!final_error.is_retryable());
 
     fixture.owner.seed(
-        &occurrence(PAY, "digest"),
-        (PAY.id(), b"pay:42"),
+        &pay(2),
+        PAY,
+        &request,
         Phase::Resolved(RecordedOutcome::OutputUnavailable),
     );
     let digest = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]).labeled("digest"))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await
         .expect_err("recorded without output");
     assert_eq!(*digest.kind(), ErrorKind::Permanent);
@@ -796,40 +1926,40 @@ async fn a_success_and_a_rejection_are_recorded_and_replayed() {
     let row = fixture.owned();
 
     let paid = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(5)]).labeled("once"))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(5)]))
         .await
         .expect("paid");
     assert_eq!(paid, 5);
-    let again = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(6)]).labeled("once"))
-        .await
-        .expect("replayed");
-    assert_eq!(again, 5, "the first output replays");
-
     let rejected = row
-        .submit_effect(
-            Pay::<false>::new(
-                &calls,
-                vec![Reply::Fail(SentState::Sent, ErrorKind::Permanent)],
-            )
-            .labeled("declined"),
-        )
+        .submit(Pay::<false>::new(
+            &calls,
+            vec![Reply::Fail(OperationError::rejected("declined"))],
+        ))
         .await
         .expect_err("declined");
     assert_eq!(*rejected.kind(), ErrorKind::Permanent);
+    // A digest-only effect records no output and replays none.
+    let refunded = row.submit(Refund::new(&calls)).await.expect("refunded");
+    assert_eq!(refunded, 7);
+
+    // The resumed execution meets every recorded slot in program order.
+    fixture.owner.resume();
+    let again = row
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(6)]))
+        .await
+        .expect("replayed");
+    assert_eq!(again, 5, "the first output replays");
     let replayed = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(6)]).labeled("declined"))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(6)]))
         .await
         .expect_err("the rejection replays");
     assert_eq!(*replayed.kind(), ErrorKind::Permanent);
     assert_eq!(replayed.sent(), SentState::Sent);
-
-    // A digest-only effect records no output and replays none.
-    let refunded = row
-        .submit_effect(Refund(Arc::clone(&calls)))
+    let digest = row
+        .submit(Refund::new(&calls))
         .await
-        .expect("refunded");
-    assert_eq!(refunded, 7);
+        .expect_err("recorded without output");
+    assert_eq!(digest.detail(), "effect recorded without output");
 
     assert_eq!(calls.made(), 3, "one call per first run, none per replay");
     let settled: Vec<_> = fixture
@@ -848,6 +1978,37 @@ async fn a_success_and_a_rejection_are_recorded_and_replayed() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn an_output_over_the_recording_cap_is_recorded_digest_only() {
+    let fixture = Fixture::new(None);
+    let row = fixture.owned();
+
+    // 1 MiB of characters is 1 MiB + 2 bytes of JSON.
+    let exported = row
+        .submit(Export { len: 1024 * 1024 })
+        .await
+        .expect("the unit still yields its output");
+    assert_eq!(exported.len(), 1024 * 1024);
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Settle("applied_without_output"))
+    );
+    let fits = row
+        .submit(Export { len: 16 })
+        .await
+        .expect("a small output");
+    assert_eq!(fits.len(), 16);
+    assert_eq!(fixture.owner.log().last(), Some(&Step::Settle("applied")));
+
+    fixture.owner.resume();
+    let replay = row
+        .submit(Export { len: 1024 * 1024 })
+        .await
+        .expect_err("recorded without output");
+    assert_eq!(*replay.kind(), ErrorKind::Permanent);
+    assert_eq!(replay.detail(), "effect recorded without output");
+}
+
 // ── unknown outcomes ─────────────────────────────────────────────────────
 
 #[tokio::test(start_paused = true)]
@@ -855,18 +2016,18 @@ async fn an_unsettled_write_makes_the_outcome_unknown_for_every_later_unit() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
     let row = fixture.owned();
-    let label = occurrence(PAY, "charge");
 
     let error = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Unsettled]).labeled("charge"))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Unsettled]))
         .await
         .expect_err("the connection reset");
     assert_eq!(error.sent(), SentState::MaybeSent);
     assert!(error.is_outcome_unknown());
-    assert_eq!(fixture.owner.phase(&label), Some(Phase::Unknown));
+    assert_eq!(fixture.owner.phase(&pay(0)), Some(Phase::Unknown));
 
+    fixture.owner.resume();
     let blocked = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]).labeled("charge"))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await
         .expect_err("the outcome is unknown");
     assert_eq!(*blocked.kind(), ErrorKind::OutcomeUnknown);
@@ -879,32 +2040,32 @@ async fn an_unsettled_write_makes_the_outcome_unknown_for_every_later_unit() {
     assert_eq!(
         fixture.owner.log(),
         vec![
-            Step::Prepare(label.clone()),
+            Step::Prepare(pay(0)),
             Step::Grant,
             Step::Explain(Crossing::Ambiguous),
-            Step::Prepare(label),
+            Step::Prepare(pay(0)),
         ]
     );
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_write_retried_after_a_sent_attempt_is_refused_outcome_unknown() {
+async fn a_write_retried_after_an_interrupted_attempt_is_refused_outcome_unknown() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
     let row = fixture.owned();
 
     let error = row
-        .submit_effect(Pay::<false>::new(
+        .submit(Pay::<false>::new(
             &calls,
             vec![
-                Reply::Fail(SentState::Sent, ErrorKind::Transient),
+                Reply::Fail(OperationError::interrupted("connection reset")),
                 Reply::Ok(1),
             ],
         ))
         .await
         .expect_err("the owner refuses the retry");
     assert_eq!(*error.kind(), ErrorKind::OutcomeUnknown);
-    assert_eq!(error.sent(), SentState::Sent);
+    assert_eq!(error.sent(), SentState::MaybeSent);
     assert_eq!(calls.made(), 1);
     assert_eq!(
         fixture.owner.log()[1..],
@@ -919,10 +2080,10 @@ async fn an_unsent_write_attempt_is_not_crossed_and_granted_again() {
     let row = fixture.owned();
 
     let paid = row
-        .submit_effect(Pay::<false>::new(
+        .submit(Pay::<false>::new(
             &calls,
             vec![
-                Reply::Fail(SentState::NotSent, ErrorKind::Transient),
+                Reply::Fail(OperationError::unreachable("no connection")),
                 Reply::Ok(3),
             ],
         ))
@@ -941,16 +2102,356 @@ async fn an_unsent_write_attempt_is_not_crossed_and_granted_again() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_call_explains_each_attempt_from_its_classification() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    let paid = row
+        .submit(Called::<true>::new(
+            &calls,
+            vec![
+                Err(OperationError::throttled(None)),
+                Err(OperationError::unreachable("no connection")),
+                Err(OperationError::interrupted("connection reset")),
+                Ok(9),
+            ],
+        ))
+        .await
+        .expect("the fourth attempt applied");
+    assert_eq!(paid, 9);
+    assert_eq!(calls.made(), 4);
+    assert_eq!(
+        fixture.owner.log()[1..],
+        [
+            Step::Grant,
+            Step::Explain(Crossing::NotCrossed),
+            Step::Grant,
+            Step::Explain(Crossing::NotCrossed),
+            Step::Grant,
+            Step::Explain(Crossing::Ambiguous),
+            Step::Grant,
+            Step::Settle("applied"),
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_owner_refusing_a_retry_ends_the_call_with_its_refusal() {
+    // The stable-key window expired during the throttle's pause, the owner
+    // closed, the slot no longer matches: the refusal is authoritative, never
+    // masked by the retryable throttle the retry followed.
+    let cases = [
+        (JournalRefusal::Unknown, ErrorKind::OutcomeUnknown),
+        (JournalRefusal::Closed, ErrorKind::Cancelled),
+        (JournalRefusal::Mismatch, ErrorKind::Permanent),
+        (JournalRefusal::Unavailable, ErrorKind::Backpressure),
+    ];
+    for (refusal, kind) in cases {
+        let fixture = Fixture::new(None);
+        let calls = Arc::new(Calls::default());
+        let owner = Arc::clone(&fixture.owner);
+        fixture
+            .owner
+            .on_next_grant(move || owner.fail_next_grant(refusal));
+        let error = fixture
+            .owned()
+            .submit(Called::<true>::new(
+                &calls,
+                vec![Err(OperationError::throttled(None)), Ok(9)],
+            ))
+            .await
+            .expect_err("the owner refused the retry");
+        assert_eq!(*error.kind(), kind, "{refusal:?}: {error}");
+        assert_ne!(error.detail(), "provider throttled the call", "{refusal:?}");
+        assert_eq!(calls.made(), 1, "{refusal:?}");
+        assert_eq!(
+            fixture.owner.log()[1..],
+            [Step::Grant, Step::Explain(Crossing::NotCrossed)],
+            "{refusal:?}"
+        );
+    }
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let owner = Arc::clone(&fixture.owner);
+    fixture
+        .owner
+        .on_next_grant(move || owner.fail_next_grant(JournalRefusal::Unknown));
+    let error = fixture
+        .owned()
+        .submit(Called::<true>::new(
+            &calls,
+            vec![Err(OperationError::throttled(None)), Ok(9)],
+        ))
+        .await
+        .expect_err("unknown");
+    assert!(
+        !error.is_retryable(),
+        "a resubmission could apply the effect twice: {error}"
+    );
+
+    // A local refusal of the retry — the throttle's pause lands past the
+    // unit deadline — still ends the call with the attempt it would have
+    // retried.
+    let fixture = Fixture::new(Some(RowLimit::rate(
+        Rate::per_second(NonZeroU32::MIN)
+            .with_burst(NonZeroU32::MIN)
+            .expect("rate"),
+    )));
+    let calls = Arc::new(Calls::default());
+    let error = fixture
+        .owned()
+        .submit(Called::<true>::new(
+            &calls,
+            vec![
+                Err(OperationError::throttled(Some(Duration::from_mins(1)))),
+                Ok(9),
+            ],
+        ))
+        .with_deadline(Instant::now().into_std() + Duration::from_secs(2))
+        .await
+        .expect_err("throttled");
+    assert_eq!(error.detail(), "provider throttled the call");
+    assert_eq!(calls.made(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_owner_refusing_a_retry_after_a_throttle_settles_nothing_crossed() {
+    // The throttle applied nothing and the refused retry was never granted:
+    // a `Write` settles not sent, its owner's refusal retryable as it is,
+    // never turned into an unknown outcome.
+    for refusal in [
+        JournalRefusal::Unavailable,
+        JournalRefusal::AcknowledgementUnknown,
+        JournalRefusal::LeaseLost,
+    ] {
+        let fixture = Fixture::new(None);
+        let calls = Arc::new(Calls::default());
+        let owner = Arc::clone(&fixture.owner);
+        fixture
+            .owner
+            .on_next_grant(move || owner.fail_next_grant(refusal));
+        let error = fixture
+            .owned()
+            .submit(Called::<false>::new(
+                &calls,
+                vec![Err(OperationError::throttled(None)), Ok(9)],
+            ))
+            .await
+            .expect_err("the owner refused the retry");
+        assert_eq!(*error.kind(), ErrorKind::Backpressure, "{refusal:?}");
+        assert_eq!(error.sent(), SentState::NotSent, "{refusal:?}");
+        assert!(error.is_retryable(), "{refusal:?}: {error}");
+        assert_eq!(
+            *crate::Error::from(error).kind(),
+            ErrorKind::Backpressure,
+            "{refusal:?}"
+        );
+        assert_eq!(calls.made(), 1, "{refusal:?}");
+    }
+
+    // The owner's own unknown outcome stays unknown.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let owner = Arc::clone(&fixture.owner);
+    fixture
+        .owner
+        .on_next_grant(move || owner.fail_next_grant(JournalRefusal::Unknown));
+    let error = fixture
+        .owned()
+        .submit(Called::<false>::new(
+            &calls,
+            vec![Err(OperationError::throttled(None)), Ok(9)],
+        ))
+        .await
+        .expect_err("unknown");
+    assert_eq!(*error.kind(), ErrorKind::OutcomeUnknown);
+    assert!(!error.is_retryable(), "{error}");
+
+    // The same for an idempotent effect.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let owner = Arc::clone(&fixture.owner);
+    fixture
+        .owner
+        .on_next_grant(move || owner.fail_next_grant(JournalRefusal::Unavailable));
+    let error = fixture
+        .owned()
+        .submit(Called::<true>::new(
+            &calls,
+            vec![Err(OperationError::throttled(None)), Ok(9)],
+        ))
+        .await
+        .expect_err("the owner refused the retry");
+    assert_eq!(*error.kind(), ErrorKind::Backpressure);
+    assert_eq!(error.sent(), SentState::NotSent);
+    assert!(error.is_retryable(), "{error}");
+
+    // An earlier attempt that may have crossed still counts: interrupted,
+    // then throttled, then the owner refuses the third attempt.
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let first = Arc::clone(&fixture.owner);
+    fixture.owner.on_next_grant(move || {
+        let second = Arc::clone(&first);
+        first.on_next_grant(move || second.fail_next_grant(JournalRefusal::Unavailable));
+    });
+    let error = fixture
+        .owned()
+        .submit(Called::<true>::new(
+            &calls,
+            vec![
+                Err(OperationError::interrupted("connection lost")),
+                Err(OperationError::throttled(None)),
+                Ok(9),
+            ],
+        ))
+        .await
+        .expect_err("the owner refused the third attempt");
+    assert_eq!(*error.kind(), ErrorKind::Backpressure);
+    assert_eq!(error.sent(), SentState::MaybeSent);
+    assert_eq!(calls.made(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_local_failure_after_an_applied_call_never_records_a_rejection() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // The response does not decode: non-retryable, after the provider
+    // applied the call. Recorded applied (without output), not rejected.
+    let local = row
+        .submit(AppliedThenFailed {
+            local: Some(OperationError::new(
+                ErrorKind::Permanent,
+                "response did not decode",
+            )),
+            calls: Arc::clone(&calls),
+        })
+        .await
+        .expect_err("the local failure");
+    assert_eq!(local.detail(), "response did not decode");
+    assert_eq!(calls.made(), 1);
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Settle("applied_without_output"))
+    );
+
+    // A resume replays the applied effect without sending it again.
+    fixture.owner.resume();
+    let replayed = row
+        .submit(AppliedThenFailed {
+            local: None,
+            calls: Arc::clone(&calls),
+        })
+        .await
+        .expect_err("recorded without output");
+    assert_eq!(replayed.detail(), "effect recorded without output");
+    assert_eq!(replayed.sent(), SentState::Sent);
+    assert_eq!(calls.made(), 1, "never sent again");
+
+    // A retryable local failure stays an ambiguous crossing.
+    let fixture = Fixture::new(None);
+    let row = fixture.owned();
+    row.submit(AppliedThenFailed {
+        local: Some(OperationError::new(ErrorKind::Transient, "decoder busy")),
+        calls: Arc::clone(&calls),
+    })
+    .await
+    .expect_err("the local failure");
+    assert_eq!(
+        fixture.owner.log().last(),
+        Some(&Step::Explain(Crossing::Ambiguous))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_last_call_is_recorded_from_its_classification() {
+    // (reply, recorded, sent)
+    let cases = [
+        (
+            OperationError::rejected_as(ErrorKind::NotFound, "no such order"),
+            Step::Settle("not_found"),
+            SentState::Sent,
+        ),
+        (
+            OperationError::rejected("declined"),
+            Step::Settle("permanent"),
+            SentState::Sent,
+        ),
+        (
+            OperationError::throttled(None),
+            Step::Explain(Crossing::NotCrossed),
+            SentState::Sent,
+        ),
+        (
+            OperationError::unreachable("no connection"),
+            Step::Explain(Crossing::NotCrossed),
+            SentState::NotSent,
+        ),
+        (
+            OperationError::interrupted("connection reset"),
+            Step::Explain(Crossing::Ambiguous),
+            SentState::MaybeSent,
+        ),
+        (
+            // Unclassified: the call may have crossed, whatever its kind.
+            OperationError::new(ErrorKind::Permanent, "client error"),
+            Step::Explain(Crossing::Ambiguous),
+            SentState::MaybeSent,
+        ),
+    ];
+    for (reply, recorded, sent) in cases {
+        let fixture = Fixture::new(None);
+        let calls = Arc::new(Calls::default());
+        let error = fixture
+            .owned()
+            .submit(Called::<false>::new(&calls, vec![Err(reply.clone())]))
+            .await
+            .expect_err("the call failed");
+        assert_eq!(
+            fixture.owner.log()[1..],
+            [Step::Grant, recorded],
+            "{reply:?}"
+        );
+        assert_eq!(error.sent(), sent, "{reply:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_interrupted_write_call_is_ambiguous_and_never_sent_again() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    let error = row
+        .submit(Called::<false>::new(
+            &calls,
+            vec![Err(OperationError::interrupted("connection reset")), Ok(1)],
+        ))
+        .await
+        .expect_err("not retried");
+    assert_eq!(calls.made(), 1);
+    assert_eq!(error.sent(), SentState::MaybeSent);
+    assert_eq!(*crate::Error::from(error).kind(), ErrorKind::OutcomeUnknown);
+    assert_eq!(
+        fixture.owner.log()[1..],
+        [Step::Grant, Step::Explain(Crossing::Ambiguous)]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn settle_without_acknowledgement_after_the_apply_is_outcome_unknown() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
     let row = fixture.owned();
     fixture
         .owner
-        .fail_next_settle(OwnerRefusal::AcknowledgementUnknown);
+        .fail_next_settle(JournalRefusal::AcknowledgementUnknown);
 
     let error = row
-        .submit_effect(Pay::<true>::new(&calls, vec![Reply::Ok(1)]))
+        .submit(Pay::<true>::new(&calls, vec![Reply::Ok(1)]))
         .await
         .expect_err("applied, but not recorded");
     assert_eq!(*error.kind(), ErrorKind::OutcomeUnknown);
@@ -968,7 +2469,7 @@ async fn an_ambiguous_idempotent_attempt_is_granted_again_with_the_same_key() {
     let row = fixture.owned();
 
     let paid = row
-        .submit_effect(Pay::<true>::new(
+        .submit(Pay::<true>::new(
             &calls,
             vec![Reply::Unsettled, Reply::Ok(8)],
         ))
@@ -977,7 +2478,7 @@ async fn an_ambiguous_idempotent_attempt_is_granted_again_with_the_same_key() {
     assert_eq!(paid, 8);
     let keys = calls.keys();
     assert_eq!(keys.len(), 2);
-    assert!(keys[0].is_some(), "an owned unit has an operation key");
+    assert!(keys[0].is_some(), "an owned unit has an idempotency key");
     assert_eq!(keys[0], keys[1], "every attempt presents the same key");
     assert_eq!(
         fixture.owner.log()[1..],
@@ -991,77 +2492,20 @@ async fn an_ambiguous_idempotent_attempt_is_granted_again_with_the_same_key() {
 
     // An exhausted budget makes the outcome unknown.
     let exhausted = row
-        .submit_effect(Pay::<true>::new(&calls, vec![Reply::Unsettled]).labeled("exhausted"))
+        .submit(Pay::<true>::new(&calls, vec![Reply::Unsettled]))
         .await
         .expect_err("ambiguous");
     assert_eq!(exhausted.sent(), SentState::MaybeSent);
-    assert_eq!(
-        fixture.owner.phase(&occurrence(PAY, "exhausted")),
-        Some(Phase::Ambiguous)
-    );
+    assert_eq!(fixture.owner.phase(&pay(1)), Some(Phase::Ambiguous));
+    fixture.owner.resume();
+    row.submit(Pay::<true>::new(&calls, vec![Reply::Ok(8)]))
+        .await
+        .expect("the first unit replays");
     let refused = row
-        .submit_effect(Pay::<true>::new(&calls, vec![Reply::Ok(1)]).labeled("exhausted"))
+        .submit(Pay::<true>::new(&calls, vec![Reply::Ok(1)]))
         .await
         .expect_err("no invocation left");
     assert_eq!(*refused.kind(), ErrorKind::OutcomeUnknown);
-}
-
-#[tokio::test(start_paused = true)]
-async fn the_developer_key_part_reaches_the_intent() {
-    let fixture = Fixture::new(None);
-    let calls = Arc::new(Calls::default());
-    let row = fixture.owned();
-
-    let mut keyed = Pay::<true>::new(&calls, vec![Reply::Ok(1)]);
-    keyed.key_part = Some("order-123");
-    row.submit_effect(keyed).await.expect("keyed");
-    row.submit_effect(Pay::<true>::new(&calls, vec![Reply::Ok(1)]))
-        .await
-        .expect("unkeyed");
-
-    let intents = fixture.owner.intents();
-    assert_eq!(intents[0].key_part.as_deref(), Some("order-123"));
-    assert_eq!(intents[1].key_part, None);
-    assert_eq!(intents[0].effect, Effect::Idempotent);
-    assert_eq!(intents[0].max_invocations, 1);
-    assert_eq!(intents[0].binding, tenant());
-}
-
-// ── labels ───────────────────────────────────────────────────────────────
-
-#[tokio::test(start_paused = true)]
-async fn ordinals_are_zero_padded_per_contract_and_author_labels_verbatim() {
-    let fixture = Fixture::new(None);
-    let calls = Arc::new(Calls::default());
-    let row = fixture.owned();
-
-    // Ordinals are taken at submit, in program order.
-    let first = row.submit_effect(Pay::<true>::new(&calls, vec![Reply::Ok(1)]));
-    let second = row.submit_effect(Pay::<true>::new(&calls, vec![Reply::Ok(2)]));
-    let refund = row.submit_effect(Refund(Arc::clone(&calls)));
-    let labeled = row.submit_effect(Pay::<true>::new(&calls, vec![Reply::Ok(3)]).labeled("charge"));
-    second.await.expect("second");
-    first.await.expect("first");
-    refund.await.expect("refund");
-    labeled.await.expect("labeled");
-
-    let mut seen: Vec<_> = fixture
-        .owner
-        .intents()
-        .into_iter()
-        .map(|intent| intent.occurrence)
-        .collect();
-    seen.sort();
-    let mut expected = vec![
-        occurrence(PAY, "#000000"),
-        occurrence(PAY, "#000001"),
-        occurrence(REFUND, "#000000"),
-        occurrence(PAY, "charge"),
-    ];
-    expected.sort();
-    assert_eq!(seen, expected);
-    assert!(OccurrenceLabel::new("with space").is_err());
-    assert!(OccurrenceLabel::new("x".repeat(129)).is_err());
 }
 
 // ── refusals ─────────────────────────────────────────────────────────────
@@ -1073,21 +2517,21 @@ async fn prepare_refusals_map_to_unsent_errors_without_a_call() {
     let row = fixture.owned();
 
     for refusal in [
-        OwnerRefusal::AcknowledgementUnknown,
-        OwnerRefusal::Unavailable,
-        OwnerRefusal::LeaseLost,
+        JournalRefusal::AcknowledgementUnknown,
+        JournalRefusal::Unavailable,
+        JournalRefusal::LeaseLost,
     ] {
         fixture.owner.fail_next_prepare(refusal);
         let error = row
-            .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+            .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
             .await
             .expect_err("refused");
         assert_unsent(&error, &ErrorKind::Backpressure);
         assert!(error.is_retryable());
     }
-    fixture.owner.fail_next_prepare(OwnerRefusal::Closed);
+    fixture.owner.fail_next_prepare(JournalRefusal::Closed);
     let closed = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await
         .expect_err("closed");
     assert_unsent(&closed, &ErrorKind::Cancelled);
@@ -1098,50 +2542,21 @@ async fn prepare_refusals_map_to_unsent_errors_without_a_call() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_different_effect_under_a_label_is_a_permanent_mismatch() {
+async fn a_different_request_under_an_occurrence_is_a_permanent_mismatch() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
     let row = fixture.owned();
-    fixture.owner.seed(
-        &occurrence(PAY, "charge"),
-        (PAY.id(), b"pay:41"),
-        Phase::Prepared,
-    );
+    fixture
+        .owner
+        .seed(&pay(0), PAY, &pay_request("pay:41"), Phase::Prepared);
 
     let error = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]).labeled("charge"))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await
-        .expect_err("another request under the label");
+        .expect_err("another request under the occurrence");
     assert_unsent(&error, &ErrorKind::Permanent);
     assert_eq!(error.detail(), "effect occurrence mismatch");
     assert_eq!(calls.made(), 0);
-}
-
-#[tokio::test(start_paused = true)]
-async fn misdeclared_effects_and_reads_are_refused_at_submit() {
-    let fixture = Fixture::new(None);
-    let calls = Arc::new(Calls::default());
-    let row = fixture.owned();
-
-    let mismatched = row
-        .submit_effect(Misdeclared::<false, false>(Arc::clone(&calls)))
-        .await
-        .expect_err("idempotent needs a stable key");
-    assert_unsent(&mismatched, &ErrorKind::Permanent);
-    let read = row
-        .submit_effect(Misdeclared::<true, false>(Arc::clone(&calls)))
-        .await
-        .expect_err("a read is not an owned effect");
-    assert_unsent(&read, &ErrorKind::Permanent);
-    let contract = row
-        .submit_effect(Misdeclared::<false, true>(Arc::clone(&calls)))
-        .await
-        .expect_err("a malformed contract");
-    assert_unsent(&contract, &ErrorKind::Permanent);
-
-    assert_eq!(calls.made(), 0);
-    assert!(fixture.owner.log().is_empty(), "nothing reached the owner");
-    assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1155,7 +2570,7 @@ async fn a_registration_refused_after_the_grant_is_explained_not_crossed() {
     fixture.owner.on_next_grant(move || parent.cancel());
 
     let error = row
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
         .await
         .expect_err("cancelled at registration");
     assert_unsent(&error, &ErrorKind::Cancelled);
@@ -1176,13 +2591,13 @@ async fn a_cancel_before_the_first_grant_leaves_only_the_prepare() {
     let calls = Arc::new(Calls::default());
     let row = fixture.owned();
     // A read takes the only permit.
-    row.submit(Look(Arc::clone(&calls), Cost::ONE))
+    row.submit(Look::new(&calls, Cost::ONE))
         .await
         .expect("read");
 
     let mut pay = Pay::<false>::new(&calls, vec![Reply::Ok(1)]);
     pay.cost = Cost::ONE;
-    let mut unit = row.submit_effect(pay);
+    let mut unit = row.submit(pay);
     assert!(futures::poll!(&mut unit).is_pending());
     tokio::time::sleep(Duration::from_millis(1)).await;
     unit.cancel();
@@ -1202,7 +2617,7 @@ async fn a_closed_owner_refuses_new_units_and_smuggled_clones() {
 
     for row in [row, clone] {
         let error = row
-            .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
+            .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
             .await
             .expect_err("the owner closed");
         assert_unsent(&error, &ErrorKind::Cancelled);
@@ -1212,58 +2627,54 @@ async fn a_closed_owner_refuses_new_units_and_smuggled_clones() {
     assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
 }
 
+// ── routing ──────────────────────────────────────────────────────────────
+
 #[tokio::test(start_paused = true)]
-async fn plain_submit_refuses_effects_and_runs_reads_without_the_owner() {
+async fn a_read_on_a_journaled_row_is_never_prepared_and_keys_locally() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
     let row = fixture.owned();
 
-    let error = row
-        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(1)]))
-        .await
-        .expect_err("effects go through submit_effect");
-    assert_unsent(&error, &ErrorKind::Permanent);
-    assert_eq!(
-        error.detail(),
-        "execution-owned effects go through submit_effect"
-    );
-    let idempotent = row
-        .submit(Pay::<true>::new(&calls, vec![Reply::Ok(1)]))
-        .await
-        .expect_err("idempotent too");
-    assert_unsent(&idempotent, &ErrorKind::Permanent);
-    let session = row
-        .session(SessionSpec::new(Cost::FREE), |_tx, _cx| {
-            Box::pin(async { Ok(()) })
-        })
-        .await
-        .expect_err("a write session too");
-    assert_unsent(&session, &ErrorKind::Permanent);
-
-    row.submit(Look(Arc::clone(&calls), Cost::FREE))
+    row.submit(Look::new(&calls, Cost::FREE))
         .await
         .expect("a read runs");
-    assert_eq!(calls.made(), 1);
-    assert!(fixture.owner.log().is_empty());
+    let mut keyed = Look::new(&calls, Cost::FREE);
+    keyed.key_part = Some("look-1");
+    row.submit(keyed).await.expect("a keyed read runs");
+
+    assert_eq!(calls.made(), 2);
+    let local = local_idempotency_key(&StrictPooled::key(), "billing.look", 1, "look-1")
+        .expect("local key");
+    assert_eq!(calls.keys(), vec![None, Some(local.to_string())]);
+    assert!(fixture.owner.log().is_empty(), "never prepared");
     assert_eq!(fixture.owner.in_flight.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_library_row_runs_submit_effect_as_submit_and_a_read_only_row_refuses_it() {
+async fn a_library_row_runs_effects_plain_and_a_read_only_row_refuses_them() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
+    let library = fixture.library();
 
-    let paid = fixture
-        .library()
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(4)]))
+    let paid = library
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(4)]))
         .await
         .expect("a library effect");
     assert_eq!(paid, 4);
-    assert_eq!(calls.keys(), vec![None], "no owner, no operation key");
+    library
+        .submit(Pay::<true>::new(&calls, vec![Reply::Ok(4)]).keyed("order-1"))
+        .await
+        .expect("a keyed library effect");
+    let local = local_idempotency_key(&StrictPooled::key(), PAY, 1, "order-1").expect("local key");
+    assert_eq!(
+        calls.keys(),
+        vec![None, Some(local.to_string())],
+        "no owner: no key, or the local one"
+    );
 
-    let refused = fixture
-        .read_only()
-        .submit_effect(Pay::<false>::new(&calls, vec![Reply::Ok(4)]))
+    let read_only = fixture.read_only();
+    let refused = read_only
+        .submit(Pay::<false>::new(&calls, vec![Reply::Ok(4)]))
         .await
         .expect_err("no effect authority");
     assert_unsent(&refused, &ErrorKind::Permanent);
@@ -1271,7 +2682,102 @@ async fn a_library_row_runs_submit_effect_as_submit_and_a_read_only_row_refuses_
         refused.detail(),
         "managed row effect requires execution-owner authority"
     );
-    assert_eq!(calls.made(), 1);
+    let idempotent = read_only
+        .submit(Pay::<true>::new(&calls, vec![Reply::Ok(4)]))
+        .await
+        .expect_err("idempotent too");
+    assert_unsent(&idempotent, &ErrorKind::Permanent);
+    read_only
+        .submit(Look::new(&calls, Cost::FREE))
+        .await
+        .expect("a read runs");
+    assert_eq!(calls.made(), 3);
+    assert!(fixture.owner.log().is_empty());
+
+    let explained = *fixture
+        .manager
+        .handle_any_read_only_because(
+            &StrictPooled::key(),
+            &fixture.ctx(),
+            &AcquireOptions::default(),
+            &tenant(),
+            "journaled effects need execution stores",
+        )
+        .expect("read-only row")
+        .downcast::<ResourceHandle<StrictPooled>>()
+        .expect("typed row");
+    let refused = explained
+        .submit(Pay::<true>::new(&calls, vec![Reply::Ok(4)]))
+        .await
+        .expect_err("no effect authority, with its reason");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(refused.detail(), "journaled effects need execution stores");
+    explained
+        .submit(Look::new(&calls, Cost::FREE))
+        .await
+        .expect("a read runs");
+    assert_eq!(calls.made(), 4);
+    assert!(fixture.owner.log().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn streamed_effects_are_refused_on_a_journaled_row() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let capacity = NonZeroUsize::MIN;
+
+    let refused = fixture
+        .owned()
+        .submit_streaming(Ticks::<true>(Arc::clone(&calls), None), capacity)
+        .finish()
+        .await
+        .expect_err("not journaled in v1");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(
+        refused.detail(),
+        "streaming effects are not journaled in v1"
+    );
+    let read_only = fixture
+        .read_only()
+        .submit_streaming(Ticks::<true>(Arc::clone(&calls), None), capacity)
+        .finish()
+        .await
+        .expect_err("no effect authority");
+    assert_unsent(&read_only, &ErrorKind::Permanent);
+    assert_eq!(calls.made(), 0);
+
+    fixture
+        .owned()
+        .submit_streaming(Ticks::<false>(Arc::clone(&calls), None), capacity)
+        .finish()
+        .await
+        .expect("a streamed read runs");
+    fixture
+        .library()
+        .submit_streaming(Ticks::<true>(Arc::clone(&calls), None), capacity)
+        .finish()
+        .await
+        .expect("a library stream runs");
+    assert_eq!(calls.made(), 2);
+    assert!(fixture.owner.log().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_keyed_stream_presents_a_local_key_to_its_attempt() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    fixture
+        .library()
+        .submit_streaming(
+            Ticks::<true>(Arc::clone(&calls), Some("tick-1")),
+            NonZeroUsize::MIN,
+        )
+        .finish()
+        .await
+        .expect("a keyed library stream");
+    let local = local_idempotency_key(&StrictPooled::key(), "billing.ticks", 1, "tick-1")
+        .expect("local key");
+    assert_eq!(calls.keys(), vec![Some(local.to_string())]);
 }
 
 // ── sessions ─────────────────────────────────────────────────────────────
@@ -1285,35 +2791,26 @@ enum Body {
     Panic,
 }
 
-const SESSION: EffectContract = EffectContract::new("billing.session", 1);
+const SESSION: &str = "billing.session";
 
-/// A `Write` session effect of `request` whose body does `body`; `calls`
-/// counts the bodies run and the operation key each saw.
+/// A `Write` session of `request` whose body does `body`; `calls` counts
+/// the bodies run and the idempotency key each saw.
 fn session(
-    row: &ManagedRow<StrictPooled>,
+    row: &ResourceHandle<StrictPooled>,
     request: &'static str,
     body: Body,
     calls: &Arc<Calls>,
-) -> super::super::Unit<u64> {
+) -> super::super::Submission<u64> {
     let calls = Arc::clone(calls);
-    row.session_effect(
-        SessionSpec::new(Cost::FREE),
-        SESSION,
-        EffectRecovery::Opaque,
-        request.as_bytes().to_vec(),
-        None,
+    row.session(
+        SessionSpec::write(SESSION, request).cost(Cost::FREE),
         move |tx, cx| {
-            calls.made.fetch_add(1, Ordering::SeqCst);
-            calls
-                .keys
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(cx.operation_key().map(ToString::to_string));
+            calls.call(cx.idempotency_key());
             Box::pin(async move {
                 tx.pending += 1;
                 match body {
                     Body::Ok(value) => Ok(value),
-                    Body::Fail => Err(OpError::new(ErrorKind::Permanent, "constraint")),
+                    Body::Fail => Err(OperationError::new(ErrorKind::Permanent, "constraint")),
                     Body::Hang => {
                         tokio::time::sleep(Duration::from_hours(1)).await;
                         Ok(0)
@@ -1337,6 +2834,12 @@ async fn session_outcomes_are_recorded_by_how_the_session_closed() {
     let committed = session(&row, "committed", Body::Ok(11), &calls).await;
     assert_eq!(committed.expect("committed"), 11);
     assert_eq!(last(&fixture), Some(Step::Settle("applied")));
+    let intent = &fixture.owner.intents()[0];
+    assert_eq!(intent.occurrence, occurrence(0));
+    assert_eq!(intent.operation, SESSION);
+    assert_eq!(intent.kind, UnitKind::Session);
+    assert_eq!(intent.canonical_request, br#""committed""#);
+    assert_eq!(intent.recovery, Recovery::Opaque);
     fixture.owner.resume();
     let replayed = session(&row, "committed", Body::Ok(12), &calls).await;
     assert_eq!(replayed.expect("replayed"), 11);
@@ -1355,7 +2858,7 @@ async fn session_outcomes_are_recorded_by_how_the_session_closed() {
     fixture
         .resource
         .probe
-        .close_next_with(SessionClosed::Unknown(OpError::new(
+        .close_next_with(SessionClosed::Unknown(OperationError::new(
             ErrorKind::Transient,
             "connection dropped",
         )));
@@ -1380,7 +2883,72 @@ async fn session_outcomes_are_recorded_by_how_the_session_closed() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_library_session_effect_runs_as_a_session_without_a_key() {
+async fn sessions_route_by_their_spec() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    let run = |spec: SessionSpec| {
+        let calls = Arc::clone(&calls);
+        row.session(spec.cost(Cost::FREE), move |tx, cx| {
+            calls.call(cx.idempotency_key());
+            Box::pin(async move {
+                tx.pending += 1;
+                Ok(1_u64)
+            })
+        })
+    };
+
+    // A read session is never prepared.
+    run(SessionSpec::read("billing.balance"))
+        .await
+        .expect("a read session");
+    assert!(fixture.owner.log().is_empty());
+
+    // An idempotent session recovers by its key window and key part.
+    run(SessionSpec::idempotent("billing.transfer", &("a", "b", 3))
+        .idempotency_key("transfer-1")
+        .key_window(Duration::from_secs(30))
+        .version(3))
+    .await
+    .expect("an idempotent session");
+    let intent = &fixture.owner.intents()[0];
+    assert_eq!(intent.occurrence, occurrence(0));
+    assert_eq!(intent.operation, "billing.transfer");
+    assert_eq!(intent.version, 3);
+    assert_eq!(
+        intent.recovery,
+        Recovery::StableKey {
+            window: Duration::from_secs(30)
+        }
+    );
+    assert_eq!(intent.key_part.as_deref(), Some("transfer-1"));
+    assert_eq!(intent.canonical_request, br#"["a","b",3]"#);
+
+    // Defects are refused at submit, on every row.
+    for (spec, detail) in [
+        (
+            SessionSpec::read("bad name"),
+            "session name must be 1..=64 bytes of [A-Za-z0-9_.-], starting and ending alphanumeric",
+        ),
+        (
+            SessionSpec::write("billing.opaque", &BTreeMap::from([(vec![1_u8], 1_u8)])),
+            "operation request does not serialize to JSON",
+        ),
+        (
+            SessionSpec::write("billing.versioned", &1).version(0),
+            "operation version must be at least 1",
+        ),
+    ] {
+        let error = run(spec).await.expect_err("a defect");
+        assert_unsent(&error, &ErrorKind::Permanent);
+        assert_eq!(error.detail(), detail);
+    }
+    assert_eq!(calls.made(), 2);
+    assert_eq!(fixture.owner.intents().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_library_session_runs_without_an_owner() {
     let fixture = Fixture::new(None);
     let calls = Arc::new(Calls::default());
     let value = session(&fixture.library(), "library", Body::Ok(3), &calls)
@@ -1388,5 +2956,583 @@ async fn a_library_session_effect_runs_as_a_session_without_a_key() {
         .expect("committed");
     assert_eq!(value, 3);
     assert_eq!(calls.keys(), vec![None]);
+    let refused = session(&fixture.read_only(), "read-only", Body::Ok(3), &calls)
+        .await
+        .expect_err("no effect authority");
+    assert_unsent(&refused, &ErrorKind::Permanent);
     assert!(fixture.owner.log().is_empty());
+}
+
+#[test]
+fn an_unsent_failure_round_trips_its_kind_and_payload_through_its_code() {
+    use crate::error::CredentialUnavailableReason;
+    let kinds = [
+        ErrorKind::Transient,
+        ErrorKind::Permanent,
+        ErrorKind::Exhausted { retry_after: None },
+        ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_millis(1500)),
+        },
+        ErrorKind::Backpressure,
+        ErrorKind::NotFound,
+        ErrorKind::Cancelled,
+        ErrorKind::Revoked,
+        ErrorKind::Ambiguous,
+        ErrorKind::CredentialUnavailable {
+            reason: CredentialUnavailableReason::ReauthRequired,
+        },
+        ErrorKind::CredentialUnavailable {
+            reason: CredentialUnavailableReason::CheckUnavailable,
+        },
+        ErrorKind::OutcomeUnknown,
+    ];
+    for kind in kinds {
+        let failure = UnsentFailure::of(&kind);
+        let code = failure.code();
+        assert!(code.len() <= 64, "{code}");
+        assert!(
+            code.bytes().all(|byte| byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || b"_@".contains(&byte)),
+            "{code}"
+        );
+        assert_eq!(UnsentFailure::parse(&code), Some(failure), "{code}");
+        assert_eq!(failure.kind(), kind, "{code}");
+    }
+    assert_eq!(
+        UnsentFailure::of(&ErrorKind::Exhausted {
+            retry_after: Some(Duration::from_millis(1500)),
+        })
+        .code(),
+        "exhausted@1500"
+    );
+    for unknown in [
+        "",
+        "teapot",
+        "transient@1",
+        "exhausted@soon",
+        "credential_unavailable@x",
+    ] {
+        assert_eq!(UnsentFailure::parse(unknown), None, "{unknown}");
+    }
+}
+
+#[test]
+fn a_superseded_effect_fails_with_its_recorded_kind_or_permanent_without_one() {
+    let throttled = ErrorKind::Exhausted {
+        retry_after: Some(Duration::from_secs(2)),
+    };
+    let replayed = super::refusal_error(JournalRefusal::Superseded(Some(UnsentFailure::of(
+        &throttled,
+    ))));
+    assert_eq!(*replayed.kind(), throttled);
+    // A slot recorded before failures were (legacy) fails `Permanent`.
+    let legacy = super::refusal_error(JournalRefusal::Superseded(None));
+    assert_eq!(*legacy.kind(), ErrorKind::Permanent);
+    assert_eq!(
+        replayed.detail(),
+        "effect failed unsent in an earlier run that moved past it; not sent again"
+    );
+}
+
+// ── recorded reads ───────────────────────────────────────────────────────
+
+const ASK: &str = "model.ask";
+
+/// A recorded read — a model call: each attempt answers the next scripted
+/// result. Its canonical request is `{"prompt":…}`.
+#[derive(Serialize, Deserialize)]
+struct Ask {
+    prompt: String,
+    #[serde(skip)]
+    script: Vec<Result<String, OperationError>>,
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl Ask {
+    fn new(calls: &Arc<Calls>, script: Vec<Result<String, OperationError>>) -> Self {
+        Self {
+            prompt: "what next?".to_owned(),
+            script,
+            calls: Arc::clone(calls),
+        }
+    }
+
+    fn answering(calls: &Arc<Calls>, answer: &str) -> Self {
+        Self::new(calls, vec![Ok(answer.to_owned())])
+    }
+}
+
+impl<R: Provider + PinSlots> Operation<R> for Ask {
+    type Output = String;
+    const KEY: &'static str = ASK;
+    const EFFECT: Effect = Effect::RecordedRead;
+
+    fn max_attempts(&self) -> NonZeroU32 {
+        NonZeroU32::new(u32::try_from(self.script.len()).expect("few")).expect("a reply")
+    }
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<String, OperationError> {
+        let mut script = std::collections::VecDeque::from(self.script);
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            script.pop_front().unwrap_or_else(|| Ok(String::new()))
+        })
+        .await
+    }
+}
+
+/// The canonical request of an [`Ask`].
+fn ask_request() -> Vec<u8> {
+    br#"{"prompt":"what next?"}"#.to_vec()
+}
+
+/// A recorded read whose answer has no JSON form (a map with non-string
+/// keys).
+#[derive(Serialize, Deserialize)]
+struct AskForMap {
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for AskForMap {
+    type Output = BTreeMap<Vec<u8>, u8>;
+    const KEY: &'static str = "model.ask_map";
+    const EFFECT: Effect = Effect::RecordedRead;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<Self::Output, OperationError> {
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(BTreeMap::from([(vec![1_u8], 1_u8)]))
+        })
+        .await
+    }
+}
+
+/// A recorded read that declares its answer digest-only: refused, it never
+/// replays the answer the program saw.
+#[derive(Serialize, Deserialize)]
+struct DigestOnlyRead {
+    #[serde(skip)]
+    calls: Arc<Calls>,
+}
+
+impl<R: Provider + PinSlots> Operation<R> for DigestOnlyRead {
+    type Output = u64;
+    const KEY: &'static str = "model.digest";
+    const EFFECT: Effect = Effect::RecordedRead;
+    const RECORD_OUTPUT: bool = false;
+
+    async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+        let calls = self.calls;
+        cx.call(Cost::FREE, async move |_, _| {
+            calls.call(None);
+            Ok(1)
+        })
+        .await
+    }
+}
+
+/// A streamed recorded read of three items.
+struct StreamedAnswer(Arc<Calls>);
+
+impl<R: Provider + PinSlots> StreamOperation<R> for StreamedAnswer {
+    type Item = u8;
+    type Output = ();
+    const KEY: &'static str = "model.stream";
+    const EFFECT: Effect = Effect::RecordedRead;
+
+    async fn run(
+        self,
+        cx: &mut OperationCx<'_, R>,
+        mut sink: StreamSink<u8>,
+    ) -> Result<(), OperationError> {
+        let attempt = cx.attempt(Cost::FREE).await?;
+        self.0.call(attempt.idempotency_key());
+        attempt.finish(&Ok::<(), OperationError>(())).await;
+        for token in 0..3 {
+            sink.send(token).await?;
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_recorded_read_routes_through_the_owner_only_on_a_journaled_row() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+
+    // Without an owner it is a plain read: a library row and a read-only
+    // row both run it, and nothing records it.
+    let library = fixture
+        .library()
+        .submit(Ask::answering(&calls, "library"))
+        .await
+        .expect("a library row reads");
+    assert_eq!(library, "library");
+    let read_only = fixture
+        .read_only()
+        .submit(Ask::answering(&calls, "read-only"))
+        .await
+        .expect("a read-only row reads");
+    assert_eq!(read_only, "read-only");
+    assert!(fixture.owner.log().is_empty(), "nothing recorded");
+
+    // A journaled row drives it through the owner like an effect.
+    let owned = fixture
+        .owned()
+        .submit(Ask::answering(&calls, "journaled"))
+        .await
+        .expect("a journaled row records the answer");
+    assert_eq!(owned, "journaled");
+    assert_eq!(
+        fixture.owner.log(),
+        vec![
+            Step::Prepare(occurrence(0)),
+            Step::Grant,
+            Step::Settle("applied")
+        ]
+    );
+    let intents = fixture.owner.intents();
+    let intent = &intents[0];
+    assert_eq!(intent.kind, UnitKind::Operation);
+    assert_eq!(intent.operation, ASK);
+    assert_eq!(intent.effect, Effect::RecordedRead);
+    assert_eq!(intent.recovery, Recovery::Observation);
+    assert_eq!(intent.recovery.as_str(), "observation");
+    assert!(intent.record_output, "an answer is always recorded");
+    assert_eq!(intent.canonical_request, ask_request());
+    assert_eq!(Effect::RecordedRead.as_str(), "recorded_read");
+    assert!(Effect::RecordedRead.is_replay_safe());
+
+    // Streamed: refused under a journal, a plain read elsewhere.
+    let capacity = NonZeroUsize::MIN;
+    let refused = fixture
+        .owned()
+        .submit_streaming(StreamedAnswer(Arc::clone(&calls)), capacity)
+        .finish()
+        .await
+        .expect_err("not journaled in v1");
+    assert_unsent(&refused, &ErrorKind::Permanent);
+    assert_eq!(
+        refused.detail(),
+        "streaming recorded reads are not journaled in v1"
+    );
+    fixture
+        .read_only()
+        .submit_streaming(StreamedAnswer(Arc::clone(&calls)), capacity)
+        .finish()
+        .await
+        .expect("a streamed read on a read-only row");
+    assert_eq!(calls.made(), 4, "one call per run, none for the refusal");
+    assert_eq!(fixture.owner.log().len(), 3, "the refusal reached no owner");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_digest_only_recorded_read_is_refused_at_submit() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    for row in [fixture.owned(), fixture.library(), fixture.read_only()] {
+        // `submit` would fail the build; the runtime refuses the same
+        // declaration when it gets past it, on every route.
+        let error = submit_unit(
+            row.unit_host(),
+            row.unit_scope(),
+            Plain(DigestOnlyRead {
+                calls: Arc::clone(&calls),
+            }),
+        )
+        .await
+        .expect_err("refused");
+        assert_unsent(&error, &ErrorKind::Permanent);
+        assert_eq!(
+            error.detail(),
+            "a recorded read records its output: RECORD_OUTPUT must stay true"
+        );
+    }
+    assert_eq!(calls.made(), 0);
+    assert!(fixture.owner.log().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_recorded_answer_replays_without_asking_again() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+    let first = row
+        .submit(Ask::answering(&calls, "first"))
+        .await
+        .expect("asked");
+    assert_eq!(first, "first");
+
+    // The provider would answer differently now: the replay observes the
+    // answer the program observed.
+    fixture.owner.resume();
+    let replayed = row
+        .submit(Ask::answering(&calls, "second"))
+        .await
+        .expect("replayed");
+    assert_eq!(replayed, "first");
+    assert_eq!(calls.made(), 1, "not asked again");
+    assert_eq!(fixture.attempts(), (1, 0), "the replay took no attempt");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_answer_the_owner_did_not_record_is_withheld_and_retryable() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    fixture.owner.fail_next_settle(JournalRefusal::Unavailable);
+    let withheld = row
+        .submit(Ask::answering(&calls, "lost"))
+        .await
+        .expect_err("the answer was not recorded");
+    assert_eq!(*withheld.kind(), ErrorKind::Transient, "{withheld}");
+    assert_eq!(withheld.sent(), SentState::MaybeSent);
+    assert_eq!(
+        withheld.detail(),
+        "recorded read could not be recorded by its owner; answer withheld"
+    );
+    assert!(withheld.is_retryable(), "asked again, never unknown");
+    assert!(!withheld.is_outcome_unknown());
+    assert_eq!(
+        crate::Error::from(withheld).kind(),
+        &ErrorKind::Transient,
+        "never converted to an unknown outcome"
+    );
+    assert!(
+        matches!(
+            fixture.owner.phase(&occurrence(0)),
+            Some(Phase::Outstanding(_))
+        ),
+        "the owner holds no answer"
+    );
+
+    // A resumed run asks the same position again and returns what it
+    // records.
+    fixture.owner.resume();
+    let asked = row
+        .submit(Ask::answering(&calls, "again"))
+        .await
+        .expect("asked again");
+    assert_eq!(asked, "again");
+    assert_eq!(calls.made(), 2);
+    assert_eq!(
+        fixture.owner.phase(&occurrence(0)),
+        Some(Phase::Resolved(RecordedOutcome::Succeeded(
+            br#""again""#.to_vec()
+        )))
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_answer_that_cannot_be_recorded_fails_before_the_caller_sees_it() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Over the cap: the JSON string's quotes count.
+    let oversized = "x".repeat(super::MAX_RECORDED_ANSWER_LEN - 1);
+    let refused = row
+        .submit(Ask::answering(&calls, &oversized))
+        .await
+        .expect_err("over the recording cap");
+    assert_eq!(*refused.kind(), ErrorKind::Permanent);
+    assert_eq!(refused.sent(), SentState::MaybeSent);
+    assert_eq!(
+        refused.detail(),
+        "recorded read's answer is over the recording cap; withheld"
+    );
+
+    let unserializable = row
+        .submit(AskForMap {
+            calls: Arc::clone(&calls),
+        })
+        .await
+        .expect_err("no JSON form");
+    assert_eq!(*unserializable.kind(), ErrorKind::Permanent);
+    assert_eq!(unserializable.sent(), SentState::MaybeSent);
+    assert_eq!(
+        unserializable.detail(),
+        "recorded read's answer does not serialize; withheld"
+    );
+
+    // Neither is recorded digest-only: each call is explained and the
+    // failure recorded, so a run that must not ask again fails the same.
+    assert_eq!(
+        fixture.owner.log(),
+        vec![
+            Step::Prepare(occurrence(0)),
+            Step::Grant,
+            Step::Explain(Crossing::Ambiguous),
+            Step::Prepare(occurrence(1)),
+            Step::Grant,
+            Step::Explain(Crossing::Ambiguous),
+        ]
+    );
+    assert_eq!(
+        fixture.owner.unsent(),
+        vec![
+            (occurrence(0), "permanent".to_owned()),
+            (occurrence(1), "permanent".to_owned()),
+        ]
+    );
+
+    // At the cap it is recorded with its output.
+    let fits = "x".repeat(super::MAX_RECORDED_ANSWER_LEN - 2);
+    let answered = row
+        .submit(Ask::answering(&calls, &fits))
+        .await
+        .expect("fits");
+    assert_eq!(answered.len(), fits.len());
+    assert_eq!(fixture.owner.log().last(), Some(&Step::Settle("applied")));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_recorded_read_records_its_failure_whatever_was_sent() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // Interrupted: it may have reached the provider. Explained ambiguous,
+    // its failure recorded all the same — never an unknown outcome.
+    let interrupted = row
+        .submit(Ask::new(
+            &calls,
+            vec![Err(OperationError::interrupted("connection reset"))],
+        ))
+        .await
+        .expect_err("interrupted");
+    assert_eq!(*interrupted.kind(), ErrorKind::Transient);
+    assert_eq!(interrupted.sent(), SentState::MaybeSent);
+    assert!(interrupted.is_retryable());
+    assert!(!interrupted.is_outcome_unknown());
+    // Unreachable: nothing crossed.
+    row.submit(Ask::new(
+        &calls,
+        vec![Err(OperationError::unreachable("no route"))],
+    ))
+    .await
+    .expect_err("unreachable");
+    // Rejected: a definitive answer, recorded and replayed.
+    let rejected = row
+        .submit(Ask::new(
+            &calls,
+            vec![Err(OperationError::rejected("prompt refused"))],
+        ))
+        .await
+        .expect_err("rejected");
+    assert_eq!(*rejected.kind(), ErrorKind::Permanent);
+    assert_eq!(
+        fixture.owner.log(),
+        vec![
+            Step::Prepare(occurrence(0)),
+            Step::Grant,
+            Step::Explain(Crossing::Ambiguous),
+            Step::Prepare(occurrence(1)),
+            Step::Grant,
+            Step::Explain(Crossing::NotCrossed),
+            Step::Prepare(occurrence(2)),
+            Step::Grant,
+            Step::Settle("permanent"),
+        ]
+    );
+    assert_eq!(
+        fixture.owner.unsent(),
+        vec![
+            (occurrence(0), "transient".to_owned()),
+            (occurrence(1), "transient".to_owned()),
+        ],
+        "every failure without a recorded answer, whatever was sent"
+    );
+
+    // An explanation the owner does not take withholds the failure too:
+    // retryable, nothing more recorded.
+    fixture.owner.fail_next_explain(JournalRefusal::Unavailable);
+    let unexplained = row
+        .submit(Ask::new(
+            &calls,
+            vec![Err(OperationError::interrupted("connection reset"))],
+        ))
+        .await
+        .expect_err("not explained");
+    assert_eq!(*unexplained.kind(), ErrorKind::Transient);
+    assert_eq!(unexplained.sent(), SentState::MaybeSent);
+    assert!(unexplained.is_retryable());
+    assert_eq!(fixture.owner.unsent().len(), 2);
+
+    // A resumed run asks the unanswered positions again and replays the
+    // rejection without a call.
+    fixture.owner.resume();
+    let made = calls.made();
+    for answer in ["zero", "one"] {
+        assert_eq!(
+            row.submit(Ask::answering(&calls, answer))
+                .await
+                .expect("asked again"),
+            answer
+        );
+    }
+    let replayed = row
+        .submit(Ask::answering(&calls, "two"))
+        .await
+        .expect_err("the rejection replays");
+    assert_eq!(*replayed.kind(), ErrorKind::Permanent);
+    assert_eq!(calls.made(), made + 2, "no call for the replayed rejection");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_recorded_read_whose_ceiling_is_spent_fails_exhausted_never_unknown() {
+    let fixture = Fixture::new(None);
+    let calls = Arc::new(Calls::default());
+    let row = fixture.owned();
+
+    // The owner refuses the grant: its ceiling for asking again is spent.
+    fixture.owner.fail_next_grant(JournalRefusal::Unknown);
+    let refused = row
+        .submit(Ask::answering(&calls, "never"))
+        .await
+        .expect_err("the ceiling is spent");
+    assert_eq!(*refused.kind(), ErrorKind::Exhausted { retry_after: None });
+    assert_eq!(
+        refused.detail(),
+        "recorded read may not be asked again: its owner's ceiling is spent"
+    );
+    assert!(!refused.is_outcome_unknown());
+
+    // A slot the owner holds as spent fails the same way at its prepare,
+    // with nothing sent.
+    fixture.owner.seed_unit(
+        &occurrence(1),
+        (
+            StrictPooled::key().to_string(),
+            UnitKind::Operation,
+            ASK.to_owned(),
+            1,
+            ask_request(),
+            None,
+        ),
+        Phase::Unknown,
+    );
+    let spent = row
+        .submit(Ask::answering(&calls, "never"))
+        .await
+        .expect_err("spent at its prepare");
+    assert_unsent(&spent, &ErrorKind::Exhausted { retry_after: None });
+    assert!(!spent.is_outcome_unknown());
+    assert_eq!(calls.made(), 0);
+    // Both failures are recorded before the caller sees them: a later run
+    // that supersedes either read fails it `Exhausted` too, never
+    // `Permanent`.
+    assert_eq!(
+        fixture.owner.unsent(),
+        vec![
+            (occurrence(0), "exhausted".to_owned()),
+            (occurrence(1), "exhausted".to_owned()),
+        ]
+    );
 }

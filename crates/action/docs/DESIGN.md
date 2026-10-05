@@ -49,7 +49,7 @@
 | `ControlAction` / `ControlOutcome<T>` (If/Switch/Router/Stop/Fail) | `src/control.rs` |
 | `WebhookAction` + HMAC (`verify_hmac_sha256*`, `SignaturePolicy` fail-closed `Required`) | `src/webhook/mod.rs` (2431 строк) |
 | `PollAction`, `PollTriggerAdapter`, `POLL_INTERVAL_FLOOR`, `DeduplicatingCursor` | `src/poll/mod.rs` |
-| `ActionHandle` enum + `StatelessHandle/StatefulHandle/TriggerHandle/ResourceHandle/ControlHandle` | `src/handle.rs:184,40-176` |
+| `ActionHandle` enum + `StatelessHandle/StatefulHandle/TriggerHandle/ResourceActionHandle/ControlHandle` | `src/handle.rs:184,40-176` |
 | `ActionFactory` + `Generic{Stateless,Stateful,Trigger,Resource,Control}Factory` | `src/factory.rs:53,69-497` |
 | `FromWorkflowNode` (async slot-binding фабрика; тело генерит derive) | `src/from_workflow_node.rs:61` |
 | `ActionError` + `RetryHintCode` (retryable vs fatal), `ValidationReason` | `src/error.rs:154,31,58` |
@@ -124,22 +124,23 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 
 ## 6. Известные напряжения / долг
 
-1. **Stale doc в derive.** `macros/src/lib.rs:47` утверждает «Action structs must be unit structs with no
-   fields» — противоречит реализации (`macros/src/action.rs:37-72` + `field_slots.rs` принимают named-поля
-   со слотами) и `AGENTS.md:34` («structs hold only slot fields»). Док врёт про текущую модель.
-2. **`nebula-action-types.md` (431 строка, рус.)** — стихийный дизайн-док в корне крейта с устаревшей
-   иерархией: рисует `TriggerAction` как потомка `StatefulAction`, тогда как `lib.rs:15` и код держат его
-   отдельным трейтом «outside the execution graph». Кандидат на удаление/перенос (этот DESIGN.md — замена).
+1. **Stale doc в derive — закрыто.** Утверждения «Action structs must be unit structs with no fields» в
+   `macros/src/lib.rs` больше нет (сверено 2026-09-29).
+2. **Спурьёзные дизайн-доки — закрыто (удалены).** `nebula-action-types.md` рисовал `TriggerAction`
+   потомком `StatefulAction`, а `docs/Action Types.md` (1691 строка) описывал иерархию, которой нет в коде
+   (`ProcessAction`, `SupplyAction`, `StreamingAction`, `InteractiveAction`, `TransactionalAction`,
+   `PollingAction`, `SimpleAction` — ни одного такого трейта в `src/`). Единственный документ иерархии —
+   этот DESIGN.md; `TriggerAction` — отдельный трейт «outside the execution graph» (`lib.rs`, `trigger/mod.rs`).
 3. **Legacy path-space.** `lib.rs:60` / `handler.rs` — handler-трейты живут в доменных файлах, но
    ре-экспортируются через `handler::*` «for backwards compatibility». Четыре прод-пути сознательно остаются
    на legacy handler-поверхности (webhook routing, plugin discovery, SDK runtime, EventSource adapter).
 4. **Stateful checkpoint recovery.** Публичный `CheckpointPolicy` удалён вместе с setter/getter:
    неподдерживаемые режимы нельзя объявить через API. Внутренние итерации stateful action пока
    не имеют production checkpoint sink; сохранение результата узла не даёт им SQL durability.
-5. **План-идентификаторы в Cargo.toml.** Строки 56 («Phase 9 / Task 9.1») и 63 («Closes Stage-4 review I3»)
-   нарушают правило «no plan IDs in committed code».
-6. **`zeroize` не через workspace.** `Cargo.toml:33,65` — локальный пин `1.8.2`, тогда как остальные deps
-   `workspace = true`. Расходится с workspace-дисциплиной версий.
+5. **План-идентификаторы в Cargo.toml — закрыто.** «Phase 9 / Task 9.1» и «Stage-4 review I3» в
+   `Cargo.toml` отсутствуют.
+6. **`zeroize` не через workspace — закрыто.** Обе записи (`[dependencies]` и `[dev-dependencies]`) теперь
+   `zeroize = { workspace = true }`.
 
 ## 7. Роль в пост-0092 credential/resource модели
 
@@ -153,35 +154,36 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   УДАЛЕНЫ. Для `nebula-action` это означает: те же типы guard'а, но из единого `nebula-credential` — точка
   проекции state→scheme должна уважать correction «policy(&State) driving routing» и `CredentialSelector` owner-isolation
   на стороне резолвера (action их не реализует, но получает уже-изолированный guard).
-- **Resource-слоты.** `#[resource(key = "…")]`-поле держит `ResourceGuard<R>`; re-export `ResourceRef` в `lib.rs:133`.
+- **Resource-слоты.** `#[resource(key = "…")]`-поле держит `ResourceHandle<R>` (или `Option<ResourceHandle<R>>`) —
+  с 0.27.0 единственная resource-capability, которую action может назвать. `ResourceGuard<R>`-слот в любой обёртке
+  derive отклоняет с migration-подсказкой (лиза обходит effect journal); re-export `ResourceRef` удалён.
   `ResourceAction` ставит `type Output = ResourceProduces<Self::Resource>` (graph-side эффект, пустая data-схема).
   Per-slot rotation FAN-OUT теперь во владении `nebula-resource` (`credential_fanout/`, ex-engine) — action только
   потребляет уже-резолвленный/уже-ротированный guard, не участвует в fan-out-механике.
 - **Bind-population seam (M12.4).** `FromWorkflowNode::from_workflow_node` — **то самое место**, где slot-bindings
   резолвятся: derive читает `node.resource_binding(slot)` / `node.credential_binding(slot)` (fallback на
-  `default_id` = slot key), зовёт `ctx.acquire_resource_by_id::<R>` / `ctx.resolve_credential_by_id::<C>`,
+  provider contract key для resource-слота), зовёт `ctx.resource_handle_by_id::<R>` / `ctx.resolve_credential_by_id::<C>`,
   собирает `Self`. Это consumer-конец producer-gap'а bind-population — `slot_bindings` отделены от `parameters`,
   привязка к конкретному `CredentialId`/resource-id идёт через ADR-0042 hybrid-механизм (default=slot key,
   override через `node.slot_bindings`). Values-only persistence: схема приходит из зарегистрированных типов
   (`HasSchema` → `nebula-metadata` → API catalog), не из inline-значений.
 - **Что меняется:** dep-пути (всё credential — из одного крейта за sole-public-`nebula-sdk`), потенциально
   упрощение re-export-блока в `lib.rs`. **Что остаётся:** сама форма слотов (`#[credential]`/`#[resource]`,
-  `CredentialGuard<Scheme>`, `ResourceGuard<R>`), `FromWorkflowNode`-seam, webhook «секрет не через dyn»-инвариант,
+  `CredentialGuard<Scheme>`, `ResourceHandle<R>`), `FromWorkflowNode`-seam, webhook «секрет не через dyn»-инвариант,
   routing-по-трейту. Lease — first-class на стороне credential; action видит его опосредованно через guard, не как
   собственный примитив. [Phase-5 authoring](../../schema/docs/PHASE5_PROPERTY.md) — target design,
   implementation pending; текущие field-атрибуты слотов остаются implementation baseline.
 
 ## 8. Forward design / открытые вопросы
 
-- **Заменить `nebula-action-types.md` этим DESIGN.md.** Удалить/перенести стихийный док с неверной иерархией
-  (Напряжение №2); зафиксировать `TriggerAction` как отдельный трейт «outside the execution graph».
-- **Починить stale derive-doc** (`macros/src/lib.rs:47`): привести текст в соответствие с named-slot-полями
-  (Напряжение №1) — иначе plugin-авторы читают противоречие между доком и компилятором.
-- **Снять долг Cargo.toml:** убрать план-идентификаторы (строки 56/63) и поднять `zeroize` до `workspace = true`
-  (Напряжения №5/№6) — в идеале согласовать с workspace-bump.
+- ~~Заменить `nebula-action-types.md` этим DESIGN.md~~ — сделано (Напряжение №2).
+- ~~Починить stale derive-doc~~ — сделано (Напряжение №1).
+- ~~Снять долг Cargo.toml~~ — сделано (Напряжения №5/№6).
 - **Согласовать re-export-блок credential** (`lib.rs:132`) с пост-0092 топологией: после коллапса credential-крейтов
   проверить, что `CredentialGuard`/`CredentialRef` приходят из единого `nebula-credential`, и нет ли осиротевших путей
   к удалённым `credential-runtime`/`builtin`.
+  *Сверено 2026-09-29:* `CredentialGuard`/`CredentialRef` реэкспортируются из единого `nebula-credential`
+  (`src/lib.rs`), осиротевших путей к удалённым крейтам нет.
 - **Checkpoint contract:** публичный выбор cadence удалён. Поле `checkpoint_policy` остаётся
   приватным wire evidence: новые metadata и планы записывают `inherit`, исторические значения
   сохраняются при чтении, но non-default не проходят readmission, registry compatibility и

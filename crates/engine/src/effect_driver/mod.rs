@@ -1,10 +1,20 @@
-//! Execution-owned driver for one explicit remote effect occurrence.
+//! Execution-owned effects: the driver of one explicit remote effect
+//! occurrence, and the effect journal of a journaled action's resource
+//! handles ([`NodeEffectJournal`]). Both record through the ledger slot core.
 
 mod error;
 mod evidence;
+mod journal;
 mod recovery;
+mod slot;
 
 pub use error::EffectExecutionError;
+pub(crate) use journal::ResumePoint;
+pub(crate) use journal::{
+    Concluded, IterationGate, IterationProgress, JournalAdmission, JournalAuthority, JournalShape,
+    NodeEffectJournal, journal_drain_limit,
+};
+use slot::{CallPurpose, GrantedCall, LedgerAccess, LedgerSlot};
 
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
@@ -25,10 +35,10 @@ use nebula_core::{
 use nebula_storage_port::{
     FencingToken, Scope,
     dto::{
-        AttemptGeneration, DestinationCapability, EffectOccurrenceKey, EffectPhase,
-        EffectSlotBinding, FrozenOutcomeEvidence, InvocationDisposition, OperationAdvance,
-        OperationCommand, OperationLedgerError, OperationRecord, OutcomeEvidenceSource,
-        PreparedEffectContract, PreparedEffectPolicy, RequestFingerprint,
+        AttemptGeneration, DestinationCapability, EffectPhase, EffectSlotBinding,
+        FrozenOutcomeEvidence, InvocationDisposition, OperationAdvance, OperationCommand,
+        OperationLedgerError, OperationRecord, OutcomeEvidenceSource, PreparedEffectContract,
+        PreparedEffectPolicy, RequestFingerprint,
     },
     store::OperationLedger,
 };
@@ -117,44 +127,31 @@ impl EffectTurn<'_> {
             // Remote effects identify themselves to the provider by the
             // ledger-minted operation id; they record no separate key.
             provider_key: None,
+            // One effect per node: no positional run to order.
+            concurrent_with: None,
+            observation: false,
         };
-        let record = match self.ledger.prepare(&binding, self.fencing).await {
-            Ok(outcome) => {
-                let record = self
-                    .ledger
-                    .read_exact(self.scope, outcome.operation().slot_id())
-                    .await?;
-                if record.operation() != outcome.operation() {
-                    return Err(EffectExecutionError::InvalidEvidence);
-                }
-                record
-            },
-            Err(OperationLedgerError::AcknowledgementUnknown) => self
-                .ledger
-                .read_occurrence(&EffectOccurrenceKey::new(
-                    self.scope,
-                    &execution,
-                    self.node_key.as_str(),
-                    occurrence,
-                ))
-                .await
-                .map_err(|_| OperationLedgerError::AcknowledgementUnknown)?
-                .ok_or(OperationLedgerError::AcknowledgementUnknown)?,
-            Err(error) => return Err(error.into()),
-        };
+        let slot = LedgerSlot::prepare(self.access(), &binding).await?;
         let mut driver = Driver {
             turn: self,
             prepared,
-            contract,
-            fingerprint,
-            record,
+            slot,
         };
-        driver.validate_record(&driver.record)?;
         tracing::Span::current().record(
             "operation_id",
             tracing::field::display(driver.operation_id()),
         );
         driver.run().await
+    }
+
+    /// The turn's fenced write authority over the ledger.
+    fn access(&self) -> LedgerAccess<'_> {
+        LedgerAccess {
+            ledger: self.ledger,
+            scope: self.scope,
+            fencing: self.fencing,
+            clock: self.clock,
+        }
     }
 
     fn binding(
@@ -244,170 +241,25 @@ fn frame(digest: &mut Sha256, bytes: &[u8]) -> Result<(), EffectExecutionError> 
 struct Driver<'a, 'turn> {
     turn: &'a EffectTurn<'turn>,
     prepared: PreparedRemoteEffect,
-    contract: PreparedEffectContract,
-    fingerprint: RequestFingerprint,
-    record: OperationRecord,
-}
-
-enum GrantedCall {
-    Invocation {
-        call: OperationCallId,
-        authorized_at_ms: i64,
-        request_started: Instant,
-    },
-    Reconciliation {
-        call: OperationCallId,
-        authorized_at_ms: i64,
-        request_started: Instant,
-    },
-}
-
-enum CallPurpose {
-    Invocation,
-    Reconciliation,
+    slot: LedgerSlot,
 }
 
 impl Driver<'_, '_> {
     fn operation_id(&self) -> OperationId {
-        self.record.operation().operation_id()
+        self.slot.operation_id()
     }
 
-    fn validate_record(&self, record: &OperationRecord) -> Result<(), EffectExecutionError> {
-        let protocol = record
-            .protocol()
-            .ok_or(EffectExecutionError::InvalidEvidence)?;
-        if record.operation() != self.record.operation()
-            || record.fingerprint() != self.fingerprint
-            || protocol.contract() != &self.contract
-            || record.operation().destination() != self.contract.policy().capability()
-        {
-            return Err(EffectExecutionError::InvalidEvidence);
-        }
-        protocol.validate()?;
-        if protocol.invocations() > self.contract.policy().max_invocations()
-            || protocol.queries() > self.contract.policy().max_queries()
-            || (protocol.phase() == EffectPhase::Resolved) != protocol.evidence().is_some()
-        {
-            return Err(EffectExecutionError::InvalidEvidence);
-        }
-        if let Some(evidence) = protocol.evidence() {
-            evidence
-                .validate()
-                .map_err(|_| EffectExecutionError::InvalidEvidence)?;
-        }
-        Ok(())
-    }
-
-    fn accept(&mut self, record: OperationRecord) -> Result<(), EffectExecutionError> {
-        self.validate_record(&record)?;
-        self.record = record;
-        Ok(())
+    fn protocol(
+        &self,
+    ) -> Result<&nebula_storage_port::dto::OperationProtocolRecord, EffectExecutionError> {
+        self.slot.protocol()
     }
 
     async fn advance(
         &mut self,
         command: &OperationCommand,
     ) -> Result<Option<GrantedCall>, EffectExecutionError> {
-        let previous = self.protocol()?;
-        let revision = previous.revision();
-        let invocations = previous.invocations();
-        let queries = previous.queries();
-        let request_started = self.turn.clock.monotonic();
-        let advance = self
-            .turn
-            .ledger
-            .advance(
-                self.turn.scope,
-                self.record.operation().slot_id(),
-                self.turn.fencing,
-                command,
-            )
-            .await?;
-        match advance {
-            OperationAdvance::Granted {
-                call,
-                authorized_at_ms,
-                record,
-            } => {
-                let protocol = record
-                    .protocol()
-                    .ok_or(EffectExecutionError::InvalidEvidence)?;
-                if Some(protocol.revision()) != revision.checked_add(1)
-                    || Some(protocol.invocations()) != invocations.checked_add(1)
-                    || protocol.queries() != queries
-                    || protocol.phase() != EffectPhase::InvocationOutstanding
-                    || protocol.invocation() != Some(call)
-                    || protocol.query().is_some()
-                {
-                    return Err(EffectExecutionError::InvalidEvidence);
-                }
-                self.accept(record)?;
-                Ok(Some(GrantedCall::Invocation {
-                    call,
-                    authorized_at_ms,
-                    request_started,
-                }))
-            },
-            OperationAdvance::ReconciliationGranted {
-                call,
-                authorized_at_ms,
-                record,
-            } => {
-                let protocol = record
-                    .protocol()
-                    .ok_or(EffectExecutionError::InvalidEvidence)?;
-                if Some(protocol.revision()) != revision.checked_add(1)
-                    || Some(protocol.queries()) != queries.checked_add(1)
-                    || protocol.invocations() != invocations
-                    || protocol.query() != Some(call)
-                    || protocol.phase() != EffectPhase::OutcomeUnknown
-                {
-                    return Err(EffectExecutionError::InvalidEvidence);
-                }
-                self.accept(record)?;
-                Ok(Some(GrantedCall::Reconciliation {
-                    call,
-                    authorized_at_ms,
-                    request_started,
-                }))
-            },
-            OperationAdvance::Recorded(record) => {
-                let recorded_revision = record
-                    .protocol()
-                    .ok_or(EffectExecutionError::InvalidEvidence)?
-                    .revision();
-                if !recorded_revision_is_valid(command, revision, recorded_revision) {
-                    return Err(EffectExecutionError::InvalidEvidence);
-                }
-                self.accept(record)?;
-                Ok(None)
-            },
-            _ => Err(EffectExecutionError::InvalidEvidence),
-        }
-    }
-
-    fn protocol(
-        &self,
-    ) -> Result<&nebula_storage_port::dto::OperationProtocolRecord, EffectExecutionError> {
-        self.record
-            .protocol()
-            .ok_or(EffectExecutionError::InvalidEvidence)
-    }
-
-    fn deadline(&self, purpose: CallPurpose) -> Result<i64, EffectExecutionError> {
-        let protocol = self.protocol()?;
-        let policy = self.contract.policy();
-        let window = match purpose {
-            CallPurpose::Reconciliation => policy.recovery_window_ms(),
-            CallPurpose::Invocation => policy.stable_window_ms().map_or_else(
-                || policy.recovery_window_ms(),
-                |stable| stable.min(policy.recovery_window_ms()),
-            ),
-        };
-        protocol
-            .prepared_at_ms()
-            .checked_add(i64::try_from(window).map_err(|_| EffectExecutionError::InvalidContract)?)
-            .ok_or(EffectExecutionError::InvalidEvidence)
+        self.slot.advance(self.turn.access(), command).await
     }
 
     fn call_timing(
@@ -416,24 +268,23 @@ impl Driver<'_, '_> {
         authorized_at_ms: i64,
         request_started: Instant,
     ) -> Result<(i64, Duration), EffectExecutionError> {
-        let deadline = self.deadline(purpose)?;
-        let remaining = remaining_call_budget(
-            deadline,
-            authorized_at_ms,
-            request_started,
-            self.turn.clock.monotonic(),
-        )
-        .ok_or(EffectExecutionError::InvalidEvidence)?;
-        Ok((deadline, remaining))
+        self.slot
+            .call_timing(self.turn.clock, purpose, authorized_at_ms, request_started)
     }
 
     async fn mark_unknown(&mut self) -> Result<(), EffectExecutionError> {
-        let revision = self.protocol()?.revision();
-        self.advance(&OperationCommand::MarkUnknown {
-            expected_revision: revision,
-        })
-        .await?;
-        Ok(())
+        self.slot.mark_unknown(self.turn.access()).await
+    }
+
+    /// Commits `evidence` and replays it as the node's result.
+    async fn commit_evidence(
+        &mut self,
+        evidence: FrozenOutcomeEvidence,
+    ) -> Result<ActionResult<Value>, EffectExecutionError> {
+        self.slot
+            .commit_evidence(self.turn.access(), &evidence)
+            .await?;
+        evidence::replay(self.operation_id(), &evidence)
     }
 
     async fn run(&mut self) -> Result<ActionResult<Value>, EffectExecutionError> {

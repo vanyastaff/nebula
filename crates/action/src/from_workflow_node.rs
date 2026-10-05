@@ -11,9 +11,9 @@
 //! resolution.
 //! 3. Resolve resources by selected id and credentials by declared slot key through
 //! [`ActionContext`](crate::ActionContext) typed helpers
-//! ([`acquire_resource_by_id`](crate::context::ActionContextExt::acquire_resource_by_id),
+//! ([`resource_handle_by_id`](crate::context::ActionContextExt::resource_handle_by_id),
 //! [`resolve_credential_by_id`](crate::context::ActionContextExt::resolve_credential_by_id)).
-//! 4. Assemble `Self` with the resolved guards.
+//! 4. Assemble `Self` with the resolved resource handles and credential guards.
 //!
 //! `#[derive(Action)]` (Phase 3 / Session 3) generates the body of
 //! [`from_workflow_node`](FromWorkflowNode::from_workflow_node) automatically

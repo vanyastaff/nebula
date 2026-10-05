@@ -23,13 +23,13 @@ use std::{
 };
 
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ScopeLevel, ShutdownConfig,
-    SlotIdentity, rate_limit::RowLimit,
+    Manager, RegistrationSpec, ResidentConfig, ScopeLevel, ShutdownConfig, SlotIdentity,
+    rate_limit::RowLimit,
 };
 use nebula_sdk::integration::resource::{
     CredentialGuard, CredentialUnavailableReason, Effect, Error, ErrorKind, HasCredentialSlots,
-    Managed, OpError, PinSlots, Provider, Rate, Resident, ResidentProvider, ResourceConfig,
-    ResourceContext, ResourceKey, ResourceMetadataDraft, SentState, SlotCell,
+    OperationError, PinSlots, Provider, Rate, Resident, ResidentProvider, ResourceConfig,
+    ResourceContext, ResourceHandle, ResourceKey, ResourceMetadataDraft, SentState, SlotCell,
     http::{
         Authorize, HttpApi, HttpConfig, HttpTransport, Request, open_stream, open_stream_until,
     },
@@ -124,7 +124,7 @@ impl Provider for Api {
 impl ResidentProvider for Api {}
 
 impl HttpApi for Api {
-    fn authorize(slots: &Pinned, auth: &mut Authorize<'_>) -> Result<(), OpError> {
+    fn authorize(slots: &Pinned, auth: &mut Authorize<'_>) -> Result<(), OperationError> {
         match slots.auth {
             Auth::Bearer => auth.bearer(slots.token.as_deref()),
             Auth::Basic => auth.basic(slots.login.as_deref()),
@@ -179,13 +179,11 @@ impl Harness {
         harness
     }
 
-    async fn managed(&self) -> Managed<Api> {
+    /// The row's resource handle, as an action would hold it: each unit
+    /// checks out the instance per attempt.
+    fn managed(&self) -> ResourceHandle<Api> {
         let context = ResourceContext::minimal(Default::default(), CancellationToken::new());
-        self.manager
-            .acquire::<Api>(&context, &AcquireOptions::default())
-            .await
-            .expect("acquire")
-            .into_managed()
+        self.manager.handle::<Api>(&context).expect("handle")
     }
 }
 
@@ -202,7 +200,7 @@ fn status(code: u16, extra: &str) -> Reply {
     ))
 }
 
-fn assert_unit_error(error: &OpError, kind: &ErrorKind, sent: SentState) {
+fn assert_unit_error(error: &OperationError, kind: &ErrorKind, sent: SentState) {
     assert_eq!(error.kind(), kind, "{error:?}");
     assert_eq!(error.sent(), sent, "{error:?}");
 }
@@ -221,7 +219,7 @@ async fn a_redirect_is_an_answer_and_is_never_followed() {
     let server = Server::start(vec![redirect(), redirect(), redirect()]).await;
 
     let bearer = Harness::bearer(&server);
-    let managed = bearer.managed().await;
+    let managed = bearer.managed();
     let got = managed
         .submit(Request::get("/user").expect("path"))
         .await
@@ -242,7 +240,6 @@ async fn a_redirect_is_an_answer_and_is_never_followed() {
     keyed.api.token.store(token("key-canary"));
     let got = keyed
         .managed()
-        .await
         .submit(Request::get("/user").expect("path"))
         .await
         .expect("a 307 is an answer");
@@ -333,7 +330,7 @@ async fn credentials_urls_and_bodies_never_reach_debug_or_logs() {
     ])
     .await;
     let harness = Harness::bearer(&server);
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let request = || {
         Request::get("/path-canary")
             .expect("path")
@@ -415,7 +412,7 @@ async fn sent_case(case: SentCase) {
     };
     let harness = Harness::new(Auth::Bearer, config, None);
     harness.api.token.store(token(TOKEN));
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let result = if case.post {
         managed
             .submit(Request::post("/charges").expect("path").body("{}"))
@@ -481,13 +478,13 @@ async fn no_head_before_the_timeout_is_maybe_sent_unknown_for_a_write_retryable_
 }
 
 #[tokio::test]
-async fn a_head_without_its_body_is_sent_and_unknown_for_a_write() {
+async fn a_head_without_its_body_is_interrupted_and_unknown_for_a_write() {
     sent_case(SentCase {
         reply: Some(Reply::HeadersThenHang(
             "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n".to_owned(),
         )),
         post: true,
-        sent: SentState::Sent,
+        sent: SentState::MaybeSent,
         retryable: false,
         requests: 1,
     })
@@ -508,7 +505,7 @@ async fn a_throttle_is_exhausted_retryable_and_pauses_the_next_unit() {
         Some(RowLimit::rate(rate)),
     );
     harness.api.token.store(token(TOKEN));
-    let managed = harness.managed().await;
+    let managed = harness.managed();
 
     let error = managed
         .submit(Request::post("/messages").expect("path").body("hi"))
@@ -538,17 +535,60 @@ async fn a_throttle_is_exhausted_retryable_and_pauses_the_next_unit() {
 }
 
 #[tokio::test]
-async fn a_503_without_retry_after_is_transient() {
+async fn a_503_without_retry_after_is_interrupted() {
     let server = Server::start(vec![status(503, "")]).await;
     let harness = Harness::bearer(&server);
     let error = harness
         .managed()
-        .await
         .submit(Request::get("/status").expect("path"))
         .await
         .expect_err("unavailable");
-    assert_unit_error(&error, &ErrorKind::Transient, SentState::Sent);
+    assert_unit_error(&error, &ErrorKind::Transient, SentState::MaybeSent);
     assert!(error.is_retryable(), "a read");
+}
+
+#[tokio::test]
+async fn a_throttled_write_is_re_attempted_after_the_pause_and_a_rejection_is_not() {
+    let two = NonZeroU32::new(2).expect("two");
+    let rate = Rate::per_second(NonZeroU32::new(100).expect("non-zero"))
+        .with_burst(NonZeroU32::new(100).expect("non-zero"))
+        .expect("rate");
+
+    let server = Server::start(vec![status(429, "Retry-After: 1\r\n"), ok("{}")]).await;
+    let harness = Harness::new(
+        Auth::Bearer,
+        HttpConfig::new(&server.base),
+        Some(RowLimit::rate(rate)),
+    );
+    harness.api.token.store(token(TOKEN));
+    let started = Instant::now();
+    let response = harness
+        .managed()
+        .submit(
+            Request::post("/messages")
+                .expect("path")
+                .body("hi")
+                .max_attempts(two),
+        )
+        .await
+        .expect("the provider applied nothing: the write is sent again");
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(server.seen().len(), 2);
+    assert!(
+        started.elapsed() >= Duration::from_millis(900),
+        "the second attempt's booking waited out the pause: {:?}",
+        started.elapsed()
+    );
+
+    let server = Server::start(vec![status(422, ""), ok("{}")]).await;
+    let harness = Harness::bearer(&server);
+    let error = harness
+        .managed()
+        .submit(Request::get("/items").expect("path").max_attempts(two))
+        .await
+        .expect_err("rejected");
+    assert_unit_error(&error, &ErrorKind::Permanent, SentState::Sent);
+    assert_eq!(server.seen().len(), 1, "a rejection is never re-attempted");
 }
 
 // ── attempts within a unit ───────────────────────────────────────────────
@@ -561,7 +601,6 @@ async fn a_read_is_re_attempted_after_a_reset_and_a_write_is_not() {
     let harness = Harness::bearer(&server);
     let response = harness
         .managed()
-        .await
         .submit(Request::get("/items").expect("path").max_attempts(two))
         .await
         .expect("the second attempt answered");
@@ -572,7 +611,6 @@ async fn a_read_is_re_attempted_after_a_reset_and_a_write_is_not() {
     let harness = Harness::bearer(&server);
     let error = harness
         .managed()
-        .await
         .submit(
             Request::post("/items")
                 .expect("path")
@@ -588,7 +626,6 @@ async fn a_read_is_re_attempted_after_a_reset_and_a_write_is_not() {
     let harness = Harness::bearer(&server);
     harness
         .managed()
-        .await
         .submit(
             Request::post("/items")
                 .expect("path")
@@ -600,10 +637,62 @@ async fn a_read_is_re_attempted_after_a_reset_and_a_write_is_not() {
         .expect("a keyed write is replay safe");
     let seen = server.seen();
     assert_eq!(seen.len(), 2);
+    let keys: Vec<&str> = seen
+        .iter()
+        .map(|request| idempotency_header(request))
+        .collect();
+    // The header is the key the unit derived from the developer part
+    // (base64url SHA-256), never the part itself, and every attempt sends
+    // the same one.
+    assert_eq!(keys[0].len(), 43, "{keys:?}");
     assert!(
-        seen.iter()
-            .all(|request| request.contains("idempotency-key: key-1"))
+        keys[0]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')),
+        "{keys:?}"
     );
+    assert_ne!(keys[0], "key-1");
+    assert_eq!(keys[0], keys[1], "one key for every attempt");
+
+    // The same part derives the same key; another part another one.
+    let server = Server::start(vec![ok("{}"), ok("{}")]).await;
+    let harness = Harness::bearer(&server);
+    let managed = harness.managed();
+    for part in ["key-1", "key-2"] {
+        managed
+            .submit(
+                Request::post("/items")
+                    .expect("path")
+                    .body("{}")
+                    .idempotency_key(part),
+            )
+            .await
+            .expect("keyed");
+    }
+    let seen = server.seen();
+    assert_eq!(idempotency_header(&seen[0]), keys[0]);
+    assert_ne!(idempotency_header(&seen[1]), keys[0]);
+
+    // An invalid part is refused before anything is sent.
+    let error = managed
+        .submit(
+            Request::post("/items")
+                .expect("path")
+                .idempotency_key("has space"),
+        )
+        .await
+        .expect_err("not visible ASCII");
+    assert_unit_error(&error, &ErrorKind::Permanent, SentState::NotSent);
+    assert_eq!(server.seen().len(), 2);
+}
+
+/// The `idempotency-key` header value of a raw request.
+fn idempotency_header(request: &str) -> &str {
+    request
+        .lines()
+        .find_map(|line| line.strip_prefix("idempotency-key: "))
+        .expect("an idempotency-key header")
+        .trim()
 }
 
 // ── credentials ──────────────────────────────────────────────────────────
@@ -613,7 +702,7 @@ async fn a_rotation_reaches_the_next_unit_over_the_same_transport_and_connection
     let server = Server::start(vec![ok("{}"), ok("{}")]).await;
     let harness = Harness::new(Auth::Bearer, HttpConfig::new(&server.base), None);
     harness.api.token.store(token("tok-v1"));
-    let managed = harness.managed().await;
+    let managed = harness.managed();
 
     managed
         .submit(Request::get("/me").expect("path"))
@@ -642,7 +731,6 @@ async fn an_unbound_slot_sends_nothing() {
     let harness = Harness::new(Auth::Bearer, HttpConfig::new(&server.base), None);
     let error = harness
         .managed()
-        .await
         .submit(Request::get("/me").expect("path"))
         .await
         .expect_err("no token");
@@ -671,7 +759,6 @@ async fn basic_and_api_key_headers_have_their_shapes() {
         ))));
     basic
         .managed()
-        .await
         .submit(Request::get("/me").expect("path"))
         .await
         .expect("basic");
@@ -680,7 +767,6 @@ async fn basic_and_api_key_headers_have_their_shapes() {
     keyed.api.token.store(token("key-7"));
     keyed
         .managed()
-        .await
         .submit(Request::get("/me").expect("path"))
         .await
         .expect("api key");
@@ -688,7 +774,6 @@ async fn basic_and_api_key_headers_have_their_shapes() {
     let anonymous = Harness::new(Auth::Anonymous, HttpConfig::new(&server.base), None);
     anonymous
         .managed()
-        .await
         .submit(Request::get("/me").expect("path"))
         .await
         .expect("anonymous");
@@ -740,7 +825,7 @@ async fn a_streamed_body_arrives_in_order_then_ends() {
     ])])
     .await;
     let harness = Harness::bearer(&server);
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let mut stream = open_stream(&managed, Request::get("/feed").expect("path"))
         .await
         .expect("head");
@@ -758,7 +843,7 @@ async fn a_slow_reader_holds_the_server_back() {
     pieces.extend((0..PIECES).map(|_| piece(&[b'x'; PIECE])));
     let server = Server::start(vec![Reply::Chunks(pieces)]).await;
     let harness = Harness::bearer(&server);
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let mut stream = open_stream(&managed, Request::get("/export").expect("path"))
         .await
         .expect("head");
@@ -782,7 +867,7 @@ fn head_then_hang() -> Reply {
 async fn a_dropped_stream_disconnects_and_releases_the_lease() {
     let server = Server::start(vec![head_then_hang()]).await;
     let harness = Harness::bearer(&server);
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let mut stream = open_stream(&managed, Request::get("/feed").expect("path"))
         .await
         .expect("head");
@@ -807,7 +892,7 @@ async fn a_dropped_stream_disconnects_and_releases_the_lease() {
 async fn a_cancelled_stream_settles_cancelled_and_sent() {
     let server = Server::start(vec![head_then_hang()]).await;
     let harness = Harness::bearer(&server);
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let mut stream = open_stream(&managed, Request::get("/feed").expect("path"))
         .await
         .expect("head");
@@ -826,7 +911,7 @@ async fn a_cancelled_stream_settles_cancelled_and_sent() {
 async fn a_stream_never_polled_or_refused_before_its_grant_sends_nothing() {
     let server = Server::start(vec![ok("{}")]).await;
     let harness = Harness::bearer(&server);
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     drop(open_stream(&managed, Request::get("/feed").expect("path")));
 
     harness.manager.remove(&Api::key()).expect("remove");
@@ -841,7 +926,7 @@ async fn a_stream_never_polled_or_refused_before_its_grant_sends_nothing() {
 async fn the_deadline_mid_body_is_maybe_sent() {
     let server = Server::start(vec![head_then_hang()]).await;
     let harness = Harness::bearer(&server);
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let mut stream = open_stream_until(
         &managed,
         Request::post("/export").expect("path").body("{}"),
@@ -863,7 +948,7 @@ async fn the_deadline_mid_body_is_maybe_sent() {
 async fn removing_the_row_mid_body_cancels_the_stream() {
     let server = Server::start(vec![head_then_hang()]).await;
     let harness = Harness::bearer(&server);
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let mut stream = open_stream(&managed, Request::get("/feed").expect("path"))
         .await
         .expect("head");
@@ -884,7 +969,7 @@ async fn a_body_cut_short_is_transient_and_sent() {
     )])
     .await;
     let harness = Harness::bearer(&server);
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let mut stream = open_stream(&managed, Request::get("/feed").expect("path"))
         .await
         .expect("head");
@@ -915,13 +1000,13 @@ async fn a_body_over_its_budget_is_permanent_and_errors_are_not_streamed() {
     );
     harness.api.token.store(token(TOKEN));
 
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let error = open_stream(&managed, Request::get("/big").expect("path"))
         .await
         .expect_err("declared length over the budget");
     assert_unit_error(&error, &ErrorKind::Permanent, SentState::Sent);
 
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let mut stream = open_stream(&managed, Request::get("/big").expect("path"))
         .await
         .expect("chunked: no declared length");
@@ -933,7 +1018,7 @@ async fn a_body_over_its_budget_is_permanent_and_errors_are_not_streamed() {
     };
     assert_unit_error(&error, &ErrorKind::Permanent, SentState::Sent);
 
-    let managed = harness.managed().await;
+    let managed = harness.managed();
     let error = open_stream(&managed, Request::get("/missing").expect("path"))
         .await
         .expect_err("an error status is not streamed");

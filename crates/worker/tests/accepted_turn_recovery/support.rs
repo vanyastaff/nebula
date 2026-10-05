@@ -160,7 +160,7 @@ impl Action for Echo {
             nebula_action::metadata_name!("Echo"),
             "pure recovery fixture",
         )
-        .with_effect_contract(ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(ActionEffectContract::ReadOnly)
     }
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -440,7 +440,6 @@ impl Backend {
     }
     pub(super) fn ports(&self) -> Ports {
         let node_results = Arc::new(nebula_storage::InMemoryNodeResultStore::new());
-        let checkpoints = Arc::new(nebula_storage::InMemoryCheckpointStore::new());
         match self {
             Self::Memory(core) => {
                 use nebula_storage::inmem::*;
@@ -450,7 +449,7 @@ impl Backend {
                         execution: core.clone(),
                         journal: Arc::new(InMemoryJournalReader::new(core)),
                         node_results,
-                        checkpoints,
+                        checkpoints: Arc::new(InMemoryCheckpointStore::new(core)),
                         idempotency: Arc::new(InMemoryIdempotencyGuard::new()),
                         resume_tokens: Arc::new(core.resume_token_store()),
                         operation_ledger: Arc::new(InMemoryOperationLedger::new(core)),
@@ -474,7 +473,7 @@ impl Backend {
                         execution: Arc::new(SqliteExecutionStore::new(pool.clone())),
                         journal: Arc::new(SqliteJournalReader::new(pool.clone())),
                         node_results,
-                        checkpoints,
+                        checkpoints: Arc::new(SqliteCheckpointStore::new(pool.clone())),
                         idempotency: Arc::new(SqliteIdempotencyGuard::new(pool.clone())),
                         resume_tokens: Arc::new(SqliteResumeTokenStore::new(pool.clone())),
                         operation_ledger: Arc::new(SqliteOperationLedger::new(pool.clone())),
@@ -498,7 +497,7 @@ impl Backend {
                         execution: Arc::new(PgExecutionStore::new(pool.clone())),
                         journal: Arc::new(PgJournalReader::new(pool.clone())),
                         node_results,
-                        checkpoints,
+                        checkpoints: Arc::new(PgCheckpointStore::new(pool.clone())),
                         idempotency: Arc::new(PgIdempotencyGuard::new(pool.clone())),
                         resume_tokens: Arc::new(PgResumeTokenStore::new(pool.clone())),
                         operation_ledger: Arc::new(PgOperationLedger::new(pool.clone())),

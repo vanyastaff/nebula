@@ -67,7 +67,7 @@ impl Action for TwoTurnAgent {
             nebula_action::metadata_name!("TwoTurnAgent"),
             "continues twice then breaks",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -152,7 +152,7 @@ impl Action for StubbornContinueAgent {
             nebula_action::metadata_name!("StubbornContinueAgent"),
             "continues N times without mutating turn state, then breaks",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -228,7 +228,7 @@ impl Action for LoopForeverAgent {
             nebula_action::metadata_name!("LoopForeverAgent"),
             "loops until budget is exceeded",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -297,7 +297,7 @@ impl Action for SlowTurnAgent {
             nebula_action::metadata_name!("SlowTurnAgent"),
             "sleeps per turn to exercise the per-turn timeout",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -355,7 +355,7 @@ impl Action for FastTurnAgent {
             nebula_action::metadata_name!("FastTurnAgent"),
             "completes instantly — per-turn timeout must NOT fire",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -418,7 +418,7 @@ impl Action for WaitReturningAgent {
             nebula_action::metadata_name!("WaitReturningAgent"),
             "returns Wait — engine must reject with AgentWaitNotSupported",
         )
-        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::ReadOnly)
     }
 
     fn dependencies() -> &'static Dependencies {

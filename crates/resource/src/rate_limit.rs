@@ -10,27 +10,22 @@
 //! several resources on one provider account stay within that account's
 //! limit.
 //!
-//! Every row has a [`ResourceLimiter`]; it is consumed once per acquire. The
-//! resource author wraps the client built in `Provider::create` once, with
-//! [`ResourceContext::limits`](crate::ResourceContext::limits) and
-//! [`ResourceLimiter::wrap`], so action code calls the [`Limited`] client and
-//! never sees the limit:
+//! Every row has a [`ResourceLimiter`]. Until a handle of the row is used,
+//! it is consumed once per acquire; once the managed call facade
+//! ([`crate::call`]) serves the row, every granted provider attempt books its
+//! declared [`Cost`](crate::call::Cost) through
+//! [`OperationCx::call`](crate::call::OperationCx::call) and an acquire only
+//! honours pauses (see [`RateLimitProfile`]). Action code never sees the
+//! limit.
 //!
-//! ```ignore
-//! async fn create(&self, config: &Config, ctx: &ResourceContext) -> Result<Self::Instance, Error> {
-//!     let bot = teloxide::Bot::new(&config.token);
-//!     Ok(ctx.limits().wrap(bot, TelegramThrottle))
-//! }
-//! // In an action:
-//! guard.run(async |bot| bot.send_message(chat, "hi").await).await?;
-//! ```
-//!
-//! The [`Throttle`] tells the provider's "slow down" apart from other
-//! outcomes; on it every caller of the quota pauses for the provider's
-//! `retry_after` (capped at the policy's `max_penalty`), or for an
-//! exponential backoff when it named no time. A resource that declares no
-//! rate pays nothing for this: its limiter paces nothing and only honours
-//! pauses.
+//! A call that returns
+//! [`OperationError::throttled`](crate::call::OperationError::throttled)
+//! reports the provider's "slow down": every caller of the quota then pauses
+//! for the provider's `retry_after` (capped at the policy's `max_penalty`),
+//! or for an exponential backoff when it named no time;
+//! [`throttled_key`](crate::call::OperationError::throttled_key) pauses only
+//! the key the call booked. A resource that declares no rate pays nothing for
+//! this: its limiter paces nothing and only honours pauses.
 //!
 //! When the limit is exhausted the caller waits for its slot, never past its
 //! deadline: beyond it the caller gets
@@ -142,7 +137,8 @@ impl ResiliencePolicy {
     /// per second per chat" — on top of the account limit.
     ///
     /// Calls opt in by naming the value
-    /// ([`Limited::run_for`], [`ResourceLimiter::ready_for`]); only the call
+    /// ([`Cost::keyed`](crate::call::Cost::keyed),
+    /// [`ResourceLimiter::ready_for`]); only the call
     /// knows which chat or recipient it addresses. Values are hashed before
     /// they reach a limit store. Declaring a dimension again replaces it.
     #[must_use]
@@ -629,14 +625,11 @@ impl KeyedLimits {
 /// [`ResourceLimiter`].
 ///
 /// The profile is observed, not declared: a row reports
-/// [`InterimPerClosure`](Self::InterimPerClosure) from the moment
-/// `Provider::create` wraps a client with [`ResourceLimiter::wrap`], and
-/// [`PerAttempt`](Self::PerAttempt) from the moment a lease of the row is
-/// turned into a managed call facade
-/// ([`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed)); it keeps a latched
-/// profile for the row's life. A row whose instance has not been created yet
-/// reports the profile it has before any latch. When both latches fired,
-/// `InterimPerClosure` wins: closure calls still book their own permits.
+/// [`PerAttempt`](Self::PerAttempt) from the moment the managed call facade
+/// first serves it — a [`Manager::handle`](crate::Manager::handle) of the
+/// row — and keeps it for the row's life. Before that it reports
+/// [`PerAcquire`](Self::PerAcquire) or [`PausesOnly`](Self::PausesOnly) by
+/// whether it has a rate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum RateLimitProfile {
@@ -646,30 +639,19 @@ pub enum RateLimitProfile {
     /// Each acquire books one permit of the row's rate, so a lease is
     /// budgeted as one provider call however many calls it makes.
     PerAcquire,
-    /// A client was [`wrap`](ResourceLimiter::wrap)ped: every
-    /// [`Limited::run`] closure books one permit and acquires only honour
-    /// pauses. Interim: the managed call facade replaces the closure family.
-    InterimPerClosure,
-    /// A lease was turned into a managed call facade: every granted provider
+    /// The managed call facade serves the row: every granted provider
     /// attempt books its declared cost, and acquires only honour pauses.
     PerAttempt,
 }
 
 impl RateLimitProfile {
-    /// Whether this profile is interim surface that a later release replaces.
-    #[must_use]
-    pub const fn is_interim(self) -> bool {
-        matches!(self, Self::InterimPerClosure)
-    }
-
     /// Stable lowercase name for logs and status views: `pauses_only`,
-    /// `per_acquire`, `interim_per_closure` or `per_attempt`.
+    /// `per_acquire` or `per_attempt`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PausesOnly => "pauses_only",
             Self::PerAcquire => "per_acquire",
-            Self::InterimPerClosure => "interim_per_closure",
             Self::PerAttempt => "per_attempt",
         }
     }
@@ -715,20 +697,10 @@ pub struct ResourceLimiter {
     key_waits: Mutex<std::collections::HashMap<LimitKey, KeyWait>>,
     /// Refunds running in the background (see [`release`](Self::release)).
     refunds: Arc<AtomicUsize>,
-    /// Set once a client is [`wrap`](Self::wrap)ped: its calls book the
-    /// quota, so an acquire only honours pauses (see
-    /// [`ready_to_acquire`](Self::ready_to_acquire)).
-    per_call: AtomicBool,
-    /// Set once a lease of the row is turned into a managed call facade: its
-    /// granted attempts book the quota at their declared cost, so an acquire
-    /// only honours pauses, as for [`per_call`](Self::wrap).
+    /// Set once the managed call facade serves the row: its granted attempts
+    /// book the quota at their declared cost, so an acquire only honours
+    /// pauses (see [`ready_to_acquire`](Self::ready_to_acquire)).
     per_attempt: AtomicBool,
-    /// The admission cell of the registry row this limiter belongs to, set
-    /// once at registration. A [`Limited`] wait ends when the row's
-    /// admission generation closes. Unset for a detached limiter, and never
-    /// carried over by [`inherit_pauses`](Self::inherit_pauses): a
-    /// replacement row has its own cell.
-    admission: std::sync::OnceLock<Arc<crate::runtime::admission::AdmissionCell>>,
 }
 
 /// What a caller does once its wait is over.
@@ -912,7 +884,6 @@ impl ResourceLimiter {
             reporter,
             paused_until: Mutex::new(None),
             engaged: AtomicBool::new(false),
-            per_call: AtomicBool::new(false),
             per_attempt: AtomicBool::new(false),
             waiters: AtomicUsize::new(0),
             store_down: AtomicBool::new(false),
@@ -920,42 +891,11 @@ impl ResourceLimiter {
             key_refusals: Mutex::new(std::collections::HashMap::new()),
             key_waits: Mutex::new(std::collections::HashMap::new()),
             refunds: Arc::new(AtomicUsize::new(0)),
-            admission: std::sync::OnceLock::new(),
         }
     }
 
-    /// Binds this limiter to its registry row's admission cell. Called once,
-    /// at registration; a second call is ignored.
-    pub(crate) fn attach_admission(&self, cell: Arc<crate::runtime::admission::AdmissionCell>) {
-        if self.admission.set(cell).is_err() {
-            tracing::debug!(
-                target: "nebula_resource::rate_limit",
-                "rate limiter already bound to an admission cell"
-            );
-        }
-    }
-
-    /// The row's admission generation a [`Limited`] call is admitted under,
-    /// read once at the call's entry. `Ok(None)` for a detached limiter;
-    /// `CredentialUnavailable` when a bound credential suspends the row;
-    /// `Cancelled` when the row otherwise admits nothing (retired, or its
-    /// current generation is closed).
-    fn admission_at_entry(
-        &self,
-    ) -> Result<Option<Arc<crate::runtime::admission::AdmissionGeneration>>, Error> {
-        let Some(cell) = self.admission.get() else {
-            return Ok(None);
-        };
-        cell.current()
-            .map(Some)
-            .ok_or_else(|| match cell.suspension() {
-                Some(suspension) => self.tagged(Error::credential_unavailable(suspension.reason())),
-                None => self.tagged(Error::cancelled()),
-            })
-    }
-
-    /// The refusal of a [`Limited`] call whose admission generation closed
-    /// while it waited: `CredentialUnavailable` when a credential suspension
+    /// The refusal of a quota wait whose admission generation closed while
+    /// it waited: `CredentialUnavailable` when a credential suspension
     /// closed it, otherwise `Cancelled`.
     fn admission_closed(
         &self,
@@ -969,23 +909,11 @@ impl ResourceLimiter {
         }
     }
 
-    /// Waits for `wait` unless the row's admission generation, read now,
-    /// closes first. See [`Limited::run`] for why.
-    async fn wait_admitted(
-        &self,
-        wait: impl Future<Output = Result<(), Error>>,
-    ) -> Result<(), Error> {
-        let Some(generation) = self.admission_at_entry()? else {
-            return wait.await;
-        };
-        self.wait_under(&generation, None, wait).await
-    }
-
     /// Waits for `wait` unless `generation` closes or `cancel` fires first.
     ///
-    /// The quota wait of work admitted under a known generation — a
-    /// [`Limited`] call (the row's current generation at the call's entry)
-    /// or a managed attempt (its lease's generation) — must end when that
+    /// The quota wait of work admitted under a known generation — a managed
+    /// attempt (its lease's generation, or the row's current one when its
+    /// unit was submitted) or a strict credential read — must end when that
     /// generation stops admitting work, not when the slot comes: a suspended
     /// or retired row must not send a call it already refused to admit.
     /// Closing wins over a slot ready at the same instant (`biased`).
@@ -1028,55 +956,16 @@ impl ResourceLimiter {
 
     /// How this limit is enforced right now; see [`RateLimitProfile`].
     ///
-    /// Latches to [`RateLimitProfile::InterimPerClosure`] at the first
-    /// [`wrap`](Self::wrap), and to [`RateLimitProfile::PerAttempt`] when a
-    /// lease of the row first becomes a managed call facade; neither changes
-    /// back. With both latched, `InterimPerClosure` wins: the closure family
-    /// still books its own permits, so it is the profile that needs review.
+    /// Latches to [`RateLimitProfile::PerAttempt`] when the managed call
+    /// facade first serves the row, and never changes back.
     #[must_use]
     pub fn profile(&self) -> RateLimitProfile {
-        if self.per_call.load(Ordering::Acquire) {
-            RateLimitProfile::InterimPerClosure
-        } else if self.per_attempt.load(Ordering::Acquire) {
+        if self.per_attempt.load(Ordering::Acquire) {
             RateLimitProfile::PerAttempt
         } else if self.quota.is_some() {
             RateLimitProfile::PerAcquire
         } else {
             RateLimitProfile::PausesOnly
-        }
-    }
-
-    /// Wraps a client so every call through it runs under this limit, with
-    /// `throttle` telling a provider's "slow down" apart from other outcomes.
-    ///
-    /// Build the wrapper once, in [`Provider::create`](crate::Provider::create),
-    /// from [`ResourceContext::limits`](crate::ResourceContext::limits).
-    ///
-    /// # Deprecated
-    ///
-    /// Wrapping latches this row's [`profile`](Self::profile) to
-    /// [`RateLimitProfile::InterimPerClosure`] for the row's life: from then
-    /// on each [`Limited::run`] closure books one permit and acquires only
-    /// honour pauses. The closure family is deprecated since 0.21.0 and is
-    /// removed before the API freeze; the managed call facade
-    /// ([`crate::call`]) replaces it — see [`Limited`] for the migration.
-    #[must_use]
-    #[deprecated(
-        since = "0.21.0",
-        note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
-    )]
-    #[expect(
-        deprecated,
-        reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
-    )]
-    pub fn wrap<C, T>(self: &Arc<Self>, client: C, throttle: T) -> Limited<C, T> {
-        // Calls through the client now book their own slots; an acquire must
-        // not book a second one for the same provider call.
-        self.per_call.store(true, Ordering::Release);
-        Limited {
-            client,
-            throttle,
-            limits: Arc::clone(self),
         }
     }
 
@@ -1088,24 +977,21 @@ impl ResourceLimiter {
         self.per_attempt.store(true, Ordering::Release);
     }
 
-    /// Whether a lease of the row became a managed call facade, whatever
-    /// else latched (the closure family wins the rate profile, not this).
+    /// Whether the managed call facade serves the row.
     pub(crate) fn per_attempt_latched(&self) -> bool {
         self.per_attempt.load(Ordering::Acquire)
     }
 
     /// What an acquire of the row waits for: a permit, as [`ready`](Self::ready),
-    /// or, once a client has been [`wrap`](Self::wrap)ped or a lease has
-    /// become a managed call facade, only the end of a pause. Wrapped calls
-    /// and managed attempts book the quota themselves; booking at acquire as
-    /// well would count every provider call twice.
+    /// or, once the managed call facade serves the row, only the end of a
+    /// pause. Managed attempts book the quota themselves; booking at acquire
+    /// as well would count every provider call twice.
     ///
-    /// The acquire that creates the client (it wraps while this acquire is
-    /// still in `Provider::create`) has already booked a permit; the first
-    /// call through the client books its own rather than reuse it. That
-    /// permit's slot was taken before the client existed and cannot tell
-    /// whether the call still runs in it, so reusing it could let the next
-    /// booked call run too close; the unused permit errs on sending less.
+    /// An acquire made before the latch has already booked a permit; the
+    /// first attempt after it books its own rather than reuse it. That
+    /// permit's slot was taken before the attempt existed and cannot tell
+    /// whether the attempt still runs in it, so reusing it could let the next
+    /// booked attempt run too close; the unused permit errs on sending less.
     ///
     /// # Errors
     ///
@@ -1114,7 +1000,7 @@ impl ResourceLimiter {
         &self,
         deadline: Option<std::time::Instant>,
     ) -> Result<(), Error> {
-        if self.per_call.load(Ordering::Acquire) || self.per_attempt.load(Ordering::Acquire) {
+        if self.per_attempt.load(Ordering::Acquire) {
             return self.wait_pause_only(deadline).await;
         }
         self.ready(deadline).await
@@ -1565,9 +1451,10 @@ impl ResourceLimiter {
     /// Pauses every caller of this limit for `retry_after`, capped at the
     /// policy's `max_penalty`.
     ///
-    /// [`Limited`] calls this for you when its [`Throttle`] recognises a
-    /// provider's "slow down"; call it directly only for a signal that does
-    /// not come back from a call.
+    /// A managed call that returns
+    /// [`OperationError::throttled`](crate::call::OperationError::throttled)
+    /// does this for you; call it directly only for a signal that does not
+    /// come back from a call.
     ///
     /// # Errors
     ///
@@ -1928,10 +1815,11 @@ impl ResourceLimiter {
     }
 }
 
-/// What one call's outcome says about the provider's limit.
+/// What one call's outcome says about the provider's limit; the managed call
+/// facade derives it from the call's
+/// [`OperationError`](crate::call::OperationError).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Verdict {
+pub(crate) enum Verdict {
     /// Not a limit signal; resets the backoff.
     Pass,
     /// The provider asked to slow down: every caller of the quota pauses for
@@ -1943,313 +1831,12 @@ pub enum Verdict {
     },
     /// The provider asked to slow down for the one key the call named — a
     /// chat's own flood limit — so only that key pauses
-    /// ([`Limited::run_for`]). A call that named no key pauses the quota, as
-    /// for [`Throttled`](Self::Throttled).
+    /// ([`Cost::keyed`](crate::call::Cost::keyed)). A call that named no key
+    /// pauses the quota, as for [`Throttled`](Self::Throttled).
     KeyThrottled {
         /// How long the provider asked to wait, if it said.
         retry_after: Option<Duration>,
     },
-}
-
-/// Tells a provider's "slow down" apart from other call outcomes.
-///
-/// Written once per resource type, next to the client it classifies. A
-/// closure over the whole outcome works directly; [`on_error`] adapts one that
-/// needs to look at the error only. The throttle sees only its own client's
-/// outcomes, so a limit hit on some other resource inside the call is never
-/// mistaken for this provider's.
-pub trait Throttle<T, E>: Send + Sync {
-    /// Classifies one outcome.
-    fn check(&self, outcome: &Result<T, E>) -> Verdict;
-}
-
-impl<T, E, F> Throttle<T, E> for F
-where
-    F: Fn(&Result<T, E>) -> Verdict + Send + Sync,
-{
-    fn check(&self, outcome: &Result<T, E>) -> Verdict {
-        self(outcome)
-    }
-}
-
-/// A throttle that never sees a limit signal: calls are paced, nothing
-/// pauses them.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoThrottle;
-
-impl<T, E> Throttle<T, E> for NoThrottle {
-    fn check(&self, _outcome: &Result<T, E>) -> Verdict {
-        Verdict::Pass
-    }
-}
-
-/// A throttle that classifies errors only; see [`on_error`].
-#[derive(Debug, Clone, Copy)]
-pub struct OnError<F>(F);
-
-/// Builds a [`Throttle`] from a classifier of errors, for clients that report
-/// a limit as an error (`teloxide::RequestError::RetryAfter`, an SDK's
-/// `ThrottlingException`, ...). Successful outcomes are [`Verdict::Pass`].
-#[must_use]
-pub const fn on_error<F>(classify: F) -> OnError<F> {
-    OnError(classify)
-}
-
-impl<T, E, F> Throttle<T, E> for OnError<F>
-where
-    F: Fn(&E) -> Verdict + Send + Sync,
-{
-    fn check(&self, outcome: &Result<T, E>) -> Verdict {
-        outcome.as_ref().err().map_or(Verdict::Pass, &self.0)
-    }
-}
-
-/// A client whose every call runs under a resource's rate limit.
-///
-/// Built by [`ResourceLimiter::wrap`] in `Provider::create`. Calls go through
-/// [`run`](Self::run); there is deliberately no `Deref` to the client, so a
-/// call cannot skip the limit by accident. [`unlimited`](Self::unlimited) is
-/// the explicit, reviewable way to do so.
-///
-/// # Deprecated
-///
-/// **Interim surface**, deprecated since 0.21.0 and removed before the API
-/// freeze (MIGRATION P10). Each `run*` closure books one permit and counts as one provider
-/// call, whatever it does inside; the row reports
-/// [`RateLimitProfile::InterimPerClosure`]. The managed call facade
-/// ([`crate::call`]) replaces the closure family: keep the client as the
-/// provider's instance, turn the lease into a facade with
-/// [`ResourceGuard::into_managed`](crate::ResourceGuard::into_managed), and
-/// describe each call as an [`Operation`](crate::call::Operation) that asks
-/// for one [`OpCx::attempt`](crate::call::OpCx::attempt) per provider call:
-///
-/// | Closure family | Managed call facade |
-/// |---|---|
-/// | `run(call)` | `cx.attempt(Cost::ONE)` |
-/// | `run_for(dimension, value, call)` | `cx.attempt(Cost::keyed(dimension, value))` |
-/// | `run_until(deadline, call)` | `Unit::with_deadline(deadline)` on the submitted unit |
-/// | `Throttle::check` | `Attempt::report(verdict)` |
-/// | `unlimited()` | none: every provider call is an attempt, by design |
-///
-/// The crate README's rate-limit profile table says what each profile
-/// budgets.
-#[deprecated(
-    since = "0.21.0",
-    note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
-)]
-pub struct Limited<C, T = NoThrottle> {
-    client: C,
-    throttle: T,
-    limits: Arc<ResourceLimiter>,
-}
-
-#[expect(
-    deprecated,
-    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
-)]
-impl<C: Clone, T: Clone> Clone for Limited<C, T> {
-    fn clone(&self) -> Self {
-        Self {
-            client: self.client.clone(),
-            throttle: self.throttle.clone(),
-            limits: Arc::clone(&self.limits),
-        }
-    }
-}
-
-#[expect(
-    deprecated,
-    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
-)]
-impl<C, T> fmt::Debug for Limited<C, T> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Limited")
-            .field("limits", &self.limits)
-            .finish_non_exhaustive()
-    }
-}
-
-#[expect(
-    deprecated,
-    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
-)]
-impl<C, T> Limited<C, T> {
-    /// Runs one call under the limit, waiting for a permit as long as needed.
-    ///
-    /// **Interim surface.** Each `run` closure books one permit and is one
-    /// unit of work; the managed call facade ([`crate::call`]) replaces this
-    /// family.
-    ///
-    /// On a registry row the wait also ends when the row stops admitting
-    /// work: a credential taint or revoke, a credential suspension, the
-    /// row's removal, or a manager shutdown (graceful ones included, from the
-    /// start of the drain). The row's admission generation is read once, when
-    /// the call starts; a call started after the row closed is refused
-    /// without waiting. A config reload or a credential refresh does not
-    /// interrupt a wait. Only the wait is raced: once the permit is granted
-    /// the provider call runs to completion. A limiter not bound to a row
-    /// (built outside a manager) never ends a wait this way.
-    ///
-    /// # Errors
-    ///
-    /// [`LimitedError::Limit`] when the limit refused the call (see
-    /// [`ResourceLimiter::ready`]) — with
-    /// [`ErrorKind::CredentialUnavailable`](crate::ErrorKind::CredentialUnavailable)
-    /// when a credential suspension stopped the row admitting work and
-    /// [`ErrorKind::Cancelled`](crate::ErrorKind::Cancelled) when anything
-    /// else did — and [`LimitedError::Call`] with the client's own error
-    /// otherwise.
-    pub async fn run<R, E>(
-        &self,
-        call: impl AsyncFnOnce(&C) -> Result<R, E>,
-    ) -> Result<R, LimitedError<E>>
-    where
-        T: Throttle<R, E>,
-    {
-        self.run_until(None, call).await
-    }
-
-    /// Runs one call under the limit, waiting for a permit never past
-    /// `deadline`.
-    ///
-    /// **Interim surface**, as [`run`](Self::run).
-    ///
-    /// # Errors
-    ///
-    /// As [`run`](Self::run); a permit past `deadline` is
-    /// [`LimitedError::Limit`] with `Exhausted` and a `retry_after`.
-    pub async fn run_until<R, E>(
-        &self,
-        deadline: Option<std::time::Instant>,
-        call: impl AsyncFnOnce(&C) -> Result<R, E>,
-    ) -> Result<R, LimitedError<E>>
-    where
-        T: Throttle<R, E>,
-    {
-        self.limits
-            .wait_admitted(self.limits.ready(deadline))
-            .await
-            .map_err(LimitedError::Limit)?;
-        let outcome = call(&self.client).await;
-        self.limits
-            .report(self.throttle.check(&outcome), None)
-            .await;
-        outcome.map_err(LimitedError::Call)
-    }
-
-    /// Runs one call addressed to `value` of a per-key limit — `run_for(
-    /// "chat_id", chat_id, …)` — under both that key's limit and the account
-    /// limit, waiting for both as long as needed. A
-    /// [`Verdict::KeyThrottled`] pauses only this key.
-    ///
-    /// **Interim surface**, as [`run`](Self::run).
-    ///
-    /// # Errors
-    ///
-    /// As [`run`](Self::run); a permanent [`LimitedError::Limit`] when the
-    /// resource declares no per-key limit named `dimension`.
-    pub async fn run_for<R, E>(
-        &self,
-        dimension: &str,
-        value: impl fmt::Display,
-        call: impl AsyncFnOnce(&C) -> Result<R, E>,
-    ) -> Result<R, LimitedError<E>>
-    where
-        T: Throttle<R, E>,
-    {
-        self.run_for_until(dimension, value, None, call).await
-    }
-
-    /// As [`run_for`](Self::run_for), never waiting past `deadline`.
-    ///
-    /// **Interim surface**, as [`run`](Self::run).
-    ///
-    /// # Errors
-    ///
-    /// As [`run_for`](Self::run_for); a permit past `deadline` is
-    /// [`LimitedError::Limit`] with `Exhausted` and a `retry_after`.
-    pub async fn run_for_until<R, E>(
-        &self,
-        dimension: &str,
-        value: impl fmt::Display,
-        deadline: Option<std::time::Instant>,
-        call: impl AsyncFnOnce(&C) -> Result<R, E>,
-    ) -> Result<R, LimitedError<E>>
-    where
-        T: Throttle<R, E>,
-    {
-        let value = value.to_string();
-        self.limits
-            .wait_admitted(self.limits.ready_for(dimension, &value, deadline))
-            .await
-            .map_err(LimitedError::Limit)?;
-        let outcome = call(&self.client).await;
-        self.limits
-            .report(self.throttle.check(&outcome), Some((dimension, &value)))
-            .await;
-        outcome.map_err(LimitedError::Call)
-    }
-
-    /// The client, bypassing the limit. Use only for calls the provider does
-    /// not count (a local builder, a cached lookup).
-    ///
-    /// **Interim surface**, replaced with [`run`](Self::run) by the managed
-    /// call facade. It also bypasses the row's admission: a call made
-    /// through it is not refused once the row stops admitting work.
-    #[must_use]
-    pub const fn unlimited(&self) -> &C {
-        &self.client
-    }
-
-    /// The limit calls run under.
-    #[must_use]
-    pub const fn limits(&self) -> &Arc<ResourceLimiter> {
-        &self.limits
-    }
-}
-
-/// Error of a call through [`Limited`].
-///
-/// Deprecated with [`Limited`]: a managed attempt fails with an
-/// [`OpError`](crate::call::OpError), whose sent state and effect say whether
-/// a retry is safe.
-#[derive(Debug)]
-#[deprecated(
-    since = "0.21.0",
-    note = "use the managed call facade: `ResourceGuard::into_managed` + `Operation`, one `OpCx::attempt(Cost)` per provider call (`Cost::keyed` replaces `run_for`, `Unit::with_deadline` replaces `run_until`, `Attempt::report(Verdict)` replaces `Throttle`)"
-)]
-pub enum LimitedError<E> {
-    /// The limit refused the call; it never reached the provider.
-    Limit(Error),
-    /// The call ran and failed with the client's own error.
-    Call(E),
-}
-
-#[expect(
-    deprecated,
-    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
-)]
-impl<E: fmt::Display> fmt::Display for LimitedError<E> {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Limit(error) => write!(formatter, "rate limit: {error}"),
-            Self::Call(error) => error.fmt(formatter),
-        }
-    }
-}
-
-#[expect(
-    deprecated,
-    reason = "the deprecated closure family is implemented here until its removal (MIGRATION P10)"
-)]
-impl<E: std::error::Error + 'static> std::error::Error for LimitedError<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Limit(error) => Some(error),
-            Self::Call(error) => Some(error),
-        }
-    }
 }
 
 /// `now + block`, saturating to a far-future instant: an author's
@@ -2302,8 +1889,9 @@ fn backoff(refusals: u32) -> Duration {
 /// Parses an HTTP `Retry-After` header value: delay seconds or an HTTP date
 /// (a date in the past is zero).
 ///
-/// Anything malformed yields `None`; a [`Verdict::Throttled`] without a
-/// `retry_after` then falls back to the limiter's own backoff.
+/// Anything malformed yields `None`; a throttle without a `retry_after`
+/// ([`OperationError::throttled(None)`](crate::call::OperationError::throttled))
+/// then falls back to the limiter's own backoff.
 #[must_use]
 pub fn retry_after_from_header(value: &str) -> Option<Duration> {
     let value = value.trim();

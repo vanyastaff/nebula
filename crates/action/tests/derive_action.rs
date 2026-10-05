@@ -53,15 +53,15 @@ fn metadata_key_matches_attribute() {
 
 #[derive(Action)]
 #[action(
-    key = "test.no_external_effects",
+    key = "test.read_only",
     description = "explicit no-effect contract",
     input = serde_json::Value,
     output = serde_json::Value,
-    no_external_effects
+    read_only
 )]
-struct NoExternalEffectsAction;
+struct ReadOnlyAction;
 
-impl StatelessAction for NoExternalEffectsAction {
+impl StatelessAction for ReadOnlyAction {
     async fn execute(
         &self,
         input: serde_json::Value,
@@ -72,19 +72,19 @@ impl StatelessAction for NoExternalEffectsAction {
 }
 
 #[test]
-fn effect_contract_requires_an_explicit_author_attestation() {
-    let undeclared = nebula_action::GenericStatelessFactory::<NoCredAction>::new()
-        .expect("valid undeclared definition");
-    let declared = nebula_action::GenericStatelessFactory::<NoExternalEffectsAction>::new()
+fn effect_contract_defaults_to_journaled_unless_read_only_is_attested() {
+    let journaled = nebula_action::GenericStatelessFactory::<NoCredAction>::new()
+        .expect("valid default-journaled definition");
+    let declared = nebula_action::GenericStatelessFactory::<ReadOnlyAction>::new()
         .expect("valid no-effect definition");
 
     assert_eq!(
-        undeclared.metadata().effect_contract(),
-        &ActionEffectContract::Undeclared
+        journaled.metadata().effect_contract(),
+        &ActionEffectContract::Journaled(nebula_action::JournalProtocol::V1)
     );
     assert_eq!(
         declared.metadata().effect_contract(),
-        &ActionEffectContract::NoExternalEffects
+        &ActionEffectContract::ReadOnly
     );
 }
 
@@ -203,10 +203,10 @@ fn macro_and_manual_metadata_preserve_the_exact_full_semver() {
     assert_eq!(**generated.metadata(), **manual.metadata());
 }
 
-// -- Managed row fields -----------------------------------------------------
+// -- Resource handle fields -------------------------------------------------
 
-mod managed_row_fields {
-    use std::{any::Any, future::Future, pin::Pin, sync::Arc};
+mod resource_handle_fields {
+    use std::{any::Any, sync::Arc};
 
     use nebula_action::{FromWorkflowNode, testing::TestContextBuilder};
     use nebula_core::{
@@ -216,7 +216,7 @@ mod managed_row_fields {
     use nebula_resource::{
         AcquireOptions, ErrorKind, Manager, PinSlots, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
-        call::{Cost, Effect, ManagedRow, OpCx, OpError, Operation, SentState},
+        call::{Cost, Effect, Operation, OperationCx, OperationError, ResourceHandle},
         resource::{Provider, ResourceMetadataDraft},
         topology::ResidentProvider,
     };
@@ -277,18 +277,18 @@ mod managed_row_fields {
 
     #[derive(Action)]
     #[action(
-        key = "test.managed_row_fields",
-        name = "Managed row fields",
+        key = "test.resource_handle_fields",
+        name = "Resource handle fields",
         description = "row facade slots",
         input = serde_json::Value,
         output = serde_json::Value,
-        no_external_effects
+        read_only
     )]
     struct RowAction {
         #[resource]
-        db: ManagedRow<Db>,
+        db: ResourceHandle<Db>,
         #[resource(key = "cache")]
-        cache: Option<ManagedRow<Cache>>,
+        cache: Option<ResourceHandle<Cache>>,
     }
 
     impl StatelessAction for RowAction {
@@ -302,17 +302,16 @@ mod managed_row_fields {
     }
 
     /// Reads the instance in one free attempt.
+    #[derive(serde::Serialize, serde::Deserialize)]
     struct Read;
 
     impl<R: Provider<Instance = u64> + PinSlots> Operation<R> for Read {
         type Output = u64;
+        const KEY: &'static str = "counter.read";
         const EFFECT: Effect = Effect::Read;
 
-        async fn run(self, cx: &mut OpCx<'_, R>) -> Result<u64, OpError> {
-            let attempt = cx.attempt(Cost::FREE).await?;
-            let value = *attempt.instance();
-            attempt.settle(SentState::Sent);
-            Ok(value)
+        async fn run(self, cx: &mut OperationCx<'_, R>) -> Result<u64, OperationError> {
+            cx.call(Cost::FREE, async |value, _| Ok(*value)).await
         }
     }
 
@@ -320,37 +319,17 @@ mod managed_row_fields {
     /// scope.
     struct RowsOf(Arc<Manager>);
 
-    type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
     impl ResourceAccessor for RowsOf {
         fn has(&self, _key: &ResourceKey) -> bool {
             true
         }
 
-        fn acquire_any(
-            &self,
-            _key: &ResourceKey,
-        ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-            Box::pin(async {
-                Err(CoreError::resource_unavailable(
-                    "lease", "unused", false, None,
-                ))
-            })
-        }
-
-        fn try_acquire_any(
-            &self,
-            _key: &ResourceKey,
-        ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-            Box::pin(async { Ok(None) })
-        }
-
-        fn managed_row_any(
+        fn resource_handle_any(
             &self,
             key: &ResourceKey,
         ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
             self.0
-                .managed_row_any(
+                .handle_any(
                     key,
                     &ResourceContext::minimal(Scope::default(), CancellationToken::new()),
                     &AcquireOptions::default(),
@@ -359,11 +338,11 @@ mod managed_row_fields {
                 .map_err(|error| error.to_core_error())
         }
 
-        fn try_managed_row_any(
+        fn try_resource_handle_any(
             &self,
             key: &ResourceKey,
         ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
-            match self.0.managed_row_any(
+            match self.0.handle_any(
                 key,
                 &ResourceContext::minimal(Scope::default(), CancellationToken::new()),
                 &AcquireOptions::default(),
@@ -388,25 +367,7 @@ mod managed_row_fields {
             true
         }
 
-        fn acquire_any(
-            &self,
-            _key: &ResourceKey,
-        ) -> BoxFut<'_, Result<Box<dyn Any + Send + Sync>, CoreError>> {
-            Box::pin(async {
-                Err(CoreError::resource_unavailable(
-                    "lease", "unused", false, None,
-                ))
-            })
-        }
-
-        fn try_acquire_any(
-            &self,
-            _key: &ResourceKey,
-        ) -> BoxFut<'_, Result<Option<Box<dyn Any + Send + Sync>>, CoreError>> {
-            Box::pin(async { Ok(None) })
-        }
-
-        fn managed_row_any(
+        fn resource_handle_any(
             &self,
             key: &ResourceKey,
         ) -> Result<Box<dyn Any + Send + Sync>, CoreError> {
@@ -418,10 +379,10 @@ mod managed_row_fields {
                     None,
                 ));
             }
-            RowsOf(Arc::clone(&self.manager)).managed_row_any(key)
+            RowsOf(Arc::clone(&self.manager)).resource_handle_any(key)
         }
 
-        fn try_managed_row_any(
+        fn try_resource_handle_any(
             &self,
             key: &ResourceKey,
         ) -> Result<Option<Box<dyn Any + Send + Sync>>, CoreError> {
@@ -433,7 +394,7 @@ mod managed_row_fields {
                     None,
                 ));
             }
-            RowsOf(Arc::clone(&self.manager)).try_managed_row_any(key)
+            RowsOf(Arc::clone(&self.manager)).try_resource_handle_any(key)
         }
     }
 
@@ -455,9 +416,14 @@ mod managed_row_fields {
     }
 
     fn node() -> NodeDefinition {
-        NodeDefinition::new(node_key!("rows"), "Rows", "test", "test.managed_row_fields")
-            .expect("valid node")
-            .with_resource_binding("db", "derive.row.db")
+        NodeDefinition::new(
+            node_key!("rows"),
+            "Rows",
+            "test",
+            "test.resource_handle_fields",
+        )
+        .expect("valid node")
+        .with_resource_binding("db", "derive.row.db")
     }
 
     #[test]
@@ -484,9 +450,12 @@ mod managed_row_fields {
         let manager = Arc::new(Manager::new());
         register(&manager, Db);
         register(&manager, Cache);
+        // The plugin-author harness: a real manager serves the handles.
         let context = TestContextBuilder::new()
-            .build()
-            .with_resources(Arc::new(RowsOf(Arc::clone(&manager))));
+            .with_resource_manager(Arc::clone(&manager))
+            .build();
+        assert!(context.has_resource("derive.row.db").await);
+        assert!(!context.has_resource("derive.row.missing").await);
 
         let node = node().with_resource_binding("cache", "derive.row.cache");
         let action = RowAction::from_workflow_node(&node, &context)
@@ -505,9 +474,13 @@ mod managed_row_fields {
         let context = TestContextBuilder::new()
             .build()
             .with_resources(Arc::new(RowsOf(Arc::clone(&manager))));
-        let projected =
-            NodeDefinition::new(node_key!("rows"), "Rows", "test", "test.managed_row_fields")
-                .expect("valid projected node");
+        let projected = NodeDefinition::new(
+            node_key!("rows"),
+            "Rows",
+            "test",
+            "test.resource_handle_fields",
+        )
+        .expect("valid projected node");
 
         let action = RowAction::from_workflow_node(&projected, &context)
             .await
@@ -527,8 +500,8 @@ mod managed_row_fields {
         let manager = Arc::new(Manager::new());
         register(&manager, Db);
         let context = TestContextBuilder::new()
-            .build()
-            .with_resources(Arc::new(RowsOf(Arc::clone(&manager))));
+            .with_resource_manager(Arc::clone(&manager))
+            .build();
 
         let action = RowAction::from_workflow_node(&node(), &context)
             .await

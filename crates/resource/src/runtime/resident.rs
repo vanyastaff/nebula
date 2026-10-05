@@ -264,7 +264,12 @@ where
         retained: &crate::RetainedStore<Arc<R::Instance>>,
     ) -> Result<CreatedEntry<Arc<R::Instance>>, Error> {
         use crate::resource::ResourceConfig as _;
-        let config_fingerprint = resource_config.fingerprint();
+        // Every acquire reaches here: the manager hands the fingerprint
+        // stored with this config at its admission, so none is recomputed;
+        // only a hand-built context computes it.
+        let config_fingerprint = ctx
+            .admitted_config_fingerprint()
+            .unwrap_or_else(|| resource_config.fingerprint());
         let mut state = self.state.lock().await;
         if state.closed {
             return Err(Error::cancelled().with_resource_key(R::key()));

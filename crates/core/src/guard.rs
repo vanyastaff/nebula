@@ -1,7 +1,10 @@
 //! RAII guard traits for typed resource/credential lifetime management.
 //!
 //! Domain crates (`nebula-credential`, `nebula-resource`) provide concrete
-//! guard types; this module defines the shared contract.
+//! guard types; this module defines the shared contract. A
+//! `CredentialGuard` is what an action's credential slot holds; a
+//! `ResourceGuard` is a host-only lease inside the resource manager and the
+//! engine — actions reach resources through `ResourceHandle<R>` instead.
 
 use std::{fmt, time::Instant};
 

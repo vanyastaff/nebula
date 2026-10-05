@@ -19,7 +19,7 @@
   "scenarios": [
     {
       "scenario": "missing_action",
-      "input_sha256": "3533a9c88a9b879ec4eac5203843353215bfc35cb98e727599da9807458b4669",
+      "input_sha256": "9269056d9068ffabd55ff08885df1534199d4ab193c95e294bb24dec9fed14d3",
       "events": [
         {
           "sequence": 0,
@@ -47,7 +47,7 @@
     },
     {
       "scenario": "missing_plugin",
-      "input_sha256": "c647557da906ed2b48f50fb7e549470f06facb3a1c0231c126c1d46d57563246",
+      "input_sha256": "343fdb2623f4881c55435380e3348335edbbaf59fd22289357be9204987c9377",
       "events": [
         {
           "sequence": 0,
@@ -75,7 +75,7 @@
     },
     {
       "scenario": "unsupported_schema",
-      "input_sha256": "694d09db85a21659a89350b6ea5f18eb042b1fcf7564d71103b5992b850d6e16",
+      "input_sha256": "b79b9452f62c7be13e17fbd62b39ff00612ef7804d7e75113636683a51b7d386",
       "events": [
         {
           "sequence": 0,
@@ -103,7 +103,7 @@
     },
     {
       "scenario": "duplicate_node",
-      "input_sha256": "3fc19db74f6c4e34d16f5bb372f09ccc8b8362263829b765a8ddfbf62b6bff28",
+      "input_sha256": "76348bf780b75accdfb91e7465b1b506f07f1601536c11d73c6cab51d5070146",
       "events": [
         {
           "sequence": 0,
@@ -131,7 +131,7 @@
     },
     {
       "scenario": "missing_endpoint",
-      "input_sha256": "b6c475f8b270a19aae68e073da282c4c369815d7a521360b793ca261ee0e92c0",
+      "input_sha256": "402765fd157c7f7887617a0b4787fa68f19d82b1293eef0c296926aea74196a5",
       "events": [
         {
           "sequence": 0,
@@ -159,7 +159,7 @@
     },
     {
       "scenario": "duplicate_connection",
-      "input_sha256": "94c13daa262055c9b229e98eb0b4bc417e54b973ec7080a21c10a3fa84288826",
+      "input_sha256": "c772767bbd31223c861ba2461c940293674ace3c9c45a1bb18c7cbb31a4c87ab",
       "events": [
         {
           "sequence": 0,
@@ -187,7 +187,7 @@
     },
     {
       "scenario": "graph_cycle",
-      "input_sha256": "41dbc2912613590eb336b2489158401aaf6350203224204dd4c40fda3a07a00a",
+      "input_sha256": "2b2ebb95e3c04a8fd50689b7548867b432a8f61b504fef56ff7a94763dd9f9f4",
       "events": [
         {
           "sequence": 0,
@@ -210,40 +210,12 @@
           "expected": "<acyclic-graph>",
           "actual": "<unsupported-variant>",
           "remediation": "remove a graph or resource dependency cycle"
-        }
-      ]
-    },
-    {
-      "scenario": "undeclared_effects",
-      "input_sha256": "1b55ab6a12bd76121cc4c16a647801c270f6933bd43e37e88bf96214bc5850c6",
-      "events": [
-        {
-          "sequence": 0,
-          "kind": "diagnostic_raised",
-          "boundary": "compiler",
-          "http_status": null,
-          "code": "PLUGIN_PLAN_GRAPH_V1:UNDECLARED_EFFECTS",
-          "path": "/nodes/step_a/action_key",
-          "expected": "<declared-effect-contract>",
-          "actual": "<undeclared-effects>",
-          "remediation": "declare reviewed external-effect behavior on the action factory"
-        },
-        {
-          "sequence": 1,
-          "kind": "diagnostic_raised",
-          "boundary": "http_activation",
-          "http_status": 422,
-          "code": "PLUGIN_PLAN_GRAPH_V1:UNDECLARED_EFFECTS",
-          "path": "/nodes/step_a/action_key",
-          "expected": "<declared-effect-contract>",
-          "actual": "<undeclared-effects>",
-          "remediation": "declare reviewed external-effect behavior on the action factory"
         }
       ]
     },
     {
       "scenario": "unsupported_node_kind",
-      "input_sha256": "b3fb24ff842244afb4c6bd07a1f6f32be4a25d84e622bf4e7dd3b3e2a4d14493",
+      "input_sha256": "bdac6bffb725a99005ca83e60d3aa2f6016b7d316a9865274192abc2da8b6055",
       "events": [
         {
           "sequence": 0,
@@ -271,7 +243,7 @@
     },
     {
       "scenario": "action_version_mismatch",
-      "input_sha256": "f25d247d88f5abcfbf2461813f4789312dc1a10ee2333d54771dffec4d3325d7",
+      "input_sha256": "59c31371a6872b7ab53cb18825d53880c2ee4a8e3f88206fc2f64355b0c70346",
       "events": [
         {
           "sequence": 0,
@@ -299,7 +271,7 @@
     },
     {
       "scenario": "disabled_node_edge",
-      "input_sha256": "322e5312b6f7ab8d3a81346f94822900dd10ca54456d6de327ab4da14908fbec",
+      "input_sha256": "1b039d7fa90b5c583d2647857f9446cc2fdb5b89e933016896dba596321833b6",
       "events": [
         {
           "sequence": 0,
@@ -327,7 +299,7 @@
     },
     {
       "scenario": "unsupported_source_port",
-      "input_sha256": "3219ae87105cb2aff7af3aca419ec4e50b7b8e811e1c9be8f5c543786c1bc643",
+      "input_sha256": "1a25d4e3012ea400af59da318b0bcc7925a483ee777b7bb72507d8c19c773fa9",
       "events": [
         {
           "sequence": 0,
@@ -355,7 +327,7 @@
     },
     {
       "scenario": "unsupported_target_port",
-      "input_sha256": "0f61d6137a3434ed391ebd5866ff144854a4153cc6e6d5f9c3092fd96dbff9a2",
+      "input_sha256": "98772d5ddc68add8da78a7f45f3842eaa21607bad58caed91c8a396bb249bce8",
       "events": [
         {
           "sequence": 0,
@@ -383,7 +355,7 @@
     },
     {
       "scenario": "trigger_kind_mismatch",
-      "input_sha256": "bdc4510e7780e399aa01128c399e8d3592d4226e211ce42db320f313817e49b3",
+      "input_sha256": "7691df55e33276e6bf916b4db0c8406449e47f5949b99ffaa9ac3edca4d98faa",
       "events": [
         {
           "sequence": 0,
@@ -411,7 +383,7 @@
     },
     {
       "scenario": "duplicate_trigger",
-      "input_sha256": "50f9f92c3eac712d10aea1c71a6c0f1fe39c1c2ac78ada4aac791a77c5e15a8a",
+      "input_sha256": "53162df0b55368e48784859dec55315fc9d9d0fbc72cfb6338ae7ad2ab4ec571",
       "events": [
         {
           "sequence": 0,
@@ -461,7 +433,7 @@
     },
     {
       "scenario": "unknown_slot_override",
-      "input_sha256": "1af1502aa9214ce87f29828d540b76800eb27cb677c4924cc2d80388a45854a4",
+      "input_sha256": "13422167df7b81b2d56270e2fd0848f51d412f98bed373d7f127441bb5ad4c75",
       "events": [
         {
           "sequence": 0,
@@ -489,7 +461,7 @@
     },
     {
       "scenario": "invalid_parameter_contract",
-      "input_sha256": "8df9df66161b37c5cc0ad6f846dae5275b21407c334ba86f2c8cca4d7c26b6b7",
+      "input_sha256": "a968021b5b4fc5f07fa8a32c25dae52bb18f9732677345435952a26b254eddd4",
       "events": [
         {
           "sequence": 0,
@@ -517,7 +489,7 @@
     },
     {
       "scenario": "invalid_reference_contract",
-      "input_sha256": "8d17dd13091e884bafda18e668756c9e118dae6c16601faee8b4a1f2b39f828c",
+      "input_sha256": "2f6137d03d358253f2b8c942e4d48272743b0159d561cc2535d815dec5c019f6",
       "events": [
         {
           "sequence": 0,
@@ -545,7 +517,7 @@
     },
     {
       "scenario": "invalid_trigger_configuration",
-      "input_sha256": "18338f176cf605a07ac41afefc2364e864a8fbb967afa77cf270c3c2de792bfd",
+      "input_sha256": "e4a34e6bd103456996effef63f13d577faca0065c023b8dda1ea9fa8c0f5790e",
       "events": [
         {
           "sequence": 0,
@@ -573,7 +545,7 @@
     },
     {
       "scenario": "missing_resource_contract",
-      "input_sha256": "5327f426a17ec39d3f2f754b93caa58537a769e930029654c1174e7312846cd4",
+      "input_sha256": "d4285c0f6c4518396d7104d2fe198f2499fdb7775ef519d5cc1df534b830b57f",
       "events": [
         {
           "sequence": 0,
@@ -623,7 +595,7 @@
     },
     {
       "scenario": "missing_credential_contract",
-      "input_sha256": "73c4cc3cce2a97f75d8ceb94ec967626593da001b45f6f7237dbec9358b854f1",
+      "input_sha256": "a2ce7a0971910192acca2560e2f8f8cc7aceaafe2125b57add1e0c5e5077c863",
       "events": [
         {
           "sequence": 0,
@@ -673,7 +645,7 @@
     },
     {
       "scenario": "empty_selector",
-      "input_sha256": "507560ad20cf188efcbadd18b54f3885d14b8d289330db0018c056f733a7395e",
+      "input_sha256": "68bc791f099d9a423014d14816cfad53e172c30bf9972086f9579d3b9fd9685e",
       "events": [
         {
           "sequence": 0,
@@ -723,7 +695,7 @@
     },
     {
       "scenario": "slot_kind_mismatch",
-      "input_sha256": "abb79d43febc393bfd032e9a02a20c734da67b39bb75c27166345fcf4c2750a8",
+      "input_sha256": "858922fba20ee2f389146973237578d5a97e6111346748e3b1beeac29b17f105",
       "events": [
         {
           "sequence": 0,
@@ -773,7 +745,7 @@
     },
     {
       "scenario": "tag_filter",
-      "input_sha256": "d54f5d6a4e366dadb71bec34996351f88f922cc138dba55d8cd5078103adc392",
+      "input_sha256": "97711a5029ce584e8f4d8453b0c01bda7dd59caca106c2775c8b985ebceee975",
       "events": [
         {
           "sequence": 0,
@@ -801,7 +773,7 @@
     },
     {
       "scenario": "node_filter",
-      "input_sha256": "a4e192f2ca0f6e18fa1bb6c935a4d03dd2ab2124a07332fb51d5d39e599e7dab",
+      "input_sha256": "a5cf84bb578deef3357666ce1928a5b998eb923ff9adc9a05523f40dd098aa5b",
       "events": [
         {
           "sequence": 0,
@@ -829,7 +801,7 @@
     },
     {
       "scenario": "support_required",
-      "input_sha256": "3df263d42bb4b2d983744d079ae09390bcbfabff5ad382a8fb38585c57738483",
+      "input_sha256": "774f0218dc9b2e1763d54f83d83e9d337e0d040727ebf84fe7cecd98c912b26f",
       "events": [
         {
           "sequence": 0,
@@ -857,7 +829,7 @@
     },
     {
       "scenario": "invalid_projection",
-      "input_sha256": "1c2d0341079d0ed01cab364057697b901d1591a71f6ef9ff1da7bb879e5b09aa",
+      "input_sha256": "d0d7cd59fbeec2693565d0fb5bd0e578ad6cda8fc6b84e2c90a64647504e793c",
       "events": [
         {
           "sequence": 0,
@@ -885,7 +857,7 @@
     },
     {
       "scenario": "wrong_dependency_type",
-      "input_sha256": "5aada452cf36d1a80fa46159a01956664f430d9454577da2c1bd6a5a414d6e13",
+      "input_sha256": "b7e4bc9e6c17883fa57bc2f27d12442daad6abb8e94bd005470f31351b680ec8",
       "events": [
         {
           "sequence": 0,
@@ -913,7 +885,7 @@
     },
     {
       "scenario": "undeclared_dependency",
-      "input_sha256": "c6b5163054d1b218711840f8a4f1666fbf6135382c9fe081e5e89a42d48130e5",
+      "input_sha256": "e5181a3f48b3fe44981e53fc44a895dad009e0239695680e31e2434b24b74795",
       "events": [
         {
           "sequence": 0,
@@ -941,7 +913,7 @@
     },
     {
       "scenario": "schema_incompatible",
-      "input_sha256": "b5359878cf72eaa87b3f3f618587271186e25c94fc1029ffb1f3a3f0efac718b",
+      "input_sha256": "7c66da4e6a5323a4b78e09ee6aa31011dd97f3908f96c90a8ddcf62a734fe81a",
       "events": [
         {
           "sequence": 0,
@@ -969,7 +941,7 @@
     },
     {
       "scenario": "compiled_record_depth",
-      "input_sha256": "b76135979eaf9c7d3086ce5556f705a17a9c26e2b21905e5842c0a5787d75c32",
+      "input_sha256": "149ff1cf5bcb81b89c591f005742a5cfc528955441d655eed36586aeae02c8d5",
       "events": [
         {
           "sequence": 0,
@@ -997,7 +969,7 @@
     },
     {
       "scenario": "plan_integrity.legacy_compiler_1",
-      "input_sha256": "b612f31daf4450adaa5741a600e12bdc54edacb1b9804cb8d1e734157a90b75d",
+      "input_sha256": "6b322f0d07e1045a7b4fdb402e47f87277fa4e5ee0ea99ae3c51592f2bb1b7b8",
       "events": [
         {
           "sequence": 0,
@@ -1014,7 +986,7 @@
     },
     {
       "scenario": "plan_integrity.unsupported_compiler_2",
-      "input_sha256": "28ca5c1d6448e4c864cd46e18f302afabbb664dd74c8e23e6d654774843cb0ef",
+      "input_sha256": "650efed691cbfca02274546144a441f30bba2ed13abe02381e5240afbd017ae7",
       "events": [
         {
           "sequence": 0,
@@ -1031,7 +1003,7 @@
     },
     {
       "scenario": "registry_compatibility.plugin_set_mismatch",
-      "input_sha256": "422644f4423b9f8d022e98aaa367a7de82945a7a450a639a9e0cd90d855f99fd",
+      "input_sha256": "82f91b95fff562b3cfb9f0a4631387902c2cf6a94aeab81a117fa635e4b02a77",
       "events": [
         {
           "sequence": 0,
@@ -1041,14 +1013,14 @@
           "code": "PLUGIN_PLAN_COMPATIBILITY:PLUGIN_SET_MISMATCH",
           "path": "/plan/plugin_set_id",
           "expected": "9999999999999999999999999999999999999999999999999999999999999999",
-          "actual": "7e5d322ff25c2aceafcad1784caae58fcb6ca8cb027513cbacf10c3a681a20ac",
+          "actual": "cc3a893ba8266b893a8b527eb6500b2e3860d8534da633d3b57d0c5ead1e9c43",
           "remediation": "load the worker flavor whose plugin set this plan was compiled against, or recompile the plan against this worker's frozen registry"
         }
       ]
     },
     {
       "scenario": "registry_compatibility.worker_flavor_mismatch",
-      "input_sha256": "bc9716551943ba7ac7b30ae95f858cc458009194ba2d59ac4754b8860401177f",
+      "input_sha256": "25c2f3e49a07a0984bd829c17d45120c2f8b5dd32895e7582129e755aa84eb60",
       "events": [
         {
           "sequence": 0,
@@ -1058,14 +1030,14 @@
           "code": "PLUGIN_PLAN_COMPATIBILITY:WORKER_FLAVOR_MISMATCH",
           "path": "/plan/worker_flavor_revision_id",
           "expected": "9999999999999999999999999999999999999999999999999999999999999999",
-          "actual": "bb6a217eadfdce7b20a9f08c6016e35a4b562093f352e966ba866222f23d5fe0",
+          "actual": "2bb55f5b7945e5d5cebba89b3cf0fa50963356324e9d757af7cbc9ce8b1eafc1",
           "remediation": "dispatch this plan to a worker running its pinned flavor, or recompile the plan against this worker's flavor"
         }
       ]
     },
     {
       "scenario": "registry_compatibility.contract_mismatch",
-      "input_sha256": "25f6beece1cec588d9322f66e56bb2a7e3731bf9ad9a3eabcff45faacfab9763",
+      "input_sha256": "1b390cad2bb60626a16eae75dbc51d7a52e57258ea9566a713eb7e55288a53cd",
       "events": [
         {
           "sequence": 0,
@@ -1082,7 +1054,7 @@
     },
     {
       "scenario": "plan_integrity.unsupported_format",
-      "input_sha256": "74f642955322f84e956e11572a5cb9d4c8cdf2c0e440689060789d08d84c8ff3",
+      "input_sha256": "eba67e1b6128a92a4c05e9c68c098cf3d8c15d5babe11d9ff5080510e1819a56",
       "events": [
         {
           "sequence": 0,
@@ -1099,7 +1071,7 @@
     },
     {
       "scenario": "plan_integrity.noncanonical",
-      "input_sha256": "230e65a0227d1a0b00abc14934ee2e9045ec49efa106ea4dc75cbe90b5931d6d",
+      "input_sha256": "4607c3c1f1c3243c80f7c91201543e70d7db939b3b25ee511242addc14fbc628",
       "events": [
         {
           "sequence": 0,
@@ -1116,7 +1088,7 @@
     },
     {
       "scenario": "plan_integrity.converters_unsupported",
-      "input_sha256": "23d5f23d40cd87d6ca504e1e682f56ecd5c24996644562b087ece3cee43a5902",
+      "input_sha256": "8b4e9b738615bcdebe45e511ff81cef04e1a1c8e6ede7ff6b2168934022dbcdf",
       "events": [
         {
           "sequence": 0,
@@ -1133,7 +1105,7 @@
     },
     {
       "scenario": "plan_integrity.revision_mismatch",
-      "input_sha256": "b7437b58a4bf73a2ca27dcc450c3ef3e85401e865806e7fa4d509331f5b8fb25",
+      "input_sha256": "b12e555a315136874dd12432ca0bb64241e6f890ba4a97676dd1dbdab1792163",
       "events": [
         {
           "sequence": 0,
@@ -1142,7 +1114,7 @@
           "http_status": null,
           "code": "PLUGIN_PLAN_INTEGRITY:REVISION_ID_MISMATCH",
           "path": "/plan/id",
-          "expected": "3a09293a5719b47057387827b08f77b37257ae10a89dee5e8ffb2ea1deba5398",
+          "expected": "ce57bdc55c979bc8a89d47d48e6a507971436f424e0ef9ee7c1fe20b16c936f2",
           "actual": "9999999999999999999999999999999999999999999999999999999999999999",
           "remediation": "discard the record: its claimed identity does not match its own content"
         }
@@ -1150,7 +1122,7 @@
     },
     {
       "scenario": "plan_integrity.unknown_capability",
-      "input_sha256": "9be4c78b85405d8b31eb3018b1f3e6de1d14e24d7e90594212c5e83b345480ef",
+      "input_sha256": "9047a775fe82c90ea0247c5fb2406b7dd17db3172083628995ed30fdb451543b",
       "events": [
         {
           "sequence": 0,
@@ -1167,7 +1139,7 @@
     },
     {
       "scenario": "plan_integrity.canonical_encoding_depth",
-      "input_sha256": "0af7cba4f0520d8fd1b4c45fa03f13e203ffa4f33a203f277a37866f6041f45a",
+      "input_sha256": "c2fd8d45a360182d704773c4cbfd8e20b039328f0767ea65bdf0cd0d5daf4d8d",
       "events": [
         {
           "sequence": 0,
@@ -1184,7 +1156,7 @@
     },
     {
       "scenario": "flavor_integrity.unsupported_record_version",
-      "input_sha256": "9f282986a37eea1f41fa461081d73707edbaf22b58b44393bd18a2b53c92fea0",
+      "input_sha256": "ad4059f823c16448664b0fbad4aa1936a0461e5ff908edcc3f2903dd2d139d39",
       "events": [
         {
           "sequence": 0,
@@ -1201,7 +1173,7 @@
     },
     {
       "scenario": "flavor_integrity.unsupported_hash_version",
-      "input_sha256": "2b9994fb72e796871b6d3daa98466176e9a849ac08e5b3e8a9b07777ef6c2266",
+      "input_sha256": "e3da8f8771a860233ceb31fb318910d98f2bfc23e8257ae7f9e691e913e037f4",
       "events": [
         {
           "sequence": 0,
@@ -1218,7 +1190,7 @@
     },
     {
       "scenario": "flavor_integrity.revision_mismatch",
-      "input_sha256": "d2e94efa3d9decb3e7ecf150a5d4c64c264ebb0a1981db5834e3c0df8fbaa992",
+      "input_sha256": "ac99f9b0738a40bba0678ef3afa5fc39cc7e7d9e3da68264981dbbb5ebcd8d6d",
       "events": [
         {
           "sequence": 0,
@@ -1227,7 +1199,7 @@
           "http_status": null,
           "code": "PLUGIN_FLAVOR_INTEGRITY:REVISION_ID_MISMATCH",
           "path": "/worker_flavor/id",
-          "expected": "bb6a217eadfdce7b20a9f08c6016e35a4b562093f352e966ba866222f23d5fe0",
+          "expected": "2bb55f5b7945e5d5cebba89b3cf0fa50963356324e9d757af7cbc9ce8b1eafc1",
           "actual": "9999999999999999999999999999999999999999999999999999999999999999",
           "remediation": "discard the record: its claimed identity does not match its own content"
         }
@@ -1235,7 +1207,7 @@
     },
     {
       "scenario": "workflow_validation.empty_name",
-      "input_sha256": "0dce4e3deeafe1616bfa1155194cffef9c4ae70baac55d3a9ca0d8ad80b734ac",
+      "input_sha256": "2571cc8e608a38a8abb32d42c6a0246f87483087c4a4cdc00d24276e283b6882",
       "events": [
         {
           "sequence": 0,
@@ -1252,7 +1224,7 @@
     },
     {
       "scenario": "workflow_validation.no_nodes",
-      "input_sha256": "65e0a12847819efe038c67537f71113d60dc770244002799a4c0c4c3a4ef1e68",
+      "input_sha256": "896f2bf15325757e9230389fb51ac1a70dcf5ee0c19e6ebf3bdd3b70863d20a7",
       "events": [
         {
           "sequence": 0,
@@ -1269,7 +1241,7 @@
     },
     {
       "scenario": "workflow_validation.self_loop",
-      "input_sha256": "b031c617b3afb629602ada76372ace9d775f9b17fec1f75a4a66b6772feabd46",
+      "input_sha256": "d9cdc2e07375421a42fc2f3dc3fe9e0f257944c688cb74ab1406ae31f78212e8",
       "events": [
         {
           "sequence": 0,
@@ -1297,7 +1269,7 @@
     },
     {
       "scenario": "workflow_validation.duplicate_node",
-      "input_sha256": "1cd1983d25024576129be880053898057beb72e7cce55062c37175371964aed1",
+      "input_sha256": "6e407adebfdfb39d98c644a44dab9104b0fb6dbf552dcd202a6ba27f8e3e44cb",
       "events": [
         {
           "sequence": 0,
@@ -1325,7 +1297,7 @@
     },
     {
       "scenario": "workflow_validation.missing_endpoint",
-      "input_sha256": "7463a3e2588567de8e2ad6d2312ac7bc8016a0c4d17f8bbd7f027542045175ba",
+      "input_sha256": "5b16369bf6e64f9dc192be332b765bb0b046beeac4c00819931d07d3198d5aa9",
       "events": [
         {
           "sequence": 0,
@@ -1353,7 +1325,7 @@
     },
     {
       "scenario": "workflow_validation.duplicate_connection",
-      "input_sha256": "d888921c6a700e2071ead0fc865917bfb522faf07cf2faaa9c4c7d56fc7ed1b3",
+      "input_sha256": "fa4a5e6c8b9ce16f7ba160649eab4ea9a37b9c2717f12542bfe7c15a539f4fec",
       "events": [
         {
           "sequence": 0,
@@ -1370,7 +1342,7 @@
     },
     {
       "scenario": "workflow_validation.graph_cycle",
-      "input_sha256": "a4712647bfffed8d0059ec2358842b2b0635205ea75989cfcc164eff23014a61",
+      "input_sha256": "0bf384d379db62cca6a74d42c55fe6c4bf5f654c438573b287e25c02e50ed7ba",
       "events": [
         {
           "sequence": 0,
@@ -1398,7 +1370,7 @@
     },
     {
       "scenario": "workflow_validation.invalid_reference_contract",
-      "input_sha256": "8adcfb20d8cce02103b70eb6092932891cd8c3b54d9cbe167f8da743215634ad",
+      "input_sha256": "ae1097d62e5f8873550b832cf656d04f9d19ed0ef68b7c33ffcfa22623e013e1",
       "events": [
         {
           "sequence": 0,
@@ -1415,7 +1387,7 @@
     },
     {
       "scenario": "workflow_validation.unsupported_schema",
-      "input_sha256": "7b0803429b121bd7f9f4c1dcf6a7395032a35611332af4516fc2b170da2630df",
+      "input_sha256": "7f750a004c2a6000844c7ddeacb27cde2ee00bece6b318470e9a78289dd3bcb5",
       "events": [
         {
           "sequence": 0,
@@ -1432,7 +1404,7 @@
     },
     {
       "scenario": "workflow_validation.duplicate_trigger",
-      "input_sha256": "66d85ccd6c82e8b17532e29e9452fae4eb9a69452155a448a6d7f22c7ce14da7",
+      "input_sha256": "94faa012de19d447019fd331398082a76807643aa616fda768bec335a08e7a95",
       "events": [
         {
           "sequence": 0,
@@ -1449,7 +1421,7 @@
     },
     {
       "scenario": "workflow_validation.reference_without_connection",
-      "input_sha256": "76b3d4e2172d6a8927a8e880b42fa20e8576d8545a5b62b449c83fe00819065a",
+      "input_sha256": "e3be851c31bb7f7d873f5ec1b5af89d09d2476fb5e658f8f0717b0044c64dbb5",
       "events": [
         {
           "sequence": 0,
@@ -1466,7 +1438,7 @@
     },
     {
       "scenario": "workflow_validation.invalid_retry",
-      "input_sha256": "9c8538bc4b717dd704702f9ed50e14bf63a1c022cb7f2f2dd621c34319d156db",
+      "input_sha256": "e74c31d6cd39fe9f8168081b830fac8221a7c467c93771e3c27e4cf2b7db8c55",
       "events": [
         {
           "sequence": 0,
@@ -1534,7 +1506,7 @@
     },
     {
       "scenario": "workflow_validation.port_incompatible",
-      "input_sha256": "659dbb2cdbf96ee68c3bd3b8b17117007bdc40cd8f8420df1f4ba05789dc782f",
+      "input_sha256": "34ef8aee74104f623e30fdbd7db54a60efd48375cd5c6357b7f248daa3a704bf",
       "events": [
         {
           "sequence": 0,
@@ -1551,7 +1523,7 @@
     },
     {
       "scenario": "workflow_validation.port_undecidable",
-      "input_sha256": "4e8b730e2b84268685db960c2a6da7dd599fce76d5aa05a943ebd8a24c3dbeef",
+      "input_sha256": "4ba93c83d46721a120d165ae1909e2da73607fe10419fc28f63ff16b5fc2d1ca",
       "events": [
         {
           "sequence": 0,
@@ -1568,7 +1540,7 @@
     },
     {
       "scenario": "workflow_validation.reference_path",
-      "input_sha256": "001dc4a3c15e570346ff7e0723ebcf585a0ada5601fb7287eb5656483828ab1b",
+      "input_sha256": "96d138f720fee1b30fe2199ae5e95a87360d7ed06da3d0c6cfd7e9fdeafce77d",
       "events": [
         {
           "sequence": 0,
@@ -1585,7 +1557,7 @@
     },
     {
       "scenario": "workflow_validation.reference_incompatible",
-      "input_sha256": "52332db495f2bb25f500541591bdfafb8bfc151826b4a4b06748b9bb2f78ea26",
+      "input_sha256": "7c1501e64ca1d39643b13f9c781ae885732e477edc91a62c21c47d702ff8f31f",
       "events": [
         {
           "sequence": 0,
@@ -1613,7 +1585,7 @@
     },
     {
       "scenario": "workflow_validation.reference_undecidable",
-      "input_sha256": "23711923cacce334e79fd8641cac593141cd7e69d1c5c84e00f009d5b1e95f6a",
+      "input_sha256": "e61178ec005a9a59d1ef07ac2fb98904c68b5b107bcf868e0b97149d00e86569",
       "events": [
         {
           "sequence": 0,

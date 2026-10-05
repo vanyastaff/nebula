@@ -10,7 +10,7 @@
 use nebula_core::{OperationCallId, OperationId};
 use nebula_storage_port::dto::{
     EffectPhase, FrozenOutcomeEvidence, InvocationDisposition, OperationAdvance, OperationCommand,
-    OperationProtocolRecord, OutcomeEvidenceSource,
+    OperationProtocolRecord, OutcomeEvidenceSource, UnsentFailureCode,
 };
 use nebula_storage_port::{
     AttemptGeneration, DestinationCapability, EffectOccurrenceRecord, EffectSlotBinding,
@@ -101,6 +101,16 @@ pub(crate) fn decide_prepare(
     if stored.operation().provider_key() != binding.provider_key {
         return Err(OperationLedgerError::OperationMismatch { slot_id });
     }
+    // An observation never replays as an effect, nor the reverse: what the
+    // slot's record means to its owner would change. A legacy row without a
+    // protocol is an effect.
+    if stored
+        .protocol()
+        .is_some_and(OperationProtocolRecord::is_observation)
+        != binding.observation
+    {
+        return Err(OperationLedgerError::OperationMismatch { slot_id });
+    }
     // The original binding is returned wholesale — including the attempt
     // generation and destination recorded at prepare time. A later attempt
     // re-preparing the same slot inherits the first attempt's operation
@@ -126,6 +136,8 @@ pub(crate) fn initial_protocol(
         .ok_or(OperationLedgerError::InvalidProtocol)?;
     OperationProtocolRecord::prepared(binding.contract.clone(), now_ms)
         .provider_key(binding.provider_key)
+        .concurrent_with(binding.concurrent_with)
+        .observation(binding.observation)
         .build()
 }
 
@@ -149,11 +161,13 @@ struct ProtocolTransition {
     revision: u64,
     phase: EffectPhase,
     invocations: u32,
+    not_crossed: u32,
     queries: u32,
     invocation: Option<OperationCallId>,
     disposition: Option<InvocationDisposition>,
     query: Option<OperationCallId>,
     outcome_evidence: Option<FrozenOutcomeEvidence>,
+    unsent_failure: Option<UnsentFailureCode>,
     target_state: OperationState,
     granted_call: Option<GrantedCall>,
 }
@@ -164,11 +178,13 @@ impl ProtocolTransition {
             revision: protocol.revision(),
             phase: protocol.phase(),
             invocations: protocol.invocations(),
+            not_crossed: protocol.not_crossed(),
             queries: protocol.queries(),
             invocation: protocol.invocation(),
             disposition: protocol.disposition(),
             query: protocol.query(),
             outcome_evidence: protocol.evidence().cloned(),
+            unsent_failure: protocol.unsent_failure().cloned(),
             original: protocol,
             target_state,
             granted_call: None,
@@ -190,12 +206,34 @@ impl ProtocolTransition {
     fn has_changes(&self) -> bool {
         self.phase != self.original.phase()
             || self.invocations != self.original.invocations()
+            || self.not_crossed != self.original.not_crossed()
             || self.queries != self.original.queries()
             || self.invocation != self.original.invocation()
             || self.disposition != self.original.disposition()
             || self.query != self.original.query()
             || self.outcome_evidence.as_ref() != self.original.evidence()
+            || self.unsent_failure.as_ref() != self.original.unsent_failure()
     }
+}
+
+/// Keeps the owner's classification of how the slot's unit failed: on a
+/// slot nothing of which is in flight or settled, or — an observation —
+/// on any slot without an answer or a call in flight, whatever crossed
+/// ([`OperationProtocolRecord::admits_unsent_failure`]).
+fn record_unsent_failure(
+    transition: &mut ProtocolTransition,
+    failure: &UnsentFailureCode,
+) -> Result<(), OperationLedgerError> {
+    if transition.query.is_some()
+        || !OperationProtocolRecord::admits_unsent_failure(
+            transition.original.is_observation(),
+            transition.phase,
+        )
+    {
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+    transition.unsent_failure = Some(failure.clone());
+    Ok(())
 }
 
 fn grant_invocation(
@@ -215,15 +253,30 @@ fn grant_invocation(
         return Err(OperationLedgerError::ProtocolConflict);
     }
 
+    // Only a call that may have reached the provider spends the budget or
+    // starts the clocks: a slot whose every call was proven not to cross has
+    // sent nothing, so there is nothing to duplicate and nothing to expire.
     let policy = transition.original.contract().policy();
+    let crossed = transition
+        .invocations
+        .saturating_sub(transition.not_crossed);
+    let ever_crossed = crossed > 0;
     let stable_key_is_valid = match policy.capability() {
-        DestinationCapability::StableKey => policy
-            .stable_window_ms()
-            .is_some_and(|window_ms| transition.is_within_window(window_ms, now_ms)),
+        DestinationCapability::StableKey => {
+            !ever_crossed
+                || policy
+                    .stable_window_ms()
+                    .is_some_and(|window_ms| transition.is_within_window(window_ms, now_ms))
+        },
         _ => transition.phase != EffectPhase::Ambiguous,
     };
-    if transition.invocations >= policy.max_invocations()
-        || !transition.is_within_window(policy.recovery_window_ms(), now_ms)
+    // The total ceiling bounds a slot that is refused locally forever. Its
+    // refusal changes nothing and authorizes nothing, so it is known not sent.
+    if transition.invocations >= OperationProtocolRecord::GRANT_CEILING {
+        return Err(OperationLedgerError::RecoveryExhausted);
+    }
+    if crossed >= policy.max_invocations()
+        || (ever_crossed && !transition.is_within_window(policy.recovery_window_ms(), now_ms))
         || !stable_key_is_valid
     {
         transition.phase = EffectPhase::OutcomeUnknown;
@@ -257,8 +310,16 @@ fn record_invocation_disposition(
         return Err(OperationLedgerError::ProtocolConflict);
     }
 
+    // Reached once per permit: a grant clears the disposition, and a repeated
+    // report of the recorded disposition returned above without counting.
     let next_phase = match reported_disposition {
-        InvocationDisposition::BeforeBoundary => EffectPhase::BeforeBoundary,
+        InvocationDisposition::BeforeBoundary => {
+            transition.not_crossed = transition
+                .not_crossed
+                .checked_add(1)
+                .ok_or(OperationLedgerError::InvalidProtocol)?;
+            EffectPhase::BeforeBoundary
+        },
         InvocationDisposition::Ambiguous
             if transition.original.contract().policy().capability()
                 == DestinationCapability::StableKey =>
@@ -374,6 +435,15 @@ fn finalize_transition(
     fresh_call: OperationCallId,
     authorized_at_ms: i64,
 ) -> Result<ProtocolDecision, OperationLedgerError> {
+    // A recorded unsent failure describes a slot with nothing in flight and
+    // nothing settled (or an observation without an answer): any call or
+    // outcome since supersedes it.
+    if !OperationProtocolRecord::admits_unsent_failure(
+        transition.original.is_observation(),
+        transition.phase,
+    ) {
+        transition.unsent_failure = None;
+    }
     let changed = transition.has_changes();
     if changed {
         transition.revision = transition
@@ -388,9 +458,11 @@ fn finalize_transition(
         .revision(transition.revision)
         .phase(transition.phase)
         .invocations(transition.invocations, transition.invocation)
+        .not_crossed(transition.not_crossed)
         .queries(transition.queries, transition.query)
         .disposition(transition.disposition)
         .evidence(transition.outcome_evidence, adjudication_audit_digest)
+        .unsent_failure(transition.unsent_failure)
         .build()?;
     let journal = (changed && transition.target_state != stored.state()).then(|| serde_json::json!({
         "kind":"operation_outcome", "version":1, "slot_id":stored.operation().slot_id().to_string(),
@@ -464,6 +536,9 @@ pub(crate) fn decide_advance(
         },
         OperationCommand::MarkUnknown { expected_revision } => {
             mark_outcome_unknown(&mut transition, *expected_revision)?;
+        },
+        OperationCommand::RecordUnsentFailure { failure } => {
+            record_unsent_failure(&mut transition, failure)?;
         },
         _ => return Err(OperationLedgerError::ProtocolConflict),
     }
@@ -602,16 +677,14 @@ pub(crate) fn attach_protocol_payload(
     }
 }
 
-/// Called under the execution owner's lock using its authoritative clock.
-pub(crate) fn require_live_lease(
-    fencing: nebula_storage_port::FencingToken,
-    current: u64,
-    live: bool,
-) -> Result<(), OperationLedgerError> {
-    if fencing.generation() != current || !live {
-        return Err(OperationLedgerError::ExecutionLeaseRejected);
+/// The ledger's answer to an execution fence that refused its write.
+impl From<crate::execution_fence::FenceRefusal> for OperationLedgerError {
+    fn from(refusal: crate::execution_fence::FenceRefusal) -> Self {
+        match refusal {
+            crate::execution_fence::FenceRefusal::LeaseRejected => Self::ExecutionLeaseRejected,
+            crate::execution_fence::FenceRefusal::Unavailable => Self::Unavailable,
+        }
     }
-    Ok(())
 }
 
 /// Compose a record projection from decoded durable columns.
@@ -737,6 +810,8 @@ pub(crate) const fn write_label(result: &Result<(), OperationLedgerError>) -> &'
 
 #[cfg(test)]
 mod tests {
+    use nebula_storage_port::dto::PositionRange;
+
     use super::*;
 
     fn contract() -> nebula_storage_port::dto::PreparedEffectContract {
@@ -830,6 +905,8 @@ mod tests {
             destination: DestinationCapability::Opaque,
             contract: &contract(),
             provider_key: None,
+            concurrent_with: None,
+            observation: false,
         };
 
         let outcome = decide_prepare(slot(), &stored, &binding)
@@ -860,6 +937,8 @@ mod tests {
             destination: DestinationCapability::StableKey,
             contract: &contract(),
             provider_key: None,
+            concurrent_with: None,
+            observation: false,
         };
 
         assert_eq!(
@@ -883,6 +962,8 @@ mod tests {
             destination: DestinationCapability::StableKey,
             contract: &stable,
             provider_key,
+            concurrent_with: None,
+            observation: false,
         };
         let protocol = initial_protocol(&binding(key("original")), 0).unwrap();
         let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
@@ -905,14 +986,332 @@ mod tests {
     }
 
     #[test]
+    fn the_concurrent_positions_are_recorded_once_and_not_part_of_the_identity() {
+        let stable = contract();
+        let scope = nebula_storage_port::Scope::new("ws", "org");
+        let binding = |concurrent_with| EffectSlotBinding {
+            scope: &scope,
+            execution_id: "exe",
+            node_key: "node",
+            occurrence: "once",
+            attempt_generation: AttemptGeneration::new(0),
+            fingerprint: RequestFingerprint::new(1, [0x33; 32]),
+            destination: DestinationCapability::StableKey,
+            contract: &stable,
+            provider_key: None,
+            concurrent_with,
+            observation: false,
+        };
+        let range = |first, last| PositionRange::new(first, last).unwrap();
+        let listed_ranges = [range(0, 0), range(2, 2)];
+        let protocol = initial_protocol(&binding(Some(&listed_ranges)), 0).unwrap();
+        assert_eq!(protocol.concurrent_with(), Some(&listed_ranges[..]));
+        let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
+        // A later prepare with other (or no) positions replays the record,
+        // which keeps the ones it was first prepared with.
+        let other_ranges = [range(1, 1)];
+        for other in [Some(&other_ranges[..]), Some(&[]), None] {
+            assert!(
+                decide_prepare(slot(), &stored, &binding(other)).is_ok(),
+                "{other:?}"
+            );
+        }
+        assert_eq!(
+            stored
+                .protocol()
+                .and_then(OperationProtocolRecord::concurrent_with),
+            Some(&listed_ranges[..])
+        );
+        // "None concurrent" is persisted as an explicit empty list; a record
+        // written without the list (unknown) leaves the field out, as before
+        // the list existed.
+        let alone =
+            serde_json::to_value(initial_protocol(&binding(Some(&[])), 0).unwrap()).unwrap();
+        assert_eq!(alone["concurrent_with"], serde_json::json!([]));
+        let unknown = serde_json::to_value(initial_protocol(&binding(None), 0).unwrap()).unwrap();
+        assert!(unknown.get("concurrent_with").is_none());
+        for (encoded, expected) in [(alone, Some(&[][..])), (unknown, None)] {
+            let decoded: OperationProtocolRecord = serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded.concurrent_with(), expected);
+        }
+        let listed =
+            serde_json::to_value(initial_protocol(&binding(Some(&listed_ranges)), 0).unwrap())
+                .unwrap();
+        assert_eq!(
+            listed["concurrent_with"],
+            serde_json::json!([[0, 0], [2, 2]])
+        );
+        // One run covers any number of positions.
+        let joined = [range(0, 99_999)];
+        assert!(initial_protocol(&binding(Some(&joined)), 0).is_ok());
+        // Unordered, overlapping, adjacent or too many runs are refused:
+        // never truncated.
+        let unordered = [range(2, 2), range(0, 0)];
+        let overlapping = [range(0, 3), range(2, 5)];
+        let adjacent = [range(0, 1), range(2, 3)];
+        for invalid in [&unordered, &overlapping, &adjacent] {
+            assert!(initial_protocol(&binding(Some(invalid)), 0).is_err());
+        }
+        let fragmented: Vec<PositionRange> = (0..=64).map(|run| range(run * 2, run * 2)).collect();
+        assert_eq!(
+            fragmented.len(),
+            OperationProtocolRecord::MAX_CONCURRENT_RANGES + 1
+        );
+        assert!(initial_protocol(&binding(Some(&fragmented)), 0).is_err());
+        assert!(
+            initial_protocol(
+                &binding(Some(
+                    &fragmented[..OperationProtocolRecord::MAX_CONCURRENT_RANGES]
+                )),
+                0
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_unsent_failure_is_kept_until_a_later_call_supersedes_it() {
+        let stable = contract();
+        let scope = nebula_storage_port::Scope::new("ws", "org");
+        let binding = EffectSlotBinding {
+            scope: &scope,
+            execution_id: "exe",
+            node_key: "node",
+            occurrence: "once",
+            attempt_generation: AttemptGeneration::new(0),
+            fingerprint: RequestFingerprint::new(1, [0x33; 32]),
+            destination: DestinationCapability::StableKey,
+            contract: &stable,
+            provider_key: None,
+            concurrent_with: Some(&[]),
+            observation: false,
+        };
+        let prepared = record(OperationState::Prepared, 0)
+            .with_protocol(initial_protocol(&binding, 0).unwrap());
+        let code = |code: &str| UnsentFailureCode::new(code).unwrap();
+        let fresh = OperationCallId::from_bytes([1; 16]);
+        let recorded = |stored: &OperationRecord, failure: &str| {
+            decide_advance(
+                stored,
+                &OperationCommand::RecordUnsentFailure {
+                    failure: code(failure),
+                },
+                0,
+                fresh,
+            )
+        };
+        // Prepared: recorded, one revision; the same code again changes nothing.
+        let decision = recorded(&prepared, "exhausted@1500").unwrap();
+        assert!(decision.changed);
+        assert!(decision.journal.is_none(), "no state change");
+        let protocol = decision.record.protocol().unwrap().clone();
+        assert_eq!(protocol.revision(), 1);
+        assert_eq!(protocol.unsent_failure(), Some(&code("exhausted@1500")));
+        assert!(
+            !recorded(&decision.record, "exhausted@1500")
+                .unwrap()
+                .changed
+        );
+        // A later classification replaces it.
+        let replaced = recorded(&decision.record, "transient").unwrap().record;
+        assert_eq!(
+            replaced.protocol().unwrap().unsent_failure(),
+            Some(&code("transient"))
+        );
+        // A later grant clears it; an outstanding call refuses it.
+        let granted = decide_advance(
+            &replaced,
+            &OperationCommand::GrantInvocation {
+                expected_revision: 2,
+            },
+            0,
+            fresh,
+        )
+        .unwrap()
+        .record;
+        assert_eq!(granted.protocol().unwrap().unsent_failure(), None);
+        assert_eq!(
+            recorded(&granted, "transient").map(|decision| decision.changed),
+            Err(OperationLedgerError::ProtocolConflict)
+        );
+        // Explained not crossed: it may be recorded again.
+        let explained = decide_advance(
+            &granted,
+            &OperationCommand::RecordDisposition {
+                invocation: fresh,
+                disposition: InvocationDisposition::BeforeBoundary,
+            },
+            0,
+            fresh,
+        )
+        .unwrap()
+        .record;
+        let again = recorded(&explained, "backpressure").unwrap().record;
+        assert_eq!(
+            again.protocol().unwrap().unsent_failure(),
+            Some(&code("backpressure"))
+        );
+        // Serialized only when present; a record carrying one outside
+        // `Prepared` / `BeforeBoundary` is invalid.
+        assert!(
+            serde_json::to_value(prepared.protocol().unwrap())
+                .unwrap()
+                .get("unsent_failure")
+                .is_none()
+        );
+        let mut encoded = serde_json::to_value(granted.protocol().unwrap()).unwrap();
+        encoded["unsent_failure"] = serde_json::json!("transient");
+        assert!(serde_json::from_value::<OperationProtocolRecord>(encoded).is_err());
+    }
+
+    #[test]
+    fn an_observation_keeps_its_failure_after_a_crossing_and_never_replays_as_an_effect() {
+        let stable = contract();
+        let scope = nebula_storage_port::Scope::new("ws", "org");
+        let binding = |observation| EffectSlotBinding {
+            scope: &scope,
+            execution_id: "exe",
+            node_key: "node",
+            occurrence: "once",
+            attempt_generation: AttemptGeneration::new(0),
+            fingerprint: RequestFingerprint::new(1, [0x33; 32]),
+            destination: DestinationCapability::StableKey,
+            contract: &stable,
+            provider_key: None,
+            concurrent_with: Some(&[]),
+            observation,
+        };
+        let protocol = initial_protocol(&binding(true), 0).unwrap();
+        assert!(protocol.is_observation());
+        assert_eq!(
+            serde_json::to_value(&protocol).unwrap()["observation"],
+            serde_json::json!(true)
+        );
+        assert!(
+            serde_json::to_value(initial_protocol(&binding(false), 0).unwrap())
+                .unwrap()
+                .get("observation")
+                .is_none(),
+            "absent for an effect: byte-identical to a record before the flag"
+        );
+        let prepared = record(OperationState::Prepared, 0).with_protocol(protocol);
+        assert!(decide_prepare(slot(), &prepared, &binding(true)).is_ok());
+        assert_eq!(
+            decide_prepare(slot(), &prepared, &binding(false)),
+            Err(OperationLedgerError::OperationMismatch { slot_id: slot() }),
+            "an observation never replays as an effect"
+        );
+        let effect = record(OperationState::Prepared, 0)
+            .with_protocol(initial_protocol(&binding(false), 0).unwrap());
+        assert_eq!(
+            decide_prepare(slot(), &effect, &binding(true)),
+            Err(OperationLedgerError::OperationMismatch { slot_id: slot() }),
+            "nor an effect as an observation"
+        );
+
+        // A call that crossed ambiguously: an observation keeps how it
+        // failed; an effect refuses it.
+        let fresh = OperationCallId::from_bytes([1; 16]);
+        let crossed = |stored: &OperationRecord| {
+            let granted = decide_advance(
+                stored,
+                &OperationCommand::GrantInvocation {
+                    expected_revision: stored.protocol().unwrap().revision(),
+                },
+                0,
+                fresh,
+            )
+            .unwrap()
+            .record;
+            decide_advance(
+                &granted,
+                &OperationCommand::RecordDisposition {
+                    invocation: fresh,
+                    disposition: InvocationDisposition::Ambiguous,
+                },
+                0,
+                fresh,
+            )
+            .unwrap()
+            .record
+        };
+        let failure = OperationCommand::RecordUnsentFailure {
+            failure: UnsentFailureCode::new("transient").unwrap(),
+        };
+        let observed = crossed(&prepared);
+        assert_eq!(observed.protocol().unwrap().phase(), EffectPhase::Ambiguous);
+        let kept = decide_advance(&observed, &failure, 0, fresh)
+            .unwrap()
+            .record;
+        assert_eq!(
+            kept.protocol().unwrap().unsent_failure(),
+            Some(&UnsentFailureCode::new("transient").unwrap())
+        );
+        let roundtrip: OperationProtocolRecord =
+            serde_json::from_value(serde_json::to_value(kept.protocol().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(&roundtrip, kept.protocol().unwrap());
+        assert_eq!(
+            decide_advance(&crossed(&effect), &failure, 0, fresh).map(|decision| decision.changed),
+            Err(OperationLedgerError::ProtocolConflict),
+            "an effect that crossed keeps no unsent failure"
+        );
+        // Exhausted (unknown at the ledger): still kept; a later grant clears it.
+        let exhausted = decide_advance(
+            &kept,
+            &OperationCommand::MarkUnknown {
+                expected_revision: kept.protocol().unwrap().revision(),
+            },
+            0,
+            fresh,
+        )
+        .unwrap()
+        .record;
+        assert!(exhausted.protocol().unwrap().unsent_failure().is_some());
+        let regranted = decide_advance(
+            &kept,
+            &OperationCommand::GrantInvocation {
+                expected_revision: kept.protocol().unwrap().revision(),
+            },
+            0,
+            fresh,
+        )
+        .unwrap()
+        .record;
+        assert_eq!(regranted.protocol().unwrap().unsent_failure(), None);
+        // Only a stable-key slot may be an observation.
+        let opaque = nebula_storage_port::dto::PreparedEffectContract::new(
+            RequestFingerprint::new(1, [9; 32]),
+            nebula_storage_port::dto::PreparedEffectPolicy::builder(DestinationCapability::Opaque)
+                .maximum_invocations(1)
+                .maximum_queries(0)
+                .recovery_window(std::time::Duration::from_mins(1))
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            OperationProtocolRecord::prepared(opaque, 0)
+                .observation(true)
+                .build()
+                .is_err()
+        );
+    }
+
+    #[test]
     fn a_superseded_attempt_cannot_decide_the_current_one() {
         assert_eq!(
-            require_live_lease(
+            crate::execution_fence::require_live_lease(
                 nebula_storage_port::FencingToken::from_generation(4),
                 5,
                 true
-            ),
+            )
+            .map_err(OperationLedgerError::from),
             Err(OperationLedgerError::ExecutionLeaseRejected)
+        );
+        assert_eq!(
+            OperationLedgerError::from(crate::execution_fence::FenceRefusal::Unavailable),
+            OperationLedgerError::Unavailable
         );
     }
 
@@ -934,9 +1333,15 @@ mod tests {
         assert_eq!(legacy.protocol(), None);
     }
 
+    /// Windows constrain only a slot that may have sent something, so the
+    /// rollback is exercised on a slot whose first call crossed ambiguously.
     #[test]
     fn backend_clock_rollback_cannot_expand_the_recovery_window() {
         let protocol = OperationProtocolRecord::prepared(contract(), 100)
+            .revision(2)
+            .phase(EffectPhase::Ambiguous)
+            .invocations(1, Some(OperationCallId::from_bytes([7; 16])))
+            .disposition(Some(InvocationDisposition::Ambiguous))
             .build()
             .unwrap();
         let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
@@ -944,7 +1349,7 @@ mod tests {
         let result = decide_advance(
             &stored,
             &OperationCommand::GrantInvocation {
-                expected_revision: 0,
+                expected_revision: 2,
             },
             99,
             OperationCallId::from_bytes([1; 16]),
@@ -959,6 +1364,77 @@ mod tests {
             record.protocol().map(OperationProtocolRecord::phase),
             Some(EffectPhase::OutcomeUnknown),
         );
+    }
+
+    /// A slot refused locally on every call spends no budget, so the total
+    /// ceiling is what stops it; that refusal authorizes and changes nothing.
+    #[test]
+    fn the_grant_ceiling_refuses_as_known_not_sent_without_a_state_change() {
+        let ceiling = OperationProtocolRecord::GRANT_CEILING;
+        let at_ceiling = |not_crossed| {
+            let protocol = OperationProtocolRecord::prepared(contract(), 0)
+                .revision(u64::from(ceiling) * 2)
+                .phase(EffectPhase::BeforeBoundary)
+                .invocations(ceiling, Some(OperationCallId::from_bytes([7; 16])))
+                .not_crossed(not_crossed)
+                .disposition(Some(InvocationDisposition::BeforeBoundary))
+                .build()
+                .unwrap();
+            record(OperationState::Prepared, 0).with_protocol(protocol)
+        };
+        let grant = OperationCommand::GrantInvocation {
+            expected_revision: u64::from(ceiling) * 2,
+        };
+
+        // Nothing ever crossed: the window is irrelevant, the ceiling is not.
+        let stored = at_ceiling(ceiling);
+        assert_eq!(
+            decide_advance(
+                &stored,
+                &grant,
+                30_000,
+                OperationCallId::from_bytes([8; 16])
+            )
+            .map(|decision| decision.changed),
+            Err(OperationLedgerError::RecoveryExhausted)
+        );
+        // One call may have crossed and budget remains: still the ceiling.
+        let stored = at_ceiling(ceiling - 1);
+        assert_eq!(
+            decide_advance(
+                &stored,
+                &grant,
+                30_000,
+                OperationCallId::from_bytes([8; 16])
+            )
+            .map(|decision| decision.changed),
+            Err(OperationLedgerError::RecoveryExhausted)
+        );
+
+        // One below the ceiling a never-crossed slot is still granted, even
+        // long after its recovery and stable-key windows.
+        let protocol = OperationProtocolRecord::prepared(contract(), 0)
+            .revision(u64::from(ceiling - 1) * 2)
+            .phase(EffectPhase::BeforeBoundary)
+            .invocations(ceiling - 1, Some(OperationCallId::from_bytes([7; 16])))
+            .not_crossed(ceiling - 1)
+            .disposition(Some(InvocationDisposition::BeforeBoundary))
+            .build()
+            .unwrap();
+        let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
+        let decision = decide_advance(
+            &stored,
+            &OperationCommand::GrantInvocation {
+                expected_revision: u64::from(ceiling - 1) * 2,
+            },
+            i64::from(u32::MAX),
+            OperationCallId::from_bytes([8; 16]),
+        )
+        .unwrap();
+        std::assert_matches!(decision.response, OperationAdvance::Granted { .. });
+        let granted = decision.record.protocol().unwrap();
+        assert_eq!(granted.invocations(), ceiling);
+        assert_eq!(granted.crossed_invocations(), 1);
     }
 
     #[test]

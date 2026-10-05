@@ -128,7 +128,10 @@ pub struct ExecutionStores {
     pub journal: Arc<dyn ExecutionJournalReader>,
     /// Per-node output + typed result persistence.
     pub node_results: Arc<dyn NodeResultStore>,
-    /// Best-effort stateful-action checkpoint persistence.
+    /// Fenced iteration checkpoints of journaled stateful actions: where a
+    /// node attempt's effect journal resumes the loop and records it.
+    /// Fenced by the same execution lease as `execution`, so it must share
+    /// its backend.
     pub checkpoints: Arc<dyn CheckpointStore>,
     /// Per-attempt idempotency guard.
     pub idempotency: Arc<dyn IdempotencyGuard>,

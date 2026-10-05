@@ -70,6 +70,9 @@ mod control_turn;
 /// Credential persistence (encryption, audit, refresh claims, pending state).
 pub mod credential;
 mod error;
+/// Backend-independent execution-lease fence, shared by every adapter that
+/// writes under a turn's lease so the fence cannot drift between ports.
+mod execution_fence;
 mod execution_state;
 /// Serialization format abstraction (JSON / MessagePack).
 pub mod format;
@@ -77,6 +80,10 @@ pub mod format;
 pub mod identity_secret;
 /// In-memory adapter implementing the `nebula-storage-port` contract.
 pub mod inmem;
+/// Backend-independent iteration-checkpoint decisions, shared by every
+/// checkpoint adapter so monotone upsert, exact recommit, conflict and
+/// regress cannot drift between backends.
+mod iteration_checkpoint;
 /// Row-to-domain type conversion utilities.
 pub mod mapping;
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]

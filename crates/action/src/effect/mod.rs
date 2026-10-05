@@ -12,17 +12,52 @@ pub use adapter::{
     PreparedRemoteEffect, ReadOnlyEffectQuery, RemoteEffectAction, RemoteEffectFactory,
 };
 
-/// Explicit effect declaration retained in the exact compiled action contract.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Effect declaration retained in the exact compiled action contract.
+///
+/// The default is [`Journaled`](Self::Journaled) at [`JournalProtocol::V1`]:
+/// an action that declares nothing may perform effects, but only through
+/// resource handles. Only handle-routed effects are journaled; a side channel
+/// the action opens itself is invisible to the engine. A stateless
+/// journaled action on a turn with execution stores gets handles under its
+/// node's effect journal (writes are prepared, granted and recorded by the
+/// engine); otherwise — no execution stores, a control action (which
+/// decides flow and must not cause effects), a stateful action until its
+/// iterations are journaled, or an agent or stream action — it runs with
+/// read-only handle authority: reads run and writes through handles are
+/// refused before any provider call, with a detail saying why. No contract
+/// reaches a raw lease: since 0.27.0 the action surface serves resource
+/// handles only, since a lease would bypass the journal. Only the engine's node dispatch runs a journaled action: the
+/// generic runtime entry points cannot vouch for a caller-supplied resource
+/// accessor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ActionEffectContract {
-    /// No trusted declaration exists; durable admission must reject this action.
-    #[default]
-    Undeclared,
+    /// Effects are routed through resource handles and journaled by the engine.
+    ///
+    /// Serialized as `{"Journaled":"V1"}`.
+    Journaled(JournalProtocol),
     /// The adapter performs no external business effect, including during construction.
-    NoExternalEffects,
+    ///
+    /// Serialized as `"NoExternalEffects"`, its name before 0.22.0, so plan
+    /// records frozen with the old spelling stay readable.
+    #[serde(rename = "NoExternalEffects")]
+    ReadOnly,
     /// Provider effects require the declared preparation and recovery protocol.
     Remote(Box<RemoteEffectDescriptor>),
+}
+
+impl Default for ActionEffectContract {
+    fn default() -> Self {
+        Self::Journaled(JournalProtocol::V1)
+    }
+}
+
+/// Version of the engine protocol that journals handle-routed effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum JournalProtocol {
+    /// First journal protocol: one journal slot per handle-routed occurrence.
+    V1,
 }
 
 /// Provider guarantee available to recover one remote business effect.
@@ -415,6 +450,38 @@ mod tests {
             .recovery_window(Duration::from_mins(1))
             .build()
             .unwrap()
+    }
+
+    #[test]
+    fn a_read_only_contract_keeps_its_frozen_wire_tag() {
+        let frozen = serde_json::json!("NoExternalEffects");
+        let decoded: ActionEffectContract = serde_json::from_value(frozen.clone()).unwrap();
+        assert_eq!(decoded, ActionEffectContract::ReadOnly);
+        assert_eq!(
+            serde_json::to_value(ActionEffectContract::ReadOnly).unwrap(),
+            frozen
+        );
+    }
+
+    #[test]
+    fn the_default_contract_is_journaled_v1_and_round_trips() {
+        let contract = ActionEffectContract::default();
+        assert_eq!(
+            contract,
+            ActionEffectContract::Journaled(JournalProtocol::V1)
+        );
+        let wire = serde_json::to_value(&contract).unwrap();
+        assert_eq!(wire, serde_json::json!({ "Journaled": "V1" }));
+        let decoded: ActionEffectContract = serde_json::from_value(wire).unwrap();
+        assert_eq!(decoded, contract);
+    }
+
+    #[test]
+    fn the_removed_undeclared_tag_fails_to_decode() {
+        assert!(
+            serde_json::from_value::<ActionEffectContract>(serde_json::json!("Undeclared"))
+                .is_err()
+        );
     }
 
     #[test]
