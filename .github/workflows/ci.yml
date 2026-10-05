@@ -351,10 +351,13 @@ jobs:
         run: cargo +nightly-2026-04-20 check-external-types --all-features
 
   # ── OpenAPI runtime conformance (NS15 producer) ───────────────────────────
-  # Runs the whole nebula-api suite with response observation enabled, then
-  # aggregates every observed response against the served OpenAPI document into
-  # the `openapi-runtime-compatibility` report. The aggregation fails on any
-  # drift finding; the report is retained either way so a failure is readable.
+  # Runs, with response observation enabled, only the nebula-api test binaries
+  # the producer needs: the conformance suite plus the fixture suites that
+  # reach the remaining documented success branches (test-matrix already runs
+  # the whole package). It then aggregates every observed response against the
+  # served OpenAPI document into the `openapi-runtime-compatibility` report and
+  # fails on any drift finding; the report is retained either way so a failure
+  # is readable. No retries: a retried fixture would duplicate observations.
   # Tier 2: skipped on draft PRs.
   openapi-runtime-conformance:
     name: OpenAPI runtime conformance
@@ -392,11 +395,23 @@ jobs:
           rm -rf "$root"
           mkdir -p "$root/observations"
           export NEBULA_OPENAPI_OBSERVATIONS="$root/observations"
-          cargo nextest run -p nebula-api --profile ci
+          producer_binaries=(
+            openapi_runtime_conformance credential_e2e credential_reauthorize_e2e
+            credential_reconciliation_transport e2e_oauth2_flow
+            execution_terminate_e2e integration_tests me_e2e org_e2e
+            resource_handlers webhook_register_e2e workspace_membership_e2e
+          )
+          filter="binary(${producer_binaries[0]})"
+          for binary in "${producer_binaries[@]:1}"; do
+            filter+=" | binary($binary)"
+          done
+          status=0
+          cargo nextest run -p nebula-api --retries 0 -E "$filter" || status=$?
           NEBULA_OPENAPI_REPORT="$root/openapi-runtime-compatibility.json" \
-            cargo nextest run -p nebula-api --profile ci \
+            cargo nextest run -p nebula-api --retries 0 \
             --test openapi_runtime_conformance --run-ignored only \
-            -E 'test(emit_openapi_runtime_compatibility_report)'
+            -E 'test(emit_openapi_runtime_compatibility_report)' || status=$?
+          exit "$status"
       - name: Upload openapi-runtime-compatibility
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

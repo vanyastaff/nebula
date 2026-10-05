@@ -922,8 +922,26 @@ fn ci_required_check_depends_on_the_openapi_runtime_compatibility_producer() {
         "test(emit_openapi_runtime_compatibility_report)",
         "name: openapi-runtime-compatibility",
         "if-no-files-found: error",
+        "--retries 0 -E \"$filter\"",
     ] {
         assert!(workflow.contains(producer_step), "missing: {producer_step}");
+    }
+    // The producer runs a named subset of binaries; each must still exist.
+    let list = workflow
+        .split_once("producer_binaries=(")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(list, _)| list)
+        .expect("the producer names its test binaries");
+    let binaries: Vec<&str> = list.split_whitespace().collect();
+    assert!(binaries.contains(&"openapi_runtime_conformance"));
+    for binary in binaries {
+        assert!(
+            workspace_root()
+                .join("crates/api/tests")
+                .join(format!("{binary}.rs"))
+                .is_file(),
+            "producer binary {binary} no longer exists"
+        );
     }
 }
 
