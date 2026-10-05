@@ -397,6 +397,13 @@ impl Rule {
 
     /// Boolean predicate evaluation against a structured context.
     ///
+    /// This is the strict evaluator behind schema field and root policies:
+    /// `Described` is transparent here because those rules carry operator
+    /// messages, and any pending dependency makes the whole rule unavailable.
+    /// [`Condition`] differs on purpose: it is a message-free grammar (so it
+    /// rejects `Described`) and evaluates with three-valued logic where a
+    /// definite answer wins over pending; see [`ConditionOutcome::Pending`].
+    ///
     /// # Errors
     /// Value and deferred rules are invalid in conditions. Pending dependencies
     /// produce `Unavailable`, including beneath `any` and `not`.
