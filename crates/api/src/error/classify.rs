@@ -118,3 +118,9 @@ impl From<nebula_core::PermissionDenied> for ApiError {
         }
     }
 }
+
+impl From<nebula_api_contract::v1::auth::OAuthProviderParseError> for ApiError {
+    fn from(_: nebula_api_contract::v1::auth::OAuthProviderParseError) -> Self {
+        crate::domain::auth::backend::AuthError::InvalidInput("unknown OAuth provider").into()
+    }
+}

@@ -27,6 +27,7 @@ members = [
 
   "crates/validator",
   "crates/api",
+  "crates/api-contract",
   "apps/server",
   "crates/workflow",
   "crates/sdk/macros-support",
@@ -60,6 +61,7 @@ homepage = "https://github.com/vanyastaff/nebula"
 documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
+nebula-api-contract = { path = "crates/api-contract", version = "=0.32.0" }
 # Async runtime
 tokio = { version = "1.51.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
 tokio-util = "0.7.18"

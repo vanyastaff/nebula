@@ -11,7 +11,7 @@
 |------|-------|
 | Add a new API endpoint | 1. Add handler in `src/domain/<x>/handler.rs` 2. Register it in `src/domain/<x>/routes.rs` and the relevant `src/domain/mod.rs` assembly 3. Run `cargo nextest run -p nebula-api --test openapi_spec` to verify spec sync |
 | Add a new middleware | Add to the stack in `src/app.rs` — **order is load-bearing** (auth before csrf). See existing stack. |
-| Add a new DTO | Create in `src/domain/<x>/dto.rs`; follow the transport/domain separation below and update OpenAPI schemas and secret-redaction tests. |
+| Add a new DTO | Create in `../api-contract/src/v1/<x>.rs` and re-export in `src/domain/<x>/dto.rs`; follow the transport/domain separation below and update OpenAPI schemas and secret-redaction tests. |
 | Add a new error variant | Extend `ApiError` in `src/error/mod.rs` — all errors are RFC 9457 `application/problem+json`. Never a new ad-hoc 500. |
 | Test Plane-A OAuth | Run `cargo nextest run -p nebula-api` and `cargo nextest run -p nebula-api --features postgres`; the private egress suite uses a generated TLS CA/server and the production client policy without a release bypass. |
 
@@ -38,6 +38,7 @@
 
 - Pure library — ships NO binary/composition root; wiring lives in `apps/server`. Do not add a `main`.
 - No SQL driver / storage-schema knowledge here — inject spec-16 storage ports via `AppState::new` (`nebula-storage` owns adapters).
+- Versioned wire DTOs live in `nebula-api-contract::v1`; API DTO modules retain compatibility imports, server mappings and tests. Enable its `openapi` feature for the served schemas.
 - DTOs MUST NOT embed `nebula-core`/`-storage`/`-engine`/`-credential` types (ADR-0047 §3); wrap cross-layer types (`OrgRoleDto`/`WorkspaceRoleDto`). DTOs carry only `serde_json::Value`/wrappers.
 - All errors are RFC 9457 `application/problem+json` via a typed `ApiError` variant — never a new ad-hoc 500 for business failures.
 - §4.5 operational honesty: an unwired capability returns honest 501/503, never a faked success. Drift between router and OpenAPI spec is a compile error (`OpenApiRouter::routes(routes!(...))`).
