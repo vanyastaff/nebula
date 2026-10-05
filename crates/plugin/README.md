@@ -24,7 +24,8 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
 - `ResolvedPlugin` — per-plugin wrapper with eager component caches. Constructed via `ResolvedPlugin::from(impl Plugin)`, which calls `actions()` / `credentials()` / `resources()` exactly once, validates the namespace invariant (every component key starts with `{plugin.key()}.`), and catches within-plugin duplicate keys; O(1) `action()` / `credential()` / `resource()` lookups thereafter. See ADR-0027.
 - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry. Accessors: `all_actions()` / `all_credentials()` / `all_resources()` flat iterators across every registered plugin; `resolve_action()` / `resolve_credential()` / `resolve_resource()` lookups by full key.
 - `PluginRegistry::freeze` — default-public activation boundary that consumes mutable assembly,
-  re-validates dependencies, and returns an immutable `FrozenPluginRegistry`.
+  re-validates dependencies, refuses a component key exposed by more than one plugin
+  (overlapping plugin namespaces), and returns an immutable `FrozenPluginRegistry`.
 - `PluginSet` / `PluginContractDescriptor` — normalized registered-surface descriptor. Identity includes sorted plugin keys, component keys, dependency keys and normalized semver requirements; prerelease is logical identity while build metadata is excluded.
 - `WorkerFlavorRevision` — combines the logical plugin-set identity with trusted artifact-set provenance and the logical runtime contract version.
 - `RecordedWorkerFlavorRevisionV1` / `WorkerFlavorIntegrityError` — closed persisted flavor
