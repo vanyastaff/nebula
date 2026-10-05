@@ -118,14 +118,14 @@ done
 if package_selected nebula-storage; then
   if [[ -n "${DATABASE_URL:-}" ]]; then
     echo "lefthook: DATABASE_URL set — running PG-gated storage tests"
-    cargo nextest run \
+    NEBULA_REQUIRE_POSTGRES=1 cargo nextest run \
       -p nebula-storage \
-      --features postgres \
-      --test execution_lease_pg_integration \
+      --features sqlite,postgres \
+      --test conformance \
       --test pg_idempotency \
       --test refresh_claim_conformance_postgres \
       --profile agent
   else
-    echo "lefthook: WARN — DATABASE_URL unset; skipping PG-gated storage tests (pg_idempotency, pg_execution_lease, refresh_claim_conformance_postgres)"
+    echo "lefthook: WARN — DATABASE_URL unset; skipping PG-gated storage tests (conformance, pg_idempotency, refresh_claim_conformance_postgres)"
   fi
 fi
