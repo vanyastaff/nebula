@@ -57,6 +57,17 @@ fn normalized_ttl(ttl: Duration) -> Duration {
 
 #[async_trait::async_trait]
 impl ExecutionTurnHandoff for InMemoryTurnHandoff {
+    async fn record_control_flavor_refusal(
+        &self,
+        request: &nebula_storage_port::store::ControlFlavorRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ControlFlavorRefusalOutcome, StorageError> {
+        super::control_turn::record_flavor(&self.inner, self.clock.as_ref(), request)
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::InMemory
+    }
+
     async fn commit_control_turn(
         &self,
         commit: &nebula_storage_port::store::ControlTurnCommit<'_>,
@@ -80,6 +91,10 @@ impl ExecutionTurnHandoff for InMemoryTurnHandoff {
 
 #[async_trait::async_trait]
 impl TurnRecovery for InMemoryTurnHandoff {
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::InMemory
+    }
+
     async fn list_recoverable_turns(
         &self,
         flavor: nebula_core::WorkerFlavorRevisionId,
@@ -162,6 +177,17 @@ impl InMemoryTurnHandoff {
             let expires = now.checked_add_signed(duration).ok_or_else(|| {
                 StorageError::Internal("control handoff lease deadline is invalid".into())
             })?;
+            // The observation is the only fallible write; it lands first so a
+            // failure leaves lease, queue and marker untouched.
+            let payload = crate::control_turn::accepted_turn_payload(
+                nebula_execution::ExecutionControlSource::ControlQueue {
+                    row_id: *handoff.claim().row_id(),
+                    queue_claim_generation: handoff.claim().generation().get(),
+                },
+                generation,
+                now,
+            )?;
+            super::control_turn::append_observation(&mut state, handoff.execution_id(), payload)?;
             let super::execution::State { rows, queue, .. } = &mut *state;
             let row = rows.get_mut(handoff.execution_id()).ok_or_else(|| {
                 StorageError::Internal("control handoff execution disappeared".into())
@@ -253,30 +279,45 @@ impl InMemoryTurnHandoff {
                     // turn, so the sweep must still be able to redeliver it.
                     Ok(TurnAcceptance::TurnHeldByAnotherOwner)
                 } else {
-                    // Past this point every write is infallible, so the lease
-                    // and the acknowledgement land together or not at all.
-                    let generation = {
-                        let row = state.rows.get_mut(handoff.execution_id()).ok_or_else(|| {
-                            StorageError::not_found("execution", handoff.execution_id())
+                    // Every acquire bumps the generation, so a token from
+                    // before this handoff is dead — including one held by a
+                    // crashed-then-restarted runner reusing its identity.
+                    let generation = row
+                        .fencing_generation
+                        .checked_add(1)
+                        .filter(|generation| i64::try_from(*generation).is_ok())
+                        .ok_or_else(|| {
+                            StorageError::Internal("handoff fence is exhausted".into())
                         })?;
-                        // Every acquire bumps the generation, so a token from
-                        // before this handoff is dead — including one held by a
-                        // crashed-then-restarted runner reusing its identity.
-                        row.fencing_generation = row
-                            .fencing_generation
-                            .checked_add(1)
-                            .filter(|generation| i64::try_from(*generation).is_ok())
-                            .ok_or_else(|| {
-                                StorageError::Internal("handoff fence is exhausted".into())
-                            })?;
-                        handoff
-                            .holder()
-                            .clone_into(row.lease_holder.get_or_insert_with(String::new));
-                        row.lease_expires_at = Some(lease_expiry);
-                        row.fencing_generation
-                    };
-                    let job = state
-                        .jobs
+                    // The observation is the last fallible write and lands
+                    // first; past it the lease and the acknowledgement land
+                    // together or not at all.
+                    let payload = crate::control_turn::accepted_turn_payload(
+                        nebula_execution::ExecutionControlSource::JobDispatch {
+                            row_id: *handoff.claim().row_id(),
+                            queue_claim_generation: handoff.claim().generation().get(),
+                        },
+                        generation,
+                        now,
+                    )?;
+                    if !state.jobs.contains_key(handoff.claim().row_id()) {
+                        return Err(StorageError::not_found("job_dispatch", "claimed row"));
+                    }
+                    super::control_turn::append_observation(
+                        &mut state,
+                        handoff.execution_id(),
+                        payload,
+                    )?;
+                    let super::execution::State { rows, jobs, .. } = &mut *state;
+                    let row = rows.get_mut(handoff.execution_id()).ok_or_else(|| {
+                        StorageError::not_found("execution", handoff.execution_id())
+                    })?;
+                    row.fencing_generation = generation;
+                    handoff
+                        .holder()
+                        .clone_into(row.lease_holder.get_or_insert_with(String::new));
+                    row.lease_expires_at = Some(lease_expiry);
+                    let job = jobs
                         .get_mut(handoff.claim().row_id())
                         .ok_or_else(|| StorageError::not_found("job_dispatch", "claimed row"))?;
                     // Retention runs from the terminal transition, and this is

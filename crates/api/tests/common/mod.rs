@@ -447,6 +447,15 @@ pub(crate) fn port_scope() -> Scope {
     Scope::new(TEST_WS, TEST_ORG)
 }
 
+/// Populated action and plugin catalogs (`core.echo` in plugin `core`) for
+/// `AppState::with_action_registry` / `with_plugin_registry`.
+pub(crate) fn catalog_registries() -> (
+    Arc<nebula_engine::ActionRegistry>,
+    Arc<tokio::sync::RwLock<nebula_plugin::PluginRegistry>>,
+) {
+    exact_runtime::catalog()
+}
+
 pub(crate) async fn activate_workflow_for_start(state: &AppState, workflow_id: &str) {
     let scope = port_scope();
     let version = state

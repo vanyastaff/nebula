@@ -13,6 +13,7 @@
 #![warn(clippy::all)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod backend;
 mod batch;
 /// Port-local row/record DTOs.
 pub mod dto;
@@ -25,6 +26,7 @@ mod scope;
 /// Repository traits (ISP-segregated, object-safe).
 pub mod store;
 
+pub use backend::StorageBackendKind;
 pub use batch::{
     ExecutionReferenceTransition, TransitionBatch, TransitionBatchBuilder, TransitionOutcome,
 };

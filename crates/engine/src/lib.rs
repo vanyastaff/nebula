@@ -65,6 +65,7 @@ pub mod binding_resolver;
 pub mod command_service;
 pub mod control_consumer;
 pub mod control_dispatch;
+mod control_metrics;
 mod control_trace;
 pub mod credential_accessor;
 pub mod daemon;

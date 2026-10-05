@@ -84,14 +84,22 @@ pub(super) async fn accept(
             tx.rollback().await.map_err(backend_error)?;
             return Ok(RecoveryTurnAcceptance::CandidateSuperseded);
         };
-        let marker: Option<i64> = sqlx::query_scalar("SELECT last_accepted_fencing_generation FROM port_execution_turn_acceptances a WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3 AND EXISTS (SELECT 1 FROM port_execution_revision_refs r WHERE r.execution_id = a.execution_id AND r.reference_state = 'live' AND r.worker_flavor_id = $4) FOR UPDATE OF a")
+        let marker = sqlx::query("SELECT last_accepted_fencing_generation, source_kind, source_queue_id FROM port_execution_turn_acceptances a WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3 AND EXISTS (SELECT 1 FROM port_execution_revision_refs r WHERE r.execution_id = a.execution_id AND r.reference_state = 'live' AND r.worker_flavor_id = $4) FOR UPDATE OF a")
             .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
             .bind(handoff.worker_flavor_revision_id().as_bytes().as_slice())
             .fetch_optional(&mut *tx).await.map_err(backend_error)?;
-        if marker != Some(expected_marker) {
+        let Some(marker) = marker else {
+            tx.rollback().await.map_err(backend_error)?;
+            return Ok(RecoveryTurnAcceptance::CandidateSuperseded);
+        };
+        if marker.try_get::<i64, _>("last_accepted_fencing_generation").map_err(backend_error)? != expected_marker {
             tx.rollback().await.map_err(backend_error)?;
             return Ok(RecoveryTurnAcceptance::CandidateSuperseded);
         }
+        let source_kind: String = marker.try_get("source_kind").map_err(backend_error)?;
+        let source_row_id: [u8; 16] = marker.try_get::<Vec<u8>, _>("source_queue_id").map_err(backend_error)?
+            .try_into()
+            .map_err(|_| StorageError::Internal("recovery marker source is invalid".into()))?;
         let version = u64::try_from(row.try_get::<i64, _>("version").map_err(backend_error)?)
             .map_err(|_| StorageError::Internal("recovery stored version is invalid".into()))?;
         if version != handoff.expected_execution_version() {
@@ -123,6 +131,15 @@ pub(super) async fn accept(
         if lease.rows_affected() != 1 || marker.rows_affected() != 1 {
             return Err(StorageError::Internal("recovery locked rows changed".into()));
         }
+        let payload = crate::control_turn::recovered_turn_payload(
+            &source_kind,
+            source_row_id,
+            handoff.expected_accepted_fencing_generation(),
+            fence.generation(),
+            chrono::DateTime::from_timestamp_millis(now)
+                .ok_or_else(|| StorageError::Internal("recovery timestamp is invalid".into()))?,
+        )?;
+        super::control_turn::append_observation(&mut tx, handoff.execution_id(), &payload).await?;
         tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown { operation: "execution_turn_recovery" })?;
         Ok(RecoveryTurnAcceptance::Accepted { fence })
     }.await;

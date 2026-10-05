@@ -49,6 +49,17 @@ fn normalized_ttl_ms(ttl: std::time::Duration) -> Result<i64, StorageError> {
 
 #[async_trait::async_trait]
 impl ExecutionTurnHandoff for PgTurnHandoff {
+    async fn record_control_flavor_refusal(
+        &self,
+        request: &nebula_storage_port::store::ControlFlavorRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ControlFlavorRefusalOutcome, StorageError> {
+        super::control_turn::record_flavor(&self.pool, request).await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::Postgres
+    }
+
     async fn commit_control_turn(
         &self,
         commit: &nebula_storage_port::store::ControlTurnCommit<'_>,
@@ -69,6 +80,10 @@ impl ExecutionTurnHandoff for PgTurnHandoff {
 
 #[async_trait::async_trait]
 impl TurnRecovery for PgTurnHandoff {
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::Postgres
+    }
+
     async fn list_recoverable_turns(
         &self,
         flavor: nebula_core::WorkerFlavorRevisionId,
@@ -151,6 +166,15 @@ impl PgTurnHandoff {
             if leased.rows_affected() != 1 || completed.rows_affected() != 1 || recorded.rows_affected() != 1 {
                 return Err(StorageError::Internal("control handoff locked rows changed".into()));
             }
+            let payload = crate::control_turn::accepted_turn_payload(
+                nebula_execution::ExecutionControlSource::ControlQueue {
+                    row_id: *handoff.claim().row_id(),
+                    queue_claim_generation: handoff.claim().generation().get(),
+                },
+                fence.generation(),
+                backend_timestamp(now)?,
+            )?;
+            super::control_turn::append_observation(&mut tx, handoff.execution_id(), &payload).await?;
             tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown {
                 operation: "control_start_handoff",
             })?;
@@ -296,9 +320,6 @@ impl PgTurnHandoff {
                     "job handoff tenant binding changed".into(),
                 ));
             }
-            tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown {
-                operation: "job_turn_handoff",
-            })?;
             // A negative generation here would mean the monotone column was
             // written out of band — fail closed with a typed error rather
             // than handing out fence 0 (the lowest possible value, which a
@@ -308,6 +329,20 @@ impl PgTurnHandoff {
                     "fencing_generation out of u64 range for execution {}: {generation}",
                     handoff.execution_id()
                 ))
+            })?;
+            let now: i64 = sqlx::query_scalar("SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")
+                .fetch_one(&mut *tx).await.map_err(conn_err)?;
+            let payload = crate::control_turn::accepted_turn_payload(
+                nebula_execution::ExecutionControlSource::JobDispatch {
+                    row_id: *handoff.claim().row_id(),
+                    queue_claim_generation: handoff.claim().generation().get(),
+                },
+                generation,
+                backend_timestamp(now)?,
+            )?;
+            super::control_turn::append_observation(&mut tx, handoff.execution_id(), &payload).await?;
+            tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown {
+                operation: "job_turn_handoff",
             })?;
             Ok(TurnAcceptance::Accepted {
                 fence: FencingToken::from_generation(generation),
@@ -324,6 +359,12 @@ impl PgTurnHandoff {
         );
         result
     }
+}
+
+/// The backend clock reading an accepted turn is journaled under.
+fn backend_timestamp(now_ms: i64) -> Result<chrono::DateTime<chrono::Utc>, StorageError> {
+    chrono::DateTime::from_timestamp_millis(now_ms)
+        .ok_or_else(|| StorageError::Internal("accepted turn timestamp is invalid".into()))
 }
 
 fn control_conn_err(_: sqlx::Error) -> StorageError {

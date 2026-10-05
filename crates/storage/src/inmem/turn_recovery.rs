@@ -135,6 +135,16 @@ pub(super) fn accept(
         let expires = now
             .checked_add_signed(duration)
             .ok_or_else(|| StorageError::Internal("recovery deadline is invalid".into()))?;
+        // The observation is the only fallible write; it lands first so a
+        // failure leaves lease and marker untouched.
+        let payload = crate::control_turn::recovered_turn_payload(
+            marker.source,
+            marker.queue_id,
+            marker.generation,
+            generation,
+            now,
+        )?;
+        super::control_turn::append_observation(&mut state, handoff.execution_id(), payload)?;
         let super::execution::State {
             rows,
             accepted_turns,

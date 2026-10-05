@@ -53,6 +53,7 @@ pub mod bundle;
 pub mod bundle_v2;
 pub mod checkpoint;
 pub mod context;
+pub mod control_observation;
 pub mod error;
 pub mod error_envelope;
 pub mod idempotency;
@@ -79,6 +80,11 @@ pub use bundle_v2::{
 };
 pub use checkpoint::{ExecutionCheckpoint, NodeCheckpoint};
 pub use context::{ExecutionBudget, ExecutionContext};
+pub use control_observation::{
+    EXECUTION_CONTROL_OBSERVATION_VERSION, ExecutionControlAttempt, ExecutionControlObservationV1,
+    ExecutionControlOutcome, ExecutionControlQueueKind, ExecutionControlReason,
+    ExecutionControlSource,
+};
 pub use error::ExecutionError;
 pub use error_envelope::{
     ERROR_ENVELOPE_VERSION, ErrorEnvelope, MAX_REDACTED_MESSAGE_BYTES, TRUNCATION_MARKER,

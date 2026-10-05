@@ -173,9 +173,16 @@ async fn get_me_with_non_user_principal_is_401() {
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let ct = response_content_type_was(&response);
-    assert!(
-        ct,
-        "non-user-principal 401 must come from the handler (RFC 9457 problem+json)"
+    assert!(ct, "non-user-principal 401 must be RFC 9457 problem+json");
+    // Middleware rejections share the media type, so the handler-owned
+    // detail is what proves authentication succeeded and the handler refused.
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let problem: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        problem["detail"], "me endpoints require an authenticated user identity",
+        "non-user-principal 401 must come from the handler"
     );
 }
 
@@ -211,9 +218,8 @@ async fn pat_with_legacy_empty_scopes_is_rejected_at_auth() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-// Helper: a 401 emitted by the handler carries application/problem+json;
-// one short-circuited by middleware does not. We check the header on the
-// still-owned response before consuming the body.
+// Helper: every 401 — handler or middleware — carries application/problem+json.
+// We check the header on the still-owned response before consuming the body.
 fn response_content_type_was(response: &axum::response::Response) -> bool {
     response
         .headers()

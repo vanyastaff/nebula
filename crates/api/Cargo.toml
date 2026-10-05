@@ -14,6 +14,8 @@ documentation.workspace = true
 
 [dependencies]
 nebula-api-contract = { workspace = true, features = ["openapi"] }
+http-body = { version = "1", optional = true }
+jsonschema = { workspace = true, optional = true }
 nebula-env = { workspace = true }
 nebula-error = { workspace = true, features = ["derive", "serde"] }
 nebula-storage = { path = "../storage", features = ["credential-in-memory", "sqlite"] }
@@ -196,7 +198,7 @@ first-party-composition = []
 # Enables `ApiConfig::for_test()` and other test helpers. NEVER
 # enable this in production builds — it exposes a constructor that
 # bypasses the JwtSecret validation gate.
-test-util = ["dep:nebula-schema"]
+test-util = ["dep:nebula-schema", "dep:jsonschema", "dep:http-body"]
 # Forwards `nebula-storage/postgres` so the `PgIdempotencyStore` impl becomes
 # available to composition roots (e.g. `nebula-server`). The `sqlx` pool is
 # constructed by the composition root, not by this library. When this feature

@@ -21,6 +21,7 @@ use super::dto::{
 use crate::{
     domain::shared::AckResponse,
     error::{ApiError, ApiResult, ProblemDetails},
+    extractors::ApiJson,
     extractors::credential::{
         validate_credential_id, validate_credential_key, validate_credential_name,
         validate_data_is_object,
@@ -93,7 +94,7 @@ pub async fn create_credential(
     Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
-    Json(body): Json<CreateCredentialRequest>,
+    ApiJson(body): ApiJson<CreateCredentialRequest>,
 ) -> ApiResult<Json<CredentialResponse>> {
     // --- Input validation ---
     validate_credential_key(&body.credential_key)?;
@@ -173,7 +174,7 @@ pub async fn update_credential(
     Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
-    Json(body): Json<UpdateCredentialRequest>,
+    ApiJson(body): ApiJson<UpdateCredentialRequest>,
 ) -> ApiResult<Json<CredentialResponse>> {
     // Validate path parameter.
     validate_credential_id(&cred)?;
@@ -427,7 +428,7 @@ pub async fn reconcile_credential(
     Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
-    Json(request): Json<ReconcileCredentialRequest>,
+    ApiJson(request): ApiJson<ReconcileCredentialRequest>,
 ) -> ApiResult<Json<ReconcileCredentialResponse>> {
     validate_credential_id(&cred)?;
 
@@ -473,7 +474,7 @@ pub async fn resolve_credential(
     Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
-    Json(request): Json<ResolveCredentialRequest>,
+    ApiJson(request): ApiJson<ResolveCredentialRequest>,
 ) -> ApiResult<Json<ResolveCredentialResponse>> {
     // ── Input validation ────────────────────────────────────────────
     validate_credential_key(&request.credential_key)?;
@@ -514,7 +515,7 @@ pub async fn reauthorize_credential(
     Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
-    Json(request): Json<ReauthorizeCredentialRequest>,
+    ApiJson(request): ApiJson<ReauthorizeCredentialRequest>,
 ) -> ApiResult<Json<ReauthorizeCredentialResponse>> {
     validate_credential_id(&cred)?;
     validate_data_is_object(&request.data)?;
@@ -547,6 +548,7 @@ pub async fn reauthorize_credential(
         (status = 400, description = "Validation error (e.g. empty `pending_token`).", body = ProblemDetails),
         (status = 401, description = "Authentication required or pending token expired/already-consumed.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 404, description = "The credential a reauthorization continues no longer exists in this workspace.", body = ProblemDetails),
         (status = 409, description = "Generated identity/name conflict or unknown persistence outcome requiring reconciliation.", body = ProblemDetails),
         (status = 503, description = "Credential authority, provider, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
@@ -556,7 +558,7 @@ pub async fn continue_resolve_credential(
     Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
-    Json(request): Json<ContinueResolveRequest>,
+    ApiJson(request): ApiJson<ContinueResolveRequest>,
 ) -> ApiResult<Json<ContinueResolveResponse>> {
     // ── Input validation ────────────────────────────────────────────
     validate_credential_key(&request.credential_key)?;

@@ -86,6 +86,26 @@ impl ScopedExecutionStore {
 
 #[async_trait::async_trait]
 impl ExecutionStore for ScopedExecutionStore {
+    async fn record_execution_admission_refusal(
+        &self,
+        refusal: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        let rebound = nebula_storage_port::store::ExecutionAdmissionRefusal::new(
+            &self.bound,
+            refusal.execution_id(),
+            refusal.fence(),
+            refusal.node_key(),
+            refusal.attempt(),
+        );
+        self.inner
+            .record_execution_admission_refusal(&rebound)
+            .await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.inner.backend_kind()
+    }
+
     async fn create(
         &self,
         _scope: &Scope,

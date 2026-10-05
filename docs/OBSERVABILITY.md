@@ -45,11 +45,10 @@ The live journal table is `port_execution_journal`, not the legacy
 `nebula_storage_port::dto::JournalEntry` — an opaque `{seq, payload}` pair — in the
 same commit as the state transition (`TransitionBatch::journal`).
 
-**No production writer exists yet (#1013).** `nebula-engine` does not fill the
-batch's journal rows, so the table is empty in every current deployment. The schema
-below is the planned event shape (the closed `JournalEntry` variant set in
-`crates/execution/src/journal.rs`); journal queries return nothing until that writer
-lands.
+**Only execution-control decisions are journaled today** (§4.1). `nebula-engine`
+does not yet fill the batch's journal rows for node and execution lifecycle events.
+The schema below is the planned event shape for those (the closed `JournalEntry`
+variant set in `crates/execution/src/journal.rs`).
 
 Every durable event appended to `port_execution_journal` follows this shape. The
 sketch below is a planned envelope, not the current variant fields — each
@@ -75,6 +74,69 @@ and the persisted wire row is the opaque
 High-cardinality fields (`execution_id`, `node_id`, `correlation_id`, `trace_id`) are required; the event vocabulary is the closed `JournalEntry` variant set in `crates/execution/src/journal.rs` (serde tag `event`, snake_case).
 
 Principle (from Observability Engineering): append rich structured events first, aggregate to metrics second. Never add a metric without the underlying event being available for drill-down.
+
+### 4.1 Execution-control operator outcomes (NS21)
+
+The one production journal writer today is the execution owner's control decision.
+`JournalEntry::ControlObserved` (`event = "control_observed"`) carries a versioned
+`ExecutionControlObservationV1` (`crates/execution/src/control_observation.rs`):
+a closed `outcome`, a typed framework `reason` (no provider text), the retained
+`source` (control-queue or job-dispatch row and queue claim generation, or the
+accepted-turn marker), the execution lease generation, an optional node attempt,
+and for `flavor-mismatch` the expected and actual worker-flavor revisions.
+
+| `outcome` | Recorded when | `reason` codes |
+|---|---|---|
+| `accepted` | a control turn commits with its checkpoint, marker and queue completion | `control_accepted` |
+| `fenced` | a verified delivery presents a superseded queue claim or execution lease | `claim_superseded`, `lease_fenced`, `lease_expired`, `lease_absent` |
+| `deferred` | the live owner must reload a newer execution version | `execution_version_conflict` |
+| `throttled` | node admission (rate limit) refuses a leased, accepted turn before provider dispatch | `admission_throttled` |
+| `recovered` | recovery acceptance takes over a retained accepted turn | `accepted_turn_recovered` |
+| `flavor-mismatch` | a claimed delivery addresses an execution pinned to another worker flavor | `exact_flavor_mismatch` |
+
+Refusals are written by the backend inside the owner transaction that verified the
+delivery, deduplicated by `port_execution_control_observation_receipts` (migration
+0063): a redelivered refusal acknowledges the existing receipt and appends nothing.
+A refused actor never receives journal write authority of its own. A Start or job
+handoff refused before any owner takes the execution (another live lease, a stale
+version, a superseded claim) rolls back and is redelivered; it is not journaled,
+and the vocabulary carries no reason that nothing produces.
+
+The observation never replaces, masks or delays the decision it observes. A
+control-turn refusal (fenced, deferred, flavor-mismatch) returns its definite
+outcome even when writing the observation fails (`observation_acknowledgement =
+unrecorded`, rolled back) or its commit acknowledgement is lost (`unknown`): the
+refusal changed nothing, so no acceptance is in doubt. A failed flavor-mismatch
+observation leaves the exact-load rejection in charge. A redelivered flavor
+mismatch reports the existing receipt's immutable expected/actual snapshot, or
+no snapshot if it cannot be read, never the retrying runtime's values. An
+admission refusal attributed to its owner is settled the same way. An admission refusal is
+gated only by the live lease, never by the aggregate version, and one the owner
+cannot attribute (no accepted-turn marker, stale lease, backend failure) never
+replaces the node's rate-limit error. Every such missing observation is counted
+on `nebula_execution_control_observations_unrecorded_total` (same `outcome` ×
+`backend` labels) and logged as a warning, so a journal that under-reports is
+visible.
+
+Known limitation: a `throttled` observation takes its source from the
+execution's single accepted-turn marker for the live lease generation. That
+marker holds only the latest acceptance: a Resume or Restart committed under the
+same lease replaces the Start or job delivery it records. A throttle is therefore
+attributed to the most recent accepted delivery of the owning lease, which may
+not be the delivery that scheduled the refused node.
+
+Telemetry is an observation of the persisted decision, never its source of truth:
+`nebula_execution_control_outcomes_total` counts newly recorded decisions with
+exactly two labels, `outcome` (the six values above) and `backend`
+(`in_memory`, `sqlite`, `postgres`) — 18 series at most. Execution, tenant,
+node, generation and revision identities are span fields only. The deciding spans
+(`commit_claimed_control`, `prepare_resume_lease`, `record_admission_refusal`,
+`record_claimed_flavor_refusal`) carry `execution_id`, `org_id`, `workspace_id`,
+`backend`, `outcome` and `observation_acknowledgement`.
+
+The execution logs handler (`get_execution_logs`) returns journal payloads as raw
+JSON through the existing DTO; it is not routed yet, and the typed projection waits
+for the versioned API contract crate (issue 1003).
 
 ## 5. Core analysis loop
 
@@ -108,7 +170,7 @@ Standard labels: `credential_key` (e.g. `"github_token"`), `outcome` (`"success"
 
 > **SEC-01/02 metric emission status (2026-04-27).** Per credential security hardening (archived sub-spec; see the maintainers' private design vault) §6, the metric *names* are reserved here as part of the doc-sync stage (`docs/PRODUCT_CANON.md` §3.5 and §4.5 operational honesty: a new error path must register its observability surface alongside the code that emits it). Emission wiring is deferred to the metric-bus integration cascade — the security-hardening fix surfaces the rejection paths via typed `TokenHttpError` (bounded reader) and the `[*_redacted]` placeholder (sanitizer). When the credential-metrics emitter is wired through `parse_token_response`, both counters get bumped at the existing `Err(...)` returns; no new error semantics are introduced in this stage.
 
-**Analysis loop integration:** when investigating credential-related failures, include credential metrics alongside `port_execution_journal` events (no journal rows exist yet — #1013). A spike in `refresh_failed_total` or `tamper_detection_total` is an early signal before execution failures surface.
+**Analysis loop integration:** when investigating credential-related failures, include credential metrics alongside `port_execution_journal` events (only execution-control decisions are journaled today, §4.1). A spike in `refresh_failed_total` or `tamper_detection_total` is an early signal before execution failures surface.
 
 ## 7. Credential refresh coordinator (two-tier L1+L2)
 

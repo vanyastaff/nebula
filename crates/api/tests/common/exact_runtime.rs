@@ -146,3 +146,31 @@ pub(super) fn services(
         },
     )
 }
+
+/// Action and plugin catalogs holding the same frozen fixture contracts, for
+/// the `/actions` and `/plugins` read models.
+pub(super) fn catalog() -> (
+    Arc<nebula_engine::ActionRegistry>,
+    Arc<tokio::sync::RwLock<PluginRegistry>>,
+) {
+    let actions = nebula_engine::ActionRegistry::new();
+    actions.register_factory(Arc::new(
+        InstanceFactory::new(Echo::metadata(), Echo).expect("valid test catalog definition"),
+    ));
+    let mut plugins = PluginRegistry::new();
+    plugins
+        .register(Arc::new(
+            ResolvedPlugin::from(FixturePlugin {
+                manifest: PluginManifest::builder("core", "HTTP fixture")
+                    .build()
+                    .unwrap(),
+                slow_started: Arc::new(tokio::sync::Notify::new()),
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    (
+        Arc::new(actions),
+        Arc::new(tokio::sync::RwLock::new(plugins)),
+    )
+}

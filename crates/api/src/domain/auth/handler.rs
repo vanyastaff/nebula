@@ -39,6 +39,7 @@ use crate::{
         shared::AckResponse,
     },
     error::{ApiError, ApiResult, ProblemDetails},
+    extractors::ApiJson,
     middleware::auth::AuthMethod,
     state::AppState,
 };
@@ -288,7 +289,7 @@ fn user_id_from_fresh_mfa_session(auth: &AuthContext) -> Result<String, ApiError
 #[tracing::instrument(level = "info", skip(state, body), fields(email = %body.email))]
 pub async fn signup(
     State(state): State<AppState>,
-    Json(body): Json<SignupRequest>,
+    ApiJson(body): ApiJson<SignupRequest>,
 ) -> ApiResult<Json<SignupResponse>> {
     let backend = backend(&state)?;
     let user = backend.register_user(body).await.map_err(ApiError::from)?;
@@ -321,7 +322,7 @@ pub async fn signup(
 #[tracing::instrument(level = "info", skip(state, body), fields(email = %body.email))]
 pub async fn login(
     State(state): State<AppState>,
-    Json(body): Json<LoginRequest>,
+    ApiJson(body): ApiJson<LoginRequest>,
 ) -> ApiResult<axum::response::Response> {
     let backend = backend(&state)?;
     let outcome = backend
@@ -411,7 +412,7 @@ pub async fn logout(
 #[tracing::instrument(level = "info", skip(state, body))]
 pub async fn forgot_password(
     State(state): State<AppState>,
-    Json(body): Json<ForgotPasswordRequest>,
+    ApiJson(body): ApiJson<ForgotPasswordRequest>,
 ) -> ApiResult<(StatusCode, Json<AckResponse>)> {
     let backend = backend(&state)?;
     backend
@@ -438,7 +439,7 @@ pub async fn forgot_password(
 #[tracing::instrument(level = "info", skip(state, body))]
 pub async fn reset_password(
     State(state): State<AppState>,
-    Json(body): Json<ResetPasswordRequest>,
+    ApiJson(body): ApiJson<ResetPasswordRequest>,
 ) -> ApiResult<Json<AckResponse>> {
     let backend = backend(&state)?;
     backend
@@ -464,7 +465,7 @@ pub async fn reset_password(
 #[tracing::instrument(level = "info", skip(state, body))]
 pub async fn verify_email(
     State(state): State<AppState>,
-    Json(body): Json<VerifyEmailRequest>,
+    ApiJson(body): ApiJson<VerifyEmailRequest>,
 ) -> ApiResult<Json<AckResponse>> {
     let backend = backend(&state)?;
     backend
@@ -534,7 +535,7 @@ pub async fn mfa_enroll(
 pub async fn mfa_verify(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<MfaConfirmEnrollRequest>,
+    ApiJson(body): ApiJson<MfaConfirmEnrollRequest>,
 ) -> ApiResult<Json<AckResponse>> {
     let backend = backend(&state)?;
     let user_id = user_id_from_fresh_mfa_session(&auth)?;
@@ -567,7 +568,7 @@ pub async fn mfa_verify(
 #[tracing::instrument(level = "info", skip(state, body))]
 pub async fn mfa_complete_login(
     State(state): State<AppState>,
-    Json(body): Json<MfaLoginCompleteRequest>,
+    ApiJson(body): ApiJson<MfaLoginCompleteRequest>,
 ) -> ApiResult<axum::response::Response> {
     let backend = backend(&state)?;
     let user = backend

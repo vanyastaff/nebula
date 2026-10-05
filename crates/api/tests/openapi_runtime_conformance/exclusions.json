@@ -1,0 +1,52 @@
+[
+  {
+    "method": "get",
+    "path": "/api/v1/auth/oauth/{provider}/callback",
+    "operation_id": "oauth_callback",
+    "reason": "Successful callback requires an externally issued one-time provider code, original browser transaction state and provider egress; fake success would bypass the production identity policy."
+  },
+  {
+    "method": "post",
+    "path": "/api/v1/orgs/{org}/workspaces/{ws}/resources",
+    "operation_id": "create_resource",
+    "status": 201,
+    "reason": "Success requires a resource-kind registrar built from a nebula-resource factory; deny.toml forbids nebula-api from depending on nebula-resource, so the API fixtures can only reach the fail-closed 409/422/503 branches."
+  },
+  {
+    "method": "put",
+    "path": "/api/v1/orgs/{org}/workspaces/{ws}/resources/{res}",
+    "operation_id": "update_resource",
+    "status": 200,
+    "reason": "Success requires a resource-kind registrar built from a nebula-resource factory; deny.toml forbids nebula-api from depending on nebula-resource, so the API fixtures can only reach the fail-closed 404/409/422/503 branches."
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/openapi.json",
+    "reason": "Serves the OpenAPI document itself; describing the document inside itself is not part of the API contract."
+  },
+  {
+    "method": "get",
+    "path": "/api/v1/docs/",
+    "reason": "Self-hosted Swagger UI static assets, not an API operation."
+  },
+  {
+    "method": "post",
+    "path": "/resume",
+    "reason": "Wait-state resume transport authorized by a consumed one-time token, deliberately outside the versioned REST contract (README endpoint table)."
+  },
+  {
+    "method": "post",
+    "path": "/internal/v1/webhooks/reload",
+    "reason": "Unsupported operator transport behind the internal shared token; excluded from the public document by design."
+  },
+  {
+    "method": "post",
+    "path": "/api/v1/_test/echo",
+    "reason": "test-util-only idempotency fixture route that never exists in production builds."
+  },
+  {
+    "method": "post",
+    "path": "/api/v1/_test/fail",
+    "reason": "test-util-only idempotency fixture route that never exists in production builds."
+  }
+]

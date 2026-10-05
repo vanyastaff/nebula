@@ -549,6 +549,9 @@ impl Orchestrator {
         let fence = match acceptance {
             Ok(TurnAcceptance::Accepted { fence }) => {
                 self.inc_handoff(orchestrator_handoff_outcome::ACCEPTED);
+                // The handoff journaled `accepted` in the same transaction;
+                // count it on the operator outcome counter too.
+                self.inc_control_outcome(nebula_execution::ExecutionControlOutcome::Accepted);
                 fence
             },
             // Another attempt now owns the row — nothing was written, and the
@@ -679,6 +682,25 @@ impl Orchestrator {
                     "orchestrator dispatch failed after handoff; recovery drives from the execution lease (#976)"
                 );
                 self.inc_dispatch(orchestrator_dispatch_outcome::FAILED);
+            },
+        }
+    }
+
+    /// Count a journaled execution-control decision on the closed
+    /// outcome × backend counter shared with the engine.
+    fn inc_control_outcome(&self, outcome: nebula_execution::ExecutionControlOutcome) {
+        let backend = self.handoff.backend_kind();
+        let labels = self
+            .metrics
+            .interner()
+            .label_set(&[("backend", backend.as_str()), ("outcome", outcome.as_str())]);
+        match self.metrics.counter_labeled(
+            nebula_metrics::NEBULA_EXECUTION_CONTROL_OUTCOMES_TOTAL,
+            &labels,
+        ) {
+            Ok(counter) => counter.inc(),
+            Err(error) => {
+                tracing::warn!(%error, "execution-control outcome metric could not be recorded");
             },
         }
     }

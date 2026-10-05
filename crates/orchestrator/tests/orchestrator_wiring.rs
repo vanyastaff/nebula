@@ -443,6 +443,59 @@ impl ExecutionSink for GateSink {
     }
 }
 
+/// Every durable `ControlObserved` row the job handoff journals must have a
+/// matching operator outcome counter increment, outcome by outcome.
+async fn assert_operator_outcome_parity(
+    core: &TestCore,
+    registry: &MetricsRegistry,
+    execution: &str,
+) {
+    use nebula_storage_port::store::ExecutionJournalReader as _;
+    let journal = nebula_storage::inmem::InMemoryJournalReader::new(&core.store)
+        .get_journal(&scope(), execution)
+        .await
+        .unwrap();
+    assert!(
+        !journal.is_empty(),
+        "the accepted job handoff must journal its decision"
+    );
+    for outcome in [
+        nebula_execution::ExecutionControlOutcome::Accepted,
+        nebula_execution::ExecutionControlOutcome::Fenced,
+        nebula_execution::ExecutionControlOutcome::Deferred,
+        nebula_execution::ExecutionControlOutcome::Throttled,
+        nebula_execution::ExecutionControlOutcome::Recovered,
+        nebula_execution::ExecutionControlOutcome::FlavorMismatch,
+    ] {
+        let rows = journal
+            .iter()
+            .filter(|row| {
+                matches!(
+                    <nebula_execution::JournalEntry as serde::Deserialize>::deserialize(&row.payload),
+                    Ok(nebula_execution::JournalEntry::ControlObserved { ref observation, .. })
+                        if observation.outcome() == outcome
+                )
+            })
+            .count();
+        let labels = registry
+            .interner()
+            .label_set(&[("backend", "in_memory"), ("outcome", outcome.as_str())]);
+        let counted = registry
+            .counter_labeled(
+                nebula_metrics::NEBULA_EXECUTION_CONTROL_OUTCOMES_TOTAL,
+                &labels,
+            )
+            .unwrap()
+            .get();
+        assert_eq!(
+            u64::try_from(rows).unwrap(),
+            counted,
+            "journal rows and counter disagree for {}",
+            outcome.as_str()
+        );
+    }
+}
+
 /// Read the handoff `accepted` counter from `registry`.
 fn accepted_count(registry: &MetricsRegistry) -> u64 {
     let labels = registry
@@ -594,6 +647,7 @@ async fn claim_route_sink_mark_dispatched() {
         1,
         "handoff accepted counter must be 1"
     );
+    assert_operator_outcome_parity(&core, &registry, &exec_id).await;
 
     // Row is terminal — a fresh processor finds nothing Pending.
     let tags = vec!["plugin-a".parse::<PluginKey>().unwrap()];

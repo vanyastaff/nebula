@@ -23,7 +23,7 @@ use std::{
 
 use axum::{
     extract::{ConnectInfo, Request},
-    http::{HeaderValue, StatusCode, header},
+    http::{HeaderValue, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -33,7 +33,7 @@ use governor::{DefaultKeyedRateLimiter, Quota};
 ///
 /// Health and readiness probes must always succeed — orchestrators depend on
 /// them independent of any traffic volume.
-const EXCLUDED_PATHS: &[&str] = &["/health", "/ready"];
+pub(crate) const EXCLUDED_PATHS: &[&str] = &["/health", "/ready"];
 
 /// Shared, per-IP rate-limiter state.
 ///
@@ -102,7 +102,7 @@ impl RateLimitState {
         if self.limiter.check_key(&ip) == Ok(()) {
             next.run(request).await
         } else {
-            let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
+            let mut response = crate::error::ApiError::RateLimitExceeded.into_response();
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));

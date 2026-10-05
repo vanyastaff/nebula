@@ -2760,6 +2760,17 @@ impl FailAtCommitN {
 
 #[async_trait::async_trait]
 impl ExecutionStore for FailAtCommitN {
+    async fn record_execution_admission_refusal(
+        &self,
+        refusal: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        self.inner.record_execution_admission_refusal(refusal).await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.inner.backend_kind()
+    }
+
     async fn create(
         &self,
         scope: &Scope,
@@ -5000,6 +5011,17 @@ impl ExternalMutateBeforeN {
 
 #[async_trait::async_trait]
 impl ExecutionStore for ExternalMutateBeforeN {
+    async fn record_execution_admission_refusal(
+        &self,
+        refusal: &nebula_storage_port::store::ExecutionAdmissionRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ExecutionAdmissionRefusalOutcome, StorageError> {
+        self.inner.record_execution_admission_refusal(refusal).await
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.inner.backend_kind()
+    }
+
     async fn create(
         &self,
         scope: &Scope,
@@ -6550,6 +6572,19 @@ struct OneShotControlHandoff {
 
 #[async_trait::async_trait]
 impl nebula_storage_port::store::ExecutionTurnHandoff for OneShotControlHandoff {
+    async fn record_control_flavor_refusal(
+        &self,
+        _: &nebula_storage_port::store::ControlFlavorRefusal<'_>,
+    ) -> Result<nebula_storage_port::store::ControlFlavorRefusalOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "flavor refusal is outside this test boundary".to_owned(),
+        ))
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        nebula_storage_port::StorageBackendKind::InMemory
+    }
+
     async fn commit_control_turn(
         &self,
         commit: &nebula_storage_port::store::ControlTurnCommit<'_>,
