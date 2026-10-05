@@ -863,9 +863,12 @@ fn freeze_refuses_component_key_owned_by_overlapping_plugin_namespaces() {
             RegistryFreezeError::DuplicateComponentKey {
                 kind: actual_kind,
                 key: actual_key,
+                first,
+                second,
             } => {
                 assert_eq!(actual_kind.to_string(), kind);
                 assert_eq!(actual_key, key);
+                assert_eq!((first.as_str(), second.as_str()), ("acme", "acme.storage"));
             },
             other => panic!("expected DuplicateComponentKey for {kind}, got {other:?}"),
         }
@@ -874,6 +877,32 @@ fn freeze_refuses_component_key_owned_by_overlapping_plugin_namespaces() {
             "PLUGIN_FREEZE:DUPLICATE_COMPONENT_KEY"
         );
         assert_eq!(error.category(), nebula_error::ErrorCategory::Validation);
+    }
+}
+
+#[test]
+fn freeze_reports_the_smallest_of_several_ambiguous_keys() {
+    // Each plugin's actions sit in a per-process randomly seeded map, so the
+    // reported key must come from an explicit order, not iteration order.
+    for _ in 0..16 {
+        let mut registry = PluginRegistry::new();
+        for owner in ["acme", "acme.storage"] {
+            let mut plugin = empty_plugin(owner, "1.0.0");
+            for key in ["acme.storage.run", "acme.storage.copy", "acme.storage.move"] {
+                plugin.actions.push(action_factory(key));
+            }
+            register(&mut registry, plugin);
+        }
+        let error = registry
+            .freeze(
+                ArtifactSetDigest::from_bytes([0x72; 32]),
+                "1.0.0".parse().unwrap(),
+            )
+            .expect_err("ambiguous component ownership must refuse freeze");
+        assert_eq!(
+            error.to_string(),
+            "action key `acme.storage.copy` is exposed by both plugin `acme` and plugin `acme.storage`"
+        );
     }
 }
 

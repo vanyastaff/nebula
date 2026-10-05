@@ -1,6 +1,9 @@
 //! In-memory plugin registry.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use nebula_core::ArtifactSetDigest;
 use nebula_core::PluginKey;
@@ -61,12 +64,16 @@ pub enum RegistryFreezeError {
     /// Each plugin's namespace check admits such a key when plugin namespaces
     /// overlap (for example `acme` and `acme.storage` both admit
     /// `acme.storage.run`). Frozen lookup by full key requires one owner.
-    #[error("{kind} key `{key}` is exposed by more than one registered plugin")]
+    #[error("{kind} key `{key}` is exposed by both plugin `{first}` and plugin `{second}`")]
     DuplicateComponentKey {
         /// Kind of the ambiguous component.
         kind: ComponentKind,
         /// Full component key claimed by more than one plugin.
         key: String,
+        /// The owning plugin that sorts first by key.
+        first: PluginKey,
+        /// Another owning plugin of the same key.
+        second: PluginKey,
     },
     /// The registered dependency graph is incomplete, incompatible, or cyclic.
     #[error(transparent)]
@@ -343,36 +350,54 @@ impl PluginRegistry {
     /// Finds a component key exposed by more than one registered plugin.
     ///
     /// `ResolvedPlugin` already rejects duplicates inside one plugin, so any
-    /// collision here crosses plugins. Plugins are visited in key order so the
-    /// reported collision does not depend on `HashMap` iteration order.
+    /// collision here crosses plugins. Every collision is collected and the
+    /// smallest (kind, then key) is reported, with owners in plugin-key order,
+    /// so the error never depends on per-plugin `HashMap` iteration order.
     fn duplicate_component_key(&self) -> Option<RegistryFreezeError> {
         let mut plugins: Vec<_> = self.plugins.iter().collect();
         plugins.sort_by_key(|(key, _)| *key);
 
-        let mut actions = std::collections::HashSet::new();
-        let mut credentials = std::collections::HashSet::new();
-        let mut resources = std::collections::HashSet::new();
-        let duplicate = |kind, key: &dyn std::fmt::Display| {
-            Some(RegistryFreezeError::DuplicateComponentKey {
-                kind,
-                key: key.to_string(),
+        let first_collision = |kind, keys_of: &dyn Fn(&ResolvedPlugin) -> Vec<String>| {
+            let mut owners = BTreeMap::<String, &PluginKey>::new();
+            let mut collisions = BTreeMap::<String, (PluginKey, PluginKey)>::new();
+            for (plugin_key, plugin) in &plugins {
+                for key in keys_of(plugin) {
+                    match owners.get(&key) {
+                        Some(first) => {
+                            let owners = ((*first).clone(), (*plugin_key).clone());
+                            collisions.entry(key).or_insert(owners);
+                        },
+                        None => {
+                            owners.insert(key, plugin_key);
+                        },
+                    }
+                }
+            }
+            collisions.into_iter().next().map(|(key, (first, second))| {
+                RegistryFreezeError::DuplicateComponentKey {
+                    kind,
+                    key,
+                    first,
+                    second,
+                }
             })
         };
-        for (_, plugin) in plugins {
-            if let Some((key, _)) = plugin.actions().find(|(key, _)| !actions.insert(*key)) {
-                return duplicate(ComponentKind::Action, key);
-            }
-            if let Some((key, _)) = plugin
-                .credentials()
-                .find(|(key, _)| !credentials.insert(*key))
-            {
-                return duplicate(ComponentKind::Credential, key);
-            }
-            if let Some((key, _)) = plugin.resources().find(|(key, _)| !resources.insert(*key)) {
-                return duplicate(ComponentKind::Resource, key);
-            }
-        }
-        None
+        first_collision(ComponentKind::Action, &|plugin| {
+            plugin.actions().map(|(key, _)| key.to_string()).collect()
+        })
+        .or_else(|| {
+            first_collision(ComponentKind::Credential, &|plugin| {
+                plugin
+                    .credentials()
+                    .map(|(key, _)| key.to_string())
+                    .collect()
+            })
+        })
+        .or_else(|| {
+            first_collision(ComponentKind::Resource, &|plugin| {
+                plugin.resources().map(|(key, _)| key.to_string()).collect()
+            })
+        })
     }
 }
 

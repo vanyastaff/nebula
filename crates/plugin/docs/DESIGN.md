@@ -28,7 +28,7 @@ in-memory `PluginRegistry` (`PluginKey -> Arc<ResolvedPlugin>`); таксоно�
 — только хранит и индексирует их trait-объекты; не выполняет process/WASM-изоляцию
 (out-of-process retired, ADR-0091 / canon §12.6); не персистит (registry чисто
 in-memory, durability — в `nebula-storage`); не отвечает за thread-safety
-(`PluginRegistry` без внутреннего лока — `RwLock` навешивает вызывающий, registry.rs:12).
+(`PluginRegistry` без внутреннего лока — `RwLock` навешивает вызывающий, `PluginRegistry` в registry.rs).
 По решению sole-public-sdk (публичен только `nebula-sdk`) крейт **internal** — его
 поверхность можно ломать без внешнего semver-обязательства.
 
@@ -41,16 +41,16 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 | `Plugin::credentials() -> Vec<Arc<dyn AnyCredential>>` | `src/plugin.rs:47` |
 | `Plugin::resources() -> Vec<Arc<dyn ResourceFactory>>` | `src/plugin.rs:61` |
 | `Plugin::on_load` / `on_unload` (default no-op) | `src/plugin.rs:74 / 81` |
-| `ResolvedPlugin` + `from(impl Plugin)` (вызывает списки ровно один раз, валидирует префикс + within-plugin дубли) | `src/resolved_plugin.rs:29 / 57` |
-| `ResolvedPlugin::action()/credential()/resource()` — O(1) lookup | `src/resolved_plugin.rs:94..105` |
-| `ResolvedPlugin::actions()/credentials()/resources()` — итераторы | `src/resolved_plugin.rs:109..121` |
-| `PluginRegistry` + `register` (fail при дубле key) | `src/registry.rs:35 / 46` |
-| `PluginRegistry::get/contains/remove/clear/iter/len` | `src/registry.rs:56..83` |
+| `ResolvedPlugin` + `from(impl Plugin)` (вызывает списки ровно один раз, валидирует префикс + within-plugin дубли) | `src/resolved_plugin.rs` (`ResolvedPlugin`, `ResolvedPlugin::from`) |
+| `ResolvedPlugin::action()/credential()/resource()` — O(1) lookup | `src/resolved_plugin.rs` (`action`/`credential`/`resource`) |
+| `ResolvedPlugin::actions()/credentials()/resources()` — итераторы | `src/resolved_plugin.rs` (`actions`/`credentials`/`resources`) |
+| `PluginRegistry` + `register` (fail при дубле key) | `src/registry.rs` (`PluginRegistry`, `PluginRegistry::register`) |
+| `PluginRegistry::get/contains/remove/clear/iter/len` | `src/registry.rs` (`impl PluginRegistry`) |
 | `PluginRegistry::freeze` / `FrozenPluginRegistry` | `src/registry.rs` |
 | `PluginSet` / `PluginContractDescriptor` / `WorkerFlavorRevision` | `src/flavor.rs` |
 | `WorkerFlavorContext` | `src/flavor_context.rs` |
-| `all_actions/all_credentials/all_resources` (плоские, для bulk-регистрации движком на старте) | `src/registry.rs:95..119` |
-| `resolve_action/credential/resource` по полному ключу (O(plugins); интроспекция/каталог) | `src/registry.rs:126..153` |
+| `all_actions/all_credentials/all_resources` (плоские, для bulk-регистрации движком на старте) | `src/registry.rs` (`PluginRegistry::all_*`) |
+| `resolve_action/credential/resource` по полному ключу (O(plugins); интроспекция/каталог) | `src/registry.rs` (`PluginRegistry::resolve_*`) |
 | `PluginError` (`derive(Classify)`, коды `PLUGIN:*`) + `ComponentKind` | `src/error.rs:28 / 7` |
 | `PluginManifest` / `PluginManifestBuilder` / `ManifestError` — re-export | `src/manifest.rs:10` (канон — `nebula-metadata`) |
 | `PluginKey` — re-export из `nebula-core` | `src/lib.rs:46` |
@@ -126,14 +126,15 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 - **Single source of truth (canon §7.1 / §13.1).** `impl Plugin` — единственный
   runtime-источник того, что регистрируется; нет вторичного манифеста, дублирующего
   `fn actions/credentials/resources`. Списки вызываются ровно один раз
-  (`ResolvedPlugin::from`, resolved_plugin.rs:57).
+  (`ResolvedPlugin::from` в resolved_plugin.rs).
 - **Registry-дедупликация по key.** `register` падает при дубле `PluginKey`
-  (`AlreadyExists`), registry.rs:46.
+  (`AlreadyExists`) в `PluginRegistry::register`.
 - **Единственный владелец ключа компонента в frozen registry.** Namespace-проверка каждого
   плагина пропускает один и тот же ключ, если неймспейсы плагинов пересекаются
   (`acme` и `acme.storage` оба допускают `acme.storage.run`). Mutable `register` это не ловит;
   `freeze` отказывает с `RegistryFreezeError::DuplicateComponentKey`
-  (`PLUGIN_FREEZE:DUPLICATE_COMPONENT_KEY`), поэтому `resolve_*` на frozen registry не зависит
+  (`PLUGIN_FREEZE:DUPLICATE_COMPONENT_KEY`) и называет обоих владельцев; при нескольких
+  коллизиях выбирается наименьшая (вид, затем ключ). Поэтому `resolve_*` на frozen registry не зависит
   от порядка итерации `HashMap`.
 - **Cross-plugin dependency rule (in-process, ADR-0091).** Типы чужого плагина
   доступны только через `Cargo.toml [dependencies]`; замкнутость зависимостей
