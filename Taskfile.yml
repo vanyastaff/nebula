@@ -115,7 +115,7 @@ tasks:
   fmt:check:
     desc: Check formatting without modifying files (CI)
     cmds:
-      - cargo fmt --all -- --check
+      - cargo xtask fmt-check
 
   clippy:
     desc: Run Clippy linter (warnings treated as errors)
@@ -130,7 +130,7 @@ tasks:
   quality:
     desc: Full mechanical gate (fmt check + clippy) — see docs/QUALITY_GATES.md
     cmds:
-      - cargo fmt --all -- --check
+      - task: fmt:check
       - cargo clippy {{.CARGO_FLAGS}} -- -D warnings
 
   deny:

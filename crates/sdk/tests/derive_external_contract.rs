@@ -3,7 +3,7 @@
 use std::{
     ffi::OsString,
     fs,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 
@@ -59,14 +59,15 @@ fn sdk_only_consumer_can_expand_supported_derive_families() {
     )
     .expect("copy workspace lockfile into derive-consumer fixture");
 
-    let output = cargo_fixture(temp.path(), "clippy");
+    let target_dir = fixture_target_dir(&fixture_dir);
+    let output = cargo_fixture(temp.path(), &target_dir, "clippy");
     assert!(
         output.status.success(),
         "SDK-only derive consumer must pass strict clippy:\n{}",
         render_output(&output)
     );
 
-    let output = cargo_fixture(temp.path(), "run");
+    let output = cargo_fixture(temp.path(), &target_dir, "run");
     assert!(
         output.status.success(),
         "SDK-only derive consumer assertions must pass:\n{}",
@@ -128,14 +129,15 @@ fn renamed_leaf_dependencies_remain_supported_with_sdk_fallbacks() {
     )
     .expect("copy workspace lockfile into renamed-consumer fixture");
 
-    let output = cargo_fixture(temp.path(), "clippy");
+    let target_dir = fixture_target_dir(&fixture_dir);
+    let output = cargo_fixture(temp.path(), &target_dir, "clippy");
     assert!(
         output.status.success(),
         "renamed leaf derive consumer must pass strict clippy:\n{}",
         render_output(&output)
     );
 
-    let output = cargo_fixture(temp.path(), "run");
+    let output = cargo_fixture(temp.path(), &target_dir, "run");
     assert!(
         output.status.success(),
         "renamed leaf derive consumer assertions must pass:\n{}",
@@ -154,7 +156,25 @@ fn copy_fixture(source_root: &Path, destination_root: &Path) {
     }
 }
 
-fn cargo_fixture(fixture_root: &Path, subcommand: &str) -> Output {
+fn fixture_target_dir(fixture_dir: &Path) -> PathBuf {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join("target"));
+    let target_root = if target_root.is_absolute() {
+        target_root
+    } else {
+        workspace_root.join(target_root)
+    };
+    // Keep manifests, lockfiles, and sources fresh while reusing Cargo's
+    // dependency fingerprints. Separate fixture caches avoid the parent build
+    // lock and prevent differently renamed consumers from sharing artifacts.
+    target_root
+        .join("sdk-external-contract")
+        .join(fixture_dir.file_name().expect("named derive fixture"))
+}
+
+fn cargo_fixture(fixture_root: &Path, target_dir: &Path, subcommand: &str) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = Command::new(cargo);
     command
@@ -165,7 +185,7 @@ fn cargo_fixture(fixture_root: &Path, subcommand: &str) -> Output {
     }
     command
         .env("CARGO_TERM_COLOR", "never")
-        .env("CARGO_TARGET_DIR", fixture_root.join("target"))
+        .env("CARGO_TARGET_DIR", target_dir)
         .output()
         .expect("run cargo for external SDK derive consumer")
 }

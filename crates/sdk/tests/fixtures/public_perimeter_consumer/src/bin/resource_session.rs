@@ -59,7 +59,11 @@ impl PoolProvider for Ledger {}
 impl SessionProvider for Ledger {
     type Session<'c> = Tx<'c>;
 
-    async fn open<'c>(&'c self, conn: &'c mut Conn, _slots: &'c ()) -> Result<Tx<'c>, OperationError> {
+    async fn open<'c>(
+        &'c self,
+        conn: &'c mut Conn,
+        _slots: &'c (),
+    ) -> Result<Tx<'c>, OperationError> {
         Ok(Tx {
             conn,
             pending: Vec::new(),

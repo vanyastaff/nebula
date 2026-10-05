@@ -14,8 +14,9 @@
 //!
 //! - `CredentialGuard<C>` — required + eager
 //! - `Option<CredentialGuard<C>>` — optional + eager
-//! - `Lazy<CredentialGuard<C>>` — required + lazy
-//! - `Option<Lazy<CredentialGuard<C>>>` — optional + lazy
+//!
+//! Lazy credential wrappers are rejected: the old expansion resolved the guard
+//! eagerly before wrapping it, so it never deferred acquisition.
 //!
 //! Detection is by path-tail name (last `PathSegment::ident`) so the
 //! macro accepts both bare `ResourceHandle<...>` and fully-qualified
@@ -44,8 +45,6 @@ pub(crate) struct ParsedSlotField {
     pub kind: SlotKind,
     /// Whether the field is wrapped in `Option<...>`.
     pub optional: bool,
-    /// Whether the field is wrapped in `Lazy<...>` (credential slots only).
-    pub lazy: bool,
     /// The inner concrete type (`R` for resource, `C` for credential).
     pub inner_type: Type,
 }
@@ -127,18 +126,13 @@ fn parse_one_slot(field: &Field, args: attrs::AttrArgs, kind: SlotKind) -> Resul
 
     let key_override = args.get_string("key");
 
-    let FieldShape {
-        optional,
-        lazy,
-        inner,
-    } = decode_field_type(&field.ty, kind)?;
+    let FieldShape { optional, inner } = decode_field_type(&field.ty, kind)?;
 
     Ok(ParsedSlotField {
         field_ident,
         key_override,
         kind,
         optional,
-        lazy,
         inner_type: inner,
     })
 }
@@ -164,8 +158,6 @@ impl ParsedSlotField {
 struct FieldShape {
     /// Wrapped in `Option<...>`.
     optional: bool,
-    /// Wrapped in `Lazy<...>`.
-    lazy: bool,
     /// The concrete `R` or `C` underneath the wrappers.
     inner: Type,
 }
@@ -173,6 +165,9 @@ struct FieldShape {
 /// The diagnostic for a `ResourceGuard<T>` resource slot in any wrapper.
 const REMOVED_RESOURCE_GUARD_SLOT: &str = "`ResourceGuard<T>` slots were removed in 0.27.0; \
      hold `ResourceHandle<T>` — a lease bypasses the effect journal";
+
+/// The old wrapper never deferred credential resolution.
+const REMOVED_LAZY_CREDENTIAL_SLOT: &str = "lazy credential slots are unsupported: the old wrapper resolved eagerly; use `CredentialGuard<T>` or `Option<CredentialGuard<T>>` instead";
 
 /// Decode the field type, recognising the allowed shapes.
 fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<FieldShape> {
@@ -222,28 +217,23 @@ fn decode_field_type(ty: &Type, kind: SlotKind) -> Result<FieldShape> {
                     "a ResourceHandle acquires nothing at resolution; drop `Lazy`",
                 ));
             }
-            Ok(FieldShape {
-                optional,
-                lazy,
-                inner,
-            })
+            Ok(FieldShape { optional, inner })
         },
         SlotKind::Credential => {
+            if lazy {
+                return Err(syn::Error::new_spanned(ty, REMOVED_LAZY_CREDENTIAL_SLOT));
+            }
             let Some(inner) = strip_path_tail(&after_lazy, "CredentialGuard") else {
                 return Err(syn::Error::new_spanned(
                     ty,
                     format!(
                         "field with `#[credential]` must have type `CredentialGuard<T>` \
-                         (optionally wrapped in `Option<...>` and/or `Lazy<...>`) — got: {}",
+                         (optionally wrapped in `Option<...>`) — got: {}",
                         quote!(#ty),
                     ),
                 ));
             };
-            Ok(FieldShape {
-                optional,
-                lazy,
-                inner,
-            })
+            Ok(FieldShape { optional, inner })
         },
     }
 }
@@ -278,7 +268,6 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedSlotField]) -> TokenS
             let slot_key = slot.slot_key();
             let inner_ty = &slot.inner_type;
             let required = !slot.optional;
-            let lazy = slot.lazy;
             let kind_tokens = match slot.kind {
                 SlotKind::Resource => quote! {
                     ::nebula_core::SlotKind::Resource {
@@ -303,7 +292,7 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedSlotField]) -> TokenS
                     default_id: #slot_key,
                     kind: #kind_tokens,
                     required: #required,
-                    lazy: #lazy,
+                    lazy: false,
                     purpose: ::core::option::Option::None,
                 })
             }
@@ -316,8 +305,8 @@ pub(crate) fn emit_slot_field_registrations(slots: &[ParsedSlotField]) -> TokenS
 /// Generate the field-resolution body for `FromWorkflowNode::from_workflow_node`.
 ///
 /// Each emitted statement reads the authored slot binding from the node for
-/// diagnostics, then calls into `ActionContextExt` (or `Lazy::with_value`
-/// etc.) and binds the result to a local matching the field name. Credential
+/// diagnostics, then calls into `ActionContextExt` and binds the result to a
+/// local matching the field name. Credential
 /// slots resolve through the declared slot key because start admission already
 /// resolved any authored selector into the durable binding manifest.
 pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStream2, Vec<Ident>) {
@@ -336,7 +325,6 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
         };
         let kind_word = slot.kind_word();
         let optional = slot.optional;
-        let lazy = slot.lazy;
 
         // A resource slot is always a `ResourceHandle<R>`: it checks nothing
         // out, so its resolution is synchronous. Resource handles already
@@ -349,7 +337,6 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
         // no-binding path addresses the activated row by the provider
         // contract key rather than by the authored field name.
         if slot.kind == SlotKind::Resource {
-            debug_assert!(!lazy, "resource handles cannot be lazy");
             let stmt = if optional {
                 quote! {
                     let #field = {
@@ -414,24 +401,8 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
         // The `binding_present` variable captures whether an explicit
         // binding was configured so the error arm can distinguish the
         // two cases.
-        let stmt = match (optional, lazy) {
-            (false, false) => quote! {
-                let #field = {
-                    let slot_id = #binding_call.unwrap_or(#slot_key_lit);
-                    match #resolve_call {
-                        Ok(guard) => guard,
-                        Err(e) => {
-                            return Err(::nebula_action::ActionError::fatal(
-                                format!(
-                                    "failed to resolve {} slot `{}` (id `{}`): {}",
-                                    #kind_word, #slot_key_lit, slot_id, e,
-                                )
-                            ));
-                        }
-                    }
-                };
-            },
-            (true, false) => quote! {
+        let stmt = if optional {
+            quote! {
                 let #field = {
                     let explicit_binding = #binding_call;
                     let slot_id = explicit_binding.unwrap_or(#slot_key_lit);
@@ -455,12 +426,13 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
                         }
                     }
                 };
-            },
-            (false, true) => quote! {
+            }
+        } else {
+            quote! {
                 let #field = {
                     let slot_id = #binding_call.unwrap_or(#slot_key_lit);
                     match #resolve_call {
-                        Ok(guard) => ::nebula_core::sync::Lazy::with_value(guard),
+                        Ok(guard) => guard,
                         Err(e) => {
                             return Err(::nebula_action::ActionError::fatal(
                                 format!(
@@ -471,28 +443,7 @@ pub(crate) fn emit_slot_resolution_block(slots: &[ParsedSlotField]) -> (TokenStr
                         }
                     }
                 };
-            },
-            (true, true) => quote! {
-                let #field = {
-                    let explicit_binding = #binding_call;
-                    let slot_id = explicit_binding.unwrap_or(#slot_key_lit);
-                    match #resolve_call {
-                        Ok(guard) => Some(::nebula_core::sync::Lazy::with_value(guard)),
-                        Err(e) => {
-                            if explicit_binding.is_some() {
-                                return Err(::nebula_action::ActionError::fatal(
-                                    format!(
-                                        "failed to resolve explicitly-bound {} slot `{}` (id `{}`): {}",
-                                        #kind_word, #slot_key_lit, slot_id, e,
-                                    )
-                                ));
-                            }
-                            let _ = e;
-                            None
-                        }
-                    }
-                };
-            },
+            }
         };
         stmts.push(stmt);
         idents.push(field.clone());
@@ -514,7 +465,6 @@ mod tests {
             key_override: None,
             kind,
             optional: false,
-            lazy: false,
             inner_type: syn::parse_quote!(DemoCredential),
         }
     }
@@ -526,7 +476,7 @@ mod tests {
     #[test]
     fn a_resource_handle_field_decodes_required_or_optional() {
         let shape = decoded(syn::parse_quote!(ResourceHandle<Db>)).expect("required row");
-        assert!(!shape.optional && !shape.lazy);
+        assert!(!shape.optional);
         let inner = &shape.inner;
         assert_eq!(quote!(#inner).to_string(), "Db");
 
@@ -534,7 +484,7 @@ mod tests {
             Option<nebula_sdk::integration::resource::ResourceHandle<Db>>
         ))
         .expect("optional row");
-        assert!(shape.optional && !shape.lazy);
+        assert!(shape.optional);
     }
 
     #[test]
@@ -580,6 +530,39 @@ mod tests {
                 error.to_string().contains("renamed to `ResourceHandle`"),
                 "{error}"
             );
+        }
+    }
+
+    #[test]
+    fn credential_guards_decode_required_or_optional() {
+        for (ty, optional) in [
+            (syn::parse_quote!(CredentialGuard<Auth>), false),
+            (
+                syn::parse_quote!(Option<nebula_credential::CredentialGuard<Auth>>),
+                true,
+            ),
+        ] {
+            let shape = decode_field_type(&ty, SlotKind::Credential).expect("supported guard");
+            assert_eq!(shape.optional, optional);
+            let inner = &shape.inner;
+            assert_eq!(quote!(#inner).to_string(), "Auth");
+        }
+    }
+
+    #[test]
+    fn lazy_credential_guards_are_rejected() {
+        for ty in [
+            syn::parse_quote!(Lazy<CredentialGuard<Auth>>),
+            syn::parse_quote!(Option<Lazy<CredentialGuard<Auth>>>),
+            syn::parse_quote!(nebula_core::sync::Lazy<nebula_credential::CredentialGuard<Auth>>),
+            syn::parse_quote!(
+                Option<nebula_core::sync::Lazy<nebula_credential::CredentialGuard<Auth>>>
+            ),
+        ] {
+            let error = decode_field_type(&ty, SlotKind::Credential)
+                .err()
+                .expect("lazy guards must be rejected");
+            assert_eq!(error.to_string(), REMOVED_LAZY_CREDENTIAL_SLOT);
         }
     }
 

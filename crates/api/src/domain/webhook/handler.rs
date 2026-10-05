@@ -50,6 +50,7 @@ use nebula_storage_port::store::TriggerStore as _;
 use crate::{
     domain::credential::dto::CreateCredentialRequest,
     error::{ApiError, ProblemDetails},
+    extractors::ApiJson,
     middleware::auth::AuthenticatedPrincipal,
     ports::credential_command::{CredentialGatewayCommand, CredentialGatewayResult},
     state::AppState,
@@ -89,7 +90,7 @@ pub async fn register_webhook(
     Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
-    Json(body): Json<RegisterWebhookRequest>,
+    ApiJson(body): ApiJson<RegisterWebhookRequest>,
 ) -> Result<(StatusCode, Json<RegisterWebhookResponse>), ApiError> {
     // ── Input validation ─────────────────────────────────────────────────────
     if body.workflow_id.is_empty() {
@@ -110,7 +111,7 @@ pub async fn register_webhook(
             errors: vec![],
         });
     }
-    body.validate_provider_config_shape()
+    crate::domain::webhook::dto::validate_provider_config_shape(&body)
         .map_err(|detail| ApiError::Unprocessable(detail.to_owned()))?;
 
     // ── Step 1: scope — server-derived, NEVER from request ──────────────────

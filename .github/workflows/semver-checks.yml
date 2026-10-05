@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           command -v tar >/dev/null
-          plan="$(cargo xtask ci-plan semver --base "$BASE_REVISION" --head "$HEAD_REVISION" --comparison direct)"
+          plan="$(cargo xtask ci-plan semver --base "$BASE_REVISION" --head "$HEAD_REVISION" --comparison direct --supported-surface)"
           jq -ce '
             .package_count as $package_count |
             .shard_count as $shard_count |
@@ -144,6 +144,9 @@ jobs:
           set -euo pipefail
           jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' <<<"$PACKAGES_JSON" >/dev/null
           while IFS= read -r package; do
+            package="${package%$'\r'}"
+            # The planner's --supported-surface mode is the branded policy; a
+            # second filter here would let a shard silently check nothing.
             cargo semver-checks check-release --package "$package" --baseline-rev "$BASE_REVISION"
           done < <(jq -r '.[]' <<<"$PACKAGES_JSON")
 

@@ -33,9 +33,10 @@ use crate::{
             CreateTokenRequest, CreateTokenResponse, MeResponse, MyOrgsResponse, MyTokensResponse,
             OrgSummary, TokenSummary, UpdateMeRequest,
         },
-        shared::{AckResponse, OrgRoleDto},
+        shared::AckResponse,
     },
     error::{ApiError, ApiResult, ProblemDetails},
+    extractors::ApiJson,
     middleware::auth::{AuthContext, AuthMethod},
     state::AppState,
 };
@@ -166,7 +167,7 @@ pub async fn get_me(
 pub async fn update_me(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<UpdateMeRequest>,
+    ApiJson(body): ApiJson<UpdateMeRequest>,
 ) -> ApiResult<Json<MeResponse>> {
     let user_id = require_user_id(&auth)?;
     let backend = auth_backend_or_503(&state)?;
@@ -243,7 +244,7 @@ pub async fn list_my_orgs(
         .into_iter()
         .map(|(org_id, role)| OrgSummary {
             id: org_id.to_string(),
-            role: OrgRoleDto::from(role),
+            role: crate::domain::shared::org_role_dto(role),
         })
         .collect::<Vec<_>>();
 
@@ -309,7 +310,7 @@ pub async fn list_my_tokens(
 pub async fn create_token(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthContext>,
-    Json(body): Json<CreateTokenRequest>,
+    ApiJson(body): ApiJson<CreateTokenRequest>,
 ) -> ApiResult<(StatusCode, Json<CreateTokenResponse>)> {
     let user_id = require_user_id(&auth)?;
     if auth.auth_method == AuthMethod::Pat {

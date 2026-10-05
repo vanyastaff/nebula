@@ -136,6 +136,12 @@ struct SecretRuntime {
     secret: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum HookDirection {
+    Refresh,
+    Revoke,
+}
+
 #[derive(Clone)]
 struct SecretRes {
     #[expect(
@@ -144,6 +150,7 @@ struct SecretRes {
     )]
     db: Arc<SlotCell<CredentialGuard<SecretCred>>>,
     hook_entered: Arc<AtomicUsize>,
+    hook_observed: tokio::sync::mpsc::UnboundedSender<HookDirection>,
 }
 
 #[async_trait::async_trait]
@@ -171,6 +178,9 @@ impl Provider for SecretRes {
         // Genuinely handle the secret-bearing runtime on the rotation
         // path so redaction is not vacuously true.
         let _ = rt.secret.len();
+        self.hook_observed
+            .send(HookDirection::Refresh)
+            .expect("test observes the refresh hook");
         Ok(())
     }
 
@@ -181,6 +191,9 @@ impl Provider for SecretRes {
     ) -> Result<(), ResourceError> {
         self.hook_entered.fetch_add(1, Ordering::SeqCst);
         let _ = rt.secret.len();
+        self.hook_observed
+            .send(HookDirection::Revoke)
+            .expect("test observes the revoke hook");
         Ok(())
     }
 
@@ -246,6 +259,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
     tracing::subscriber::set_global_default(subscriber).expect("install global capture subscriber");
 
     let hook_entered = Arc::new(AtomicUsize::new(0));
+    let (hook_observed, mut hooks) = tokio::sync::mpsc::unbounded_channel();
     let org = OrgId::new();
     let scope = ScopeLevel::Organization(org);
     let mgr = Arc::new(Manager::new());
@@ -266,6 +280,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         resource: SecretRes {
             db: Arc::new(slot),
             hook_entered: Arc::clone(&hook_entered),
+            hook_observed,
         },
         config: Cfg,
         scope: scope.clone(),
@@ -310,8 +325,18 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         Some(Arc::clone(&lease_bus)),
     );
 
-    // Refresh via the credential bus.
+    // The buses have no cross-bus ordering guarantee. Observe the refresh
+    // hook before emitting revoke: once revoke fences the row, a later
+    // refresh is correctly rejected by lifecycle admission. This gate must
+    // actually handle the secret-bearing runtime in both hook directions.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     cred_bus.emit(CredentialEvent::Refreshed { credential_id: cid });
+    assert_eq!(
+        tokio::time::timeout_at(deadline, hooks.recv())
+            .await
+            .expect("wired refresh hook must run within the observation budget"),
+        Some(HookDirection::Refresh)
+    );
     // Revoke via the lease bus (the → path).
     lease_bus.emit(LeaseEvent::LeaseRevoked {
         credential_id: Some(cid),
@@ -319,14 +344,12 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         provider: std::borrow::Cow::Borrowed("vault"),
     });
 
-    // Wait until both hooks ran (refresh + revoke) — proof the wired
-    // path handled the secret-bearing runtime on both directions.
-    for _ in 0..3000 {
-        if hook_entered.load(Ordering::SeqCst) >= 2 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    assert_eq!(
+        tokio::time::timeout_at(deadline, hooks.recv())
+            .await
+            .expect("wired revoke hook must run within the same observation budget"),
+        Some(HookDirection::Revoke)
+    );
     assert!(
         hook_entered.load(Ordering::SeqCst) >= 2,
         "both rotation + revoke hooks must have run through the wired driver \

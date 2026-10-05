@@ -308,6 +308,49 @@ fn main() {
         .add_node("invoke", "example", "perimeter")
         .build()
         .expect("the supported builder must accept one valid node");
+    let connected = WorkflowBuilder::new("normalized_node_keys")
+        .add_node(" extract ", "example", "perimeter")
+        .add_node_with_params(
+            "Extract",
+            "example",
+            "perimeter",
+            std::collections::HashMap::new(),
+        )
+        .connect(" extract ", "Extract")
+        .build()
+        .expect("padded author ids and case-distinct node keys remain supported");
+    assert_eq!(connected.nodes[0].id.as_str(), "extract");
+    assert_eq!(connected.nodes[0].name, " extract ");
+    assert_eq!(connected.nodes[1].id.as_str(), "Extract");
+    assert_eq!(connected.connections[0].from_node, connected.nodes[0].id);
+    assert_eq!(connected.connections[0].to_node, connected.nodes[1].id);
+
+    for (first, second) in [("extract", " extract "), (" extract ", "extract")] {
+        let error = WorkflowBuilder::new("normalized_collision")
+            .add_node(first, "example", "perimeter")
+            .add_node_with_params(
+                second,
+                "example",
+                "perimeter",
+                std::collections::HashMap::new(),
+            )
+            .connect(first, second)
+            .build()
+            .expect_err("normalized node key collisions must fail during authoring");
+        assert!(error.to_string().contains("Duplicate node id"));
+    }
+    for (from, to, diagnostic) in [
+        ("extract", "end", "unknown source node: extract"),
+        ("end", "extract", "unknown target node: extract"),
+    ] {
+        let error = WorkflowBuilder::new("raw_connection_ids")
+            .add_node(" extract ", "example", "perimeter")
+            .add_node("end", "example", "perimeter")
+            .connect(from, to)
+            .build()
+            .expect_err("connections must use the original author id, including whitespace");
+        assert!(error.to_string().contains(diagnostic));
+    }
     let result = TestResult::Failed {
         code: TestFailureCode::AuthenticationRejected,
     };
