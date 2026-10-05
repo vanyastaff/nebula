@@ -61,7 +61,6 @@ homepage = "https://github.com/vanyastaff/nebula"
 documentation = "https://docs.rs/nebula"
 
 [workspace.dependencies]
-nebula-api-contract = { path = "crates/api-contract", version = "=0.32.0" }
 # Async runtime
 tokio = { version = "1.51.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time", "fs"] }
 tokio-util = "0.7.18"
@@ -220,6 +219,9 @@ quote = "1"
 proc-macro2 = "1"
 
 # Nebula internal
+# Publishable lockstep with the SDK, so the exact version travels with the
+# path; bump it together with `workspace.package.version`.
+nebula-api-contract = { path = "crates/api-contract", version = "=0.32.0" }
 nebula-env = { path = "crates/env" }
 nebula-error = { path = "crates/error" }
 nebula-error-macros = { path = "crates/error/macros" }

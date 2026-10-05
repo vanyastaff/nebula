@@ -631,9 +631,7 @@ pub async fn oauth_start(
     OriginalUri(request_uri): OriginalUri,
     headers: HeaderMap,
 ) -> ApiResult<axum::response::Response> {
-    let provider: OAuthProvider = provider
-        .parse()
-        .map_err(|_| ApiError::from(AuthError::InvalidInput("unknown OAuth provider")))?;
+    let provider: OAuthProvider = provider.parse().map_err(ApiError::from)?;
     validate_oauth_request_authority(&state.public_url, &headers, &request_uri)
         .map_err(ApiError::from)?;
     if oauth_transaction_cookie_count(&headers).map_err(ApiError::from)?
@@ -698,9 +696,7 @@ pub async fn oauth_callback(
         ApiError::from(AuthError::InvalidInput("OAuth callback query is malformed"))
     })?;
     let callback = validate_oauth_callback_params(&params).map_err(ApiError::from)?;
-    let provider: OAuthProvider = provider
-        .parse()
-        .map_err(|_| ApiError::from(AuthError::InvalidInput("unknown OAuth provider")))?;
+    let provider: OAuthProvider = provider.parse().map_err(ApiError::from)?;
     validate_oauth_request_authority(&state.public_url, &headers, &request_uri)
         .map_err(ApiError::from)?;
     let transaction = OAuthTransactionBinding::new(provider, &params.state);

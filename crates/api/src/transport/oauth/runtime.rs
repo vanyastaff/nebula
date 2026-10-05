@@ -241,7 +241,6 @@ impl OAuthIdentityRuntime {
                     unix_timestamp(),
                 )?),
                 OAuthProvider::GitHub => None,
-                _ => return Err(OAuthFailureCode::ProviderNotConfigured),
             };
 
             let userinfo_body = self
@@ -281,7 +280,6 @@ impl OAuthIdentityRuntime {
                         }),
                     )
                 },
-                _ => return Err(OAuthFailureCode::ProviderNotConfigured),
             };
             drop(userinfo_body);
 
@@ -957,7 +955,6 @@ fn compile_provider_config(
                 discovery_url: parse_server_url(GOOGLE_DISCOVERY_URL)?,
             },
             OAuthProvider::GitHub => fixed_github_endpoints()?,
-            _ => return Err(OAuthRuntimeBuildError::new()),
         };
         compiled.insert(
             provider,

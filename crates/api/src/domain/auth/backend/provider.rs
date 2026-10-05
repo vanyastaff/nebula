@@ -66,14 +66,12 @@ pub(super) mod metrics_emit {
     /// makes the closed-set guarantee visible to the reviewer: the
     /// `match` cannot produce a non-constant value. If a new
     /// `OAuthProvider` variant lands without a matching constant, this
-    /// is rejected by the fixed provider runtime; its observation uses the fixed
-    /// `unsupported` label.
+    /// fails compilation.
     #[must_use]
     pub(crate) fn oauth_provider_label(provider: OAuthProvider) -> &'static str {
         match provider {
             OAuthProvider::Google => auth_oauth_provider::GOOGLE,
             OAuthProvider::GitHub => auth_oauth_provider::GITHUB,
-            _ => "unsupported",
         }
     }
 

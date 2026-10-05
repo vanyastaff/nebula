@@ -361,9 +361,13 @@ impl<'de> Deserialize<'de> for SecretString {
 /// this matters for `GitHub`, whose mechanical snake-case spelling would be
 /// the incompatible `git_hub`. Drift against [`Self::as_str`] and `FromStr`
 /// is covered by a unit test.
+///
+/// Deliberately exhaustive: the server matches on this enum to pick the
+/// provider runtime and the closed metric label, and a new provider must
+/// fail its build rather than fall through a wildcard arm. The contract
+/// ships lockstep, so adding a variant is a coordinated release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-#[non_exhaustive]
 pub enum OAuthProvider {
     /// Sign in with Google.
     #[serde(rename = "google")]
@@ -409,6 +413,7 @@ impl std::fmt::Display for OAuthProviderParseError {
 }
 
 impl std::error::Error for OAuthProviderParseError {}
+
 /// Query string for the OAuth callback.
 #[derive(Deserialize, Serialize)]
 pub struct OAuthCallbackParams {
