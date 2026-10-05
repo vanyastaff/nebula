@@ -17,6 +17,7 @@ nebula-plugin = { path = "../plugin" }
 nebula-storage-port = { path = "../storage-port" }
 nebula-core = { path = "../core" }
 nebula-metrics = { path = "../metrics" }
+nebula-execution = { path = "../execution" }
 
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -31,6 +32,7 @@ tracing-opentelemetry = { workspace = true }
 nebula-storage = { path = "../storage" }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util"] }
 serde_json = { workspace = true }
+serde = { workspace = true }
 async-trait = { workspace = true }
 
 [lib]

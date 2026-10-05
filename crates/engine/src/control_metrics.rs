@@ -1,7 +1,10 @@
 //! Shared-registry telemetry for authoritative execution-owner decisions.
 
 use nebula_execution::ExecutionControlOutcome;
-use nebula_metrics::{MetricsRegistry, MetricsResult, NEBULA_EXECUTION_CONTROL_OUTCOMES_TOTAL};
+use nebula_metrics::{
+    MetricsRegistry, MetricsResult, NEBULA_EXECUTION_CONTROL_OBSERVATIONS_UNRECORDED_TOTAL,
+    NEBULA_EXECUTION_CONTROL_OUTCOMES_TOTAL,
+};
 use nebula_storage_port::StorageBackendKind;
 
 /// Record only a decision acknowledged by its owning aggregate.
@@ -23,6 +26,65 @@ pub(crate) fn record_execution_control_outcome(
         .counter_labeled(NEBULA_EXECUTION_CONTROL_OUTCOMES_TOTAL, &labels)?
         .inc();
     Ok(())
+}
+
+/// Make a decision whose durable observation is missing visible: a counter on
+/// the same closed labels plus a warning. The decision itself is unaffected.
+pub(crate) fn record_unrecorded_execution_control_outcome(
+    metrics: &MetricsRegistry,
+    backend: StorageBackendKind,
+    outcome: ExecutionControlOutcome,
+    cause: &'static str,
+) {
+    tracing::warn!(
+        backend = backend.as_str(),
+        outcome = outcome.as_str(),
+        cause,
+        "execution-control decision stands but its journal observation is missing"
+    );
+    let labels = metrics
+        .interner()
+        .label_set(&[("backend", backend.as_str()), ("outcome", outcome.as_str())]);
+    match metrics.counter_labeled(
+        NEBULA_EXECUTION_CONTROL_OBSERVATIONS_UNRECORDED_TOTAL,
+        &labels,
+    ) {
+        Ok(counter) => counter.inc(),
+        Err(error) => {
+            tracing::warn!(%error, "unrecorded-observation metric could not be recorded");
+        },
+    }
+}
+
+/// Count a decision by whether its observation is durable: a newly recorded
+/// one on the outcome counter, a missing one on the unrecorded counter, and
+/// an already-recorded replay on neither.
+pub(crate) fn observe_execution_control_decision(
+    metrics: &MetricsRegistry,
+    backend: StorageBackendKind,
+    outcome: ExecutionControlOutcome,
+    acknowledgement: nebula_storage_port::store::ControlObservationAcknowledgement,
+) {
+    use nebula_storage_port::store::ControlObservationAcknowledgement as Ack;
+    match acknowledgement {
+        Ack::Recorded => {
+            if let Err(error) = record_execution_control_outcome(metrics, backend, outcome) {
+                tracing::warn!(%error, "execution-control outcome metric could not be recorded");
+            }
+        },
+        Ack::AlreadyRecorded => {},
+        Ack::Unrecorded => {
+            record_unrecorded_execution_control_outcome(metrics, backend, outcome, "write_failed");
+        },
+        Ack::Unknown => {
+            record_unrecorded_execution_control_outcome(
+                metrics,
+                backend,
+                outcome,
+                "acknowledgement_lost",
+            );
+        },
+    }
 }
 
 #[cfg(test)]

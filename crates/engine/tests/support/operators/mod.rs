@@ -110,7 +110,7 @@ async fn collect(
     ports: &Ports,
     admitted: &Admitted,
     registry: &MetricsRegistry,
-    before: Vec<metrics::CounterObservation>,
+    (before, journal_before): (Vec<metrics::CounterObservation>, usize),
     source: ExecutionControlSource,
     outcome: ExecutionControlOutcome,
     backend: &str,
@@ -146,10 +146,12 @@ async fn collect(
             .await
             .expect("read backend journal independently"),
         counters_before: before,
+        journal_before,
         counters_after: metrics::snapshot(registry),
         trace: TraceCapture::global().for_execution(&admitted.id.to_string()),
     };
     case.verify(backend, outcome);
+    case.verify_journal_metric_parity(backend);
     case
 }
 
@@ -161,6 +163,7 @@ async fn accepted(ports: Ports, backend: &str) -> CaseEvidence {
     let source = claim_source(&claim);
     let registry = MetricsRegistry::new();
     let before = metrics::snapshot(&registry);
+    let journal_before = journal_len(&ports, &admitted).await;
     let owner = dispatch(&ports, engine(&ports, &calls, &registry, 0x74));
     assert!(matches!(
         owner
@@ -177,7 +180,7 @@ async fn accepted(ports: Ports, backend: &str) -> CaseEvidence {
         &ports,
         &admitted,
         &registry,
-        before,
+        (before, journal_before),
         source,
         ExecutionControlOutcome::Accepted,
         backend,
@@ -193,6 +196,7 @@ async fn throttled(ports: Ports, backend: &str) -> CaseEvidence {
     let source_row_id = *claim.row_id();
     let registry = MetricsRegistry::new();
     let before = metrics::snapshot(&registry);
+    let journal_before = journal_len(&ports, &admitted).await;
     let owner = dispatch(&ports, engine(&ports, &calls, &registry, 0x74));
     assert!(matches!(
         owner
@@ -216,7 +220,7 @@ async fn throttled(ports: Ports, backend: &str) -> CaseEvidence {
         &ports,
         &admitted,
         &registry,
-        before,
+        (before, journal_before),
         source,
         ExecutionControlOutcome::Throttled,
         backend,
@@ -285,6 +289,7 @@ async fn deferred(mut ports: Ports, backend: &str) -> CaseEvidence {
     });
     ports.handoff = interleaving.clone();
     let before = metrics::snapshot(&registry);
+    let journal_before = journal_len(&ports, &admitted).await;
     let state_before = ports
         .stores
         .execution
@@ -330,7 +335,7 @@ async fn deferred(mut ports: Ports, backend: &str) -> CaseEvidence {
         &ports,
         &admitted,
         &registry,
-        before,
+        (before, journal_before),
         source,
         ExecutionControlOutcome::Deferred,
         backend,
@@ -353,6 +358,7 @@ async fn flavor_mismatch(ports: Ports, backend: &str) -> CaseEvidence {
     let claim = claim_resume(&ports, &admitted, &calls).await;
     let source = claim_source(&claim);
     let before = metrics::snapshot(&registry);
+    let journal_before = journal_len(&ports, &admitted).await;
     let incompatible = dispatch(&ports, engine(&ports, &calls, &registry, 0x75));
     let decision = incompatible
         .dispatch_claimed_resume(&admitted.scope, admitted.id, None, claim)
@@ -373,7 +379,7 @@ async fn flavor_mismatch(ports: Ports, backend: &str) -> CaseEvidence {
         &ports,
         &admitted,
         &registry,
-        before,
+        (before, journal_before),
         source,
         ExecutionControlOutcome::FlavorMismatch,
         backend,
@@ -441,6 +447,7 @@ async fn recovered(ports: Ports, backend: &str) -> CaseEvidence {
     };
     let registry = MetricsRegistry::new();
     let before = metrics::snapshot(&registry);
+    let journal_before = journal_len(&ports, &admitted).await;
     let owner = engine(&ports, &calls, &registry, 0x74);
     let decision = owner
         .resume_recoverable_turn(
@@ -470,7 +477,7 @@ async fn recovered(ports: Ports, backend: &str) -> CaseEvidence {
         &ports,
         &admitted,
         &registry,
-        before,
+        (before, journal_before),
         source,
         ExecutionControlOutcome::Recovered,
         backend,
@@ -515,6 +522,7 @@ async fn fenced(mut ports: Ports, backend: &str) -> CaseEvidence {
     });
     ports.handoff = interleaving.clone();
     let before = metrics::snapshot(&registry);
+    let journal_before = journal_len(&ports, &admitted).await;
     let state_before = ports
         .stores
         .execution
@@ -554,7 +562,7 @@ async fn fenced(mut ports: Ports, backend: &str) -> CaseEvidence {
         &ports,
         &admitted,
         &registry,
-        before,
+        (before, journal_before),
         source,
         ExecutionControlOutcome::Fenced,
         backend,
@@ -680,4 +688,112 @@ fn assert_omission_rejected(case: &CaseEvidence, expected: &str) {
         message.contains(expected),
         "gate failed for the wrong omitted surface: {message}"
     );
+}
+
+/// A handoff whose flavor-refusal observation always fails like a storage blip.
+#[derive(Debug)]
+struct FailingFlavorObservation(Arc<dyn nebula_storage_port::ExecutionTurnHandoff>);
+
+#[async_trait::async_trait]
+impl nebula_storage_port::ExecutionTurnHandoff for FailingFlavorObservation {
+    async fn record_control_flavor_refusal(
+        &self,
+        _: &nebula_storage_port::store::ControlFlavorRefusal<'_>,
+    ) -> Result<
+        nebula_storage_port::store::ControlFlavorRefusalOutcome,
+        nebula_storage_port::StorageError,
+    > {
+        Err(nebula_storage_port::StorageError::Connection(
+            "injected transient observation failure".into(),
+        ))
+    }
+
+    fn backend_kind(&self) -> nebula_storage_port::StorageBackendKind {
+        self.0.backend_kind()
+    }
+
+    async fn commit_control_turn(
+        &self,
+        request: &nebula_storage_port::store::ControlTurnCommit<'_>,
+    ) -> Result<
+        nebula_storage_port::store::ControlTurnCommitOutcome,
+        nebula_storage_port::StorageError,
+    > {
+        self.0.commit_control_turn(request).await
+    }
+
+    async fn accept_control_start(
+        &self,
+        request: &nebula_storage_port::store::ControlStartHandoff<'_>,
+    ) -> Result<nebula_storage_port::store::ControlStartAcceptance, nebula_storage_port::StorageError>
+    {
+        self.0.accept_control_start(request).await
+    }
+
+    async fn accept_turn(
+        &self,
+        request: &nebula_storage_port::store::TurnHandoff<'_>,
+    ) -> Result<nebula_storage_port::store::TurnAcceptance, nebula_storage_port::StorageError> {
+        self.0.accept_turn(request).await
+    }
+}
+
+/// Recording a flavor mismatch is an observation. A transient failure to
+/// record it must not turn the exact-load rejection into a retriable
+/// deferral that redelivers forever; it must be counted as unrecorded.
+#[tokio::test]
+async fn a_failed_flavor_observation_keeps_the_typed_rejection() {
+    let core = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let ports = fixture::in_memory(&core);
+    let calls = Arc::new(AtomicU32::new(0));
+    let admitted = fixture::admit(ports.clone(), &calls, false).await;
+    let registry = MetricsRegistry::new();
+    let original = dispatch(&ports, engine(&ports, &calls, &registry, 0x74));
+    let start = claim_start(&ports, &calls).await;
+    assert!(matches!(
+        original
+            .dispatch_claimed_start(&admitted.scope, admitted.id, start)
+            .await,
+        nebula_engine::ClaimedControlDispatchOutcome::Accepted(Ok(()))
+    ));
+    let claim = claim_resume(&ports, &admitted, &calls).await;
+    let mut faulty = ports.clone();
+    faulty.handoff = Arc::new(FailingFlavorObservation(ports.handoff.clone()));
+    let incompatible = dispatch(&faulty, engine(&faulty, &calls, &registry, 0x75));
+    let decision = incompatible
+        .dispatch_claimed_resume(&admitted.scope, admitted.id, None, claim)
+        .await;
+    // The wrong-flavor runtime defers the delivery to a runtime of the right
+    // flavor with the exact-load reason. A failed observation must leave that
+    // reason intact rather than replace it with a storage handoff error.
+    assert!(
+        matches!(
+            &decision,
+            nebula_engine::ClaimedControlDispatchOutcome::NotAccepted(Err(
+                nebula_engine::ControlDispatchError::Deferred(reason)
+            )) if reason.contains("not the requested exact worker flavor")
+        ),
+        "the exact-load rejection must win over the failed observation: {decision:?}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "wrong flavor never runs");
+    let unrecorded = metrics::snapshot(&registry)
+        .into_iter()
+        .filter(|counter| {
+            counter.name == "nebula_execution_control_observations_unrecorded_total"
+                && counter.labels.get("outcome").map(String::as_str) == Some("flavor-mismatch")
+        })
+        .map(|counter| counter.value)
+        .sum::<u64>();
+    assert_eq!(unrecorded, 1, "the missing observation is counted");
+}
+
+/// Journal rows already present when a scenario starts observing.
+async fn journal_len(ports: &Ports, admitted: &Admitted) -> usize {
+    ports
+        .stores
+        .journal
+        .get_journal(&admitted.scope, &admitted.id.to_string())
+        .await
+        .expect("read backend journal")
+        .len()
 }

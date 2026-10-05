@@ -93,9 +93,7 @@ impl WorkflowEngine {
         expected: WorkerFlavorRevisionId,
         source: &ResumeLeaseSource<'_>,
     ) -> Result<(), ExactTurnFailure> {
-        use nebula_storage_port::store::{
-            ControlFlavorRefusal, ControlFlavorRefusalOutcome, ControlObservationAcknowledgement,
-        };
+        use nebula_storage_port::store::{ControlFlavorRefusal, ControlFlavorRefusalOutcome};
         let Some(context) = self.worker_flavor_context() else {
             return Ok(());
         };
@@ -160,29 +158,56 @@ impl WorkflowEngine {
                 );
                 span.record("backend", backend.as_str());
                 span.record("outcome", "fenced");
-                if observation_acknowledgement == ControlObservationAcknowledgement::Recorded
-                    && let Err(error) = crate::control_metrics::record_execution_control_outcome(
-                        &self.metrics,
-                        backend,
-                        nebula_execution::ExecutionControlOutcome::Fenced,
-                    )
-                {
-                    tracing::warn!(%error, "execution claim refusal metric could not be recorded");
-                }
+                crate::control_metrics::observe_execution_control_decision(
+                    &self.metrics,
+                    backend,
+                    nebula_execution::ExecutionControlOutcome::Fenced,
+                    observation_acknowledgement,
+                );
                 Err(ExactTurnFailure::ClaimSuperseded)
             },
             Ok(ControlFlavorRefusalOutcome::ClaimSuperseded) => {
                 Err(ExactTurnFailure::ClaimSuperseded)
             },
             Ok(ControlFlavorRefusalOutcome::NoMismatch) => Ok(()),
-            Ok(_) => Err(ExactTurnFailure::AcceptanceUnknown(
-                EngineError::ControlTurnInterrupted,
-            )),
-            Err(source @ nebula_storage_port::StorageError::AcknowledgementUnknown { .. }) => Err(
-                ExactTurnFailure::AcceptanceUnknown(EngineError::ControlTurnHandoff { source }),
-            ),
-            Err(source) => Err(EngineError::ControlTurnHandoff { source }.into()),
+            // Recording is an observation of the mismatch, never the decision:
+            // an unreadable outcome, a storage failure or a lost acknowledgement
+            // leaves the exact-load validation to issue the typed rejection.
+            Ok(_) => {
+                self.flavor_refusal_unrecorded(handoff.backend_kind(), "unsupported_outcome");
+                Ok(())
+            },
+            Err(error) => {
+                tracing::warn!(%error, "flavor refusal observation could not be recorded");
+                let cause = if matches!(
+                    error,
+                    nebula_storage_port::StorageError::AcknowledgementUnknown { .. }
+                ) {
+                    "acknowledgement_lost"
+                } else {
+                    "write_failed"
+                };
+                self.flavor_refusal_unrecorded(handoff.backend_kind(), cause);
+                Ok(())
+            },
         }
+    }
+
+    fn flavor_refusal_unrecorded(
+        &self,
+        backend: nebula_storage_port::StorageBackendKind,
+        cause: &'static str,
+    ) {
+        let span = tracing::Span::current();
+        span.record("observation_acknowledgement", cause);
+        span.record("backend", backend.as_str());
+        span.record("outcome", "flavor-mismatch");
+        crate::control_metrics::record_unrecorded_execution_control_outcome(
+            &self.metrics,
+            backend,
+            nebula_execution::ExecutionControlOutcome::FlavorMismatch,
+            cause,
+        );
     }
 
     /// Atomically accept a claimed Resume or Restart under its execution owner.

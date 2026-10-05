@@ -3123,98 +3123,72 @@ impl AdmissionRefusalObserver<'_> {
     /// The observation never changes the node's failure: the rate-limit refusal
     /// stays the retryable error the error strategy decides on. An owner that
     /// cannot observe it (no execution store, no accepted-turn marker, a stale
-    /// lease, a backend failure) is reported on the span, not as a new error.
+    /// lease, a backend failure) is counted on
+    /// `nebula_execution_control_observations_unrecorded_total` and warned,
+    /// never turned into a new error.
     #[tracing::instrument(name = "record_admission_refusal", skip_all, fields(execution_id = %self.execution_id, org_id = %self.scope.org_id, workspace_id = %self.scope.workspace_id, node_key = %self.node_key, backend = tracing::field::Empty, outcome = tracing::field::Empty, observation_acknowledgement = tracing::field::Empty, reason = "admission_throttled", execution_lease_generation = tracing::field::Empty))]
     async fn record(self) {
+        use nebula_execution::ExecutionControlOutcome::Throttled;
         use nebula_storage_port::store::{
             ExecutionAdmissionRefusal, ExecutionAdmissionRefusalOutcome,
         };
-        /// Sibling branches may commit between the version read and the
-        /// receipt write; each retry uses the version the backend reported
-        /// under its own lock.
-        const VERSION_RETRIES: usize = 3;
         let (Some(store), Some(fence)) = (self.execution_store, self.fencing) else {
             return;
         };
         let span = tracing::Span::current();
         span.record("execution_lease_generation", fence.generation());
+        let backend = store.backend_kind();
+        span.record("backend", backend.as_str());
+        span.record("outcome", Throttled.as_str());
+        let unrecorded = |cause: &'static str| {
+            span.record("observation_acknowledgement", cause);
+            crate::control_metrics::record_unrecorded_execution_control_outcome(
+                self.metrics,
+                backend,
+                Throttled,
+                cause,
+            );
+        };
         let execution_key = self.execution_id.to_string();
         let Some(attempt) = self
             .attempt_generation
             .checked_sub(1)
             .and_then(|attempt| u32::try_from(attempt).ok())
         else {
-            span.record("observation_acknowledgement", "unobservable");
-            tracing::warn!("admission refusal has no representable node attempt");
+            unrecorded("attempt_unrepresentable");
             return;
         };
-        let mut expected_version = match store.get(self.scope, &execution_key).await {
-            Ok(Some(record)) => record.version,
-            Ok(None) => {
-                span.record("observation_acknowledgement", "unobservable");
-                tracing::warn!("admission refusal execution row is not visible to its owner");
-                return;
+        let request = ExecutionAdmissionRefusal::new(
+            self.scope,
+            &execution_key,
+            fence,
+            self.node_key,
+            attempt,
+        );
+        match store.record_execution_admission_refusal(&request).await {
+            Ok(ExecutionAdmissionRefusalOutcome::Recorded { backend }) => {
+                span.record("observation_acknowledgement", "recorded");
+                if let Err(error) = crate::control_metrics::record_execution_control_outcome(
+                    self.metrics,
+                    backend,
+                    Throttled,
+                ) {
+                    tracing::warn!(%error, "execution admission outcome metric could not be recorded");
+                }
             },
+            Ok(ExecutionAdmissionRefusalOutcome::AlreadyRecorded { .. }) => {
+                span.record("observation_acknowledgement", "already_recorded");
+            },
+            Ok(ExecutionAdmissionRefusalOutcome::FencedOut) => unrecorded("fenced_out"),
+            Ok(ExecutionAdmissionRefusalOutcome::MissingAcceptedTurn) => {
+                unrecorded("missing_accepted_turn");
+            },
+            Ok(_) => unrecorded("unsupported_outcome"),
             Err(error) => {
-                span.record("observation_acknowledgement", "unknown");
-                tracing::warn!(%error, "admission refusal could not read its execution");
-                return;
+                tracing::warn!(%error, "admission refusal could not be recorded");
+                unrecorded("write_failed");
             },
-        };
-        for _ in 0..VERSION_RETRIES {
-            let request = ExecutionAdmissionRefusal::new(
-                self.scope,
-                &execution_key,
-                expected_version,
-                fence,
-                self.node_key,
-                attempt,
-            );
-            match store.record_execution_admission_refusal(&request).await {
-                Ok(ExecutionAdmissionRefusalOutcome::Recorded { backend }) => {
-                    span.record("observation_acknowledgement", "recorded");
-                    if let Err(error) = crate::control_metrics::record_execution_control_outcome(
-                        self.metrics,
-                        backend,
-                        nebula_execution::ExecutionControlOutcome::Throttled,
-                    ) {
-                        tracing::warn!(%error, "execution admission outcome metric could not be recorded");
-                    }
-                    return;
-                },
-                Ok(ExecutionAdmissionRefusalOutcome::AlreadyRecorded { backend }) => {
-                    span.record("observation_acknowledgement", "already_recorded");
-                    span.record("backend", backend.as_str());
-                    span.record("outcome", "throttled");
-                    return;
-                },
-                Ok(ExecutionAdmissionRefusalOutcome::VersionConflict { actual }) => {
-                    expected_version = actual;
-                },
-                Ok(ExecutionAdmissionRefusalOutcome::FencedOut) => {
-                    span.record("observation_acknowledgement", "fenced_out");
-                    tracing::warn!("admission refusal owner no longer holds the execution lease");
-                    return;
-                },
-                Ok(ExecutionAdmissionRefusalOutcome::MissingAcceptedTurn) => {
-                    span.record("observation_acknowledgement", "unobservable");
-                    tracing::warn!("admission refusal has no accepted-turn marker to attribute");
-                    return;
-                },
-                Ok(_) => {
-                    span.record("observation_acknowledgement", "unobservable");
-                    tracing::warn!("admission refusal outcome is not understood by this runtime");
-                    return;
-                },
-                Err(error) => {
-                    span.record("observation_acknowledgement", "unknown");
-                    tracing::warn!(%error, "admission refusal could not be recorded");
-                    return;
-                },
-            }
         }
-        span.record("observation_acknowledgement", "version_contended");
-        tracing::warn!("admission refusal lost every version race with sibling commits");
     }
 }
 

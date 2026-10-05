@@ -390,6 +390,7 @@ async fn an_unobservable_admission_refusal_keeps_the_rate_limit_error() {
     }
     let mut task = node.task(Input::Valid, CancellationToken::new(), None, Some(spent));
     task.execution_store = Some(Arc::new(node._executions.clone()) as Arc<dyn ExecutionStore>);
+    let metrics = task.metrics.clone();
     let (_, result) = task.run().await;
     assert!(
         matches!(
@@ -408,6 +409,20 @@ async fn an_unobservable_admission_refusal_keeps_the_rate_limit_error() {
         "no throttle was fabricated: {journal:?}"
     );
     assert_eq!(node.dispatches.load(Ordering::SeqCst), 0);
+    let labels = metrics
+        .interner()
+        .label_set(&[("backend", "in_memory"), ("outcome", "throttled")]);
+    assert_eq!(
+        metrics
+            .counter_labeled(
+                nebula_metrics::NEBULA_EXECUTION_CONTROL_OBSERVATIONS_UNRECORDED_TOTAL,
+                &labels,
+            )
+            .unwrap()
+            .get(),
+        1,
+        "an unattributable throttle is counted, not only traced"
+    );
 }
 
 #[tokio::test]

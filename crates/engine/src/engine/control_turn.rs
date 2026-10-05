@@ -206,15 +206,12 @@ impl WorkflowEngine {
             span.record("backend", backend.as_str());
             span.record("outcome", outcome.as_str());
             span.record("observation_acknowledgement", acknowledgement.as_str());
-            if acknowledgement == ControlObservationAcknowledgement::Recorded
-                && let Err(error) = crate::control_metrics::record_execution_control_outcome(
-                    &self.metrics,
-                    backend,
-                    outcome,
-                )
-            {
-                tracing::warn!(%error, "execution-control outcome metric could not be recorded");
-            }
+            crate::control_metrics::observe_execution_control_decision(
+                &self.metrics,
+                backend,
+                outcome,
+                acknowledgement,
+            );
         }
         match decision {
             Ok(ControlTurnCommitOutcome::Accepted {

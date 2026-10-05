@@ -20,12 +20,57 @@ pub(super) struct CaseEvidence {
     pub worker_flavor_revision_id: nebula_core::WorkerFlavorRevisionId,
     pub expected_source: ExecutionControlSource,
     pub journal: Vec<StoredJournalEntry>,
+    /// Rows already journaled when the scenario took `counters_before`.
+    pub journal_before: usize,
     pub counters_before: Vec<CounterObservation>,
     pub counters_after: Vec<CounterObservation>,
     pub trace: Vec<TraceObservation>,
 }
 
 impl CaseEvidence {
+    /// Every durable observation written during the scenario has exactly one
+    /// matching counter increment on the scenario's registry, outcome by
+    /// outcome; no journal row goes uncounted and no count lacks a row.
+    pub(super) fn verify_journal_metric_parity(&self, backend: &str) {
+        for outcome in [
+            ExecutionControlOutcome::Accepted,
+            ExecutionControlOutcome::Fenced,
+            ExecutionControlOutcome::Deferred,
+            ExecutionControlOutcome::Throttled,
+            ExecutionControlOutcome::Recovered,
+            ExecutionControlOutcome::FlavorMismatch,
+        ] {
+            let rows = self
+                .journal
+                .iter()
+                .skip(self.journal_before)
+                .filter(|row| {
+                    matches!(
+                        <JournalEntry as serde::Deserialize>::deserialize(&row.payload),
+                        Ok(JournalEntry::ControlObserved { ref observation, .. })
+                            if observation.outcome() == outcome
+                    )
+                })
+                .count();
+            // Only decisions made while the scenario observed this registry;
+            // setup the test drives directly against storage is excluded.
+            let counted = outcome_delta(
+                &self.counters_before,
+                &self.counters_after,
+                COUNTER,
+                backend,
+                outcome.as_str(),
+            );
+            assert_eq!(
+                u64::try_from(rows).expect("row count"),
+                counted,
+                "{}: journal rows and outcome counter disagree for {}",
+                self.scenario,
+                outcome.as_str()
+            );
+        }
+    }
+
     pub(super) fn verify(&self, backend: &str, outcome: ExecutionControlOutcome) {
         let (target, span, reason) = match outcome {
             ExecutionControlOutcome::Accepted => (
