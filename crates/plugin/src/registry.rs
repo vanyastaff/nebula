@@ -5,11 +5,11 @@ use std::{collections::HashMap, sync::Arc};
 use nebula_core::ArtifactSetDigest;
 use nebula_core::PluginKey;
 
-use crate::{PluginContractDescriptor, PluginSet, RuntimeContractVersion, WorkerFlavorRevision};
 use crate::{
-    PluginError, ResolvedPlugin,
+    ComponentKind, PluginError, ResolvedPlugin,
     dependency::{self, PluginDependencyError},
 };
+use crate::{PluginContractDescriptor, PluginSet, RuntimeContractVersion, WorkerFlavorRevision};
 
 /// In-memory registry mapping [`PluginKey`] to [`Arc<ResolvedPlugin>`].
 ///
@@ -56,6 +56,18 @@ pub enum RegistryFreezeError {
     /// A worker flavor cannot be identified without at least one plugin.
     #[error("cannot freeze an empty plugin registry")]
     EmptyRegistry,
+    /// Distinct plugins expose one globally addressed component key.
+    ///
+    /// Each plugin's namespace check admits such a key when plugin namespaces
+    /// overlap (for example `acme` and `acme.storage` both admit
+    /// `acme.storage.run`). Frozen lookup by full key requires one owner.
+    #[error("{kind} key `{key}` is exposed by more than one registered plugin")]
+    DuplicateComponentKey {
+        /// Kind of the ambiguous component.
+        kind: ComponentKind,
+        /// Full component key claimed by more than one plugin.
+        key: String,
+    },
     /// The registered dependency graph is incomplete, incompatible, or cyclic.
     #[error(transparent)]
     Dependency(#[from] PluginDependencyError),
@@ -227,7 +239,9 @@ impl PluginRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`RegistryFreezeError::EmptyRegistry`] for an empty registry, or
+    /// Returns [`RegistryFreezeError::EmptyRegistry`] for an empty registry,
+    /// [`RegistryFreezeError::DuplicateComponentKey`] when distinct plugins
+    /// expose one component key, or
     /// [`RegistryFreezeError::Dependency`] when dependency validation fails,
     /// or [`RegistryFreezeError::UnsupportedVersionRequirement`] when a
     /// requirement contains a semver operator this fingerprint version does
@@ -254,6 +268,13 @@ impl PluginRegistry {
             span.record("outcome", "error");
             span.record("error_code", "PLUGIN_FREEZE:EMPTY_REGISTRY");
             return Err(RegistryFreezeError::EmptyRegistry);
+        }
+
+        if let Some(error) = self.duplicate_component_key() {
+            let span = tracing::Span::current();
+            span.record("outcome", "error");
+            span.record("error_code", nebula_error::Classify::code(&error).as_str());
+            return Err(error);
         }
 
         let load_order = match self.resolve_load_order() {
@@ -317,6 +338,41 @@ impl PluginRegistry {
             plugin_set,
             revision,
         })
+    }
+
+    /// Finds a component key exposed by more than one registered plugin.
+    ///
+    /// `ResolvedPlugin` already rejects duplicates inside one plugin, so any
+    /// collision here crosses plugins. Plugins are visited in key order so the
+    /// reported collision does not depend on `HashMap` iteration order.
+    fn duplicate_component_key(&self) -> Option<RegistryFreezeError> {
+        let mut plugins: Vec<_> = self.plugins.iter().collect();
+        plugins.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        let mut actions = std::collections::HashSet::new();
+        let mut credentials = std::collections::HashSet::new();
+        let mut resources = std::collections::HashSet::new();
+        let duplicate = |kind, key: &dyn std::fmt::Display| {
+            Some(RegistryFreezeError::DuplicateComponentKey {
+                kind,
+                key: key.to_string(),
+            })
+        };
+        for (_, plugin) in plugins {
+            if let Some((key, _)) = plugin.actions().find(|(key, _)| !actions.insert(*key)) {
+                return duplicate(ComponentKind::Action, key);
+            }
+            if let Some((key, _)) = plugin
+                .credentials()
+                .find(|(key, _)| !credentials.insert(*key))
+            {
+                return duplicate(ComponentKind::Credential, key);
+            }
+            if let Some((key, _)) = plugin.resources().find(|(key, _)| !resources.insert(*key)) {
+                return duplicate(ComponentKind::Resource, key);
+            }
+        }
+        None
     }
 }
 
@@ -412,9 +468,9 @@ impl FrozenPluginRegistry {
 impl nebula_error::Classify for RegistryFreezeError {
     fn category(&self) -> nebula_error::ErrorCategory {
         match self {
-            Self::EmptyRegistry | Self::UnsupportedVersionRequirement { .. } => {
-                nebula_error::ErrorCategory::Validation
-            },
+            Self::EmptyRegistry
+            | Self::DuplicateComponentKey { .. }
+            | Self::UnsupportedVersionRequirement { .. } => nebula_error::ErrorCategory::Validation,
             Self::Dependency(source) => nebula_error::Classify::category(source),
         }
     }
@@ -422,6 +478,9 @@ impl nebula_error::Classify for RegistryFreezeError {
     fn code(&self) -> nebula_error::ErrorCode {
         match self {
             Self::EmptyRegistry => nebula_error::ErrorCode::new("PLUGIN_FREEZE:EMPTY_REGISTRY"),
+            Self::DuplicateComponentKey { .. } => {
+                nebula_error::ErrorCode::new("PLUGIN_FREEZE:DUPLICATE_COMPONENT_KEY")
+            },
             Self::Dependency(source) => nebula_error::Classify::code(source),
             Self::UnsupportedVersionRequirement { .. } => {
                 nebula_error::ErrorCode::new("PLUGIN_FREEZE:UNSUPPORTED_VERSION_REQUIREMENT")
