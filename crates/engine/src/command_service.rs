@@ -62,6 +62,15 @@ pub enum ExecutionCommandError {
     /// Only a human user can approve: the principal is not a user.
     #[error("only a user principal can deliver an approval signal")]
     ApproverNotUser,
+    /// An `ExecutionCompleted` signal named an execution that has not reached
+    /// a terminal state; the completion is a durable fact, not a claim.
+    #[error("awaited execution {execution_id} has not completed (status '{status}')")]
+    AwaitedNotTerminal {
+        /// The execution the signal claimed had completed.
+        execution_id: ExecutionId,
+        /// Its current durable status.
+        status: String,
+    },
     /// The bearer is absent, expired, consumed or not a webhook token. One
     /// variant for every case, so the refusal never reveals which applied.
     #[error("resume token not found")]
@@ -90,7 +99,9 @@ impl ExecutionCommandError {
     fn outcome(&self) -> &'static str {
         match self {
             Self::Terminal { .. } => execution_command_outcome::TERMINAL,
-            Self::ApproverNotUser => execution_command_outcome::FORBIDDEN,
+            Self::ApproverNotUser | Self::AwaitedNotTerminal { .. } => {
+                execution_command_outcome::FORBIDDEN
+            },
             Self::NotFound(_) | Self::ResumeTokenNotFound => execution_command_outcome::NOT_FOUND,
             Self::QueueUnavailable(_) | Self::ResumeUnwired => {
                 execution_command_outcome::UNAVAILABLE
@@ -285,6 +296,9 @@ impl ExecutionCommandService {
     /// - [`Signal::Approval`] targets the approval gate whose approver is the
     ///   authenticated `principal`'s user id (`usr_…`); any other principal
     ///   kind is refused with [`ExecutionCommandError::ApproverNotUser`].
+    /// - [`Signal::ExecutionCompleted`] is admitted only if the awaited execution
+    ///   exists in `scope` and has durably reached a terminal state; otherwise it
+    ///   is refused (`NotFound` / [`ExecutionCommandError::AwaitedNotTerminal`]).
     /// - A webhook wait cannot be signalled here — it resumes only through
     ///   [`Self::resume_webhook`] with its verified bearer.
     /// - There is deliberately no untargeted resume: this service only ever
@@ -324,8 +338,16 @@ impl ExecutionCommandService {
             },
             Signal::ExecutionCompleted {
                 execution_id: awaited,
-            } => ResumeTarget::Execution {
-                execution_id: awaited.to_string(),
+            } => {
+                // The completion must be a durable fact in the caller's own
+                // scope, never the caller's claim.
+                if let Err(refusal) = self.require_terminal(scope, awaited).await {
+                    self.record("signal", refusal.outcome());
+                    return Err(refusal);
+                }
+                ResumeTarget::Execution {
+                    execution_id: awaited.to_string(),
+                }
             },
         };
         self.submit(
@@ -470,6 +492,35 @@ impl ExecutionCommandService {
             },
         );
         result
+    }
+
+    /// Admit an `ExecutionCompleted` claim only if the awaited execution exists
+    /// in `scope` and has durably reached a terminal state. A foreign-scope or
+    /// absent id is `NotFound`, so the refusal reveals nothing across tenants.
+    async fn require_terminal(
+        &self,
+        scope: &Scope,
+        awaited: ExecutionId,
+    ) -> Result<(), ExecutionCommandError> {
+        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
+        let record = store
+            .get(scope, &awaited.to_string())
+            .await
+            .map_err(ExecutionCommandError::Store)?
+            .ok_or(ExecutionCommandError::NotFound(awaited))?;
+        let status = record
+            .state
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        if TERMINAL_STATUSES.contains(&status) {
+            Ok(())
+        } else {
+            Err(ExecutionCommandError::AwaitedNotTerminal {
+                execution_id: awaited,
+                status: status.to_owned(),
+            })
+        }
     }
 
     async fn submit_inner(

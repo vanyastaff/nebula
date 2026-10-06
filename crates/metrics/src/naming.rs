@@ -97,8 +97,9 @@ pub mod execution_command_outcome {
     pub const UNAVAILABLE: &str = "unavailable";
     /// A store read or enqueue write failed; nothing was recorded.
     pub const FAILED: &str = "failed";
-    /// The caller's principal may not deliver this command (an approval from
-    /// a non-user principal); nothing was recorded.
+    /// The caller may not deliver this command (an approval from a non-user
+    /// principal, or a completion claim for an execution that has not
+    /// completed); nothing was recorded.
     pub const FORBIDDEN: &str = "forbidden";
 }
 

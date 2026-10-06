@@ -344,7 +344,8 @@ async fn signals_target_by_caller_authority(f: Fixture) {
     .unwrap();
     let user = UserId::new();
     let caller = Principal::User(user);
-    let awaited = ExecutionId::new();
+    // A completion signal names an execution that has durably completed.
+    let awaited = f.execution("completed").await;
     let approval = f
         .service
         .signal(
@@ -405,6 +406,54 @@ async fn signals_target_by_caller_authority(f: Fixture) {
             .signal(&other, id, &caller, Signal::Approval, None)
             .await,
         Err(ExecutionCommandError::NotFound(_))
+    ));
+
+    // A completion claim is a durable fact, never the caller's word: an
+    // unknown execution and one still running are both refused.
+    let unknown = ExecutionId::new();
+    assert!(matches!(
+        f.service
+            .signal(
+                &f.scope,
+                id,
+                &caller,
+                Signal::ExecutionCompleted {
+                    execution_id: unknown
+                },
+                None,
+            )
+            .await,
+        Err(ExecutionCommandError::NotFound(missing)) if missing == unknown
+    ));
+    let running = f.execution("running").await;
+    assert!(matches!(
+        f.service
+            .signal(
+                &f.scope,
+                id,
+                &caller,
+                Signal::ExecutionCompleted {
+                    execution_id: running
+                },
+                None,
+            )
+            .await,
+        Err(ExecutionCommandError::AwaitedNotTerminal { execution_id, .. }) if execution_id == running
+    ));
+    // The awaited execution must live in the caller's scope.
+    assert!(matches!(
+        f.service
+            .signal(
+                &other,
+                id,
+                &caller,
+                Signal::ExecutionCompleted {
+                    execution_id: awaited
+                },
+                None,
+            )
+            .await,
+        Err(ExecutionCommandError::NotFound(missing)) if missing == awaited
     ));
     let done = f.execution("completed").await;
     assert!(matches!(
