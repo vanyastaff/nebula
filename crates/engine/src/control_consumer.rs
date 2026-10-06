@@ -244,7 +244,8 @@ pub trait ControlDispatch: Send + Sync {
     /// `resume_target` is the per-message resume target from
     /// `ControlMsg.resume_target`: `Some(target)` arms only the parked
     /// signal wait whose persisted identity matches the target by kind +
-    /// identity; `None` arms every signal wait.
+    /// identity; `None` arms every signal wait except approval and webhook
+    /// gates, which demand their target.
     ///
     /// **Idempotency (critical):** double-resume starts the workflow twice.
     /// Implementations must guard via the durable CAS on

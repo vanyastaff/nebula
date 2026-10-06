@@ -1,6 +1,6 @@
 //! Execution control commands: the one owner of the §12.2 contract.
 //!
-//! Cancel, terminate, resume and targeted signals are **intents**, not writes.
+//! Cancel, terminate, typed signals and webhook resumes are **intents**, not writes.
 //! The execution aggregate has exactly one writer — the runtime, holding the
 //! lease and the fencing token that proves it — so this service reads the
 //! durable state, decides whether the command is admissible, and records
@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use nebula_core::{ExecutionId, W3cTraceContext};
+use nebula_core::{ExecutionId, Principal, W3cTraceContext};
 use nebula_execution::ExecutionStatus;
 use nebula_metrics::{
     MetricsRegistry,
@@ -43,21 +43,25 @@ pub enum ExecutionCommandError {
     /// The execution already reached a terminal state.
     #[error("Cannot {verb} execution in '{status}' state")]
     Terminal {
-        /// The command that was refused (`cancel`, `terminate`, `resume` or `signal`).
+        /// The command that was refused (`cancel`, `terminate` or `signal`).
         verb: &'static str,
         /// The terminal status the execution is in.
         status: String,
     },
-    /// The execution store (or the resume-token row) could not be read.
-    #[error("failed to read execution: {0}")]
+    /// The durable command state (the execution row or the resume-token row)
+    /// could not be read; the cause is the [`source`](std::error::Error::source).
+    #[error("failed to read command state from storage")]
     Store(#[source] StorageError),
     /// The control-queue backend is absent or unreachable (infra down, not a
     /// logic bug); the command was **not** recorded.
-    #[error("control-queue backend unavailable: {0}")]
+    #[error("control-queue backend unavailable")]
     QueueUnavailable(#[source] StorageError),
     /// The control-queue write failed; the command was **not** recorded.
-    #[error("failed to enqueue control command: {0}")]
+    #[error("failed to enqueue control command")]
     Enqueue(#[source] StorageError),
+    /// Only a human user can approve: the principal is not a user.
+    #[error("only a user principal can deliver an approval signal")]
+    ApproverNotUser,
     /// The bearer is absent, expired, consumed or not a webhook token. One
     /// variant for every case, so the refusal never reveals which applied.
     #[error("resume token not found")]
@@ -86,6 +90,7 @@ impl ExecutionCommandError {
     fn outcome(&self) -> &'static str {
         match self {
             Self::Terminal { .. } => execution_command_outcome::TERMINAL,
+            Self::ApproverNotUser => execution_command_outcome::FORBIDDEN,
             Self::NotFound(_) | Self::ResumeTokenNotFound => execution_command_outcome::NOT_FOUND,
             Self::QueueUnavailable(_) | Self::ResumeUnwired => {
                 execution_command_outcome::UNAVAILABLE
@@ -93,6 +98,62 @@ impl ExecutionCommandError {
             Self::Store(_) | Self::Enqueue(_) => execution_command_outcome::FAILED,
         }
     }
+}
+
+/// A signal an authenticated caller may deliver through
+/// [`ExecutionCommandService::signal`]. Its identity is never a free-form
+/// payload: the approver comes from the caller's principal, and webhook waits
+/// are not representable (they resume only with their bearer).
+///
+/// ```no_run
+/// # use nebula_engine::{ExecutionCommandService, Signal};
+/// # async fn deliver(svc: &ExecutionCommandService, scope: &nebula_storage_port::Scope,
+/// #     id: nebula_core::ExecutionId, caller: &nebula_core::Principal) {
+/// let _ = svc.signal(scope, id, caller, Signal::Approval, None).await;
+/// # }
+/// ```
+///
+/// A webhook target cannot be signalled by an authenticated caller:
+///
+/// ```compile_fail
+/// # use nebula_engine::{ExecutionCommandService, Signal};
+/// # async fn deliver(svc: &ExecutionCommandService, scope: &nebula_storage_port::Scope,
+/// #     id: nebula_core::ExecutionId, caller: &nebula_core::Principal) {
+/// let webhook = Signal::Webhook { callback_id: "cb".to_owned() };
+/// let _ = svc.signal(scope, id, caller, webhook, None).await;
+/// # }
+/// ```
+///
+/// Nor can a caller name the approver:
+///
+/// ```compile_fail
+/// # use nebula_engine::{ExecutionCommandService, Signal};
+/// # async fn deliver(svc: &ExecutionCommandService, scope: &nebula_storage_port::Scope,
+/// #     id: nebula_core::ExecutionId, caller: &nebula_core::Principal) {
+/// let approval = Signal::Approval { approver: "anyone".to_owned() };
+/// let _ = svc.signal(scope, id, caller, approval, None).await;
+/// # }
+/// ```
+///
+/// And there is no untargeted resume, which would arm every signal wait:
+///
+/// ```compile_fail
+/// # use nebula_engine::ExecutionCommandService;
+/// # async fn deliver(svc: &ExecutionCommandService, scope: &nebula_storage_port::Scope,
+/// #     id: nebula_core::ExecutionId) {
+/// let _ = svc.resume(scope, id, None).await;
+/// # }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Signal {
+    /// Approve the gate parked for the calling user.
+    Approval,
+    /// Report that the awaited execution completed.
+    ExecutionCompleted {
+        /// The execution the parked wait is gated on.
+        execution_id: ExecutionId,
+    },
 }
 
 /// What the service accepted.
@@ -217,36 +278,19 @@ impl ExecutionCommandService {
         self
     }
 
-    /// Resume every signal wait of the execution through the durable control
-    /// queue. Unlike [`Self::cancel`], a repeated request is enqueued again;
-    /// the runtime satisfies only waits that are still parked.
+    /// Deliver a typed signal to one parked wait of the execution.
     ///
-    /// # Errors
+    /// Authority comes from the caller, never from a payload:
     ///
-    /// See [`ExecutionCommandError`]; this never acquires runtime write authority.
-    #[tracing::instrument(
-        name = "execution.command.resume",
-        skip(self, scope, w3c),
-        fields(execution_id = %execution_id),
-    )]
-    pub async fn resume(
-        &self,
-        scope: &Scope,
-        execution_id: ExecutionId,
-        w3c: Option<W3cTraceContext>,
-    ) -> Result<CommandReceipt, ExecutionCommandError> {
-        self.submit(
-            scope,
-            execution_id,
-            (ControlCommand::Resume, None),
-            "resume",
-            false,
-            w3c,
-        )
-        .await
-    }
-
-    /// Deliver a targeted signal: resume only the wait matching `target`.
+    /// - [`Signal::Approval`] targets the approval gate whose approver is the
+    ///   authenticated `principal`'s user id (`usr_…`); any other principal
+    ///   kind is refused with [`ExecutionCommandError::ApproverNotUser`].
+    /// - A webhook wait cannot be signalled here — it resumes only through
+    ///   [`Self::resume_webhook`] with its verified bearer.
+    /// - There is deliberately no untargeted resume: this service only ever
+    ///   enqueues identity-targeted signals. The runtime independently refuses
+    ///   to let an untargeted Resume satisfy approval or webhook gates, so
+    ///   neither layer alone is trusted with that authority.
     ///
     /// The signal is acknowledged only once it is durably on the control
     /// queue; it never travels over the event bus.
@@ -256,16 +300,34 @@ impl ExecutionCommandService {
     /// See [`ExecutionCommandError`]; delivery remains execution-owner fenced.
     #[tracing::instrument(
         name = "execution.command.signal",
-        skip(self, scope, target, w3c),
+        skip(self, scope, principal, signal, w3c),
         fields(execution_id = %execution_id),
     )]
     pub async fn signal(
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
-        target: ResumeTarget,
+        principal: &Principal,
+        signal: Signal,
         w3c: Option<W3cTraceContext>,
     ) -> Result<CommandReceipt, ExecutionCommandError> {
+        let target = match signal {
+            Signal::Approval => {
+                let Principal::User(user) = principal else {
+                    let refusal = ExecutionCommandError::ApproverNotUser;
+                    self.record("signal", refusal.outcome());
+                    return Err(refusal);
+                };
+                ResumeTarget::Approval {
+                    approver: user.to_string(),
+                }
+            },
+            Signal::ExecutionCompleted {
+                execution_id: awaited,
+            } => ResumeTarget::Execution {
+                execution_id: awaited.to_string(),
+            },
+        };
         self.submit(
             scope,
             execution_id,
@@ -306,7 +368,9 @@ impl ExecutionCommandService {
             Err(error) => error.outcome(),
         };
         tracing::Span::current().record("outcome", outcome);
-        self.record("resume", outcome);
+        // Its own label: unauthenticated bearer traffic (forged tokens
+        // included) must not pollute the authenticated command series.
+        self.record("resume_webhook", outcome);
         result
     }
 

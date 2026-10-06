@@ -186,10 +186,6 @@ pub(crate) async fn resume_handler(
         warn!("resume_handler called without ResumeHandlerComponents wired — composition-root bug");
         return (StatusCode::SERVICE_UNAVAILABLE, "").into_response();
     };
-    if state.resume_producer.is_none() {
-        warn!("resume_handler called without resume_producer wired — composition-root bug");
-        return (StatusCode::SERVICE_UNAVAILABLE, "").into_response();
-    }
 
     // Step 1 — body cap.
     if body.len() > RESUME_BODY_LIMIT_BYTES {
@@ -263,11 +259,16 @@ pub(crate) async fn resume_handler(
         Err(nebula_engine::ExecutionCommandError::ResumeTokenNotFound) => {
             return uniform_not_found();
         },
+        Err(nebula_engine::ExecutionCommandError::ResumeUnwired) => {
+            warn!("resume_handler called without resume_producer wired — composition-root bug");
+            return (StatusCode::SERVICE_UNAVAILABLE, "").into_response();
+        },
         // Transient storage fault: the transaction rolled back, so the token
         // is still live and the caller may retry.
         Err(error) => {
             warn!(
                 error = %error,
+                cause = ?std::error::Error::source(&error),
                 "resume: command service failed — 503 (token not burned)"
             );
             return service_unavailable_with_retry_after();

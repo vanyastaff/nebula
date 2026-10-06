@@ -329,12 +329,23 @@ impl StatelessAction for WebhookParkNode {
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         Ok(ActionResult::Wait {
             condition: WaitCondition::Webhook {
-                callback_id: "w-s3e-integration-cb".to_owned(),
+                callback_id: WEBHOOK_CALLBACK.to_owned(),
             },
             timeout: None,
             partial_output: None,
         })
     }
+}
+
+/// The callback the parked webhook node waits on.
+const WEBHOOK_CALLBACK: &str = "w-s3e-integration-cb";
+
+/// The target a webhook Resume carries: an untargeted Resume never satisfies a
+/// webhook wait.
+fn webhook_target() -> Option<nebula_engine::ResumeTarget> {
+    Some(nebula_engine::ResumeTarget::Webhook {
+        callback_id: WEBHOOK_CALLBACK.to_owned(),
+    })
 }
 
 /// A plain echo node used downstream of the parked node so that a satisfied
@@ -705,7 +716,7 @@ async fn terminal_transition_revokes_unconsumed_resume_tokens() {
     // Resume: satisfy the wait and drive to Completed (SINK 1 fires here).
     harness
         .dispatch
-        .dispatch_resume(&scope, execution_id, None)
+        .dispatch_resume(&scope, execution_id, webhook_target())
         .await
         .expect("dispatch_resume must satisfy the wait and drive to Completed");
     assert_eq!(
@@ -834,7 +845,7 @@ async fn revoke_failure_does_not_fail_terminal_transition() {
     // terminal transition must still succeed (best-effort).
     harness
         .dispatch
-        .dispatch_resume(&scope, execution_id, None)
+        .dispatch_resume(&scope, execution_id, webhook_target())
         .await
         .expect("a revoke failure must NOT fail the terminal transition (best-effort)");
     assert_eq!(
@@ -906,7 +917,7 @@ async fn cas_retry_terminal_path_revokes_token() {
     // Resume: drives to Completed via the CAS-reconcile retry path.
     harness
         .dispatch
-        .dispatch_resume(&scope, execution_id, None)
+        .dispatch_resume(&scope, execution_id, webhook_target())
         .await
         .expect("dispatch_resume must succeed via the CAS-retry path");
 
@@ -998,7 +1009,7 @@ async fn honor_external_terminal_path_revokes_token() {
     // honored external_status as a valid terminal outcome.
     harness
         .dispatch
-        .dispatch_resume(&scope, execution_id, None)
+        .dispatch_resume(&scope, execution_id, webhook_target())
         .await
         .expect("dispatch_resume must complete Ok even when honoring external terminal");
 

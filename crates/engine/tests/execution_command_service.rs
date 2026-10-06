@@ -9,7 +9,7 @@ mod postgres_schema;
 use std::sync::Arc;
 
 use nebula_core::ExecutionId;
-use nebula_engine::{ExecutionCommandError, ExecutionCommandService};
+use nebula_engine::{ExecutionCommandError, ExecutionCommandService, Signal};
 use nebula_metrics::{
     MetricsRegistry,
     naming::{NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL, execution_command_outcome as outcome},
@@ -327,7 +327,14 @@ both_backends!(
     every_outcome_is_counted_by_command_and_outcome
 );
 
-async fn resume_and_signal_preserve_scope_target_trace_and_state(f: Fixture) {
+/// Every signal enqueues one identity-targeted `Resume`: the approver is the
+/// calling user, never a payload; nothing untargeted or webhook-shaped is ever
+/// produced (an untargeted Resume would arm every signal wait, approval and
+/// webhook gates included).
+async fn signals_target_by_caller_authority(f: Fixture) {
+    use nebula_core::{Principal, UserId};
+    use nebula_storage_port::dto::ResumeTarget;
+
     let id = f.execution("paused").await;
     let context = nebula_core::W3cTraceContext::from_optional_headers(
         Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
@@ -335,54 +342,76 @@ async fn resume_and_signal_preserve_scope_target_trace_and_state(f: Fixture) {
     )
     .unwrap()
     .unwrap();
-    let target = nebula_storage_port::dto::ResumeTarget::Webhook {
-        callback_id: "callback".to_owned(),
-    };
-    let resume = f
+    let user = UserId::new();
+    let caller = Principal::User(user);
+    let awaited = ExecutionId::new();
+    let approval = f
         .service
-        .resume(&f.scope, id, Some(context.clone()))
+        .signal(
+            &f.scope,
+            id,
+            &caller,
+            Signal::Approval,
+            Some(context.clone()),
+        )
         .await
         .unwrap();
-    let signal = f
+    let completed = f
         .service
-        .signal(&f.scope, id, target.clone(), Some(context.clone()))
+        .signal(
+            &f.scope,
+            id,
+            &caller,
+            Signal::ExecutionCompleted {
+                execution_id: awaited,
+            },
+            Some(context.clone()),
+        )
         .await
         .unwrap();
-    assert!(resume.enqueued && signal.enqueued);
-    assert_eq!(resume.execution_state, signal.execution_state);
+    assert!(approval.enqueued && completed.enqueued);
     assert_eq!(f.status(id).await, "paused", "the service never writes");
     let messages = f.queue.claim_pending(&[8; 16], 100).await.unwrap();
     assert_eq!(messages.len(), 2);
     assert!(messages.iter().all(|claim| claim.msg.scope == f.scope
         && claim.msg.command == ControlCommand::Resume
         && claim.msg.w3c_traceparent.as_deref() == Some(context.traceparent())));
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|claim| claim.msg.resume_target.as_ref() == Some(&target))
-            .count(),
-        1
-    );
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|claim| claim.msg.resume_target.is_none())
-            .count(),
-        1
-    );
+    let targets: Vec<_> = messages
+        .iter()
+        .map(|claim| claim.msg.resume_target.clone())
+        .collect();
+    assert!(targets.contains(&Some(ResumeTarget::Approval {
+        approver: user.to_string()
+    })));
+    assert!(targets.contains(&Some(ResumeTarget::Execution {
+        execution_id: awaited.to_string()
+    })));
+
+    // Only a user can approve; the refusal enqueues nothing.
+    for principal in [
+        Principal::System,
+        Principal::ServiceAccount(nebula_core::ServiceAccountId::new()),
+    ] {
+        assert!(matches!(
+            f.service
+                .signal(&f.scope, id, &principal, Signal::Approval, None)
+                .await,
+            Err(ExecutionCommandError::ApproverNotUser)
+        ));
+    }
     let other = Scope::new("other", "other");
     assert!(matches!(
-        f.service.resume(&other, id, None).await,
-        Err(ExecutionCommandError::NotFound(_))
-    ));
-    assert!(matches!(
-        f.service.signal(&other, id, target.clone(), None).await,
+        f.service
+            .signal(&other, id, &caller, Signal::Approval, None)
+            .await,
         Err(ExecutionCommandError::NotFound(_))
     ));
     let done = f.execution("completed").await;
     assert!(matches!(
-        f.service.signal(&f.scope, done, target, None).await,
-        Err(ExecutionCommandError::Terminal { .. })
+        f.service
+            .signal(&f.scope, done, &caller, Signal::Approval, None)
+            .await,
+        Err(ExecutionCommandError::Terminal { verb: "signal", .. })
     ));
     assert!(
         f.commands().await.is_empty(),
@@ -390,8 +419,8 @@ async fn resume_and_signal_preserve_scope_target_trace_and_state(f: Fixture) {
     );
 }
 both_backends!(
-    resume_and_signal_preserve_scope_target_trace_and_state_case,
-    resume_and_signal_preserve_scope_target_trace_and_state
+    signals_target_by_caller_authority_case,
+    signals_target_by_caller_authority
 );
 
 async fn webhook_resume_consumes_only_valid_tokens_and_enqueues_once(f: Fixture) {
@@ -484,11 +513,27 @@ async fn webhook_resume_consumes_only_valid_tokens_and_enqueues_once(f: Fixture)
         f.producer.peek(&hashes[0]).await.unwrap().is_none(),
         "the accepted token is burned"
     );
+    // Bearer traffic never lands in an authenticated command's series.
+    for command in ["resume", "signal"] {
+        for outcome in [outcome::ENQUEUED, outcome::NOT_FOUND] {
+            let labels = metrics
+                .interner()
+                .label_set(&[("command", command), ("outcome", outcome)]);
+            assert_eq!(
+                metrics
+                    .counter_labeled(NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL, &labels)
+                    .unwrap()
+                    .get(),
+                0,
+                "{command}/{outcome}"
+            );
+        }
+    }
     // 3 refused rows + 1 forged bearer + 1 losing replay.
     for (outcome, expected) in [(outcome::ENQUEUED, 1), (outcome::NOT_FOUND, 5)] {
         let labels = metrics
             .interner()
-            .label_set(&[("command", "resume"), ("outcome", outcome)]);
+            .label_set(&[("command", "resume_webhook"), ("outcome", outcome)]);
         assert_eq!(
             metrics
                 .counter_labeled(NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL, &labels)
@@ -585,6 +630,10 @@ async fn webhook_resume_failures_keep_the_storage_cause() {
             .is_some(),
         "the storage error is the typed source"
     );
+    assert!(
+        !error.to_string().contains("backend down"),
+        "the cause is reported once, as the source — not repeated in the message: {error}"
+    );
 
     let row = ResumeTokenRow::new(
         hash.clone(),
@@ -643,7 +692,7 @@ async fn webhook_resume_failures_keep_the_storage_cause() {
     let count = |outcome: &str| {
         let labels = metrics
             .interner()
-            .label_set(&[("command", "resume"), ("outcome", outcome)]);
+            .label_set(&[("command", "resume_webhook"), ("outcome", outcome)]);
         metrics
             .counter_labeled(NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL, &labels)
             .unwrap()

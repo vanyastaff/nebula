@@ -1159,7 +1159,7 @@ impl WorkflowEngine {
     /// `Some(target)` arms only the node whose persisted [`WaitSignal`] matches
     /// the target by kind + identity (a webhook target never satisfies an
     /// approval gate — the kind-confusion safety rule); `None` arms every
-    /// signal-driven wait (the untargeted behavior).
+    /// signal-driven wait except approval and webhook gates.
     ///
     /// # Returns
     ///
@@ -1276,7 +1276,7 @@ impl WorkflowEngine {
     ///   inner the `Paused` path uses, so the version-CAS + fencing commit and
     ///   the kind-aware [`arm_signal_waits_under_lease`] targeting are identical.
     ///   A targeted recovery (`Some(resume_target)`) arms ONLY the matching
-    ///   node; an untargeted one arms every signal wait. The caller then
+    ///   node; an untargeted one every non-approval, non-webhook wait. The caller then
     ///   re-drives via `drive_armed_resume`, whose wait drain completes the armed
     ///   wait on the main port.
     ///
@@ -1451,7 +1451,7 @@ impl WorkflowEngine {
         //
         // `arm_signal_waits_under_lease` is the shared armer: a `Some(target)`
         // Resume arms only the kind+identity match; a `None` Resume arms every
-        // signal wait. It runs under the lease we hold, so the
+        // signal wait except approval/webhook gates. It runs under the lease, so the
         // own-the-lease-before-read-modify-write invariant is preserved.
         let now = self.clock.now();
         let armed = arm_signal_waits_under_lease(&mut exec_state, resume_target, now);

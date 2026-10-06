@@ -277,6 +277,15 @@ impl ResumeProducer for AlwaysFailResumeProducer {
 
 /// Build a harness whose resume producer always returns a storage error on `peek`.
 async fn build_failing_store_harness(components: ResumeHandlerComponents) -> ResumeHarness {
+    build_detached_producer_harness(components, Some(Arc::new(AlwaysFailResumeProducer))).await
+}
+
+/// Build a harness whose resume producer (if any) does not share the token
+/// store: `None` leaves the producer unwired, a composition-root fault.
+async fn build_detached_producer_harness(
+    components: ResumeHandlerComponents,
+    producer: Option<Arc<dyn ResumeProducer>>,
+) -> ResumeHarness {
     use nebula_storage::inmem::{
         InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
         InMemoryWorkflowVersionStore,
@@ -289,7 +298,7 @@ async fn build_failing_store_harness(components: ResumeHandlerComponents) -> Res
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions, &exec_store);
     // A standalone store is returned in `token_store` for the field but is
-    // never wired into AppState — `AlwaysFailResumeProducer` is wired instead.
+    // never wired into AppState — only `producer` (if any) is.
     let token_store_placeholder = InMemoryResumeTokenStore::standalone();
 
     let api_config = ApiConfig::for_test();
@@ -308,8 +317,11 @@ async fn build_failing_store_harness(components: ResumeHandlerComponents) -> Res
     .with_org_resolver(Arc::new(common::TestOrgResolver))
     .with_workspace_resolver(Arc::new(common::TestWorkspaceResolver))
     .with_insecure_tenant_rbac_bypass_for_tests()
-    .with_resume_producer(Arc::new(AlwaysFailResumeProducer))
     .with_resume_handler_components(components);
+    let state = match producer {
+        Some(producer) => state.with_resume_producer(producer),
+        None => state,
+    };
 
     let app = app::build_app(state, &api_config);
 
@@ -933,6 +945,28 @@ async fn storage_error_returns_503_retry_after_no_enqueue() {
         harness.control_queue.snapshot().is_empty(),
         "no ControlMsg must be enqueued when the store returns an error"
     );
+}
+
+/// An unwired resume producer is a composition-root fault, owned by the
+/// command service's `ResumeUnwired`: plain 503 (no `Retry-After` — retrying
+/// cannot help), nothing enqueued.
+#[tokio::test]
+async fn unwired_producer_returns_503_without_retry_after() {
+    let clock = Arc::new(MockClock::at_now());
+    let harness = build_detached_producer_harness(components_with_clock(clock), None).await;
+
+    let resp = harness
+        .app
+        .oneshot(resume_post("any-bearer-does-not-matter", PEER_A))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        !resp.headers().contains_key("retry-after"),
+        "a wiring fault is not transient: no Retry-After"
+    );
+    assert!(harness.control_queue.snapshot().is_empty());
 }
 
 /// Test 13 — Body is inert: extra JSON ignored; oversized body → 413 before store hit.

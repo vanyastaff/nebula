@@ -76,8 +76,8 @@ pub mod control_reclaim_outcome {
 /// Counter: execution control commands submitted through
 /// `ExecutionCommandService`.
 ///
-/// Labeled by `command` (`cancel` / `terminate` / `resume` / `signal`; a
-/// webhook bearer resume counts as `resume`) and `outcome` (see
+/// Labeled by `command` (`cancel` / `terminate` / `signal` /
+/// `resume_webhook`, the unauthenticated bearer path) and `outcome` (see
 /// [`execution_command_outcome`]). Cardinality is bounded by those two static
 /// sets — no execution or tenant id is ever a label.
 pub const NEBULA_ENGINE_EXECUTION_COMMAND_TOTAL: &str = "nebula_engine_execution_command_total";
@@ -97,6 +97,9 @@ pub mod execution_command_outcome {
     pub const UNAVAILABLE: &str = "unavailable";
     /// A store read or enqueue write failed; nothing was recorded.
     pub const FAILED: &str = "failed";
+    /// The caller's principal may not deliver this command (an approval from
+    /// a non-user principal); nothing was recorded.
+    pub const FORBIDDEN: &str = "forbidden";
 }
 
 // ---------------------------------------------------------------------------

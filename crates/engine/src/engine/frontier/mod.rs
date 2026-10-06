@@ -417,7 +417,7 @@ impl WorkflowEngine {
                     //
                     // Targeted in W-S3a: `req.resume_target` selects which signal
                     // wait(s) to arm — `Some(target)` arms only the kind+identity
-                    // match, `None` arms every signal wait (W-S2b behavior). The
+                    // match, `None` every signal wait but approval/webhook gates. The
                     // shared `arm_signal_waits_under_lease` runs under THIS loop's
                     // own lease (it is the sole writer of its own row), preserving
                     // the own-the-lease-before-RMW invariant.
