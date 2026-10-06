@@ -214,6 +214,74 @@ fn native_nullable_array_enum_and_recursive_roots_validate_exactly() {
     );
 }
 
+fn six() -> u32 {
+    6
+}
+
+fn seven() -> u32 {
+    7
+}
+
+fn some_text() -> Option<String> {
+    Some("text".to_owned())
+}
+
+fn one_item() -> Vec<u32> {
+    vec![1]
+}
+
+#[derive(Schema, serde::Deserialize)]
+struct AgreeingDefault {
+    #[field(default = 7)]
+    #[serde(default = "seven")]
+    value: u32,
+}
+
+#[derive(Schema, serde::Deserialize)]
+struct DisagreeingDefault {
+    #[field(default = 7)]
+    #[serde(default = "six")]
+    value: u32,
+}
+
+#[derive(Schema, serde::Deserialize)]
+struct DisagreeingNullDefault {
+    #[property(input(default = null))]
+    #[serde(default = "some_text")]
+    value: Option<String>,
+}
+
+#[derive(PropertyType, serde::Deserialize)]
+struct DisagreeingEmptyDefault {
+    #[property(input(default = []))]
+    #[serde(default = "one_item")]
+    values: Vec<u32>,
+}
+
+#[test]
+fn serde_default_provider_must_yield_the_literal_schema_default() {
+    AgreeingDefault::definition(SchemaDirection::Input).unwrap();
+    let decoded: AgreeingDefault = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(decoded.value, 7);
+    for report in [
+        DisagreeingDefault::definition(SchemaDirection::Input).unwrap_err(),
+        DisagreeingNullDefault::definition(SchemaDirection::Input).unwrap_err(),
+        DisagreeingEmptyDefault::definition(SchemaDirection::Input).unwrap_err(),
+    ] {
+        assert!(
+            report
+                .errors()
+                .any(|error| error.code() == "schema.codec.default_mismatch"),
+            "{report:?}"
+        );
+    }
+    // The outbound graph carries no input default and needs no agreement.
+    DisagreeingDefault::definition(SchemaDirection::Output).unwrap();
+    let _ = serde_json::from_value::<DisagreeingDefault>(json!({})).map(|value| value.value);
+    let _ = serde_json::from_value::<DisagreeingNullDefault>(json!({})).map(|value| value.value);
+    let _ = serde_json::from_value::<DisagreeingEmptyDefault>(json!({})).map(|value| value.values);
+}
+
 #[test]
 fn variant_rename_all_renames_struct_payload_fields_like_serde() {
     let input = nebula_schema::InputContract::for_type::<VariantRenamed>().unwrap();

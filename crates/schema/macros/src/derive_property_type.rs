@@ -392,7 +392,7 @@ fn record(
         let ty = &field.ty;
         let output_present_type = crate::codec_attrs::output_present_type(&projection, ty)?;
         let optional = crate::type_infer::classify(ty).is_optional();
-        let input_presence = if validate.required || !(optional || projection.default) {
+        let input_presence = if validate.required || !(optional || projection.default.is_some()) {
             "required"
         } else {
             "optional"
@@ -409,6 +409,7 @@ fn record(
             &validate,
             &input_key,
             validate_secret_input,
+            projection.default.as_ref(),
         )?;
         let omission_check = output_present_type.map(|inner| {
             quote! {
@@ -501,6 +502,7 @@ fn property_facets(
     validation: &ValidateAttrs,
     key: &str,
     validate_secret_input: bool,
+    default_provider: Option<&syn::Path>,
 ) -> syn::Result<TokenStream> {
     let schema = crate::crate_path();
     let kind = crate::type_infer::classify(&field.ty);
@@ -529,6 +531,29 @@ fn property_facets(
         validate_secret_input,
     )?;
     let field_type = &field.ty;
+    // A serde provider is the codec's default; the literal is the schema's.
+    // Admission refuses the graph unless the provider yields the literal.
+    let agreement = default_provider.map(|provider| {
+        let disagrees = match attributes.default {
+            Some(crate::attrs::DefaultLit::Null) => quote!(__provided.is_some()),
+            Some(crate::attrs::DefaultLit::EmptyArray) if kind.is_optional() => {
+                quote!(!__provided.as_ref().is_some_and(|__items| __items.is_empty()))
+            },
+            Some(crate::attrs::DefaultLit::EmptyArray) => quote!(!__provided.is_empty()),
+            _ => quote!(__provided != __default),
+        };
+        quote! {
+            let __provided: #field_type = #provider();
+            if #disagrees {
+                return ::core::result::Result::Err(
+                    #schema::ValidationError::builder("schema.codec.default_mismatch")
+                        .message("the serde default provider disagrees with the literal schema default")
+                        .build()
+                        .into(),
+                );
+            }
+        }
+    });
     let projected_default = match if attributes.enum_select {
         None
     } else {
@@ -548,6 +573,7 @@ fn property_facets(
             quote! {
                 if __builder.direction() == #schema::SchemaDirection::Input {
                     let __default: #field_type = #value;
+                    #agreement
                     let _ = __default;
                     __property["input_default"] = #json;
                 }
@@ -556,6 +582,7 @@ fn property_facets(
         Some(value) => quote! {
             if __builder.direction() == #schema::SchemaDirection::Input {
                 let __default: #field_type = #value;
+                #agreement
                 __property["input_default"] = #schema::__private::serde_json::to_value(__default)
                     .map_err(|_| #schema::ValidationError::builder("schema.codec.default_encoding").build())?;
             }

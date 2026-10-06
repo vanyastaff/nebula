@@ -15,7 +15,9 @@ pub(crate) struct CodecAttrs {
     pub skip_input: bool,
     pub skip_output: bool,
     pub optional_output: bool,
-    pub default: bool,
+    /// Serde's named default provider; only admitted beside a literal schema
+    /// default, whose agreement the generated graph checks.
+    pub default: Option<syn::Path>,
     pub transparent: bool,
     pub deny_unknown: bool,
     pub tag: Option<String>,
@@ -128,8 +130,12 @@ impl CodecAttrs {
                         output.optional_output = true;
                     },
                     ("default", Meta::NameValue(value)) if projected_default => {
-                        let _: syn::Path = syn::parse_str(&string(&value.value)?)?;
-                        output.default = true;
+                        let mut provider: syn::Path = syn::parse_str(&string(&value.value)?)?;
+                        // Errors about the provider point at the authored attribute.
+                        for segment in &mut provider.segments {
+                            segment.ident.set_span(value.value.span());
+                        }
+                        output.default = Some(provider);
                     },
                     ("default", _) => {
                         return Err(syn::Error::new_spanned(
