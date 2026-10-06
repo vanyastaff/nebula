@@ -444,7 +444,7 @@ pub struct ReleaseQueue {
     /// (double-`Full` saturation). A non-zero value means the queue is
     /// saturated badly enough that `try_send` to both primary and fallback
     /// failed — operators should investigate worker capacity.
-    rescued_count: Arc<AtomicUsize>,
+    rescued_count: AtomicUsize,
     identity: Arc<()>,
     reentrant_tx: mpsc::Sender<QueuedTask>,
     reentrant_capacity: Arc<Semaphore>,
@@ -566,7 +566,7 @@ impl ReleaseQueue {
             admission: Arc::clone(&admission),
             fallback_count: AtomicUsize::new(0),
             dropped_count,
-            rescued_count: Arc::new(AtomicUsize::new(0)),
+            rescued_count: AtomicUsize::new(0),
             identity,
             reentrant_tx,
             reentrant_capacity: Arc::new(Semaphore::new(REENTRANT_CAPACITY)),
