@@ -40,8 +40,17 @@ use super::{
     metrics::RefreshCoordMetrics,
 };
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "staged landing (#998 link d): the K3 command runtime (link e) dispatches through it"
+    )
+)]
+mod circuit;
 mod config;
 
+pub(crate) use circuit::RefreshDispatchCircuit;
 pub use config::{ConfigError, RefreshCoordConfig};
 mod errors;
 mod lease;
@@ -978,6 +987,32 @@ impl RefreshCoordinator {
     /// Report whether the resolver-owned per-credential circuit is open.
     pub(crate) fn is_circuit_open(&self, credential_id: &str) -> bool {
         self.l1.is_circuit_open(credential_id)
+    }
+
+    /// Bind the local transport circuit to one exact tenant-qualified selector.
+    ///
+    /// The key is length-prefixed so no owner/credential pair can alias
+    /// another tenant's circuit.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "staged landing (#998 link d): the K3 command runtime (link e) is the caller"
+        )
+    )]
+    pub(crate) fn dispatch_circuit(
+        &self,
+        selector: &CredentialSelector,
+        min_retry_backoff: Duration,
+    ) -> RefreshDispatchCircuit {
+        let owner = selector.owner().as_str();
+        let key = format!("{}:{owner}:{}", owner.len(), selector.credential_id());
+        RefreshDispatchCircuit::new(
+            self.l1.clone(),
+            key,
+            min_retry_backoff,
+            self.metrics.circuit.clone(),
+        )
     }
 }
 

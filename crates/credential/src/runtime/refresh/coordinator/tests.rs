@@ -1673,3 +1673,42 @@ async fn definite_post_provider_failure_also_blocks_immediate_replay() {
     );
     assert_eq!(coordinator.l1.in_flight_count(), 0);
 }
+
+#[test]
+fn dispatch_circuits_are_isolated_per_tenant_qualified_selector() {
+    let coordinator = coordinator(
+        Arc::new(ScriptedClaimRepo::new()),
+        RefreshCoordConfig::default(),
+    );
+    let credential_id = CredentialId::new();
+    let tenant_a =
+        CredentialSelector::new(CredentialOwner::from_canonical("tenant-a"), credential_id);
+    let tenant_b =
+        CredentialSelector::new(CredentialOwner::from_canonical("tenant-b"), credential_id);
+    for _ in 0..5 {
+        let circuit = coordinator.dispatch_circuit(&tenant_a, Duration::from_secs(1));
+        circuit
+            .check_before_dispatch()
+            .expect("closed circuit admits");
+        circuit.provider_started();
+        circuit.record_failure();
+    }
+    let refusal = coordinator
+        .dispatch_circuit(&tenant_a, Duration::from_secs(1))
+        .check_before_dispatch()
+        .expect_err("tenant A's circuit is open");
+    assert!(matches!(
+        refusal.retry(),
+        crate::RetryAdvice::After(delay) if delay.get() > Duration::from_secs(1)
+    ));
+    coordinator
+        .dispatch_circuit(&tenant_b, Duration::from_secs(1))
+        .check_before_dispatch()
+        .expect("same credential id under another owner has its own circuit");
+    assert!(
+        !coordinator.is_circuit_open(&credential_id.to_string()),
+        "the dispatch key never aliases the bare credential-id circuit"
+    );
+    assert_eq!(coordinator.metrics().circuit.open.get(), 1);
+    assert_eq!(coordinator.metrics().circuit.transport_failure.get(), 5);
+}

@@ -44,6 +44,12 @@ field was renamed.
   for the criterion benches without putting them on the documented surface.
   The crate's own integration effects (server/worker drains, engine limiter
   sharing) are recorded in the repository CHANGELOG.
+- `CircuitBreaker::try_admit` / `record_admitted_outcome` with an epoch-bound
+  `circuit_breaker::Admission`: an outcome reported after the breaker changed
+  state is discarded, so a late closed-state result cannot settle or free a
+  half-open probe it never owned.
+- `CircuitBreaker::remaining_open_duration`, a non-mutating read of the open
+  cooldown left.
 
 ### Changed
 
