@@ -22,7 +22,7 @@
 //! 9. `complete_password_reset` (consume reset token, change password,
 //!    revoke sibling reset tokens, bump version).
 //! 10. `authenticate_password` with the new password succeeds.
-//! 11. `start_oauth` persists a `plane_a_oauth_states` row.
+//! 11. `start_oauth` persists an `oauth_states` row.
 //! 12. `complete_oauth` consumes the state atomically; a redirect mismatch
 //!     fails before egress and a second callback surfaces `InvalidToken`
 //!     (replay defence).
@@ -103,7 +103,7 @@ async fn pool() -> Pool<Postgres> {
 }
 
 /// Generate a unique-per-run email so re-runs against a persistent
-/// Postgres do not collide on the `idx_users_email_active` unique index.
+/// Postgres do not collide on the `uq_users__active_email` unique index.
 fn unique_email(label: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()

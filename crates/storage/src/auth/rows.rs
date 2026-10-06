@@ -238,7 +238,7 @@ pub struct VerificationTokenRow {
     pub consumed_at: Option<DateTime<Utc>>,
 }
 
-/// Table: `plane_a_oauth_states`
+/// Table: `oauth_states`
 ///
 /// Server-side PKCE state for Plane-A (sign-in-with-OAuth). Each row
 /// holds the `code_verifier` minted by `start_oauth`; the matching

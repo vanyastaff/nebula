@@ -1198,6 +1198,12 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
+    /// Heads 0065 onward are transition migrations of the database standard
+    /// (ADR-005): each replaces one aggregate's tables with standard ones and
+    /// preserves no rows. No deployed database exists to carry forward; the
+    /// series is squashed into the baseline when the last aggregate lands.
+    /// 0065: identity.
+    ///
     /// Head 0064, on both backends, adds the execution listing projection
     /// (`started_at`, `finished_at`, `created_at_us`), backfills it and
     /// `status` from each execution row's own persisted state, and replaces

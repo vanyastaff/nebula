@@ -1,7 +1,7 @@
 //! Postgres implementation of [`OAuthStateRepo`].
 //!
-//! Schema: migration `0028_plane_a_oauth_state.sql`
-//! (`plane_a_oauth_states` table). Holds Plane-A sign-in-with-OAuth
+//! Schema: the `oauth_states` table of the identity migration. Holds Plane-A
+//! sign-in-with-OAuth
 //! PKCE state \u2014 distinct from the Plane-B credential OAuth pending
 //! surface (`pending_credentials`).
 //!
@@ -90,7 +90,7 @@ async fn rollback_after_failure(
     }
 }
 
-// Column order must match every `SELECT ... FROM plane_a_oauth_states`
+// Column order must match every `SELECT ... FROM oauth_states`
 // and every `RETURNING ...` in this file.
 type StateTuple = (
     String,                                // state
@@ -153,7 +153,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
 
         let admission = async {
             sqlx::query(
-                "DELETE FROM plane_a_oauth_states \
+                "DELETE FROM oauth_states \
                  WHERE expires_at <= statement_timestamp()",
             )
             .execute(&mut *transaction)
@@ -162,12 +162,12 @@ impl OAuthStateRepo for PgOAuthStateRepo {
 
             let capacity = i64::from(self.capacity);
             let inserted = sqlx::query(
-                "INSERT INTO plane_a_oauth_states \
+                "INSERT INTO oauth_states \
                  (state, provider, code_verifier, redirect_uri, created_at, expires_at, consumed_at) \
                  SELECT $1, $2, $3, $4, $5, $6, NULL \
                  WHERE ( \
                      SELECT COUNT(*) FROM ( \
-                         SELECT 1 FROM plane_a_oauth_states \
+                         SELECT 1 FROM oauth_states \
                          WHERE consumed_at IS NULL \
                            AND expires_at > statement_timestamp() \
                          LIMIT $7 \
@@ -210,7 +210,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
         // Single-statement atomicity: the UPDATE only matches an
         // unconsumed, unexpired row; the replay/race loser sees None.
         let sql = format!(
-            "UPDATE plane_a_oauth_states SET consumed_at = NOW() \
+            "UPDATE oauth_states SET consumed_at = NOW() \
              WHERE state = $1 AND consumed_at IS NULL AND expires_at > NOW() \
              RETURNING {SELECT_COLS}"
         );
@@ -235,7 +235,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
         // providers does not match and is NOT consumed. The valid
         // callback at the correct provider can still succeed.
         let sql = format!(
-            "UPDATE plane_a_oauth_states SET consumed_at = NOW() \
+            "UPDATE oauth_states SET consumed_at = NOW() \
              WHERE state = $1 AND provider = $2 \
                AND consumed_at IS NULL AND expires_at > NOW() \
              RETURNING {SELECT_COLS}"
@@ -251,7 +251,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn cleanup_expired(&self) -> Result<u64, StorageError> {
-        let result = sqlx::query("DELETE FROM plane_a_oauth_states WHERE expires_at <= NOW()")
+        let result = sqlx::query("DELETE FROM oauth_states WHERE expires_at <= NOW()")
             .execute(&self.pool)
             .await
             .map_err(|e| storage_error_for("plane_a_oauth_state", e))?;
@@ -261,7 +261,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
     #[tracing::instrument(level = "debug", skip(self, state))]
     async fn get_by_state(&self, state: &str) -> Result<Option<OAuthStateRow>, StorageError> {
         debug_assert!(!state.is_empty(), "state value must not be empty");
-        let sql = format!("SELECT {SELECT_COLS} FROM plane_a_oauth_states WHERE state = $1");
+        let sql = format!("SELECT {SELECT_COLS} FROM oauth_states WHERE state = $1");
         let row = sqlx::query_as::<_, StateTuple>(sqlx::AssertSqlSafe(sql))
             .bind(state)
             .fetch_optional(&self.pool)
@@ -365,7 +365,7 @@ mod tests {
                 .await
                 .expect("connect second isolated pool");
             sqlx::query(
-                "CREATE TABLE plane_a_oauth_states (\
+                "CREATE TABLE oauth_states (\
                     state TEXT PRIMARY KEY, \
                     provider TEXT NOT NULL, \
                     code_verifier TEXT NOT NULL, \
@@ -407,7 +407,7 @@ mod tests {
 
     async fn insert_unchecked(pool: &Pool<Postgres>, state: &OAuthStateRow) {
         sqlx::query(
-            "INSERT INTO plane_a_oauth_states \
+            "INSERT INTO oauth_states \
              (state, provider, code_verifier, redirect_uri, created_at, expires_at, consumed_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
@@ -425,7 +425,7 @@ mod tests {
 
     async fn active_count(pool: &Pool<Postgres>) -> i64 {
         sqlx::query_scalar(
-            "SELECT COUNT(*) FROM plane_a_oauth_states \
+            "SELECT COUNT(*) FROM oauth_states \
              WHERE consumed_at IS NULL AND expires_at > statement_timestamp()",
         )
         .fetch_one(pool)
@@ -434,7 +434,7 @@ mod tests {
     }
 
     async fn total_count(pool: &Pool<Postgres>) -> i64 {
-        sqlx::query_scalar("SELECT COUNT(*) FROM plane_a_oauth_states")
+        sqlx::query_scalar("SELECT COUNT(*) FROM oauth_states")
             .fetch_one(pool)
             .await
             .expect("count all OAuth state rows")
@@ -619,7 +619,7 @@ mod tests {
         let Some(database) = TestDatabase::create().await else {
             return;
         };
-        sqlx::query("DROP TABLE plane_a_oauth_states")
+        sqlx::query("DROP TABLE oauth_states")
             .execute(&database.first_pool)
             .await
             .expect("remove table to force a post-lock SQL failure");

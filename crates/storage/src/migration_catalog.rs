@@ -9,7 +9,7 @@
 
 /// The newest migration whose setup admission has been reviewed. Setup tests
 /// fail until a new migration is acknowledged here.
-pub const REVIEWED_HEAD: i64 = 64;
+pub const REVIEWED_HEAD: i64 = 65;
 
 /// Versions present only in the PostgreSQL catalog. The SQLite catalog skips
 /// them, and a SQLite ledger that records one is rejected.

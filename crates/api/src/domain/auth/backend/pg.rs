@@ -7,12 +7,11 @@
 //!
 //! ## Storage layout
 //!
-//! - `users` (`0001_users.sql`) — backed by `PgUserRepo`.
-//! - `sessions`, `personal_access_tokens`, `verification_tokens`
-//!   (`0002_user_auth.sql`) — backed by `PgSessionRepo`,
-//!   `PgPatRepo`, `PgVerificationTokenRepo`.
-//! - `plane_a_oauth_states` (`0028_plane_a_oauth_state.sql`) — backed
-//!   by `PgOAuthStateRepo`.
+//! The identity migration's tables:
+//! - `users` — backed by `PgUserRepo`.
+//! - `sessions`, `personal_access_tokens`, `verification_tokens` — backed by
+//!   `PgSessionRepo`, `PgPatRepo`, `PgVerificationTokenRepo`.
+//! - `oauth_states` — backed by `PgOAuthStateRepo`.
 //!
 //! ## Encoding seams (deliberate divergences)
 //!

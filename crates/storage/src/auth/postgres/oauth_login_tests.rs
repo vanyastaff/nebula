@@ -493,7 +493,7 @@ async fn linked_mfa_user_without_a_secret_rolls_back_every_authority_artifact() 
         // finalizer refuses.
         without_users_check(
             &pool,
-            "chk_users_mfa_secret_envelope_bounds",
+            "ck_users__mfa_secret_envelope_length",
             "mfa_secret_envelope IS NULL OR octet_length(mfa_secret_envelope) BETWEEN 1 AND 4096",
             || async {
                 PgUserRepo::new(pool.clone())
@@ -598,7 +598,7 @@ async fn malformed_linked_user_id_is_rejected_before_session_commit() {
     user.email_verified_at = Some(Utc::now());
     without_users_check(
         &pool,
-        "chk_users_identity_id_length",
+        "ck_users__id_length",
         "octet_length(id) = 16",
         || async {
             PgUserRepo::new(pool.clone())
