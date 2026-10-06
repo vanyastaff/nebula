@@ -5,6 +5,8 @@
 //! The codes in `STANDARD_CODES` map to codes produced by two layers:
 //! - `ValidSchema::validate` (proof-token pipeline)
 //! - `SchemaBuilder::build` (lint/build time via `lint_tree`)
+//! - directional graph contracts (`InputContract`, output admission, derived
+//!   codec definitions), whose tests also assert `STANDARD_CODES` membership
 //!
 //! Rule-failure codes flow through from `nebula-validator` verbatim — the
 //! schema crate performs no namespace remap. So a too-short string surfaces
@@ -30,8 +32,9 @@
 //! - `"loader.missing_config"` — `load_select_options_without_loader_emits_missing_config`.
 
 use nebula_schema::{
-    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, FieldKey, Property, Schema,
-    ValidationError, ValidationReport, field_key,
+    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, FieldKey, InputContract,
+    Property, STANDARD_CODES, Schema, SchemaGraphDocument, SecretValue, ValidationError,
+    ValidationReport, ValuePath, ValueTree, field_key,
 };
 use serde_json::json;
 
@@ -838,4 +841,156 @@ fn emits_rule_incompatible_warning() {
             .map(ValidationError::code)
             .collect::<Vec<_>>()
     );
+}
+
+// ── Directional contract and graph runtime codes ────────────────────────────
+
+fn graph_contract(root: serde_json::Value, definitions: serde_json::Value) -> InputContract {
+    let graph = serde_json::from_value::<SchemaGraphDocument>(
+        json!({"version":3,"root":root,"definitions":definitions}),
+    )
+    .unwrap()
+    .admit()
+    .unwrap();
+    InputContract::from_graph(&graph).unwrap()
+}
+
+fn text_contract(use_site: serde_json::Value) -> InputContract {
+    graph_contract(use_site, json!([{"key":"text","body":{"kind":"string"}}]))
+}
+
+/// The emitted code is both present and registered as a standard code.
+fn assert_standard(report: &ValidationReport, code: &str) {
+    assert!(has_code(report, code), "expected `{code}` in {report:?}");
+    assert!(
+        STANDARD_CODES.contains(&code),
+        "`{code}` is emitted but missing from STANDARD_CODES"
+    );
+}
+
+#[test]
+fn emits_graph_value_admission_codes() {
+    let report = text_contract(json!({"target":"text","null":"reject"}))
+        .validate_data(json!(null))
+        .unwrap_err();
+    assert_standard(&report, "value.null_rejected");
+    let report = text_contract(json!({"target":"text","null":"reject","empty_string":"reject"}))
+        .validate_data(json!(""))
+        .unwrap_err();
+    assert_standard(&report, "value.empty_rejected");
+    let array = |body: serde_json::Value| {
+        graph_contract(
+            json!({"target":"array","null":"reject"}),
+            json!([{"key":"array","body":body},{"key":"text","body":{"kind":"string"}}]),
+        )
+    };
+    let report =
+        array(json!({"kind":"array","min_items":2,"element":{"target":"text","null":"reject"}}))
+            .validate_data(json!(["a"]))
+            .unwrap_err();
+    assert_standard(&report, "value.array_bounds");
+    let report =
+        array(json!({"kind":"array","unique":true,"element":{"target":"text","null":"reject"}}))
+            .validate_data(json!(["a", "a"]))
+            .unwrap_err();
+    assert_standard(&report, "value.array_unique");
+    let report = graph_contract(
+        json!({"target":"record","null":"reject"}),
+        json!([{"key":"record","body":{"kind":"record","properties":[],"additional_properties":"closed"}}]),
+    )
+    .validate_data(json!({"extra": 1}))
+    .unwrap_err();
+    assert_standard(&report, "value.undeclared");
+    let report = graph_contract(
+        json!({"target":"choice","null":"reject"}),
+        json!([{"key":"choice","body":{"kind":"union","tagging":{"adjacent":{"tag":"kind","content":"data"}},
+            "variants":[{"key":"none","payload":null}]}}]),
+    )
+    .validate_data(json!({}))
+    .unwrap_err();
+    assert_standard(&report, "union.malformed");
+    let report = text_contract(json!({"target":"text","null":"reject"}))
+        .validate(ValueTree::Secret(SecretValue::string("x".to_owned())))
+        .unwrap_err();
+    assert_standard(&report, "secret.undeclared");
+}
+
+#[test]
+fn emits_directional_custody_codes() {
+    let numbers = InputContract::for_type::<u32>().unwrap();
+    let other = InputContract::for_type::<u64>().unwrap();
+    let error = numbers
+        .validate_data(json!(7))
+        .unwrap()
+        .into_typed::<u64>(&other)
+        .unwrap_err();
+    assert_standard(&error.into(), "schema.input.contract_mismatch");
+    let report = numbers.record().readmit_output().unwrap_err();
+    assert_standard(&report, "schema.contract.evidence_mismatch");
+    let record = graph_contract(
+        json!({"target":"record","null":"reject"}),
+        json!([
+            {"key":"record","body":{"kind":"record","properties":[
+                {"key":"value","target":"text","presence":"optional","null":"reject","expression":"allowed"}
+            ],"additional_properties":"closed"}},
+            {"key":"text","body":{"kind":"string"}}
+        ]),
+    );
+    let report = record
+        .validate_symbolic(
+            AuthoredValue::from_data(json!({})).unwrap(),
+            &[ValuePath::single("missing")],
+        )
+        .unwrap_err();
+    assert_standard(&report, "schema.reference.undeclared");
+    let report = record
+        .validate_symbolic(
+            AuthoredValue::from_data(json!({})).unwrap(),
+            &[ValuePath::single("value")],
+        )
+        .unwrap()
+        .resolve_data()
+        .unwrap_err();
+    assert_standard(&report, "validation.symbolic_input");
+}
+
+#[test]
+fn emits_output_admission_codes() {
+    let protected = Schema::builder()
+        .property(Property::secret(field_key!("token")))
+        .build()
+        .unwrap();
+    let report = protected.validate_output_data(json!({})).unwrap_err();
+    assert_standard(&report, "schema.output.protected_domain");
+    let renamed = Schema::builder()
+        .property(
+            Property::string(field_key!("name"))
+                .emit_as("wire_name")
+                .unwrap(),
+        )
+        .build()
+        .unwrap();
+    let report = renamed
+        .validate_output_data(json!({"name": "ok"}))
+        .unwrap_err();
+    assert_standard(&report, "schema.output.unprojected_key");
+}
+
+fn six() -> u32 {
+    6
+}
+
+#[derive(nebula_schema::Schema, serde::Deserialize)]
+struct MismatchedDefault {
+    #[field(default = 7)]
+    #[serde(default = "six")]
+    value: u32,
+}
+
+#[test]
+fn emits_codec_default_mismatch() {
+    use nebula_schema::{PropertyType, SchemaDirection};
+    let report = MismatchedDefault::definition(SchemaDirection::Input).unwrap_err();
+    assert_standard(&report, "schema.codec.default_mismatch");
+    let _ = serde_json::from_value::<MismatchedDefault>(json!({})).map(|value| value.value);
 }
