@@ -26,6 +26,9 @@
 //! there is no wall-clock-flakiness window. Lease TTLs that gate crash recovery
 //! likewise use the in-mem store's clamp floor (1s) under real time.
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -266,20 +269,20 @@ impl WtStores {
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 
     async fn persist_created_execution(&self, workflow_id: nebula_core::WorkflowId) -> ExecutionId {
@@ -2038,20 +2041,20 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
     // Persist + save the workflow through the same scope the engine reads.
     let scope = nebula_engine::store_seam::single_tenant_scope();
     let wf = make_workflow(/* with_error_port */ true, timeout);
-    versions
-        .create(
-            &scope,
-            WorkflowVersionRecord {
-                activation: None,
-                workflow_id: wf.id.to_string(),
-                number: 0,
-                published: true,
-                pinned: false,
-                definition: serde_json::to_value(&wf).unwrap(),
-            },
-        )
-        .await
-        .unwrap();
+    workflow_fixture::save_version(
+        &versions,
+        &scope,
+        WorkflowVersionRecord {
+            activation: None,
+            workflow_id: wf.id.to_string(),
+            number: 0,
+            published: true,
+            pinned: false,
+            definition: serde_json::to_value(&wf).unwrap(),
+        },
+    )
+    .await
+    .unwrap();
     let execution_id = ExecutionId::new();
     {
         let mut exec_state = ExecutionState::new(execution_id, wf.id, &[]);

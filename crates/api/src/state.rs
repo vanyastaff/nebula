@@ -798,7 +798,6 @@ impl AppState {
                 scope: scope.clone(),
                 version: row_version,
                 slug: id_str.clone(),
-                deleted: false,
             },
             WorkflowVersionRecord {
                 activation: None,

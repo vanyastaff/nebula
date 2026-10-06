@@ -409,7 +409,6 @@ impl Fixture {
                     scope: scope.clone(),
                     version: 1,
                     slug: "start-fixture".into(),
-                    deleted: false,
                 },
             )
             .await

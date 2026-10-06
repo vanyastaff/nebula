@@ -345,6 +345,19 @@ async fn save_echo_workflow_scoped(stores: &TestStores, scope: &Scope) -> Arc<Va
     };
     let validated =
         ValidatedWorkflow::validate(def).expect("echo workflow definition must pass validation");
+    // Revision 1 of the row is what activation later advances.
+    nebula_storage_port::store::WorkflowStore::create(
+        stores.workflow.as_ref(),
+        scope,
+        nebula_storage_port::dto::WorkflowRecord {
+            id: validated.definition().id.to_string(),
+            scope: scope.clone(),
+            version: 1,
+            slug: "exact-control".into(),
+        },
+    )
+    .await
+    .expect("create workflow row");
     stores
         .versions
         .create(
@@ -582,7 +595,7 @@ async fn worker_runtime_does_not_poll_the_technical_job_queue() {
 
 #[tokio::test(start_paused = true)]
 async fn control_start_waits_for_worker_with_retained_exact_flavor() {
-    use nebula_storage_port::store::{ControlQueue, WorkflowStore};
+    use nebula_storage_port::store::ControlQueue;
     fn scope() -> Scope {
         static SCOPE: OnceLock<Scope> = OnceLock::new();
         SCOPE
@@ -597,20 +610,6 @@ async fn control_start_waits_for_worker_with_retained_exact_flavor() {
     let stores = TestStores::new();
     let workflow = save_echo_workflow_scoped(&stores, &scope()).await;
     let workflow_id = workflow.definition().id;
-    stores
-        .workflow
-        .create(
-            &scope(),
-            nebula_storage_port::dto::WorkflowRecord {
-                id: workflow_id.to_string(),
-                scope: scope(),
-                version: 1,
-                slug: "exact-control".into(),
-                deleted: false,
-            },
-        )
-        .await
-        .unwrap();
     let registry = Arc::new(frozen_fixture(
         &[TEST_PLUGIN_KEY.parse().unwrap()],
         Arc::new(AtomicU32::new(0)),

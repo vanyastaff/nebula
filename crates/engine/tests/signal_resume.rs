@@ -20,6 +20,9 @@
 //! frontier loop synchronously to completion (park or terminal).  No wall-clock
 //! sleeps are needed — assertions follow immediately after the dispatch call.
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::HashMap,
     sync::{
@@ -48,7 +51,7 @@ use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
     FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
     dto::{ExecutionRecord, WorkflowVersionRecord},
-    store::{ExecutionStore, WorkflowVersionStore},
+    store::ExecutionStore,
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
@@ -282,20 +285,20 @@ impl SignalStores {
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 }
 

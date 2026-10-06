@@ -226,7 +226,6 @@ async fn activate_set_fields_workflow(stores: &TestStores) -> WorkflowId {
                 scope: scope(),
                 version: 0,
                 slug: "smoke-set-fields".into(),
-                deleted: false,
             },
         )
         .await

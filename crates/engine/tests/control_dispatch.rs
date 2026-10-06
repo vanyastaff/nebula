@@ -8,6 +8,9 @@
 //! Running → Cancelled) and the idempotency contract
 //! (re-delivery does not re-run or double-signal).
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::HashMap,
     sync::{
@@ -94,20 +97,20 @@ impl DispatchStores {
 
     /// Persist a workflow definition as published version 0.
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    activation: None,
-                    definition: serde_json::to_value(wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                activation: None,
+                definition: serde_json::to_value(wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 }
 

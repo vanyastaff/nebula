@@ -349,6 +349,20 @@ async fn save_echo_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
     };
     let validated =
         ValidatedWorkflow::validate(def).expect("echo workflow definition must pass validation");
+    // Revision 1 of the row is what activation later advances.
+    stores
+        .workflow
+        .create(
+            &scope(),
+            nebula_storage_port::dto::WorkflowRecord {
+                id: validated.definition().id.to_string(),
+                scope: scope(),
+                version: 1,
+                slug: "trigger-fixture".into(),
+            },
+        )
+        .await
+        .expect("create workflow row");
     stores
         .versions
         .create(
@@ -584,20 +598,6 @@ async fn activated_start_service(
         let _ = make_engine(stores).await;
     }
     let registry = Arc::clone(stores.frozen.get().unwrap());
-    stores
-        .workflow
-        .create(
-            &scope(),
-            nebula_storage_port::dto::WorkflowRecord {
-                id: workflow.definition().id.to_string(),
-                scope: scope(),
-                version: 1,
-                slug: "trigger-fixture".into(),
-                deleted: false,
-            },
-        )
-        .await
-        .unwrap();
     nebula_engine::WorkflowActivationService::new(
         stores.workflow.clone(),
         stores.versions.clone(),

@@ -1,13 +1,13 @@
 //! In-memory `WorkflowStore` + `WorkflowVersionStore`.
 //!
-//! Spec-16 splits the workflow aggregate (the workflow row: id / slug /
-//! soft-delete / CAS version) from its versions (each carrying the opaque
-//! definition payload). Both are `parking_lot::Mutex`-guarded maps keyed
-//! with the tenant scope folded in, so a cross-tenant `get` returns
-//! `Ok(None)` exactly as the SQL backends' `WHERE workspace_id = ? AND
-//! org_id = ?` predicate would — an id that is not in the caller's scope
-//! is indistinguishable from one that does not exist (no existence
-//! oracle).
+//! The workflow row (id / slug / soft delete / CAS version) and its versions
+//! (each carrying the opaque definition payload) live in one
+//! `parking_lot::Mutex`-guarded state shared by both stores, so a version
+//! needs its workflow and a save writes the row and the version atomically —
+//! the relational contract of `workflows` / `workflow_versions`. Keys fold
+//! the tenant scope in, so a cross-tenant `get` returns `Ok(None)` (no
+//! existence oracle). A soft-deleted workflow is invisible to every read and
+//! write.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,69 +17,173 @@ use nebula_storage_port::store::{WorkflowPublicationError, WorkflowStore, Workfl
 use nebula_storage_port::{Scope, StorageError};
 use parking_lot::Mutex;
 
-/// Workflow-row key: `(workspace_id, org_id, workflow_id)`.
-type WfKey = (String, String, String);
+/// Workflow-row key: `(org_id, workspace_id, workflow_id)`.
+type WorkflowKey = (String, String, String);
 
-/// Workflow-version key: `(workspace_id, org_id, workflow_id, number)`.
-type WfVerKey = (String, String, String, u32);
+/// Workflow-version key: `(org_id, workspace_id, workflow_id, number)`.
+type VersionKey = (String, String, String, u32);
 
-fn wf_key(scope: &Scope, id: &str) -> WfKey {
+fn workflow_key(scope: &Scope, id: &str) -> WorkflowKey {
     (
-        scope.workspace_id.clone(),
         scope.org_id.clone(),
-        id.to_string(),
+        scope.workspace_id.clone(),
+        id.to_owned(),
     )
 }
 
-fn wf_ver_key(scope: &Scope, workflow_id: &str, number: u32) -> WfVerKey {
+fn version_key(scope: &Scope, workflow_id: &str, number: u32) -> VersionKey {
     (
-        scope.workspace_id.clone(),
         scope.org_id.clone(),
-        workflow_id.to_string(),
+        scope.workspace_id.clone(),
+        workflow_id.to_owned(),
         number,
     )
 }
 
-/// Shared workflow-version map handle. The version store owns this map;
-/// [`InMemoryWorkflowStore`] holds a clone of the same `Arc` so
-/// [`WorkflowStore::save_with_published_version`] can mutate the row map
-/// **and** the version map inside one critical section (both-or-neither),
-/// mirroring how [`super::InMemoryControlQueue`] / journal reader build
-/// over the shared [`super::InMemoryExecutionStore`] core.
-type SharedVersions = Arc<Mutex<HashMap<WfVerKey, WorkflowVersionRecord>>>;
+#[derive(Debug)]
+struct StoredWorkflow {
+    record: WorkflowRecord,
+    deleted: bool,
+}
+
+#[derive(Debug, Default)]
+struct WorkflowState {
+    rows: HashMap<WorkflowKey, StoredWorkflow>,
+    versions: HashMap<VersionKey, WorkflowVersionRecord>,
+}
+
+impl WorkflowState {
+    fn live(&self, scope: &Scope, id: &str) -> Option<&WorkflowRecord> {
+        self.rows
+            .get(&workflow_key(scope, id))
+            .filter(|stored| !stored.deleted)
+            .map(|stored| &stored.record)
+    }
+
+    fn live_in_scope<'a>(&'a self, scope: &'a Scope) -> impl Iterator<Item = &'a WorkflowRecord> {
+        self.rows
+            .iter()
+            .filter(move |((org, workspace, _), stored)| {
+                org == &scope.org_id && workspace == &scope.workspace_id && !stored.deleted
+            })
+            .map(|(_, stored)| &stored.record)
+    }
+
+    fn insert_workflow(&mut self, scope: &Scope, row: WorkflowRecord) -> Result<(), StorageError> {
+        let key = workflow_key(scope, &row.id);
+        if self.rows.contains_key(&key) {
+            return Err(duplicate("workflow", "id"));
+        }
+        if self.live_in_scope(scope).any(|live| live.slug == row.slug) {
+            return Err(duplicate("workflow", "slug"));
+        }
+        self.rows.insert(
+            key,
+            StoredWorkflow {
+                record: row,
+                deleted: false,
+            },
+        );
+        Ok(())
+    }
+
+    /// Validate a CAS rewrite of a live row without applying it.
+    fn check_update(
+        &self,
+        scope: &Scope,
+        row: &WorkflowRecord,
+        expected_version: u64,
+    ) -> Result<(), StorageError> {
+        let Some(current) = self.live(scope, &row.id) else {
+            return Err(StorageError::not_found("workflow", row.id.clone()));
+        };
+        if current.version != expected_version {
+            return Err(StorageError::Conflict {
+                entity: "workflow",
+                id: row.id.clone(),
+                expected: expected_version,
+                actual: current.version,
+            });
+        }
+        if self
+            .live_in_scope(scope)
+            .any(|live| live.id != row.id && live.slug == row.slug)
+        {
+            return Err(duplicate("workflow", "slug"));
+        }
+        Ok(())
+    }
+
+    /// Validate a version append without applying it: the workflow row must
+    /// exist (`fk_workflow_versions__workflows`), the number and the
+    /// activation identity must be free.
+    fn check_version(
+        &self,
+        scope: &Scope,
+        version: &WorkflowVersionRecord,
+    ) -> Result<VersionKey, StorageError> {
+        if !self
+            .rows
+            .contains_key(&workflow_key(scope, &version.workflow_id))
+        {
+            return Err(StorageError::not_found(
+                "workflow",
+                version.workflow_id.clone(),
+            ));
+        }
+        let key = version_key(scope, &version.workflow_id, version.number);
+        if self.versions.contains_key(&key) {
+            return Err(duplicate("workflow_version", "number"));
+        }
+        if let Some(activation) = version.activation
+            && self.versions.values().any(|existing| {
+                existing.activation.is_some_and(|identity| {
+                    identity.workflow_version_id() == activation.workflow_version_id()
+                })
+            })
+        {
+            return Err(duplicate("workflow_version", "activation"));
+        }
+        Ok(key)
+    }
+}
+
+type SharedWorkflows = Arc<Mutex<WorkflowState>>;
+
+/// `Duplicate` naming only the entity and the colliding field — never its
+/// value.
+fn duplicate(entity: &'static str, field: &str) -> StorageError {
+    StorageError::Duplicate {
+        entity,
+        detail: format!("an active {entity} already has this {field}"),
+    }
+}
+
+fn require_unactivated(version: &WorkflowVersionRecord) -> Result<(), StorageError> {
+    if version.activation.is_some() {
+        return Err(StorageError::InvalidInput(
+            "activated versions require publication admission".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// In-memory workflow-row store.
 ///
-/// Constructed **only** from its paired [`InMemoryWorkflowVersionStore`]
-/// via [`Self::new_with_versions`], so the version map is *always* shared
-/// between the two. There is deliberately no parameterless constructor:
-/// [`WorkflowStore::save_with_published_version`] writes the published
-/// version into the `versions` field, and a private unshared map would make
-/// that write invisible to every `WorkflowVersionStore` reader (a
-/// just-created workflow would 404). This mirrors
-/// [`super::InMemoryControlQueue`] / [`super::InMemoryJournalReader`],
-/// which are likewise built *from* the shared [`super::InMemoryExecutionStore`]
-/// core and have no standalone constructor — sharing is structural, not a
-/// caller discipline.
+/// Constructed **only** from its paired [`InMemoryWorkflowVersionStore`] via
+/// [`Self::new_with_versions`], so both observe one state: a save writes the
+/// row and its version in one critical section, and the version store reads
+/// what the save wrote. Sharing is structural, not a caller discipline.
 #[derive(Debug, Clone)]
 pub struct InMemoryWorkflowStore {
     catalog: super::execution::SharedState,
-    inner: Arc<Mutex<HashMap<WfKey, WorkflowRecord>>>,
-    /// The *same* map the paired [`InMemoryWorkflowVersionStore`]
-    /// reads/writes (an `Arc` clone of its `inner`), so the atomic save
-    /// and the version-read path observe one state.
-    versions: SharedVersions,
+    inner: SharedWorkflows,
 }
 
 impl InMemoryWorkflowStore {
-    /// Create a workflow-row store that shares its version map with
-    /// `versions`, so [`WorkflowStore::save_with_published_version`]
-    /// commits the row and the version atomically and the paired
-    /// [`InMemoryWorkflowVersionStore`] observes the same data (the
-    /// composition-root wiring — mirrors
-    /// [`super::InMemoryControlQueue::new`] over a shared execution core).
-    /// `execution` supplies the shared revision catalog lock so activation
-    /// admission and publication linearize against drain/delete operations.
+    /// Create a workflow-row store over the state of `versions`. `execution`
+    /// supplies the shared revision catalog lock so activation admission and
+    /// publication linearize against drain/delete operations.
     #[must_use]
     pub fn new_with_versions(
         versions: &InMemoryWorkflowVersionStore,
@@ -87,8 +191,7 @@ impl InMemoryWorkflowStore {
     ) -> Self {
         Self {
             catalog: Arc::clone(&execution.inner),
-            inner: Arc::new(Mutex::new(HashMap::new())),
-            versions: Arc::clone(&versions.inner),
+            inner: Arc::clone(&versions.inner),
         }
     }
 }
@@ -109,32 +212,10 @@ impl WorkflowStore for InMemoryWorkflowStore {
             &version,
             expected_version,
         )?;
-        // Fixed lock order: catalog, workflows, versions. Drain takes catalog only.
+        // Fixed lock order: catalog, workflows. Drain takes catalog only.
         let catalog = self.catalog.lock();
-        let mut rows = self.inner.lock();
-        let mut versions = self.versions.lock();
-        let row_key = wf_key(scope, &row.id);
-        let current = rows
-            .get(&row_key)
-            .filter(|row| !row.deleted)
-            .ok_or_else(|| StorageError::not_found("workflow", row.id.clone()))?;
-        if current.version != expected_version {
-            return Err(StorageError::Conflict {
-                entity: "workflow",
-                id: row.id,
-                expected: expected_version,
-                actual: current.version,
-            }
-            .into());
-        }
-        let version_key = wf_ver_key(scope, &version.workflow_id, version.number);
-        if versions.contains_key(&version_key) {
-            return Err(StorageError::Duplicate {
-                entity: "workflow_version",
-                detail: "workflow version already exists".into(),
-            }
-            .into());
-        }
+        let mut state = self.inner.lock();
+        state.check_update(scope, &row, expected_version)?;
         super::plan_flavor_catalog::require_active_pair(
             &catalog.revision_catalog,
             activation.revisions(),
@@ -146,11 +227,13 @@ impl WorkflowStore for InMemoryWorkflowStore {
         )
         .map_err(|_| WorkflowPublicationError::RevisionNotAdmitted)?;
         crate::workflow_activation::validate_plan_identity(plan.plan_bytes(), &row.id, activation)?;
-        if versions
+        // A reused activation identity is a disagreeing publication.
+        if state
+            .versions
             .iter()
-            .any(|((workspace, org, workflow, _), existing)| {
-                workspace == &scope.workspace_id
-                    && org == &scope.org_id
+            .any(|((org, workspace, workflow, _), existing)| {
+                org == &scope.org_id
+                    && workspace == &scope.workspace_id
                     && workflow == &row.id
                     && existing.activation.is_some_and(|identity| {
                         identity.workflow_version_id() == activation.workflow_version_id()
@@ -159,29 +242,20 @@ impl WorkflowStore for InMemoryWorkflowStore {
         {
             return Err(WorkflowPublicationError::InvalidPublication);
         }
-        rows.insert(row_key, row);
-        versions.insert(version_key, version);
+        let key = state.check_version(scope, &version)?;
+        state.versions.insert(key, version);
+        if let Some(stored) = state.rows.get_mut(&workflow_key(scope, &row.id)) {
+            stored.record = row;
+        }
         Ok(())
     }
 
     async fn create(&self, scope: &Scope, record: WorkflowRecord) -> Result<(), StorageError> {
-        let key = wf_key(scope, &record.id);
-        let mut map = self.inner.lock();
-        if map.contains_key(&key) {
-            return Err(StorageError::Duplicate {
-                entity: "workflow",
-                detail: format!("workflow {} already exists", record.id),
-            });
-        }
-        map.insert(key, record);
-        Ok(())
+        self.inner.lock().insert_workflow(scope, record)
     }
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<WorkflowRecord>, StorageError> {
-        let map = self.inner.lock();
-        // A soft-deleted row is a miss for the read path (callers that
-        // need tombstones use `list` semantics on a future variant).
-        Ok(map.get(&wf_key(scope, id)).filter(|r| !r.deleted).cloned())
+        Ok(self.inner.lock().live(scope, id).cloned())
     }
 
     async fn get_by_slug(
@@ -189,13 +263,12 @@ impl WorkflowStore for InMemoryWorkflowStore {
         scope: &Scope,
         slug: &str,
     ) -> Result<Option<WorkflowRecord>, StorageError> {
-        let map = self.inner.lock();
-        Ok(map
-            .iter()
-            .find(|((ws, org, _), r)| {
-                ws == &scope.workspace_id && org == &scope.org_id && r.slug == slug && !r.deleted
-            })
-            .map(|(_, r)| r.clone()))
+        Ok(self
+            .inner
+            .lock()
+            .live_in_scope(scope)
+            .find(|row| row.slug == slug)
+            .cloned())
     }
 
     async fn update(
@@ -204,28 +277,11 @@ impl WorkflowStore for InMemoryWorkflowStore {
         record: WorkflowRecord,
         expected_version: u64,
     ) -> Result<(), StorageError> {
-        let key = wf_key(scope, &record.id);
-        let mut map = self.inner.lock();
-        // Read the current version out of the borrow so the error paths
-        // can move `record.id` without an extra clone. A soft-deleted row
-        // is invisible to `update` — the map keeps tombstones (only
-        // `get`/`list` filter them), so without the `!deleted` guard an
-        // `update` would resurrect a row `get`/`get_by_slug`/`list`
-        // already treat as gone. A tombstone ⇒ `NotFound`, matching the
-        // SQL backends' `WHERE … AND deleted = FALSE`.
-        let current_version = match map.get(&key) {
-            Some(current) if !current.deleted => current.version,
-            _ => return Err(StorageError::not_found("workflow", record.id)),
-        };
-        if current_version != expected_version {
-            return Err(StorageError::Conflict {
-                entity: "workflow",
-                id: record.id,
-                expected: expected_version,
-                actual: current_version,
-            });
+        let mut state = self.inner.lock();
+        state.check_update(scope, &record, expected_version)?;
+        if let Some(stored) = state.rows.get_mut(&workflow_key(scope, &record.id)) {
+            stored.record = record;
         }
-        map.insert(key, record);
         Ok(())
     }
 
@@ -236,122 +292,76 @@ impl WorkflowStore for InMemoryWorkflowStore {
         version: WorkflowVersionRecord,
         expected_version: Option<u64>,
     ) -> Result<(), StorageError> {
-        if version.activation.is_some() {
-            return Err(StorageError::Internal(
-                "activated versions require publication admission".into(),
-            ));
-        }
-        let row_key = wf_key(scope, &row.id);
-        let ver_key = wf_ver_key(scope, &version.workflow_id, version.number);
-        // Lock the row map and the version map together so the pair is
-        // applied (or rejected) as one unit — no orphan-row window. Lock
-        // order is fixed (rows then versions) and no other path takes
-        // both, so this cannot deadlock.
-        let mut rows = self.inner.lock();
-        let mut vers = self.versions.lock();
-
+        require_unactivated(&version)?;
+        // One critical section, validate both writes before applying either
+        // — no orphan-row window.
+        let mut state = self.inner.lock();
         match expected_version {
             None => {
-                // Create: the row must not exist and the version slot must
-                // be free. Validate both before mutating either.
-                if rows.contains_key(&row_key) {
-                    return Err(StorageError::Duplicate {
-                        entity: "workflow",
-                        detail: format!("workflow {} already exists", row.id),
-                    });
+                let row_key = workflow_key(scope, &row.id);
+                state.insert_workflow(scope, row)?;
+                match state.check_version(scope, &version) {
+                    Ok(key) => {
+                        state.versions.insert(key, version);
+                        Ok(())
+                    },
+                    Err(error) => {
+                        state.rows.remove(&row_key);
+                        Err(error)
+                    },
                 }
-                if vers.contains_key(&ver_key) {
-                    return Err(StorageError::Duplicate {
-                        entity: "workflow_version",
-                        detail: format!(
-                            "workflow {} version {} already exists",
-                            version.workflow_id, version.number
-                        ),
-                    });
-                }
-                rows.insert(row_key, row);
-                vers.insert(ver_key, version);
-                Ok(())
             },
             Some(expected) => {
-                // CAS update: the row must exist at `expected` and the new
-                // version slot must be free. Validate both before mutating.
-                let current_version = match rows.get(&row_key) {
-                    Some(current) => current.version,
-                    None => return Err(StorageError::not_found("workflow", row.id)),
-                };
-                if current_version != expected {
-                    return Err(StorageError::Conflict {
-                        entity: "workflow",
-                        id: row.id,
-                        expected,
-                        actual: current_version,
-                    });
+                state.check_update(scope, &row, expected)?;
+                let key = state.check_version(scope, &version)?;
+                state.versions.insert(key, version);
+                if let Some(stored) = state.rows.get_mut(&workflow_key(scope, &row.id)) {
+                    stored.record = row;
                 }
-                if vers.contains_key(&ver_key) {
-                    return Err(StorageError::Duplicate {
-                        entity: "workflow_version",
-                        detail: format!(
-                            "workflow {} version {} already exists",
-                            version.workflow_id, version.number
-                        ),
-                    });
-                }
-                rows.insert(row_key, row);
-                vers.insert(ver_key, version);
                 Ok(())
             },
         }
     }
 
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {
-        let mut map = self.inner.lock();
-        let Some(row) = map.get_mut(&wf_key(scope, id)) else {
-            return Err(StorageError::not_found("workflow", id));
-        };
-        row.deleted = true;
-        Ok(())
+        let mut state = self.inner.lock();
+        match state
+            .rows
+            .get_mut(&workflow_key(scope, id))
+            .filter(|stored| !stored.deleted)
+        {
+            Some(stored) => {
+                stored.deleted = true;
+                Ok(())
+            },
+            None => Err(StorageError::not_found("workflow", id)),
+        }
     }
 
     async fn list(&self, scope: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {
-        let map = self.inner.lock();
-        let mut rows: Vec<WorkflowRecord> = map
-            .iter()
-            .filter(|((ws, org, _), r)| {
-                ws == &scope.workspace_id && org == &scope.org_id && !r.deleted
-            })
-            .map(|(_, r)| r.clone())
-            .collect();
-        // Stable order by id so list output is deterministic across runs.
+        let state = self.inner.lock();
+        let mut rows: Vec<WorkflowRecord> = state.live_in_scope(scope).cloned().collect();
+        // Same order as the SQL backends' `ORDER BY id`.
         rows.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(rows)
     }
 
     async fn count(&self, scope: &Scope) -> Result<u64, StorageError> {
-        let map = self.inner.lock();
-        // Same active-in-scope predicate as `list`, counted without
-        // cloning the rows.
-        let n = map
-            .iter()
-            .filter(|((ws, org, _), r)| {
-                ws == &scope.workspace_id && org == &scope.org_id && !r.deleted
-            })
-            .count();
-        Ok(n as u64)
+        let n = self.inner.lock().live_in_scope(scope).count();
+        u64::try_from(n).map_err(|_| StorageError::Internal("workflow count overflows u64".into()))
     }
 
     async fn is_reachable(&self) -> Result<(), StorageError> {
-        // The in-memory store has no transport to fail — acquiring the
-        // lock is the only "round-trip" and is infallible here.
-        let _guard = self.inner.lock();
+        // No transport to fail — the in-memory store is always reachable.
         Ok(())
     }
 }
 
-/// In-memory workflow-version store.
+/// In-memory workflow-version store; owns the state its paired
+/// [`InMemoryWorkflowStore`] shares.
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryWorkflowVersionStore {
-    inner: Arc<Mutex<HashMap<WfVerKey, WorkflowVersionRecord>>>,
+    inner: SharedWorkflows,
 }
 
 impl InMemoryWorkflowVersionStore {
@@ -369,23 +379,10 @@ impl WorkflowVersionStore for InMemoryWorkflowVersionStore {
         scope: &Scope,
         record: WorkflowVersionRecord,
     ) -> Result<(), StorageError> {
-        if record.activation.is_some() {
-            return Err(StorageError::Internal(
-                "activated versions require publication admission".into(),
-            ));
-        }
-        let key = wf_ver_key(scope, &record.workflow_id, record.number);
-        let mut map = self.inner.lock();
-        if map.contains_key(&key) {
-            return Err(StorageError::Duplicate {
-                entity: "workflow_version",
-                detail: format!(
-                    "workflow {} version {} already exists",
-                    record.workflow_id, record.number
-                ),
-            });
-        }
-        map.insert(key, record);
+        require_unactivated(&record)?;
+        let mut state = self.inner.lock();
+        let key = state.check_version(scope, &record)?;
+        state.versions.insert(key, record);
         Ok(())
     }
 
@@ -395,8 +392,12 @@ impl WorkflowVersionStore for InMemoryWorkflowVersionStore {
         workflow_id: &str,
         number: u32,
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
-        let map = self.inner.lock();
-        Ok(map.get(&wf_ver_key(scope, workflow_id, number)).cloned())
+        Ok(self
+            .inner
+            .lock()
+            .versions
+            .get(&version_key(scope, workflow_id, number))
+            .cloned())
     }
 
     async fn get_published(
@@ -404,23 +405,21 @@ impl WorkflowVersionStore for InMemoryWorkflowVersionStore {
         scope: &Scope,
         workflow_id: &str,
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
-        let map = self.inner.lock();
-        // Highest-numbered published version wins. `HashMap` iteration
-        // order is unspecified, so `find` would return an arbitrary
-        // published row when more than one is marked published (e.g. a
-        // stale publish that was never cleared) — `max_by_key` makes the
-        // result deterministic and matches the SQL backends'
-        // `ORDER BY number DESC LIMIT 1`.
-        Ok(map
+        // Highest-numbered published version wins, matching the SQL
+        // backends' `ORDER BY number DESC LIMIT 1`.
+        Ok(self
+            .inner
+            .lock()
+            .versions
             .iter()
-            .filter(|((ws, org, wf, _), r)| {
-                ws == &scope.workspace_id
-                    && org == &scope.org_id
-                    && wf == workflow_id
-                    && r.published
+            .filter(|((org, workspace, workflow, _), version)| {
+                org == &scope.org_id
+                    && workspace == &scope.workspace_id
+                    && workflow == workflow_id
+                    && version.published
             })
             .max_by_key(|((.., number), _)| *number)
-            .map(|(_, r)| r.clone()))
+            .map(|(_, version)| version.clone()))
     }
 
     async fn list(
@@ -428,16 +427,18 @@ impl WorkflowVersionStore for InMemoryWorkflowVersionStore {
         scope: &Scope,
         workflow_id: &str,
     ) -> Result<Vec<WorkflowVersionRecord>, StorageError> {
-        let map = self.inner.lock();
-        let mut rows: Vec<WorkflowVersionRecord> = map
+        let mut versions: Vec<WorkflowVersionRecord> = self
+            .inner
+            .lock()
+            .versions
             .iter()
-            .filter(|((ws, org, wf, _), _)| {
-                ws == &scope.workspace_id && org == &scope.org_id && wf == workflow_id
+            .filter(|((org, workspace, workflow, _), _)| {
+                org == &scope.org_id && workspace == &scope.workspace_id && workflow == workflow_id
             })
-            .map(|(_, r)| r.clone())
+            .map(|(_, version)| version.clone())
             .collect();
         // Newest first (highest version number first).
-        rows.sort_by_key(|r| std::cmp::Reverse(r.number));
-        Ok(rows)
+        versions.sort_by_key(|version| std::cmp::Reverse(version.number));
+        Ok(versions)
     }
 }

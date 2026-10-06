@@ -1,39 +1,184 @@
-//! Postgres `WorkflowStore` + `WorkflowVersionStore` (spec-16 split) over
-//! the port-scoped schema.
+//! Postgres `WorkflowStore` + `WorkflowVersionStore` over `workflows` and
+//! `workflow_versions`.
 //!
-//! The workflow row (id / slug / soft-delete / CAS version) and its
-//! versions (each carrying the opaque definition payload) are separate
-//! tables. Every query carries `WHERE workspace_id = $ AND org_id = $`, so
-//! a cross-tenant `get` yields `Ok(None)` and a cross-tenant `update` /
-//! `soft_delete` is a `NotFound` — an id outside the caller's scope is
-//! indistinguishable from one that does not exist (no existence oracle),
-//! exactly as the in-memory and SQLite backends behave.
+//! The workflow row (id / slug / soft delete / CAS version) and its versions
+//! (each carrying the opaque definition payload) are separate tables. Every
+//! query carries `WHERE org_id = $ AND workspace_id = $`, so a cross-tenant
+//! `get` yields `Ok(None)` and a cross-tenant `update` / `soft_delete` is
+//! `NotFound` — an id outside the caller's scope is indistinguishable from
+//! one that does not exist (no existence oracle). A soft-deleted workflow is
+//! invisible to every read and write.
 //!
-//! `get_published` returns the **highest-numbered** published version
-//! (`ORDER BY number DESC LIMIT 1`) so the result is deterministic even if
-//! more than one row is left marked published.
+//! `get_published` returns the **highest-numbered** published version, so
+//! the result is deterministic while older versions stay marked published.
 
 use nebula_storage_port::dto::{WorkflowRecord, WorkflowVersionRecord};
 use nebula_storage_port::store::{WorkflowPublicationError, WorkflowStore, WorkflowVersionStore};
 use nebula_storage_port::{Scope, StorageError};
-use sqlx::{PgPool, Row};
+use sqlx::postgres::PgRow;
+use sqlx::{PgConnection, PgPool, Row};
 
-use crate::sql_error::{decode_u64, storage_error};
+use crate::sql_error::{
+    decode_u64, encode_u64, is_foreign_key_violation, storage_error, storage_error_for,
+};
+use crate::workflow_activation::ActivationColumns;
 
-/// Decode one live `port_workflows` row selected as `id, version, slug`. The
-/// one decoder of the table for this backend.
-fn decode_workflow(
-    row: &sqlx::postgres::PgRow,
-    scope: &Scope,
-) -> Result<WorkflowRecord, StorageError> {
-    let version = row.try_get::<i64, _>("version").map_err(storage_error)?;
+const VERSION_COLUMNS: &str = "workflow_id, number, published, pinned, definition, \
+     activation_workflow_version_id, activation_executable_plan_id, activation_worker_flavor_id";
+
+/// Decode one live `workflows` row selected as `id, version, slug`.
+fn decode_workflow(row: &PgRow, scope: &Scope) -> Result<WorkflowRecord, StorageError> {
     Ok(WorkflowRecord {
         id: row.try_get("id").map_err(storage_error)?,
         scope: scope.clone(),
-        version: decode_u64(version, "version")?,
+        version: decode_u64(row.try_get("version").map_err(storage_error)?, "version")?,
         slug: row.try_get("slug").map_err(storage_error)?,
-        deleted: false,
     })
+}
+
+fn decode_version(row: &PgRow) -> Result<WorkflowVersionRecord, StorageError> {
+    let activation = ActivationColumns {
+        workflow_version: row
+            .try_get("activation_workflow_version_id")
+            .map_err(storage_error)?,
+        executable_plan: row
+            .try_get("activation_executable_plan_id")
+            .map_err(storage_error)?,
+        worker_flavor: row
+            .try_get("activation_worker_flavor_id")
+            .map_err(storage_error)?,
+    };
+    Ok(WorkflowVersionRecord {
+        activation: activation.decode()?,
+        workflow_id: row.try_get("workflow_id").map_err(storage_error)?,
+        number: u32::try_from(row.try_get::<i64, _>("number").map_err(storage_error)?).map_err(
+            |_| StorageError::Corrupt("column `number` is outside the u32 range".into()),
+        )?,
+        published: row.try_get("published").map_err(storage_error)?,
+        pinned: row.try_get("pinned").map_err(storage_error)?,
+        definition: row.try_get("definition").map_err(storage_error)?,
+    })
+}
+
+/// Insert a live workflow row. A taken id or active slug is `Duplicate`; a
+/// missing workspace is `NotFound`.
+async fn insert_workflow(
+    connection: &mut PgConnection,
+    scope: &Scope,
+    row: &WorkflowRecord,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "INSERT INTO workflows (org_id, workspace_id, id, slug, version) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(&row.id)
+    .bind(&row.slug)
+    .bind(encode_u64(row.version, "version")?)
+    .execute(connection)
+    .await
+    .map_err(|error| {
+        if is_foreign_key_violation(&error) {
+            StorageError::not_found("workspace", scope.workspace_id.clone())
+        } else {
+            storage_error_for("workflow", error)
+        }
+    })?;
+    Ok(())
+}
+
+/// CAS-rewrite a live workflow row; zero rows ⇒ `NotFound` or `Conflict`.
+async fn update_workflow(
+    connection: &mut PgConnection,
+    scope: &Scope,
+    row: &WorkflowRecord,
+    expected_version: u64,
+) -> Result<(), StorageError> {
+    let changed = sqlx::query(
+        "UPDATE workflows SET version = $1, slug = $2 \
+         WHERE org_id = $3 AND workspace_id = $4 AND id = $5 \
+           AND version = $6 AND deleted_at IS NULL",
+    )
+    .bind(encode_u64(row.version, "version")?)
+    .bind(&row.slug)
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(&row.id)
+    .bind(encode_u64(expected_version, "version")?)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| storage_error_for("workflow", error))?
+    .rows_affected();
+    if changed > 0 {
+        return Ok(());
+    }
+    // Disambiguate behind the same tombstone-invisible predicate: a deleted
+    // row is `NotFound`, never a spurious `Conflict`.
+    let current = sqlx::query_scalar::<_, i64>(
+        "SELECT version FROM workflows \
+         WHERE org_id = $1 AND workspace_id = $2 AND id = $3 AND deleted_at IS NULL",
+    )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(&row.id)
+    .fetch_optional(connection)
+    .await
+    .map_err(storage_error)?;
+    match current {
+        Some(actual) => Err(StorageError::Conflict {
+            entity: "workflow",
+            id: row.id.clone(),
+            expected: expected_version,
+            actual: decode_u64(actual, "version")?,
+        }),
+        None => Err(StorageError::not_found("workflow", row.id.clone())),
+    }
+}
+
+/// Append one version row. A taken number or activation identity is
+/// `Duplicate`; a missing workflow is `NotFound`.
+async fn insert_version(
+    connection: &mut PgConnection,
+    scope: &Scope,
+    version: &WorkflowVersionRecord,
+) -> Result<(), StorageError> {
+    let activation = ActivationColumns::encode(version.activation);
+    sqlx::query(
+        "INSERT INTO workflow_versions (org_id, workspace_id, workflow_id, number, \
+         published, pinned, definition, activation_workflow_version_id, \
+         activation_executable_plan_id, activation_worker_flavor_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(&version.workflow_id)
+    .bind(i64::from(version.number))
+    .bind(version.published)
+    .bind(version.pinned)
+    .bind(&version.definition)
+    .bind(activation.workflow_version)
+    .bind(activation.executable_plan)
+    .bind(activation.worker_flavor)
+    .execute(connection)
+    .await
+    .map_err(|error| {
+        if is_foreign_key_violation(&error) {
+            StorageError::not_found("workflow", version.workflow_id.clone())
+        } else {
+            storage_error_for("workflow_version", error)
+        }
+    })?;
+    Ok(())
+}
+
+fn require_unactivated(version: &WorkflowVersionRecord) -> Result<(), StorageError> {
+    if version.activation.is_some() {
+        return Err(StorageError::InvalidInput(
+            "activated versions require publication admission".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Postgres-backed workflow-row store.
@@ -66,53 +211,40 @@ impl WorkflowStore for PgWorkflowStore {
             &version,
             expected_version,
         )?;
-        let next =
-            i64::try_from(row.version).map_err(|_| WorkflowPublicationError::InvalidPublication)?;
-        let expected = i64::try_from(expected_version)
-            .map_err(|_| WorkflowPublicationError::InvalidPublication)?;
-        let definition = version.definition.clone();
-        let activation_json = serde_json::to_value(activation).map_err(StorageError::from)?;
         let mut transaction = self.pool.begin().await.map_err(storage_error)?;
-        let changed = sqlx::query("UPDATE port_workflows SET version = $1, slug = $2 WHERE id = $3 AND workspace_id = $4 AND org_id = $5 AND version = $6 AND deleted = FALSE")
-            .bind(next).bind(&row.slug).bind(&row.id).bind(&scope.workspace_id).bind(&scope.org_id).bind(expected)
-            .execute(&mut *transaction).await.map_err(storage_error)?.rows_affected();
-        if changed != 1 {
-            let actual = sqlx::query_scalar::<_, i64>("SELECT version FROM port_workflows WHERE id = $1 AND workspace_id = $2 AND org_id = $3 AND deleted = FALSE")
-                .bind(&row.id).bind(&scope.workspace_id).bind(&scope.org_id)
-                .fetch_optional(&mut *transaction).await.map_err(storage_error)?;
-            return Err(match actual {
-                Some(actual) => StorageError::Conflict {
-                    entity: "workflow",
-                    id: row.id,
-                    expected: expected_version,
-                    actual: actual
-                        .try_into()
-                        .map_err(|_| WorkflowPublicationError::InvalidPublication)?,
-                },
-                None => StorageError::not_found("workflow", row.id),
-            }
-            .into());
-        }
+        update_workflow(&mut transaction, scope, &row, expected_version).await?;
         let ids = activation.revisions();
-        let plan: Option<Vec<u8>> = sqlx::query_scalar("SELECT p.record_bytes FROM port_executable_plan_revisions p JOIN port_worker_flavor_revisions f ON f.worker_flavor_id = p.worker_flavor_id WHERE p.executable_plan_id = $1 AND p.worker_flavor_id = $2 AND p.lifecycle = 'active' AND f.lifecycle = 'active' FOR SHARE OF p, f")
-            .bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
-            .fetch_optional(&mut *transaction).await.map_err(storage_error)?;
+        let plan: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT p.record_bytes FROM port_executable_plan_revisions p \
+             JOIN port_worker_flavor_revisions f ON f.worker_flavor_id = p.worker_flavor_id \
+             WHERE p.executable_plan_id = $1 AND p.worker_flavor_id = $2 \
+               AND p.lifecycle = 'active' AND f.lifecycle = 'active' \
+             FOR SHARE OF p, f",
+        )
+        .bind(ids.plan().as_bytes().as_slice())
+        .bind(ids.worker_flavor().as_bytes().as_slice())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage_error)?;
         let plan = plan.ok_or(WorkflowPublicationError::RevisionNotAdmitted)?;
         crate::workflow_activation::validate_plan_identity(&plan, &row.id, activation)?;
-        let reused: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM port_workflow_versions WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3 AND activation->>'workflow_version_id' = $4")
-            .bind(&scope.workspace_id).bind(&scope.org_id).bind(&row.id).bind(activation.workflow_version_id().to_string())
-            .fetch_one(&mut *transaction).await.map_err(storage_error)?;
-        if reused != 0 {
+        // A reused activation identity is a disagreeing publication.
+        let reused = sqlx::query(
+            "SELECT 1 FROM workflow_versions \
+             WHERE org_id = $1 AND workspace_id = $2 AND workflow_id = $3 \
+               AND activation_workflow_version_id = $4",
+        )
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .bind(&row.id)
+        .bind(activation.workflow_version_id().to_string())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage_error)?;
+        if reused.is_some() {
             return Err(WorkflowPublicationError::InvalidPublication);
         }
-        sqlx::query("INSERT INTO port_workflow_versions (workspace_id, org_id, workflow_id, number, published, pinned, definition, activation) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
-            .bind(&scope.workspace_id).bind(&scope.org_id).bind(&version.workflow_id).bind(i64::from(version.number))
-            .bind(version.published).bind(version.pinned).bind(definition).bind(activation_json)
-            .execute(&mut *transaction).await.map_err(|error| match error {
-                sqlx::Error::Database(database) if database.is_unique_violation() =>
-                    StorageError::Duplicate { entity: "workflow_version", detail: "workflow version already exists".into() },
-                other => storage_error(other),
-            })?;
+        insert_version(&mut transaction, scope, &version).await?;
         transaction
             .commit()
             .await
@@ -121,40 +253,18 @@ impl WorkflowStore for PgWorkflowStore {
     }
 
     async fn create(&self, scope: &Scope, record: WorkflowRecord) -> Result<(), StorageError> {
-        let res = sqlx::query(
-            "INSERT INTO port_workflows \
-             (id, workspace_id, org_id, version, slug, deleted) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(&record.id)
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(record.version as i64)
-        .bind(&record.slug)
-        .bind(record.deleted)
-        .execute(&self.pool)
-        .await;
-        match res {
-            Ok(_) => Ok(()),
-            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-                Err(StorageError::Duplicate {
-                    entity: "workflow",
-                    detail: format!("workflow {} already exists", record.id),
-                })
-            },
-            Err(e) => Err(storage_error(e)),
-        }
+        let mut connection = self.pool.acquire().await.map_err(storage_error)?;
+        insert_workflow(&mut connection, scope, &record).await
     }
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<WorkflowRecord>, StorageError> {
-        // A soft-deleted row is a read miss, matching the other backends.
         let row = sqlx::query(
-            "SELECT id, version, slug FROM port_workflows \
-             WHERE id = $1 AND workspace_id = $2 AND org_id = $3 AND deleted = FALSE",
+            "SELECT id, version, slug FROM workflows \
+             WHERE org_id = $1 AND workspace_id = $2 AND id = $3 AND deleted_at IS NULL",
         )
-        .bind(id)
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .map_err(storage_error)?;
@@ -167,11 +277,11 @@ impl WorkflowStore for PgWorkflowStore {
         slug: &str,
     ) -> Result<Option<WorkflowRecord>, StorageError> {
         let row = sqlx::query(
-            "SELECT id, version, slug FROM port_workflows \
-             WHERE workspace_id = $1 AND org_id = $2 AND slug = $3 AND deleted = FALSE",
+            "SELECT id, version, slug FROM workflows \
+             WHERE org_id = $1 AND workspace_id = $2 AND slug = $3 AND deleted_at IS NULL",
         )
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(slug)
         .fetch_optional(&self.pool)
         .await
@@ -185,56 +295,8 @@ impl WorkflowStore for PgWorkflowStore {
         record: WorkflowRecord,
         expected_version: u64,
     ) -> Result<(), StorageError> {
-        // CAS in one statement: the row is rewritten only when the stored
-        // version still equals `expected_version` AND it is not a
-        // tombstone. `deleted = FALSE` is mandatory — without it an
-        // `update` on a soft-deleted row would rewrite it (clearing the
-        // tombstone) and resurrect a row that `get`/`get_by_slug`/`list`
-        // already treat as gone. Zero rows affected then means the row is
-        // gone/tombstoned (NotFound) or the version moved (Conflict) —
-        // disambiguated by a follow-up read.
-        let res = sqlx::query(
-            "UPDATE port_workflows \
-             SET version = $1, slug = $2, deleted = $3 \
-             WHERE id = $4 AND workspace_id = $5 AND org_id = $6 \
-               AND version = $7 AND deleted = FALSE",
-        )
-        .bind(record.version as i64)
-        .bind(&record.slug)
-        .bind(record.deleted)
-        .bind(&record.id)
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(expected_version as i64)
-        .execute(&self.pool)
-        .await
-        .map_err(storage_error)?;
-        if res.rows_affected() > 0 {
-            return Ok(());
-        }
-        // Disambiguate behind the same tombstone-invisible predicate the
-        // UPDATE used: a soft-deleted row must surface as `NotFound`
-        // (a read miss, matching `get`), never a spurious `Conflict`.
-        let current = sqlx::query_scalar::<_, i64>(
-            "SELECT version FROM port_workflows \
-             WHERE id = $1 AND workspace_id = $2 AND org_id = $3 \
-               AND deleted = FALSE",
-        )
-        .bind(&record.id)
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage_error)?;
-        match current {
-            Some(actual) => Err(StorageError::Conflict {
-                entity: "workflow",
-                id: record.id,
-                expected: expected_version,
-                actual: decode_u64(actual, "version")?,
-            }),
-            None => Err(StorageError::not_found("workflow", record.id)),
-        }
+        let mut connection = self.pool.acquire().await.map_err(storage_error)?;
+        update_workflow(&mut connection, scope, &record, expected_version).await
     }
 
     async fn save_with_published_version(
@@ -244,126 +306,26 @@ impl WorkflowStore for PgWorkflowStore {
         version: WorkflowVersionRecord,
         expected_version: Option<u64>,
     ) -> Result<(), StorageError> {
-        if version.activation.is_some() {
-            return Err(StorageError::Internal(
-                "activated versions require publication admission".into(),
-            ));
-        }
-        // One transaction so the row write and the version write commit
-        // (or roll back) together — no orphan-row window.
+        require_unactivated(&version)?;
+        // One transaction: the row write and the version write commit (or
+        // roll back) together — no orphan-row window.
         let mut tx = self.pool.begin().await.map_err(storage_error)?;
-
         match expected_version {
-            None => {
-                // Create the row.
-                let res = sqlx::query(
-                    "INSERT INTO port_workflows \
-                     (id, workspace_id, org_id, version, slug, deleted) \
-                     VALUES ($1, $2, $3, $4, $5, $6)",
-                )
-                .bind(&row.id)
-                .bind(&scope.workspace_id)
-                .bind(&scope.org_id)
-                .bind(row.version as i64)
-                .bind(&row.slug)
-                .bind(row.deleted)
-                .execute(&mut *tx)
-                .await;
-                if let Err(e) = res {
-                    return Err(match e {
-                        sqlx::Error::Database(db) if db.is_unique_violation() => {
-                            StorageError::Duplicate {
-                                entity: "workflow",
-                                detail: format!("workflow {} already exists", row.id),
-                            }
-                        },
-                        other => storage_error(other),
-                    });
-                }
-            },
-            Some(expected) => {
-                // CAS the row counter forward in the same tx.
-                let res = sqlx::query(
-                    "UPDATE port_workflows \
-                     SET version = $1, slug = $2, deleted = $3 \
-                     WHERE id = $4 AND workspace_id = $5 AND org_id = $6 AND version = $7",
-                )
-                .bind(row.version as i64)
-                .bind(&row.slug)
-                .bind(row.deleted)
-                .bind(&row.id)
-                .bind(&scope.workspace_id)
-                .bind(&scope.org_id)
-                .bind(expected as i64)
-                .execute(&mut *tx)
-                .await
-                .map_err(storage_error)?;
-                if res.rows_affected() == 0 {
-                    // Disambiguate row-gone vs version-moved within the tx
-                    // (rolled back on drop) so neither write lands.
-                    let current = sqlx::query_scalar::<_, i64>(
-                        "SELECT version FROM port_workflows \
-                         WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
-                    )
-                    .bind(&row.id)
-                    .bind(&scope.workspace_id)
-                    .bind(&scope.org_id)
-                    .fetch_optional(&mut *tx)
-                    .await
-                    .map_err(storage_error)?;
-                    return Err(match current {
-                        Some(actual) => StorageError::Conflict {
-                            entity: "workflow",
-                            id: row.id,
-                            expected,
-                            actual: decode_u64(actual, "version")?,
-                        },
-                        None => StorageError::not_found("workflow", row.id),
-                    });
-                }
-            },
+            None => insert_workflow(&mut tx, scope, &row).await?,
+            Some(expected) => update_workflow(&mut tx, scope, &row, expected).await?,
         }
-
-        // Append the published version row inside the same tx.
-        let res = sqlx::query(
-            "INSERT INTO port_workflow_versions \
-             (workspace_id, org_id, workflow_id, number, published, pinned, definition) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(&version.workflow_id)
-        .bind(i64::from(version.number))
-        .bind(version.published)
-        .bind(version.pinned)
-        .bind(&version.definition)
-        .execute(&mut *tx)
-        .await;
-        if let Err(e) = res {
-            return Err(match e {
-                sqlx::Error::Database(db) if db.is_unique_violation() => StorageError::Duplicate {
-                    entity: "workflow_version",
-                    detail: format!(
-                        "workflow {} version {} already exists",
-                        version.workflow_id, version.number
-                    ),
-                },
-                other => storage_error(other),
-            });
-        }
-
-        tx.commit().await.map_err(storage_error)?;
-        Ok(())
+        insert_version(&mut tx, scope, &version).await?;
+        tx.commit().await.map_err(storage_error)
     }
 
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {
         let res = sqlx::query(
-            "UPDATE port_workflows SET deleted = TRUE \
-             WHERE id = $1 AND workspace_id = $2 AND org_id = $3 AND deleted = FALSE",
+            "UPDATE workflows SET deleted_at = now() \
+             WHERE org_id = $1 AND workspace_id = $2 AND id = $3 AND deleted_at IS NULL",
         )
-        .bind(id)
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .bind(id)
         .execute(&self.pool)
         .await
         .map_err(storage_error)?;
@@ -375,14 +337,12 @@ impl WorkflowStore for PgWorkflowStore {
     }
 
     async fn list(&self, scope: &Scope) -> Result<Vec<WorkflowRecord>, StorageError> {
-        // Stable order by id so list output is deterministic across runs.
         let rows = sqlx::query(
-            "SELECT id, version, slug FROM port_workflows \
-             WHERE workspace_id = $1 AND org_id = $2 AND deleted = FALSE \
-             ORDER BY id",
+            "SELECT id, version, slug FROM workflows \
+             WHERE org_id = $1 AND workspace_id = $2 AND deleted_at IS NULL ORDER BY id",
         )
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .fetch_all(&self.pool)
         .await
         .map_err(storage_error)?;
@@ -390,15 +350,12 @@ impl WorkflowStore for PgWorkflowStore {
     }
 
     async fn count(&self, scope: &Scope) -> Result<u64, StorageError> {
-        // Same active-in-scope predicate as `list`, answered with
-        // COUNT(*) so the readiness probe / pagination total never
-        // materializes the row set.
         let n: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM port_workflows \
-             WHERE workspace_id = $1 AND org_id = $2 AND deleted = FALSE",
+            "SELECT COUNT(*) FROM workflows \
+             WHERE org_id = $1 AND workspace_id = $2 AND deleted_at IS NULL",
         )
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .fetch_one(&self.pool)
         .await
         .map_err(storage_error)?;
@@ -406,9 +363,7 @@ impl WorkflowStore for PgWorkflowStore {
     }
 
     async fn is_reachable(&self) -> Result<(), StorageError> {
-        // Cheapest possible liveness round-trip: no table touched, no
-        // tenant predicate. Maps any pool/transport error to the same
-        // `StorageError` the readiness probe treats as "not ready".
+        // Cheapest liveness round-trip: no table, no tenant predicate.
         sqlx::query_scalar::<_, i32>("SELECT 1")
             .fetch_one(&self.pool)
             .await
@@ -431,25 +386,6 @@ impl PgWorkflowVersionStore {
     }
 }
 
-/// Decode one version row. `definition` is a JSONB column mapped directly
-/// to `serde_json::Value` by sqlx.
-fn version_from_row(row: &sqlx::postgres::PgRow) -> Result<WorkflowVersionRecord, StorageError> {
-    Ok(WorkflowVersionRecord {
-        activation: row
-            .try_get::<Option<serde_json::Value>, _>("activation")
-            .map_err(storage_error)?
-            .map(serde_json::from_value)
-            .transpose()?,
-        workflow_id: row.try_get("workflow_id").map_err(storage_error)?,
-        number: u32::try_from(row.try_get::<i64, _>("number").map_err(storage_error)?).map_err(
-            |_| StorageError::Corrupt("column `number` is outside the u32 range".into()),
-        )?,
-        published: row.try_get("published").map_err(storage_error)?,
-        pinned: row.try_get("pinned").map_err(storage_error)?,
-        definition: row.try_get("definition").map_err(storage_error)?,
-    })
-}
-
 #[async_trait::async_trait]
 impl WorkflowVersionStore for PgWorkflowVersionStore {
     async fn create(
@@ -457,38 +393,9 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         scope: &Scope,
         record: WorkflowVersionRecord,
     ) -> Result<(), StorageError> {
-        if record.activation.is_some() {
-            return Err(StorageError::Internal(
-                "activated versions require publication admission".into(),
-            ));
-        }
-        let res = sqlx::query(
-            "INSERT INTO port_workflow_versions \
-             (workspace_id, org_id, workflow_id, number, published, pinned, definition) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(&record.workflow_id)
-        .bind(i64::from(record.number))
-        .bind(record.published)
-        .bind(record.pinned)
-        .bind(&record.definition)
-        .execute(&self.pool)
-        .await;
-        match res {
-            Ok(_) => Ok(()),
-            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-                Err(StorageError::Duplicate {
-                    entity: "workflow_version",
-                    detail: format!(
-                        "workflow {} version {} already exists",
-                        record.workflow_id, record.number
-                    ),
-                })
-            },
-            Err(e) => Err(storage_error(e)),
-        }
+        require_unactivated(&record)?;
+        let mut connection = self.pool.acquire().await.map_err(storage_error)?;
+        insert_version(&mut connection, scope, &record).await
     }
 
     async fn get(
@@ -497,19 +404,21 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         workflow_id: &str,
         number: u32,
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
-        let row = sqlx::query(
-            "SELECT workflow_id, number, published, pinned, definition, activation \
-             FROM port_workflow_versions \
-             WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3 AND number = $4",
-        )
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(workflow_id)
-        .bind(i64::from(number))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage_error)?;
-        row.as_ref().map(version_from_row).transpose()
+        let sql = format!(
+            "SELECT {VERSION_COLUMNS} FROM workflow_versions \
+             WHERE org_id = $1 AND workspace_id = $2 AND workflow_id = $3 AND number = $4"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(workflow_id)
+            .bind(i64::from(number))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .as_ref()
+            .map(decode_version)
+            .transpose()
     }
 
     async fn get_published(
@@ -517,22 +426,21 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         scope: &Scope,
         workflow_id: &str,
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
-        // Highest-numbered published version wins (deterministic even if a
-        // stale publish was left set on an older version).
-        let row = sqlx::query(
-            "SELECT workflow_id, number, published, pinned, definition, activation \
-             FROM port_workflow_versions \
-             WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3 \
-               AND published = TRUE \
-             ORDER BY number DESC LIMIT 1",
-        )
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(workflow_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage_error)?;
-        row.as_ref().map(version_from_row).transpose()
+        let sql = format!(
+            "SELECT {VERSION_COLUMNS} FROM workflow_versions \
+             WHERE org_id = $1 AND workspace_id = $2 AND workflow_id = $3 AND published \
+             ORDER BY number DESC LIMIT 1"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(workflow_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .as_ref()
+            .map(decode_version)
+            .transpose()
     }
 
     async fn list(
@@ -540,19 +448,20 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         scope: &Scope,
         workflow_id: &str,
     ) -> Result<Vec<WorkflowVersionRecord>, StorageError> {
-        // Newest first (highest version number first).
-        let rows = sqlx::query(
-            "SELECT workflow_id, number, published, pinned, definition, activation \
-             FROM port_workflow_versions \
-             WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3 \
-             ORDER BY number DESC",
-        )
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(workflow_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage_error)?;
-        rows.iter().map(version_from_row).collect()
+        let sql = format!(
+            "SELECT {VERSION_COLUMNS} FROM workflow_versions \
+             WHERE org_id = $1 AND workspace_id = $2 AND workflow_id = $3 \
+             ORDER BY number DESC"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(workflow_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .iter()
+            .map(decode_version)
+            .collect()
     }
 }

@@ -1333,6 +1333,7 @@ impl JournalFixture {
             .unwrap();
         definition.config.error_strategy = strategy;
         let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
+        ports.provision(&scope).await;
         ports
             .workflows
             .workflow
@@ -1343,7 +1344,6 @@ impl JournalFixture {
                     scope: scope.clone(),
                     version: 1,
                     slug: "journaled-effects".into(),
-                    deleted: false,
                 },
             )
             .await

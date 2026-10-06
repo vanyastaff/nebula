@@ -31,6 +31,8 @@
 mod exact_fixture;
 #[path = "exact_fixture/qualified_runtime.rs"]
 mod qualified_runtime;
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
 
 macro_rules! pure_action_metadata {
     ($key:expr, $name:expr, $description:expr $(,)?) => {
@@ -70,7 +72,7 @@ use nebula_storage::{
 use nebula_storage_port::{
     FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
     dto::{ExecutionRecord, ResumeTokenRow, WorkflowVersionRecord},
-    store::{ExecutionStore, ResumeTokenStore, WorkflowVersionStore},
+    store::{ExecutionStore, ResumeTokenStore},
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
@@ -619,20 +621,20 @@ impl RevokeHarness {
             ui_metadata: None,
             schema_version: CURRENT_SCHEMA_VERSION,
         };
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: workflow_id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(&wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: workflow_id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(&wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
         workflow_id
     }
 

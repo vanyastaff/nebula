@@ -31,6 +31,9 @@
 //! outer `tokio::time::timeout` safety bound; lease-TTL crash recovery uses the
 //! in-mem store's 1s clamp floor under real time.
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::HashMap,
     sync::{
@@ -361,20 +364,20 @@ impl RecoveryStores {
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 
     async fn persist_created_execution(&self, workflow_id: nebula_core::WorkflowId) -> ExecutionId {

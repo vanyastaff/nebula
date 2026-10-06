@@ -259,6 +259,7 @@ struct TestStores {
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
     versions: Arc<nebula_storage::InMemoryWorkflowVersionStore>,
+    workflows: Arc<nebula_storage::InMemoryWorkflowStore>,
 }
 
 impl TestStores {
@@ -270,7 +271,11 @@ impl TestStores {
     fn with_execution(execution: Arc<nebula_storage::InMemoryExecutionStore>) -> Self {
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = nebula_storage::InMemoryWorkflowVersionStore::new();
+        let workflows = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
+            &versions, &execution,
+        ));
         Self {
+            workflows,
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
@@ -314,6 +319,22 @@ impl TestStores {
     async fn save_workflow_version(&self, wf: &WorkflowDefinition, number: u32, published: bool) {
         let scope = crate::store_seam::single_tenant_scope();
         let definition = serde_json::to_value(wf).unwrap();
+        // A version needs its workflow row; a later version reuses it.
+        match nebula_storage_port::store::WorkflowStore::create(
+            self.workflows.as_ref(),
+            &scope,
+            nebula_storage_port::dto::WorkflowRecord {
+                id: wf.id.to_string(),
+                scope: scope.clone(),
+                version: 0,
+                slug: wf.id.to_string(),
+            },
+        )
+        .await
+        {
+            Ok(()) | Err(StorageError::Duplicate { .. }) => {},
+            Err(error) => panic!("workflow row fixture: {error:?}"),
+        }
         self.versions
             .create(
                 &scope,

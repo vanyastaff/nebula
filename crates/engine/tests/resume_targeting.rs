@@ -17,6 +17,9 @@
 //! to completion (park or terminal), so assertions follow immediately — no
 //! wall-clock sleeps.
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::HashMap,
     sync::{
@@ -42,10 +45,7 @@ use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
 use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
-use nebula_storage_port::{
-    dto::WorkflowVersionRecord,
-    store::{ExecutionStore, WorkflowVersionStore},
-};
+use nebula_storage_port::{dto::WorkflowVersionRecord, store::ExecutionStore};
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
@@ -249,20 +249,20 @@ impl Stores {
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 
     async fn create_execution(&self, workflow_id: nebula_core::WorkflowId) -> ExecutionId {

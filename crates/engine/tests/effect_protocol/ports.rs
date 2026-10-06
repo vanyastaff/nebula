@@ -2,8 +2,13 @@ use std::sync::Arc;
 
 use nebula_engine::{ExecutionStores, WorkflowStores};
 use nebula_metrics::MetricsRegistry;
+use nebula_storage_port::Scope;
+use nebula_storage_port::dto::{
+    PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningRequest,
+};
 use nebula_storage_port::store::{
     OperationLedger, PlanFlavorCatalog, PlanFlavorCatalogWriter, StartAcceptanceStore,
+    TenantProvisioningStore,
 };
 
 pub(super) struct Ports {
@@ -13,9 +18,47 @@ pub(super) struct Ports {
     pub ledger: Arc<dyn OperationLedger>,
     pub catalog: Arc<dyn PlanFlavorCatalog>,
     pub writer: Arc<dyn PlanFlavorCatalogWriter>,
+    pub tenants: Arc<dyn TenantProvisioningStore>,
 }
 
 impl Ports {
+    /// Provision the tenant behind `scope`, so its workflows satisfy their
+    /// foreign keys on the SQL backends.
+    pub(super) async fn provision(&self, scope: &Scope) {
+        let org = TenantOrgCreate::new(
+            scope.org_id.clone(),
+            scope.org_id.clone(),
+            "Effect protocol".into(),
+            "effect-protocol".into(),
+            "free".into(),
+            None,
+            serde_json::json!({}),
+        )
+        .unwrap();
+        let workspace = TenantDefaultWorkspaceCreate::new(
+            scope.workspace_id.clone(),
+            "default".into(),
+            "Default".into(),
+            None,
+            "effect-protocol".into(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        self.tenants
+            .provision_tenant(
+                TenantProvisioningRequest::new(
+                    org,
+                    workspace,
+                    PrincipalKind::User,
+                    "effect-protocol-owner".into(),
+                    None,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
     pub(super) fn memory() -> Self {
         Self::memory_core(Arc::new(nebula_storage::InMemoryExecutionStore::new()))
     }
@@ -41,6 +84,7 @@ impl Ports {
             ledger,
             catalog: catalog.clone(),
             writer: catalog,
+            tenants: Arc::new(inmem::InMemoryIdentityDirectory::new()),
         }
     }
 
@@ -65,10 +109,11 @@ impl Ports {
                 workflow: Arc::new(SqliteWorkflowStore::new(pool.clone())),
                 versions: Arc::new(SqliteWorkflowVersionStore::new(pool.clone())),
             },
-            starts: Arc::new(SqliteStartAcceptanceStore::new(pool)),
+            starts: Arc::new(SqliteStartAcceptanceStore::new(pool.clone())),
             ledger,
             catalog: catalog.clone(),
             writer: catalog,
+            tenants: Arc::new(SqliteTenantProvisioningStore::new(pool)),
         }
     }
 
@@ -93,10 +138,11 @@ impl Ports {
                 workflow: Arc::new(PgWorkflowStore::new(pool.clone())),
                 versions: Arc::new(PgWorkflowVersionStore::new(pool.clone())),
             },
-            starts: Arc::new(PgStartAcceptanceStore::new(pool)),
+            starts: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
             ledger,
             catalog: catalog.clone(),
             writer: catalog,
+            tenants: Arc::new(PgTenantProvisioningStore::new(pool)),
         }
     }
 }

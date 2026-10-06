@@ -529,7 +529,6 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
                     scope: scope.clone(),
                     version: 1,
                     slug: id_str.clone(),
-                    deleted: false,
                 },
             )
             .await

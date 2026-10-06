@@ -239,7 +239,6 @@ impl WorkflowActivationService {
             .get(scope, &workflow_key)
             .await
             .map_err(map_storage_error)?
-            .filter(|row| !row.deleted)
             .ok_or(WorkflowActivationError::MissingWorkflow)?;
         if row.version != expected_version {
             return Err(WorkflowActivationError::CasConflict);

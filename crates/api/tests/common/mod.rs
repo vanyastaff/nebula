@@ -543,7 +543,6 @@ impl PortHandles {
                 scope: scope.clone(),
                 version: 1,
                 slug: id_str.clone(),
-                deleted: false,
             },
         )
         .await
@@ -1282,7 +1281,6 @@ pub(crate) mod engine_seam {
                     scope: scope.clone(),
                     version: 1,
                     slug: id_str.clone(),
-                    deleted: false,
                 },
             )
             .await

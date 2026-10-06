@@ -212,6 +212,10 @@ impl SqliteBackend {
                 nebula_storage::sqlite::init_schema(&pool)
                     .await
                     .expect("install port schema");
+                provision_fixed_scopes(
+                    &nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone()),
+                )
+                .await;
                 pool
             })
             .await
@@ -409,6 +413,10 @@ impl PostgresBackend {
                 nebula_storage::postgres::init_schema(&pool)
                     .await
                     .expect("install port schema");
+                provision_fixed_scopes(&nebula_storage::postgres::PgTenantProvisioningStore::new(
+                    pool.clone(),
+                ))
+                .await;
                 pool
             })
             .await
@@ -635,6 +643,53 @@ fn scope_a() -> Scope {
 
 fn scope_b() -> Scope {
     Scope::new("ws_b", "org_b")
+}
+
+/// Provision the tenants behind the fixed scopes, so workspace-owned rows
+/// satisfy their foreign keys on the SQL backends. Replays are no-ops.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+async fn provision_fixed_scopes(store: &dyn nebula_storage_port::store::TenantProvisioningStore) {
+    use nebula_storage_port::dto::{
+        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningOutcome,
+        TenantProvisioningRequest,
+    };
+    for scope in [scope_a(), scope_b()] {
+        let org = TenantOrgCreate::new(
+            scope.org_id.clone(),
+            scope.org_id.clone(),
+            "Conformance".into(),
+            "conformance".into(),
+            "free".into(),
+            None,
+            serde_json::json!({}),
+        )
+        .expect("org values");
+        let workspace = TenantDefaultWorkspaceCreate::new(
+            scope.workspace_id.clone(),
+            "default".into(),
+            "Default".into(),
+            None,
+            "conformance".into(),
+            serde_json::json!({}),
+        )
+        .expect("workspace values");
+        let request = TenantProvisioningRequest::new(
+            org,
+            workspace,
+            PrincipalKind::User,
+            "conformance-owner".into(),
+            None,
+        )
+        .expect("provisioning request");
+        let outcome = store
+            .provision_tenant(request)
+            .await
+            .expect("provision fixed scope");
+        assert!(matches!(
+            outcome,
+            TenantProvisioningOutcome::Created | TenantProvisioningOutcome::Replayed
+        ));
+    }
 }
 
 // ── shared contract assertions ────────────────────────────────────────────
@@ -1039,7 +1094,6 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
         scope: s.clone(),
         version: 0,
         slug: "billing".into(),
-        deleted: false,
     };
     wf.create(&s, rec.clone()).await.expect("create");
 
@@ -1152,7 +1206,6 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
             &s,
             WorkflowRecord {
                 id: "wf_c".into(),
-                deleted: false,
                 version: 2,
                 ..by_id.clone()
             },
@@ -1177,6 +1230,54 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
     assert!(
         matches!(del_missing, Err(StorageError::NotFound { .. })),
         "[{}] soft-delete of a missing row must be NotFound, got {del_missing:?}",
+        backend.name()
+    );
+
+    // A version needs its workflow row.
+    let orphan = ver
+        .create(
+            &s,
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: "wf_v".into(),
+                number: 1,
+                published: false,
+                pinned: false,
+                definition: serde_json::json!({}),
+            },
+        )
+        .await;
+    assert!(
+        matches!(orphan, Err(StorageError::NotFound { .. })),
+        "[{}] a version of a missing workflow must be NotFound, got {orphan:?}",
+        backend.name()
+    );
+    // Two live workflows never share a slug in one scope.
+    wf.create(
+        &s,
+        WorkflowRecord {
+            id: "wf_v".into(),
+            scope: s.clone(),
+            version: 0,
+            slug: "versions".into(),
+        },
+    )
+    .await
+    .expect("create wf_v");
+    let slug_taken = wf
+        .create(
+            &s,
+            WorkflowRecord {
+                id: "wf_slug_twin".into(),
+                scope: s.clone(),
+                version: 0,
+                slug: "versions".into(),
+            },
+        )
+        .await;
+    assert!(
+        matches!(slug_taken, Err(StorageError::Duplicate { .. })),
+        "[{}] a taken active slug must be Duplicate, got {slug_taken:?}",
         backend.name()
     );
 
@@ -1256,7 +1357,6 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(
             scope: s.clone(),
             version: 1,
             slug: "wf_atomic".into(),
-            deleted: false,
         },
         WorkflowVersionRecord {
             activation: None,
@@ -1297,7 +1397,6 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(
                 scope: s.clone(),
                 version: 2,
                 slug: "wf_atomic".into(),
-                deleted: false,
             },
             WorkflowVersionRecord {
                 activation: None,
@@ -1346,7 +1445,6 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(
                 scope: s.clone(),
                 version: 1,
                 slug: "wf_atomic2".into(),
-                deleted: false,
             },
             WorkflowVersionRecord {
                 activation: None,
@@ -1388,8 +1486,20 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(
 /// `HashMap`-order row; this locks the deterministic
 /// `ORDER BY number DESC LIMIT 1` contract across every backend.
 pub(crate) async fn assert_get_published_is_highest_numbered(backend: &dyn Backend) {
+    let wf = backend.workflow_store().await;
     let ver = backend.workflow_version_store().await;
     let s = scope_a();
+    wf.create(
+        &s,
+        WorkflowRecord {
+            id: "wf_pub".into(),
+            scope: s.clone(),
+            version: 0,
+            slug: "wf_pub".into(),
+        },
+    )
+    .await
+    .expect("create wf_pub");
     // Two published versions for the same workflow (1 and 3) plus an
     // unpublished one (2) — `get_published` must return version 3.
     for (n, published) in [(1u32, true), (2, false), (3, true)] {

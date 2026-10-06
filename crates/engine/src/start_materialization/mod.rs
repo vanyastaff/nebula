@@ -473,7 +473,6 @@ impl WorkflowStartService {
             .get(scope, &workflow_key)
             .await
             .map_err(|_| WorkflowStartError::BackendUnavailable)?
-            .filter(|row| !row.deleted)
             .ok_or(WorkflowStartError::MissingWorkflow)?;
         if row.scope != *scope || row.id != workflow_key {
             return Err(WorkflowStartError::InvalidActivation);
