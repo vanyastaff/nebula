@@ -14,6 +14,25 @@
 - `src/dto/` — private-field lifecycle DTOs, typed `CredentialSelector`, bounded `CredentialVersion`, structural live/tombstoned records, and opaque exact plan/flavor records
 - `src/scope.rs` — plain-data `Scope { workspace_id, org_id }`; `src/ids.rs` — re-exported core ULIDs + lease `FencingToken`
 
+## Layout rules (new and touched code)
+
+- `store/<aggregate>.rs` holds a role trait plus the command, commit and outcome types only
+  that trait uses (often borrowed, `<'a>`) — the trait's vocabulary stays beside it.
+  `dto/<aggregate>.rs` holds records shared by several stores or consumers. File size alone
+  is not a reason to split a cohesive trait module.
+- One import path per type: `dto::X` / `store::X`. Submodules of `dto` and `store` are
+  private and re-exported; the crate root re-exports only the cross-cutting core (`Scope`,
+  `StorageError`, ids, `TransitionBatch`, `TransitionOutcome`) plus existing compatibility
+  exports — do not add new root re-exports.
+- Rows read back from storage are plain data (pub fields). A value with an invariant is a
+  newtype or a private-field struct with a validating constructor and `FromStr`/`Display`
+  where it has a text form (`ExecutionListingStatus`, `MicrosInstant`, `CredentialVersion`).
+  Timestamps are `DateTime<Utc>` or `MicrosInstant`, never strings, in new DTOs.
+- `StorageError` variants are chosen by what failed; the table on the type is the contract
+  every adapter follows. Messages never carry stored or submitted values.
+- Traits stay object-safe: no generic methods and no GATs; borrowed command structs carry
+  lifetimes instead.
+
 ## Conventions & never-do
 
 - This crate declares *what* storage does; **never implement a backend here** (adapters live in `nebula-storage`). `nebula-tenancy` enforces policy for the general Scope-taking stores; credential persistence is owner-bound directly and intentionally has no tenancy decorator.

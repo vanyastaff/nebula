@@ -10,6 +10,7 @@
 | Task | Steps |
 |------|-------|
 | Add a new port method | Define in `nebula-storage-port`, update all applicable backends and policy decorators, then shared conformance tests. Credential adapters/decorators live under `src/credential/`; general adapters live under `src/inmem/`, `src/sqlite/`, `src/postgres/`. Add paired migrations when needed. |
+| Add a port store | 1. Port: trait in `nebula-storage-port/src/store/<aggregate>.rs`, records in `dto/<aggregate>.rs` (see that crate's AGENTS.md). 2. Paired migrations. 3. One file named `<aggregate>.rs` in **each** of `src/inmem/`, `src/sqlite/`, `src/postgres/`, re-exported from the backend's `mod.rs` as `InMemory*` / `Sqlite*` / `Pg*`. 4. In each SQL file one `fn decode_<dto>(row) -> Result<Dto, StorageError>`; every query maps errors through `sql_error`. 5. Tenancy decorator for a Scope-taking store, and its classification in `nebula-tenancy`. 6. Cases in the shared conformance suite run against all three backends. |
 | Add a SQL migration | Create paired `migrations/{postgres,sqlite}/NNNN_description.sql` files when the logical schema is shared. Numbered SQLx migrations are the sole setup source; never add a `src/**/schema.sql` snapshot. Classify the migration as aggregate-neutral or aggregate-transforming before changing the executable catalog-boundary test. Run the curated `task db:migrate` operator; never run raw SQLx migration against a non-empty database. |
 
 ## Commands
@@ -48,6 +49,34 @@
 - `src/credential/{sqlite,postgres}.rs` — ready-store deployment adapters for the owner-bound
   `CredentialPersistence` port. Paired migration `0039` makes owner and structural record state
   final invariants; unchecked raw-pool constructors are deliberately unavailable.
+
+## Adapter rules (every backend, every new or touched store)
+
+- **Layout.** One file per port aggregate with the same name in `inmem/`, `sqlite/` and
+  `postgres/`. When a file grows to hold several aggregates, it becomes a directory
+  (`identity/`): `mod.rs` keeps the shared decoders and helpers, one file per aggregate.
+  Code that is not a port adapter goes in a module named for what it is (`auth/`,
+  `http_idempotency/`), never in a backend-named tree.
+- **Errors.** Every `sqlx::Error` goes through `sql_error::storage_error` (or
+  `storage_error_for(entity, _)` when callers branch on which record collided). Choose the
+  variant by what failed: unreachable/busy → `Connection`; stored data that does not decode
+  (NULL in a NOT NULL column, unknown enum text, out-of-range integer, bad JSON) →
+  `Corrupt`; caller passed something invalid → `InvalidInput`; deployment misconfiguration
+  → `Configuration`; a broken internal invariant → `Internal`. Never `Connection` for bad
+  data and never a default value in its place.
+- **Value-free messages.** Errors name the entity, column, constraint or SQLSTATE — never
+  a stored or submitted value (emails, slugs, payloads, tokens).
+- **Decoding.** One `decode_<dto>` per DTO per backend, in the module that owns the table.
+  Nullable columns decode as `Option<T>` and propagate errors — never `.ok()` or
+  `unwrap_or_default()`. SQLite returns `0`/`""` for NULL scalars, so NOT NULL columns are
+  read as `Option<T>` and rejected when `None`. Integers cross the signed SQL boundary only
+  through `decode_u64` / `decode_i32` / `encode_u64` — never `as`.
+- **Reference adapter.** `inmem/` returns the same variants, order and uniqueness outcomes
+  as the SQL backends; conformance asserts it.
+- **Tests.** Behaviour shared by backends is a conformance case in `tests/`, run against
+  all three. Unit tests of private helpers live beside them: inline `mod tests` when short,
+  otherwise a module directory's `mod.rs` declares `#[cfg(test)] mod <name>_tests;`
+  (e.g. `sqlite/identity/decoder_tests.rs`) — no new `#[path]` includes.
 
 ## Conventions & never-do
 
