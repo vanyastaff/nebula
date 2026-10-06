@@ -99,7 +99,7 @@ impl ResumeProducer for PgResumeProducer {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            .map_err(StorageError::from)?;
         sqlx::query(
             "INSERT INTO port_control_queue \
              (id, execution_id, workspace_id, org_id, command, status, \

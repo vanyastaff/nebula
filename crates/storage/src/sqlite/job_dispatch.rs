@@ -53,10 +53,15 @@ fn decode_command(s: &str) -> Result<nebula_storage_port::dto::ControlCommand, S
         "Terminate" => Ok(C::Terminate),
         "Resume" => Ok(C::Resume),
         "Restart" => Ok(C::Restart),
-        other => Err(StorageError::Serialization(format!(
-            "unknown control command: {other}"
-        ))),
+        _ => Err(StorageError::Serialization(
+            "column `command` holds an unknown control command".into(),
+        )),
     }
+}
+
+/// A stored plugin key that does not parse — named by column, never quoted.
+fn invalid_plugin_key(column: &str) -> StorageError {
+    StorageError::Serialization(format!("column `{column}` holds an invalid plugin key"))
 }
 
 fn plugins_to_json(plugins: &[PluginKey]) -> String {
@@ -67,20 +72,20 @@ fn plugins_to_json(plugins: &[PluginKey]) -> String {
 fn row_to_msg(row: &sqlx::sqlite::SqliteRow) -> Result<JobDispatchMsg, StorageError> {
     let id_bytes: Vec<u8> = row.try_get("id").map_err(storage_error)?;
     let plugins_json: String = row.try_get("required_plugins").map_err(storage_error)?;
-    let plugin_strs: Vec<String> = serde_json::from_str(&plugins_json)
-        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+    let plugin_strs: Vec<String> =
+        serde_json::from_str(&plugins_json).map_err(StorageError::from)?;
     let required_plugins: Vec<PluginKey> = plugin_strs
         .iter()
         .map(|s| {
             s.parse::<PluginKey>()
-                .map_err(|e| StorageError::Serialization(e.to_string()))
+                .map_err(|_| invalid_plugin_key("required_plugins"))
         })
         .collect::<Result<_, _>>()?;
     let required_plugin_key: PluginKey = row
         .try_get::<String, _>("required_plugin_key")
         .map_err(storage_error)?
         .parse::<PluginKey>()
-        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        .map_err(|_| invalid_plugin_key("required_plugin_key"))?;
     let payload_json: String = row.try_get("payload").map_err(storage_error)?;
     Ok(JobDispatchMsg::new(
         decode_id(&id_bytes)?,
@@ -92,8 +97,7 @@ fn row_to_msg(row: &sqlx::sqlite::SqliteRow) -> Result<JobDispatchMsg, StorageEr
                 .map_err(storage_error)?,
             row.try_get::<String, _>("org_id").map_err(storage_error)?,
         ),
-        serde_json::from_str(&payload_json)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?,
+        serde_json::from_str(&payload_json).map_err(StorageError::from)?,
         row.try_get::<Option<String>, _>("event_id")
             .map_err(storage_error)?,
         required_plugin_key,
@@ -196,8 +200,7 @@ fn generation_bind(claim: &JobClaimToken) -> Result<i64, StorageError> {
 impl JobDispatchQueue for SqliteJobDispatchQueue {
     #[tracing::instrument(level = "debug", skip(self, msg), fields(id = ?msg.id, command = msg.command.as_str()))]
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError> {
-        let payload = serde_json::to_string(&msg.payload)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let payload = serde_json::to_string(&msg.payload).map_err(StorageError::from)?;
         let plugins = plugins_to_json(&msg.required_plugins);
         sqlx::query(
             "INSERT INTO port_job_dispatch_queue \

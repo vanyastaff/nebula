@@ -57,21 +57,17 @@ impl IdempotencyStoreRepo for PgHttpIdempotencyStore {
             return Ok(None);
         };
 
+        // The cache key embeds the client's raw Idempotency-Key, so no
+        // message below quotes it (nor the stored bytes).
         let status = u16::try_from(status_i16).map_err(|_| {
-            StorageError::Serialization(format!(
-                "api_idempotency_dedup.status out of u16 range: {status_i16} \
-                 (cache_key={cache_key})"
-            ))
+            StorageError::Corrupt("column `api_idempotency_dedup.status` is negative".into())
         })?;
-        let headers = decode_headers(&headers_blob).map_err(|err| {
-            StorageError::Serialization(format!(
-                "api_idempotency_dedup.headers decode failed (cache_key={cache_key}): {err}"
-            ))
+        let headers = decode_headers(&headers_blob).map_err(|_| {
+            StorageError::Corrupt("column `api_idempotency_dedup.headers` does not decode".into())
         })?;
         let fingerprint: [u8; 32] = fingerprint_blob.as_slice().try_into().map_err(|_| {
-            StorageError::Serialization(format!(
-                "api_idempotency_dedup.fingerprint length != 32 \
-                 (cache_key={cache_key}, len={})",
+            StorageError::Corrupt(format!(
+                "column `api_idempotency_dedup.fingerprint` holds {} bytes, expected 32",
                 fingerprint_blob.len()
             ))
         })?;
@@ -90,18 +86,16 @@ impl IdempotencyStoreRepo for PgHttpIdempotencyStore {
         record: CachedRecord,
         ttl: Duration,
     ) -> Result<(), StorageError> {
-        let headers_blob = encode_headers(&record.headers).map_err(|err| {
-            StorageError::Serialization(format!(
-                "api_idempotency_dedup.headers encode failed (cache_key={cache_key}): {err}"
-            ))
+        let headers_blob = encode_headers(&record.headers).map_err(|_| {
+            StorageError::Serialization("cached response headers do not encode".into())
         })?;
         let expires_at = chrono::Utc::now()
             + chrono::Duration::from_std(ttl).map_err(|err| {
                 StorageError::InvalidInput(format!("ttl out of chrono::Duration range: {err}"))
             })?;
         let status_i16 = i16::try_from(record.status).map_err(|_| {
-            StorageError::Serialization(format!(
-                "status out of i16 range: {} (cache_key={cache_key})",
+            StorageError::InvalidInput(format!(
+                "cached response status {} is outside the stored range",
                 record.status
             ))
         })?;

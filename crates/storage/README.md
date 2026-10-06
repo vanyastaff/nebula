@@ -107,7 +107,8 @@ provides the adapters:
   user-version fencing, explicit old-key rotation, and repeated verification;
   the Postgres auth backend is not exposed until convergence succeeds.
 - `StorageError` — re-exported from `nebula-storage-port`; `sqlx` failures are
-  classified once, value-free, in `sql_error`.
+  classified once, value-free, in `sql_error` (the resource-runtime adapters still
+  carry their own classifier).
 
 Applied migrations `0001..0041` are immutable SQLx-checksummed history.
 Credential lifecycle migration

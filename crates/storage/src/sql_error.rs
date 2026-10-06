@@ -37,6 +37,14 @@ pub(crate) fn storage_error(error: sqlx::Error) -> StorageError {
         sqlx::Error::Configuration(_) => {
             StorageError::Configuration("database driver is misconfigured".into())
         },
+        sqlx::Error::Encode(_) => {
+            StorageError::InvalidInput("a bound value does not encode for the database".into())
+        },
+        sqlx::Error::InvalidArgument(_) | sqlx::Error::InvalidSavePointStatement => {
+            StorageError::Internal("the driver rejected a statement argument".into())
+        },
+        // Io, Tls, Protocol, pool exhaustion or closure, a crashed worker: the
+        // backend could not be reached — a retry may succeed.
         _ => StorageError::Connection("database backend unavailable".into()),
     }
 }
@@ -76,7 +84,7 @@ pub(crate) fn encode_u64(value: u64, column: &'static str) -> Result<i64, Storag
 fn database_error(database: &dyn DatabaseError) -> StorageError {
     let code = database.code();
     let code = code.as_deref().unwrap_or("unknown");
-    if is_transient(code) {
+    if is_transient(database, code) {
         return StorageError::Connection(format!("database backend unavailable (SQLSTATE {code})"));
     }
     let constraint = database.constraint().unwrap_or("unnamed");
@@ -94,20 +102,41 @@ fn database_error(database: &dyn DatabaseError) -> StorageError {
     }
 }
 
-/// Failures a retry can clear: PostgreSQL connection exceptions (class 08),
-/// operator intervention / cancellation (class 57), insufficient resources
-/// (class 53), serialization failures and deadlocks (40001, 40P01); SQLite
-/// `BUSY` and `LOCKED` (primary codes 5 and 6, including extended forms).
-fn is_transient(code: &str) -> bool {
-    if ["08", "57", "53"]
-        .iter()
-        .any(|class| code.starts_with(class))
-        || matches!(code, "40001" | "40P01")
+/// Whether a retry can clear the failure. The dialect is decided by the
+/// error's type, never by the shape of its code: an all-digit PostgreSQL
+/// SQLSTATE such as `42501` would otherwise read as a SQLite code.
+fn is_transient(database: &dyn DatabaseError, code: &str) -> bool {
+    #[cfg(feature = "sqlite")]
+    if database
+        .try_downcast_ref::<sqlx::sqlite::SqliteError>()
+        .is_some()
     {
-        return true;
+        return sqlite_code_is_transient(code);
     }
+    #[cfg(not(feature = "sqlite"))]
+    let _ = database;
+    postgres_code_is_transient(code)
+}
+
+/// PostgreSQL connection exceptions (class 08), operator intervention /
+/// cancellation (class 57), insufficient resources (class 53), serialization
+/// failures and deadlocks (40001, 40P01).
+fn postgres_code_is_transient(sqlstate: &str) -> bool {
+    ["08", "57", "53"]
+        .iter()
+        .any(|class| sqlstate.starts_with(class))
+        || matches!(sqlstate, "40001" | "40P01")
+}
+
+/// SQLite `BUSY` and `LOCKED`: primary codes 5 and 6, including their
+/// extended forms (the primary code is the low byte).
+#[cfg_attr(
+    not(feature = "sqlite"),
+    expect(dead_code, reason = "only SQLite errors carry SQLite result codes")
+)]
+fn sqlite_code_is_transient(code: &str) -> bool {
     code.parse::<u32>()
-        .is_ok_and(|sqlite| matches!(sqlite & 0xff, 5 | 6))
+        .is_ok_and(|extended| matches!(extended & 0xff, 5 | 6))
 }
 
 #[cfg(test)]
@@ -163,14 +192,33 @@ mod tests {
     }
 
     #[test]
-    fn transient_codes_cover_both_dialects() {
-        for code in [
-            "08006", "57014", "53300", "40001", "40P01", "5", "6", "261", "517",
-        ] {
-            assert!(is_transient(code), "{code}");
+    fn postgres_transient_codes_are_the_retryable_classes_only() {
+        for code in ["08006", "57014", "53300", "40001", "40P01"] {
+            assert!(postgres_code_is_transient(code), "{code}");
         }
-        for code in ["23505", "23503", "42601", "19", "2067"] {
-            assert!(!is_transient(code), "{code}");
+        // All-digit SQLSTATEs whose low byte is SQLite BUSY/LOCKED stay
+        // permanent: insufficient privilege, a NUL byte in text.
+        for code in ["23505", "23503", "42601", "42501", "22021", "22022"] {
+            assert!(!postgres_code_is_transient(code), "{code}");
         }
+    }
+
+    #[test]
+    fn sqlite_transient_codes_are_busy_and_locked_only() {
+        for code in ["5", "6", "261", "517"] {
+            assert!(sqlite_code_is_transient(code), "{code}");
+        }
+        // Constraint codes, including extended ones that start with "53".
+        for code in ["19", "2067", "531", "5386"] {
+            assert!(!sqlite_code_is_transient(code), "{code}");
+        }
+    }
+
+    #[test]
+    fn caller_and_driver_faults_are_not_connection_failures() {
+        assert!(matches!(
+            storage_error(sqlx::Error::InvalidArgument("x".into())),
+            StorageError::Internal(_)
+        ));
     }
 }

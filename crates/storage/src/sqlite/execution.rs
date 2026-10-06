@@ -228,7 +228,10 @@ impl ExecutionStore for SqliteExecutionStore {
         .map_err(storage_error)?;
 
         if let Some(generation) = new_generation {
-            return Ok(Some(FencingToken::from_generation(generation as u64)));
+            return Ok(Some(FencingToken::from_generation(decode_u64(
+                generation,
+                "fencing_generation",
+            )?)));
         }
 
         // Zero rows means either a live lease or no such row; only a live lease
@@ -416,7 +419,7 @@ impl ExecutionStore for SqliteExecutionStore {
             },
         }
         .map_err(storage_error)?;
-        Ok(row.try_get::<i64, _>("n").map_err(storage_error)? as u64)
+        decode_u64(row.try_get::<i64, _>("n").map_err(storage_error)?, "n")
     }
 }
 
@@ -552,10 +555,15 @@ pub(super) async fn commit_locked(
         // Unknown id or invisible cross-tenant row: never Apply.
         return Ok(TransitionOutcome::VersionConflict { actual: 0 });
     };
-    let cur_version = row.try_get::<i64, _>("version").map_err(storage_error)? as u64;
-    let cur_gen = row
-        .try_get::<i64, _>("fencing_generation")
-        .map_err(storage_error)? as u64;
+    let cur_version = decode_u64(
+        row.try_get::<i64, _>("version").map_err(storage_error)?,
+        "version",
+    )?;
+    let cur_gen = decode_u64(
+        row.try_get::<i64, _>("fencing_generation")
+            .map_err(storage_error)?,
+        "fencing_generation",
+    )?;
 
     // Fencing gate first: a superseded token is rejected even on a
     // version match (zombie-runner closure, spec §4.1).
@@ -632,7 +640,7 @@ pub(super) async fn commit_locked(
             .as_ref()
             .map(serde_json::to_string)
             .transpose()
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            .map_err(StorageError::from)?;
         sqlx::query(
             "INSERT INTO port_control_queue \
              (id, execution_id, workspace_id, org_id, command, status, \

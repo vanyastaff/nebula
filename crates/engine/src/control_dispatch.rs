@@ -313,8 +313,9 @@ impl EngineControlDispatch {
         error: StorageError,
     ) -> Result<StatusRead, ControlDispatchError> {
         match error {
-            error
-            @ (StorageError::Serialization(_) | StorageError::UnknownSchemaVersion { .. }) => {
+            error @ (StorageError::Corrupt(_)
+            | StorageError::Serialization(_)
+            | StorageError::UnknownSchemaVersion { .. }) => {
                 tracing::error!(
                     %execution_id,
                     error = %error,
@@ -1299,6 +1300,15 @@ mod tests {
             EngineControlDispatch::classify_status_read_error(
                 execution_id,
                 StorageError::UnknownSchemaVersion { found: 2, max: 1 },
+            ),
+            Ok(StatusRead::Corrupt)
+        );
+        // A stored row the adapter cannot decode (unknown status text, NULL
+        // in a NOT NULL column) is permanent too — never redelivered forever.
+        std::assert_matches!(
+            EngineControlDispatch::classify_status_read_error(
+                execution_id,
+                StorageError::Corrupt("column `status` holds an unknown value".to_owned()),
             ),
             Ok(StatusRead::Corrupt)
         );

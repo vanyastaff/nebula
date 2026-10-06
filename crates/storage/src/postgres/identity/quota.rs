@@ -9,6 +9,27 @@ use sqlx::postgres::PgRow;
 use super::{int32, optional, required};
 use crate::sql_error::{decode_i32, decode_u64, storage_error};
 
+/// Why the guarded counter `UPDATE` matched no row, given the counter read
+/// afterwards: no quota row ⇒ `NotFound`; past `i32::MAX` ⇒ `InvalidInput`;
+/// below zero ⇒ `Conflict`.
+fn adjustment_refused(current: Option<i64>, org_id: &str, delta: i32) -> StorageError {
+    let Some(actual) = current else {
+        return StorageError::not_found("quota", org_id);
+    };
+    if actual.saturating_add(i64::from(delta)) > i64::from(i32::MAX) {
+        return StorageError::InvalidInput("concurrent execution adjustment overflows".into());
+    }
+    match decode_u64(actual, "concurrent_executions") {
+        Ok(actual) => StorageError::Conflict {
+            entity: "quota",
+            id: org_id.to_owned(),
+            expected: 0,
+            actual,
+        },
+        Err(corrupt) => corrupt,
+    }
+}
+
 /// Postgres-backed `org_quotas` + `org_quota_usage` store.
 #[derive(Clone, Debug)]
 pub struct PgQuotaStore {
@@ -83,16 +104,18 @@ impl QuotaStore for PgQuotaStore {
     }
 
     async fn adjust_concurrent(&self, org_id: &str, delta: i32) -> Result<i32, StorageError> {
-        // The floor is enforced in the WHERE: a would-be-negative adjustment
-        // affects zero rows and is rejected below.
+        // Both bounds are enforced in the WHERE: an adjustment that would go
+        // negative or past `i32::MAX` affects zero rows and is rejected below,
+        // so the stored counter always decodes.
         let updated = sqlx::query_scalar::<_, i64>(
             "UPDATE port_quotas \
              SET concurrent_executions = concurrent_executions + $1 \
-             WHERE org_id = $2 AND concurrent_executions + $1 >= 0 \
+             WHERE org_id = $2 AND concurrent_executions + $1 BETWEEN 0 AND $3 \
              RETURNING concurrent_executions",
         )
         .bind(i64::from(delta))
         .bind(org_id)
+        .bind(i64::from(i32::MAX))
         .fetch_optional(&self.pool)
         .await
         .map_err(storage_error)?;
@@ -106,14 +129,6 @@ impl QuotaStore for PgQuotaStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(storage_error)?;
-        match current {
-            Some(actual) => Err(StorageError::Conflict {
-                entity: "quota",
-                id: org_id.to_owned(),
-                expected: 0,
-                actual: decode_u64(actual, "concurrent_executions")?,
-            }),
-            None => Err(StorageError::not_found("quota", org_id)),
-        }
+        Err(adjustment_refused(current, org_id, delta))
     }
 }

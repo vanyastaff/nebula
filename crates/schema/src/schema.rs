@@ -648,9 +648,8 @@ fn property_uses_predicate_context(property: &Property) -> bool {
 ///
 /// This guards the *logical* tree once it has been deserialized. Untrusted
 /// schema bytes reach the system as JSON (plugin protocol, API), whose parser
-/// self-limits recursion; a non-self-limiting binary deserializer
-/// (`StorageFormat::MessagePack`, off by default) is only used for trusted
-/// at-rest data and is not fed attacker-controlled schema trees.
+/// self-limits recursion; schemas at rest are stored as JSON too, so no
+/// non-self-limiting binary deserializer ever reads a schema tree.
 pub const MAX_SCHEMA_DEPTH: u8 = 64;
 
 /// Per-level fan-out cap: the property-handle cursor is `u16`, so a single level

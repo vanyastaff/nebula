@@ -18,7 +18,7 @@ use nebula_storage_port::store::{WorkflowPublicationError, WorkflowStore, Workfl
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
 
-use crate::sql_error::storage_error;
+use crate::sql_error::{decode_u64, storage_error};
 
 /// Decode one live `port_workflows` row selected as `id, version, slug`. The
 /// one decoder of the table for this backend; a value that does not fit the
@@ -31,8 +31,7 @@ fn decode_workflow(
     Ok(WorkflowRecord {
         id: row.try_get("id").map_err(storage_error)?,
         scope: scope.clone(),
-        version: u64::try_from(version)
-            .map_err(|_| StorageError::Corrupt("workflow version is negative".into()))?,
+        version: decode_u64(version, "version")?,
         slug: row.try_get("slug").map_err(storage_error)?,
         deleted: false,
     })
@@ -234,7 +233,7 @@ impl WorkflowStore for SqliteWorkflowStore {
                 entity: "workflow",
                 id: record.id,
                 expected: expected_version,
-                actual: actual as u64,
+                actual: decode_u64(actual, "version")?,
             }),
             None => Err(StorageError::not_found("workflow", record.id)),
         }
@@ -320,7 +319,7 @@ impl WorkflowStore for SqliteWorkflowStore {
                             entity: "workflow",
                             id: row.id,
                             expected,
-                            actual: actual as u64,
+                            actual: decode_u64(actual, "version")?,
                         },
                         None => StorageError::not_found("workflow", row.id),
                     });
@@ -406,7 +405,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         .fetch_one(&self.pool)
         .await
         .map_err(storage_error)?;
-        Ok(n.max(0) as u64)
+        decode_u64(n, "count")
     }
 
     async fn is_reachable(&self) -> Result<(), StorageError> {
@@ -446,7 +445,9 @@ fn version_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<WorkflowVersionReco
             .map(|encoded| serde_json::from_str(&encoded))
             .transpose()?,
         workflow_id: row.try_get("workflow_id").map_err(storage_error)?,
-        number: row.try_get::<i64, _>("number").map_err(storage_error)? as u32,
+        number: u32::try_from(row.try_get::<i64, _>("number").map_err(storage_error)?).map_err(
+            |_| StorageError::Corrupt("column `number` is outside the u32 range".into()),
+        )?,
         published: row.try_get::<i64, _>("published").map_err(storage_error)? != 0,
         pinned: row.try_get::<i64, _>("pinned").map_err(storage_error)? != 0,
         definition,

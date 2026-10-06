@@ -29,7 +29,7 @@ fn decode_claim(row: sqlx::postgres::PgRow) -> Result<ControlClaim, StorageError
         .as_deref()
         .map(serde_json::from_str)
         .transpose()
-        .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        .map_err(StorageError::from)?;
     let msg = ControlMsg {
         id,
         execution_id: row.try_get("execution_id").map_err(storage_error)?,
@@ -142,9 +142,9 @@ fn decode_command(s: &str) -> Result<nebula_storage_port::dto::ControlCommand, S
         "Terminate" => Ok(C::Terminate),
         "Resume" => Ok(C::Resume),
         "Restart" => Ok(C::Restart),
-        other => Err(StorageError::Serialization(format!(
-            "unknown control command: {other}"
-        ))),
+        _ => Err(StorageError::Serialization(
+            "column `command` holds an unknown control command".into(),
+        )),
     }
 }
 
@@ -165,7 +165,7 @@ impl ControlQueue for PgControlQueue {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+            .map_err(StorageError::from)?;
         sqlx::query(
             "INSERT INTO port_control_queue \
              (id, execution_id, workspace_id, org_id, command, status, \

@@ -57,10 +57,7 @@ pub use dto::{
     CredentialVersionError, MaterialUpdate, SecretBytes, StoredCredential, StoredCredentialHead,
     StoredLiveCredential, StoredTombstonedCredential,
 };
-pub use dto::{
-    ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError,
-    UnknownResumeTokenWaitKind,
-};
+pub use dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use error::StorageError;
 pub use ids::{CredentialId, FencingToken, OperationCallId, OperationId};
 pub use scope::Scope;

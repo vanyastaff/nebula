@@ -38,7 +38,7 @@
 - `src/auth/` — Plane-A account persistence (users, sessions, PATs, OAuth state, external identities, MFA, identity secrets, session-token digests): traits and rows in `auth`, PostgreSQL implementations in `auth/postgres/`. Outside the port contract by design.
 - `src/http_idempotency/` — the API's idempotent-replay response cache (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); not the port's per-attempt `IdempotencyStore`.
 - `src/webhook_activation.rs` — the webhook activation spec persisted in `triggers.config`.
-- `src/sql_error.rs` — the one `sqlx::Error` → `StorageError` classification (value-free) plus `decode_u64`; every SQL adapter maps errors through it.
+- `src/sql_error.rs` — the one `sqlx::Error` → `StorageError` classification (value-free; dialect chosen by error type) plus `decode_u64` / `decode_i32` / `encode_u64`. Every SQL adapter maps errors through it except `*/resource_runtime.rs`, which still has its own classifier (known debt: its `corrupt()` mixes corrupt data, counter exhaustion and caller TTL).
 - `src/auth/postgres/oauth_login.rs` + `src/auth/oauth_login.rs` — storage-owned Plane-A
   OAuth finalization: every call performs no network I/O and atomically records
   either user/stable-link/session or an MFA challenge-without-session outcome.
@@ -52,8 +52,10 @@
 
 ## Adapter rules (every backend, every new or touched store)
 
-- **Layout.** One file per port aggregate with the same name in `inmem/`, `sqlite/` and
-  `postgres/`. When a file grows to hold several aggregates, it becomes a directory
+- **Layout.** A new port store gets one file with the same name in `inmem/`, `sqlite/`
+  and `postgres/`. Existing exceptions: the journal reader lives in `inmem/journal.rs` but
+  `*/control_queue.rs` in SQL, `inmem/node_result.rs` has no SQL twin, `postgres/rate_limit.rs`
+  is PostgreSQL-only by design, and credential persistence lives in `src/credential/`. When a file grows to hold several aggregates, it becomes a directory
   (`identity/`): `mod.rs` keeps the shared decoders and helpers, one file per aggregate.
   Code that is not a port adapter goes in a module named for what it is (`auth/`,
   `http_idempotency/`), never in a backend-named tree.
@@ -69,8 +71,11 @@
 - **Decoding.** One `decode_<dto>` per DTO per backend, in the module that owns the table.
   Nullable columns decode as `Option<T>` and propagate errors — never `.ok()` or
   `unwrap_or_default()`. SQLite returns `0`/`""` for NULL scalars, so NOT NULL columns are
-  read as `Option<T>` and rejected when `None`. Integers cross the signed SQL boundary only
-  through `decode_u64` / `decode_i32` / `encode_u64` — never `as`.
+  read as `Option<T>` and rejected when `None` (or the column is declared NOT NULL in every
+  migration). Integers cross the signed SQL boundary only through `decode_u64` /
+  `decode_i32` / `encode_u64` — never `as`. Older adapters (`execution`, `workflow`,
+  `control_queue`, `job_dispatch`, `turn_handoff`) still bind with `as i64`: convert them
+  when you touch them.
 - **Reference adapter.** `inmem/` returns the same variants, order and uniqueness outcomes
   as the SQL backends; conformance asserts it.
 - **Tests.** Behaviour shared by backends is a conformance case in `tests/`, run against

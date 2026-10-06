@@ -54,10 +54,15 @@ fn decode_command(s: &str) -> Result<nebula_storage_port::dto::ControlCommand, S
         "Terminate" => Ok(C::Terminate),
         "Resume" => Ok(C::Resume),
         "Restart" => Ok(C::Restart),
-        other => Err(StorageError::Serialization(format!(
-            "unknown control command: {other}"
-        ))),
+        _ => Err(StorageError::Serialization(
+            "column `command` holds an unknown control command".into(),
+        )),
     }
+}
+
+/// A stored plugin key that does not parse — named by column, never quoted.
+fn invalid_plugin_key(column: &str) -> StorageError {
+    StorageError::Serialization(format!("column `{column}` holds an invalid plugin key"))
 }
 
 fn plugins_to_jsonb(plugins: &[PluginKey]) -> serde_json::Value {
@@ -128,7 +133,7 @@ fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageErro
                 })
                 .and_then(|s| {
                     s.parse::<PluginKey>()
-                        .map_err(|e| StorageError::Serialization(e.to_string()))
+                        .map_err(|_| invalid_plugin_key("required_plugins"))
                 })
         })
         .collect::<Result<_, _>>()?;
@@ -136,7 +141,7 @@ fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageErro
         .try_get::<String, _>("required_plugin_key")
         .map_err(storage_error)?
         .parse::<PluginKey>()
-        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        .map_err(|_| invalid_plugin_key("required_plugin_key"))?;
     Ok(JobDispatchMsg::new(
         decode_id(&id_bytes)?,
         row.try_get::<String, _>("execution_id")
