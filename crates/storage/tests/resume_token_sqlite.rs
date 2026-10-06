@@ -103,18 +103,15 @@ async fn seed_token(
         .expect("acquire_lease must not error")
         .expect("fresh row must yield a fencing token");
 
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id)
-        .expected_version(expected_version)
-        .fencing(fencing)
-        .state(
-            serde_json::json!({"s": "waiting"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .resume_tokens(vec![token_row])
-        .build()
-        .expect("well-formed batch must build");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id,
+        expected_version,
+        fencing,
+        serde_json::json!({"s": "waiting"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_resume_tokens(vec![token_row]);
 
     let outcome = exec_store
         .commit(batch)

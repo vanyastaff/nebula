@@ -120,17 +120,14 @@ impl ExecutionTurnHandoff for CheckpointBeforeCommit {
                 serde::Deserialize::deserialize(&row.state).unwrap();
             state.version += 1;
             state.updated_at = chrono::Utc::now();
-            let batch = nebula_storage_port::TransitionBatch::builder()
-                .scope(transition.scope().clone())
-                .execution_id(transition.execution_id())
-                .expected_version(row.version)
-                .fencing(transition.fence())
-                .state(
-                    serde_json::to_value(&state).unwrap(),
-                    nebula_engine::execution_listing(&state),
-                )
-                .build()
-                .unwrap();
+            let batch = nebula_storage_port::TransitionBatch::new(
+                transition.scope().clone(),
+                transition.execution_id(),
+                row.version,
+                transition.fence(),
+                serde_json::to_value(&state).unwrap(),
+                nebula_engine::execution_listing(&state),
+            );
             self.execution.commit(batch).await?;
             let updated = self
                 .execution

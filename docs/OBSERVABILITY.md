@@ -146,7 +146,7 @@ Operator procedure for any failed or stuck run:
    lists the workspace's execution history newest first (add `workflow_id`,
    `created_after`, `created_before`; page with `cursor`). The status filter reads the
    listing projection the execution owner writes with every state snapshot
-   (`TransitionBatchBuilder::state`, migration 0064), so it is never staler than the
+   (`TransitionBatch::new`, migration 0064), so it is never staler than the
    last commit.
 1. **What failed?** Query `port_execution_journal` by `execution_id` for the last event before the failure. The `event` tag + `payload.error` pins the failing step.
 2. **When?** Compare the `execution_started` timestamp to the failure event timestamp; cross-reference with `trace_id` in the observability stack.

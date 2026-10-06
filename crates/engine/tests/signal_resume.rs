@@ -461,14 +461,14 @@ impl SignalHarness {
             .as_object_mut()
             .unwrap()
             .insert("status".to_owned(), serde_json::json!(status.to_string()));
-        let batch = TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(record.version)
-            .fencing(token)
-            .state(state.clone(), listing_of(&state))
-            .build()
-            .unwrap();
+        let batch = TransitionBatch::new(
+            scope.clone(),
+            &id,
+            record.version,
+            token,
+            state.clone(),
+            listing_of(&state),
+        );
         assert!(matches!(
             self.stores.execution.commit(batch).await.unwrap(),
             TransitionOutcome::Applied { .. }
@@ -3026,14 +3026,14 @@ impl SignalHarness {
             .as_object_mut()
             .expect("a pinned execution state is a JSON object")
             .insert("node_states".to_owned(), body);
-        let batch = TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(record.version)
-            .fencing(token)
-            .state(state.clone(), listing_of(&state))
-            .build()
-            .unwrap();
+        let batch = TransitionBatch::new(
+            scope.clone(),
+            &id,
+            record.version,
+            token,
+            state.clone(),
+            listing_of(&state),
+        );
         assert!(matches!(
             self.stores.execution.commit(batch).await.unwrap(),
             TransitionOutcome::Applied { .. }

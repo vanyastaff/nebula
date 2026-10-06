@@ -125,22 +125,19 @@ impl Fixture {
             .await
             .unwrap()
             .unwrap();
-        let batch = TransitionBatch::builder()
-            .scope(self.scope.clone())
-            .execution_id(id.to_string())
-            .expected_version(0)
-            .fencing(fencing)
-            .state(
-                json!({"status":"paused", "workflow_id":"wf_1"}),
-                nebula_storage_port::ExecutionListing::new(
-                    nebula_storage_port::ExecutionListingStatus::Paused,
-                    None,
-                    None,
-                ),
-            )
-            .resume_tokens(rows)
-            .build()
-            .unwrap();
+        let batch = TransitionBatch::new(
+            self.scope.clone(),
+            id.to_string(),
+            0,
+            fencing,
+            json!({"status":"paused", "workflow_id":"wf_1"}),
+            nebula_storage_port::ExecutionListing::new(
+                nebula_storage_port::ExecutionListingStatus::Paused,
+                None,
+                None,
+            ),
+        )
+        .with_resume_tokens(rows);
         assert!(matches!(
             self.store.commit(batch).await.unwrap(),
             TransitionOutcome::Applied { .. }

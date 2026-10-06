@@ -1451,17 +1451,14 @@ async fn arm_wait_for_completion(stores: &WtStores, execution_id: ExecutionId) {
         }
     }
     state.version += 1;
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(&id)
-        .expected_version(record.version)
-        .fencing(token)
-        .state(
-            serde_json::to_value(&state).unwrap(),
-            nebula_engine::execution_listing(&state),
-        )
-        .build()
-        .unwrap();
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        &id,
+        record.version,
+        token,
+        serde_json::to_value(&state).unwrap(),
+        nebula_engine::execution_listing(&state),
+    );
     assert!(matches!(
         stores.execution.commit(batch).await.unwrap(),
         TransitionOutcome::Applied { .. }

@@ -695,14 +695,14 @@ pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease must be acquirable", backend.name()));
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_cas")
-        .expected_version(999) // deliberately wrong
-        .fencing(token)
-        .state(serde_json::json!({"s": "running"}), nebula_storage_port::ExecutionListing::CREATED)
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_cas",
+        999, // deliberately wrong
+        token,
+        serde_json::json!({"s": "running"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    );
     let outcome = store.commit(batch).await.expect("commit");
     assert!(
         matches!(outcome, TransitionOutcome::VersionConflict { .. }),
@@ -736,17 +736,14 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) ->
         .unwrap();
     // A token from an older generation than whatever the store now holds.
     let stale = FencingToken::from_generation(0);
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_fence")
-        .expected_version(0)
-        .fencing(stale)
-        .state(
-            serde_json::json!({"s": "running"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_fence",
+        0,
+        stale,
+        serde_json::json!({"s": "running"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    );
     let outcome = store.commit(batch).await.expect("commit");
     assert!(
         matches!(
@@ -911,19 +908,16 @@ pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) -> serde_json::V
         seq: None,
         payload: serde_json::json!({"event": "transition"}),
     };
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_triple")
-        .expected_version(0)
-        .fencing(token)
-        .state(
-            serde_json::json!({"s": "running"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .outbox(vec![msg])
-        .journal(vec![je])
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_triple",
+        0,
+        token,
+        serde_json::json!({"s": "running"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![msg])
+    .with_journal(vec![je]);
     let outcome = store.commit(batch).await.expect("commit");
     assert!(
         matches!(outcome, TransitionOutcome::Applied { .. }),
@@ -1023,14 +1017,14 @@ pub(crate) async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend)
         .create(&scope_a(), "exe_y", "wf_1", serde_json::json!({}))
         .await
         .expect("create in scope A");
-    let batch = TransitionBatch::builder()
-        .scope(scope_b()) // attacker's scope
-        .execution_id("exe_y")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(0))
-        .state(serde_json::json!({"s": "hijacked"}), nebula_storage_port::ExecutionListing::CREATED)
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        scope_b(), // attacker's scope
+        "exe_y",
+        0,
+        FencingToken::from_generation(0),
+        serde_json::json!({"s": "hijacked"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    );
     let outcome = store.commit(batch).await;
     // Any of VersionConflict / FencedOut / NotFound (Err) is an acceptable
     // rejection; the only forbidden outcome is a successful cross-tenant
@@ -1483,18 +1477,15 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
         reclaim_count: 0,
         resume_target: None,
     };
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_cq")
-        .expected_version(0)
-        .fencing(token)
-        .state(
-            serde_json::json!({"s": "cancelling"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .outbox(vec![msg])
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_cq",
+        0,
+        token,
+        serde_json::json!({"s": "cancelling"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![msg]);
     let outcome = store.commit(batch).await.expect("commit");
     assert!(
         matches!(outcome, TransitionOutcome::Applied { .. }),
@@ -1605,18 +1596,15 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         reclaim_count: 0,
         resume_target: Some(webhook_target.clone()),
     };
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_rt")
-        .expected_version(0)
-        .fencing(token)
-        .state(
-            serde_json::json!({"s": "waiting"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .outbox(vec![resume_msg])
-        .build()
-        .expect("batch for resume-target round-trip");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_rt",
+        0,
+        token,
+        serde_json::json!({"s": "waiting"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![resume_msg]);
     store
         .commit(batch)
         .await
@@ -1661,18 +1649,15 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         reclaim_count: 0,
         resume_target: None,
     };
-    let batch2 = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_rt2")
-        .expected_version(0)
-        .fencing(token2)
-        .state(
-            serde_json::json!({"s": "cancelling"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .outbox(vec![null_msg])
-        .build()
-        .expect("batch 2");
+    let batch2 = TransitionBatch::new(
+        s.clone(),
+        "exe_rt2",
+        0,
+        token2,
+        serde_json::json!({"s": "cancelling"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![null_msg]);
     store.commit(batch2).await.expect("commit 2");
     // First, drain the already-claimed row above to avoid re-claiming it.
     queue
@@ -1900,27 +1885,24 @@ pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease", backend.name()));
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_j")
-        .expected_version(0)
-        .fencing(token)
-        .state(
-            serde_json::json!({"s": "running"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .journal(vec![
-            JournalEntry {
-                seq: None,
-                payload: serde_json::json!({"e": "a"}),
-            },
-            JournalEntry {
-                seq: None,
-                payload: serde_json::json!({"e": "b"}),
-            },
-        ])
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_j",
+        0,
+        token,
+        serde_json::json!({"s": "running"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_journal(vec![
+        JournalEntry {
+            seq: None,
+            payload: serde_json::json!({"e": "a"}),
+        },
+        JournalEntry {
+            seq: None,
+            payload: serde_json::json!({"e": "b"}),
+        },
+    ]);
     store.commit(batch).await.expect("commit");
 
     let entries = reader.get_journal(&s, "exe_j").await.expect("get_journal");
@@ -2752,18 +2734,15 @@ pub(crate) async fn assert_terminal_commit_releases_live_reference(backend: &dyn
         .expect("acquire lease")
         .expect("lease must be available for a fresh execution");
 
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(0)
-        .fencing(token)
-        .state(
-            serde_json::json!({"status": "Completed"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .reference_transition(ExecutionReferenceTransition::ReleaseLive)
-        .build()
-        .expect("terminal release batch");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        0,
+        token,
+        serde_json::json!({"status": "Completed"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::ReleaseLive);
     let outcome = executions
         .commit(batch)
         .await
@@ -2798,21 +2777,18 @@ pub(crate) async fn assert_terminal_commit_retains_rollback_window(backend: &dyn
         .expect("acquire lease")
         .expect("lease must be available for a fresh execution");
 
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(0)
-        .fencing(token)
-        .state(
-            serde_json::json!({"status": "Completed"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .reference_transition(ExecutionReferenceTransition::RetainRollback {
-            window_id: [0x71; 16],
-            retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
-        })
-        .build()
-        .expect("terminal rollback batch");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        0,
+        token,
+        serde_json::json!({"status": "Completed"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::RetainRollback {
+        window_id: [0x71; 16],
+        retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
+    });
     let outcome = executions
         .commit(batch)
         .await
@@ -2849,21 +2825,18 @@ pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transi
         .expect("acquire lease")
         .expect("lease must be available for a fresh execution");
 
-    let first = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(0)
-        .fencing(token)
-        .state(
-            serde_json::json!({"status": "Completed"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .reference_transition(ExecutionReferenceTransition::RetainRollback {
-            window_id: [0x72; 16],
-            retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
-        })
-        .build()
-        .expect("rollback batch");
+    let first = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        0,
+        token,
+        serde_json::json!({"status": "Completed"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::RetainRollback {
+        window_id: [0x72; 16],
+        retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
+    });
     let first_outcome = executions
         .commit(first)
         .await
@@ -2872,18 +2845,15 @@ pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transi
 
     // The same lease token is still current; only the reference transition is
     // incompatible now.
-    let second = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(1)
-        .fencing(token)
-        .state(
-            serde_json::json!({"status": "Completed", "second": true}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .reference_transition(ExecutionReferenceTransition::ReleaseLive)
-        .build()
-        .expect("incompatible release batch");
+    let second = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        1,
+        token,
+        serde_json::json!({"status": "Completed", "second": true}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::ReleaseLive);
     let second_outcome = executions.commit(second).await;
     assert!(
         matches!(second_outcome, Err(StorageError::Internal(_))),
@@ -2932,21 +2902,18 @@ pub(crate) async fn assert_expired_rollbacks_are_released(backend: &dyn Backend)
         .expect("acquire lease")
         .expect("lease must be available for a fresh execution");
 
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(0)
-        .fencing(token)
-        .state(
-            serde_json::json!({"status": "Completed"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .reference_transition(ExecutionReferenceTransition::RetainRollback {
-            window_id: [0x73; 16],
-            retain_until: chrono::Utc::now() - chrono::TimeDelta::minutes(1),
-        })
-        .build()
-        .expect("expired rollback batch");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        0,
+        token,
+        serde_json::json!({"status": "Completed"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::RetainRollback {
+        window_id: [0x73; 16],
+        retain_until: chrono::Utc::now() - chrono::TimeDelta::minutes(1),
+    });
     let outcome = executions
         .commit(batch)
         .await

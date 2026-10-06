@@ -27,17 +27,14 @@ async fn commit_listing(
     fencing: FencingToken,
     listing: ExecutionListing,
 ) -> u64 {
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(id)
-        .expected_version(expected_version)
-        .fencing(fencing)
-        .state(
-            serde_json::json!({"status": listing.status().as_str()}),
-            listing,
-        )
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        id,
+        expected_version,
+        fencing,
+        serde_json::json!({"status": listing.status().as_str()}),
+        listing,
+    );
     match store.commit(batch).await.expect("commit") {
         TransitionOutcome::Applied { new_version } => new_version,
         other => panic!("listing commit must apply, got {other:?}"),

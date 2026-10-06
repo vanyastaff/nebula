@@ -524,18 +524,15 @@ pub(super) async fn run(
         .await
         .unwrap()
         .unwrap();
-    let batch = TransitionBatch::builder()
-        .scope(fixture.scope.clone())
-        .execution_id(fixture.execution_id.clone())
-        .expected_version(0)
-        .fencing(lease)
-        .state(
-            serde_json::json!({"status":"Completed"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .reference_transition(ExecutionReferenceTransition::ReleaseLive)
-        .build()
-        .unwrap();
+    let batch = TransitionBatch::new(
+        fixture.scope.clone(),
+        fixture.execution_id.clone(),
+        0,
+        lease,
+        serde_json::json!({"status":"Completed"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::ReleaseLive);
     executions.commit(batch).await.unwrap();
     assert_eq!(
         starts
@@ -752,18 +749,15 @@ async fn exact_control_claim(
         .unwrap();
     executions
         .commit(
-            TransitionBatch::builder()
-                .scope(matching.scope.clone())
-                .execution_id(matching.execution_id.clone())
-                .expected_version(0)
-                .fencing(lease)
-                .state(
-                    serde_json::json!({"status":"Completed"}),
-                    nebula_storage_port::ExecutionListing::CREATED,
-                )
-                .reference_transition(ExecutionReferenceTransition::ReleaseLive)
-                .build()
-                .unwrap(),
+            TransitionBatch::new(
+                matching.scope.clone(),
+                matching.execution_id.clone(),
+                0,
+                lease,
+                serde_json::json!({"status":"Completed"}),
+                nebula_storage_port::ExecutionListing::CREATED,
+            )
+            .with_reference_transition(ExecutionReferenceTransition::ReleaseLive),
         )
         .await
         .unwrap();

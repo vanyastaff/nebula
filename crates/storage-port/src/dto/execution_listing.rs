@@ -263,7 +263,7 @@ impl MicrosInstant {
 /// The queryable projection of an execution state snapshot.
 ///
 /// Supplied together with every snapshot (see
-/// [`crate::TransitionBatchBuilder::state`]), so the two cannot drift apart.
+/// [`crate::TransitionBatch::new`]), so the two cannot drift apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionListing {
     status: ExecutionListingStatus,

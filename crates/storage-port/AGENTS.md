@@ -7,8 +7,9 @@
 
 ## Key files
 
-- `src/lib.rs` — crate root; re-exports `Scope`, `StorageError`, `FencingToken`, `TransitionBatch{,Builder,Outcome}`
-- `src/batch.rs` — `TransitionBatch`: private fields, builder-only construction; `commit` writes state+outbox+journal in one CAS+fencing-gated transaction
+- `src/lib.rs` — crate root; re-exports `Scope`, `StorageError`, `FencingToken`, `TransitionBatch{,Outcome}`
+- `src/batch.rs` — `TransitionBatch`: private fields, one constructor `TransitionBatch::new` taking every required part (scope, id, expected version, fence, state + listing) plus `with_*` for outbox/journal/resume tokens/reference transition; `commit` writes state+outbox+journal in one CAS+fencing-gated transaction
+- `src/dto/execution_listing.rs` / `src/dto/execution_history.rs` — the listing projection value types (`ExecutionListingStatus`, `ExecutionStatusSet`, `MicrosInstant`, `ExecutionListing`) and the history query/cursor/page
 - `src/store/mod.rs` — ISP-segregated object-safe role traits, including `CredentialPersistence`
 - `src/dto/` — private-field lifecycle DTOs, typed `CredentialSelector`, bounded `CredentialVersion`, structural live/tombstoned records, and opaque exact plan/flavor records
 - `src/scope.rs` — plain-data `Scope { workspace_id, org_id }`; `src/ids.rs` — re-exported core ULIDs + lease `FencingToken`
@@ -21,7 +22,7 @@
 - Credential persistence exposes only explicit `create`, version-fenced `replace`, and version-fenced `tombstone`; never restore generic overwrite or physical delete. Its refresh-retry gate and material epoch are structural aggregate state (never metadata or claim TTL). The backend authors epochs: create/migration starts at `CredentialMaterialEpoch::MIN`; `CredentialMaterialTransition::Preserve { refresh_retry }` retains the epoch and applies the explicit gate transition; `Advance` increments the epoch and unconditionally clears the gate; overflow fails closed. Admission is evaluated against the backend clock.
 - Material travels only in `CredentialMaterialTransition::Advance { material: MaterialUpdate::Replace(CredentialMaterial) }`; `Preserve` and `Advance { Unchanged }` carry no bytes and leave stored material byte-identical. Never put material back on `CredentialReplacement`.
 - `CredentialAdmissionEpoch` (the use revision, reported only by `CredentialOperationStatus::Open`) advances in the same transaction as every write that closes use — every `Advance`, any `reauth_required` change, a won revoke claim, `mark_sentinel`, threshold escalation — and never moves row `version` or `updated_at`. Keep invariant I-A (documented on the type) true for every new write; overflow fails closed. Do not add it to heads or live records, which the cache layer serves stale.
-- Every repository trait stays `#[async_trait]` + `dyn`-compatible (consumed as `Arc<dyn …>`); keep `TransitionBatch` fields private and builder-only so a transition can't skip scope/CAS/fencing.
+- Every repository trait stays `#[async_trait]` + `dyn`-compatible (consumed as `Arc<dyn …>`); keep `TransitionBatch` fields private and `new` the only constructor, so a transition missing scope/CAS/fencing/snapshot does not compile. Decorators retarget batches with `TransitionBatch::rebound_to`, never a hand-written rebuild.
 - A port change must include its adapters, applicable tenancy decorators, and consumers. Object-safety tests prove the contract compiles; storage conformance proves its backend behavior. Neither substitutes for the other.
 - `PlanFlavorCatalog` loads only an exact typed pair; `PlanFlavorCatalogWriter` inserts only; `PlanFlavorCatalogAdmin` owns drain/delete only. Never merge installer and destructive lifecycle authority, and never add public retain/release/reference mutation: execution-owned references must compose inside their owning backend transaction.
 

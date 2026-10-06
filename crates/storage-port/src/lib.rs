@@ -27,9 +27,7 @@ mod scope;
 pub mod store;
 
 pub use backend::StorageBackendKind;
-pub use batch::{
-    ExecutionReferenceTransition, TransitionBatch, TransitionBatchBuilder, TransitionOutcome,
-};
+pub use batch::{ExecutionReferenceTransition, TransitionBatch, TransitionOutcome};
 pub use dto::credential::{
     CredentialAdmissionEpoch, CredentialAdmissionEpochError, CredentialCommit, CredentialCreate,
     CredentialMaterial, CredentialMaterialEpoch, CredentialMaterialEpochError,

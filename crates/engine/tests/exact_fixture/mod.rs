@@ -184,16 +184,14 @@ pub(crate) async fn materialize_state(
             .unwrap()
             .version;
         execution
-            .commit(
-                TransitionBatch::builder()
-                    .scope(scope.clone())
-                    .execution_id(&execution_id)
-                    .expected_version(version)
-                    .fencing(fencing)
-                    .state(desired.clone(), listing_of(&desired))
-                    .build()
-                    .unwrap(),
-            )
+            .commit(TransitionBatch::new(
+                scope.clone(),
+                &execution_id,
+                version,
+                fencing,
+                desired.clone(),
+                listing_of(&desired),
+            ))
             .await
             .unwrap();
         execution

@@ -120,17 +120,14 @@ async fn stale_fencing_token_commit_is_fenced_out() {
     let store = StubExecutionStore {
         owner_scope: Scope::new("ws_a", "org_a"),
     };
-    let batch = TransitionBatch::builder()
-        .scope(Scope::new("ws_a", "org_a"))
-        .execution_id("exe_1")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(1))
-        .state(
-            serde_json::json!({"s": "running"}),
-            ExecutionListing::CREATED,
-        )
-        .build()
-        .expect("valid batch");
+    let batch = TransitionBatch::new(
+        Scope::new("ws_a", "org_a"),
+        "exe_1",
+        0,
+        FencingToken::from_generation(1),
+        serde_json::json!({"s": "running"}),
+        ExecutionListing::CREATED,
+    );
     let outcome = store.commit(batch).await.expect("commit returns");
     assert_eq!(outcome, TransitionOutcome::FencedOut);
 }

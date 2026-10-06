@@ -81,16 +81,14 @@ async fn malformed_non_action_checkpoint_facts_reject_before_instantiation() {
             .unwrap();
         let outcome = stores
             .execution
-            .commit(
-                nebula_storage_port::TransitionBatch::builder()
-                    .scope(scope.clone())
-                    .execution_id(id.to_string())
-                    .expected_version(version)
-                    .fencing(fence)
-                    .state(state.clone(), listing_of(&state))
-                    .build()
-                    .unwrap(),
-            )
+            .commit(nebula_storage_port::TransitionBatch::new(
+                scope.clone(),
+                id.to_string(),
+                version,
+                fence,
+                state.clone(),
+                listing_of(&state),
+            ))
             .await
             .unwrap();
         assert!(matches!(

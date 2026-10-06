@@ -498,17 +498,14 @@ async fn cross_tenant_commit_never_applies() {
     // Tenant B builds a batch *explicitly targeting A's scope* and A's
     // execution id — the confused-deputy attack. The decorator rebinds the
     // batch to B's scope before it reaches the store, so the CAS misses.
-    let attack = TransitionBatch::builder()
-        .scope(scope_a())
-        .execution_id("exe_y")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(0))
-        .state(
-            serde_json::json!({"s": "hijacked"}),
-            nebula_storage_port::ExecutionListing::CREATED,
-        )
-        .build()
-        .expect("batch");
+    let attack = TransitionBatch::new(
+        scope_a(),
+        "exe_y",
+        0,
+        FencingToken::from_generation(0),
+        serde_json::json!({"s": "hijacked"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    );
     let outcome = tenant_b.commit(attack).await.expect("commit returns");
     assert!(
         !matches!(outcome, TransitionOutcome::Applied { .. }),
@@ -1223,15 +1220,15 @@ async fn scoped_execution_store_rebind_carries_resume_tokens() {
         None,
     );
 
-    let batch = TransitionBatch::builder()
-        .scope(scope_b()) // caller's scope — ignored by decorator
-        .execution_id("exe-rebind-test")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(1))
-        .state(serde_json::json!({"s": "waiting"}), nebula_storage_port::ExecutionListing::CREATED)
-        .resume_tokens(vec![token_row])
-        .build()
-        .expect("well-formed batch must build");
+    let batch = TransitionBatch::new(
+        scope_b(), // caller's scope — ignored by decorator
+        "exe-rebind-test",
+        0,
+        FencingToken::from_generation(1),
+        serde_json::json!({"s": "waiting"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_resume_tokens(vec![token_row]);
 
     let outcome = scoped.commit(batch).await.expect("commit must not error");
     assert!(

@@ -343,18 +343,15 @@ impl WorkflowEngine {
         };
         let state_json = encoded?;
 
-        let batch = nebula_storage_port::TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(*repo_version)
-            .fencing(token)
-            .state(state_json, execution_listing(exec_state))
-            .resume_tokens(resume_tokens)
-            .build()
-            .map_err(|e| EngineError::CheckpointFailed {
-                node_key: node_key.clone(),
-                reason: format!("build transition batch: {e}"),
-            })?;
+        let batch = nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            &id,
+            *repo_version,
+            token,
+            state_json,
+            execution_listing(exec_state),
+        )
+        .with_resume_tokens(resume_tokens);
 
         match stores.execution.commit(batch).await {
             Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {
@@ -519,21 +516,17 @@ impl WorkflowEngine {
         checkpoint::validate_checkpoint_size(exec_state)?;
         let projection = execution_listing(exec_state);
 
-        let build_batch = |version: u64,
-                           json: serde_json::Value|
-         -> Result<nebula_storage_port::TransitionBatch, EngineError> {
-            nebula_storage_port::TransitionBatch::builder()
-                .scope(scope.clone())
-                .execution_id(&id)
-                .expected_version(version)
-                .fencing(token)
-                .state(json, projection)
-                .build()
-                .map_err(|e| EngineError::CheckpointFailed {
-                    node_key: final_state_node_key(),
-                    reason: format!("build final transition batch: {e}"),
-                })
-        };
+        let build_batch =
+            |version: u64, json: serde_json::Value| -> nebula_storage_port::TransitionBatch {
+                nebula_storage_port::TransitionBatch::new(
+                    scope.clone(),
+                    &id,
+                    version,
+                    token,
+                    json,
+                    projection,
+                )
+            };
 
         let state_json =
             serde_json::to_value(exec_state).map_err(|e| EngineError::CheckpointFailed {
@@ -543,7 +536,7 @@ impl WorkflowEngine {
 
         let outcome = stores
             .execution
-            .commit(build_batch(*repo_version, state_json)?)
+            .commit(build_batch(*repo_version, state_json))
             .await
             .map_err(|e| EngineError::CheckpointFailed {
                 node_key: final_state_node_key(),
@@ -638,7 +631,7 @@ impl WorkflowEngine {
                 };
                 match stores
                     .execution
-                    .commit(build_batch(*repo_version, retry_json)?)
+                    .commit(build_batch(*repo_version, retry_json))
                     .await
                 {
                     Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {

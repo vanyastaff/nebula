@@ -407,14 +407,14 @@ impl Harness {
             .as_object_mut()
             .expect("a pinned execution state is a JSON object")
             .insert("status".to_owned(), value);
-        let batch = TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(record.version)
-            .fencing(fencing)
-            .state(state.clone(), listing_of(&state))
-            .build()
-            .unwrap();
+        let batch = TransitionBatch::new(
+            scope.clone(),
+            &id,
+            record.version,
+            fencing,
+            state.clone(),
+            listing_of(&state),
+        );
         assert!(matches!(
             self.stores.execution.commit(batch).await.unwrap(),
             TransitionOutcome::Applied { .. }

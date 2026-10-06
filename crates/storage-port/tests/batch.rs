@@ -1,3 +1,7 @@
+//! `TransitionBatch` construction. Every required part is a constructor
+//! argument, so a batch missing one does not compile; these tests cover what
+//! the constructor and the `with_*` methods carry.
+
 use chrono::{TimeZone, Utc};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, JournalEntry};
 use nebula_storage_port::{
@@ -5,48 +9,15 @@ use nebula_storage_port::{
     TransitionBatch, TransitionOutcome,
 };
 
-#[test]
-fn builder_requires_core_fields_and_allows_empty_outbox_journal() {
-    let b = TransitionBatch::builder()
-        .scope(Scope::new("w", "o"))
-        .execution_id("01J")
-        .expected_version(3)
-        .fencing(FencingToken::from_generation(7))
-        .state(
-            serde_json::json!({"s":"running"}),
-            ExecutionListing::CREATED,
-        )
-        .build()
-        .expect("all required fields present");
-    assert!(b.outbox().is_empty() && b.journal().is_empty());
-    assert_eq!(b.expected_version(), 3);
-    assert_eq!(b.fencing().generation(), 7);
-    assert_eq!(b.execution_id(), "01J");
-    assert_eq!(b.scope().workspace_id, "w");
-    assert_eq!(b.listing(), ExecutionListing::CREATED);
-}
-
-#[test]
-fn builder_missing_required_field_is_configuration_error() {
-    let r = TransitionBatch::builder()
-        .scope(Scope::new("w", "o"))
-        .execution_id("01J")
-        // expected_version omitted
-        .fencing(FencingToken::from_generation(1))
-        .state(serde_json::json!({}), ExecutionListing::CREATED)
-        .build();
-    assert!(r.is_err(), "missing expected_version must fail closed");
-}
-
-#[test]
-fn builder_missing_state_is_configuration_error() {
-    let r = TransitionBatch::builder()
-        .scope(Scope::new("w", "o"))
-        .execution_id("01J")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(1))
-        .build();
-    assert!(r.is_err(), "a batch without a snapshot must fail closed");
+fn batch(listing: ExecutionListing) -> TransitionBatch {
+    TransitionBatch::new(
+        Scope::new("w", "o"),
+        "01J",
+        3,
+        FencingToken::from_generation(7),
+        serde_json::json!({"s": "running"}),
+        listing,
+    )
 }
 
 fn control_msg(scope: Scope) -> ControlMsg {
@@ -61,24 +32,38 @@ fn control_msg(scope: Scope) -> ControlMsg {
     }
 }
 
-#[test]
-fn builder_carries_outbox_and_journal() {
-    let je = JournalEntry {
+fn journal_entry(n: u64) -> JournalEntry {
+    JournalEntry {
         seq: None,
-        payload: serde_json::json!({"e":"x"}),
-    };
-    let b = TransitionBatch::builder()
-        .scope(Scope::new("w", "o"))
-        .execution_id("01J")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(1))
-        .state(serde_json::json!({}), ExecutionListing::CREATED)
-        .outbox(vec![control_msg(Scope::new("w", "o"))])
-        .journal(vec![je])
-        .build()
-        .expect("valid batch");
+        payload: serde_json::json!({ "n": n }),
+    }
+}
+
+#[test]
+fn constructor_carries_the_required_parts_and_starts_with_empty_extras() {
+    let b = batch(ExecutionListing::CREATED);
+    assert_eq!(b.scope().workspace_id, "w");
+    assert_eq!(b.execution_id(), "01J");
+    assert_eq!(b.expected_version(), 3);
+    assert_eq!(b.fencing().generation(), 7);
+    assert_eq!(b.new_state(), &serde_json::json!({"s": "running"}));
+    assert_eq!(b.listing(), ExecutionListing::CREATED);
+    assert!(b.outbox().is_empty() && b.journal().is_empty() && b.resume_tokens().is_empty());
+    assert_eq!(b.reference_transition(), None);
+}
+
+#[test]
+fn with_methods_carry_outbox_journal_and_reference_transition() {
+    let b = batch(ExecutionListing::CREATED)
+        .with_outbox(vec![control_msg(Scope::new("w", "o"))])
+        .with_journal(vec![journal_entry(1)])
+        .with_reference_transition(ExecutionReferenceTransition::ReleaseLive);
     assert_eq!(b.outbox().len(), 1);
     assert_eq!(b.journal().len(), 1);
+    assert_eq!(
+        b.reference_transition(),
+        Some(ExecutionReferenceTransition::ReleaseLive)
+    );
 }
 
 /// A decorator rebinding a batch must retarget every scoped row and keep
@@ -92,20 +77,10 @@ fn rebound_batch_retargets_every_scope_and_keeps_every_other_field() {
         Some(finished),
         Some(finished),
     );
-    let original = TransitionBatch::builder()
-        .scope(Scope::new("w", "o"))
-        .execution_id("01J")
-        .expected_version(4)
-        .fencing(FencingToken::from_generation(2))
-        .state(serde_json::json!({"x": 1}), listing)
-        .outbox(vec![control_msg(Scope::new("w", "o"))])
-        .journal(vec![JournalEntry {
-            seq: None,
-            payload: serde_json::json!({"e": "x"}),
-        }])
-        .reference_transition(ExecutionReferenceTransition::ReleaseLive)
-        .build()
-        .expect("valid batch");
+    let original = batch(listing)
+        .with_outbox(vec![control_msg(Scope::new("w", "o"))])
+        .with_journal(vec![journal_entry(1)])
+        .with_reference_transition(ExecutionReferenceTransition::ReleaseLive);
 
     let bound = Scope::new("w2", "o2");
     let rebound = original.rebound_to(&bound);
@@ -126,29 +101,15 @@ fn rebound_batch_retargets_every_scope_and_keeps_every_other_field() {
 
 #[test]
 fn appended_journal_keeps_existing_rows_first() {
-    let batch = TransitionBatch::builder()
-        .scope(Scope::new("w", "o"))
-        .execution_id("01J")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(1))
-        .state(serde_json::json!({}), ExecutionListing::CREATED)
-        .journal(vec![JournalEntry {
-            seq: None,
-            payload: serde_json::json!({"n": 1}),
-        }])
-        .build()
-        .expect("valid batch");
-    let appended = batch.with_appended_journal([JournalEntry {
-        seq: None,
-        payload: serde_json::json!({"n": 2}),
-    }]);
+    let original = batch(ExecutionListing::CREATED).with_journal(vec![journal_entry(1)]);
+    let appended = original.with_appended_journal([journal_entry(2)]);
     let order: Vec<_> = appended
         .journal()
         .iter()
-        .map(|e| e.payload["n"].clone())
+        .map(|entry| entry.payload["n"].clone())
         .collect();
     assert_eq!(order, vec![serde_json::json!(1), serde_json::json!(2)]);
-    assert_eq!(appended.listing(), batch.listing());
+    assert_eq!(appended.listing(), original.listing());
 }
 
 #[test]

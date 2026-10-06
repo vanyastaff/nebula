@@ -1905,17 +1905,14 @@ impl TestStores {
             .await
             .unwrap()
             .unwrap();
-        let batch = nebula_storage_port::TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(execution_id.clone())
-            .expected_version(record.version)
-            .fencing(fence)
-            .state(
-                serde_json::to_value(&state).unwrap(),
-                execution_listing(&state),
-            )
-            .build()
-            .unwrap();
+        let batch = nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            execution_id.clone(),
+            record.version,
+            fence,
+            serde_json::to_value(&state).unwrap(),
+            execution_listing(&state),
+        );
         assert!(matches!(
             self.execution.commit(batch).await.unwrap(),
             nebula_storage_port::TransitionOutcome::Applied { .. }
@@ -5063,18 +5060,15 @@ impl ExecutionStore for ExternalMutateBeforeN {
             // current, reusing the live fencing generation so this is
             // a pure CAS race (not a fencing race). Bumps the version
             // beneath the engine's feet.
-            if let Ok(external) = nebula_storage_port::TransitionBatch::builder()
-                .scope(record.scope.clone())
-                .execution_id(record.id.clone())
-                .expected_version(record.version)
-                .fencing(nebula_storage_port::FencingToken::from_generation(
-                    record.fencing.unwrap_or(0),
-                ))
-                .state(state.clone(), listing_of(&state))
-                .build()
-            {
-                let _ = self.inner.commit(external).await;
-            }
+            let external = nebula_storage_port::TransitionBatch::new(
+                record.scope.clone(),
+                record.id.clone(),
+                record.version,
+                nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0)),
+                state.clone(),
+                listing_of(&state),
+            );
+            let _ = self.inner.commit(external).await;
         }
         self.inner.commit(batch).await
     }
@@ -5387,16 +5381,14 @@ async fn persist_final_state_retries_once_on_nonterminal_conflict() {
     external_state.updated_at = Utc::now();
     let external_json = serde_json::to_value(&external_state).unwrap();
     let external_outcome = execution
-        .commit(
-            nebula_storage_port::TransitionBatch::builder()
-                .scope(scope.clone())
-                .execution_id(execution_id.to_string())
-                .expected_version(0)
-                .fencing(token)
-                .state(external_json.clone(), listing_of(&external_json))
-                .build()
-                .unwrap(),
-        )
+        .commit(nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            execution_id.to_string(),
+            0,
+            token,
+            external_json.clone(),
+            listing_of(&external_json),
+        ))
         .await
         .expect("external commit should succeed");
     assert!(
@@ -5506,16 +5498,14 @@ async fn persist_final_state_honors_external_terminal_transition() {
         .unwrap();
     let external_json = serde_json::to_value(&external_state).unwrap();
     let external_outcome = execution
-        .commit(
-            nebula_storage_port::TransitionBatch::builder()
-                .scope(scope.clone())
-                .execution_id(execution_id.to_string())
-                .expected_version(0)
-                .fencing(token)
-                .state(external_json.clone(), listing_of(&external_json))
-                .build()
-                .unwrap(),
-        )
+        .commit(nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            execution_id.to_string(),
+            0,
+            token,
+            external_json.clone(),
+            listing_of(&external_json),
+        ))
         .await
         .expect("external commit should succeed");
     assert!(

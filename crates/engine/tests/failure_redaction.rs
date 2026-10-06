@@ -395,8 +395,8 @@ async fn durable_failure_redaction_keeps_the_marker_out_of_every_surface() {
     // 2. Journal — `port_execution_journal.payload`.
     //
     // Forward guard, deliberately not a non-empty assertion: the engine appends
-    // no journal rows yet (every `TransitionBatch::builder()` in
-    // `crates/engine/src` omits `.journal(...)`, so `TransitionBatch::journal()`
+    // no journal rows yet (every `TransitionBatch::new(..)` in
+    // `crates/engine/src` omits `.with_journal(..)`, so `TransitionBatch::journal()`
     // hands back an empty slice), which makes this leg vacuously true today. It
     // becomes load-bearing when the journal gains its writer (#1013 adds entries
     // on this same shape). Asserting emptiness instead would fail for the wrong
