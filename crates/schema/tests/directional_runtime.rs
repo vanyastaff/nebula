@@ -122,6 +122,42 @@ fn alias_null_and_closed_domain_intersections_are_enforced() {
     assert!(outer_rejects.admit().is_err());
 }
 
+#[test]
+fn unique_arrays_compare_whole_values_in_linear_time() {
+    let unique = |element: &str, kind: &str, nullability: &str| {
+        InputContract::from_graph(&graph(
+            json!({"target":"array","null":"reject"}),
+            json!([
+                {"key":"array","body":{"kind":"array","unique":true,"element":{"target":element,"null":nullability}}},
+                {"key":element,"body":{"kind":kind}}
+            ]),
+        ))
+        .unwrap()
+    };
+    let numbers = unique("number", "number", "reject");
+    // Close to the node budget: a pairwise scan needs ~2e9 comparisons here.
+    let distinct: Vec<Value> = (0..60_000).map(|index| json!(index)).collect();
+    let started = std::time::Instant::now();
+    numbers.validate_data(Value::Array(distinct)).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "uniqueness took {:?}",
+        started.elapsed()
+    );
+    let mut repeated: Vec<Value> = (0..60_000).map(|index| json!(index)).collect();
+    repeated.push(json!(59_999));
+    assert!(numbers.validate_data(Value::Array(repeated)).is_err());
+    // Equality is whole-value JSON equality: key order is irrelevant and an
+    // integer differs from its float spelling.
+    let any = unique("any", "any", "allow");
+    assert!(
+        any.validate_data(json!([{"a":1,"b":[2]}, {"b":[2],"a":1}]))
+            .is_err()
+    );
+    any.validate_data(json!([1, 1.0, null, "1", [1], {"1":1}]))
+        .unwrap();
+}
+
 #[tokio::test]
 async fn whole_value_uniqueness_remains_pending_until_all_elements_resolve() {
     let array = graph(

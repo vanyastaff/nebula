@@ -270,12 +270,7 @@ pub(super) fn validate_literal(
                 }
                 if array.unique && incomplete {
                     obligations.push(PendingValidation::Policy { path: path.clone() });
-                } else if array.unique
-                    && values
-                        .iter()
-                        .enumerate()
-                        .any(|(index, value)| values[..index].contains(value))
-                {
+                } else if array.unique && has_duplicate(values) {
                     return Err(error("value.array_unique", &path));
                 }
                 rules(
@@ -502,4 +497,55 @@ pub(super) fn error(code: &'static str, path: &ValuePath) -> ValidationReport {
         .message("schema graph value admission failed")
         .build()
         .into()
+}
+
+/// Whether any two array elements are equal, in expected linear time.
+///
+/// Elements are bucketed by a structural hash consistent with `Value`'s
+/// equality (object keys are order-insensitive) and only bucket mates are
+/// compared. A per-call random seed keeps hostile collisions unpredictable.
+fn has_duplicate(values: &[Value]) -> bool {
+    use std::{
+        collections::{HashMap, hash_map::RandomState},
+        hash::BuildHasher,
+    };
+    let seed = RandomState::new();
+    let mut buckets: HashMap<u64, Vec<&Value>> = HashMap::with_capacity(values.len());
+    for value in values {
+        let mut hasher = seed.build_hasher();
+        hash_value(value, &mut hasher);
+        let bucket = buckets
+            .entry(std::hash::Hasher::finish(&hasher))
+            .or_default();
+        if bucket.contains(&value) {
+            return true;
+        }
+        bucket.push(value);
+    }
+    false
+}
+
+fn hash_value(value: &Value, hasher: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    match value {
+        Value::Null => 0_u8.hash(hasher),
+        Value::Bool(flag) => (1_u8, flag).hash(hasher),
+        Value::Number(number) => (2_u8, number).hash(hasher),
+        Value::String(text) => (3_u8, text).hash(hasher),
+        Value::Array(items) => {
+            (4_u8, items.len()).hash(hasher);
+            for item in items {
+                hash_value(item, hasher);
+            }
+        },
+        Value::Object(entries) => {
+            (5_u8, entries.len()).hash(hasher);
+            let mut sorted: Vec<_> = entries.iter().collect();
+            sorted.sort_unstable_by(|left, right| left.0.cmp(right.0));
+            for (key, item) in sorted {
+                key.hash(hasher);
+                hash_value(item, hasher);
+            }
+        },
+    }
 }
