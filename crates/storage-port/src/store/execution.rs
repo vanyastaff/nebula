@@ -2,7 +2,7 @@
 use std::time::Duration;
 
 use crate::batch::{TransitionBatch, TransitionOutcome};
-use crate::dto::ExecutionRecord;
+use crate::dto::{ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionRecord};
 use crate::error::StorageError;
 use crate::ids::FencingToken;
 use crate::scope::Scope;
@@ -96,27 +96,31 @@ pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
         token: FencingToken,
     ) -> Result<bool, StorageError>;
 
-    /// List every execution row across ALL tenant scopes.
+    /// List every non-terminal execution row across ALL tenant scopes.
     ///
     /// Used by the durable-timer wake scanner to find parked timers with no live
     /// owner regardless of tenant. Returns full [`ExecutionRecord`]s (scope + state)
     /// so the caller applies its own predicate and re-drives under each row's own
-    /// scope. MVP: returns all active rows; a backend-side overdue-timer pushdown
-    /// (e.g. a Postgres JSONB predicate) is a follow-up optimization.
+    /// scope. Terminal rows are filtered by the listing status column; a
+    /// backend-side overdue-timer pushdown is a separate optimization.
     ///
     /// # Errors
     /// Returns [`StorageError`] on a backend failure.
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError>;
 
-    /// List running execution ids in `scope`.
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError>;
-
-    /// List running execution ids for one workflow in `scope`.
-    async fn list_running_for_workflow(
+    /// One page of execution history in `scope`, newest first.
+    ///
+    /// Filters and keyset position come from `query`; see
+    /// [`ExecutionHistoryQuery::admits`] for the exact predicate every backend
+    /// implements. A cursor from another tenant can only page this scope.
+    ///
+    /// # Errors
+    /// Returns [`StorageError`] on a backend failure or an undecodable row.
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError>;
+        query: &ExecutionHistoryQuery,
+    ) -> Result<ExecutionHistoryPage, StorageError>;
 
     /// Count executions in `scope`, optionally filtered by workflow.
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError>;

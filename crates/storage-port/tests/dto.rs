@@ -21,7 +21,7 @@ fn execution_record_roundtrips() {
         workflow_id: "wf_1".into(),
         scope: Scope::new("ws_1", "org_1"),
         version: 3,
-        status: "Running".into(),
+        status: nebula_storage_port::ExecutionListingStatus::Running,
         state: serde_json::json!({"s":"running"}),
         lease_holder: Some("nbl_1".into()),
         fencing: Some(7),

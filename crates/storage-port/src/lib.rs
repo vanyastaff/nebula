@@ -42,7 +42,10 @@ pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, Toke
 pub use dto::{
     AttemptGeneration, BeginDrainOutcome, CheckpointSaved, DestinationCapability,
     DestinationCapabilityParseError, EffectOccurrenceKey, EffectOccurrenceRecord,
-    EffectSlotBinding, EffectSlotId, ExecutablePlanRecordFormat, IterationCheckpoint,
+    EffectSlotBinding, EffectSlotId, ExecutablePlanRecordFormat, ExecutionHistoryCursor,
+    ExecutionHistoryPage, ExecutionHistoryPageSize, ExecutionHistoryPageSizeError,
+    ExecutionHistoryQuery, ExecutionListing, ExecutionListingStatus, ExecutionSummary,
+    IterationCheckpoint,
     IterationCheckpointError, IterationCheckpointKey, KnownOutcome, MAX_CHECKPOINT_ITERATION,
     MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES, MAX_ITERATION_CHECKPOINT_STATE_BYTES,
     MAX_OCCURRENCE_LABEL_BYTES, MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES, OccurrenceLabelViolation,

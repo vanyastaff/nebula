@@ -18,7 +18,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::dto::resume_token::ResumeTokenRow;
-use crate::dto::{ControlMsg, JournalEntry};
+use crate::dto::{ControlMsg, ExecutionListing, JournalEntry};
 use crate::error::StorageError;
 use crate::ids::FencingToken;
 use crate::scope::Scope;
@@ -51,6 +51,8 @@ pub struct TransitionBatch {
     expected_version: u64,
     fencing: FencingToken,
     new_state: serde_json::Value,
+    /// Queryable projection of `new_state`, written in the same statement.
+    listing: ExecutionListing,
     outbox: Vec<ControlMsg>,
     journal: Vec<JournalEntry>,
     /// Resume-token rows to INSERT in the same transaction as the state
@@ -65,7 +67,7 @@ pub struct TransitionBatch {
 
 impl TransitionBatch {
     /// Start building a batch. Required: `scope`, `execution_id`,
-    /// `expected_version`, `fencing`, `new_state`. `outbox`/`journal`
+    /// `expected_version`, `fencing`, `state`. `outbox`/`journal`
     /// default empty.
     #[must_use]
     pub fn builder() -> TransitionBatchBuilder {
@@ -101,6 +103,43 @@ impl TransitionBatch {
     #[must_use]
     pub fn new_state(&self) -> &serde_json::Value {
         &self.new_state
+    }
+
+    /// Listing projection of [`Self::new_state`]; backends write it in the
+    /// same statement as the state.
+    #[must_use]
+    pub const fn listing(&self) -> ExecutionListing {
+        self.listing
+    }
+
+    /// The same batch retargeted at `scope`: the batch itself, every outbox
+    /// row, and every resume-token row.
+    ///
+    /// This is how a tenancy decorator binds a batch to its tenant. Every
+    /// other field is carried over unchanged, so adding a field to the batch
+    /// can never be silently dropped by a hand-written rebuild.
+    #[must_use]
+    pub fn rebound_to(&self, scope: &Scope) -> Self {
+        let mut batch = self.clone();
+        batch.scope = scope.clone();
+        for message in &mut batch.outbox {
+            message.scope = scope.clone();
+        }
+        for token in &mut batch.resume_tokens {
+            token.scope = scope.clone();
+        }
+        batch
+    }
+
+    /// The same batch with `entries` appended to its journal rows.
+    ///
+    /// Used by backends that add an owner-written observation to a verified
+    /// batch inside their own lock.
+    #[must_use]
+    pub fn with_appended_journal(&self, entries: impl IntoIterator<Item = JournalEntry>) -> Self {
+        let mut batch = self.clone();
+        batch.journal.extend(entries);
+        batch
     }
 
     /// Control-queue rows to append in the same transaction.
@@ -144,7 +183,7 @@ pub struct TransitionBatchBuilder {
     execution_id: Option<String>,
     expected_version: Option<u64>,
     fencing: Option<FencingToken>,
-    new_state: Option<serde_json::Value>,
+    state: Option<(serde_json::Value, ExecutionListing)>,
     outbox: Vec<ControlMsg>,
     journal: Vec<JournalEntry>,
     resume_tokens: Vec<ResumeTokenRow>,
@@ -180,10 +219,14 @@ impl TransitionBatchBuilder {
         self
     }
 
-    /// Set the opaque new execution state (required).
+    /// Set the opaque new execution state and its listing projection
+    /// (required).
+    ///
+    /// The two travel together so a snapshot can never be committed with a
+    /// stale or missing projection.
     #[must_use]
-    pub fn new_state(mut self, state: serde_json::Value) -> Self {
-        self.new_state = Some(state);
+    pub fn state(mut self, state: serde_json::Value, listing: ExecutionListing) -> Self {
+        self.state = Some((state, listing));
         self
     }
 
@@ -235,15 +278,16 @@ impl TransitionBatchBuilder {
         let fencing = self
             .fencing
             .ok_or_else(|| StorageError::Configuration("TransitionBatch.fencing missing".into()))?;
-        let new_state = self.new_state.ok_or_else(|| {
-            StorageError::Configuration("TransitionBatch.new_state missing".into())
-        })?;
+        let (new_state, listing) = self
+            .state
+            .ok_or_else(|| StorageError::Configuration("TransitionBatch.state missing".into()))?;
         Ok(TransitionBatch {
             scope,
             execution_id,
             expected_version,
             fencing,
             new_state,
+            listing,
             outbox: self.outbox,
             journal: self.journal,
             resume_tokens: self.resume_tokens,

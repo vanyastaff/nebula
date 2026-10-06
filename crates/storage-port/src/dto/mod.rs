@@ -47,7 +47,11 @@ pub use credential_refresh_retry::{
     RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetryProjection,
     RefreshRetrySnapshot, RefreshRetryTransition,
 };
-pub use execution::{ExecutionRecord, NewExecution};
+pub use execution::{
+    ExecutionHistoryCursor, ExecutionHistoryPage, ExecutionHistoryPageSize,
+    ExecutionHistoryPageSizeError, ExecutionHistoryQuery, ExecutionListing,
+    ExecutionListingStatus, ExecutionRecord, ExecutionSummary, NewExecution, truncate_to_micros,
+};
 pub use idempotency::CachedRecord;
 pub use identity::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
