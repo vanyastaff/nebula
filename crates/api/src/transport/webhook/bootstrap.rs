@@ -32,7 +32,7 @@ use nebula_engine::ActionRegistry;
 use nebula_metrics::{
     MetricsRegistry, NEBULA_WEBHOOK_BOOTSTRAP_FAILURES_TOTAL, webhook_bootstrap_failure_reason,
 };
-use nebula_storage::rows::{
+use nebula_storage::webhook_activation::{
     WebhookActivationSpec as StorageWebhookActivationSpec, WebhookTimestampFormat,
 };
 use nebula_storage_port::store::WebhookActivationStore;

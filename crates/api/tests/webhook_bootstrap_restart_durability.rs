@@ -32,7 +32,7 @@ use nebula_api::transport::webhook::{
 };
 use nebula_engine::ActionRegistry;
 use nebula_storage::inmem::{InMemoryTriggerStore, InMemoryWebhookActivationStore};
-use nebula_storage::rows::WebhookActivationSpec;
+use nebula_storage::webhook_activation::WebhookActivationSpec;
 use nebula_storage_port::{
     Scope,
     dto::{TriggerRow, WebhookActivationRecord},

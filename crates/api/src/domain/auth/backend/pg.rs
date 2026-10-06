@@ -70,19 +70,17 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Postgres};
 
-use nebula_storage::{
+use nebula_storage::auth::{
+    MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo,
+    OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
+    OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft, OAuthLoginUserDraft, OAuthStateAdmission,
+    OAuthStateRepo, OAuthStateRow, PatRepo, PersonalAccessTokenRow, SessionDraft, SessionRepo,
+    UserRepo, UserRow, VerificationTokenRepo, VerificationTokenRow,
     identity_secret::{IdentitySecretCodec, TotpSecretPurpose},
-    pg::{
+    postgres::{
         PgMfaEnrollmentRepo, PgOAuthLoginFinalizer, PgOAuthStateRepo, PgPatRepo, PgSessionRepo,
         PgUserRepo, PgVerificationTokenRepo,
     },
-    repos::{
-        MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo,
-        OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
-        OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft, OAuthLoginUserDraft,
-        OAuthStateAdmission, OAuthStateRepo, PatRepo, SessionRepo, UserRepo, VerificationTokenRepo,
-    },
-    rows::{OAuthStateRow, PersonalAccessTokenRow, SessionDraft, UserRow, VerificationTokenRow},
 };
 
 use super::{
@@ -303,7 +301,7 @@ fn session_repo_error(_: nebula_storage::StorageError) -> AuthError {
 }
 
 fn identity_secret_auth_error(
-    _: nebula_storage::identity_secret::IdentitySecretError,
+    _: nebula_storage::auth::identity_secret::IdentitySecretError,
 ) -> AuthError {
     AuthError::Internal("MFA secret envelope operation failed".to_owned())
 }

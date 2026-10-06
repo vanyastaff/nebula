@@ -60,13 +60,15 @@ provides the adapters:
 - `postgres::*` (feature `postgres`) — production multi-process adapters
   (real tx + `FOR UPDATE SKIP LOCKED`) over the same canonical catalog;
   `init_schema` is the catalog-only deployment/bootstrap seam.
-- `repos::*` + `pg::*` (feature `postgres`) — Plane-A account persistence
-  outside the port contract (users, sessions, PATs, OAuth state, external
-  identities, MFA enrollment) and the API idempotency cache
-  (`IdempotencyStoreRepo`): traits in `repos`, PostgreSQL implementations in
-  `pg`.
-- `pg::PgOAuthLoginFinalizer` (feature `postgres`) plus the
-  `repos::OAuthLoginFinalize*` command/outcome types — the technical,
+- `auth::*` + `auth::postgres::*` (feature `postgres`) — Plane-A account
+  persistence outside the port contract (users, sessions, PATs, OAuth state,
+  external identities, MFA enrollment): traits and rows in `auth`, PostgreSQL
+  implementations in `auth::postgres`.
+- `http_idempotency::*` — the API's idempotent-replay response cache
+  (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); distinct from the
+  port's per-attempt `IdempotencyStore`.
+- `auth::postgres::PgOAuthLoginFinalizer` (feature `postgres`) plus the
+  `auth::OAuthLoginFinalize*` command/outcome types — the technical,
   storage-owned Plane-A completion seam. Each call receives already-verified
   identity inputs and performs no provider network I/O. An existing
   `(provider, subject)` link is authoritative; same-subject races converge
@@ -81,7 +83,7 @@ provides the adapters:
   operation; a full or contended gate returns the capacity outcome used by the
   API's 429 response and writes no state. The Memory backend enforces the same
   numerical bound process-locally in `nebula-api`.
-- `repos::MfaEnrollmentRepo` and `pg::PgMfaEnrollmentRepo` own the Plane-A MFA
+- `auth::MfaEnrollmentRepo` and `auth::postgres::PgMfaEnrollmentRepo` own the Plane-A MFA
   replacement boundary. One expiring candidate exists per user, separate from
   the active factor. Start replaces only that candidate; confirmation consumes
   the exact live candidate and installs it atomically, so replay/concurrent
@@ -92,19 +94,20 @@ provides the adapters:
   `SHA-256("nebula:plane-a:session-cookie:v1\\0" || token)`. Migration `0038`
   intentionally truncates pre-digest sessions; raw cookies cannot be migrated
   without preserving the bearer authority.
-- `identity_secret::IdentitySecretCodec` stores active and pending TOTP seeds
+- `auth::identity_secret::IdentitySecretCodec` stores active and pending TOTP seeds
   as `EncryptedData` v1 AES-256-GCM envelopes. AAD binds the exact 16-byte user
   id plus a distinct active/pending purpose, so promotion must decrypt the
   verified candidate and re-seal it; copying ciphertext between columns cannot
   grant authority. The codec and credential encryption consume one atomic
   `KeyProvider::current()` snapshot (`key_id` + key) so a live KMS rotation
   cannot pair metadata from one generation with bytes from another.
-- `pg::PgIdentitySecretMigrator` is a startup data migrator, not a schema
+- `auth::postgres::PgIdentitySecretMigrator` is a startup data migrator, not a schema
   migrator: all DDL stays in numbered migration `0038`. It uses a cancellation-
   safe retired advisory-lock connection, bounded reads, equality-guarded CAS,
   user-version fencing, explicit old-key rotation, and repeated verification;
   the Postgres auth backend is not exposed until convergence succeeds.
-- crate-local `StorageError`.
+- `StorageError` — re-exported from `nebula-storage-port`; `sqlx` failures are
+  classified once, value-free, in `sql_error`.
 
 Applied migrations `0001..0041` are immutable SQLx-checksummed history.
 Credential lifecycle migration
@@ -324,8 +327,8 @@ See `docs/MATURITY.md` row for `nebula-storage`.
   `crates/engine/tests/lease_takeover.rs`, the lease-handoff loom probe
   at `crates/storage-loom-probe/src/lease_handoff.rs`, and the
   conformance matrix's lease cases.
-- The retained `repos::*` surface (Plane-A accounts and
-  `IdempotencyStoreRepo`) keeps live consumers (the API auth backend and
+- The `auth::*` and `http_idempotency::*` surfaces (Plane-A accounts and
+  the API replay cache) keep live consumers (the API auth backend and
   idempotency middleware) and is outside the port contract by design.
 - Postgres adapter + identity stores are compile-verified and structurally
   identical to the runtime-verified SQLite tree, but Postgres runtime
@@ -452,8 +455,8 @@ first-party apps consume the technical port. The legacy
 `repos::{execution,workflow,execution_node,journal}` placeholders were
 deleted.
 
-The retained `repos::*` traits (Plane-A accounts and
-`IdempotencyStoreRepo`) are not part of the deleted dual model — they keep
+The `auth::*` and `http_idempotency::*` traits (Plane-A accounts and the
+API replay cache) are not part of the deleted dual model — they keep
 live consumers (the API auth backend and idempotency middleware). The legacy
 `ControlQueueRepo` outbox and the unused org/workspace/quota/trigger/audit/
 blob/resource repository traits were deleted; the port `ControlQueue` is the

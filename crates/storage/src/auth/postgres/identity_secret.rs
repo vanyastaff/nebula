@@ -18,7 +18,7 @@ use sqlx::{PgConnection, Pool, Postgres};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
-use crate::identity_secret::{
+use crate::auth::identity_secret::{
     IdentitySecretCodec, IdentitySecretError, TotpSecretPurpose, is_canonical_totp_seed,
 };
 
@@ -484,9 +484,9 @@ mod postgres_tests {
 
     use super::*;
     use crate::{
+        auth::UserRepo,
+        auth::postgres::{IdentitySecretRejectionReason, PgUserRepo},
         credential::{EnvKeyProvider, KeyProvider},
-        pg::{PgUserRepo, identity_secret::IdentitySecretRejectionReason},
-        repos::UserRepo,
         test_support::{random_id, test_user},
     };
 

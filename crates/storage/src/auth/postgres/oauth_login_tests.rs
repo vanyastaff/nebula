@@ -9,13 +9,12 @@ use tokio::sync::Barrier;
 use super::*;
 use crate::{
     StorageError,
-    pg::{PgExternalIdentityRepo, PgSessionRepo, PgUserRepo},
-    repos::{
+    auth::postgres::{PgExternalIdentityRepo, PgSessionRepo, PgUserRepo},
+    auth::{
         ExternalIdentityRepo, OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome,
         OAuthLoginFinalized, OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft,
-        OAuthLoginUserDraft, SessionRepo, UserRepo,
+        OAuthLoginUserDraft, SessionDraft, SessionRepo, UserRepo,
     },
-    rows::SessionDraft,
     test_support::{random_id, test_user},
 };
 

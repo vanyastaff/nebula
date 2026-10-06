@@ -54,9 +54,10 @@ owner-bound `CredentialPersistence`; `Scope`).
 | `SqliteExecutionStore` / `SqliteControlQueue` | `src/sqlite/execution.rs:20`, `src/sqlite/control_queue.rs:21` |
 | `postgres::init_schema` | `src/postgres/mod.rs:38` |
 | `PgExecutionStore` / `PgControlQueue` | `src/postgres/execution.rs:21`, `src/postgres/control_queue.rs:22` |
-| `repos::*` — Plane-A аккаунты (вне порта) + кэш идемпотентности API | `UserRepo`/`SessionRepo`/`PatRepo`/`OAuthStateRepo`/`ExternalIdentityRepo`/`VerificationTokenRepo` `src/repos/user.rs`; `MfaEnrollmentRepo`; `IdempotencyStoreRepo` `src/repos/idempotency.rs` |
-| `pg::*` (feature postgres) — реализации `repos`-трейтов | `PgUserRepo`, `PgSessionRepo`, `PgPatRepo`, `PgOAuthLoginFinalizer`, `PgIdentitySecretMigrator`, … |
-| `rows::*` — row-типы таблиц Plane-A | `UserRow`, `SessionRow`, `PersonalAccessTokenRow`, `WebhookActivationSpec` |
+| `auth::*` — Plane-A аккаунты (вне порта): трейты и строки | `UserRepo`/`SessionRepo`/`PatRepo`/`OAuthStateRepo`/`ExternalIdentityRepo`/`VerificationTokenRepo` `src/auth/repos.rs`; `MfaEnrollmentRepo`; `UserRow`, `SessionRow`, …; `identity_secret`, `session_token` |
+| `auth::postgres::*` (feature postgres) — реализации | `PgUserRepo`, `PgSessionRepo`, `PgPatRepo`, `PgOAuthLoginFinalizer`, `PgIdentitySecretMigrator`, … |
+| `http_idempotency::*` — кэш идемпотентности API | `IdempotencyStoreRepo`, `InMemoryIdempotencyStoreRepo`, `PgHttpIdempotencyStore` |
+| `webhook_activation::*` | `WebhookActivationSpec` |
 | credential persistence | `SqliteCredentialPersistence` and `PgCredentialPersistence`, both implementing the port-local object-safe contract |
 | `KeyProvider` / `EnvKeyProvider` / `FileKeyProvider` | `src/credential/key_provider.rs` |
 | credential decorator-слои `EncryptionLayer`/`CacheLayer`/`AuditLayer` | `src/credential/layer/` |
@@ -86,15 +87,16 @@ owner-bound `CredentialPersistence`; `Scope`).
   пулов; credential-семантику проверяет только credential Ready constructor
   под тем же guard/session; отдельного schema snapshot нет.
 - `postgres/` (feature) — production порт-адаптеры (real tx + `FOR UPDATE SKIP LOCKED`).
-- `pg/` (feature postgres) — Postgres-глю для **residual** `repos`-трейтов (identity rows,
-  control-queue, oauth_state, pat, session…).
-- `repos/` — residual не-портовые трейты (outbox, idempotency-cache, webhook-activation,
-  identity rows) с живыми потребителями (API idempotency-middleware, `pg::*`-глю).
-- `rows/` — row-DTO структуры (multi-tenant by construction: `workspace_id`/`org_id`
-  обязательны).
+- `auth/` — Plane-A аккаунты вне порта: трейты (`repos.rs`), строки (`rows.rs`),
+  OAuth-finalizer, MFA enrollment, `identity_secret`, `session_token`; PostgreSQL-реализации
+  в `auth/postgres/` (feature postgres).
+- `http_idempotency/` — кэш идемпотентного replay API (`IdempotencyStoreRepo`,
+  in-memory и `PgHttpIdempotencyStore`); не путать с портовым `IdempotencyStore`.
+- `webhook_activation.rs` — `WebhookActivationSpec` в `triggers.config`.
 - `credential/` — credential-стора, `KeyProvider`, decorator-слои (`layer/`: encryption,
   audit, cache), `provider_cache`, `pending`, `backup`, `refresh_claim/`.
-- `error.rs` — `StorageError`.
+- `sql_error.rs` — единственная классификация `sqlx::Error` → порт-`StorageError`
+  (value-free) и `decode_u64`. Крейт-локального `StorageError` нет.
 - `test_support/` (cfg test) — фикстуры Plane-A строк; `tests/` —
   конформанс-матрица {InMemory, SQLite, Pg} + tenancy-декораторы.
 
@@ -144,23 +146,19 @@ SQLite/Postgres, под Mutex в InMemory).
   Expired `Normal` безопасно удаляется; expired `RefreshInFlight` никогда не reclaim-ится в
   provider replay. `reclaim_stuck` атомарно записывает ровно одно evidence-событие на claim UUID,
   сохраняет poison-row и возвращает только newly-accounted incidents для threshold observation.
-- **Multi-tenant by construction.** `rows::*` несут обязательные `workspace_id`/`org_id`;
+- **Multi-tenant by construction.** `auth::*Row` несут обязательные `workspace_id`/`org_id`;
   identity-стора tenant-scoped на уровне row-DTO.
 
 ## 6. Известные напряжения / долг
 
-1. **Два `StorageError`.** README.md:52 говорит «`StorageError` (re-exported from the
-   port)», но `src/lib.rs:102` реэкспортирует **крейт-локальный** enum `src/error.rs:13`;
-   при этом порт-адаптеры возвращают `nebula_storage_port::StorageError`
-   (`src/sqlite/mod.rs:39`, `src/postgres/mod.rs:38`). Двойственность типов ошибок
-   порт vs residual-repos.
-2. **Дубль idempotency.** Портовый `*IdempotencyStore` (`port_idempotency_cache`) и
-   residual `repos::IdempotencyStoreRepo` + `pg::PgIdempotencyStore` (кэш API) — одно имя
-   типа `PgIdempotencyStore` в двух модулях. Legacy `ControlQueueRepo` удалён (2026-10-06):
-   портовый `ControlQueue` — единственный outbox.
-3. **`pg/` vs `postgres/`.** Два Postgres-дерева с разными ролями: `pg/` — Plane-A
-   аккаунты вне порта, `postgres/` — портовые адаптеры. Переименование `pg/`+`repos/` в
-   `auth/` запланировано (ADR-003 в `.10x/`).
+1. **Два `StorageError` — закрыт (2026-10-06).** Крейт-локальный enum удалён; все
+   адаптеры возвращают порт-`StorageError`, ошибки `sqlx` классифицирует `sql_error`.
+2. **Коллизия имён idempotency — закрыта (2026-10-06).** Кэш API живёт в
+   `http_idempotency` (`PgHttpIdempotencyStore`), портовый per-attempt стор — в
+   `postgres::PgIdempotencyStore`. Legacy `ControlQueueRepo` удалён: портовый
+   `ControlQueue` — единственный outbox.
+3. **`pg/` vs `postgres/` — закрыт (2026-10-06).** `pg/`+`repos/`+`rows/` заменены на
+   `auth/` (+ `auth/postgres/`), `http_idempotency/`, `webhook_activation`.
 5. **Legacy-алиасы refresh_claim.** `RefreshClaimStore as RefreshClaimRepo`,
    `RefreshClaimError as RepoError` (`src/credential/refresh_claim/mod.rs:37-41`) —
    rename-on-import ради исторических путей потребителей.
@@ -218,9 +216,6 @@ builtin types), а `nebula-crypto` владеет `Cipher`/`Kdf`-портами.
 
 ## 8. Forward design / открытые вопросы
 
-- **Унифицировать `StorageError`.** Решить порт-локальный vs крейт-локальный enum
-  (напряжение №1) — выбрать один канон до того, как residual-repos семья вырастет. README
-  теперь явно различает эти два технических error-типа.
 - **K2 owner schema migration закрыта новой `0039`.** Историческая
   `0030_credentials_store.sql` остаётся SQLx-checksummed и byte-immutable, включая legacy-комментарий.
   Paired SQLite/PostgreSQL `0039_credentials_owner_and_record_state.sql` проверяет legacy rows,
@@ -230,10 +225,9 @@ builtin types), а `nebula-crypto` владеет `Cipher`/`Kdf`-портами.
 - **Свернуть refresh-CAS×2.** Дубль refresh-claim между storage и credential-rewrite-планом
   — закрыть _до_ старта rewrite credential (иначе мигрируем дубль). Решить, чья сторона
   владеет CAS-предикатом.
-- **Дедуп idempotency.** Портовый `*IdempotencyStore` vs `repos::IdempotencyStoreRepo`
-  (кэш API) — либо перевести middleware на порт, либо развести имена.
+- **Дедуп idempotency.** Портовый `*IdempotencyStore` vs `http_idempotency::IdempotencyStoreRepo`
+  (кэш API): имена разведены; перевод middleware на порт остаётся открытым вопросом.
 - **Postgres runtime-verify.** Снять `DATABASE_URL`-gate в CI (M7 ROADMAP) — единственный
   residual после spec-16 merge; до этого «pg-verified» нельзя заявлять.
-- **`pg/` vs `postgres/` именование.** `pg/`+`repos/` → `auth/` (ADR-003).
 - **Durable bind-state (M12.4).** Когда resource bind-population дойдёт до production
   producer, спроектировать шов в resource-runtime адаптерах ДО, чтобы не вклеивать ad-hoc.

@@ -327,7 +327,7 @@ pub(crate) fn test_echo_router<S: Clone + Send + Sync + 'static>() -> Router<S> 
 /// from [`IdempotencyApiConfig`] — those are properties of the
 /// **store**, set at composition-root time when the operator builds
 /// `InMemoryIdempotencyStore::with_ttl_and_capacity` /
-/// `PgIdempotencyStore::new`. Only the body-size guards live on the
+/// `PgHttpIdempotencyStore::new`. Only the body-size guards live on the
 /// per-request layer config.
 fn layer_config_from(cfg: &IdempotencyApiConfig) -> IdempotencyConfig {
     IdempotencyConfig {

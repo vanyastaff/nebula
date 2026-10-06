@@ -19,10 +19,9 @@ use sqlx::{Pool, Postgres};
 
 use crate::{
     StorageError,
-    pg::map_db_err,
-    repos::SessionRepo,
-    rows::{SessionDraft, SessionRow},
-    session_token::{SessionTokenDigest, session_token_digest},
+    auth::session_token::{SessionTokenDigest, session_token_digest},
+    auth::{SessionDraft, SessionRepo, SessionRow},
+    sql_error::storage_error_for,
 };
 
 /// Postgres-backed session repository.
@@ -103,7 +102,7 @@ impl SessionRepo for PgSessionRepo {
         .bind(session.revoked_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("session", e))?;
+        .map_err(|e| storage_error_for("session", e))?;
         Ok(())
     }
 
@@ -118,7 +117,7 @@ impl SessionRepo for PgSessionRepo {
             .bind(digest.as_bytes().as_slice())
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("session", e))?;
+            .map_err(|e| storage_error_for("session", e))?;
         row.map(tuple_to_row).transpose()
     }
 
@@ -132,7 +131,7 @@ impl SessionRepo for PgSessionRepo {
         .bind(digest.as_bytes().as_slice())
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("session", e))?;
+        .map_err(|e| storage_error_for("session", e))?;
         Ok(())
     }
 
@@ -148,7 +147,7 @@ impl SessionRepo for PgSessionRepo {
         .bind(digest.as_bytes().as_slice())
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("session", e))?;
+        .map_err(|e| storage_error_for("session", e))?;
         Ok(())
     }
 
@@ -157,7 +156,7 @@ impl SessionRepo for PgSessionRepo {
         let result = sqlx::query("DELETE FROM sessions WHERE expires_at <= NOW()")
             .execute(&self.pool)
             .await
-            .map_err(|e| map_db_err("session", e))?;
+            .map_err(|e| storage_error_for("session", e))?;
         Ok(result.rows_affected())
     }
 }
@@ -169,10 +168,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        pg::user::PgUserRepo,
-        repos::UserRepo,
-        rows::SessionDraft,
-        session_token::session_token_digest,
+        auth::postgres::PgUserRepo,
+        auth::session_token::session_token_digest,
+        auth::{SessionDraft, UserRepo},
         test_support::{random_id, test_user},
     };
 

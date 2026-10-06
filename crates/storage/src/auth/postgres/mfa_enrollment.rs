@@ -11,9 +11,9 @@ use sqlx::{Pool, Postgres};
 
 use crate::{
     StorageError,
-    identity_secret::{IdentitySecretCodec, TotpSecretPurpose},
-    pg::map_db_err,
-    repos::{MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo},
+    auth::identity_secret::{IdentitySecretCodec, TotpSecretPurpose},
+    auth::{MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo},
+    sql_error::storage_error_for,
 };
 
 /// PostgreSQL-backed pending MFA enrollment repository.
@@ -81,7 +81,7 @@ impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
         .bind(candidate.expires_at())
         .execute(&self.pool)
         .await
-        .map_err(|error| map_db_err("mfa_enrollment_candidate", error))?;
+        .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?;
         Ok(())
     }
 
@@ -98,7 +98,7 @@ impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
         .bind(user_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|error| map_db_err("mfa_enrollment_candidate", error))?;
+        .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?;
         row.map(tuple_to_candidate).transpose()
     }
 
@@ -112,7 +112,7 @@ impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
             .pool
             .begin()
             .await
-            .map_err(|error| map_db_err("mfa_enrollment_candidate", error))?;
+            .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?;
         let secret_envelope = sqlx::query_scalar::<_, Vec<u8>>(
             "DELETE FROM mfa_enrollment_candidates \
              WHERE user_id = $1 AND enrollment_id = $2 AND expires_at > NOW() \
@@ -122,13 +122,13 @@ impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
         .bind(enrollment_id.as_slice())
         .fetch_optional(&mut *transaction)
         .await
-        .map_err(|error| map_db_err("mfa_enrollment_candidate", error))?;
+        .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?;
 
         let Some(pending_envelope) = secret_envelope else {
             transaction
                 .rollback()
                 .await
-                .map_err(|error| map_db_err("mfa_enrollment_candidate", error))?;
+                .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?;
             return Ok(MfaEnrollmentInstallOutcome::CandidateUnavailable);
         };
 
@@ -158,25 +158,27 @@ impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
         .bind(active_envelope)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| map_db_err("user", error))?
+        .map_err(|error| storage_error_for("user", error))?
         .rows_affected();
         if updated != 1 {
             transaction
                 .rollback()
                 .await
-                .map_err(|error| map_db_err("mfa_enrollment_candidate", error))?;
+                .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?;
             return Err(StorageError::not_found("user", "MFA enrollment owner"));
         }
 
         transaction
             .commit()
             .await
-            .map_err(|error| map_db_err("mfa_enrollment_candidate", error))?;
+            .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?;
         Ok(MfaEnrollmentInstallOutcome::Installed)
     }
 }
 
-fn identity_secret_storage_error(_: crate::identity_secret::IdentitySecretError) -> StorageError {
+fn identity_secret_storage_error(
+    _: crate::auth::identity_secret::IdentitySecretError,
+) -> StorageError {
     StorageError::Serialization("identity secret envelope operation failed".to_owned())
 }
 
@@ -188,9 +190,9 @@ mod tests {
 
     use super::*;
     use crate::{
+        auth::UserRepo,
+        auth::postgres::PgUserRepo,
         credential::{EnvKeyProvider, KeyProvider},
-        pg::PgUserRepo,
-        repos::UserRepo,
         test_support::{random_id, test_user},
     };
 

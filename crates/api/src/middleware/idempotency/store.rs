@@ -11,7 +11,7 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-use nebula_storage::repos::{CachedRecord, IdempotencyStoreRepo};
+use nebula_storage::http_idempotency::{CachedRecord, IdempotencyStoreRepo};
 
 // ── Error ────────────────────────────────────────────────────────────────────
 

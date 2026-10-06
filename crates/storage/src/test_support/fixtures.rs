@@ -2,7 +2,7 @@
 
 use chrono::Utc;
 
-use crate::rows::UserRow;
+use crate::auth::UserRow;
 
 /// Generate a pseudo-unique 16-byte ID for tests.
 ///

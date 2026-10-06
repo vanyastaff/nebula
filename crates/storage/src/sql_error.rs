@@ -41,6 +41,16 @@ pub(crate) fn storage_error(error: sqlx::Error) -> StorageError {
     }
 }
 
+/// [`storage_error`], with a unique violation attributed to `entity` — for
+/// stores whose callers branch on which record collided.
+#[cfg(feature = "postgres")]
+pub(crate) fn storage_error_for(entity: &'static str, error: sqlx::Error) -> StorageError {
+    match storage_error(error) {
+        StorageError::Duplicate { detail, .. } => StorageError::Duplicate { entity, detail },
+        other => other,
+    }
+}
+
 /// Decode a non-negative counter (version, fencing generation, sequence)
 /// stored as a signed SQL integer. A negative value is corrupt data, never a
 /// wrapped `u64`.

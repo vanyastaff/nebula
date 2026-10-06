@@ -24,8 +24,8 @@ use nebula_metrics::{
         NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL, auth_outcome,
     },
 };
-use nebula_storage::{
-    repos::OAUTH_STATE_CAPACITY,
+use nebula_storage::auth::{
+    OAUTH_STATE_CAPACITY,
     session_token::{SessionTokenDigest, session_token_digest},
 };
 use parking_lot::Mutex;

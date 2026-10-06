@@ -142,15 +142,15 @@ identically*: types differ by dialect, but table/column names and
 constraints must match.
 
 Parity is **not** total, and the gaps are deliberate — these tables are
-PostgreSQL-only because their adapters are (`crates/storage/src/pg/`, with
+PostgreSQL-only because their adapters are (`crates/storage/src/auth/postgres/`, with
 no SQLite counterpart):
 
 | PostgreSQL migration | Why it has no SQLite counterpart |
 |----------------------|----------------------------------|
-| `0029_external_identities` | `external_identities` — OAuth identity linking, `pg/external_identity.rs` only |
+| `0029_external_identities` | `external_identities` — OAuth identity linking, `auth/postgres/external_identity.rs` only |
 | `0036_plane_a_oauth_state_cleanup_index` | partial index over `NOW()`; SQLite requires constant expressions (see *Dialect notes*) |
-| `0037_mfa_enrollment_candidates` | `mfa_enrollment_candidates` — `pg/mfa_enrollment.rs` only |
-| `0038_identity_secret_authority` | `pg/identity_secret.rs` only |
+| `0037_mfa_enrollment_candidates` | `mfa_enrollment_candidates` — `auth/postgres/mfa_enrollment.rs` only |
+| `0038_identity_secret_authority` | `auth/postgres/identity_secret.rs` only |
 | `0060_rate_limits` | cluster-wide rate limits, `postgres/rate_limit.rs` only; one SQLite process keeps its limits in memory |
 
 A fresh SQLite database therefore has two fewer tables than a fresh

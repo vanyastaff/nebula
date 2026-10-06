@@ -1,14 +1,11 @@
-//! Identity-layer repositories.
+//! Account repository traits.
 
 use std::future::Future;
 
-use crate::{
-    StorageError,
-    rows::{
-        OAuthStateRow, PersonalAccessTokenRow, SessionDraft, SessionRow, UserRow,
-        VerificationTokenRow,
-    },
+use super::rows::{
+    OAuthStateRow, PersonalAccessTokenRow, SessionDraft, SessionRow, UserRow, VerificationTokenRow,
 };
+use crate::StorageError;
 
 /// User account storage.
 pub trait UserRepo: Send + Sync {

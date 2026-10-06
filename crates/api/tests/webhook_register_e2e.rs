@@ -1255,7 +1255,7 @@ async fn bootstrap_reconstruct_uses_spec_trigger_id() {
     use nebula_api::transport::webhook::{
         TriggerSpecLookup, WebhookSecretResolver, bootstrap_webhook_activations,
     };
-    use nebula_storage::rows::WebhookActivationSpec as StorageWebhookActivationSpec;
+    use nebula_storage::webhook_activation::WebhookActivationSpec as StorageWebhookActivationSpec;
 
     // We need a TriggerSpecLookup that serves a spec for trg_X but NOT for the
     // NodeKey "wh-node-key".  This proves the bootstrap uses spec_trigger_id

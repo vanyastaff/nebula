@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::rows::UserRow;
+use crate::auth::UserRow;
 
 /// All storage inputs needed to converge one OAuth login into a local
 /// user, a stable external-identity link, and exactly one authority
@@ -208,7 +208,7 @@ mod tests {
         OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
         OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft, OAuthLoginUserDraft,
     };
-    use crate::rows::UserRow;
+    use crate::auth::UserRow;
 
     #[test]
     fn command_debug_redacts_identity_email_and_session_material() {

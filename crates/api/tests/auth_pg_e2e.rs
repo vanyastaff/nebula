@@ -51,18 +51,18 @@ use nebula_api::{
 };
 use nebula_core::UserId;
 use nebula_storage::{
+    auth::identity_secret::IdentitySecretCodec,
     credential::{EnvKeyProvider, KeyProvider},
-    identity_secret::IdentitySecretCodec,
 };
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 
-/// Mirrors `nebula_storage::pg::user::LOCKOUT_THRESHOLD` (the module is
+/// Mirrors `nebula_storage::auth::postgres::user::LOCKOUT_THRESHOLD` (the module is
 /// `pub(crate)` so the constant is not re-exported from
 /// `nebula-storage`). If the storage-side value changes from 5, this
 /// constant must change with it; the lockout assertions below will
 /// otherwise fail loudly (off-by-one between the test loop bound and
 /// the storage-side CASE check) — which is the desired regression
-/// signal. Source: `crates/storage/src/pg/user.rs:34`.
+/// signal. Source: `crates/storage/src/auth/postgres/user.rs`.
 const LOCKOUT_THRESHOLD_LOCAL: u32 = 5;
 const TEST_IDENTITY_KEY_B64: &str = "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=";
 

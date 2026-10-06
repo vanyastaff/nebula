@@ -27,7 +27,11 @@ use std::time::Duration;
 
 use sqlx::{Pool, Postgres};
 
-use crate::{StorageError, pg::map_db_err, repos::UserRepo, rows::UserRow};
+use crate::{
+    StorageError,
+    auth::{UserRepo, UserRow},
+    sql_error::storage_error_for,
+};
 
 /// Failed-login threshold before [`PgUserRepo::record_login_failure`]
 /// arms the lockout.
@@ -70,7 +74,7 @@ impl PgUserRepo {
         .bind(replacement_envelope)
         .execute(&self.pool)
         .await
-        .map_err(|error| map_db_err("user", error))?
+        .map_err(|error| storage_error_for("user", error))?
         .rows_affected();
         Ok(rows == 1)
     }
@@ -145,7 +149,7 @@ impl UserRepo for PgUserRepo {
         .bind(user.deleted_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("user", e))?;
+        .map_err(|e| storage_error_for("user", e))?;
         Ok(())
     }
 
@@ -156,7 +160,7 @@ impl UserRepo for PgUserRepo {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("user", e))?;
+            .map_err(|e| storage_error_for("user", e))?;
         Ok(row.map(tuple_to_row))
     }
 
@@ -170,7 +174,7 @@ impl UserRepo for PgUserRepo {
             .bind(email)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("user", e))?;
+            .map_err(|e| storage_error_for("user", e))?;
         Ok(row.map(tuple_to_row))
     }
 
@@ -202,7 +206,7 @@ impl UserRepo for PgUserRepo {
         .bind(expected_version)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("user", e))?
+        .map_err(|e| storage_error_for("user", e))?
         .rows_affected();
 
         if rows == 0 {
@@ -213,7 +217,7 @@ impl UserRepo for PgUserRepo {
             .bind(&user.id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("user", e))?;
+            .map_err(|e| storage_error_for("user", e))?;
             return match actual {
                 Some(actual) => Err(StorageError::Conflict {
                     entity: "user",
@@ -245,7 +249,7 @@ impl UserRepo for PgUserRepo {
         .bind(id)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("user", e))?;
+        .map_err(|e| storage_error_for("user", e))?;
         Ok(())
     }
 
@@ -263,7 +267,7 @@ impl UserRepo for PgUserRepo {
         .bind(id)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("user", e))?;
+        .map_err(|e| storage_error_for("user", e))?;
         Ok(())
     }
 
@@ -293,7 +297,7 @@ impl UserRepo for PgUserRepo {
         .bind(lockout_secs as f64)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("user", e))?;
+        .map_err(|e| storage_error_for("user", e))?;
         Ok(())
     }
 }

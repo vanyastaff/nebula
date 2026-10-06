@@ -4,7 +4,7 @@
 //! consumer:
 //!
 //! 1. Construction compiles using only engine-public + storage-port types — no `nebula_api::*`
-//!    leaks, no `nebula_storage::rows::*` (row / private) types on the consumer's signature.
+//!    leaks, no storage row (private) types on the consumer's signature.
 //! 2. The consumer observes a queued command via the engine-owned `ControlDispatch` trait.
 //! 3. Graceful shutdown via `CancellationToken` completes the spawned task.
 //!

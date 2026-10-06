@@ -37,7 +37,7 @@ use axum::{
 };
 use nebula_action::SignaturePolicy;
 use nebula_core::{TenantContext, TriggerId};
-use nebula_storage::rows::WebhookActivationSpec;
+use nebula_storage::webhook_activation::WebhookActivationSpec;
 use nebula_storage_port::dto::{TriggerRow, WebhookMode};
 use nebula_tenancy::ScopedTriggerStore;
 use nebula_workflow::definition::WorkflowDefinition;

@@ -34,8 +34,11 @@
 - `src/lib.rs` — module/feature map and adapter re-exports (`InMemory*`, `StorageError`).
 - `src/inmem/` — internal test/reference/conformance adapters and loom probes; not a supported deployment backend.
 - `src/sqlite/` · `src/postgres/` — feature-gated port adapters over the port-scoped schema (Postgres uses real tx + `FOR UPDATE SKIP LOCKED`).
-- `src/repos/` + `src/pg/` — Plane-A account persistence (users, sessions, PATs, OAuth state, external identities, MFA) and the API idempotency cache: traits in `repos`, PostgreSQL implementations in `pg`. Outside the port contract by design.
-- `src/pg/oauth_login.rs` + `src/repos/oauth_login.rs` — storage-owned Plane-A
+- `src/auth/` — Plane-A account persistence (users, sessions, PATs, OAuth state, external identities, MFA, identity secrets, session-token digests): traits and rows in `auth`, PostgreSQL implementations in `auth/postgres/`. Outside the port contract by design.
+- `src/http_idempotency/` — the API's idempotent-replay response cache (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); not the port's per-attempt `IdempotencyStore`.
+- `src/webhook_activation.rs` — the webhook activation spec persisted in `triggers.config`.
+- `src/sql_error.rs` — the one `sqlx::Error` → `StorageError` classification (value-free) plus `decode_u64`; every SQL adapter maps errors through it.
+- `src/auth/postgres/oauth_login.rs` + `src/auth/oauth_login.rs` — storage-owned Plane-A
   OAuth finalization: every call performs no network I/O and atomically records
   either user/stable-link/session or an MFA challenge-without-session outcome.
   A subject-only call may roll back as `VerifiedEmailRequired` before optional

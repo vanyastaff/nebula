@@ -17,7 +17,11 @@
 
 use sqlx::{Pool, Postgres, types::Json};
 
-use crate::{StorageError, pg::map_db_err, repos::PatRepo, rows::PersonalAccessTokenRow};
+use crate::{
+    StorageError,
+    auth::{PatRepo, PersonalAccessTokenRow},
+    sql_error::storage_error_for,
+};
 
 /// Postgres-backed personal access token repository.
 #[derive(Clone)]
@@ -100,7 +104,7 @@ impl PatRepo for PgPatRepo {
         .bind(pat.revoked_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("pat", e))?;
+        .map_err(|e| storage_error_for("pat", e))?;
         Ok(())
     }
 
@@ -123,7 +127,7 @@ impl PatRepo for PgPatRepo {
             .bind(hash)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("pat", e))?;
+            .map_err(|e| storage_error_for("pat", e))?;
         Ok(row.map(tuple_to_row))
     }
 
@@ -138,7 +142,7 @@ impl PatRepo for PgPatRepo {
         .bind(id)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("pat", e))?;
+        .map_err(|e| storage_error_for("pat", e))?;
         Ok(())
     }
 
@@ -154,7 +158,7 @@ impl PatRepo for PgPatRepo {
         .bind(id)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("pat", e))?;
+        .map_err(|e| storage_error_for("pat", e))?;
         Ok(())
     }
 
@@ -185,7 +189,7 @@ impl PatRepo for PgPatRepo {
             .bind(principal_id)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| map_db_err("pat", e))?;
+            .map_err(|e| storage_error_for("pat", e))?;
         Ok(rows.into_iter().map(tuple_to_row).collect())
     }
 }
@@ -198,8 +202,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        pg::user::PgUserRepo,
-        repos::UserRepo,
+        auth::UserRepo,
+        auth::postgres::PgUserRepo,
         test_support::{random_id, test_user},
     };
 

@@ -1,14 +1,13 @@
-//! Idempotent-replay dedup store.
+//! The API's idempotent-replay cache: completed HTTP responses keyed by the
+//! client's `Idempotency-Key`.
 //!
-//! Storage-layer port for the API's idempotency middleware. Two impls
-//! ship in this crate today:
+//! Not the port's `IdempotencyStore` (the engine's per-attempt dedup), which
+//! is why the PostgreSQL type is named for HTTP. Two impls:
 //!
 //! - [`InMemoryIdempotencyStoreRepo`] — process-local cache with TTL
 //!   eviction (`moka::future::Cache`). Used in tests and dev builds.
-//! - `PgIdempotencyStore` (behind `feature = "postgres"`)
-//!   — PG-backed durable store satisfying ROADMAP §M3 1.0 closure
-//!   ("the dedup store survives process restart in production
-//!   deployments").
+//! - `PgHttpIdempotencyStore` (feature `postgres`) — durable across
+//!   process restarts.
 //!
 //! The middleware in `nebula-api` consumes this trait through a thin
 //! bridge struct (`crate::middleware::idempotency::StorageBackedIdempotencyStore`)
@@ -23,6 +22,11 @@ use async_trait::async_trait;
 use moka::future::Cache;
 
 use crate::StorageError;
+
+#[cfg(feature = "postgres")]
+mod postgres;
+#[cfg(feature = "postgres")]
+pub use postgres::PgHttpIdempotencyStore;
 
 /// Cached HTTP response retained for idempotent replay.
 ///

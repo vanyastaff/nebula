@@ -21,7 +21,7 @@
 
 use sqlx::{Pool, Postgres};
 
-use crate::{StorageError, pg::map_db_err, repos::ExternalIdentityRepo};
+use crate::{StorageError, auth::ExternalIdentityRepo, sql_error::storage_error_for};
 
 /// Postgres-backed `external_identities` repository.
 #[derive(Clone)]
@@ -53,7 +53,7 @@ impl ExternalIdentityRepo for PgExternalIdentityRepo {
         .bind(subject)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| map_db_err("external_identity", e))?;
+        .map_err(|e| storage_error_for("external_identity", e))?;
         Ok(row.map(|(user_id,)| user_id))
     }
 
@@ -79,7 +79,7 @@ impl ExternalIdentityRepo for PgExternalIdentityRepo {
         .bind(email)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("external_identity", e))?;
+        .map_err(|e| storage_error_for("external_identity", e))?;
         Ok(())
     }
 }

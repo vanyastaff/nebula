@@ -9,15 +9,14 @@
 
 use sqlx::{Pool, Postgres, Transaction};
 
+use super::user::{SELECT_COLS, UserTuple, tuple_to_row};
 use crate::{
     StorageError,
-    pg::user::{SELECT_COLS, UserTuple, tuple_to_row},
-    repos::{
+    auth::session_token::session_token_digest,
+    auth::{
         OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
-        OAuthLoginSessionDraft,
+        OAuthLoginSessionDraft, UserRow,
     },
-    rows::UserRow,
-    session_token::session_token_digest,
 };
 
 const USER_ID_BYTES: usize = 16;

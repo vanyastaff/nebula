@@ -370,7 +370,7 @@ pub struct AppState {
     ///
     /// See idempotency backend for the backend selection contract; the composition root
     /// chooses between [`crate::middleware::InMemoryIdempotencyStore`] and a
-    /// PG-backed bridge (`StorageBackedIdempotencyStore<PgIdempotencyStore>`)
+    /// PG-backed bridge (`StorageBackedIdempotencyStore<PgHttpIdempotencyStore>`)
     /// based on `ApiConfig.idempotency.backend`.
     pub idempotency_store: Option<Arc<dyn IdempotencyStore>>,
 

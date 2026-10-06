@@ -25,9 +25,8 @@ use sqlx::{Pool, Postgres};
 
 use crate::{
     StorageError,
-    pg::map_db_err,
-    repos::{OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo},
-    rows::OAuthStateRow,
+    auth::{OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo, OAuthStateRow},
+    sql_error::storage_error_for,
 };
 
 /// Database-wide namespace/resource pair for Plane-A OAuth-state admission.
@@ -85,7 +84,9 @@ async fn rollback_after_failure(
 ) -> StorageError {
     match transaction.rollback().await {
         Ok(()) => primary_error,
-        Err(rollback_error) => map_db_err("plane_a_oauth_state_admission_rollback", rollback_error),
+        Err(rollback_error) => {
+            storage_error_for("plane_a_oauth_state_admission_rollback", rollback_error)
+        },
     }
 }
 
@@ -129,7 +130,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             .pool
             .begin()
             .await
-            .map_err(|error| map_db_err("plane_a_oauth_state_admission", error))?;
+            .map_err(|error| storage_error_for("plane_a_oauth_state_admission", error))?;
         let acquired =
             match sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock($1, $2)")
                 .bind(OAUTH_STATE_ADMISSION_LOCK_KEY.0)
@@ -139,15 +140,14 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             {
                 Ok(acquired) => acquired,
                 Err(error) => {
-                    let error = map_db_err("plane_a_oauth_state_admission", error);
+                    let error = storage_error_for("plane_a_oauth_state_admission", error);
                     return Err(rollback_after_failure(transaction, error).await);
                 },
             };
         if !acquired {
-            transaction
-                .rollback()
-                .await
-                .map_err(|error| map_db_err("plane_a_oauth_state_admission_rollback", error))?;
+            transaction.rollback().await.map_err(|error| {
+                storage_error_for("plane_a_oauth_state_admission_rollback", error)
+            })?;
             return Ok(OAuthStateAdmission::Contended);
         }
 
@@ -158,7 +158,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             )
             .execute(&mut *transaction)
             .await
-            .map_err(|error| map_db_err("plane_a_oauth_state", error))?;
+            .map_err(|error| storage_error_for("plane_a_oauth_state", error))?;
 
             let capacity = i64::from(self.capacity);
             let inserted = sqlx::query(
@@ -183,7 +183,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             .bind(capacity)
             .execute(&mut *transaction)
             .await
-            .map_err(|error| map_db_err("plane_a_oauth_state", error))?;
+            .map_err(|error| storage_error_for("plane_a_oauth_state", error))?;
 
             Ok(if inserted.rows_affected() == 1 {
                 OAuthStateAdmission::Created
@@ -200,7 +200,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
         transaction
             .commit()
             .await
-            .map_err(|error| map_db_err("plane_a_oauth_state_admission_commit", error))?;
+            .map_err(|error| storage_error_for("plane_a_oauth_state_admission_commit", error))?;
         Ok(admission)
     }
 
@@ -218,7 +218,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             .bind(state)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("plane_a_oauth_state", e))?;
+            .map_err(|e| storage_error_for("plane_a_oauth_state", e))?;
         Ok(row.map(tuple_to_row))
     }
 
@@ -245,7 +245,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             .bind(provider)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("plane_a_oauth_state", e))?;
+            .map_err(|e| storage_error_for("plane_a_oauth_state", e))?;
         Ok(row.map(tuple_to_row))
     }
 
@@ -254,7 +254,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
         let result = sqlx::query("DELETE FROM plane_a_oauth_states WHERE expires_at <= NOW()")
             .execute(&self.pool)
             .await
-            .map_err(|e| map_db_err("plane_a_oauth_state", e))?;
+            .map_err(|e| storage_error_for("plane_a_oauth_state", e))?;
         Ok(result.rows_affected())
     }
 
@@ -266,7 +266,7 @@ impl OAuthStateRepo for PgOAuthStateRepo {
             .bind(state)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("plane_a_oauth_state", e))?;
+            .map_err(|e| storage_error_for("plane_a_oauth_state", e))?;
         Ok(row.map(tuple_to_row))
     }
 }

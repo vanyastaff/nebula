@@ -21,7 +21,9 @@
 use sqlx::{Pool, Postgres, types::Json};
 
 use crate::{
-    StorageError, pg::map_db_err, repos::VerificationTokenRepo, rows::VerificationTokenRow,
+    StorageError,
+    auth::{VerificationTokenRepo, VerificationTokenRow},
+    sql_error::storage_error_for,
 };
 
 /// Postgres-backed verification-token repository.
@@ -88,7 +90,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
         .bind(token.consumed_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("verification_token", e))?;
+        .map_err(|e| storage_error_for("verification_token", e))?;
         Ok(())
     }
 
@@ -110,7 +112,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
             .bind(token_hash)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("verification_token", e))?;
+            .map_err(|e| storage_error_for("verification_token", e))?;
         Ok(row.map(tuple_to_row))
     }
 
@@ -137,7 +139,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
             .bind(kind)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("verification_token", e))?;
+            .map_err(|e| storage_error_for("verification_token", e))?;
         Ok(row.map(tuple_to_row))
     }
 
@@ -152,7 +154,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
             .bind(token_hash)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|e| map_db_err("verification_token", e))?;
+            .map_err(|e| storage_error_for("verification_token", e))?;
         Ok(row.map(tuple_to_row))
     }
 
@@ -161,7 +163,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
         let result = sqlx::query("DELETE FROM verification_tokens WHERE expires_at <= NOW()")
             .execute(&self.pool)
             .await
-            .map_err(|e| map_db_err("verification_token", e))?;
+            .map_err(|e| storage_error_for("verification_token", e))?;
         Ok(result.rows_affected())
     }
 
@@ -181,7 +183,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
         .bind(kind)
         .execute(&self.pool)
         .await
-        .map_err(|e| map_db_err("verification_token", e))?;
+        .map_err(|e| storage_error_for("verification_token", e))?;
         Ok(result.rows_affected())
     }
 }
@@ -196,8 +198,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        pg::user::PgUserRepo,
-        repos::UserRepo,
+        auth::UserRepo,
+        auth::postgres::PgUserRepo,
         test_support::{random_id, test_user},
     };
 

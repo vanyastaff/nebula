@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::session_token::SessionTokenDigest;
+use crate::auth::session_token::SessionTokenDigest;
 
 /// Table: `users`
 ///
@@ -143,7 +143,7 @@ mod identity_row_secret_tests {
     use chrono::Utc;
 
     use super::{OAuthStateRow, SessionDraft, SessionRow, UserRow};
-    use crate::session_token::session_token_digest;
+    use crate::auth::session_token::session_token_digest;
 
     static_assertions::assert_not_impl_any!(UserRow: Clone);
     static_assertions::assert_not_impl_any!(SessionRow: Clone);

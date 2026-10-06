@@ -969,7 +969,7 @@ fn warn_short_sweep_interval(sweep_interval_secs: u64) {
 async fn build_pg_idempotency_store(
     api_config: &ApiConfig,
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
-    use nebula_storage::pg::PgIdempotencyStore;
+    use nebula_storage::http_idempotency::PgHttpIdempotencyStore;
     use sqlx::postgres::PgPoolOptions;
 
     use nebula_api::middleware::idempotency::StorageBackedIdempotencyStore;
@@ -991,7 +991,7 @@ async fn build_pg_idempotency_store(
         })?;
     warn_short_sweep_interval(api_config.idempotency.sweep_interval_secs);
     tracing::info!(backend = "postgres", "idempotency: PG-backed store wired");
-    let pg_repo = Arc::new(PgIdempotencyStore::new(pool));
+    let pg_repo = Arc::new(PgHttpIdempotencyStore::new(pool));
     let store: Arc<dyn IdempotencyStore> = Arc::new(StorageBackedIdempotencyStore::new(
         pg_repo,
         Duration::from_secs(api_config.idempotency.ttl_secs),
@@ -1005,7 +1005,7 @@ async fn build_pg_idempotency_store(
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
     Err(TransportInitError::IdempotencyBackendUnavailable {
         requested: "postgres",
-        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + PgIdempotencyStore",
+        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + PgHttpIdempotencyStore",
     })
 }
 
@@ -1018,7 +1018,9 @@ async fn build_pg_auth_backend(
     legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     use nebula_api::domain::auth::backend::PgAuthBackend;
-    use nebula_storage::{identity_secret::IdentitySecretCodec, pg::PgIdentitySecretMigrator};
+    use nebula_storage::auth::{
+        identity_secret::IdentitySecretCodec, postgres::PgIdentitySecretMigrator,
+    };
     use sqlx::postgres::PgPoolOptions;
 
     let url =

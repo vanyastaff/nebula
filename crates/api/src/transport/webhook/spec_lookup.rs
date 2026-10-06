@@ -16,7 +16,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use nebula_storage::rows::WebhookActivationSpec;
+use nebula_storage::webhook_activation::WebhookActivationSpec;
 use nebula_storage_port::{Scope, store::TriggerStore};
 use nebula_tenancy::ScopedTriggerStore;
 

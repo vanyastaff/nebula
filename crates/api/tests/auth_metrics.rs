@@ -350,8 +350,8 @@ mod pg_backend {
         let sink = Arc::new(EchoSink::default());
         let port: Arc<dyn EmailPort> = Arc::clone(&sink) as _;
         use nebula_storage::{
+            auth::identity_secret::IdentitySecretCodec,
             credential::{EnvKeyProvider, KeyProvider},
-            identity_secret::IdentitySecretCodec,
         };
 
         let provider = EnvKeyProvider::from_base64("REREREREREREREREREREREREREREREREREREREREREQ=")

@@ -23,19 +23,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use sqlx::{Pool, Postgres};
 
-use crate::{
-    StorageError,
-    pg::map_db_err,
-    repos::{CachedRecord, IdempotencyStoreRepo},
-};
+use super::{CachedRecord, IdempotencyStoreRepo};
+use crate::{StorageError, sql_error::storage_error_for};
 
 /// Postgres-backed durable dedup store (survives process restart).
 #[derive(Clone, Debug)]
-pub struct PgIdempotencyStore {
+pub struct PgHttpIdempotencyStore {
     pool: Pool<Postgres>,
 }
 
-impl PgIdempotencyStore {
+impl PgHttpIdempotencyStore {
     /// Construct from an existing pool.
     #[must_use]
     pub fn new(pool: Pool<Postgres>) -> Self {
@@ -44,7 +41,7 @@ impl PgIdempotencyStore {
 }
 
 #[async_trait]
-impl IdempotencyStoreRepo for PgIdempotencyStore {
+impl IdempotencyStoreRepo for PgHttpIdempotencyStore {
     async fn get(&self, cache_key: &str) -> Result<Option<CachedRecord>, StorageError> {
         let row: Option<(i16, Vec<u8>, Vec<u8>, Vec<u8>)> = sqlx::query_as(
             "SELECT status, headers, body, fingerprint \
@@ -54,7 +51,7 @@ impl IdempotencyStoreRepo for PgIdempotencyStore {
         .bind(cache_key)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|err| map_db_err("idempotency_dedup", err))?;
+        .map_err(|err| storage_error_for("idempotency_dedup", err))?;
 
         let Some((status_i16, headers_blob, body, fingerprint_blob)) = row else {
             return Ok(None);
@@ -122,7 +119,7 @@ impl IdempotencyStoreRepo for PgIdempotencyStore {
         .bind(expires_at)
         .execute(&self.pool)
         .await
-        .map_err(|err| map_db_err("idempotency_dedup", err))?;
+        .map_err(|err| storage_error_for("idempotency_dedup", err))?;
         Ok(())
     }
 
@@ -130,7 +127,7 @@ impl IdempotencyStoreRepo for PgIdempotencyStore {
         let result = sqlx::query("DELETE FROM api_idempotency_dedup WHERE expires_at <= NOW()")
             .execute(&self.pool)
             .await
-            .map_err(|err| map_db_err("idempotency_dedup", err))?;
+            .map_err(|err| storage_error_for("idempotency_dedup", err))?;
         let rows = result.rows_affected();
         if rows > 0 {
             tracing::info!(
