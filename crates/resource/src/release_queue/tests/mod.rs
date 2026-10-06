@@ -523,10 +523,20 @@ async fn close_drains_buffered_tasks_before_exit() {
     );
 }
 
-fn submit_gated(queue: &ReleaseQueue, gate: &Arc<Notify>, counter: &Arc<AtomicU32>) {
+fn submit_ready_gated(
+    queue: &ReleaseQueue,
+    gate: &Arc<Notify>,
+    ready: oneshot::Sender<()>,
+    counter: &Arc<AtomicU32>,
+) {
     let g = gate.clone();
     let c = counter.clone();
-    queue.submit(move || Box::pin(gated_increment(g, c)));
+    queue.submit(move || {
+        Box::pin(async move {
+            let _ = ready.send(());
+            gated_increment(g, c).await;
+        })
+    });
 }
 
 async fn gated_increment(gate: Arc<Notify>, counter: Arc<AtomicU32>) {
@@ -547,10 +557,11 @@ async fn double_full_saturation_rescues_instead_of_dropping() {
     // Step 1: park the primary worker on the gate. The first submit
     // routes to senders[0] (round-robin with 1 worker). The primary
     // worker pulls it via `recv()` and blocks on `notified()`.
-    submit_gated(&queue, &gate, &counter);
-    // Yield long enough for the primary worker to actually receive
-    // and start the gated task.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (primary_ready_tx, primary_ready_rx) = oneshot::channel();
+    submit_ready_gated(&queue, &gate, primary_ready_tx, &counter);
+    primary_ready_rx
+        .await
+        .expect("primary worker must start the gated task");
 
     // Step 2: park the fallback worker too. Fill primary first with
     // near-instant tasks so the next submit overflows into the
@@ -561,9 +572,11 @@ async fn double_full_saturation_rescues_instead_of_dropping() {
     }
     // Primary is now full (256 buffered, 1 in-flight on the worker).
     // Next submit overflows to the fallback channel.
-    submit_gated(&queue, &gate, &counter);
-    // Let the fallback worker pick up the gated task and block.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let (fallback_ready_tx, fallback_ready_rx) = oneshot::channel();
+    submit_ready_gated(&queue, &gate, fallback_ready_tx, &counter);
+    fallback_ready_rx
+        .await
+        .expect("fallback worker must start the gated task");
 
     // Step 3: now both workers are blocked. Flood until both channels
     // are completely full and rescue must kick in. Capacity:

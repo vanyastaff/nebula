@@ -55,6 +55,26 @@ struct DaemonRun {
     handle: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DaemonJoinFailure {
+    Cancelled,
+    Panicked,
+}
+
+fn classify_daemon_join_failure(error: &tokio::task::JoinError) -> DaemonJoinFailure {
+    if error.is_cancelled() {
+        DaemonJoinFailure::Cancelled
+    } else {
+        DaemonJoinFailure::Panicked
+    }
+}
+
+fn report_daemon_join(result: Result<(), tokio::task::JoinError>, operation: &'static str) {
+    let Err(error) = result else { return };
+    let failure = classify_daemon_join_failure(&error);
+    tracing::warn!(operation, failure = ?failure, "daemon task join failed");
+}
+
 impl<R: Provider> DaemonRuntime<R> {
     /// Creates a new daemon runtime with the given configuration and
     /// *parent* cancellation token.
@@ -118,9 +138,9 @@ where
     ///
     /// # Restart-safety (#318)
     ///
-    /// A stale `DaemonRun` whose task has already finished (natural exit)
-    /// is silently dropped here so a fresh `start()` succeeds. Only an
-    /// actually-live run returns `Err("daemon is already running")`.
+    /// A stale `DaemonRun` whose task has already finished is joined here so
+    /// panic or cancellation is observed before a fresh `start()` succeeds.
+    /// Only an actually-live run returns `Err("daemon is already running")`.
     ///
     /// # Errors
     ///
@@ -136,14 +156,16 @@ where
 
         // #318: if a prior run has already finished (e.g. RestartPolicy::Never
         // and natural exit), its handle sticks around in `inner` forever and
-        // blocks future starts. Drop it here so a clean restart succeeds.
+        // blocks future starts. Join it here so panic/cancellation remains
+        // observable without logging a potentially secret-bearing panic payload.
         if let Some(run) = guard.as_ref()
             && !run.handle.is_finished()
         {
             return Err(Error::permanent("daemon is already running"));
         }
-        // Either guard was None, or the prior run is finished — drop it.
-        *guard = None;
+        if let Some(run) = guard.take() {
+            report_daemon_join(run.handle.await, "restart");
+        }
 
         // Fresh per-run cancel token as a child of the parent. External
         // shutdown of `parent_cancel` still propagates here, and `stop()`
@@ -179,9 +201,7 @@ where
             // Keep the run visible until join completes so concurrent
             // start()/is_running() calls cannot observe a false "stopped"
             // state while shutdown is still in progress.
-            if let Err(e) = (&mut run.handle).await {
-                tracing::warn!(error = %e, "daemon join error on stop");
-            }
+            report_daemon_join((&mut run.handle).await, "stop");
             guard.take();
         }
     }
@@ -381,6 +401,49 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct PanickingDaemon;
+
+    #[async_trait::async_trait]
+    impl Provider for PanickingDaemon {
+        type Config = EmptyCfg;
+        type Instance = ();
+        type Topology = nebula_resource::NoTopology;
+
+        fn key() -> ResourceKey {
+            ResourceKey::new("daemon-panicking").unwrap()
+        }
+
+        async fn create(
+            &self,
+            _config: &Self::Config,
+            _ctx: &ResourceContext,
+        ) -> Result<(), ResourceError> {
+            Ok(())
+        }
+
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("daemon-panicking"),
+                "",
+            )
+        }
+    }
+
+    nebula_resource::no_credential_slots!(PanickingDaemon);
+
+    impl Daemon for PanickingDaemon {
+        async fn run(
+            &self,
+            _runtime: &Self::Instance,
+            _ctx: &ResourceContext,
+            _cancel: CancellationToken,
+        ) -> Result<(), ResourceError> {
+            panic!("secret panic payload must not enter daemon diagnostics")
+        }
+    }
+
     /// #323: `stop()` called while the daemon is sleeping in `restart_backoff`
     /// must return promptly. Without the `biased select` at the bottom of
     /// `daemon_loop`, stop would be blocked for the full backoff.
@@ -492,5 +555,116 @@ mod tests {
         rt.start(OneShotDaemon, Arc::new(()), &ctx)
             .await
             .expect("start after natural exit must succeed");
+    }
+
+    /// Captures every event's level and fields as text so a test can assert
+    /// what daemon diagnostics carry.
+    struct EventCapture(Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    struct FieldText<'a>(&'a mut String);
+
+    impl tracing::field::Visit for FieldText<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            use std::fmt::Write as _;
+            let _ = write!(self.0, "{}={:?} ", field.name(), value);
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for EventCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut text = String::new();
+            event.record(&mut FieldText(&mut text));
+            self.0
+                .lock()
+                .unwrap()
+                .push((*event.metadata().level(), text));
+        }
+    }
+
+    /// A finished run that panicked is joined and reported by both the
+    /// restarting `start()` and `stop()`, and neither report carries the
+    /// panic payload (it may hold secrets).
+    #[tokio::test]
+    async fn panicked_runs_are_reported_on_restart_and_stop_without_payload() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(EventCapture(Arc::clone(&events)));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let rt = DaemonRuntime::<PanickingDaemon>::new(
+            DaemonCfg {
+                restart_policy: RestartPolicy::Never,
+                restart_backoff: Duration::ZERO,
+                max_restarts: 0,
+            },
+            CancellationToken::new(),
+        );
+        let ctx = ResourceContext::minimal(
+            nebula_core::scope::Scope {
+                execution_id: Some(ExecutionId::new()),
+                ..Default::default()
+            },
+            CancellationToken::new(),
+        );
+
+        rt.start(PanickingDaemon, Arc::new(()), &ctx).await.unwrap();
+        while rt.is_running().await {
+            tokio::task::yield_now().await;
+        }
+        rt.start(PanickingDaemon, Arc::new(()), &ctx)
+            .await
+            .expect("a panicked finished run must be joined before restart");
+        while rt.is_running().await {
+            tokio::task::yield_now().await;
+        }
+        rt.stop().await;
+
+        let events = events.lock().unwrap().clone();
+        let warnings: Vec<&str> = events
+            .iter()
+            .filter(|(level, _)| *level == tracing::Level::WARN)
+            .map(|(_, text)| text.as_str())
+            .collect();
+        for operation in ["restart", "stop"] {
+            assert!(
+                warnings
+                    .iter()
+                    .any(|text| text.contains(&format!("operation=\"{operation}\""))
+                        && text.contains("failure=Panicked")),
+                "a panicked run must be reported on {operation}, got {warnings:?}"
+            );
+        }
+        assert!(
+            events
+                .iter()
+                .all(|(_, text)| !text.contains("secret panic payload")),
+            "daemon diagnostics must not carry the panic payload, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn join_failures_are_classified_without_their_payload() {
+        let panicked = tokio::spawn(async {
+            panic!("secret panic payload must remain redacted");
+        })
+        .await
+        .expect_err("task must panic");
+        assert_eq!(
+            classify_daemon_join_failure(&panicked),
+            DaemonJoinFailure::Panicked
+        );
+
+        let pending = tokio::spawn(std::future::pending::<()>());
+        pending.abort();
+        let cancelled = pending.await.expect_err("aborted task must fail to join");
+        assert_eq!(
+            classify_daemon_join_failure(&cancelled),
+            DaemonJoinFailure::Cancelled
+        );
     }
 }
