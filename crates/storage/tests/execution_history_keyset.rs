@@ -7,6 +7,8 @@
 //! paging one row at a time proves the backend orders and resumes by bytes —
 //! the order the reference adapter uses.
 
+#![cfg(any(feature = "sqlite", feature = "postgres"))]
+
 use nebula_storage_port::store::ExecutionStore;
 use nebula_storage_port::{ExecutionHistoryPageSize, ExecutionHistoryQuery, Scope};
 

@@ -43,7 +43,6 @@ pub(crate) fn storage_error(error: sqlx::Error) -> StorageError {
 
 /// [`storage_error`], with a unique violation attributed to `entity` — for
 /// stores whose callers branch on which record collided.
-#[cfg(feature = "postgres")]
 pub(crate) fn storage_error_for(entity: &'static str, error: sqlx::Error) -> StorageError {
     match storage_error(error) {
         StorageError::Duplicate { detail, .. } => StorageError::Duplicate { entity, detail },
@@ -57,6 +56,21 @@ pub(crate) fn storage_error_for(entity: &'static str, error: sqlx::Error) -> Sto
 pub(crate) fn decode_u64(value: i64, column: &'static str) -> Result<u64, StorageError> {
     u64::try_from(value)
         .map_err(|_| StorageError::Corrupt(format!("column `{column}` holds a negative counter")))
+}
+
+/// Decode a 32-bit counter or limit stored as a 64-bit SQL integer. A value
+/// outside the `i32` range is corrupt data, never a truncated number.
+pub(crate) fn decode_i32(value: i64, column: &'static str) -> Result<i32, StorageError> {
+    i32::try_from(value)
+        .map_err(|_| StorageError::Corrupt(format!("column `{column}` is outside the i32 range")))
+}
+
+/// Encode a non-negative counter for a signed 64-bit SQL column. A value
+/// past `i64::MAX` is rejected input, never a wrapped negative number.
+pub(crate) fn encode_u64(value: u64, column: &'static str) -> Result<i64, StorageError> {
+    i64::try_from(value).map_err(|_| {
+        StorageError::InvalidInput(format!("`{column}` exceeds the signed 64-bit range"))
+    })
 }
 
 fn database_error(database: &dyn DatabaseError) -> StorageError {
@@ -128,6 +142,23 @@ mod tests {
         assert!(matches!(
             storage_error(sqlx::Error::RowNotFound),
             StorageError::Internal(_)
+        ));
+    }
+
+    #[test]
+    fn integer_narrowing_never_wraps() {
+        assert_eq!(decode_u64(7, "version").ok(), Some(7));
+        assert!(matches!(
+            decode_u64(-1, "version"),
+            Err(StorageError::Corrupt(_))
+        ));
+        assert!(matches!(
+            decode_i32(i64::from(i32::MAX) + 1, "limit"),
+            Err(StorageError::Corrupt(_))
+        ));
+        assert!(matches!(
+            encode_u64(u64::MAX, "version"),
+            Err(StorageError::InvalidInput(_))
         ));
     }
 

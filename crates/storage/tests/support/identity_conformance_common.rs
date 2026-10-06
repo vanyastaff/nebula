@@ -789,7 +789,7 @@ async fn assert_ambiguous_workspace_blocks_org_removal(b: &dyn IdentityBackend) 
         store
             .remove_org_member_guarded("org_a", PrincipalKind::User, "owner")
             .await,
-        Err(PortStorageError::Serialization(_))
+        Err(PortStorageError::Corrupt(_))
     ));
     assert!(
         store

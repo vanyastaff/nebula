@@ -6,6 +6,8 @@
 //! timestamps live only in the state JSON. The migration must project them
 //! into the new columns so history filters see the truth for old rows too.
 
+#![cfg(any(feature = "sqlite", feature = "postgres"))]
+
 use serde_json::json;
 
 #[cfg(feature = "postgres")]

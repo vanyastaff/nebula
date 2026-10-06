@@ -295,7 +295,7 @@ async fn postgres_workspace_alias_create_serializes_with_membership_cascade() {
                     .is_none()
             );
         },
-        Err(PortStorageError::Serialization(_)) => {
+        Err(PortStorageError::Corrupt(_)) => {
             assert!(
                 memberships
                     .get(

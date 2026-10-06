@@ -335,13 +335,13 @@ async fn membership_corrupt_roles_fail_closed_sqlite() {
             store
                 .get_tenant_membership("org", None, PrincipalKind::User, "owner")
                 .await,
-            Err(nebula_storage_port::StorageError::Serialization(_))
+            Err(nebula_storage_port::StorageError::Corrupt(_))
         ));
         assert!(matches!(
             store
                 .list_orgs_for_principal(PrincipalKind::User, "owner")
                 .await,
-            Err(nebula_storage_port::StorageError::Serialization(_))
+            Err(nebula_storage_port::StorageError::Corrupt(_))
         ));
         assert!(matches!(
             store
@@ -351,13 +351,13 @@ async fn membership_corrupt_roles_fail_closed_sqlite() {
                     OrgMembershipRole::Admin
                 ))
                 .await,
-            Err(nebula_storage_port::StorageError::Serialization(_))
+            Err(nebula_storage_port::StorageError::Corrupt(_))
         ));
         assert!(matches!(
             store
                 .remove_org_member_guarded("org", PrincipalKind::User, "owner")
                 .await,
-            Err(nebula_storage_port::StorageError::Serialization(_))
+            Err(nebula_storage_port::StorageError::Corrupt(_))
         ));
         assert_eq!(
             store
@@ -397,10 +397,10 @@ async fn membership_corrupt_roles_fail_closed_sqlite() {
         store
             .get_tenant_membership("org", Some("ws"), PrincipalKind::User, "owner")
             .await,
-        Err(nebula_storage_port::StorageError::Serialization(_))
+        Err(nebula_storage_port::StorageError::Corrupt(_))
     ));
     assert!(matches!(
         store.list_workspace_members("org", "ws").await,
-        Err(nebula_storage_port::StorageError::Serialization(_))
+        Err(nebula_storage_port::StorageError::Corrupt(_))
     ));
 }
