@@ -63,23 +63,6 @@ impl std::fmt::Debug for UserRow {
     }
 }
 
-/// Table: `oauth_links`
-///
-/// Links external OAuth accounts to a user. The Plane-A runtime currently
-/// emits only the reviewed `google` and `github` provider keys.
-/// Primary key: `(provider, provider_user_id)`.
-#[derive(Debug, Clone)]
-pub struct OAuthLinkRow {
-    pub user_id: Vec<u8>,
-    /// Runtime-emitted provider key: currently `'google'` or `'github'`.
-    /// The text storage shape is technical decoupling, not an
-    /// operator-extensible provider profile.
-    pub provider: String,
-    pub provider_user_id: String,
-    pub provider_email: Option<String>,
-    pub linked_at: DateTime<Utc>,
-}
-
 /// Table: `sessions`
 ///
 /// Active login sessions (browser cookies). Expired rows are
@@ -322,33 +305,4 @@ mod oauth_state_debug_tests {
         assert!(!debug.contains("VERIFIER_CANARY-c815"));
         assert!(!debug.contains("REDIRECT_CANARY-d96c"));
     }
-}
-
-/// External identity row: a stable per-IdP linkage between
-/// `(provider, subject)` (the IdP's `sub` claim is the source of
-/// truth for "same human") and a Nebula `user_id`.
-///
-/// Per ADR-0085 D-8: PK is `(provider, subject)`; `user_id` is the
-/// FK with `ON DELETE CASCADE`, so deleting a user atomically purges
-/// every external link. `email` is the IdP-side email captured at
-/// link time — audit only, NOT refreshed on subsequent logins per
-/// REQ-oauth-006 Scenario 6.2.
-#[derive(Debug, Clone)]
-pub struct ExternalIdentityRow {
-    /// Runtime-emitted IdP key: currently `'google'` or `'github'`.
-    /// Snake-case matches the `OAuthProvider` enum serialization; the text
-    /// column is not an operator-extensible profile registry.
-    pub provider: String,
-    /// IdP `sub` claim. Opaque to Nebula; treated as a stable string.
-    pub subject: String,
-    /// Nebula `user_id` (16-byte ULID, raw bytes — matches `users.id`).
-    /// `Vec<u8>` because the repos layer is generic over storage shape
-    /// and `users.id` is `BYTEA` per `0001_users.sql`.
-    pub user_id: Vec<u8>,
-    /// IdP-side email at link time (NULL when the IdP did not return
-    /// one, e.g. GitHub with no `user:email` scope). NOT refreshed on
-    /// subsequent logins.
-    pub email: Option<String>,
-    /// When the link was first established.
-    pub linked_at: DateTime<Utc>,
 }

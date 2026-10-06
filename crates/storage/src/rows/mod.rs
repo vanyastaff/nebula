@@ -1,59 +1,21 @@
-//! Database row types — 1:1 mappings to SQL table columns.
+//! Row types of the Plane-A account tables and the webhook activation spec.
 //!
-//! These are raw storage shapes, not domain types. IDs are `Vec<u8>` (BYTEA/BLOB),
-//! enums are `String`, timestamps are `chrono::DateTime<chrono::Utc>`, JSON fields are
-//! `serde_json::Value`. The mapping layer converts between rows and domain types.
+//! Raw storage shapes, not domain types: IDs are `Vec<u8>` (BYTEA/BLOB),
+//! timestamps are `chrono::DateTime<chrono::Utc>`.
 
 // Row structs are plain data containers where field names mirror SQL columns.
-// Documenting every field individually adds noise without value.
-#[expect(
-    missing_docs,
-    reason = "row structs mirror SQL columns; per-field docs add noise without value"
-)]
-mod audit;
-#[expect(
-    missing_docs,
-    reason = "row structs mirror SQL columns; per-field docs add noise without value"
-)]
-mod execution;
-#[expect(
-    missing_docs,
-    reason = "row structs mirror SQL columns; per-field docs add noise without value"
-)]
-mod org;
-#[expect(
-    missing_docs,
-    reason = "row structs mirror SQL columns; per-field docs add noise without value"
-)]
-mod quota;
-#[expect(
-    missing_docs,
-    reason = "row structs mirror SQL columns; per-field docs add noise without value"
-)]
-mod trigger;
 #[expect(
     missing_docs,
     reason = "row structs mirror SQL columns; per-field docs add noise without value"
 )]
 mod user;
 mod webhook_activation;
-#[expect(
-    missing_docs,
-    reason = "row structs mirror SQL columns; per-field docs add noise without value"
-)]
-mod workflow;
 
-pub use audit::{AuditLogRow, BlobRow, SlugHistoryRow};
-pub use execution::{ExecutionNodeRow, ExecutionRow};
-pub use org::{OrgMemberRow, OrgRow, ServiceAccountRow, WorkspaceMemberRow, WorkspaceRow};
-pub use quota::{OrgQuotaRow, OrgQuotaUsageRow, WorkspaceQuotaUsageRow};
-pub use trigger::{CronFireSlotRow, PendingSignalRow, TriggerEventRow, TriggerRow};
 pub use user::{
-    ExternalIdentityRow, OAuthLinkRow, OAuthStateRow, PersonalAccessTokenRow, SessionDraft,
-    SessionRow, UserRow, VerificationTokenRow,
+    OAuthStateRow, PersonalAccessTokenRow, SessionDraft, SessionRow, UserRow,
+    VerificationTokenRow,
 };
 pub use webhook_activation::{
     WEBHOOK_ACTIVATION_KEY, WebhookActivationSpec, WebhookActivationSpecError,
     WebhookTimestampFormat,
 };
-pub use workflow::{WorkflowRow, WorkflowVersionRow};

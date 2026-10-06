@@ -1,7 +1,8 @@
-//! PostgreSQL implementations of repository traits.
+//! PostgreSQL implementations of the Plane-A account repositories.
 //!
 //! Each module in this directory implements exactly one repo trait from
-//! `crate::repos`. All implementations share:
+//! `crate::repos`, plus the identity-secret rotation migrator. All
+//! implementations share:
 //!
 //! - a `sqlx::Pool<Postgres>` for connection management
 //! - the `map_db_err` helper for translating `sqlx::Error` into `StorageError`
@@ -16,21 +17,17 @@ use sqlx::Error as SqlxError;
 
 use crate::error::StorageError;
 
-mod control_queue;
 mod external_identity;
 mod idempotency;
 mod identity_secret;
 mod mfa_enrollment;
 mod oauth_login;
 mod oauth_state;
-mod org;
 mod pat;
 mod session;
 pub(crate) mod user;
 mod verification_token;
-mod workspace;
 
-pub use control_queue::PgControlQueueRepo;
 pub use external_identity::PgExternalIdentityRepo;
 pub use idempotency::PgIdempotencyStore;
 pub use identity_secret::{
@@ -40,12 +37,10 @@ pub use identity_secret::{
 pub use mfa_enrollment::PgMfaEnrollmentRepo;
 pub use oauth_login::PgOAuthLoginFinalizer;
 pub use oauth_state::PgOAuthStateRepo;
-pub use org::PgOrgRepo;
 pub use pat::PgPatRepo;
 pub use session::PgSessionRepo;
 pub use user::PgUserRepo;
 pub use verification_token::PgVerificationTokenRepo;
-pub use workspace::PgWorkspaceRepo;
 
 /// Translate an [`sqlx::Error`] into a [`StorageError`].
 ///

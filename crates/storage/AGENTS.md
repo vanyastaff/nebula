@@ -31,10 +31,10 @@
 
 ## Key files
 
-- `src/lib.rs` — adapter re-exports (`InMemory*`, `StorageError`, `StorageFormat`); module/feature map.
+- `src/lib.rs` — module/feature map and adapter re-exports (`InMemory*`, `StorageError`).
 - `src/inmem/` — internal test/reference/conformance adapters and loom probes; not a supported deployment backend.
 - `src/sqlite/` · `src/postgres/` — feature-gated port adapters over the port-scoped schema (Postgres uses real tx + `FOR UPDATE SKIP LOCKED`).
-- `src/repos/` — residual non-port traits with live consumers (`ControlQueueRepo`, `IdempotencyStoreRepo`, `WebhookActivationRepo`, identity glue).
+- `src/repos/` + `src/pg/` — Plane-A account persistence (users, sessions, PATs, OAuth state, external identities, MFA) and the API idempotency cache: traits in `repos`, PostgreSQL implementations in `pg`. Outside the port contract by design.
 - `src/pg/oauth_login.rs` + `src/repos/oauth_login.rs` — storage-owned Plane-A
   OAuth finalization: every call performs no network I/O and atomically records
   either user/stable-link/session or an MFA challenge-without-session outcome.

@@ -111,7 +111,7 @@ the engine `ControlConsumer`, so 202 proves the durable producer write, not depl
 consumption.
 Seam: `crates/api/src/domain/execution/handler.rs` — `start_execution`.
 - **[L2-§13 step 5]** Cancel (`POST /api/v1/executions/:id/cancel`) writes a
-durable signal to `ControlQueueRepo` in the same logical operation as the
+durable signal to the port `ControlQueue` in the same logical operation as the
 terminal cancellation state transition — not only a DB-row flip. The API
 returns after this producer commit; it does not wait for a consumer or prove
 that an in-flight handler stopped. Seam:

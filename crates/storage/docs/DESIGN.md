@@ -47,7 +47,6 @@ owner-bound `CredentialPersistence`; `Scope`).
 | Item | Where |
 |------|-------|
 | `StorageError` (крейт-локальный enum) | `src/error.rs:13`, реэкспорт `src/lib.rs:102` |
-| `StorageFormat` (JSON / MessagePack) | `src/format.rs:14` |
 | `InMemoryExecutionStore` / `InMemoryIdempotencyGuard` | `src/inmem/execution.rs:69,362` |
 | `InMemoryControlQueue` | `src/inmem/control_queue.rs:26` |
 | workflow/journal/checkpoint/node-result/identity in-mem | реэкспорт `src/inmem/mod.rs:19-29`, `src/lib.rs:104-109` |
@@ -55,25 +54,23 @@ owner-bound `CredentialPersistence`; `Scope`).
 | `SqliteExecutionStore` / `SqliteControlQueue` | `src/sqlite/execution.rs:20`, `src/sqlite/control_queue.rs:21` |
 | `postgres::init_schema` | `src/postgres/mod.rs:38` |
 | `PgExecutionStore` / `PgControlQueue` | `src/postgres/execution.rs:21`, `src/postgres/control_queue.rs:22` |
-| `repos::*` (не-портовые трейты с живыми потребителями) | `ControlQueueRepo`+`InMemoryControlQueueRepo` `src/repos/control_queue.rs`; `IdempotencyStoreRepo` `src/repos/idempotency.rs`; `WebhookActivationRepo` `src/repos/webhook_activation.rs:67`; identity-row трейты `src/repos/user.rs` (+ org/workspace/quota/trigger/audit/blob/resource) |
-| `pg::*` (feature postgres) — Postgres-глю для `repos`-трейтов | `PgUserRepo` `src/pg/user.rs:41`, `PgWebhookActivationRepo` `src/pg/webhook_activation.rs:44`, `PgControlQueueRepo`, `PgSessionRepo`, … |
-| `rows::*` — row-DTO (multi-tenant by construction) | `UserRow` `src/rows/user.rs:11`, `WorkflowRow`, `WebhookActivationSpec` `src/rows/webhook_activation.rs:72`, … |
+| `repos::*` — Plane-A аккаунты (вне порта) + кэш идемпотентности API | `UserRepo`/`SessionRepo`/`PatRepo`/`OAuthStateRepo`/`ExternalIdentityRepo`/`VerificationTokenRepo` `src/repos/user.rs`; `MfaEnrollmentRepo`; `IdempotencyStoreRepo` `src/repos/idempotency.rs` |
+| `pg::*` (feature postgres) — реализации `repos`-трейтов | `PgUserRepo`, `PgSessionRepo`, `PgPatRepo`, `PgOAuthLoginFinalizer`, `PgIdentitySecretMigrator`, … |
+| `rows::*` — row-типы таблиц Plane-A | `UserRow`, `SessionRow`, `PersonalAccessTokenRow`, `WebhookActivationSpec` |
 | credential persistence | `SqliteCredentialPersistence` and `PgCredentialPersistence`, both implementing the port-local object-safe contract |
 | `KeyProvider` / `EnvKeyProvider` / `FileKeyProvider` | `src/credential/key_provider.rs` |
 | credential decorator-слои `EncryptionLayer`/`CacheLayer`/`AuditLayer` | `src/credential/layer/` |
 | `ProviderCacheLayer` / `RotationBackup` (feature rotation) / `InMemoryPendingStore` | `src/credential/provider_cache.rs`, `src/credential/backup.rs`, `src/credential/pending.rs` |
 | refresh-claim (ADR-0041) | `InMemoryRefreshClaimRepo` `src/credential/refresh_claim/in_memory.rs:48`, `SqliteRefreshClaimRepo` `…/sqlite.rs:33`, `PgRefreshClaimRepo` `…/postgres.rs:22`; трейт+DTO — алиасы на порт `src/credential/refresh_claim/mod.rs:37-41` |
-| `pool::{Backend, PoolConfig}` | `src/pool.rs:14,48` |
-| `mapping::{ids,json,timestamps}` — утилиты row↔domain | `src/mapping/` |
 
 ## 3. Зависимости и зависимые
 
 - **Workspace-deps:** `nebula-core`, `nebula-env`, `nebula-credential`, `nebula-crypto`,
   `nebula-storage-port`.
-- **Внешние:** `sqlx` (opt; фичи postgres/sqlite), `redis` (opt), `aws-config`+`aws-sdk-s3`
-  (opt), `moka`, `uuid`, `parking_lot`, `zeroize`, `base64`, `sha2`, `rmp-serde` (opt).
-- **Фичи:** `sqlite`, `postgres` (TLS rustls-native-roots по умолчанию), `redis`, `s3`,
-  `rotation` (→ `nebula-credential/rotation`), `credential-in-memory`, `msgpack-storage`.
+- **Внешние:** `sqlx` (opt; фичи postgres/sqlite), `moka`, `uuid`, `parking_lot`, `zeroize`,
+  `base64`, `sha2`.
+- **Фичи:** `sqlite`, `postgres` (TLS rustls-native-roots по умолчанию), `rotation`
+  (→ `nebula-credential/rotation`), `credential-in-memory`.
 - **Зависимые:** `nebula-engine` (`crates/engine/Cargo.toml:39,72`), `nebula-api`
   (`crates/api/Cargo.toml:17,134`), `apps/server` (`apps/server/Cargo.toml:22`),
   `examples` (`examples/Cargo.toml:25`). Соседний `nebula-storage-loom-probe` сознательно
@@ -97,9 +94,8 @@ owner-bound `CredentialPersistence`; `Scope`).
   обязательны).
 - `credential/` — credential-стора, `KeyProvider`, decorator-слои (`layer/`: encryption,
   audit, cache), `provider_cache`, `pending`, `backup`, `refresh_claim/`.
-- `mapping/` — конверсии ids/json/timestamps; `format.rs` — JSON/MessagePack; `pool.rs` —
-  конфиг пула; `error.rs` — `StorageError`.
-- `test_support/` (cfg test) — fixtures + `sqlite_memory_*` harness; `tests/` —
+- `error.rs` — `StorageError`.
+- `test_support/` (cfg test) — фикстуры Plane-A строк; `tests/` —
   конформанс-матрица {InMemory, SQLite, Pg} + tenancy-декораторы.
 
 Поток данных (execution-путь): engine собирает `TransitionBatch` (state-переход + journal-
@@ -139,8 +135,8 @@ SQLite/Postgres, под Mutex в InMemory).
   операции**, что и сопровождаемый переход; cancel-сигнал enqueue-ится атомарно с
   `cancelling`-переходом (нельзя «переход без enqueue» или «enqueue без перехода»).
 - **[L2-§12.3] One local path.** Дефолтный локальный путь — SQLite (file или `:memory:`);
-  in-process тесты идут через `test_support` (`sqlite_memory_*`), не через отдельный
-  HashMap-backend.
+  in-process тесты открывают `sqlite::memory:` через тот же `init_schema`; `inmem` —
+  эталон/конформанс-модель, не deployment-backend.
 - **[ADR-0041] Refresh-claim atomicity.** `try_claim` атомарен под контеншеном — ровно один
   из N acquirers по N репликам выигрывает (CAS `INSERT … ON CONFLICT DO UPDATE WHERE
   expires_at < now() AND sentinel = Normal` в SQL; per-key Mutex-swap в in-memory).
@@ -158,17 +154,13 @@ SQLite/Postgres, под Mutex в InMemory).
    при этом порт-адаптеры возвращают `nebula_storage_port::StorageError`
    (`src/sqlite/mod.rs:39`, `src/postgres/mod.rs:38`). Двойственность типов ошибок
    порт vs residual-repos.
-2. **redis/s3 объявлены, кода нет.** Фичи и deps в `Cargo.toml:62-75,102-103`, но в `src/`
-   нет ни одного redis/s3 модуля; cargo-shear ignored (`Cargo.toml:127-132`,
-   «implementation is landing incrementally»). README:232-233 называет их «experimental» —
-   фактически пустые фичи.
-3. **Дубль control-queue / idempotency / webhook-activation.** Портовая семья
-   (`inmem/sqlite/postgres::*ControlQueue`, `*IdempotencyStore`, `*WebhookActivationStore`)
-   И residual `repos::ControlQueueRepo`/`IdempotencyStoreRepo`/`WebhookActivationRepo` +
-   `pg::*Repo`. Задокументировано как намеренный остаток (`lib.rs:25-36`), но это две
-   параллельные реализации одних концернов.
-4. **`pg/` vs `postgres/`.** Два Postgres-дерева с разными ролями, имена почти
-   неразличимы (`src/pg/control_queue.rs` vs `src/postgres/control_queue.rs`).
+2. **Дубль idempotency.** Портовый `*IdempotencyStore` (`port_idempotency_cache`) и
+   residual `repos::IdempotencyStoreRepo` + `pg::PgIdempotencyStore` (кэш API) — одно имя
+   типа `PgIdempotencyStore` в двух модулях. Legacy `ControlQueueRepo` удалён (2026-10-06):
+   портовый `ControlQueue` — единственный outbox.
+3. **`pg/` vs `postgres/`.** Два Postgres-дерева с разными ролями: `pg/` — Plane-A
+   аккаунты вне порта, `postgres/` — портовые адаптеры. Переименование `pg/`+`repos/` в
+   `auth/` запланировано (ADR-003 в `.10x/`).
 5. **Legacy-алиасы refresh_claim.** `RefreshClaimStore as RefreshClaimRepo`,
    `RefreshClaimError as RepoError` (`src/credential/refresh_claim/mod.rs:37-41`) —
    rename-on-import ради исторических путей потребителей.
@@ -222,8 +214,7 @@ builtin types), а `nebula-crypto` владеет `Cipher`/`Kdf`-портами.
   владеет `nebula-resource` (per-slot), а storage остаётся бэкапом состояния, не драйвером.
 
 **Resource redesign (ADR-0093, bind-population M12.4)** крейт затрагивает _косвенно_:
-`repos::ResourceRepo` + `rows` + identity-стора — потенциальное место durable bind-state,
-но сейчас resource-редизайн кода здесь не менял.
+портовые resource-runtime адаптеры (`*/resource_runtime.rs`) — место durable bind-state.
 
 ## 8. Forward design / открытые вопросы
 
@@ -239,15 +230,10 @@ builtin types), а `nebula-crypto` владеет `Cipher`/`Kdf`-портами.
 - **Свернуть refresh-CAS×2.** Дубль refresh-claim между storage и credential-rewrite-планом
   — закрыть _до_ старта rewrite credential (иначе мигрируем дубль). Решить, чья сторона
   владеет CAS-предикатом.
-- **Дедуп control-queue / idempotency / webhook-activation.** Портовая семья vs
-  `repos::*Repo` — два пути к одним концернам; либо мигрировать потребителей residual на
-  порт, либо явно зафиксировать why-two в ADR (сейчас только `lib.rs`-комментарий).
-- **redis/s3: реализовать или удалить.** Пустые фичи + ignored-shear — либо landing
-  завершить, либо снять deps/фичи (честность Cargo.toml).
+- **Дедуп idempotency.** Портовый `*IdempotencyStore` vs `repos::IdempotencyStoreRepo`
+  (кэш API) — либо перевести middleware на порт, либо развести имена.
 - **Postgres runtime-verify.** Снять `DATABASE_URL`-gate в CI (M7 ROADMAP) — единственный
   residual после spec-16 merge; до этого «pg-verified» нельзя заявлять.
-- **`pg/` vs `postgres/` именование.** Переименовать одно из деревьев — текущая
-  неразличимость имён множит ошибки навигации.
+- **`pg/` vs `postgres/` именование.** `pg/`+`repos/` → `auth/` (ADR-003).
 - **Durable bind-state (M12.4).** Когда resource bind-population дойдёт до production
-  producer, решить, садится ли durable bind-state в `repos::ResourceRepo`/`rows` здесь или
-  в отдельный шов — спроектировать ДО, чтобы не вклеивать ad-hoc.
+  producer, спроектировать шов в resource-runtime адаптерах ДО, чтобы не вклеивать ad-hoc.

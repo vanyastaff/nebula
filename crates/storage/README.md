@@ -60,11 +60,11 @@ provides the adapters:
 - `postgres::*` (feature `postgres`) — production multi-process adapters
   (real tx + `FOR UPDATE SKIP LOCKED`) over the same canonical catalog;
   `init_schema` is the catalog-only deployment/bootstrap seam.
-- `repos::*` — the non-port backend traits that still have live
-  consumers: `ControlQueueRepo` (+ `InMemoryControlQueueRepo`,
-  `pg::PgControlQueueRepo`), `IdempotencyStoreRepo`,
-  `WebhookActivationRepo`, and the identity-row glue the Postgres
-  backend implements.
+- `repos::*` + `pg::*` (feature `postgres`) — Plane-A account persistence
+  outside the port contract (users, sessions, PATs, OAuth state, external
+  identities, MFA enrollment) and the API idempotency cache
+  (`IdempotencyStoreRepo`): traits in `repos`, PostgreSQL implementations in
+  `pg`.
 - `pg::PgOAuthLoginFinalizer` (feature `postgres`) plus the
   `repos::OAuthLoginFinalize*` command/outcome types — the technical,
   storage-owned Plane-A completion seam. Each call receives already-verified
@@ -104,8 +104,7 @@ provides the adapters:
   safe retired advisory-lock connection, bounded reads, equality-guarded CAS,
   user-version fencing, explicit old-key rotation, and repeated verification;
   the Postgres auth backend is not exposed until convergence succeeds.
-- crate-local `StorageError`, plus `StorageFormat`
-  (serialization format abstraction).
+- crate-local `StorageError`.
 
 Applied migrations `0001..0041` are immutable SQLx-checksummed history.
 Credential lifecycle migration
@@ -281,8 +280,8 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   enqueues without transitioning, violates this invariant.
 
 - **[L2-§12.3]** The default local storage path is **SQLite** (file or `sqlite::memory:`).
-  In-process tests use `nebula_storage::test_support` (`sqlite_memory_*` helpers), not a
-  separate HashMap "memory backend." There is **one** local storage path.
+  In-process tests open `sqlite::memory:` through the same `init_schema` catalog path.
+  The `inmem` adapters are the reference/conformance model, not a deployment backend.
 
 - **[ADR-0041 / sub-spec §3]** `RefreshClaimRepo::try_claim` MUST be atomic under
   contention — exactly one of N concurrent acquirers across N replicas wins. Implementations
@@ -301,8 +300,6 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 - Not the execution state machine — see `nebula-execution` (state types, transition legality).
 - Not the engine orchestrator — see `nebula-engine` (drives the port `ExecutionStore`).
 - Not an action dispatcher — see `nebula-runtime`.
-- Not a KV cache (Redis) as a production execution backend — Redis feature is KV only, not
-  execution state.
 
 ## Maturity
 
@@ -327,12 +324,9 @@ See `docs/MATURITY.md` row for `nebula-storage`.
   `crates/engine/tests/lease_takeover.rs`, the lease-handoff loom probe
   at `crates/storage-loom-probe/src/lease_handoff.rs`, and the
   conformance matrix's lease cases.
-- The retained `repos::*` surface (`ControlQueueRepo`,
-  `IdempotencyStoreRepo`, `WebhookActivationRepo`, identity-row glue)
-  keeps live consumers (the API idempotency middleware and the Postgres
-  glue) and is no longer "planned spec-16".
-- S3 and Redis features are optional and experimental; local filesystem
-  backend is `planned`.
+- The retained `repos::*` surface (Plane-A accounts and
+  `IdempotencyStoreRepo`) keeps live consumers (the API auth backend and
+  idempotency middleware) and is outside the port contract by design.
 - Postgres adapter + identity stores are compile-verified and structurally
   identical to the runtime-verified SQLite tree, but Postgres runtime
   coverage is `DATABASE_URL`-gated and skip-clean — not claimed as
@@ -458,11 +452,12 @@ first-party apps consume the technical port. The legacy
 `repos::{execution,workflow,execution_node,journal}` placeholders were
 deleted.
 
-The retained `repos::*` traits (`ControlQueueRepo`,
-`IdempotencyStoreRepo`, `WebhookActivationRepo`, and the identity-row
-glue the Postgres backend implements) are not part of the deleted dual
-model — they keep live consumers (the API idempotency middleware, the
-`pg::*` glue) and persist through the same per-backend schema.
+The retained `repos::*` traits (Plane-A accounts and
+`IdempotencyStoreRepo`) are not part of the deleted dual model — they keep
+live consumers (the API auth backend and idempotency middleware). The legacy
+`ControlQueueRepo` outbox and the unused org/workspace/quota/trigger/audit/
+blob/resource repository traits were deleted; the port `ControlQueue` is the
+only control-command outbox.
 
 ### Persistence durability matrix (reference from §11.5)
 
@@ -486,9 +481,6 @@ model — they keep live consumers (the API idempotency middleware, the
 |---|---|---|
 | SQLite (file or `sqlite::memory:`) | `sqlite` | `implemented` — local + test default; feature-gated since the wave-2 review (driver footprint not unconditional) |
 | PostgreSQL | `postgres` | `implemented` — production path |
-| Redis | `redis` | `experimental` — KV only, not execution state |
-| S3 / MinIO | `s3` | `experimental` — blob storage |
-| Local filesystem | — | `planned` |
 
 Job-dispatch claims require both exact worker-flavor revision equality and a
 superset of required plugin keys. The exact identity is mandatory on the port
