@@ -811,6 +811,12 @@ impl AppState {
         )
         .await
         .map_err(|e| match e {
+            // The tenant resolved by the middleware vanished before the
+            // write: the workspace is gone, not concurrently modified.
+            nebula_storage_port::StorageError::NotFound {
+                entity: "workspace",
+                ..
+            } => ApiError::NotFound("workspace not found".to_string()),
             // A row/version conflict, a missing row on CAS, or a
             // duplicate (create raced, or the version slot is taken)
             // all mean "modified by another request" — the exact

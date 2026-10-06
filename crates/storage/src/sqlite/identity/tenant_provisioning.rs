@@ -99,7 +99,7 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         }
 
         insert_org(&mut *tx, &org).await?;
-        insert_workspace(&mut *tx, &workspace).await?;
+        insert_workspace(&mut tx, &workspace).await?;
         sqlx::query(
             "INSERT INTO org_memberships \
              (org_id, principal_kind, principal_id, role, added_by, added_at) \

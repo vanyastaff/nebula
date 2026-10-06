@@ -18,13 +18,16 @@ use nebula_storage_port::{Scope, StorageError};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
-use crate::sql_error::{
-    decode_u64, encode_u64, is_foreign_key_violation, storage_error, storage_error_for,
-};
+use crate::sql_error::{decode_u64, encode_u64, storage_error, storage_error_for};
 use crate::workflow_activation::ActivationColumns;
 
-const VERSION_COLUMNS: &str = "workflow_id, number, published, pinned, definition, \
-     activation_workflow_version_id, activation_executable_plan_id, activation_worker_flavor_id";
+/// Versions of live workflows only: a soft-deleted workflow's versions are
+/// invisible with it.
+const LIVE_VERSIONS: &str = "SELECT v.workflow_id, v.number, v.published, v.pinned, \
+     v.definition, v.activation_workflow_version_id, v.activation_executable_plan_id, \
+     v.activation_worker_flavor_id \
+     FROM workflow_versions v JOIN workflows w ON w.org_id = v.org_id \
+       AND w.workspace_id = v.workspace_id AND w.id = v.workflow_id AND w.deleted_at IS NULL";
 
 /// Decode one live `workflows` row selected as `id, version, slug`.
 fn decode_workflow(row: &SqliteRow, scope: &Scope) -> Result<WorkflowRecord, StorageError> {
@@ -65,13 +68,29 @@ fn decode_version(row: &SqliteRow) -> Result<WorkflowVersionRecord, StorageError
     })
 }
 
-/// Insert a live workflow row. A taken id or active slug is `Duplicate`; a
-/// missing workspace is `NotFound`.
+/// Insert a live workflow row inside the caller's `BEGIN IMMEDIATE`
+/// transaction. A taken id or active slug is `Duplicate`; a missing or
+/// deleted workspace is `NotFound` (the foreign key proves existence only).
 async fn insert_workflow(
     connection: &mut SqliteConnection,
     scope: &Scope,
     row: &WorkflowRecord,
 ) -> Result<(), StorageError> {
+    let workspace = sqlx::query(
+        "SELECT w.id FROM workspaces w JOIN orgs o ON o.id = w.org_id \
+         WHERE w.org_id = ? AND w.id = ? AND w.deleted_at IS NULL AND o.deleted_at IS NULL",
+    )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(storage_error)?;
+    if workspace.is_none() {
+        return Err(StorageError::not_found(
+            "workspace",
+            scope.workspace_id.clone(),
+        ));
+    }
     sqlx::query(
         "INSERT INTO workflows (org_id, workspace_id, id, slug, version) \
          VALUES (?, ?, ?, ?, ?)",
@@ -83,13 +102,7 @@ async fn insert_workflow(
     .bind(encode_u64(row.version, "version")?)
     .execute(connection)
     .await
-    .map_err(|error| {
-        if is_foreign_key_violation(&error) {
-            StorageError::not_found("workspace", scope.workspace_id.clone())
-        } else {
-            storage_error_for("workflow", error)
-        }
-    })?;
+    .map_err(|error| storage_error_for("workflow", error))?;
     Ok(())
 }
 
@@ -141,13 +154,30 @@ async fn update_workflow(
     }
 }
 
-/// Append one version row. A taken number or activation identity is
-/// `Duplicate`; a missing workflow is `NotFound`.
+/// Append one version row inside the caller's `BEGIN IMMEDIATE`
+/// transaction. A taken number or activation identity is `Duplicate`; a
+/// missing or deleted workflow is `NotFound`.
 async fn insert_version(
     connection: &mut SqliteConnection,
     scope: &Scope,
     version: &WorkflowVersionRecord,
 ) -> Result<(), StorageError> {
+    let workflow = sqlx::query(
+        "SELECT id FROM workflows \
+         WHERE org_id = ? AND workspace_id = ? AND id = ? AND deleted_at IS NULL",
+    )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(&version.workflow_id)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(storage_error)?;
+    if workflow.is_none() {
+        return Err(StorageError::not_found(
+            "workflow",
+            version.workflow_id.clone(),
+        ));
+    }
     let activation = ActivationColumns::encode(version.activation);
     sqlx::query(
         "INSERT INTO workflow_versions (org_id, workspace_id, workflow_id, number, \
@@ -167,13 +197,7 @@ async fn insert_version(
     .bind(activation.worker_flavor)
     .execute(connection)
     .await
-    .map_err(|error| {
-        if is_foreign_key_violation(&error) {
-            StorageError::not_found("workflow", version.workflow_id.clone())
-        } else {
-            storage_error_for("workflow_version", error)
-        }
-    })?;
+    .map_err(|error| storage_error_for("workflow_version", error))?;
     Ok(())
 }
 
@@ -236,19 +260,14 @@ impl WorkflowStore for SqliteWorkflowStore {
         .map_err(storage_error)?;
         let plan = plan.ok_or(WorkflowPublicationError::RevisionNotAdmitted)?;
         crate::workflow_activation::validate_plan_identity(&plan, &row.id, activation)?;
-        // A reused activation identity is a disagreeing publication.
-        let reused = sqlx::query(
-            "SELECT 1 FROM workflow_versions \
-             WHERE org_id = ? AND workspace_id = ? AND workflow_id = ? \
-               AND activation_workflow_version_id = ?",
-        )
-        .bind(&scope.org_id)
-        .bind(&scope.workspace_id)
-        .bind(&row.id)
-        .bind(activation.workflow_version_id().to_string())
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(storage_error)?;
+        // An activation identity is unique across all workflows; reusing one
+        // is a disagreeing publication, not a storage collision.
+        let reused =
+            sqlx::query("SELECT 1 FROM workflow_versions WHERE activation_workflow_version_id = ?")
+                .bind(activation.workflow_version_id().to_string())
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(storage_error)?;
         if reused.is_some() {
             return Err(WorkflowPublicationError::InvalidPublication);
         }
@@ -261,8 +280,13 @@ impl WorkflowStore for SqliteWorkflowStore {
     }
 
     async fn create(&self, scope: &Scope, record: WorkflowRecord) -> Result<(), StorageError> {
-        let mut connection = self.pool.acquire().await.map_err(storage_error)?;
-        insert_workflow(&mut connection, scope, &record).await
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
+        insert_workflow(&mut tx, scope, &record).await?;
+        tx.commit().await.map_err(storage_error)
     }
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<WorkflowRecord>, StorageError> {
@@ -407,8 +431,13 @@ impl WorkflowVersionStore for SqliteWorkflowVersionStore {
         record: WorkflowVersionRecord,
     ) -> Result<(), StorageError> {
         require_unactivated(&record)?;
-        let mut connection = self.pool.acquire().await.map_err(storage_error)?;
-        insert_version(&mut connection, scope, &record).await
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
+        insert_version(&mut tx, scope, &record).await?;
+        tx.commit().await.map_err(storage_error)
     }
 
     async fn get(
@@ -418,8 +447,8 @@ impl WorkflowVersionStore for SqliteWorkflowVersionStore {
         number: u32,
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
         let sql = format!(
-            "SELECT {VERSION_COLUMNS} FROM workflow_versions \
-             WHERE org_id = ? AND workspace_id = ? AND workflow_id = ? AND number = ?"
+            "{LIVE_VERSIONS} \
+             WHERE v.org_id = ? AND v.workspace_id = ? AND v.workflow_id = ? AND v.number = ?"
         );
         sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&scope.org_id)
@@ -440,9 +469,9 @@ impl WorkflowVersionStore for SqliteWorkflowVersionStore {
         workflow_id: &str,
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
         let sql = format!(
-            "SELECT {VERSION_COLUMNS} FROM workflow_versions \
-             WHERE org_id = ? AND workspace_id = ? AND workflow_id = ? AND published = 1 \
-             ORDER BY number DESC LIMIT 1"
+            "{LIVE_VERSIONS} \
+             WHERE v.org_id = ? AND v.workspace_id = ? AND v.workflow_id = ? AND v.published = 1 \
+             ORDER BY v.number DESC LIMIT 1"
         );
         sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&scope.org_id)
@@ -462,9 +491,9 @@ impl WorkflowVersionStore for SqliteWorkflowVersionStore {
         workflow_id: &str,
     ) -> Result<Vec<WorkflowVersionRecord>, StorageError> {
         let sql = format!(
-            "SELECT {VERSION_COLUMNS} FROM workflow_versions \
-             WHERE org_id = ? AND workspace_id = ? AND workflow_id = ? \
-             ORDER BY number DESC"
+            "{LIVE_VERSIONS} \
+             WHERE v.org_id = ? AND v.workspace_id = ? AND v.workflow_id = ? \
+             ORDER BY v.number DESC"
         );
         sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(&scope.org_id)

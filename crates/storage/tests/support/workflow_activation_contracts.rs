@@ -183,6 +183,62 @@ async fn publication_contract(
             .await,
         Err(WorkflowPublicationError::InvalidPublication)
     ));
+    // The activation identity is unique across workflows: another workflow
+    // presenting the same revision through its own admitted plan is a
+    // disagreeing publication, not a storage collision.
+    let other_id = nebula_core::WorkflowId::new();
+    let mut other_row = WorkflowRecord {
+        id: other_id.to_string(),
+        scope: scope.clone(),
+        version: 1,
+        slug: other_id.to_string(),
+    };
+    let mut other_version = WorkflowVersionRecord {
+        activation: None,
+        workflow_id: other_row.id.clone(),
+        number: 1,
+        published: true,
+        pinned: false,
+        definition: serde_json::json!({}),
+    };
+    rows.save_with_published_version(&scope, other_row.clone(), other_version.clone(), None)
+        .await
+        .unwrap();
+    let other_revisions = PlanFlavorRevisionIds::new(
+        ExecutablePlanRevisionId::from_bytes([11; 32]),
+        WorkerFlavorRevisionId::from_bytes([12; 32]),
+    );
+    writer
+        .insert(&PlanFlavorRevisionRecord::graph_v1_json(
+            other_revisions.plan(),
+            RevisionRecordBytes::try_from_vec(
+                serde_json::to_vec(&serde_json::json!({
+                    "workflow_version_id": workflow_revision,
+                    "manifest": {"workflow_id": other_id}
+                }))
+                .unwrap(),
+            )
+            .unwrap(),
+            WorkerFlavorRevisionRecord::v1_json(
+                other_revisions.worker_flavor(),
+                RevisionRecordBytes::try_from_vec(b"{}".to_vec()).unwrap(),
+            ),
+        ))
+        .await
+        .unwrap();
+    other_row.version = 2;
+    other_version.number = 2;
+    other_version.activation = Some(WorkflowActivation::new(workflow_revision, other_revisions));
+    assert!(matches!(
+        rows.publish_activated_version(&scope, other_row.clone(), other_version, 1)
+            .await,
+        Err(WorkflowPublicationError::InvalidPublication)
+    ));
+    assert_eq!(
+        rows.get(&scope, &other_row.id).await.unwrap().unwrap().version,
+        1
+    );
+
     admin
         .begin_drain(PlanFlavorRevisionTarget::ExecutablePlan(
             activation.revisions().plan(),

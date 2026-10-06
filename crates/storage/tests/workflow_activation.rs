@@ -55,6 +55,49 @@ async fn sqlite_publication_is_admitted_and_atomic() {
     );
 }
 
+/// A workflow needs a live workspace: the foreign key proves existence, the
+/// adapter proves liveness.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_workflow_needs_a_live_workspace() {
+    use nebula_storage_port::store::WorkspaceStore;
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    nebula_storage::sqlite::init_schema(&pool).await.unwrap();
+    let scope = Scope::new("gone-workspace", "gone-org");
+    provision(
+        &nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone()),
+        &scope,
+    )
+    .await;
+    nebula_storage::sqlite::SqliteWorkspaceStore::new(pool.clone())
+        .soft_delete(&scope.org_id, &scope.workspace_id)
+        .await
+        .unwrap();
+    let rows = nebula_storage::sqlite::SqliteWorkflowStore::new(pool);
+    let created = rows
+        .create(
+            &scope,
+            WorkflowRecord {
+                id: "in-deleted-workspace".into(),
+                scope: scope.clone(),
+                version: 1,
+                slug: "in-deleted-workspace".into(),
+            },
+        )
+        .await;
+    assert!(matches!(
+        created,
+        Err(nebula_storage_port::StorageError::NotFound {
+            entity: "workspace",
+            ..
+        })
+    ));
+}
+
 /// The activation identity is all three columns or none, and the digests
 /// are exactly 32 bytes, whatever the writer.
 #[cfg(feature = "sqlite")]

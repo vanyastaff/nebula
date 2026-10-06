@@ -105,12 +105,14 @@ impl MembershipStore for SqliteMembershipStore {
         principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<TenantMembershipSnapshot, StorageError> {
-        // One statement, one snapshot: the org grant and the workspace grant
-        // of a live workspace in a live org.
+        // One statement, one snapshot: the org grant in a live org and the
+        // workspace grant of a live workspace in a live org.
         let row = sqlx::query(
             "SELECT \
-             (SELECT role FROM org_memberships \
-              WHERE org_id = ?1 AND principal_kind = ?2 AND principal_id = ?3) AS org_role, \
+             (SELECT m.role FROM org_memberships m \
+              JOIN orgs o ON o.id = m.org_id AND o.deleted_at IS NULL \
+              WHERE m.org_id = ?1 AND m.principal_kind = ?2 AND m.principal_id = ?3) \
+              AS org_role, \
              (SELECT m.role FROM workspace_memberships m \
               JOIN workspaces w ON w.org_id = m.org_id AND w.id = m.workspace_id \
               JOIN orgs o ON o.id = w.org_id \
@@ -144,8 +146,9 @@ impl MembershipStore for SqliteMembershipStore {
         principal_id: &str,
     ) -> Result<Vec<PrincipalOrgMembership>, StorageError> {
         sqlx::query(
-            "SELECT org_id, role FROM org_memberships \
-             WHERE principal_kind = ?1 AND principal_id = ?2 ORDER BY org_id",
+            "SELECT m.org_id, m.role FROM org_memberships m \
+             JOIN orgs o ON o.id = m.org_id AND o.deleted_at IS NULL \
+             WHERE m.principal_kind = ?1 AND m.principal_id = ?2 ORDER BY m.org_id",
         )
         .bind(principal_kind.as_str())
         .bind(principal_id)
@@ -164,23 +167,33 @@ impl MembershipStore for SqliteMembershipStore {
 
     #[tracing::instrument(skip_all)]
     async fn list_org_members(&self, org_id: &str) -> Result<Vec<OrgMembership>, StorageError> {
-        sqlx::query(
-            "SELECT principal_kind, principal_id, role FROM org_memberships \
-             WHERE org_id = ?1 ORDER BY principal_kind, principal_id",
+        // One statement, one snapshot: no row ⇒ the org is missing or
+        // deleted; one row with a NULL principal ⇒ a live org without grants.
+        let rows = sqlx::query(
+            "SELECT m.principal_kind, m.principal_id, m.role FROM orgs o \
+             LEFT JOIN org_memberships m ON m.org_id = o.id \
+             WHERE o.id = ?1 AND o.deleted_at IS NULL \
+             ORDER BY m.principal_kind, m.principal_id",
         )
         .bind(org_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(storage_error)?
-        .iter()
-        .map(|row| {
-            Ok(OrgMembership {
+        .map_err(storage_error)?;
+        if rows.is_empty() {
+            return Err(StorageError::not_found("org", org_id));
+        }
+        let mut members = Vec::with_capacity(rows.len());
+        for row in &rows {
+            if optional::<String>(row, "principal_id")?.is_none() {
+                continue;
+            }
+            members.push(OrgMembership {
                 principal_kind: principal_kind(row)?,
                 principal_id: required(row, "principal_id")?,
                 role: org_role(row)?,
-            })
-        })
-        .collect()
+            });
+        }
+        Ok(members)
     }
 
     #[tracing::instrument(skip_all)]
@@ -189,29 +202,37 @@ impl MembershipStore for SqliteMembershipStore {
         org_id: &str,
         workspace_id: &str,
     ) -> Result<Vec<WorkspaceMembership>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
-        if !live_workspace_exists(&mut tx, org_id, workspace_id).await? {
-            return Err(StorageError::not_found("workspace", workspace_id));
-        }
+        // One statement, one snapshot: no row ⇒ the workspace is missing,
+        // deleted, under a deleted org or under another org.
         let rows = sqlx::query(
-            "SELECT principal_kind, principal_id, role FROM workspace_memberships \
-             WHERE org_id = ?1 AND workspace_id = ?2 ORDER BY principal_kind, principal_id",
+            "SELECT m.principal_kind, m.principal_id, m.role \
+             FROM workspaces w JOIN orgs o ON o.id = w.org_id \
+             LEFT JOIN workspace_memberships m \
+               ON m.org_id = w.org_id AND m.workspace_id = w.id \
+             WHERE w.org_id = ?1 AND w.id = ?2 \
+               AND w.deleted_at IS NULL AND o.deleted_at IS NULL \
+             ORDER BY m.principal_kind, m.principal_id",
         )
         .bind(org_id)
         .bind(workspace_id)
-        .fetch_all(&mut *tx)
+        .fetch_all(&self.pool)
         .await
         .map_err(storage_error)?;
-        tx.commit().await.map_err(storage_error)?;
-        rows.iter()
-            .map(|row| {
-                Ok(WorkspaceMembership {
-                    role: workspace_role(row)?,
-                    principal_kind: principal_kind(row)?,
-                    principal_id: required(row, "principal_id")?,
-                })
-            })
-            .collect()
+        if rows.is_empty() {
+            return Err(StorageError::not_found("workspace", workspace_id));
+        }
+        let mut members = Vec::with_capacity(rows.len());
+        for row in &rows {
+            if optional::<String>(row, "principal_id")?.is_none() {
+                continue;
+            }
+            members.push(WorkspaceMembership {
+                role: workspace_role(row)?,
+                principal_kind: principal_kind(row)?,
+                principal_id: required(row, "principal_id")?,
+            });
+        }
+        Ok(members)
     }
 
     #[tracing::instrument(skip_all)]

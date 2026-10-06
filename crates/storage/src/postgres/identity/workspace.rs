@@ -6,12 +6,12 @@
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::WorkspaceRow;
 use nebula_storage_port::store::WorkspaceStore;
-use sqlx::PgPool;
 use sqlx::postgres::PgRow;
 use sqlx::types::Json;
+use sqlx::{PgConnection, PgPool};
 
 use super::{cas_failure, encode_version, json, optional, required, version};
-use crate::sql_error::{is_foreign_key_violation, storage_error, storage_error_for};
+use crate::sql_error::{storage_error, storage_error_for};
 
 /// Postgres-backed `workspaces` store.
 #[derive(Clone, Debug)]
@@ -45,15 +45,23 @@ pub(super) fn decode_workspace(row: &PgRow) -> Result<WorkspaceRow, StorageError
 
 /// Insert `workspace` inside the caller's transaction — shared with tenant
 /// provisioning. A taken id, active slug or active default is
-/// `Duplicate { entity: "workspace", .. }`; a missing parent org is
-/// `NotFound`.
-pub(super) async fn insert_workspace<'c, E>(
-    executor: E,
+/// `Duplicate { entity: "workspace", .. }`; a missing or deleted parent org
+/// is `NotFound`.
+///
+/// The org row is share-locked first, so a concurrent org soft delete
+/// serializes with the insert (the foreign key proves existence only).
+pub(super) async fn insert_workspace(
+    connection: &mut PgConnection,
     workspace: &WorkspaceRow,
-) -> Result<(), StorageError>
-where
-    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
-{
+) -> Result<(), StorageError> {
+    let org = sqlx::query("SELECT id FROM orgs WHERE id = $1 AND deleted_at IS NULL FOR SHARE")
+        .bind(&workspace.org_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(storage_error)?;
+    if org.is_none() {
+        return Err(StorageError::not_found("org", workspace.org_id.clone()));
+    }
     sqlx::query(
         "INSERT INTO workspaces (id, org_id, slug, display_name, \
          description, created_at, created_by, is_default, settings, version, \
@@ -70,22 +78,18 @@ where
     .bind(Json(&workspace.settings))
     .bind(encode_version(workspace.version)?)
     .bind(workspace.deleted_at)
-    .execute(executor)
+    .execute(connection)
     .await
-    .map_err(|error| {
-        if is_foreign_key_violation(&error) {
-            StorageError::not_found("org", workspace.org_id.clone())
-        } else {
-            storage_error_for("workspace", error)
-        }
-    })?;
+    .map_err(|error| storage_error_for("workspace", error))?;
     Ok(())
 }
 
 #[async_trait::async_trait]
 impl WorkspaceStore for PgWorkspaceStore {
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError> {
-        insert_workspace(&self.pool, &row).await
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        insert_workspace(&mut tx, &row).await?;
+        tx.commit().await.map_err(storage_error)
     }
 
     async fn get(&self, org_id: &str, id: &str) -> Result<Option<WorkspaceRow>, StorageError> {
@@ -125,7 +129,7 @@ impl WorkspaceStore for PgWorkspaceStore {
     async fn list_for_org(&self, org_id: &str) -> Result<Vec<WorkspaceRow>, StorageError> {
         sqlx::query(
             "SELECT * FROM workspaces \
-             WHERE org_id = $1 AND deleted_at IS NULL ORDER BY id",
+             WHERE org_id = $1 AND deleted_at IS NULL ORDER BY id COLLATE \"C\"",
         )
         .bind(org_id)
         .fetch_all(&self.pool)

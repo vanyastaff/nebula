@@ -110,6 +110,10 @@ identity_matrix!(workspace_store_contract, assert_workspace_contract);
 identity_matrix!(membership_store_contract, assert_membership_contract);
 identity_matrix!(membership_snapshot, assert_membership_snapshot);
 identity_matrix!(
+    deleted_org_hides_its_memberships,
+    assert_deleted_org_hides_its_memberships
+);
+identity_matrix!(
     workspace_member_listing_and_org_removal_cleanup,
     assert_workspace_member_listing_and_org_removal_cleanup
 );
@@ -124,7 +128,7 @@ identity_matrix!(trigger_store_contract, assert_trigger_contract);
 
 /// Provisioning races an ordinary default-workspace create. Whichever
 /// transaction wins, the organization retains only one live default
-/// workspace (`uq_workspaces__active_default`).
+/// workspace (`uq_workspaces__org_id__live_default`).
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_provisioning_serializes_with_workspace_create() {
@@ -159,6 +163,124 @@ async fn postgres_provisioning_serializes_with_workspace_create() {
     .await
     .unwrap();
     assert_eq!(active_defaults, 1);
+}
+
+/// Seed one org with a live workspace and an owner grant for `principal`.
+#[cfg(feature = "postgres")]
+async fn seed_workspace(backend: &PostgresBackend, org: &str, workspace: &str, principal: &str) {
+    backend
+        .org_store()
+        .await
+        .create(org_row(org, org))
+        .await
+        .unwrap();
+    backend
+        .workspace_store()
+        .await
+        .create(workspace_row(workspace, org, workspace))
+        .await
+        .unwrap();
+    backend
+        .membership_store()
+        .await
+        .upsert_org_member_guarded(org_member(org, principal, OrgMembershipRole::Owner))
+        .await
+        .unwrap();
+}
+
+async fn workspace_grant_count(pool: &sqlx::PgPool, workspace: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM workspace_memberships WHERE workspace_id = $1")
+        .bind(workspace)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// A workspace grant serializes with a concurrent soft delete of its
+/// workspace: while the delete is uncommitted the grant waits on the
+/// workspace row, and once it commits the grant is refused — never written
+/// beneath a deleted workspace.
+#[cfg(feature = "postgres")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_workspace_grant_waits_for_a_concurrent_workspace_delete() {
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    seed_workspace(&backend, "org_ws_race", "ws_race", "owner").await;
+    let memberships = backend.membership_store().await;
+
+    let mut deleter = pool.begin().await.unwrap();
+    sqlx::query("UPDATE workspaces SET deleted_at = now() WHERE id = 'ws_race'")
+        .execute(&mut *deleter)
+        .await
+        .unwrap();
+    let grant =
+        memberships.upsert_workspace_member(workspace_member("org_ws_race", "ws_race", "owner"));
+    tokio::pin!(grant);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut grant)
+            .await
+            .is_err(),
+        "the grant must wait for the uncommitted workspace delete"
+    );
+    deleter.commit().await.unwrap();
+
+    assert!(matches!(
+        grant.await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert_eq!(workspace_grant_count(&pool, "ws_race").await, 0);
+}
+
+/// A workspace grant serializes with a concurrent removal of the principal's
+/// org grant: while the removal holds the org row the grant waits, and once
+/// it commits the grant is refused — never left without its org grant.
+#[cfg(feature = "postgres")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_workspace_grant_waits_for_a_concurrent_org_grant_removal() {
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    seed_workspace(&backend, "org_grant_race", "ws_grant_race", "owner").await;
+    let memberships = backend.membership_store().await;
+    memberships
+        .upsert_org_member_guarded(org_member(
+            "org_grant_race",
+            "target",
+            OrgMembershipRole::Member,
+        ))
+        .await
+        .unwrap();
+
+    // The guarded removal's critical section: org row lock, then delete.
+    let mut remover = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM orgs WHERE id = 'org_grant_race' FOR UPDATE")
+        .execute(&mut *remover)
+        .await
+        .unwrap();
+    sqlx::query(
+        "DELETE FROM org_memberships WHERE org_id = 'org_grant_race' AND principal_id = 'target'",
+    )
+    .execute(&mut *remover)
+    .await
+    .unwrap();
+    let grant = memberships.upsert_workspace_member(workspace_member(
+        "org_grant_race",
+        "ws_grant_race",
+        "target",
+    ));
+    tokio::pin!(grant);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut grant)
+            .await
+            .is_err(),
+        "the grant must wait for the uncommitted org-grant removal"
+    );
+    remover.commit().await.unwrap();
+
+    assert!(matches!(
+        grant.await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert_eq!(workspace_grant_count(&pool, "ws_grant_race").await, 0);
 }
 
 /// Roles and principal kinds are closed vocabularies in the schema: a row

@@ -42,10 +42,15 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
     ) -> Result<TenantProvisioningOutcome, StorageError> {
         let org_values = request.org();
         let workspace_values = request.default_workspace();
-        let created_at = chrono::Utc::now();
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        // Backend-authored instants come from the transaction clock, as every
+        // other PostgreSQL write here (`now()`).
+        let created_at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT now()")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(storage_error)?;
         let org = org_values.materialize(created_at);
         let workspace = workspace_values.materialize(org.id.clone(), created_at);
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         // Sorted so concurrent provisioners acquire the pair in one order.
         let mut lock_keys = [
             format!("tenant-provisioning:id:{}", org.id),
@@ -113,7 +118,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
             Err(StorageError::Duplicate { .. }) => return Ok(EXISTING_STATE),
             Err(error) => return Err(error),
         }
-        match insert_workspace(&mut *tx, &workspace).await {
+        match insert_workspace(&mut tx, &workspace).await {
             Ok(()) => {},
             Err(StorageError::Duplicate { .. }) => return Ok(EXISTING_STATE),
             Err(error) => return Err(error),

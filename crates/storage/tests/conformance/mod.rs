@@ -1336,6 +1336,112 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
     );
 }
 
+/// A soft-deleted workflow takes its versions with it: every version read
+/// misses, and no version can be appended to it.
+pub(crate) async fn assert_deleted_workflow_hides_its_versions(backend: &dyn Backend) {
+    let wf = backend.workflow_store().await;
+    let ver = backend.workflow_version_store().await;
+    let s = scope_a();
+    let version = |number: u32| WorkflowVersionRecord {
+        activation: None,
+        workflow_id: "wf_deleted".into(),
+        number,
+        published: true,
+        pinned: false,
+        definition: serde_json::json!({ "v": number }),
+    };
+    wf.save_with_published_version(
+        &s,
+        WorkflowRecord {
+            id: "wf_deleted".into(),
+            scope: s.clone(),
+            version: 1,
+            slug: "wf_deleted".into(),
+        },
+        version(1),
+        None,
+    )
+    .await
+    .expect("save");
+    wf.soft_delete(&s, "wf_deleted").await.expect("soft_delete");
+
+    assert!(
+        ver.get(&s, "wf_deleted", 1).await.expect("get").is_none(),
+        "[{}] a deleted workflow's version must be a read miss",
+        backend.name()
+    );
+    assert!(
+        ver.get_published(&s, "wf_deleted")
+            .await
+            .expect("get_published")
+            .is_none(),
+        "[{}] a deleted workflow must have no published version",
+        backend.name()
+    );
+    assert!(
+        ver.list(&s, "wf_deleted").await.expect("list").is_empty(),
+        "[{}] a deleted workflow must list no versions",
+        backend.name()
+    );
+    let appended = ver.create(&s, version(2)).await;
+    assert!(
+        matches!(
+            appended,
+            Err(StorageError::NotFound {
+                entity: "workflow",
+                ..
+            })
+        ),
+        "[{}] appending to a deleted workflow must be NotFound, got {appended:?}",
+        backend.name()
+    );
+}
+
+/// A workflow belongs to an existing workspace (`fk_workflows__workspaces`):
+/// writing one under a scope with no workspace is `NotFound` and leaves
+/// nothing behind, through every write path.
+pub(crate) async fn assert_workspace_owned_rows_require_their_workspace(backend: &dyn Backend) {
+    let wf = backend.workflow_store().await;
+    let unprovisioned = Scope::new("ws_unprovisioned", "org_unprovisioned");
+    let row = WorkflowRecord {
+        id: "wf_orphan".into(),
+        scope: unprovisioned.clone(),
+        version: 1,
+        slug: "orphan".into(),
+    };
+    let created = wf.create(&unprovisioned, row.clone()).await;
+    assert!(
+        matches!(created, Err(StorageError::NotFound { .. })),
+        "[{}] a workflow in a missing workspace must be NotFound, got {created:?}",
+        backend.name()
+    );
+    let saved = wf
+        .save_with_published_version(
+            &unprovisioned,
+            row,
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: "wf_orphan".into(),
+                number: 1,
+                published: true,
+                pinned: false,
+                definition: serde_json::json!({}),
+            },
+            None,
+        )
+        .await;
+    assert!(
+        matches!(saved, Err(StorageError::NotFound { .. })),
+        "[{}] an atomic save in a missing workspace must be NotFound, got {saved:?}",
+        backend.name()
+    );
+    assert!(
+        wf.list(&unprovisioned).await.expect("list").is_empty(),
+        "[{}] a rejected write must leave no row",
+        backend.name()
+    );
+}
+
 /// `WorkflowStore::save_with_published_version` is a real all-or-nothing
 /// unit of work on every backend: the row write and the published-version
 /// write either both land or neither does. This locks the spec-16

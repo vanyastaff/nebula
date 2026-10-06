@@ -49,6 +49,7 @@ impl MembershipStore for InMemoryMembershipStore {
         let org_role = state
             .org_grants
             .get(&grant_key(org_id, principal_kind, principal_id))
+            .filter(|_| state.live_org(org_id))
             .map(|grant| grant.role);
         let workspace_role = workspace_id
             .filter(|id| state.live_workspace(org_id, id))
@@ -74,7 +75,9 @@ impl MembershipStore for InMemoryMembershipStore {
         let mut result: Vec<PrincipalOrgMembership> = state
             .org_grants
             .iter()
-            .filter(|((_, kind, id), _)| *kind == principal_kind && id == principal_id)
+            .filter(|((org_id, kind, id), _)| {
+                *kind == principal_kind && id == principal_id && state.live_org(org_id)
+            })
             .map(|((org_id, _, _), grant)| PrincipalOrgMembership {
                 org_id: org_id.clone(),
                 role: grant.role,
@@ -87,6 +90,9 @@ impl MembershipStore for InMemoryMembershipStore {
     #[tracing::instrument(skip_all)]
     async fn list_org_members(&self, org_id: &str) -> Result<Vec<OrgMembership>, StorageError> {
         let state = self.inner.lock();
+        if !state.live_org(org_id) {
+            return Err(StorageError::not_found("org", org_id));
+        }
         let mut result: Vec<OrgMembership> = state
             .org_grants
             .iter()

@@ -1,7 +1,7 @@
 -- Tenancy: organizations, their workspaces, and the explicit grants that make
 -- a principal a member of either.
 --
--- Transition migration of the database standard (ADR-005): replaces the
+-- Transition migration of the database standard (docs/database-standard.md): replaces the
 -- port_* tenant tables and the dead legacy tenant tables. Instants are
 -- INTEGER microseconds since the Unix epoch.
 
@@ -48,7 +48,7 @@ CREATE TABLE orgs (
     CONSTRAINT ck_orgs__settings_json CHECK (json_valid(settings)),
     CONSTRAINT ck_orgs__version CHECK (version >= 0)
 );
-CREATE UNIQUE INDEX uq_orgs__active_slug ON orgs (slug) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX uq_orgs__slug__live ON orgs (slug) WHERE deleted_at IS NULL;
 
 -- Workspace ids are unique across organizations; (org_id, id) is the key
 -- grants reference so a grant always names its organization.
@@ -71,10 +71,10 @@ CREATE TABLE workspaces (
     CONSTRAINT ck_workspaces__settings_json CHECK (json_valid(settings)),
     CONSTRAINT ck_workspaces__version CHECK (version >= 0)
 );
-CREATE UNIQUE INDEX uq_workspaces__active_slug ON workspaces (org_id, slug)
+CREATE UNIQUE INDEX uq_workspaces__org_id_slug__live ON workspaces (org_id, slug)
     WHERE deleted_at IS NULL;
 -- An organization has at most one active default workspace.
-CREATE UNIQUE INDEX uq_workspaces__active_default ON workspaces (org_id)
+CREATE UNIQUE INDEX uq_workspaces__org_id__live_default ON workspaces (org_id)
     WHERE is_default = 1 AND deleted_at IS NULL;
 
 CREATE TABLE org_memberships (
@@ -91,7 +91,7 @@ CREATE TABLE org_memberships (
     CONSTRAINT ck_org_memberships__role
         CHECK (role IN ('OrgMember', 'OrgBilling', 'OrgAdmin', 'OrgOwner'))
 );
-CREATE INDEX ix_org_memberships__principal ON org_memberships (principal_kind, principal_id);
+CREATE INDEX ix_org_memberships__principal_kind_principal_id ON org_memberships (principal_kind, principal_id);
 
 -- A workspace grant requires the principal's membership of the parent
 -- organization; removing that membership removes its workspace grants.
@@ -114,5 +114,5 @@ CREATE TABLE workspace_memberships (
     CONSTRAINT ck_workspace_memberships__role
         CHECK (role IN ('WorkspaceViewer', 'WorkspaceRunner', 'WorkspaceEditor', 'WorkspaceAdmin'))
 );
-CREATE INDEX ix_workspace_memberships__org_principal
+CREATE INDEX ix_workspace_memberships__org_id_principal_kind_principal_id
     ON workspace_memberships (org_id, principal_kind, principal_id);

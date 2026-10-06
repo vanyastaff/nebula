@@ -1,6 +1,6 @@
 -- Workflows: the workflow row of a workspace and its immutable versions.
 --
--- Transition migration of the database standard (ADR-005): replaces
+-- Transition migration of the database standard (docs/database-standard.md): replaces
 -- port_workflows and port_workflow_versions.
 
 DROP TABLE IF EXISTS port_workflow_versions, port_workflows CASCADE;
@@ -17,7 +17,7 @@ CREATE TABLE workflows (
         FOREIGN KEY (org_id, workspace_id) REFERENCES workspaces (org_id, id),
     CONSTRAINT ck_workflows__version CHECK (version >= 0)
 );
-CREATE UNIQUE INDEX uq_workflows__active_slug ON workflows (org_id, workspace_id, slug)
+CREATE UNIQUE INDEX uq_workflows__org_id_workspace_id_slug__live ON workflows (org_id, workspace_id, slug)
     WHERE deleted_at IS NULL;
 
 -- `definition` is opaque to storage (the workflow compiler owns its shape).
@@ -56,6 +56,6 @@ CREATE TABLE workflow_versions (
     CONSTRAINT ck_workflow_versions__activation_worker_flavor_id_length
         CHECK (octet_length(activation_worker_flavor_id) = 32)
 );
-CREATE INDEX ix_workflow_versions__published
+CREATE INDEX ix_workflow_versions__org_id_workspace_id_workflow_id_number__published
     ON workflow_versions (org_id, workspace_id, workflow_id, number)
     WHERE published;

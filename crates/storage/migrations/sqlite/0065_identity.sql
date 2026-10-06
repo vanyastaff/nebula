@@ -2,7 +2,7 @@
 -- personal access tokens, single-use verification tokens, OAuth login state,
 -- linked external identities and pending MFA enrollments.
 --
--- Transition migration of the database standard (ADR-005): replaces the
+-- Transition migration of the database standard (docs/database-standard.md): replaces the
 -- previous identity tables and the dead legacy tables that referenced users.
 -- Instants are INTEGER microseconds since the Unix epoch.
 
@@ -38,8 +38,8 @@ CREATE TABLE users (
         CHECK (mfa_secret_envelope IS NULL OR length(mfa_secret_envelope) BETWEEN 1 AND 4096)
 );
 -- An email identifies one active account, case-insensitively.
-CREATE UNIQUE INDEX uq_users__active_email ON users (lower(email)) WHERE deleted_at IS NULL;
-CREATE INDEX ix_users__locked_until ON users (locked_until) WHERE locked_until IS NOT NULL;
+CREATE UNIQUE INDEX uq_users__email__live ON users (lower(email)) WHERE deleted_at IS NULL;
+CREATE INDEX ix_users__locked_until__locked ON users (locked_until) WHERE locked_until IS NOT NULL;
 
 -- Browser sessions: only the SHA-256 digest of the cookie token is stored.
 CREATE TABLE sessions (
@@ -55,8 +55,8 @@ CREATE TABLE sessions (
     CONSTRAINT fk_sessions__users FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
     CONSTRAINT ck_sessions__token_digest_length CHECK (length(token_digest) = 32)
 );
-CREATE INDEX ix_sessions__user_id ON sessions (user_id) WHERE revoked_at IS NULL;
-CREATE INDEX ix_sessions__expires_at ON sessions (expires_at) WHERE revoked_at IS NULL;
+CREATE INDEX ix_sessions__user_id__unrevoked ON sessions (user_id) WHERE revoked_at IS NULL;
+CREATE INDEX ix_sessions__expires_at__unrevoked ON sessions (expires_at) WHERE revoked_at IS NULL;
 
 -- Personal access tokens. The principal is a user or a service account, so it
 -- is not a foreign key.
@@ -75,9 +75,9 @@ CREATE TABLE personal_access_tokens (
     CONSTRAINT pk_personal_access_tokens PRIMARY KEY (id),
     CONSTRAINT ck_personal_access_tokens__scopes_json CHECK (json_valid(scopes))
 );
-CREATE INDEX ix_personal_access_tokens__hash ON personal_access_tokens (hash)
+CREATE INDEX ix_personal_access_tokens__hash__unrevoked ON personal_access_tokens (hash)
     WHERE revoked_at IS NULL;
-CREATE INDEX ix_personal_access_tokens__principal
+CREATE INDEX ix_personal_access_tokens__principal_kind_principal_id
     ON personal_access_tokens (principal_kind, principal_id);
 
 -- Single-use email verification and password-reset tokens (digest only).
@@ -94,9 +94,9 @@ CREATE TABLE verification_tokens (
         FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
     CONSTRAINT ck_verification_tokens__payload_json CHECK (payload IS NULL OR json_valid(payload))
 );
-CREATE INDEX ix_verification_tokens__user_id_kind ON verification_tokens (user_id, kind)
+CREATE INDEX ix_verification_tokens__user_id_kind__unconsumed ON verification_tokens (user_id, kind)
     WHERE consumed_at IS NULL;
-CREATE INDEX ix_verification_tokens__expires_at ON verification_tokens (expires_at)
+CREATE INDEX ix_verification_tokens__expires_at__unconsumed ON verification_tokens (expires_at)
     WHERE consumed_at IS NULL;
 
 -- Single-use PKCE state of an OAuth login between redirect and callback.

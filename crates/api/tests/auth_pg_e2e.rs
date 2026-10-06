@@ -103,7 +103,7 @@ async fn pool() -> Pool<Postgres> {
 }
 
 /// Generate a unique-per-run email so re-runs against a persistent
-/// Postgres do not collide on the `uq_users__active_email` unique index.
+/// Postgres do not collide on the `uq_users__email__live` unique index.
 fn unique_email(label: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()

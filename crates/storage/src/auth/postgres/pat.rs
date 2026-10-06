@@ -1,7 +1,7 @@
 //! Postgres implementation of [`PatRepo`].
 //!
 //! Schema: migration `0002_user_auth.sql` (`personal_access_tokens`
-//! table) \u2014 the SHA-256 lookup leans on `ix_personal_access_tokens__hash`, which is a
+//! table) \u2014 the SHA-256 lookup leans on `ix_personal_access_tokens__hash__unrevoked`, which is a
 //! partial index over the `hash` column where `revoked_at IS NULL`.
 //!
 //! Liveness rules:
@@ -114,7 +114,7 @@ impl PatRepo for PgPatRepo {
         hash: &[u8],
     ) -> Result<Option<PersonalAccessTokenRow>, StorageError> {
         debug_assert!(!hash.is_empty(), "hash must not be empty");
-        // Liveness filter mirrors `ix_personal_access_tokens__hash` (partial on
+        // Liveness filter mirrors `ix_personal_access_tokens__hash__unrevoked` (partial on
         // `revoked_at IS NULL`) so the planner can use the index for
         // O(log n) lookup; `expires_at` is then checked in the
         // predicate so we never surface an expired token.

@@ -213,6 +213,10 @@ identity_matrix!(workspace_store_contract, assert_workspace_contract);
 identity_matrix!(membership_store_contract, assert_membership_contract);
 identity_matrix!(membership_snapshot, assert_membership_snapshot);
 identity_matrix!(
+    deleted_org_hides_its_memberships,
+    assert_deleted_org_hides_its_memberships
+);
+identity_matrix!(
     workspace_member_listing_and_org_removal_cleanup,
     assert_workspace_member_listing_and_org_removal_cleanup
 );

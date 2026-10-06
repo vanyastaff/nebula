@@ -7,6 +7,12 @@
 //! conformance suite asserts. The scope predicate is enforced exactly as the
 //! SQL backends enforce `WHERE workspace_id = ? AND org_id = ?`, so
 //! cross-tenant denial is proven uniformly across backends.
+//!
+//! Every invariant inside one aggregate matches the relational schema.
+//! References between aggregates (a workflow's workspace, …) are foreign keys
+//! that only the SQL backends enforce; the in-memory stores are composed
+//! independently and do not check them (`docs/database-standard.md`,
+//! "Backends").
 
 mod control_queue;
 mod control_turn;

@@ -169,7 +169,7 @@ impl TenantProvisioningStore for InMemoryIdentityDirectory {
             ));
         }
 
-        let created_at = chrono::Utc::now();
+        let created_at = super::now_micros();
         state.orgs.insert(
             org_request.id().to_owned(),
             org_request.materialize(created_at),

@@ -217,6 +217,27 @@ async fn assert_org_contract(b: &dyn IdentityBackend) {
     s.create(org_row("org_2", "acme"))
         .await
         .expect("a deleted org frees its slug");
+
+    // Instants are stored at microsecond precision on every backend.
+    let mut precise = org_row("org_ns", "precise");
+    precise.created_at = DateTime::from_timestamp(1_767_225_600, 123_456_789).unwrap();
+    s.create(precise).await.unwrap();
+    assert_eq!(
+        s.get("org_ns").await.unwrap().unwrap().created_at,
+        DateTime::from_timestamp(1_767_225_600, 123_456_000).unwrap()
+    );
+
+    // `update` rewrites the editable columns only.
+    let mut edited = org_row("org_2", "acme-renamed");
+    edited.version = 1;
+    edited.created_by = "someone-else".into();
+    edited.created_at = DateTime::from_timestamp(0, 0).unwrap();
+    s.update(edited, 0).await.unwrap();
+    let stored = s.get("org_2").await.unwrap().unwrap();
+    assert_eq!(stored.slug, "acme-renamed");
+    assert_eq!(stored.version, 1);
+    assert_eq!(stored.created_by, "usr_1");
+    assert_eq!(stored.created_at, created_at());
 }
 
 async fn assert_workspace_contract(b: &dyn IdentityBackend) {
@@ -246,12 +267,31 @@ async fn assert_workspace_contract(b: &dyn IdentityBackend) {
         s.create(workspace_row("ws_1", "org_2", "alias")).await,
         Err(PortStorageError::Duplicate { .. })
     ));
-    // a workspace needs its parent org
+    // a workspace needs its live parent org
     assert!(matches!(
         s.create(workspace_row("ws_orphan", "org_missing", "orphan"))
             .await,
         Err(PortStorageError::NotFound { .. })
     ));
+    orgs.create(org_row("org_gone", "gone")).await.unwrap();
+    orgs.soft_delete("org_gone").await.unwrap();
+    assert!(matches!(
+        s.create(workspace_row("ws_in_gone", "org_gone", "main")).await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    // `update` rewrites the editable columns only.
+    let mut edited = workspace_row("ws_1", "org_1", "main");
+    edited.display_name = "Renamed".into();
+    edited.created_by = "someone-else".into();
+    edited.version = 1;
+    s.update(edited, 0).await.unwrap();
+    let stored = s.get("org_1", "ws_1").await.unwrap().unwrap();
+    assert_eq!(stored.display_name, "Renamed");
+    assert_eq!(stored.created_by, "usr_1");
+    let mut restored = stored.clone();
+    restored.display_name = "Test Workspace".into();
+    restored.version = 0;
+    s.update(restored, 1).await.unwrap();
     // cross-org get is a miss (no existence oracle)
     assert!(s.get("org_2", "ws_1").await.unwrap().is_none());
     assert_eq!(
@@ -331,7 +371,10 @@ async fn assert_membership_contract(b: &dyn IdentityBackend) {
         }]
     );
     assert_eq!(org_role_of(&s, "org_2", "usr_1").await, None);
-    assert!(s.list_org_members("org_2").await.unwrap().is_empty());
+    assert!(matches!(
+        s.list_org_members("org_2").await,
+        Err(PortStorageError::NotFound { .. })
+    ));
     assert!(matches!(
         s.upsert_org_member_guarded(org_member("org_2", "usr_1", OrgMembershipRole::Owner))
             .await,
@@ -481,6 +524,60 @@ async fn assert_membership_snapshot(b: &dyn IdentityBackend) {
             .await
             .unwrap()
     );
+}
+
+/// A soft-deleted organization takes its grants out of every read: the
+/// snapshot, the principal's organizations and the member listings.
+async fn assert_deleted_org_hides_its_memberships(b: &dyn IdentityBackend) {
+    let orgs = b.org_store().await;
+    let workspaces = b.workspace_store().await;
+    let store = b.membership_store().await;
+    orgs.create(org_row("org_kept", "kept")).await.unwrap();
+    orgs.create(org_row("org_gone", "gone")).await.unwrap();
+    workspaces
+        .create(workspace_row("ws_gone", "org_gone", "main"))
+        .await
+        .unwrap();
+    for org in ["org_kept", "org_gone"] {
+        store
+            .upsert_org_member_guarded(org_member(org, "user", OrgMembershipRole::Owner))
+            .await
+            .unwrap();
+    }
+    store
+        .upsert_workspace_member(workspace_member("org_gone", "ws_gone", "user"))
+        .await
+        .unwrap();
+    orgs.soft_delete("org_gone").await.unwrap();
+
+    assert_eq!(
+        store
+            .get_tenant_membership("org_gone", Some("ws_gone"), PrincipalKind::User, "user")
+            .await
+            .unwrap(),
+        TenantMembershipSnapshot::default()
+    );
+    let listed = store
+        .list_orgs_for_principal(PrincipalKind::User, "user")
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.iter().map(|m| m.org_id.as_str()).collect::<Vec<_>>(),
+        ["org_kept"]
+    );
+    assert!(matches!(
+        store.list_org_members("org_gone").await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert!(matches!(
+        store.list_org_members("org_missing").await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert!(matches!(
+        store.list_workspace_members("org_gone", "ws_gone").await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert_eq!(store.list_org_members("org_kept").await.unwrap().len(), 1);
 }
 
 async fn assert_workspace_member_listing_and_org_removal_cleanup(b: &dyn IdentityBackend) {

@@ -146,22 +146,36 @@ fn record_setup_failure(error: &impl SchemaSetupFailure) {
     }
 }
 
-/// Log why the migrator stopped — the failing version and the database's
-/// diagnostic for the DDL — so an `Unavailable` setup is explainable. The
-/// diagnostic names schema objects, never row values.
+/// Log why the migrator stopped, so an `Unavailable` setup is explainable.
+///
+/// The error event carries value-free fields only: the failing version, the
+/// SQLSTATE and the table and constraint the database names. The database's
+/// own message can quote row values (a failed backfill), so it goes to a
+/// separate `debug` event for local diagnosis.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn record_migration_failure(backend: &'static str, error: &sqlx::migrate::MigrateError) {
-    let version = match error {
-        sqlx::migrate::MigrateError::ExecuteMigration(_, version) => Some(*version),
-        _ => None,
+    let (version, database) = match error {
+        sqlx::migrate::MigrateError::ExecuteMigration(source, version) => {
+            (Some(*version), source.as_database_error())
+        },
+        _ => (None, None),
     };
     tracing::error!(
         target: "nebula_storage::migration",
         backend,
         stage = "migrate",
         version = ?version,
-        error = %error,
+        sqlstate = ?database.and_then(sqlx::error::DatabaseError::code),
+        table = ?database.and_then(sqlx::error::DatabaseError::table),
+        constraint = ?database.and_then(sqlx::error::DatabaseError::constraint),
         "schema migration failed"
+    );
+    tracing::debug!(
+        target: "nebula_storage::migration",
+        backend,
+        version = ?version,
+        diagnostic = %error,
+        "schema migration failure diagnostic (may quote stored values)"
     );
 }
 
@@ -1224,7 +1238,7 @@ mod tests {
     }
 
     /// Heads 0065 onward are transition migrations of the database standard
-    /// (ADR-005): each replaces one aggregate's tables with standard ones and
+    /// (`docs/database-standard.md`): each replaces one aggregate's tables with standard ones and
     /// preserves no rows. No deployed database exists to carry forward; the
     /// series is squashed into the baseline when the last aggregate lands.
     /// 0065: identity. 0066: tenancy. 0067: workflows.

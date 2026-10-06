@@ -288,7 +288,10 @@ impl ApiMembershipStore for ServerTenantDirectory {
         self.memberships
             .list_org_members(&org_id.to_string())
             .await
-            .map_err(|error| unavailable("list_members", &error))?
+            .map_err(|error| match error {
+                StorageError::NotFound { .. } => ApiError::NotFound("org not found".to_owned()),
+                other => unavailable("list_members", &other),
+            })?
             .into_iter()
             .map(|member| {
                 Ok(OrgMember {

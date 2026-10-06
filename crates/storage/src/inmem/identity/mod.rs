@@ -30,12 +30,23 @@ pub use resource::InMemoryResourceStore;
 pub use trigger::InMemoryTriggerStore;
 pub use workspace::InMemoryWorkspaceStore;
 
+use chrono::{DateTime, SubsecRound, Utc};
 use nebula_storage_port::{Scope, StorageError};
+
+/// An instant at the microsecond precision every backend stores.
+fn micros(instant: DateTime<Utc>) -> DateTime<Utc> {
+    instant.trunc_subsecs(6)
+}
+
+/// The current instant at storage precision.
+fn now_micros() -> DateTime<Utc> {
+    micros(Utc::now())
+}
 
 /// Current time as an RFC 3339 string — the soft-delete stamp of the
 /// aggregates that still store instants as text (resources, triggers).
 fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339()
+    Utc::now().to_rfc3339()
 }
 
 /// Workspace-scoped key: `(workspace_id, org_id, id)`.

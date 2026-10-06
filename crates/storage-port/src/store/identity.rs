@@ -33,7 +33,7 @@ pub trait OrgStore: Send + Sync + std::fmt::Debug {
 pub trait WorkspaceStore: Send + Sync + std::fmt::Debug {
     /// Insert a new workspace. Workspace ids are unique across organizations;
     /// a taken id, a duplicate active slug per org or a second active default
-    /// ⇒ `Duplicate`, a missing parent org ⇒ `NotFound`.
+    /// ⇒ `Duplicate`, a missing or deleted parent org ⇒ `NotFound`.
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError>;
     /// Read a workspace by id; `org_id` scopes the lookup.
     async fn get(&self, org_id: &str, id: &str) -> Result<Option<WorkspaceRow>, StorageError>;
@@ -76,9 +76,11 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
     /// Read explicit organization and optional workspace roles for one principal
     /// from one logical snapshot. Two independent reads are not sufficient.
     /// The adapter must reject unknown persisted roles, never treat them as absent.
-    /// A workspace role may be returned only for a live workspace belonging to
-    /// `org_id` in a live organization, verified in the same snapshot; a
-    /// missing, deleted or wrong-parent workspace yields no workspace role.
+    /// Roles are returned only beneath a live organization: a deleted
+    /// organization yields neither role. A workspace role may be returned only
+    /// for a live workspace belonging to `org_id`, verified in the same
+    /// snapshot; a missing, deleted or wrong-parent workspace yields no
+    /// workspace role.
     /// This operation reads membership evidence and does not grant authority.
     async fn get_tenant_membership(
         &self,
@@ -88,16 +90,19 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
         principal_id: &str,
     ) -> Result<TenantMembershipSnapshot, StorageError>;
 
-    /// Enumerate explicit organization memberships for exactly this principal.
-    /// Unknown persisted organization roles fail the whole read closed.
+    /// Enumerate explicit memberships of live organizations for exactly this
+    /// principal, ordered by organization id. Unknown persisted organization
+    /// roles fail the whole read closed.
     async fn list_orgs_for_principal(
         &self,
         principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<Vec<PrincipalOrgMembership>, StorageError>;
 
-    /// List explicit grants of one organization, ordered by principal.
-    /// Unknown persisted roles fail the whole read closed.
+    /// List explicit grants of one live organization, ordered by principal
+    /// kind then id (bytewise). A missing or deleted organization fails
+    /// closed as `StorageError::NotFound`; unknown persisted roles fail the
+    /// whole read closed.
     async fn list_org_members(&self, org_id: &str) -> Result<Vec<OrgMembership>, StorageError>;
 
     /// List explicit grants for one live, parent-qualified workspace.
@@ -141,9 +146,11 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
     /// Replace explicit workspace membership after verifying a live workspace
     /// under the requested organization and a current organization membership
     /// for the same principal. Missing membership or a wrong/missing parent
-    /// returns `StorageError::NotFound`; this cannot mutate organization roles. The organization-membership check and write
-    /// serialize with guarded organization-member removal so a concurrent
-    /// removal either rejects this write or atomically deletes its result.
+    /// returns `StorageError::NotFound`; this cannot mutate organization roles.
+    /// The organization-membership check and write serialize with guarded
+    /// organization-member removal and with a workspace soft delete, so a
+    /// concurrent removal or delete either rejects this write or atomically
+    /// deletes its result.
     /// The adapter records `added_at` using its own clock inside the atomic write.
     async fn upsert_workspace_member(
         &self,

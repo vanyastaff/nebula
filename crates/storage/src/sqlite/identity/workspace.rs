@@ -5,14 +5,14 @@
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::WorkspaceRow;
 use nebula_storage_port::store::WorkspaceStore;
-use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
+use sqlx::{SqliteConnection, SqlitePool};
 
 use super::{
     cas_failure, encode_instant, encode_version, flag, instant, json, json_text, now_micros,
     optional, optional_instant, required, version,
 };
-use crate::sql_error::{is_foreign_key_violation, storage_error, storage_error_for};
+use crate::sql_error::{storage_error, storage_error_for};
 
 /// SQLite-backed `workspaces` store.
 #[derive(Clone, Debug)]
@@ -44,17 +44,22 @@ pub(super) fn decode_workspace(row: &SqliteRow) -> Result<WorkspaceRow, StorageE
     })
 }
 
-/// Insert `workspace` on `executor` — shared with tenant provisioning. A
-/// taken id, active slug or active default is
-/// `Duplicate { entity: "workspace", .. }`; a missing parent org is
-/// `NotFound`.
-pub(super) async fn insert_workspace<'c, E>(
-    executor: E,
+/// Insert `workspace` inside the caller's `BEGIN IMMEDIATE` transaction —
+/// shared with tenant provisioning. A taken id, active slug or active
+/// default is `Duplicate { entity: "workspace", .. }`; a missing or deleted
+/// parent org is `NotFound` (the foreign key proves existence only).
+pub(super) async fn insert_workspace(
+    connection: &mut SqliteConnection,
     workspace: &WorkspaceRow,
-) -> Result<(), StorageError>
-where
-    E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
-{
+) -> Result<(), StorageError> {
+    let org = sqlx::query("SELECT id FROM orgs WHERE id = ? AND deleted_at IS NULL")
+        .bind(&workspace.org_id)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(storage_error)?;
+    if org.is_none() {
+        return Err(StorageError::not_found("org", workspace.org_id.clone()));
+    }
     sqlx::query(
         "INSERT INTO workspaces (id, org_id, slug, display_name, \
          description, created_at, created_by, is_default, settings, version, \
@@ -71,22 +76,22 @@ where
     .bind(json_text(&workspace.settings))
     .bind(encode_version(workspace.version)?)
     .bind(workspace.deleted_at.map(encode_instant))
-    .execute(executor)
+    .execute(connection)
     .await
-    .map_err(|error| {
-        if is_foreign_key_violation(&error) {
-            StorageError::not_found("org", workspace.org_id.clone())
-        } else {
-            storage_error_for("workspace", error)
-        }
-    })?;
+    .map_err(|error| storage_error_for("workspace", error))?;
     Ok(())
 }
 
 #[async_trait::async_trait]
 impl WorkspaceStore for SqliteWorkspaceStore {
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError> {
-        insert_workspace(&self.pool, &row).await
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
+        insert_workspace(&mut tx, &row).await?;
+        tx.commit().await.map_err(storage_error)
     }
 
     async fn get(&self, org_id: &str, id: &str) -> Result<Option<WorkspaceRow>, StorageError> {

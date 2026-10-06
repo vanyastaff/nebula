@@ -115,17 +115,14 @@ impl WorkflowState {
     }
 
     /// Validate a version append without applying it: the workflow row must
-    /// exist (`fk_workflow_versions__workflows`), the number and the
-    /// activation identity must be free.
+    /// be live (`fk_workflow_versions__workflows` plus the liveness check of
+    /// the SQL adapters), the number and the activation identity free.
     fn check_version(
         &self,
         scope: &Scope,
         version: &WorkflowVersionRecord,
     ) -> Result<VersionKey, StorageError> {
-        if !self
-            .rows
-            .contains_key(&workflow_key(scope, &version.workflow_id))
-        {
+        if self.live(scope, &version.workflow_id).is_none() {
             return Err(StorageError::not_found(
                 "workflow",
                 version.workflow_id.clone(),
@@ -155,7 +152,7 @@ type SharedWorkflows = Arc<Mutex<WorkflowState>>;
 fn duplicate(entity: &'static str, field: &str) -> StorageError {
     StorageError::Duplicate {
         entity,
-        detail: format!("an active {entity} already has this {field}"),
+        detail: format!("another {entity} already has this {field}"),
     }
 }
 
@@ -227,19 +224,13 @@ impl WorkflowStore for InMemoryWorkflowStore {
         )
         .map_err(|_| WorkflowPublicationError::RevisionNotAdmitted)?;
         crate::workflow_activation::validate_plan_identity(plan.plan_bytes(), &row.id, activation)?;
-        // A reused activation identity is a disagreeing publication.
-        if state
-            .versions
-            .iter()
-            .any(|((org, workspace, workflow, _), existing)| {
-                org == &scope.org_id
-                    && workspace == &scope.workspace_id
-                    && workflow == &row.id
-                    && existing.activation.is_some_and(|identity| {
-                        identity.workflow_version_id() == activation.workflow_version_id()
-                    })
+        // An activation identity is unique across all workflows; reusing one
+        // is a disagreeing publication, not a storage collision.
+        if state.versions.values().any(|existing| {
+            existing.activation.is_some_and(|identity| {
+                identity.workflow_version_id() == activation.workflow_version_id()
             })
-        {
+        }) {
             return Err(WorkflowPublicationError::InvalidPublication);
         }
         let key = state.check_version(scope, &version)?;
@@ -392,9 +383,11 @@ impl WorkflowVersionStore for InMemoryWorkflowVersionStore {
         workflow_id: &str,
         number: u32,
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
-        Ok(self
-            .inner
-            .lock()
+        let state = self.inner.lock();
+        if state.live(scope, workflow_id).is_none() {
+            return Ok(None);
+        }
+        Ok(state
             .versions
             .get(&version_key(scope, workflow_id, number))
             .cloned())
@@ -407,9 +400,11 @@ impl WorkflowVersionStore for InMemoryWorkflowVersionStore {
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
         // Highest-numbered published version wins, matching the SQL
         // backends' `ORDER BY number DESC LIMIT 1`.
-        Ok(self
-            .inner
-            .lock()
+        let state = self.inner.lock();
+        if state.live(scope, workflow_id).is_none() {
+            return Ok(None);
+        }
+        Ok(state
             .versions
             .iter()
             .filter(|((org, workspace, workflow, _), version)| {
@@ -427,9 +422,11 @@ impl WorkflowVersionStore for InMemoryWorkflowVersionStore {
         scope: &Scope,
         workflow_id: &str,
     ) -> Result<Vec<WorkflowVersionRecord>, StorageError> {
-        let mut versions: Vec<WorkflowVersionRecord> = self
-            .inner
-            .lock()
+        let state = self.inner.lock();
+        if state.live(scope, workflow_id).is_none() {
+            return Ok(Vec::new());
+        }
+        let mut versions: Vec<WorkflowVersionRecord> = state
             .versions
             .iter()
             .filter(|((org, workspace, workflow, _), _)| {

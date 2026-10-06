@@ -5,7 +5,7 @@ use nebula_storage_port::dto::OrgRow;
 use nebula_storage_port::store::OrgStore;
 
 use super::directory::SharedDirectory;
-use super::{duplicate, version_conflict};
+use super::{duplicate, micros, now_micros, version_conflict};
 
 /// In-memory `orgs` store — standalone, or a projection of an
 /// [`InMemoryIdentityDirectory`](super::InMemoryIdentityDirectory).
@@ -40,6 +40,11 @@ impl OrgStore for InMemoryOrgStore {
         {
             return Err(duplicate("org", "slug"));
         }
+        let row = OrgRow {
+            created_at: micros(row.created_at),
+            deleted_at: row.deleted_at.map(micros),
+            ..row
+        };
         orgs.insert(row.id.clone(), row);
         Ok(())
     }
@@ -80,7 +85,16 @@ impl OrgStore for InMemoryOrgStore {
         {
             return Err(duplicate("org", "slug"));
         }
-        orgs.insert(row.id.clone(), row);
+        // The editable columns only, as the SQL `UPDATE`; identity, audit
+        // and lifecycle columns keep their stored values.
+        if let Some(current) = orgs.get_mut(&row.id) {
+            current.slug = row.slug;
+            current.display_name = row.display_name;
+            current.plan = row.plan;
+            current.billing_email = row.billing_email;
+            current.settings = row.settings;
+            current.version = row.version;
+        }
         Ok(())
     }
 
@@ -93,7 +107,7 @@ impl OrgStore for InMemoryOrgStore {
         else {
             return Err(StorageError::not_found("org", id));
         };
-        row.deleted_at = Some(chrono::Utc::now());
+        row.deleted_at = Some(now_micros());
         Ok(())
     }
 }
