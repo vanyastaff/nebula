@@ -68,6 +68,40 @@ pub enum ResumeTokenWaitKind {
     Approval,
 }
 
+impl ResumeTokenWaitKind {
+    /// The stored and wire name (identical to the serde form).
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Webhook => "webhook",
+            Self::Approval => "approval",
+        }
+    }
+}
+
+impl std::fmt::Display for ResumeTokenWaitKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A name outside the closed [`ResumeTokenWaitKind`] set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("unknown resume-token wait kind")]
+pub struct UnknownResumeTokenWaitKind;
+
+impl std::str::FromStr for ResumeTokenWaitKind {
+    type Err = UnknownResumeTokenWaitKind;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "webhook" => Ok(Self::Webhook),
+            "approval" => Ok(Self::Approval),
+            _ => Err(UnknownResumeTokenWaitKind),
+        }
+    }
+}
+
 /// One row in `port_resume_tokens`.
 ///
 /// Produced by the engine at signal-park time and inserted in the

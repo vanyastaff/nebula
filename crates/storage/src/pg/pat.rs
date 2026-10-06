@@ -17,7 +17,7 @@
 
 use sqlx::{Pool, Postgres, types::Json};
 
-use crate::{error::StorageError, pg::map_db_err, repos::PatRepo, rows::PersonalAccessTokenRow};
+use crate::{StorageError, pg::map_db_err, repos::PatRepo, rows::PersonalAccessTokenRow};
 
 /// Postgres-backed personal access token repository.
 #[derive(Clone)]

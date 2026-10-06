@@ -12,19 +12,41 @@
 
 use nebula_storage_port::Scope;
 use nebula_storage_port::StorageError;
-use nebula_storage_port::dto::resume_token::{
-    ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError,
-};
+use nebula_storage_port::dto::resume_token::{ResumeTokenRow, TokenHash};
 use nebula_storage_port::store::ResumeTokenStore;
 use sqlx::{Row, SqlitePool};
 
-fn conn_err(e: impl std::fmt::Display) -> StorageError {
-    StorageError::Connection(e.to_string())
-}
+use crate::sql_error::storage_error;
 
-fn deserialize_wait_kind(raw: &str) -> Result<ResumeTokenWaitKind, StorageError> {
-    serde_json::from_str(&format!("\"{raw}\""))
-        .map_err(|e| StorageError::Serialization(e.to_string()))
+/// Decode one `port_resume_tokens` row (every column, as selected by
+/// `RETURNING` or `SELECT`). The one decoder of the table for this backend.
+pub(super) fn decode_resume_token(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ResumeTokenRow, StorageError> {
+    let token_hash = TokenHash::try_from_bytes(
+        row.try_get::<Vec<u8>, _>("token_hash")
+            .map_err(storage_error)?,
+    )
+    .map_err(|_| StorageError::Corrupt("resume token hash has the wrong length".into()))?;
+    let wait_kind = row
+        .try_get::<String, _>("wait_kind")
+        .map_err(storage_error)?
+        .parse()
+        .map_err(|_| StorageError::Corrupt("resume token wait kind is unknown".into()))?;
+    let scope = Scope {
+        workspace_id: row.try_get("workspace_id").map_err(storage_error)?,
+        org_id: row.try_get("org_id").map_err(storage_error)?,
+    };
+    Ok(ResumeTokenRow::new(
+        token_hash,
+        scope,
+        row.try_get("execution_id").map_err(storage_error)?,
+        row.try_get("node_key").map_err(storage_error)?,
+        wait_kind,
+        row.try_get("callback_label").map_err(storage_error)?,
+        row.try_get("created_at").map_err(storage_error)?,
+        row.try_get("expires_at").map_err(storage_error)?,
+    ))
 }
 
 /// SQLite-backed resume-token store.
@@ -62,33 +84,9 @@ impl ResumeTokenStore for SqliteResumeTokenStore {
         .bind(token_hash.as_bytes())
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
-        let Some(row) = row else {
-            return Ok(None);
-        };
-
-        let raw_hash: Vec<u8> = row.try_get("token_hash").map_err(conn_err)?;
-        let hash = TokenHash::try_from_bytes(raw_hash).map_err(|e: TokenHashLengthError| {
-            StorageError::Internal(format!("persisted token_hash bad length: {e}"))
-        })?;
-        let wait_kind_str: String = row.try_get("wait_kind").map_err(conn_err)?;
-        let wait_kind = deserialize_wait_kind(&wait_kind_str)?;
-
-        let scope = Scope {
-            workspace_id: row.try_get("workspace_id").map_err(conn_err)?,
-            org_id: row.try_get("org_id").map_err(conn_err)?,
-        };
-        Ok(Some(ResumeTokenRow::new(
-            hash,
-            scope,
-            row.try_get("execution_id").map_err(conn_err)?,
-            row.try_get("node_key").map_err(conn_err)?,
-            wait_kind,
-            row.try_get("callback_label").map_err(conn_err)?,
-            row.try_get("created_at").map_err(conn_err)?,
-            row.try_get("expires_at").map_err(conn_err)?,
-        )))
+        row.as_ref().map(decode_resume_token).transpose()
     }
 
     async fn revoke_on_terminal(
@@ -105,7 +103,7 @@ impl ResumeTokenStore for SqliteResumeTokenStore {
         .bind(execution_id)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
         Ok(result.rows_affected())
     }

@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use sqlx::{Pool, Postgres};
 
-use crate::{error::StorageError, pg::map_db_err, repos::UserRepo, rows::UserRow};
+use crate::{StorageError, pg::map_db_err, repos::UserRepo, rows::UserRow};
 
 /// Failed-login threshold before [`PgUserRepo::record_login_failure`]
 /// arms the lockout.
@@ -215,12 +215,15 @@ impl UserRepo for PgUserRepo {
             .await
             .map_err(|e| map_db_err("user", e))?;
             return match actual {
-                Some(v) => Err(StorageError::conflict(
-                    "user",
-                    hex::encode(&user.id),
-                    expected_version,
-                    v,
-                )),
+                Some(actual) => Err(StorageError::Conflict {
+                    entity: "user",
+                    id: hex::encode(&user.id),
+                    expected: u64::try_from(expected_version).map_err(|_| {
+                        StorageError::InvalidInput("user version is negative".into())
+                    })?,
+                    actual: u64::try_from(actual)
+                        .map_err(|_| StorageError::Corrupt("user version is negative".into()))?,
+                }),
                 None => Err(StorageError::not_found("user", hex::encode(&user.id))),
             };
         }
@@ -271,7 +274,7 @@ impl UserRepo for PgUserRepo {
         // update atomic so a racing failure cannot observe a
         // counter-bumped row that is not yet locked.
         let lockout_secs = i64::try_from(LOCKOUT_DURATION.as_secs()).map_err(|_| {
-            StorageError::Configuration(format!(
+            StorageError::Internal(format!(
                 "LOCKOUT_DURATION exceeds i64 seconds: {LOCKOUT_DURATION:?}"
             ))
         })?;

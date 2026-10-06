@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use sqlx::{Pool, Postgres};
 
 use crate::{
-    error::StorageError,
+    StorageError,
     pg::map_db_err,
     repos::{CachedRecord, IdempotencyStoreRepo},
 };
@@ -100,7 +100,7 @@ impl IdempotencyStoreRepo for PgIdempotencyStore {
         })?;
         let expires_at = chrono::Utc::now()
             + chrono::Duration::from_std(ttl).map_err(|err| {
-                StorageError::Configuration(format!("ttl out of chrono::Duration range: {err}"))
+                StorageError::InvalidInput(format!("ttl out of chrono::Duration range: {err}"))
             })?;
         let status_i16 = i16::try_from(record.status).map_err(|_| {
             StorageError::Serialization(format!(

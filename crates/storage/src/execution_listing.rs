@@ -1,23 +1,23 @@
 //! Column codec for the execution listing projection shared by the SQL
 //! backends (migration 0064).
 //!
-//! Decoding fails closed: a status outside the closed set or a key outside
-//! the representable range is a [`StorageError::Serialization`], never a
-//! guessed value.
+//! Decoding fails closed: a status outside the closed set, a key outside the
+//! representable range, or a timestamp that is not RFC 3339 is
+//! [`StorageError::Corrupt`], never a guessed value.
 
 use nebula_storage_port::{ExecutionListingStatus, MicrosInstant, StorageError};
 
 /// Decode a stored status.
 pub(crate) fn decode_status(stored: &str) -> Result<ExecutionListingStatus, StorageError> {
-    stored.parse().map_err(|_| {
-        StorageError::Serialization("execution status column holds an unknown value".into())
-    })
+    stored
+        .parse()
+        .map_err(|_| StorageError::Corrupt("execution status column holds an unknown value".into()))
 }
 
 /// Decode the `created_at_us` sort key.
 pub(crate) fn decode_sort_key(micros: i64) -> Result<MicrosInstant, StorageError> {
     MicrosInstant::from_micros(micros)
-        .ok_or_else(|| StorageError::Serialization("execution creation key is out of range".into()))
+        .ok_or_else(|| StorageError::Corrupt("execution creation key is out of range".into()))
 }
 
 /// Decode an RFC 3339 timestamp stored as text (SQLite).
@@ -25,7 +25,7 @@ pub(crate) fn decode_sort_key(micros: i64) -> Result<MicrosInstant, StorageError
 pub(crate) fn decode_text_instant(stored: &str) -> Result<MicrosInstant, StorageError> {
     chrono::DateTime::parse_from_rfc3339(stored)
         .map(|instant| MicrosInstant::floor(instant.with_timezone(&chrono::Utc)))
-        .map_err(|_| StorageError::Serialization("execution timestamp is not RFC 3339".into()))
+        .map_err(|_| StorageError::Corrupt("execution timestamp is not RFC 3339".into()))
 }
 
 /// Encode an instant as the RFC 3339 text SQLite stores.

@@ -3,6 +3,21 @@
 //! Every port operation returns [`StorageError`]. It is `#[non_exhaustive]`
 //! so the adapter can grow new failure modes without a breaking change, and
 //! every variant is fail-closed (no variant silently degrades to success).
+//!
+//! Choosing a variant — the question is *whose* fault the failure is:
+//!
+//! | Cause | Variant |
+//! |---|---|
+//! | the backend cannot be reached or did not answer | [`StorageError::Connection`] / [`StorageError::Timeout`] |
+//! | a stored value violates the contract (undecodable column, unknown enum, NULL where required) | [`StorageError::Corrupt`] |
+//! | the caller passed a value the operation rejects | [`StorageError::InvalidInput`] |
+//! | the deployment is misconfigured | [`StorageError::Configuration`] |
+//! | a domain outcome (missing row, CAS miss, duplicate, fenced) | the matching typed variant |
+//! | an invariant of this code broke | [`StorageError::Internal`] |
+//!
+//! Messages are value-free: they name what failed, never the stored or
+//! submitted values, so an error can be logged or surfaced without leaking
+//! data.
 use std::time::Duration;
 
 use nebula_error::decode::value_free_decode_summary;
@@ -39,14 +54,6 @@ pub enum StorageError {
         entity: &'static str,
         /// Human-readable collision detail.
         detail: String,
-    },
-    /// Lease could not be acquired.
-    #[error("{entity} {id}: lease unavailable")]
-    LeaseUnavailable {
-        /// Entity name.
-        entity: &'static str,
-        /// Entity id.
-        id: String,
     },
     /// Caller's fencing token was superseded by a newer lease generation.
     #[error("{entity} {id}: fenced out")]
@@ -89,6 +96,15 @@ pub enum StorageError {
     /// Backend connectivity failure.
     #[error("connection: {0}")]
     Connection(String),
+    /// A stored value violates the contract: an undecodable column, a value
+    /// outside a closed set, NULL in a required column. The data needs an
+    /// operator, not a retry.
+    #[error("corrupt stored data: {0}")]
+    Corrupt(String),
+    /// The caller passed a value the operation rejects. A retry with the
+    /// same input fails the same way.
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
     /// A commit may have succeeded but its acknowledgement was lost.
     /// Reading persisted identity does not mint the lost write authority.
     #[error("{operation}: commit acknowledgement is unknown")]

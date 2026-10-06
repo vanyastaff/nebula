@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use crate::{
-    error::StorageError,
+    StorageError,
     rows::{
         OAuthStateRow, PersonalAccessTokenRow, SessionDraft, SessionRow, UserRow,
         VerificationTokenRow,

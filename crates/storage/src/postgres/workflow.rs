@@ -18,7 +18,24 @@ use nebula_storage_port::store::{WorkflowPublicationError, WorkflowStore, Workfl
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
-use super::execution::conn_err;
+use crate::sql_error::storage_error;
+
+/// Decode one live `port_workflows` row selected as `id, version, slug`. The
+/// one decoder of the table for this backend.
+fn decode_workflow(
+    row: &sqlx::postgres::PgRow,
+    scope: &Scope,
+) -> Result<WorkflowRecord, StorageError> {
+    let version = row.try_get::<i64, _>("version").map_err(storage_error)?;
+    Ok(WorkflowRecord {
+        id: row.try_get("id").map_err(storage_error)?,
+        scope: scope.clone(),
+        version: u64::try_from(version)
+            .map_err(|_| StorageError::Corrupt("workflow version is negative".into()))?,
+        slug: row.try_get("slug").map_err(storage_error)?,
+        deleted: false,
+    })
+}
 
 /// Postgres-backed workflow-row store.
 #[derive(Clone, Debug)]
@@ -56,14 +73,14 @@ impl WorkflowStore for PgWorkflowStore {
             .map_err(|_| WorkflowPublicationError::InvalidPublication)?;
         let definition = version.definition.clone();
         let activation_json = serde_json::to_value(activation).map_err(StorageError::from)?;
-        let mut transaction = self.pool.begin().await.map_err(conn_err)?;
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
         let changed = sqlx::query("UPDATE port_workflows SET version = $1, slug = $2 WHERE id = $3 AND workspace_id = $4 AND org_id = $5 AND version = $6 AND deleted = FALSE")
             .bind(next).bind(&row.slug).bind(&row.id).bind(&scope.workspace_id).bind(&scope.org_id).bind(expected)
-            .execute(&mut *transaction).await.map_err(conn_err)?.rows_affected();
+            .execute(&mut *transaction).await.map_err(storage_error)?.rows_affected();
         if changed != 1 {
             let actual = sqlx::query_scalar::<_, i64>("SELECT version FROM port_workflows WHERE id = $1 AND workspace_id = $2 AND org_id = $3 AND deleted = FALSE")
                 .bind(&row.id).bind(&scope.workspace_id).bind(&scope.org_id)
-                .fetch_optional(&mut *transaction).await.map_err(conn_err)?;
+                .fetch_optional(&mut *transaction).await.map_err(storage_error)?;
             return Err(match actual {
                 Some(actual) => StorageError::Conflict {
                     entity: "workflow",
@@ -80,12 +97,12 @@ impl WorkflowStore for PgWorkflowStore {
         let ids = activation.revisions();
         let plan: Option<Vec<u8>> = sqlx::query_scalar("SELECT p.record_bytes FROM port_executable_plan_revisions p JOIN port_worker_flavor_revisions f ON f.worker_flavor_id = p.worker_flavor_id WHERE p.executable_plan_id = $1 AND p.worker_flavor_id = $2 AND p.lifecycle = 'active' AND f.lifecycle = 'active' FOR SHARE OF p, f")
             .bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
-            .fetch_optional(&mut *transaction).await.map_err(conn_err)?;
+            .fetch_optional(&mut *transaction).await.map_err(storage_error)?;
         let plan = plan.ok_or(WorkflowPublicationError::RevisionNotAdmitted)?;
         crate::workflow_activation::validate_plan_identity(&plan, &row.id, activation)?;
         let reused: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM port_workflow_versions WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3 AND activation->>'workflow_version_id' = $4")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(&row.id).bind(activation.workflow_version_id().to_string())
-            .fetch_one(&mut *transaction).await.map_err(conn_err)?;
+            .fetch_one(&mut *transaction).await.map_err(storage_error)?;
         if reused != 0 {
             return Err(WorkflowPublicationError::InvalidPublication);
         }
@@ -95,7 +112,7 @@ impl WorkflowStore for PgWorkflowStore {
             .execute(&mut *transaction).await.map_err(|error| match error {
                 sqlx::Error::Database(database) if database.is_unique_violation() =>
                     StorageError::Duplicate { entity: "workflow_version", detail: "workflow version already exists".into() },
-                other => conn_err(other),
+                other => storage_error(other),
             })?;
         transaction
             .commit()
@@ -126,14 +143,14 @@ impl WorkflowStore for PgWorkflowStore {
                     detail: format!("workflow {} already exists", record.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<WorkflowRecord>, StorageError> {
         // A soft-deleted row is a read miss, matching the other backends.
         let row = sqlx::query(
-            "SELECT version, slug FROM port_workflows \
+            "SELECT id, version, slug FROM port_workflows \
              WHERE id = $1 AND workspace_id = $2 AND org_id = $3 AND deleted = FALSE",
         )
         .bind(id)
@@ -141,17 +158,8 @@ impl WorkflowStore for PgWorkflowStore {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
-        row.map(|r| {
-            Ok(WorkflowRecord {
-                id: id.to_string(),
-                scope: scope.clone(),
-                version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
-                slug: r.try_get("slug").map_err(conn_err)?,
-                deleted: false,
-            })
-        })
-        .transpose()
+        .map_err(storage_error)?;
+        row.map(|row| decode_workflow(&row, scope)).transpose()
     }
 
     async fn get_by_slug(
@@ -160,7 +168,7 @@ impl WorkflowStore for PgWorkflowStore {
         slug: &str,
     ) -> Result<Option<WorkflowRecord>, StorageError> {
         let row = sqlx::query(
-            "SELECT id, version FROM port_workflows \
+            "SELECT id, version, slug FROM port_workflows \
              WHERE workspace_id = $1 AND org_id = $2 AND slug = $3 AND deleted = FALSE",
         )
         .bind(&scope.workspace_id)
@@ -168,17 +176,8 @@ impl WorkflowStore for PgWorkflowStore {
         .bind(slug)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
-        row.map(|r| {
-            Ok(WorkflowRecord {
-                id: r.try_get("id").map_err(conn_err)?,
-                scope: scope.clone(),
-                version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
-                slug: slug.to_string(),
-                deleted: false,
-            })
-        })
-        .transpose()
+        .map_err(storage_error)?;
+        row.map(|row| decode_workflow(&row, scope)).transpose()
     }
 
     async fn update(
@@ -210,7 +209,7 @@ impl WorkflowStore for PgWorkflowStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -227,7 +226,7 @@ impl WorkflowStore for PgWorkflowStore {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "workflow",
@@ -253,7 +252,7 @@ impl WorkflowStore for PgWorkflowStore {
         }
         // One transaction so the row write and the version write commit
         // (or roll back) together — no orphan-row window.
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
 
         match expected_version {
             None => {
@@ -279,7 +278,7 @@ impl WorkflowStore for PgWorkflowStore {
                                 detail: format!("workflow {} already exists", row.id),
                             }
                         },
-                        other => conn_err(other),
+                        other => storage_error(other),
                     });
                 }
             },
@@ -299,7 +298,7 @@ impl WorkflowStore for PgWorkflowStore {
                 .bind(expected as i64)
                 .execute(&mut *tx)
                 .await
-                .map_err(conn_err)?;
+                .map_err(storage_error)?;
                 if res.rows_affected() == 0 {
                     // Disambiguate row-gone vs version-moved within the tx
                     // (rolled back on drop) so neither write lands.
@@ -312,7 +311,7 @@ impl WorkflowStore for PgWorkflowStore {
                     .bind(&scope.org_id)
                     .fetch_optional(&mut *tx)
                     .await
-                    .map_err(conn_err)?;
+                    .map_err(storage_error)?;
                     return Err(match current {
                         Some(actual) => StorageError::Conflict {
                             entity: "workflow",
@@ -350,11 +349,11 @@ impl WorkflowStore for PgWorkflowStore {
                         version.workflow_id, version.number
                     ),
                 },
-                other => conn_err(other),
+                other => storage_error(other),
             });
         }
 
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(())
     }
 
@@ -368,7 +367,7 @@ impl WorkflowStore for PgWorkflowStore {
         .bind(&scope.org_id)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             Ok(())
         } else {
@@ -387,18 +386,8 @@ impl WorkflowStore for PgWorkflowStore {
         .bind(&scope.org_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
-        rows.into_iter()
-            .map(|r| {
-                Ok(WorkflowRecord {
-                    id: r.try_get("id").map_err(conn_err)?,
-                    scope: scope.clone(),
-                    version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
-                    slug: r.try_get("slug").map_err(conn_err)?,
-                    deleted: false,
-                })
-            })
-            .collect()
+        .map_err(storage_error)?;
+        rows.iter().map(|row| decode_workflow(row, scope)).collect()
     }
 
     async fn count(&self, scope: &Scope) -> Result<u64, StorageError> {
@@ -413,7 +402,7 @@ impl WorkflowStore for PgWorkflowStore {
         .bind(&scope.org_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(n.max(0) as u64)
     }
 
@@ -424,7 +413,7 @@ impl WorkflowStore for PgWorkflowStore {
         sqlx::query_scalar::<_, i32>("SELECT 1")
             .fetch_one(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         Ok(())
     }
 }
@@ -449,14 +438,14 @@ fn version_from_row(row: &sqlx::postgres::PgRow) -> Result<WorkflowVersionRecord
     Ok(WorkflowVersionRecord {
         activation: row
             .try_get::<Option<serde_json::Value>, _>("activation")
-            .map_err(conn_err)?
+            .map_err(storage_error)?
             .map(serde_json::from_value)
             .transpose()?,
-        workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
-        number: row.try_get::<i64, _>("number").map_err(conn_err)? as u32,
-        published: row.try_get("published").map_err(conn_err)?,
-        pinned: row.try_get("pinned").map_err(conn_err)?,
-        definition: row.try_get("definition").map_err(conn_err)?,
+        workflow_id: row.try_get("workflow_id").map_err(storage_error)?,
+        number: row.try_get::<i64, _>("number").map_err(storage_error)? as u32,
+        published: row.try_get("published").map_err(storage_error)?,
+        pinned: row.try_get("pinned").map_err(storage_error)?,
+        definition: row.try_get("definition").map_err(storage_error)?,
     })
 }
 
@@ -497,7 +486,7 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
                     ),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -518,7 +507,7 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         .bind(i64::from(number))
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(version_from_row).transpose()
     }
 
@@ -541,7 +530,7 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         .bind(workflow_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(version_from_row).transpose()
     }
 
@@ -562,7 +551,7 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         .bind(workflow_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(version_from_row).collect()
     }
 }

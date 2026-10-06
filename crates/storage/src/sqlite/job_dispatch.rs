@@ -23,7 +23,7 @@ use nebula_storage_port::store::{
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
 
-use crate::sqlite::execution::conn_err;
+use crate::sql_error::storage_error;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -65,8 +65,8 @@ fn plugins_to_json(plugins: &[PluginKey]) -> String {
 }
 
 fn row_to_msg(row: &sqlx::sqlite::SqliteRow) -> Result<JobDispatchMsg, StorageError> {
-    let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
-    let plugins_json: String = row.try_get("required_plugins").map_err(conn_err)?;
+    let id_bytes: Vec<u8> = row.try_get("id").map_err(storage_error)?;
+    let plugins_json: String = row.try_get("required_plugins").map_err(storage_error)?;
     let plugin_strs: Vec<String> = serde_json::from_str(&plugins_json)
         .map_err(|e| StorageError::Serialization(e.to_string()))?;
     let required_plugins: Vec<PluginKey> = plugin_strs
@@ -78,30 +78,33 @@ fn row_to_msg(row: &sqlx::sqlite::SqliteRow) -> Result<JobDispatchMsg, StorageEr
         .collect::<Result<_, _>>()?;
     let required_plugin_key: PluginKey = row
         .try_get::<String, _>("required_plugin_key")
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .parse::<PluginKey>()
         .map_err(|e| StorageError::Serialization(e.to_string()))?;
-    let payload_json: String = row.try_get("payload").map_err(conn_err)?;
+    let payload_json: String = row.try_get("payload").map_err(storage_error)?;
     Ok(JobDispatchMsg::new(
         decode_id(&id_bytes)?,
-        row.try_get::<String, _>("execution_id").map_err(conn_err)?,
-        decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
+        row.try_get::<String, _>("execution_id")
+            .map_err(storage_error)?,
+        decode_command(&row.try_get::<String, _>("command").map_err(storage_error)?)?,
         Scope::new(
-            row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-            row.try_get::<String, _>("org_id").map_err(conn_err)?,
+            row.try_get::<String, _>("workspace_id")
+                .map_err(storage_error)?,
+            row.try_get::<String, _>("org_id").map_err(storage_error)?,
         ),
         serde_json::from_str(&payload_json)
             .map_err(|e| StorageError::Serialization(e.to_string()))?,
         row.try_get::<Option<String>, _>("event_id")
-            .map_err(conn_err)?,
+            .map_err(storage_error)?,
         required_plugin_key,
         required_plugins,
         row.try_get::<Option<String>, _>("w3c_traceparent")
-            .map_err(conn_err)?,
-        row.try_get::<i64, _>("reclaim_count").map_err(conn_err)? as u32,
+            .map_err(storage_error)?,
+        row.try_get::<i64, _>("reclaim_count")
+            .map_err(storage_error)? as u32,
         WorkerFlavorRevisionId::from_bytes(
             row.try_get::<Vec<u8>, _>("required_worker_flavor_id")
-                .map_err(conn_err)?
+                .map_err(storage_error)?
                 .try_into()
                 .map_err(|_| {
                     StorageError::Serialization(
@@ -144,7 +147,7 @@ impl SqliteJobDispatchQueue {
         .bind(&claim.scope().org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "job_dispatch",
@@ -217,7 +220,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(msg.required_worker_flavor_id.as_bytes().as_slice())
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         tracing::debug!(target: "nebula_storage::sqlite", "job_dispatch: enqueued");
         Ok(())
     }
@@ -233,7 +236,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         if available_plugins.is_empty() {
             return Ok(Vec::new());
         }
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
 
         // Superset predicate: a job is claimable when `required_plugins ⊆
         // available_plugins`.  The available set is bound ONCE as a JSON array
@@ -273,12 +276,12 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(worker_flavor_id.as_bytes().as_slice())
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
         let mut claimed = Vec::with_capacity(rows.len());
         let now_ms = chrono::Utc::now().timestamp_millis();
         for row in &rows {
-            let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err(storage_error)?;
             // Conditional claim — AND status = 'Pending' guard prevents
             // double-claim if a concurrent actor flipped the row between the
             // SELECT above and this UPDATE (single-consumer SQLite boundary).
@@ -300,7 +303,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
             .bind(id_bytes.as_slice())
             .fetch_optional(&mut *tx)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
             if let Some(generation) = minted {
                 let id = decode_id(&id_bytes)?;
                 let msg = row_to_msg(row)?;
@@ -309,7 +312,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
                 claimed.push(JobClaim { msg, token });
             }
         }
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         tracing::debug!(
             target: "nebula_storage::sqlite",
             claimed = claimed.len(),
@@ -333,7 +336,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -357,7 +360,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -374,7 +377,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         // as `port_control_queue`, so reclaim cutoff arithmetic is identical.
         let terminal_at_ms = chrono::Utc::now().timestamp_millis();
         let cutoff = terminal_at_ms - i64::try_from(reclaim_after.as_millis()).unwrap_or(i64::MAX);
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let exhausted = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Failed', \
@@ -388,7 +391,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(i64::from(max_reclaim_count))
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         // `claim_generation` is deliberately untouched here: ownership is
         // cleared, but the counter only ever moves forward, so the next claim
@@ -405,9 +408,9 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(i64::from(max_reclaim_count))
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(ReclaimOutcome {
             reclaimed,
             exhausted,
@@ -424,7 +427,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(cutoff)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         Ok(deleted)
     }

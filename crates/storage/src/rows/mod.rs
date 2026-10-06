@@ -12,8 +12,7 @@ mod user;
 mod webhook_activation;
 
 pub use user::{
-    OAuthStateRow, PersonalAccessTokenRow, SessionDraft, SessionRow, UserRow,
-    VerificationTokenRow,
+    OAuthStateRow, PersonalAccessTokenRow, SessionDraft, SessionRow, UserRow, VerificationTokenRow,
 };
 pub use webhook_activation::{
     WEBHOOK_ACTIVATION_KEY, WebhookActivationSpec, WebhookActivationSpecError,

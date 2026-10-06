@@ -21,7 +21,7 @@
 use sqlx::{Pool, Postgres, types::Json};
 
 use crate::{
-    error::StorageError, pg::map_db_err, repos::VerificationTokenRepo, rows::VerificationTokenRow,
+    StorageError, pg::map_db_err, repos::VerificationTokenRepo, rows::VerificationTokenRow,
 };
 
 /// Postgres-backed verification-token repository.

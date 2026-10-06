@@ -34,22 +34,22 @@ impl MfaEnrollmentCandidate {
         expires_at: DateTime<Utc>,
     ) -> Result<Self, StorageError> {
         if enrollment_id == [0; 32] {
-            return Err(StorageError::Configuration(
+            return Err(StorageError::InvalidInput(
                 "MFA enrollment id must be non-zero".to_owned(),
             ));
         }
         if user_id.is_empty() {
-            return Err(StorageError::Configuration(
+            return Err(StorageError::InvalidInput(
                 "MFA enrollment user id must not be empty".to_owned(),
             ));
         }
         if secret_envelope.is_empty() {
-            return Err(StorageError::Configuration(
+            return Err(StorageError::InvalidInput(
                 "MFA enrollment secret envelope must not be empty".to_owned(),
             ));
         }
         if created_at >= expires_at {
-            return Err(StorageError::Configuration(
+            return Err(StorageError::InvalidInput(
                 "MFA enrollment expiry must follow creation".to_owned(),
             ));
         }

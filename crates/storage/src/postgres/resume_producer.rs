@@ -11,54 +11,14 @@
 //! byte-identical to the execution-store outbox append, and the tx commits. A
 //! transient fault rolls back, leaving the token live for retry.
 
-use chrono::{DateTime, Utc};
-use nebula_storage_port::Scope;
 use nebula_storage_port::StorageError;
-use nebula_storage_port::dto::resume_token::{
-    ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError,
-};
+use nebula_storage_port::dto::resume_token::{ResumeTokenRow, TokenHash};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg};
 use nebula_storage_port::store::ResumeProducer;
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 
-fn conn_err(e: impl std::fmt::Display) -> StorageError {
-    StorageError::Connection(e.to_string())
-}
-
-fn deserialize_wait_kind(raw: &str) -> Result<ResumeTokenWaitKind, StorageError> {
-    serde_json::from_str(&format!("\"{raw}\""))
-        .map_err(|e| StorageError::Serialization(e.to_string()))
-}
-
-/// Reconstruct a [`ResumeTokenRow`] from a token-table row.
-///
-/// Postgres stores `created_at`/`expires_at` as `TIMESTAMPTZ`; they are read
-/// as [`DateTime<Utc>`] and rendered back to RFC-3339 to match the DTO's
-/// string shape (mirrors `postgres::resume_token`).
-fn row_from_token_columns(row: &sqlx::postgres::PgRow) -> Result<ResumeTokenRow, StorageError> {
-    let raw_hash: Vec<u8> = row.try_get("token_hash").map_err(conn_err)?;
-    let hash = TokenHash::try_from_bytes(raw_hash).map_err(|e: TokenHashLengthError| {
-        StorageError::Internal(format!("persisted token_hash bad length: {e}"))
-    })?;
-    let wait_kind_str: String = row.try_get("wait_kind").map_err(conn_err)?;
-    let wait_kind = deserialize_wait_kind(&wait_kind_str)?;
-    let created_at: DateTime<Utc> = row.try_get("created_at").map_err(conn_err)?;
-    let expires_at: Option<DateTime<Utc>> = row.try_get("expires_at").map_err(conn_err)?;
-    let scope = Scope {
-        workspace_id: row.try_get("workspace_id").map_err(conn_err)?,
-        org_id: row.try_get("org_id").map_err(conn_err)?,
-    };
-    Ok(ResumeTokenRow::new(
-        hash,
-        scope,
-        row.try_get("execution_id").map_err(conn_err)?,
-        row.try_get("node_key").map_err(conn_err)?,
-        wait_kind,
-        row.try_get("callback_label").map_err(conn_err)?,
-        created_at.to_rfc3339(),
-        expires_at.map(|dt| dt.to_rfc3339()),
-    ))
-}
+use super::resume_token::decode_resume_token;
+use crate::sql_error::storage_error;
 
 /// PostgreSQL-backed resume producer.
 ///
@@ -90,11 +50,11 @@ impl ResumeProducer for PgResumeProducer {
         .bind(token_hash.as_bytes())
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
         match row {
             None => Ok(None),
-            Some(row) => Ok(Some(row_from_token_columns(&row)?)),
+            Some(row) => Ok(Some(decode_resume_token(&row)?)),
         }
     }
 
@@ -112,7 +72,7 @@ impl ResumeProducer for PgResumeProducer {
             ));
         }
 
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
 
         // `DELETE … RETURNING` (rows-affected == 1) IS the single-use replay
         // gate: a raced/replayed/absent hash deletes zero rows. The DELETE's
@@ -125,10 +85,10 @@ impl ResumeProducer for PgResumeProducer {
         .bind(token_hash.as_bytes())
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
         if deleted.is_none() {
-            tx.rollback().await.map_err(conn_err)?;
+            tx.rollback().await.map_err(storage_error)?;
             return Ok(false);
         }
 
@@ -156,9 +116,9 @@ impl ResumeProducer for PgResumeProducer {
         .bind(resume_target_json)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(true)
     }
 }

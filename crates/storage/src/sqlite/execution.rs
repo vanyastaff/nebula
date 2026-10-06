@@ -18,6 +18,7 @@ use nebula_storage_port::{
 use sqlx::{Row, SqlitePool};
 
 use crate::execution_listing as listing;
+use crate::sql_error::{decode_u64, storage_error};
 
 /// SQLite-backed execution aggregate. Wrap a pool whose schema was
 /// installed via [`super::init_schema`].
@@ -35,17 +36,45 @@ impl SqliteExecutionStore {
     }
 }
 
-pub(super) fn conn_err(e: sqlx::Error) -> StorageError {
-    StorageError::Connection(e.to_string())
-}
-
 /// Read an RFC 3339 text timestamp column of an execution row.
 fn text_datetime(
     row: &sqlx::sqlite::SqliteRow,
     column: &str,
 ) -> Result<chrono::DateTime<chrono::Utc>, StorageError> {
-    listing::decode_text_instant(&row.try_get::<String, _>(column).map_err(conn_err)?)
+    listing::decode_text_instant(&row.try_get::<String, _>(column).map_err(storage_error)?)
         .map(MicrosInstant::to_datetime)
+}
+
+/// Decode one `port_executions` row selected as `id, workspace_id, org_id,
+/// workflow_id, status, state, version, lease_holder, fencing_generation,
+/// created_at, updated_at` — `state` already NULLed by the size cap. The one
+/// decoder of the table for this backend.
+fn decode_execution(row: &sqlx::sqlite::SqliteRow) -> Result<ExecutionRecord, StorageError> {
+    let state: String = row
+        .try_get::<Option<String>, _>("state")
+        .map_err(storage_error)?
+        .ok_or_else(crate::execution_state::oversized_execution_state)?;
+    Ok(ExecutionRecord {
+        id: row.try_get("id").map_err(storage_error)?,
+        workflow_id: row.try_get("workflow_id").map_err(storage_error)?,
+        scope: Scope::new(
+            row.try_get::<String, _>("workspace_id")
+                .map_err(storage_error)?,
+            row.try_get::<String, _>("org_id").map_err(storage_error)?,
+        ),
+        version: decode_u64(row.try_get("version").map_err(storage_error)?, "version")?,
+        status: listing::decode_status(
+            &row.try_get::<String, _>("status").map_err(storage_error)?,
+        )?,
+        state: serde_json::from_str(&state)?,
+        lease_holder: row.try_get("lease_holder").map_err(storage_error)?,
+        fencing: Some(decode_u64(
+            row.try_get("fencing_generation").map_err(storage_error)?,
+            "fencing_generation",
+        )?),
+        created_at: text_datetime(row, "created_at")?,
+        updated_at: text_datetime(row, "updated_at")?,
+    })
 }
 
 /// Clamp the lease TTL (≥1s, ≤24h) so a zero/absurd TTL cannot make a
@@ -96,7 +125,7 @@ pub(super) async fn insert_created_execution(
                 detail: format!("execution {id} already exists"),
             })
         },
-        Err(e) => Err(conn_err(e)),
+        Err(e) => Err(storage_error(e)),
     }
 }
 
@@ -120,9 +149,9 @@ impl ExecutionStore for SqliteExecutionStore {
         workflow_id: &str,
         initial_state: serde_json::Value,
     ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         insert_created_execution(&mut tx, scope, id, workflow_id, &initial_state).await?;
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         tracing::debug!(
             target: "nebula_storage::sqlite",
             execution_id = id,
@@ -133,11 +162,11 @@ impl ExecutionStore for SqliteExecutionStore {
     }
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
-        let row = sqlx::query(
-            "SELECT workflow_id, status, \
+        // Scope mismatch or absent → `None`: an existence-preserving miss.
+        sqlx::query(
+            "SELECT id, workspace_id, org_id, workflow_id, status, \
                     CASE WHEN length(CAST(state AS BLOB)) <= ? THEN state END AS state, \
-                    version, lease_holder, \
-                    fencing_generation, created_at, updated_at \
+                    version, lease_holder, fencing_generation, created_at, updated_at \
              FROM port_executions \
              WHERE id = ? AND workspace_id = ? AND org_id = ?",
         )
@@ -147,31 +176,10 @@ impl ExecutionStore for SqliteExecutionStore {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
-        let Some(row) = row else {
-            // Scope mismatch or absent → existence-preserving miss.
-            return Ok(None);
-        };
-        let state_str: String = row
-            .try_get::<Option<String>, _>("state")
-            .map_err(conn_err)?
-            .ok_or_else(crate::execution_state::oversized_execution_state)?;
-        let state: serde_json::Value = serde_json::from_str(&state_str)?;
-        Ok(Some(ExecutionRecord {
-            id: id.to_string(),
-            workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
-            scope: scope.clone(),
-            version: row.try_get::<i64, _>("version").map_err(conn_err)? as u64,
-            status: listing::decode_status(&row.try_get::<String, _>("status").map_err(conn_err)?)?,
-            state,
-            lease_holder: row.try_get("lease_holder").map_err(conn_err)?,
-            fencing: Some(
-                row.try_get::<i64, _>("fencing_generation")
-                    .map_err(conn_err)? as u64,
-            ),
-            created_at: text_datetime(&row, "created_at")?,
-            updated_at: text_datetime(&row, "updated_at")?,
-        }))
+        .map_err(storage_error)?
+        .as_ref()
+        .map(decode_execution)
+        .transpose()
     }
 
     async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
@@ -179,9 +187,9 @@ impl ExecutionStore for SqliteExecutionStore {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         let outcome = commit_locked(&mut tx, &batch).await?;
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(outcome)
     }
 
@@ -217,7 +225,7 @@ impl ExecutionStore for SqliteExecutionStore {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
         if let Some(generation) = new_generation {
             return Ok(Some(FencingToken::from_generation(generation as u64)));
@@ -234,7 +242,7 @@ impl ExecutionStore for SqliteExecutionStore {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if exists.is_none() {
             return Err(StorageError::not_found("execution", id));
         }
@@ -263,7 +271,7 @@ impl ExecutionStore for SqliteExecutionStore {
         .bind(token.generation() as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -285,7 +293,7 @@ impl ExecutionStore for SqliteExecutionStore {
         .bind(token.generation() as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(res.rows_affected() == 1)
     }
 
@@ -300,36 +308,8 @@ impl ExecutionStore for SqliteExecutionStore {
         .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
-        rows.into_iter()
-            .map(|row| {
-                let state_str: String = row
-                    .try_get::<Option<String>, _>("state")
-                    .map_err(conn_err)?
-                    .ok_or_else(crate::execution_state::oversized_execution_state)?;
-                let state: serde_json::Value = serde_json::from_str(&state_str)?;
-                Ok(ExecutionRecord {
-                    id: row.try_get("id").map_err(conn_err)?,
-                    workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
-                    scope: Scope::new(
-                        row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-                        row.try_get::<String, _>("org_id").map_err(conn_err)?,
-                    ),
-                    version: row.try_get::<i64, _>("version").map_err(conn_err)? as u64,
-                    status: listing::decode_status(
-                        &row.try_get::<String, _>("status").map_err(conn_err)?,
-                    )?,
-                    state,
-                    lease_holder: row.try_get("lease_holder").map_err(conn_err)?,
-                    fencing: Some(
-                        row.try_get::<i64, _>("fencing_generation")
-                            .map_err(conn_err)? as u64,
-                    ),
-                    created_at: text_datetime(&row, "created_at")?,
-                    updated_at: text_datetime(&row, "updated_at")?,
-                })
-            })
-            .collect()
+        .map_err(storage_error)?;
+        rows.iter().map(decode_execution).collect()
     }
 
     async fn list_history(
@@ -375,30 +355,35 @@ impl ExecutionStore for SqliteExecutionStore {
         }
         sql.push(" ORDER BY created_at_us DESC, id DESC LIMIT ")
             .push_bind(i64::from(query.fetch_limit()));
-        let rows = sql.build().fetch_all(&self.pool).await.map_err(conn_err)?;
+        let rows = sql
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_error)?;
         let summaries = rows
             .into_iter()
             .map(|row| {
                 let optional_instant = |column: &str| -> Result<_, StorageError> {
                     row.try_get::<Option<String>, _>(column)
-                        .map_err(conn_err)?
+                        .map_err(storage_error)?
                         .as_deref()
                         .map(listing::decode_text_instant)
                         .transpose()
                 };
                 Ok(ExecutionSummary {
-                    id: row.try_get("id").map_err(conn_err)?,
-                    workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
+                    id: row.try_get("id").map_err(storage_error)?,
+                    workflow_id: row.try_get("workflow_id").map_err(storage_error)?,
                     status: listing::decode_status(
-                        &row.try_get::<String, _>("status").map_err(conn_err)?,
+                        &row.try_get::<String, _>("status").map_err(storage_error)?,
                     )?,
                     created_at: listing::decode_sort_key(
-                        row.try_get("created_at_us").map_err(conn_err)?,
+                        row.try_get("created_at_us").map_err(storage_error)?,
                     )?,
                     started_at: optional_instant("started_at")?,
                     finished_at: optional_instant("finished_at")?,
                     updated_at: listing::decode_text_instant(
-                        &row.try_get::<String, _>("updated_at").map_err(conn_err)?,
+                        &row.try_get::<String, _>("updated_at")
+                            .map_err(storage_error)?,
                     )?,
                 })
             })
@@ -430,8 +415,8 @@ impl ExecutionStore for SqliteExecutionStore {
                 .await
             },
         }
-        .map_err(conn_err)?;
-        Ok(row.try_get::<i64, _>("n").map_err(conn_err)? as u64)
+        .map_err(storage_error)?;
+        Ok(row.try_get::<i64, _>("n").map_err(storage_error)? as u64)
     }
 }
 
@@ -463,13 +448,15 @@ async fn apply_reference_transition(
     .bind(id)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(conn_err)?;
+    .map_err(storage_error)?;
 
     // A missing row is a legacy execution that predates materialized
     // starts; terminal transitions on it are a no-op. An existing row
     // in an incompatible lifecycle must fail the whole commit.
     if let Some(reference_row) = reference_row {
-        let state: String = reference_row.try_get("reference_state").map_err(conn_err)?;
+        let state: String = reference_row
+            .try_get("reference_state")
+            .map_err(storage_error)?;
         match transition {
             nebula_storage_port::ExecutionReferenceTransition::ReleaseLive => {
                 match state.as_str() {
@@ -483,12 +470,12 @@ async fn apply_reference_transition(
                         .bind(id)
                         .execute(&mut **tx)
                         .await
-                        .map_err(conn_err)?;
+                        .map_err(storage_error)?;
                     },
                     "released" => {
                         let window: Option<Vec<u8>> = reference_row
                             .try_get("rollback_window_id")
-                            .map_err(conn_err)?;
+                            .map_err(storage_error)?;
                         if window.is_some() {
                             return Err(StorageError::Internal(format!(
                                 "terminal dereference: execution {id} reference is                                          released from a rollback window"
@@ -508,9 +495,10 @@ async fn apply_reference_transition(
             } => {
                 let stored_window: Option<Vec<u8>> = reference_row
                     .try_get("rollback_window_id")
-                    .map_err(conn_err)?;
-                let stored_until: Option<i64> =
-                    reference_row.try_get("retain_until_ms").map_err(conn_err)?;
+                    .map_err(storage_error)?;
+                let stored_until: Option<i64> = reference_row
+                    .try_get("retain_until_ms")
+                    .map_err(storage_error)?;
                 match state.as_str() {
                     "live" => {
                         sqlx::query(
@@ -524,7 +512,7 @@ async fn apply_reference_transition(
                         .bind(id)
                         .execute(&mut **tx)
                         .await
-                        .map_err(conn_err)?;
+                        .map_err(storage_error)?;
                     },
                     "rollback"
                         if stored_window.as_deref() == Some(window_id.as_slice())
@@ -558,16 +546,16 @@ pub(super) async fn commit_locked(
     .bind(&batch.scope().org_id)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(conn_err)?;
+    .map_err(storage_error)?;
 
     let Some(row) = row else {
         // Unknown id or invisible cross-tenant row: never Apply.
         return Ok(TransitionOutcome::VersionConflict { actual: 0 });
     };
-    let cur_version = row.try_get::<i64, _>("version").map_err(conn_err)? as u64;
+    let cur_version = row.try_get::<i64, _>("version").map_err(storage_error)? as u64;
     let cur_gen = row
         .try_get::<i64, _>("fencing_generation")
-        .map_err(conn_err)? as u64;
+        .map_err(storage_error)? as u64;
 
     // Fencing gate first: a superseded token is rejected even on a
     // version match (zombie-runner closure, spec §4.1).
@@ -610,7 +598,7 @@ pub(super) async fn commit_locked(
     .bind(&batch.scope().org_id)
     .execute(&mut **tx)
     .await
-    .map_err(conn_err)?;
+    .map_err(storage_error)?;
 
     // Journal append: next seq for this execution.
     let next_seq: i64 = sqlx::query(
@@ -620,9 +608,9 @@ pub(super) async fn commit_locked(
     .bind(&id)
     .fetch_one(&mut **tx)
     .await
-    .map_err(conn_err)?
+    .map_err(storage_error)?
     .try_get("next")
-    .map_err(conn_err)?;
+    .map_err(storage_error)?;
     for (offset, je) in batch.journal().iter().enumerate() {
         let payload = serde_json::to_string(&je.payload)?;
         sqlx::query(
@@ -634,7 +622,7 @@ pub(super) async fn commit_locked(
         .bind(&payload)
         .execute(&mut **tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     }
 
     // Outbox append: raw 16-byte ULID id (no UTF-8-of-ULID hack).
@@ -661,7 +649,7 @@ pub(super) async fn commit_locked(
         .bind(resume_target_json)
         .execute(&mut **tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     }
 
     // Insert resume-token rows in the same transaction as the
@@ -669,13 +657,6 @@ pub(super) async fn commit_locked(
     // DO NOTHING ensures a crash re-drive that re-parks the same node
     // does NOT mint a duplicate live token.
     for token_row in batch.resume_tokens() {
-        let wait_kind_str = serde_json::to_value(&token_row.wait_kind)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?
-            .as_str()
-            .ok_or_else(|| {
-                StorageError::Serialization("wait_kind serialized to non-string".into())
-            })?
-            .to_owned();
         sqlx::query(
             "INSERT INTO port_resume_tokens \
              (token_hash, workspace_id, org_id, execution_id, node_key, \
@@ -688,13 +669,13 @@ pub(super) async fn commit_locked(
         .bind(&token_row.scope.org_id)
         .bind(&token_row.execution_id)
         .bind(&token_row.node_key)
-        .bind(&wait_kind_str)
+        .bind(token_row.wait_kind.as_str())
         .bind(&token_row.callback_label)
         .bind(&token_row.created_at)
         .bind(token_row.expires_at.as_deref())
         .execute(&mut **tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     }
 
     if let Some(transition) = batch.reference_transition() {
@@ -728,7 +709,7 @@ impl IdempotencyGuard for SqliteIdempotencyGuard {
             .bind(&key)
             .execute(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         Ok(res.rows_affected() == 1)
     }
 }

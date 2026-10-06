@@ -18,7 +18,7 @@
 use sqlx::{Pool, Postgres};
 
 use crate::{
-    error::StorageError,
+    StorageError,
     pg::map_db_err,
     repos::SessionRepo,
     rows::{SessionDraft, SessionRow},

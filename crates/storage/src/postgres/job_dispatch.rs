@@ -33,7 +33,7 @@ use nebula_storage_port::store::{
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
-use super::execution::conn_err;
+use crate::sql_error::storage_error;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,7 +73,7 @@ fn plugins_to_jsonb(plugins: &[PluginKey]) -> serde_json::Value {
 /// minted for it.
 fn row_to_claim(row: &sqlx::postgres::PgRow) -> Result<JobClaim, StorageError> {
     let msg = row_to_msg(row)?;
-    let generation: i64 = row.try_get("claim_generation").map_err(conn_err)?;
+    let generation: i64 = row.try_get("claim_generation").map_err(storage_error)?;
     let token = JobClaimToken::new(
         msg.id,
         decode_generation(generation, &msg.id)?,
@@ -113,8 +113,8 @@ fn generation_bind(claim: &JobClaimToken) -> Result<i64, StorageError> {
 }
 
 fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageError> {
-    let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
-    let plugins_val: serde_json::Value = row.try_get("required_plugins").map_err(conn_err)?;
+    let id_bytes: Vec<u8> = row.try_get("id").map_err(storage_error)?;
+    let plugins_val: serde_json::Value = row.try_get("required_plugins").map_err(storage_error)?;
     let required_plugins: Vec<PluginKey> = plugins_val
         .as_array()
         .ok_or_else(|| StorageError::Serialization("required_plugins not a JSON array".to_owned()))?
@@ -134,28 +134,31 @@ fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageErro
         .collect::<Result<_, _>>()?;
     let required_plugin_key: PluginKey = row
         .try_get::<String, _>("required_plugin_key")
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .parse::<PluginKey>()
         .map_err(|e| StorageError::Serialization(e.to_string()))?;
     Ok(JobDispatchMsg::new(
         decode_id(&id_bytes)?,
-        row.try_get::<String, _>("execution_id").map_err(conn_err)?,
-        decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
+        row.try_get::<String, _>("execution_id")
+            .map_err(storage_error)?,
+        decode_command(&row.try_get::<String, _>("command").map_err(storage_error)?)?,
         Scope::new(
-            row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-            row.try_get::<String, _>("org_id").map_err(conn_err)?,
+            row.try_get::<String, _>("workspace_id")
+                .map_err(storage_error)?,
+            row.try_get::<String, _>("org_id").map_err(storage_error)?,
         ),
-        row.try_get("payload").map_err(conn_err)?,
+        row.try_get("payload").map_err(storage_error)?,
         row.try_get::<Option<String>, _>("event_id")
-            .map_err(conn_err)?,
+            .map_err(storage_error)?,
         required_plugin_key,
         required_plugins,
         row.try_get::<Option<String>, _>("w3c_traceparent")
-            .map_err(conn_err)?,
-        row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
+            .map_err(storage_error)?,
+        row.try_get::<i32, _>("reclaim_count")
+            .map_err(storage_error)? as u32,
         WorkerFlavorRevisionId::from_bytes(
             row.try_get::<Vec<u8>, _>("required_worker_flavor_id")
-                .map_err(conn_err)?
+                .map_err(storage_error)?
                 .try_into()
                 .map_err(|_| {
                     StorageError::Serialization(
@@ -198,7 +201,7 @@ impl PgJobDispatchQueue {
         .bind(&claim.scope().org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "job_dispatch",
@@ -239,7 +242,7 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(msg.required_worker_flavor_id.as_bytes().as_slice())
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         tracing::debug!(target: "nebula_storage::postgres", "job_dispatch: enqueued");
         Ok(())
     }
@@ -266,7 +269,7 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         // helper `enqueue` uses — so `$3` (text[]) and `$4` (jsonb) are always
         // derived from the same source and can never diverge.
         let available_jsonb = plugins_to_jsonb(available_plugins);
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let rows = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Processing', processed_by = $1, processed_at_ms = $2, \
@@ -293,12 +296,12 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(worker_flavor_id.as_bytes().as_slice())
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let claimed = rows
             .iter()
             .map(row_to_claim)
             .collect::<Result<Vec<_>, _>>()?;
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         tracing::debug!(
             target: "nebula_storage::postgres",
             claimed = claimed.len(),
@@ -322,7 +325,7 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -346,7 +349,7 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -378,7 +381,7 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         // `claim_generation` is deliberately untouched here: ownership is
         // cleared, but the counter only ever moves forward, so the next claim
@@ -395,7 +398,7 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         Ok(ReclaimOutcome {
             reclaimed,
@@ -414,7 +417,7 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(cutoff_ms)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         Ok(deleted)
     }

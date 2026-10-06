@@ -22,7 +22,7 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use moka::future::Cache;
 
-use crate::error::StorageError;
+use crate::StorageError;
 
 /// Cached HTTP response retained for idempotent replay.
 ///

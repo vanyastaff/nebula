@@ -141,7 +141,7 @@ pub(super) fn commit(
                 .iter()
                 .any(|row| state.queue.contains_key(&row.id))
         {
-            return Err(StorageError::Configuration(
+            return Err(StorageError::InvalidInput(
                 "control turn outbox collision".into(),
             ));
         }
@@ -189,7 +189,7 @@ pub(super) fn commit(
                 }
             },
             _ => {
-                return Err(StorageError::Configuration(
+                return Err(StorageError::InvalidInput(
                     "unsupported control turn transition".into(),
                 ));
             },

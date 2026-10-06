@@ -36,7 +36,7 @@ use nebula_storage_port::{Scope, StorageError};
 use sqlx::types::Json;
 use sqlx::{PgConnection, PgPool, Row};
 
-use super::execution::conn_err;
+use crate::sql_error::storage_error;
 
 // ── Users ─────────────────────────────────────────────────────────────────
 
@@ -57,24 +57,24 @@ impl PgUserStore {
 
 fn user_from_row(r: &sqlx::postgres::PgRow) -> Result<Arc<UserRow>, StorageError> {
     Ok(Arc::new(UserRow {
-        id: r.try_get("id").map_err(conn_err)?,
-        email: r.try_get("email").map_err(conn_err)?,
+        id: r.try_get("id").map_err(storage_error)?,
+        email: r.try_get("email").map_err(storage_error)?,
         email_verified_at: r.try_get("email_verified_at").ok(),
-        display_name: r.try_get("display_name").map_err(conn_err)?,
+        display_name: r.try_get("display_name").map_err(storage_error)?,
         avatar_url: r.try_get("avatar_url").ok(),
         password_hash: r.try_get("password_hash").ok(),
-        created_at: r.try_get("created_at").map_err(conn_err)?,
+        created_at: r.try_get("created_at").map_err(storage_error)?,
         last_login_at: r.try_get("last_login_at").ok(),
         locked_until: r.try_get("locked_until").ok(),
         failed_login_count: r
             .try_get::<i64, _>("failed_login_count")
-            .map_err(conn_err)? as i32,
-        mfa_enabled: r.try_get("mfa_enabled").map_err(conn_err)?,
+            .map_err(storage_error)? as i32,
+        mfa_enabled: r.try_get("mfa_enabled").map_err(storage_error)?,
         // The port schema column is `mfa_secret`; `mfa_secret_envelope` is the
         // domain field name. Reading the domain name here silently yielded
         // `None` for every user, and writing it below failed outright.
         mfa_secret_envelope: r.try_get("mfa_secret").ok(),
-        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
+        version: r.try_get::<i64, _>("version").map_err(storage_error)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
     }))
 }
@@ -112,7 +112,7 @@ impl UserStore for PgUserStore {
                     detail: format!("user {} or its active email already exists", row.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -121,7 +121,7 @@ impl UserStore for PgUserStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(user_from_row).transpose()
     }
 
@@ -133,7 +133,7 @@ impl UserStore for PgUserStore {
         .bind(email)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(user_from_row).transpose()
     }
 
@@ -160,7 +160,7 @@ impl UserStore for PgUserStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -190,18 +190,18 @@ impl PgOrgStore {
 
 fn org_from_row(r: &sqlx::postgres::PgRow) -> Result<OrgRow, StorageError> {
     Ok(OrgRow {
-        id: r.try_get("id").map_err(conn_err)?,
-        slug: r.try_get("slug").map_err(conn_err)?,
-        display_name: r.try_get("display_name").map_err(conn_err)?,
-        created_at: r.try_get("created_at").map_err(conn_err)?,
-        created_by: r.try_get("created_by").map_err(conn_err)?,
-        plan: r.try_get("plan").map_err(conn_err)?,
+        id: r.try_get("id").map_err(storage_error)?,
+        slug: r.try_get("slug").map_err(storage_error)?,
+        display_name: r.try_get("display_name").map_err(storage_error)?,
+        created_at: r.try_get("created_at").map_err(storage_error)?,
+        created_by: r.try_get("created_by").map_err(storage_error)?,
+        plan: r.try_get("plan").map_err(storage_error)?,
         billing_email: r.try_get("billing_email").ok(),
         settings: r
             .try_get::<Json<serde_json::Value>, _>("settings")
             .map(|j| j.0)
-            .map_err(conn_err)?,
-        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
+            .map_err(storage_error)?,
+        version: r.try_get::<i64, _>("version").map_err(storage_error)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
     })
 }
@@ -234,7 +234,7 @@ impl OrgStore for PgOrgStore {
                     detail: format!("org {} or its active slug already exists", row.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -243,7 +243,7 @@ impl OrgStore for PgOrgStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(org_from_row).transpose()
     }
 
@@ -252,7 +252,7 @@ impl OrgStore for PgOrgStore {
             .bind(slug)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(org_from_row).transpose()
     }
 
@@ -272,7 +272,7 @@ impl OrgStore for PgOrgStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -309,7 +309,7 @@ async fn lock_workspace_org(
         .bind(format!("tenant-workspace-org:{org_id}"))
         .execute(connection)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -321,7 +321,7 @@ async fn lock_workspace_identity(
         .bind(format!("tenant-workspace-id:{workspace_id}"))
         .execute(connection)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     Ok(())
 }
 
@@ -340,7 +340,7 @@ async fn reject_second_active_default(
     .bind(&row.id)
     .fetch_optional(connection)
     .await
-    .map_err(conn_err)?;
+    .map_err(storage_error)?;
     if let Some(existing_id) = existing {
         return Err(StorageError::Duplicate {
             entity: "workspace",
@@ -355,19 +355,19 @@ async fn reject_second_active_default(
 
 fn workspace_from_row(r: &sqlx::postgres::PgRow) -> Result<WorkspaceRow, StorageError> {
     Ok(WorkspaceRow {
-        id: r.try_get("id").map_err(conn_err)?,
-        org_id: r.try_get("org_id").map_err(conn_err)?,
-        slug: r.try_get("slug").map_err(conn_err)?,
-        display_name: r.try_get("display_name").map_err(conn_err)?,
+        id: r.try_get("id").map_err(storage_error)?,
+        org_id: r.try_get("org_id").map_err(storage_error)?,
+        slug: r.try_get("slug").map_err(storage_error)?,
+        display_name: r.try_get("display_name").map_err(storage_error)?,
         description: r.try_get("description").ok(),
-        created_at: r.try_get("created_at").map_err(conn_err)?,
-        created_by: r.try_get("created_by").map_err(conn_err)?,
-        is_default: r.try_get("is_default").map_err(conn_err)?,
+        created_at: r.try_get("created_at").map_err(storage_error)?,
+        created_by: r.try_get("created_by").map_err(storage_error)?,
+        is_default: r.try_get("is_default").map_err(storage_error)?,
         settings: r
             .try_get::<Json<serde_json::Value>, _>("settings")
             .map(|j| j.0)
-            .map_err(conn_err)?,
-        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
+            .map_err(storage_error)?,
+        version: r.try_get::<i64, _>("version").map_err(storage_error)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
     })
 }
@@ -375,7 +375,7 @@ fn workspace_from_row(r: &sqlx::postgres::PgRow) -> Result<WorkspaceRow, Storage
 #[async_trait::async_trait]
 impl WorkspaceStore for PgWorkspaceStore {
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         lock_workspace_org(&mut tx, &row.org_id).await?;
         lock_workspace_identity(&mut tx, &row.id).await?;
         reject_second_active_default(&mut tx, &row).await?;
@@ -399,7 +399,7 @@ impl WorkspaceStore for PgWorkspaceStore {
         .await;
         match res {
             Ok(_) => {
-                tx.commit().await.map_err(conn_err)?;
+                tx.commit().await.map_err(storage_error)?;
                 Ok(())
             },
             Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
@@ -411,7 +411,7 @@ impl WorkspaceStore for PgWorkspaceStore {
                     ),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -424,7 +424,7 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(workspace_from_row).transpose()
     }
 
@@ -441,7 +441,7 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(slug)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(workspace_from_row).transpose()
     }
 
@@ -453,12 +453,12 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(org_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(workspace_from_row).collect()
     }
 
     async fn update(&self, row: WorkspaceRow, expected_version: u64) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         lock_workspace_org(&mut tx, &row.org_id).await?;
         lock_workspace_identity(&mut tx, &row.id).await?;
         let res = sqlx::query(
@@ -478,10 +478,10 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(expected_version as i64)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             reject_second_active_default(&mut tx, &row).await?;
-            tx.commit().await.map_err(conn_err)?;
+            tx.commit().await.map_err(storage_error)?;
             return Ok(());
         }
         let current = sqlx::query_scalar::<_, i64>(
@@ -491,7 +491,7 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(&row.id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "workspace",
@@ -504,7 +504,7 @@ impl WorkspaceStore for PgWorkspaceStore {
     }
 
     async fn soft_delete(&self, org_id: &str, id: &str) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         lock_workspace_org(&mut tx, org_id).await?;
         lock_workspace_identity(&mut tx, id).await?;
         let res = sqlx::query(
@@ -516,9 +516,9 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(id)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
-            tx.commit().await.map_err(conn_err)?;
+            tx.commit().await.map_err(storage_error)?;
             Ok(())
         } else {
             Err(StorageError::not_found("workspace", id))
@@ -552,7 +552,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         let created_at = now_rfc3339();
         let org = org_values.materialize(created_at.clone());
         let workspace = workspace_values.materialize(org.id.clone(), created_at);
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         lock_workspace_org(&mut tx, &org.id).await?;
         let mut lock_keys = [
             format!("tenant-provisioning:id:{}", org.id),
@@ -564,7 +564,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
                 .bind(key)
                 .execute(&mut *tx)
                 .await
-                .map_err(conn_err)?;
+                .map_err(storage_error)?;
         }
         let org_rows = sqlx::query(
             "SELECT * FROM port_orgs WHERE id = $1 OR (slug = $2 AND deleted_at IS NULL) FOR UPDATE",
@@ -573,7 +573,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         .bind(&org.slug)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         lock_workspace_identity(&mut tx, &workspace.id).await?;
         let workspace_rows = sqlx::query(
             "SELECT * FROM port_workspaces WHERE id = $2 OR (org_id = $1 AND (slug = $3 OR is_default = TRUE) AND deleted_at IS NULL) FOR UPDATE",
@@ -583,7 +583,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         .bind(&workspace.slug)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let owner_row = sqlx::query(
             "SELECT * FROM port_memberships WHERE scope_kind = 'org' AND scope_id = $1 AND principal_kind = $2 AND principal_id = $3 FOR UPDATE",
         )
@@ -592,7 +592,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         .bind(request.owner_principal_id())
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
         let exact_org =
             org_rows.len() == 1 && org_values.matches_persisted(&org_from_row(&org_rows[0])?);
@@ -637,7 +637,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
                     TenantProvisioningConflict::ExistingState,
                 ));
             }
-            return Err(conn_err(error));
+            return Err(storage_error(error));
         }
         sqlx::query(
             "INSERT INTO port_workspaces (id, org_id, slug, display_name, description, created_at, created_by, is_default, settings, version, deleted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
@@ -655,7 +655,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         .bind(&workspace.deleted_at)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         sqlx::query(
             "INSERT INTO port_memberships (scope_kind, scope_id, principal_kind, principal_id, role, added_at, added_by) VALUES ('org', $1, $2, $3, $4, $5, $6)",
         )
@@ -667,8 +667,8 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         .bind(request.owner_added_by())
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+        .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(TenantProvisioningOutcome::Created)
     }
 }
@@ -690,21 +690,21 @@ impl PgMembershipStore {
 }
 
 fn membership_from_row(r: &sqlx::postgres::PgRow) -> Result<MembershipRow, StorageError> {
-    let scope_kind_txt: String = r.try_get("scope_kind").map_err(conn_err)?;
-    let principal_kind_txt: String = r.try_get("principal_kind").map_err(conn_err)?;
+    let scope_kind_txt: String = r.try_get("scope_kind").map_err(storage_error)?;
+    let principal_kind_txt: String = r.try_get("principal_kind").map_err(storage_error)?;
     Ok(MembershipRow {
         // Fail-closed: an unrecognized authz-domain value is a hard
         // deserialization error, never silently coerced.
         scope_kind: ScopeKind::parse(&scope_kind_txt).map_err(|bad| {
             StorageError::Serialization(format!("unknown membership scope_kind {bad:?}"))
         })?,
-        scope_id: r.try_get("scope_id").map_err(conn_err)?,
+        scope_id: r.try_get("scope_id").map_err(storage_error)?,
         principal_kind: PrincipalKind::parse(&principal_kind_txt).map_err(|bad| {
             StorageError::Serialization(format!("unknown membership principal_kind {bad:?}"))
         })?,
-        principal_id: r.try_get("principal_id").map_err(conn_err)?,
-        role: r.try_get("role").map_err(conn_err)?,
-        added_at: r.try_get("added_at").map_err(conn_err)?,
+        principal_id: r.try_get("principal_id").map_err(storage_error)?,
+        role: r.try_get("role").map_err(storage_error)?,
+        added_at: r.try_get("added_at").map_err(storage_error)?,
         added_by: r.try_get("added_by").ok(),
     })
 }
@@ -743,7 +743,7 @@ impl MembershipStore for PgMembershipStore {
         .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let mut snapshot = TenantMembershipSnapshot::default();
         for raw in &rows {
             let row = membership_from_row(raw)?;
@@ -778,7 +778,7 @@ impl MembershipStore for PgMembershipStore {
         .bind(principal_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter()
             .map(|raw| {
                 let row = membership_from_row(raw)?;
@@ -796,14 +796,14 @@ impl MembershipStore for PgMembershipStore {
         org_id: &str,
         workspace_id: &str,
     ) -> Result<Vec<WorkspaceMembership>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         lock_workspace_org(&mut tx, org_id).await?;
         let org =
             sqlx::query("SELECT id FROM port_orgs WHERE id = $1 AND deleted_at IS NULL FOR SHARE")
                 .bind(org_id)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(conn_err)?;
+                .map_err(storage_error)?;
         if org.is_none() {
             return Err(StorageError::not_found("workspace", workspace_id));
         }
@@ -815,7 +815,7 @@ impl MembershipStore for PgMembershipStore {
         .bind(workspace_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if workspace.is_none() {
             return Err(StorageError::not_found("workspace", workspace_id));
         }
@@ -825,8 +825,8 @@ impl MembershipStore for PgMembershipStore {
         .bind(workspace_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+        .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         rows.iter().map(workspace_membership_from_row).collect()
     }
 
@@ -835,13 +835,13 @@ impl MembershipStore for PgMembershipStore {
         &self,
         request: OrgMemberUpsert,
     ) -> Result<OrgMemberUpsertOutcome, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let org =
             sqlx::query("SELECT id FROM port_orgs WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
                 .bind(&request.org_id)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(conn_err)?;
+                .map_err(storage_error)?;
         if org.is_none() {
             return Err(StorageError::not_found("org", request.org_id));
         }
@@ -853,7 +853,7 @@ impl MembershipStore for PgMembershipStore {
         .bind(&request.org_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let mut privileged_other = false;
         for raw in &rows {
             let row = membership_from_row(raw)?;
@@ -880,8 +880,8 @@ impl MembershipStore for PgMembershipStore {
             .bind(&request.added_by)
             .execute(&mut *tx)
             .await
-            .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+            .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(OrgMemberUpsertOutcome::Applied)
     }
 
@@ -892,14 +892,14 @@ impl MembershipStore for PgMembershipStore {
         principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<OrgMemberRemoveOutcome, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         lock_workspace_org(&mut tx, org_id).await?;
         let org =
             sqlx::query("SELECT id FROM port_orgs WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
                 .bind(org_id)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(conn_err)?;
+                .map_err(storage_error)?;
         if org.is_none() {
             return Err(StorageError::not_found("org", org_id));
         }
@@ -909,7 +909,7 @@ impl MembershipStore for PgMembershipStore {
         .bind(org_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let mut found = false;
         let mut privileged_other = false;
         for raw in &rows {
@@ -931,7 +931,7 @@ impl MembershipStore for PgMembershipStore {
         .bind(org_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         for workspace_id in &workspace_ids {
             lock_workspace_identity(&mut tx, workspace_id).await?;
         }
@@ -941,14 +941,14 @@ impl MembershipStore for PgMembershipStore {
         .bind(org_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if ambiguous_workspace.is_some() {
             return Err(StorageError::Serialization(
                 "workspace identity is ambiguous".into(),
             ));
         }
         sqlx::query("DELETE FROM port_memberships WHERE scope_kind = 'org' AND scope_id = $1 AND principal_kind = $2 AND principal_id = $3")
-            .bind(org_id).bind(principal_kind.as_str()).bind(principal_id).execute(&mut *tx).await.map_err(conn_err)?;
+            .bind(org_id).bind(principal_kind.as_str()).bind(principal_id).execute(&mut *tx).await.map_err(storage_error)?;
         sqlx::query(
             "DELETE FROM port_memberships WHERE scope_kind = 'workspace' AND principal_kind = $1 AND principal_id = $2 AND scope_id IN (SELECT id FROM port_workspaces WHERE org_id = $3)",
         )
@@ -957,8 +957,8 @@ impl MembershipStore for PgMembershipStore {
         .bind(org_id)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+        .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(OrgMemberRemoveOutcome::Removed)
     }
 
@@ -967,20 +967,20 @@ impl MembershipStore for PgMembershipStore {
         &self,
         request: WorkspaceMemberUpsert,
     ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         lock_workspace_org(&mut tx, &request.org_id).await?;
         let org =
             sqlx::query("SELECT id FROM port_orgs WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
                 .bind(&request.org_id)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(conn_err)?;
+                .map_err(storage_error)?;
         if org.is_none() {
             return Err(StorageError::not_found("workspace", request.workspace_id));
         }
         lock_workspace_identity(&mut tx, &request.workspace_id).await?;
         let workspace = sqlx::query("SELECT id FROM port_workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = $2 AND other.org_id <> $1) FOR UPDATE")
-            .bind(&request.org_id).bind(&request.workspace_id).fetch_optional(&mut *tx).await.map_err(conn_err)?;
+            .bind(&request.org_id).bind(&request.workspace_id).fetch_optional(&mut *tx).await.map_err(storage_error)?;
         if workspace.is_none() {
             return Err(StorageError::not_found("workspace", request.workspace_id));
         }
@@ -992,7 +992,7 @@ impl MembershipStore for PgMembershipStore {
         .bind(&request.principal_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let Some(org_membership) = org_membership else {
             return Err(StorageError::not_found(
                 "org membership",
@@ -1015,8 +1015,8 @@ impl MembershipStore for PgMembershipStore {
             .bind(&request.added_by)
             .execute(&mut *tx)
             .await
-            .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+            .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(())
     }
 
@@ -1037,7 +1037,7 @@ impl MembershipStore for PgMembershipStore {
         .bind(principal_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(membership_from_row).transpose()
     }
 
@@ -1054,7 +1054,7 @@ impl MembershipStore for PgMembershipStore {
         .bind(scope_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(membership_from_row).collect()
     }
 
@@ -1066,20 +1066,20 @@ impl MembershipStore for PgMembershipStore {
         principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<bool, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         lock_workspace_org(&mut tx, org_id).await?;
         let org =
             sqlx::query("SELECT id FROM port_orgs WHERE id = $1 AND deleted_at IS NULL FOR UPDATE")
                 .bind(org_id)
                 .fetch_optional(&mut *tx)
                 .await
-                .map_err(conn_err)?;
+                .map_err(storage_error)?;
         if org.is_none() {
             return Ok(false);
         }
         lock_workspace_identity(&mut tx, workspace_id).await?;
         let workspace = sqlx::query("SELECT id FROM port_workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = $2 AND other.org_id <> $1) FOR UPDATE")
-            .bind(org_id).bind(workspace_id).fetch_optional(&mut *tx).await.map_err(conn_err)?;
+            .bind(org_id).bind(workspace_id).fetch_optional(&mut *tx).await.map_err(storage_error)?;
         if workspace.is_none() {
             return Ok(false);
         }
@@ -1096,8 +1096,8 @@ impl MembershipStore for PgMembershipStore {
         .bind(principal_id)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+        .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(result.rows_affected() != 0)
     }
 }
@@ -1138,30 +1138,30 @@ impl PgResourceStore {
 
 fn resource_from_row(r: &sqlx::postgres::PgRow) -> Result<ResourceRow, StorageError> {
     Ok(ResourceRow {
-        id: r.try_get("id").map_err(conn_err)?,
-        workspace_id: r.try_get("workspace_id").map_err(conn_err)?,
-        slug: r.try_get("slug").map_err(conn_err)?,
-        display_name: r.try_get("display_name").map_err(conn_err)?,
-        kind: r.try_get("kind").map_err(conn_err)?,
+        id: r.try_get("id").map_err(storage_error)?,
+        workspace_id: r.try_get("workspace_id").map_err(storage_error)?,
+        slug: r.try_get("slug").map_err(storage_error)?,
+        display_name: r.try_get("display_name").map_err(storage_error)?,
+        kind: r.try_get("kind").map_err(storage_error)?,
         config: r
             .try_get::<Json<serde_json::Value>, _>("config")
             .map(|j| j.0)
-            .map_err(conn_err)?,
+            .map_err(storage_error)?,
         credential_bindings: r
             .try_get::<Json<std::collections::BTreeMap<String, String>>, _>("credential_bindings")
             .map(|json| json.0)
-            .map_err(conn_err)?,
+            .map_err(storage_error)?,
         topology: r
             .try_get::<Option<Json<serde_json::Value>>, _>("topology")
             .map(|json| json.map(|json| json.0))
-            .map_err(conn_err)?,
+            .map_err(storage_error)?,
         resilience_override: r
             .try_get::<Option<Json<serde_json::Value>>, _>("resilience_override")
             .map(|json| json.map(|json| json.0))
-            .map_err(conn_err)?,
-        created_at: r.try_get("created_at").map_err(conn_err)?,
-        created_by: r.try_get("created_by").map_err(conn_err)?,
-        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
+            .map_err(storage_error)?,
+        created_at: r.try_get("created_at").map_err(storage_error)?,
+        created_by: r.try_get("created_by").map_err(storage_error)?,
+        version: r.try_get::<i64, _>("version").map_err(storage_error)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
     })
 }
@@ -1199,7 +1199,7 @@ impl ResourceStore for PgResourceStore {
                     detail: format!("resource {} or its active slug already exists", row.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -1214,7 +1214,7 @@ impl ResourceStore for PgResourceStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(resource_from_row).transpose()
     }
 
@@ -1228,7 +1228,7 @@ impl ResourceStore for PgResourceStore {
         .bind(&scope.org_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(resource_from_row).collect()
     }
 
@@ -1259,7 +1259,7 @@ impl ResourceStore for PgResourceStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -1272,7 +1272,7 @@ impl ResourceStore for PgResourceStore {
         .bind(&row.id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "resource",
@@ -1307,22 +1307,22 @@ impl PgTriggerStore {
 
 fn trigger_from_row(r: &sqlx::postgres::PgRow) -> Result<TriggerRow, StorageError> {
     Ok(TriggerRow {
-        id: r.try_get("id").map_err(conn_err)?,
-        workspace_id: r.try_get("workspace_id").map_err(conn_err)?,
-        workflow_id: r.try_get("workflow_id").map_err(conn_err)?,
-        slug: r.try_get("slug").map_err(conn_err)?,
-        display_name: r.try_get("display_name").map_err(conn_err)?,
-        kind: r.try_get("kind").map_err(conn_err)?,
+        id: r.try_get("id").map_err(storage_error)?,
+        workspace_id: r.try_get("workspace_id").map_err(storage_error)?,
+        workflow_id: r.try_get("workflow_id").map_err(storage_error)?,
+        slug: r.try_get("slug").map_err(storage_error)?,
+        display_name: r.try_get("display_name").map_err(storage_error)?,
+        kind: r.try_get("kind").map_err(storage_error)?,
         config: r
             .try_get::<Json<serde_json::Value>, _>("config")
             .map(|j| j.0)
-            .map_err(conn_err)?,
-        state: r.try_get("state").map_err(conn_err)?,
+            .map_err(storage_error)?,
+        state: r.try_get("state").map_err(storage_error)?,
         run_as: r.try_get("run_as").ok(),
         webhook_path: r.try_get("webhook_path").ok(),
-        created_at: r.try_get("created_at").map_err(conn_err)?,
-        created_by: r.try_get("created_by").map_err(conn_err)?,
-        version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
+        created_at: r.try_get("created_at").map_err(storage_error)?,
+        created_by: r.try_get("created_by").map_err(storage_error)?,
+        version: r.try_get::<i64, _>("version").map_err(storage_error)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
     })
 }
@@ -1362,7 +1362,7 @@ impl TriggerStore for PgTriggerStore {
                     detail: format!("trigger {} already exists", row.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -1377,7 +1377,7 @@ impl TriggerStore for PgTriggerStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(trigger_from_row).transpose()
     }
 
@@ -1391,7 +1391,7 @@ impl TriggerStore for PgTriggerStore {
         .bind(&scope.org_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(trigger_from_row).collect()
     }
 
@@ -1423,7 +1423,7 @@ impl TriggerStore for PgTriggerStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -1436,7 +1436,7 @@ impl TriggerStore for PgTriggerStore {
         .bind(&row.id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "trigger",
@@ -1471,26 +1471,26 @@ impl PgQuotaStore {
 
 fn quota_from_row(r: &sqlx::postgres::PgRow) -> Result<QuotaRow, StorageError> {
     Ok(QuotaRow {
-        org_id: r.try_get("org_id").map_err(conn_err)?,
-        plan: r.try_get("plan").map_err(conn_err)?,
+        org_id: r.try_get("org_id").map_err(storage_error)?,
+        plan: r.try_get("plan").map_err(storage_error)?,
         concurrent_executions_limit: r
             .try_get::<i64, _>("concurrent_executions_limit")
-            .map_err(conn_err)? as i32,
+            .map_err(storage_error)? as i32,
         executions_per_month_limit: r
             .try_get::<Option<i64>, _>("executions_per_month_limit")
-            .map_err(conn_err)?,
+            .map_err(storage_error)?,
         active_workflows_limit: r
             .try_get::<Option<i64>, _>("active_workflows_limit")
-            .map_err(conn_err)?
+            .map_err(storage_error)?
             .map(|v| v as i32),
         concurrent_executions: r
             .try_get::<i64, _>("concurrent_executions")
-            .map_err(conn_err)? as i32,
+            .map_err(storage_error)? as i32,
         executions_this_month: r
             .try_get::<i64, _>("executions_this_month")
-            .map_err(conn_err)?,
-        month_reset_at: r.try_get("month_reset_at").map_err(conn_err)?,
-        updated_at: r.try_get("updated_at").map_err(conn_err)?,
+            .map_err(storage_error)?,
+        month_reset_at: r.try_get("month_reset_at").map_err(storage_error)?,
+        updated_at: r.try_get("updated_at").map_err(storage_error)?,
     })
 }
 
@@ -1501,7 +1501,7 @@ impl QuotaStore for PgQuotaStore {
             .bind(org_id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(quota_from_row).transpose()
     }
 
@@ -1531,7 +1531,7 @@ impl QuotaStore for PgQuotaStore {
         .bind(&row.updated_at)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -1548,7 +1548,7 @@ impl QuotaStore for PgQuotaStore {
         .bind(org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if let Some(v) = updated {
             return Ok(v as i32);
         }
@@ -1560,7 +1560,7 @@ impl QuotaStore for PgQuotaStore {
         .bind(org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "quota",
@@ -1592,21 +1592,21 @@ impl PgAuditStore {
 
 fn audit_from_row(r: &sqlx::postgres::PgRow) -> Result<AuditLogRow, StorageError> {
     Ok(AuditLogRow {
-        id: r.try_get("id").map_err(conn_err)?,
-        org_id: r.try_get("org_id").map_err(conn_err)?,
+        id: r.try_get("id").map_err(storage_error)?,
+        org_id: r.try_get("org_id").map_err(storage_error)?,
         workspace_id: r.try_get("workspace_id").ok(),
-        actor_kind: r.try_get("actor_kind").map_err(conn_err)?,
+        actor_kind: r.try_get("actor_kind").map_err(storage_error)?,
         actor_id: r.try_get("actor_id").ok(),
-        action: r.try_get("action").map_err(conn_err)?,
+        action: r.try_get("action").map_err(storage_error)?,
         target_kind: r.try_get("target_kind").ok(),
         target_id: r.try_get("target_id").ok(),
         details: r
             .try_get::<Option<Json<serde_json::Value>>, _>("details")
-            .map_err(conn_err)?
+            .map_err(storage_error)?
             .map(|j| j.0),
         ip_address: r.try_get("ip_address").ok(),
         user_agent: r.try_get("user_agent").ok(),
-        emitted_at: r.try_get("emitted_at").map_err(conn_err)?,
+        emitted_at: r.try_get("emitted_at").map_err(storage_error)?,
     })
 }
 
@@ -1633,7 +1633,7 @@ impl AuditStore for PgAuditStore {
         .bind(&row.emitted_at)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -1650,7 +1650,7 @@ impl AuditStore for PgAuditStore {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(audit_from_row).collect()
     }
 }
@@ -1673,21 +1673,21 @@ impl PgBlobStore {
 
 fn blob_from_row(r: &sqlx::postgres::PgRow) -> Result<BlobRow, StorageError> {
     Ok(BlobRow {
-        id: r.try_get("id").map_err(conn_err)?,
-        workspace_id: r.try_get("workspace_id").map_err(conn_err)?,
+        id: r.try_get("id").map_err(storage_error)?,
+        workspace_id: r.try_get("workspace_id").map_err(storage_error)?,
         execution_id: r.try_get("execution_id").ok(),
-        kind: r.try_get("kind").map_err(conn_err)?,
+        kind: r.try_get("kind").map_err(storage_error)?,
         content_type: r.try_get("content_type").ok(),
-        size_bytes: r.try_get::<i64, _>("size_bytes").map_err(conn_err)?,
+        size_bytes: r.try_get::<i64, _>("size_bytes").map_err(storage_error)?,
         checksum: r.try_get("checksum").ok(),
-        storage_mode: r.try_get("storage_mode").map_err(conn_err)?,
+        storage_mode: r.try_get("storage_mode").map_err(storage_error)?,
         data: r.try_get("data").ok(),
         external_ref: r.try_get("external_ref").ok(),
         metadata: r
             .try_get::<Option<Json<serde_json::Value>>, _>("metadata")
-            .map_err(conn_err)?
+            .map_err(storage_error)?
             .map(|j| j.0),
-        created_at: r.try_get("created_at").map_err(conn_err)?,
+        created_at: r.try_get("created_at").map_err(storage_error)?,
         expires_at: r.try_get("expires_at").ok(),
     })
 }
@@ -1723,7 +1723,7 @@ impl BlobStore for PgBlobStore {
         .bind(&row.expires_at)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -1733,7 +1733,7 @@ impl BlobStore for PgBlobStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(blob_from_row).transpose()
     }
 
@@ -1743,7 +1743,7 @@ impl BlobStore for PgBlobStore {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         Ok(())
     }
 
@@ -1755,7 +1755,7 @@ impl BlobStore for PgBlobStore {
         .bind(now_rfc3339())
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(res.rows_affected())
     }
 }
@@ -1785,7 +1785,7 @@ async fn cas_disambiguate(
         .bind(id)
         .fetch_optional(pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     match current {
         Some(actual) => Err(StorageError::Conflict {
             entity,
@@ -1811,7 +1811,7 @@ async fn soft_delete_by_id(
         .bind(id)
         .execute(pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     if res.rows_affected() > 0 {
         Ok(())
     } else {
@@ -1839,7 +1839,7 @@ async fn soft_delete_scoped(
         .bind(id)
         .execute(pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     if res.rows_affected() > 0 {
         Ok(())
     } else {

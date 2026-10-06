@@ -24,7 +24,7 @@
 use sqlx::{Pool, Postgres};
 
 use crate::{
-    error::StorageError,
+    StorageError,
     pg::map_db_err,
     repos::{OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo},
     rows::OAuthStateRow,

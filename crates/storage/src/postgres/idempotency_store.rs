@@ -18,7 +18,7 @@ use nebula_storage_port::store::{IdempotencyStore, WebhookActivationStore};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
-use super::execution::conn_err;
+use crate::sql_error::storage_error;
 
 /// Parse an RFC 3339 expiry into epoch milliseconds. A malformed
 /// timestamp maps to `i64::MIN` (fail-closed: an unparsable expiry is
@@ -83,19 +83,19 @@ impl IdempotencyStore for PgIdempotencyStore {
         .bind(namespaced(scope, cache_key))
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let Some(row) = row else {
             return Ok(None);
         };
         Ok(Some(CachedRecord {
-            status: row.try_get::<i32, _>("status").map_err(conn_err)? as u16,
-            headers: row.try_get("headers").map_err(conn_err)?,
-            body: row.try_get("body").map_err(conn_err)?,
-            fingerprint: row.try_get("fingerprint").map_err(conn_err)?,
+            status: row.try_get::<i32, _>("status").map_err(storage_error)? as u16,
+            headers: row.try_get("headers").map_err(storage_error)?,
+            body: row.try_get("body").map_err(storage_error)?,
+            fingerprint: row.try_get("fingerprint").map_err(storage_error)?,
             // `expires_at` is the RFC 3339 text stored verbatim (same as
             // the SQLite backend), returned unchanged — not reconstructed
             // from a `TIMESTAMPTZ` round-trip.
-            expires_at: row.try_get("expires_at").map_err(conn_err)?,
+            expires_at: row.try_get("expires_at").map_err(storage_error)?,
         }))
     }
 
@@ -124,7 +124,7 @@ impl IdempotencyStore for PgIdempotencyStore {
         .bind(expires_at_ms(&record.expires_at))
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -138,7 +138,7 @@ impl IdempotencyStore for PgIdempotencyStore {
             .bind(now_ms)
             .execute(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         Ok(res.rows_affected())
     }
 }
@@ -192,7 +192,7 @@ impl WebhookActivationStore for PgWebhookActivationStore {
         .bind(&record.spec_trigger_id)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -212,7 +212,7 @@ impl WebhookActivationStore for PgWebhookActivationStore {
         .bind(slug)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.map(|r| {
             // Fail-closed: any unrecognised mode text defaults to Test.
             let mode = match r
@@ -231,9 +231,10 @@ impl WebhookActivationStore for PgWebhookActivationStore {
                 .ok()
                 .and_then(|v| v.try_into().ok())
                 .unwrap_or([0u8; 32]);
-            let trigger_id: String = r.try_get("trigger_id").map_err(conn_err)?;
-            let workflow_id: Option<String> = r.try_get("workflow_id").map_err(conn_err)?;
-            let spec_trigger_id: Option<String> = r.try_get("spec_trigger_id").map_err(conn_err)?;
+            let trigger_id: String = r.try_get("trigger_id").map_err(storage_error)?;
+            let workflow_id: Option<String> = r.try_get("workflow_id").map_err(storage_error)?;
+            let spec_trigger_id: Option<String> =
+                r.try_get("spec_trigger_id").map_err(storage_error)?;
             // `WebhookActivationRecord` is `#[non_exhaustive]`; construct
             // via the public constructor then overwrite the non-default
             // fields through their public field accessors.
@@ -257,7 +258,7 @@ impl WebhookActivationStore for PgWebhookActivationStore {
         .bind(trigger_id)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -280,16 +281,18 @@ impl WebhookActivationStore for PgWebhookActivationStore {
         .bind(token_hash.as_ref())
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let Some(r) = row else { return Ok(None) };
         let scope = Scope::new(
-            r.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-            r.try_get::<String, _>("org_id").map_err(conn_err)?,
+            r.try_get::<String, _>("workspace_id")
+                .map_err(storage_error)?,
+            r.try_get::<String, _>("org_id").map_err(storage_error)?,
         );
-        let slug: String = r.try_get("slug").map_err(conn_err)?;
-        let trigger_id: String = r.try_get("trigger_id").map_err(conn_err)?;
-        let workflow_id: Option<String> = r.try_get("workflow_id").map_err(conn_err)?;
-        let spec_trigger_id: Option<String> = r.try_get("spec_trigger_id").map_err(conn_err)?;
+        let slug: String = r.try_get("slug").map_err(storage_error)?;
+        let trigger_id: String = r.try_get("trigger_id").map_err(storage_error)?;
+        let workflow_id: Option<String> = r.try_get("workflow_id").map_err(storage_error)?;
+        let spec_trigger_id: Option<String> =
+            r.try_get("spec_trigger_id").map_err(storage_error)?;
         // Fail-closed: unrecognised mode → Test.
         let mode = match r
             .try_get::<Option<String>, _>("webhook_mode")
@@ -324,17 +327,19 @@ impl WebhookActivationStore for PgWebhookActivationStore {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let mut out = Vec::with_capacity(rows.len());
         for r in rows {
             let scope = Scope::new(
-                r.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-                r.try_get::<String, _>("org_id").map_err(conn_err)?,
+                r.try_get::<String, _>("workspace_id")
+                    .map_err(storage_error)?,
+                r.try_get::<String, _>("org_id").map_err(storage_error)?,
             );
-            let slug: String = r.try_get("slug").map_err(conn_err)?;
-            let trigger_id: String = r.try_get("trigger_id").map_err(conn_err)?;
-            let workflow_id: Option<String> = r.try_get("workflow_id").map_err(conn_err)?;
-            let spec_trigger_id: Option<String> = r.try_get("spec_trigger_id").map_err(conn_err)?;
+            let slug: String = r.try_get("slug").map_err(storage_error)?;
+            let trigger_id: String = r.try_get("trigger_id").map_err(storage_error)?;
+            let workflow_id: Option<String> = r.try_get("workflow_id").map_err(storage_error)?;
+            let spec_trigger_id: Option<String> =
+                r.try_get("spec_trigger_id").map_err(storage_error)?;
             let mode = match r
                 .try_get::<Option<String>, _>("webhook_mode")
                 .ok()

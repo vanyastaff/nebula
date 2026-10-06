@@ -18,28 +18,31 @@ use nebula_storage_port::store::{
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
-use super::execution::conn_err;
+use crate::sql_error::storage_error;
 
 fn decode_claim(row: sqlx::postgres::PgRow) -> Result<ControlClaim, StorageError> {
-    let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(conn_err)?)?;
-    let generation = row.try_get("claim_generation").map_err(conn_err)?;
+    let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(storage_error)?)?;
+    let generation = row.try_get("claim_generation").map_err(storage_error)?;
     let resume_target = row
         .try_get::<Option<String>, _>("resume_target")
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .as_deref()
         .map(serde_json::from_str)
         .transpose()
         .map_err(|error| StorageError::Serialization(error.to_string()))?;
     let msg = ControlMsg {
         id,
-        execution_id: row.try_get("execution_id").map_err(conn_err)?,
+        execution_id: row.try_get("execution_id").map_err(storage_error)?,
         scope: Scope::new(
-            row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-            row.try_get::<String, _>("org_id").map_err(conn_err)?,
+            row.try_get::<String, _>("workspace_id")
+                .map_err(storage_error)?,
+            row.try_get::<String, _>("org_id").map_err(storage_error)?,
         ),
-        command: decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
-        w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
-        reclaim_count: row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
+        command: decode_command(&row.try_get::<String, _>("command").map_err(storage_error)?)?,
+        w3c_traceparent: row.try_get("w3c_traceparent").map_err(storage_error)?,
+        reclaim_count: row
+            .try_get::<i32, _>("reclaim_count")
+            .map_err(storage_error)? as u32,
         resume_target,
     };
     let token = ControlClaimToken::new(id, decode_generation(generation, &id)?, msg.scope.clone());
@@ -78,7 +81,7 @@ impl PgControlQueue {
         .bind(&claim.scope().org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "control_queue",
@@ -179,7 +182,7 @@ impl ControlQueue for PgControlQueue {
         .bind(resume_target_json)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -195,7 +198,7 @@ impl ControlQueue for PgControlQueue {
         // Rust (`now()` SQL would be `TIMESTAMPTZ`) so both dialects
         // stamp and compare the reclaim clock identically.
         let now_ms = Utc::now().timestamp_millis();
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let rows = sqlx::query(
             "UPDATE port_control_queue SET status = 'Processing', \
                     processed_by = $1, processed_at_ms = $2, \
@@ -216,12 +219,12 @@ impl ControlQueue for PgControlQueue {
         .bind(i64::from(batch_size.clamp(1, 256)))
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let claims = rows
             .into_iter()
             .map(decode_claim)
             .collect::<Result<Vec<_>, StorageError>>()?;
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(claims)
     }
 
@@ -231,7 +234,7 @@ impl ControlQueue for PgControlQueue {
         batch_size: u32,
         worker_flavor: nebula_core::WorkerFlavorRevisionId,
     ) -> Result<Vec<ControlClaim>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let rows = sqlx::query(
             "UPDATE port_control_queue SET status = 'Processing', \
                  processed_by = $1, processed_at_ms = $2, \
@@ -254,12 +257,12 @@ impl ControlQueue for PgControlQueue {
         .bind(worker_flavor.as_bytes().as_slice())
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let claims = rows
             .into_iter()
             .map(decode_claim)
             .collect::<Result<Vec<_>, StorageError>>()?;
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         tracing::debug!(
             claimed = claims.len(),
             "claimed exact-flavor control commands"
@@ -279,7 +282,7 @@ impl ControlQueue for PgControlQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -305,7 +308,7 @@ impl ControlQueue for PgControlQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -331,7 +334,7 @@ impl ControlQueue for PgControlQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -368,7 +371,7 @@ impl ControlQueue for PgControlQueue {
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         // `OR command = 'Resume'` is the budget-exemption complement of the
         // exhaust branch (ADR-0099 W-S3b): an exempt Resume at
@@ -385,7 +388,7 @@ impl ControlQueue for PgControlQueue {
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         Ok(ReclaimOutcome {
             reclaimed,
@@ -428,7 +431,7 @@ impl PgJournalReader {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(row.is_some())
     }
 }
@@ -450,12 +453,12 @@ impl ExecutionJournalReader for PgJournalReader {
         .bind(execution_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.into_iter()
             .map(|r| {
                 Ok(JournalEntry {
-                    seq: Some(r.try_get::<i64, _>("seq").map_err(conn_err)? as u64),
-                    payload: r.try_get("payload").map_err(conn_err)?,
+                    seq: Some(r.try_get::<i64, _>("seq").map_err(storage_error)? as u64),
+                    payload: r.try_get("payload").map_err(storage_error)?,
                 })
             })
             .collect()
@@ -478,12 +481,12 @@ impl ExecutionJournalReader for PgJournalReader {
         .bind(i64::try_from(after).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.into_iter()
             .map(|r| {
                 Ok(JournalEntry {
-                    seq: Some(r.try_get::<i64, _>("seq").map_err(conn_err)? as u64),
-                    payload: r.try_get("payload").map_err(conn_err)?,
+                    seq: Some(r.try_get::<i64, _>("seq").map_err(storage_error)? as u64),
+                    payload: r.try_get("payload").map_err(storage_error)?,
                 })
             })
             .collect()

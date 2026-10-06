@@ -21,7 +21,7 @@
 
 use sqlx::{Pool, Postgres};
 
-use crate::{error::StorageError, pg::map_db_err, repos::ExternalIdentityRepo};
+use crate::{StorageError, pg::map_db_err, repos::ExternalIdentityRepo};
 
 /// Postgres-backed `external_identities` repository.
 #[derive(Clone)]

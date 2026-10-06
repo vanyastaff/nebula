@@ -38,7 +38,6 @@
 mod control_turn;
 /// Credential persistence (encryption, audit, refresh claims, pending state).
 pub mod credential;
-mod error;
 /// Backend-independent execution-lease fence, shared by every adapter that
 /// writes under a turn's lease so the fence cannot drift between ports.
 mod execution_fence;
@@ -83,6 +82,9 @@ mod revision_catalog;
 pub mod rows;
 /// Domain-separated lookup digests for opaque browser-session tokens.
 pub mod session_token;
+/// The one `sqlx` error → `StorageError` mapping of the SQL backends.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod sql_error;
 /// SQLite adapter implementing the `nebula-storage-port` contract
 /// (dev / edge single-writer; spec §5 SQLite parity boundary).
 #[cfg(feature = "sqlite")]
@@ -92,7 +94,6 @@ mod start_materialization;
 pub mod test_support;
 mod workflow_activation;
 
-pub use error::StorageError;
 pub use inmem::{
     InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
     InMemoryIdempotencyGuard, InMemoryIdempotencyStore, InMemoryJournalReader,
@@ -100,6 +101,8 @@ pub use inmem::{
     InMemoryResourceStatusStore, InMemoryResumeProducer, InMemoryResumeTokenStore,
     InMemoryWebhookActivationStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
 };
+/// The one storage error of the crate: the port's.
+pub use nebula_storage_port::StorageError;
 #[cfg(feature = "postgres")]
 pub use postgres::{PgResourceRuntime, PgResourceStatusStore};
 #[cfg(feature = "sqlite")]

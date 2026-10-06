@@ -123,7 +123,10 @@ pub use resource_subscription::{
     ResourceSubscriptionValueError, ResourceSubscriptionVersion,
     TransitionResourceSubscriptionRequest,
 };
-pub use resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
+pub use resume_token::{
+    ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError,
+    UnknownResumeTokenWaitKind,
+};
 pub use revision_catalog::{
     BeginDrainOutcome, ExecutablePlanRecordFormat, PlanFlavorRevisionIds, PlanFlavorRevisionRecord,
     PlanFlavorRevisionTarget, RevisionCatalogError, RevisionInsertOutcome, RevisionRecordBytes,

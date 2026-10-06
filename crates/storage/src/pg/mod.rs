@@ -15,7 +15,7 @@
 
 use sqlx::Error as SqlxError;
 
-use crate::error::StorageError;
+use crate::StorageError;
 
 mod external_identity;
 mod idempotency;
@@ -44,17 +44,20 @@ pub use verification_token::PgVerificationTokenRepo;
 
 /// Translate an [`sqlx::Error`] into a [`StorageError`].
 ///
-/// Most errors become [`StorageError::Connection`]. Unique-constraint
-/// violations (SQLSTATE `23505`) become [`StorageError::Duplicate`]
-/// with the constraint detail preserved.
+/// The shared classification ([`crate::sql_error::storage_error`]), with a
+/// unique violation attributed to `entity` and its constraint name — never
+/// the backend message, which can quote the colliding value.
 pub(crate) fn map_db_err(entity: &'static str, err: SqlxError) -> StorageError {
     if let SqlxError::Database(db_err) = &err
-        && db_err.code().as_deref() == Some("23505")
+        && db_err.kind() == sqlx::error::ErrorKind::UniqueViolation
     {
         return StorageError::Duplicate {
             entity,
-            detail: db_err.message().to_string(),
+            detail: format!(
+                "unique constraint `{}`",
+                db_err.constraint().unwrap_or("unnamed")
+            ),
         };
     }
-    StorageError::Connection(err.to_string())
+    crate::sql_error::storage_error(err)
 }

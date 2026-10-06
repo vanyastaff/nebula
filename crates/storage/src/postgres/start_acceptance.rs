@@ -11,8 +11,9 @@ use nebula_storage_port::store::{
 };
 use sqlx::{PgPool, Row};
 
-use super::execution::{conn_err, insert_created_execution};
+use super::execution::insert_created_execution;
 use crate::revision_catalog::ArtifactLifecycle;
+use crate::sql_error::storage_error;
 
 /// Postgres-backed owner of keyed start acceptance.
 #[derive(Clone, Debug)]
@@ -36,7 +37,7 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
         scope: &nebula_storage_port::Scope,
         key: &nebula_storage_port::dto::TriggerStartKey<'_>,
     ) -> Result<Option<String>, StorageError> {
-        sqlx::query_scalar("SELECT execution_id FROM port_trigger_dedup_inbox WHERE workspace_id = $1 AND org_id = $2 AND trigger_id = $3 AND event_id = $4").bind(&scope.workspace_id).bind(&scope.org_id).bind(key.trigger_id()).bind(key.event_id()).fetch_optional(&self.pool).await.map_err(conn_err)
+        sqlx::query_scalar("SELECT execution_id FROM port_trigger_dedup_inbox WHERE workspace_id = $1 AND org_id = $2 AND trigger_id = $3 AND event_id = $4").bind(&scope.workspace_id).bind(&scope.org_id).bind(key.trigger_id()).bind(key.event_id()).fetch_optional(&self.pool).await.map_err(storage_error)
     }
 
     #[tracing::instrument(skip_all, fields(execution_id = %start.execution_id()), err)]
@@ -158,25 +159,25 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
         key: &str,
     ) -> Result<Option<nebula_storage_port::dto::StartReservation>, StorageError> {
         let row = sqlx::query("SELECT fingerprint_version, fingerprint, execution_id FROM port_start_key_reservations WHERE workspace_id = $1 AND org_id = $2 AND start_key = $3")
-            .bind(&scope.workspace_id).bind(&scope.org_id).bind(key).fetch_optional(&self.pool).await.map_err(conn_err)?;
+            .bind(&scope.workspace_id).bind(&scope.org_id).bind(key).fetch_optional(&self.pool).await.map_err(storage_error)?;
         row.map(|row| {
             let version = row
                 .try_get::<i32, _>("fingerprint_version")
-                .map_err(conn_err)?
+                .map_err(storage_error)?
                 .try_into()
                 .map_err(|_| {
                     StorageError::Internal("invalid stored start fingerprint version".into())
                 })?;
             let digest = row
                 .try_get::<Vec<u8>, _>("fingerprint")
-                .map_err(conn_err)?
+                .map_err(storage_error)?
                 .try_into()
                 .map_err(|_| {
                     StorageError::Internal("invalid stored start fingerprint size".into())
                 })?;
             Ok(nebula_storage_port::dto::StartReservation::new(
                 nebula_storage_port::store::StartFingerprint::new(version, digest),
-                row.try_get("execution_id").map_err(conn_err)?,
+                row.try_get("execution_id").map_err(storage_error)?,
             ))
         })
         .transpose()
@@ -188,27 +189,27 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
         execution_id: &str,
     ) -> Result<Option<nebula_storage_port::dto::StoredContractBundle>, StorageError> {
         let row = sqlx::query("SELECT bundle_id, executable_plan_id, worker_flavor_id, record_format, record_bytes FROM port_execution_contract_bundles WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3")
-            .bind(execution_id).bind(&scope.workspace_id).bind(&scope.org_id).fetch_optional(&self.pool).await.map_err(conn_err)?;
+            .bind(execution_id).bind(&scope.workspace_id).bind(&scope.org_id).fetch_optional(&self.pool).await.map_err(storage_error)?;
         row.map(|row| {
             let invalid =
                 || StorageError::Internal("invalid stored execution contract bundle".into());
-            let format: String = row.try_get("record_format").map_err(conn_err)?;
+            let format: String = row.try_get("record_format").map_err(storage_error)?;
             let bundle: [u8; 16] = row
                 .try_get::<Vec<u8>, _>("bundle_id")
-                .map_err(conn_err)?
+                .map_err(storage_error)?
                 .try_into()
                 .map_err(|_| invalid())?;
             let plan: [u8; 32] = row
                 .try_get::<Vec<u8>, _>("executable_plan_id")
-                .map_err(conn_err)?
+                .map_err(storage_error)?
                 .try_into()
                 .map_err(|_| invalid())?;
             let flavor: [u8; 32] = row
                 .try_get::<Vec<u8>, _>("worker_flavor_id")
-                .map_err(conn_err)?
+                .map_err(storage_error)?
                 .try_into()
                 .map_err(|_| invalid())?;
-            let bytes = row.try_get("record_bytes").map_err(conn_err)?;
+            let bytes = row.try_get("record_bytes").map_err(storage_error)?;
             let identity = nebula_storage_port::store::StartContractIdentity::new(
                 nebula_core::ExecutionContractBundleId::from_bytes(bundle),
                 nebula_storage_port::PlanFlavorRevisionIds::new(
@@ -250,7 +251,7 @@ impl StartReservationMaintenance for PgStartAcceptanceStore {
         .bind(retention_ms)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         Ok(deleted)
     }
@@ -274,16 +275,18 @@ async fn admit_exact_pair(
     .bind(plan_id.as_bytes().as_slice())
     .fetch_optional(&mut **tx)
     .await
-    .map_err(conn_err)?
+    .map_err(storage_error)?
     else {
         return Ok(Some(StartRevisionRejection::PlanUnavailable));
     };
 
-    let pinned_flavor: Vec<u8> = plan_row.try_get("worker_flavor_id").map_err(conn_err)?;
+    let pinned_flavor: Vec<u8> = plan_row
+        .try_get("worker_flavor_id")
+        .map_err(storage_error)?;
     if pinned_flavor != worker_flavor_id.as_bytes().as_slice() {
         return Ok(Some(StartRevisionRejection::PairNotAdmitted));
     }
-    let plan_lifecycle: String = plan_row.try_get("lifecycle").map_err(conn_err)?;
+    let plan_lifecycle: String = plan_row.try_get("lifecycle").map_err(storage_error)?;
     match ArtifactLifecycle::from_text(&plan_lifecycle) {
         Some(ArtifactLifecycle::Active) => {},
         // Draining, deleted, or a lifecycle value this binary cannot decode:
@@ -297,11 +300,11 @@ async fn admit_exact_pair(
     .bind(worker_flavor_id.as_bytes().as_slice())
     .fetch_optional(&mut **tx)
     .await
-    .map_err(conn_err)?
+    .map_err(storage_error)?
     else {
         return Ok(Some(StartRevisionRejection::WorkerFlavorUnavailable));
     };
-    let flavor_lifecycle: String = flavor_row.try_get("lifecycle").map_err(conn_err)?;
+    let flavor_lifecycle: String = flavor_row.try_get("lifecycle").map_err(storage_error)?;
     match ArtifactLifecycle::from_text(&flavor_lifecycle) {
         Some(ArtifactLifecycle::Active) => Ok(None),
         _ => Ok(Some(StartRevisionRejection::PairNotAdmitted)),

@@ -36,7 +36,7 @@ use nebula_storage_port::store::{
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqliteConnection, SqlitePool};
 
-use super::execution::conn_err;
+use crate::sql_error::storage_error;
 
 /// Decode a NOT NULL column, returning `Err` when the column value is SQL NULL.
 ///
@@ -44,7 +44,7 @@ use super::execution::conn_err;
 /// for `String`, `0` for `i64`, …) because the SQLite C API returns 0/empty
 /// when `sqlite3_value_*` is called on a NULL cell. Calling `try_get::<T>`
 /// therefore returns `Ok(default)` on NULL — the error never fires, so a plain
-/// `.map_err(conn_err)?` silently accepts NULL as the default. We must decode
+/// `.map_err(storage_error)?` silently accepts NULL as the default. We must decode
 /// as `Option<T>` instead (sqlx correctly yields `None` for NULL regardless of
 /// the inner type) and reject `None` explicitly.
 fn required<'r, T>(row: &'r sqlx::sqlite::SqliteRow, col: &'static str) -> Result<T, StorageError>
@@ -52,7 +52,7 @@ where
     T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>,
 {
     row.try_get::<Option<T>, _>(col)
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .ok_or_else(|| {
             StorageError::Connection(format!(
                 "NOT NULL column '{col}' contained SQL NULL (schema/data inconsistency)"
@@ -67,7 +67,7 @@ fn optional<'r, T>(
 where
     T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>,
 {
-    row.try_get::<Option<T>, _>(col).map_err(conn_err)
+    row.try_get::<Option<T>, _>(col).map_err(storage_error)
 }
 
 fn json_to_text(v: &serde_json::Value) -> String {
@@ -162,7 +162,7 @@ impl UserStore for SqliteUserStore {
                     detail: format!("user {} or its active email already exists", row.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -171,7 +171,7 @@ impl UserStore for SqliteUserStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(user_from_row).transpose()
     }
 
@@ -183,7 +183,7 @@ impl UserStore for SqliteUserStore {
         .bind(email)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(user_from_row).transpose()
     }
 
@@ -210,7 +210,7 @@ impl UserStore for SqliteUserStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -283,7 +283,7 @@ impl OrgStore for SqliteOrgStore {
                     detail: format!("org {} or its active slug already exists", row.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -292,7 +292,7 @@ impl OrgStore for SqliteOrgStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(org_from_row).transpose()
     }
 
@@ -301,7 +301,7 @@ impl OrgStore for SqliteOrgStore {
             .bind(slug)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(org_from_row).transpose()
     }
 
@@ -321,7 +321,7 @@ impl OrgStore for SqliteOrgStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -383,7 +383,7 @@ async fn reject_second_active_default(
     .bind(&row.id)
     .fetch_optional(connection)
     .await
-    .map_err(conn_err)?;
+    .map_err(storage_error)?;
     if let Some(existing_id) = existing {
         return Err(StorageError::Duplicate {
             entity: "workspace",
@@ -403,7 +403,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         reject_second_active_default(&mut tx, &row).await?;
         let res = sqlx::query(
             "INSERT INTO port_workspaces (id, org_id, slug, display_name, \
@@ -425,7 +425,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .await;
         match res {
             Ok(_) => {
-                tx.commit().await.map_err(conn_err)?;
+                tx.commit().await.map_err(storage_error)?;
                 Ok(())
             },
             Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
@@ -437,7 +437,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
                     ),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -450,7 +450,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(workspace_from_row).transpose()
     }
 
@@ -467,7 +467,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(slug)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(workspace_from_row).transpose()
     }
 
@@ -479,7 +479,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(org_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(workspace_from_row).collect()
     }
 
@@ -488,7 +488,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         let res = sqlx::query(
             "UPDATE port_workspaces SET slug = ?, display_name = ?, \
              description = ?, is_default = ?, settings = ?, version = ? \
@@ -505,10 +505,10 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(expected_version as i64)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             reject_second_active_default(&mut tx, &row).await?;
-            tx.commit().await.map_err(conn_err)?;
+            tx.commit().await.map_err(storage_error)?;
             return Ok(());
         }
         let current = sqlx::query_scalar::<_, i64>(
@@ -518,7 +518,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(&row.id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "workspace",
@@ -535,7 +535,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         let res = sqlx::query(
             "UPDATE port_workspaces SET deleted_at = ? \
              WHERE org_id = ? AND id = ? AND deleted_at IS NULL",
@@ -545,9 +545,9 @@ impl WorkspaceStore for SqliteWorkspaceStore {
         .bind(id)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
-            tx.commit().await.map_err(conn_err)?;
+            tx.commit().await.map_err(storage_error)?;
             Ok(())
         } else {
             Err(StorageError::not_found("workspace", id))
@@ -585,7 +585,7 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         let org_rows = sqlx::query(
             "SELECT * FROM port_orgs WHERE id = ?1 OR (slug = ?2 AND deleted_at IS NULL)",
         )
@@ -593,7 +593,7 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         .bind(&org.slug)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let workspace_rows = sqlx::query(
             "SELECT * FROM port_workspaces WHERE id = ?2 OR (org_id = ?1 AND (slug = ?3 OR is_default = 1) AND deleted_at IS NULL)",
         )
@@ -602,7 +602,7 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         .bind(&workspace.slug)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let owner_row = sqlx::query(
             "SELECT * FROM port_memberships WHERE scope_kind = 'org' AND scope_id = ?1 AND principal_kind = ?2 AND principal_id = ?3",
         )
@@ -611,7 +611,7 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         .bind(request.owner_principal_id())
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
         let exact_org =
             org_rows.len() == 1 && org_values.matches_persisted(&org_from_row(&org_rows[0])?);
@@ -650,7 +650,7 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         .bind(&org.deleted_at)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         sqlx::query(
             "INSERT INTO port_workspaces (id, org_id, slug, display_name, description, created_at, created_by, is_default, settings, version, deleted_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )
@@ -667,7 +667,7 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         .bind(&workspace.deleted_at)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         sqlx::query(
             "INSERT INTO port_memberships (scope_kind, scope_id, principal_kind, principal_id, role, added_at, added_by) VALUES ('org', ?1, ?2, ?3, ?4, ?5, ?6)",
         )
@@ -679,8 +679,8 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         .bind(request.owner_added_by())
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+        .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(TenantProvisioningOutcome::Created)
     }
 }
@@ -757,7 +757,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let mut snapshot = TenantMembershipSnapshot::default();
         for raw in &rows {
             let row = membership_from_row(raw)?;
@@ -792,7 +792,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(principal_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter()
             .map(|raw| {
                 let row = membership_from_row(raw)?;
@@ -810,7 +810,7 @@ impl MembershipStore for SqliteMembershipStore {
         org_id: &str,
         workspace_id: &str,
     ) -> Result<Vec<WorkspaceMembership>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let workspace = sqlx::query(
             "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = ?1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
         )
@@ -818,7 +818,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(workspace_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if workspace.is_none() {
             return Err(StorageError::not_found("workspace", workspace_id));
         }
@@ -828,8 +828,8 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(workspace_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+        .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         rows.iter().map(workspace_membership_from_row).collect()
     }
 
@@ -842,12 +842,12 @@ impl MembershipStore for SqliteMembershipStore {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         let org = sqlx::query("SELECT id FROM port_orgs WHERE id = ?1 AND deleted_at IS NULL")
             .bind(&request.org_id)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         if org.is_none() {
             return Err(StorageError::not_found("org", request.org_id));
         }
@@ -858,7 +858,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(&request.org_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let mut privileged_other = false;
         for raw in &rows {
             let row = membership_from_row(raw)?;
@@ -885,8 +885,8 @@ impl MembershipStore for SqliteMembershipStore {
             .bind(&request.added_by)
             .execute(&mut *tx)
             .await
-            .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+            .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(OrgMemberUpsertOutcome::Applied)
     }
 
@@ -901,12 +901,12 @@ impl MembershipStore for SqliteMembershipStore {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         let org = sqlx::query("SELECT id FROM port_orgs WHERE id = ?1 AND deleted_at IS NULL")
             .bind(org_id)
             .fetch_optional(&mut *tx)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         if org.is_none() {
             return Err(StorageError::not_found("org", org_id));
         }
@@ -916,7 +916,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(org_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let mut found = false;
         let mut privileged_other = false;
         for raw in &rows {
@@ -938,14 +938,14 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(org_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if ambiguous_workspace.is_some() {
             return Err(StorageError::Serialization(
                 "workspace identity is ambiguous".into(),
             ));
         }
         sqlx::query("DELETE FROM port_memberships WHERE scope_kind = 'org' AND scope_id = ?1 AND principal_kind = ?2 AND principal_id = ?3")
-            .bind(org_id).bind(principal_kind.as_str()).bind(principal_id).execute(&mut *tx).await.map_err(conn_err)?;
+            .bind(org_id).bind(principal_kind.as_str()).bind(principal_id).execute(&mut *tx).await.map_err(storage_error)?;
         sqlx::query(
             "DELETE FROM port_memberships WHERE scope_kind = 'workspace' AND principal_kind = ?1 AND principal_id = ?2 AND scope_id IN (SELECT id FROM port_workspaces WHERE org_id = ?3)",
         )
@@ -954,8 +954,8 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(org_id)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+        .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(OrgMemberRemoveOutcome::Removed)
     }
 
@@ -968,7 +968,7 @@ impl MembershipStore for SqliteMembershipStore {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         let workspace = sqlx::query(
             "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = ?1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
         )
@@ -976,7 +976,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(&request.workspace_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if workspace.is_none() {
             return Err(StorageError::not_found("workspace", request.workspace_id));
         }
@@ -988,7 +988,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(&request.principal_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let Some(org_membership) = org_membership else {
             return Err(StorageError::not_found(
                 "org membership",
@@ -1011,8 +1011,8 @@ impl MembershipStore for SqliteMembershipStore {
             .bind(&request.added_by)
             .execute(&mut *tx)
             .await
-            .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+            .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(())
     }
 
@@ -1033,7 +1033,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(principal_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(membership_from_row).transpose()
     }
 
@@ -1050,7 +1050,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(scope_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(membership_from_row).collect()
     }
 
@@ -1066,7 +1066,7 @@ impl MembershipStore for SqliteMembershipStore {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         let workspace = sqlx::query(
             "SELECT id FROM port_workspaces WHERE org_id = ?1 AND id = ?2 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM port_orgs o WHERE o.id = ?1 AND o.deleted_at IS NULL) AND NOT EXISTS (SELECT 1 FROM port_workspaces other WHERE other.id = ?2 AND other.org_id <> ?1)",
         )
@@ -1074,7 +1074,7 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(workspace_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if workspace.is_none() {
             return Ok(false);
         }
@@ -1091,8 +1091,8 @@ impl MembershipStore for SqliteMembershipStore {
         .bind(principal_id)
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
+        .map_err(storage_error)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(result.rows_affected() != 0)
     }
 }
@@ -1158,7 +1158,7 @@ fn optional_json(
     column: &str,
 ) -> Result<Option<serde_json::Value>, StorageError> {
     r.try_get::<Option<String>, _>(column)
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .as_deref()
         .map(text_to_json)
         .transpose()
@@ -1200,7 +1200,7 @@ impl ResourceStore for SqliteResourceStore {
                     detail: format!("resource {} or its active slug already exists", row.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -1215,7 +1215,7 @@ impl ResourceStore for SqliteResourceStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(resource_from_row).transpose()
     }
 
@@ -1229,7 +1229,7 @@ impl ResourceStore for SqliteResourceStore {
         .bind(&scope.org_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(resource_from_row).collect()
     }
 
@@ -1263,7 +1263,7 @@ impl ResourceStore for SqliteResourceStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -1276,7 +1276,7 @@ impl ResourceStore for SqliteResourceStore {
         .bind(&row.id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "resource",
@@ -1364,7 +1364,7 @@ impl TriggerStore for SqliteTriggerStore {
                     detail: format!("trigger {} already exists", row.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -1379,7 +1379,7 @@ impl TriggerStore for SqliteTriggerStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(trigger_from_row).transpose()
     }
 
@@ -1393,7 +1393,7 @@ impl TriggerStore for SqliteTriggerStore {
         .bind(&scope.org_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(trigger_from_row).collect()
     }
 
@@ -1424,7 +1424,7 @@ impl TriggerStore for SqliteTriggerStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -1437,7 +1437,7 @@ impl TriggerStore for SqliteTriggerStore {
         .bind(&row.id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "trigger",
@@ -1494,10 +1494,10 @@ fn quota_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<QuotaRow, StorageError>
         // Nullable columns — Option<T> decode is correct; a NULL column becomes None.
         executions_per_month_limit: r
             .try_get::<Option<i64>, _>("executions_per_month_limit")
-            .map_err(conn_err)?,
+            .map_err(storage_error)?,
         active_workflows_limit: r
             .try_get::<Option<i64>, _>("active_workflows_limit")
-            .map_err(conn_err)?
+            .map_err(storage_error)?
             .map(|v| {
                 i32::try_from(v).map_err(|e| {
                     StorageError::Serialization(format!(
@@ -1516,7 +1516,7 @@ impl QuotaStore for SqliteQuotaStore {
             .bind(org_id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(quota_from_row).transpose()
     }
 
@@ -1546,7 +1546,7 @@ impl QuotaStore for SqliteQuotaStore {
         .bind(&row.updated_at)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -1564,7 +1564,7 @@ impl QuotaStore for SqliteQuotaStore {
         .bind(i64::from(delta))
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             let v = sqlx::query_scalar::<_, i64>(
                 "SELECT concurrent_executions FROM port_quotas WHERE org_id = ?",
@@ -1572,7 +1572,7 @@ impl QuotaStore for SqliteQuotaStore {
             .bind(org_id)
             .fetch_one(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
             return i32::try_from(v).map_err(|e| {
                 StorageError::Serialization(format!("concurrent_executions out of i32 range: {e}"))
             });
@@ -1585,7 +1585,7 @@ impl QuotaStore for SqliteQuotaStore {
         .bind(org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "quota",
@@ -1629,7 +1629,7 @@ fn audit_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<AuditLogRow, StorageErr
         target_id: r.try_get("target_id").ok(),
         details: opt_text_to_json(
             r.try_get::<Option<String>, _>("details")
-                .map_err(conn_err)?,
+                .map_err(storage_error)?,
         )?,
         ip_address: r.try_get("ip_address").ok(),
         user_agent: r.try_get("user_agent").ok(),
@@ -1658,7 +1658,7 @@ impl AuditStore for SqliteAuditStore {
         .bind(&row.emitted_at)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -1675,7 +1675,7 @@ impl AuditStore for SqliteAuditStore {
         .bind(i64::from(limit))
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(audit_from_row).collect()
     }
 }
@@ -1713,7 +1713,7 @@ fn blob_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<BlobRow, StorageError> {
         external_ref: r.try_get("external_ref").ok(),
         metadata: opt_text_to_json(
             r.try_get::<Option<String>, _>("metadata")
-                .map_err(conn_err)?,
+                .map_err(storage_error)?,
         )?,
         expires_at: r.try_get("expires_at").ok(),
     })
@@ -1750,7 +1750,7 @@ impl BlobStore for SqliteBlobStore {
         .bind(&row.expires_at)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -1760,7 +1760,7 @@ impl BlobStore for SqliteBlobStore {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         row.as_ref().map(blob_from_row).transpose()
     }
 
@@ -1770,7 +1770,7 @@ impl BlobStore for SqliteBlobStore {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         Ok(())
     }
 
@@ -1782,7 +1782,7 @@ impl BlobStore for SqliteBlobStore {
         .bind(now_rfc3339())
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(res.rows_affected())
     }
 }
@@ -1812,7 +1812,7 @@ async fn cas_disambiguate(
         .bind(id)
         .fetch_optional(pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     match current {
         Some(actual) => Err(StorageError::Conflict {
             entity,
@@ -1838,7 +1838,7 @@ async fn soft_delete_by_id(
         .bind(id)
         .execute(pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     if res.rows_affected() > 0 {
         Ok(())
     } else {
@@ -1866,7 +1866,7 @@ async fn soft_delete_scoped(
         .bind(id)
         .execute(pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
     if res.rows_affected() > 0 {
         Ok(())
     } else {

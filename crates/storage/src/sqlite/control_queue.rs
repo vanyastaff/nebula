@@ -17,26 +17,29 @@ use nebula_storage_port::store::{
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
 
-use super::execution::conn_err;
+use crate::sql_error::storage_error;
 
 fn decode_message(row: &sqlx::sqlite::SqliteRow, id: [u8; 16]) -> Result<ControlMsg, StorageError> {
     let resume_target = row
         .try_get::<Option<String>, _>("resume_target")
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .as_deref()
         .map(serde_json::from_str)
         .transpose()
         .map_err(|error| StorageError::Serialization(error.to_string()))?;
     Ok(ControlMsg {
         id,
-        execution_id: row.try_get("execution_id").map_err(conn_err)?,
+        execution_id: row.try_get("execution_id").map_err(storage_error)?,
         scope: Scope::new(
-            row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-            row.try_get::<String, _>("org_id").map_err(conn_err)?,
+            row.try_get::<String, _>("workspace_id")
+                .map_err(storage_error)?,
+            row.try_get::<String, _>("org_id").map_err(storage_error)?,
         ),
-        command: decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
-        w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
-        reclaim_count: row.try_get::<i64, _>("reclaim_count").map_err(conn_err)? as u32,
+        command: decode_command(&row.try_get::<String, _>("command").map_err(storage_error)?)?,
+        w3c_traceparent: row.try_get("w3c_traceparent").map_err(storage_error)?,
+        reclaim_count: row
+            .try_get::<i64, _>("reclaim_count")
+            .map_err(storage_error)? as u32,
         resume_target,
     })
 }
@@ -73,7 +76,7 @@ impl SqliteControlQueue {
         .bind(&claim.scope().org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "control_queue",
@@ -174,7 +177,7 @@ impl ControlQueue for SqliteControlQueue {
         .bind(resume_target_json)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(())
     }
 
@@ -183,7 +186,7 @@ impl ControlQueue for SqliteControlQueue {
         processor: &[u8; 16],
         batch_size: u32,
     ) -> Result<Vec<ControlClaim>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let rows = sqlx::query(
             "SELECT id, execution_id, workspace_id, org_id, command, \
                     w3c_traceparent, reclaim_count, resume_target \
@@ -193,10 +196,10 @@ impl ControlQueue for SqliteControlQueue {
         .bind(i64::from(batch_size.clamp(1, 256)))
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let mut claimed = Vec::with_capacity(rows.len());
         for row in rows {
-            let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err(storage_error)?;
             let id = decode_id(&id_bytes)?;
             // The claim flip is conditional on the row still being
             // `Pending`: a concurrent consumer or a reclaim sweep can
@@ -223,7 +226,7 @@ impl ControlQueue for SqliteControlQueue {
             .bind(id_bytes.as_slice())
             .fetch_optional(&mut *tx)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
             let Some(generation) = minted else {
                 continue;
             };
@@ -232,7 +235,7 @@ impl ControlQueue for SqliteControlQueue {
                 ControlClaimToken::new(id, decode_generation(generation, &id)?, msg.scope.clone());
             claimed.push(ControlClaim { msg, token });
         }
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(claimed)
     }
 
@@ -246,7 +249,7 @@ impl ControlQueue for SqliteControlQueue {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         let rows = sqlx::query(
             "UPDATE port_control_queue SET status = 'Processing', \
                  processed_by = ?, processed_at_ms = ?, \
@@ -269,12 +272,12 @@ impl ControlQueue for SqliteControlQueue {
         .bind(i64::from(batch_size.clamp(1, 256)))
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let claims = rows
             .into_iter()
             .map(|row| {
-                let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(conn_err)?)?;
-                let generation = row.try_get("claim_generation").map_err(conn_err)?;
+                let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(storage_error)?)?;
+                let generation = row.try_get("claim_generation").map_err(storage_error)?;
                 let msg = decode_message(&row, id)?;
                 let token = ControlClaimToken::new(
                     id,
@@ -284,7 +287,7 @@ impl ControlQueue for SqliteControlQueue {
                 Ok(ControlClaim { msg, token })
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         tracing::debug!(
             claimed = claims.len(),
             "claimed exact-flavor control commands"
@@ -304,7 +307,7 @@ impl ControlQueue for SqliteControlQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -330,7 +333,7 @@ impl ControlQueue for SqliteControlQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -356,7 +359,7 @@ impl ControlQueue for SqliteControlQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -371,7 +374,7 @@ impl ControlQueue for SqliteControlQueue {
     ) -> Result<ReclaimOutcome, StorageError> {
         let cutoff = chrono::Utc::now().timestamp_millis()
             - i64::try_from(reclaim_after.as_millis()).unwrap_or(i64::MAX);
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         // Exhausted rows (past the reclaim budget) → Failed.
         //
         // A `command = 'Resume'` row is EXEMPT (ADR-0099 W-S3b): a Resume does
@@ -392,7 +395,7 @@ impl ControlQueue for SqliteControlQueue {
         .bind(i64::from(max_reclaim_count))
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         // Remaining stale rows → back to Pending, bump reclaim_count. A
         // `command = 'Resume'` row redelivers regardless of `reclaim_count`
@@ -411,9 +414,9 @@ impl ControlQueue for SqliteControlQueue {
         .bind(i64::from(max_reclaim_count))
         .execute(&mut *tx)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(ReclaimOutcome {
             reclaimed,
             exhausted,
@@ -455,7 +458,7 @@ impl SqliteJournalReader {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(row.is_some())
     }
 }
@@ -477,12 +480,12 @@ impl ExecutionJournalReader for SqliteJournalReader {
         .bind(execution_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.into_iter()
             .map(|r| {
-                let payload: String = r.try_get("payload").map_err(conn_err)?;
+                let payload: String = r.try_get("payload").map_err(storage_error)?;
                 Ok(JournalEntry {
-                    seq: Some(r.try_get::<i64, _>("seq").map_err(conn_err)? as u64),
+                    seq: Some(r.try_get::<i64, _>("seq").map_err(storage_error)? as u64),
                     payload: serde_json::from_str(&payload)?,
                 })
             })
@@ -506,12 +509,12 @@ impl ExecutionJournalReader for SqliteJournalReader {
         .bind(i64::try_from(after).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.into_iter()
             .map(|r| {
-                let payload: String = r.try_get("payload").map_err(conn_err)?;
+                let payload: String = r.try_get("payload").map_err(storage_error)?;
                 Ok(JournalEntry {
-                    seq: Some(r.try_get::<i64, _>("seq").map_err(conn_err)? as u64),
+                    seq: Some(r.try_get::<i64, _>("seq").map_err(storage_error)? as u64),
                     payload: serde_json::from_str(&payload)?,
                 })
             })

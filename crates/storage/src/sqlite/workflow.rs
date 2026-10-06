@@ -18,7 +18,25 @@ use nebula_storage_port::store::{WorkflowPublicationError, WorkflowStore, Workfl
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
 
-use super::execution::conn_err;
+use crate::sql_error::storage_error;
+
+/// Decode one live `port_workflows` row selected as `id, version, slug`. The
+/// one decoder of the table for this backend; a value that does not fit the
+/// record is `Corrupt`, never a default.
+fn decode_workflow(
+    row: &sqlx::sqlite::SqliteRow,
+    scope: &Scope,
+) -> Result<WorkflowRecord, StorageError> {
+    let version = row.try_get::<i64, _>("version").map_err(storage_error)?;
+    Ok(WorkflowRecord {
+        id: row.try_get("id").map_err(storage_error)?,
+        scope: scope.clone(),
+        version: u64::try_from(version)
+            .map_err(|_| StorageError::Corrupt("workflow version is negative".into()))?,
+        slug: row.try_get("slug").map_err(storage_error)?,
+        deleted: false,
+    })
+}
 
 /// SQLite-backed workflow-row store.
 #[derive(Clone, Debug)]
@@ -56,14 +74,14 @@ impl WorkflowStore for SqliteWorkflowStore {
             .map_err(|_| WorkflowPublicationError::InvalidPublication)?;
         let definition = serde_json::to_string(&version.definition).map_err(StorageError::from)?;
         let activation_json = serde_json::to_string(&activation).map_err(StorageError::from)?;
-        let mut transaction = self.pool.begin().await.map_err(conn_err)?;
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
         let changed = sqlx::query("UPDATE port_workflows SET version = ?, slug = ? WHERE id = ? AND workspace_id = ? AND org_id = ? AND version = ? AND deleted = 0")
             .bind(next).bind(&row.slug).bind(&row.id).bind(&scope.workspace_id).bind(&scope.org_id).bind(expected)
-            .execute(&mut *transaction).await.map_err(conn_err)?.rows_affected();
+            .execute(&mut *transaction).await.map_err(storage_error)?.rows_affected();
         if changed != 1 {
             let actual = sqlx::query_scalar::<_, i64>("SELECT version FROM port_workflows WHERE id = ? AND workspace_id = ? AND org_id = ? AND deleted = 0")
                 .bind(&row.id).bind(&scope.workspace_id).bind(&scope.org_id)
-                .fetch_optional(&mut *transaction).await.map_err(conn_err)?;
+                .fetch_optional(&mut *transaction).await.map_err(storage_error)?;
             return Err(match actual {
                 Some(actual) => StorageError::Conflict {
                     entity: "workflow",
@@ -80,12 +98,12 @@ impl WorkflowStore for SqliteWorkflowStore {
         let ids = activation.revisions();
         let plan: Option<Vec<u8>> = sqlx::query_scalar("SELECT p.record_bytes FROM port_executable_plan_revisions p JOIN port_worker_flavor_revisions f ON f.worker_flavor_id = p.worker_flavor_id WHERE p.executable_plan_id = ? AND p.worker_flavor_id = ? AND p.lifecycle = 'active' AND f.lifecycle = 'active'")
             .bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
-            .fetch_optional(&mut *transaction).await.map_err(conn_err)?;
+            .fetch_optional(&mut *transaction).await.map_err(storage_error)?;
         let plan = plan.ok_or(WorkflowPublicationError::RevisionNotAdmitted)?;
         crate::workflow_activation::validate_plan_identity(&plan, &row.id, activation)?;
         let reused: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM port_workflow_versions WHERE workspace_id = ? AND org_id = ? AND workflow_id = ? AND json_extract(activation, '$.workflow_version_id') = ?")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(&row.id).bind(activation.workflow_version_id().to_string())
-            .fetch_one(&mut *transaction).await.map_err(conn_err)?;
+            .fetch_one(&mut *transaction).await.map_err(storage_error)?;
         if reused != 0 {
             return Err(WorkflowPublicationError::InvalidPublication);
         }
@@ -95,7 +113,7 @@ impl WorkflowStore for SqliteWorkflowStore {
             .execute(&mut *transaction).await.map_err(|error| match error {
                 sqlx::Error::Database(database) if database.is_unique_violation() =>
                     StorageError::Duplicate { entity: "workflow_version", detail: "workflow version already exists".into() },
-                other => conn_err(other),
+                other => storage_error(other),
             })?;
         transaction
             .commit()
@@ -126,7 +144,7 @@ impl WorkflowStore for SqliteWorkflowStore {
                     detail: format!("workflow {} already exists", record.id),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -134,7 +152,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         // A soft-deleted row is a read miss (callers needing tombstones
         // would use a future list variant), matching the in-memory store.
         let row = sqlx::query(
-            "SELECT version, slug, deleted FROM port_workflows \
+            "SELECT id, version, slug FROM port_workflows \
              WHERE id = ? AND workspace_id = ? AND org_id = ? AND deleted = 0",
         )
         .bind(id)
@@ -142,14 +160,8 @@ impl WorkflowStore for SqliteWorkflowStore {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
-        Ok(row.map(|r| WorkflowRecord {
-            id: id.to_string(),
-            scope: scope.clone(),
-            version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
-            slug: r.try_get("slug").unwrap_or_default(),
-            deleted: false,
-        }))
+        .map_err(storage_error)?;
+        row.map(|row| decode_workflow(&row, scope)).transpose()
     }
 
     async fn get_by_slug(
@@ -158,7 +170,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         slug: &str,
     ) -> Result<Option<WorkflowRecord>, StorageError> {
         let row = sqlx::query(
-            "SELECT id, version FROM port_workflows \
+            "SELECT id, version, slug FROM port_workflows \
              WHERE workspace_id = ? AND org_id = ? AND slug = ? AND deleted = 0",
         )
         .bind(&scope.workspace_id)
@@ -166,14 +178,8 @@ impl WorkflowStore for SqliteWorkflowStore {
         .bind(slug)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
-        Ok(row.map(|r| WorkflowRecord {
-            id: r.try_get("id").unwrap_or_default(),
-            scope: scope.clone(),
-            version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
-            slug: slug.to_string(),
-            deleted: false,
-        }))
+        .map_err(storage_error)?;
+        row.map(|row| decode_workflow(&row, scope)).transpose()
     }
 
     async fn update(
@@ -205,7 +211,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         .bind(expected_version as i64)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             return Ok(());
         }
@@ -222,7 +228,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         match current {
             Some(actual) => Err(StorageError::Conflict {
                 entity: "workflow",
@@ -249,7 +255,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         let def = serde_json::to_string(&version.definition)?;
         // One transaction so the row write and the version write commit
         // (or roll back) together — no orphan-row window.
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
 
         match expected_version {
             None => {
@@ -275,7 +281,7 @@ impl WorkflowStore for SqliteWorkflowStore {
                                 detail: format!("workflow {} already exists", row.id),
                             }
                         },
-                        other => conn_err(other),
+                        other => storage_error(other),
                     });
                 }
             },
@@ -295,7 +301,7 @@ impl WorkflowStore for SqliteWorkflowStore {
                 .bind(expected as i64)
                 .execute(&mut *tx)
                 .await
-                .map_err(conn_err)?;
+                .map_err(storage_error)?;
                 if res.rows_affected() == 0 {
                     // Disambiguate row-gone vs version-moved within the tx
                     // (rolled back on drop) so neither write lands.
@@ -308,7 +314,7 @@ impl WorkflowStore for SqliteWorkflowStore {
                     .bind(&scope.org_id)
                     .fetch_optional(&mut *tx)
                     .await
-                    .map_err(conn_err)?;
+                    .map_err(storage_error)?;
                     return Err(match current {
                         Some(actual) => StorageError::Conflict {
                             entity: "workflow",
@@ -346,11 +352,11 @@ impl WorkflowStore for SqliteWorkflowStore {
                         version.workflow_id, version.number
                     ),
                 },
-                other => conn_err(other),
+                other => storage_error(other),
             });
         }
 
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(())
     }
 
@@ -364,7 +370,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         .bind(&scope.org_id)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         if res.rows_affected() > 0 {
             Ok(())
         } else {
@@ -384,17 +390,8 @@ impl WorkflowStore for SqliteWorkflowStore {
         .bind(&scope.org_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| WorkflowRecord {
-                id: r.try_get("id").unwrap_or_default(),
-                scope: scope.clone(),
-                version: r.try_get::<i64, _>("version").unwrap_or_default() as u64,
-                slug: r.try_get("slug").unwrap_or_default(),
-                deleted: false,
-            })
-            .collect())
+        .map_err(storage_error)?;
+        rows.iter().map(|row| decode_workflow(row, scope)).collect()
     }
 
     async fn count(&self, scope: &Scope) -> Result<u64, StorageError> {
@@ -408,7 +405,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         .bind(&scope.org_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(n.max(0) as u64)
     }
 
@@ -419,7 +416,7 @@ impl WorkflowStore for SqliteWorkflowStore {
         sqlx::query_scalar::<_, i32>("SELECT 1")
             .fetch_one(&self.pool)
             .await
-            .map_err(conn_err)?;
+            .map_err(storage_error)?;
         Ok(())
     }
 }
@@ -440,18 +437,18 @@ impl SqliteWorkflowVersionStore {
 
 /// Decode one version row. The `definition` column is opaque JSON text.
 fn version_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<WorkflowVersionRecord, StorageError> {
-    let def_str: String = row.try_get("definition").map_err(conn_err)?;
+    let def_str: String = row.try_get("definition").map_err(storage_error)?;
     let definition: serde_json::Value = serde_json::from_str(&def_str)?;
     Ok(WorkflowVersionRecord {
         activation: row
             .try_get::<Option<String>, _>("activation")
-            .map_err(conn_err)?
+            .map_err(storage_error)?
             .map(|encoded| serde_json::from_str(&encoded))
             .transpose()?,
-        workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
-        number: row.try_get::<i64, _>("number").map_err(conn_err)? as u32,
-        published: row.try_get::<i64, _>("published").map_err(conn_err)? != 0,
-        pinned: row.try_get::<i64, _>("pinned").map_err(conn_err)? != 0,
+        workflow_id: row.try_get("workflow_id").map_err(storage_error)?,
+        number: row.try_get::<i64, _>("number").map_err(storage_error)? as u32,
+        published: row.try_get::<i64, _>("published").map_err(storage_error)? != 0,
+        pinned: row.try_get::<i64, _>("pinned").map_err(storage_error)? != 0,
         definition,
     })
 }
@@ -494,7 +491,7 @@ impl WorkflowVersionStore for SqliteWorkflowVersionStore {
                     ),
                 })
             },
-            Err(e) => Err(conn_err(e)),
+            Err(e) => Err(storage_error(e)),
         }
     }
 
@@ -515,7 +512,7 @@ impl WorkflowVersionStore for SqliteWorkflowVersionStore {
         .bind(i64::from(number))
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(version_from_row).transpose()
     }
 
@@ -538,7 +535,7 @@ impl WorkflowVersionStore for SqliteWorkflowVersionStore {
         .bind(workflow_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         row.as_ref().map(version_from_row).transpose()
     }
 
@@ -560,7 +557,7 @@ impl WorkflowVersionStore for SqliteWorkflowVersionStore {
         .bind(workflow_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.iter().map(version_from_row).collect()
     }
 }

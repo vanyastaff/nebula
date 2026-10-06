@@ -205,6 +205,21 @@ mod iteration_checkpoint {
     }
 }
 
+/// The stored wait-kind name is the serde name, so rows written through
+/// either path decode through the other.
+#[test]
+fn resume_token_wait_kind_names_match_serde() {
+    use nebula_storage_port::dto::ResumeTokenWaitKind;
+    for kind in [ResumeTokenWaitKind::Webhook, ResumeTokenWaitKind::Approval] {
+        assert_eq!(
+            serde_json::to_value(&kind).unwrap(),
+            serde_json::json!(kind.as_str())
+        );
+        assert_eq!(kind.as_str().parse::<ResumeTokenWaitKind>(), Ok(kind));
+    }
+    assert!("Webhook".parse::<ResumeTokenWaitKind>().is_err());
+}
+
 // Compile-time guard: a fresh FencingToken generation is comparable, proving
 // the id seam stays usable from DTO-consuming code.
 #[test]
