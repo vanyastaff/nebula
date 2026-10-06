@@ -214,6 +214,55 @@ fn native_nullable_array_enum_and_recursive_roots_validate_exactly() {
     );
 }
 
+#[schema_type(both)]
+#[derive(Debug, PartialEq)]
+struct Port(u16);
+
+#[schema_type(both)]
+#[derive(Debug, PartialEq)]
+struct Endpoint {
+    port: Option<Port>,
+}
+
+#[schema_type(input)]
+#[derive(Debug, PartialEq)]
+struct DefaultedEndpoint {
+    #[property(input(default = null))]
+    port: Option<Port>,
+}
+
+#[test]
+fn optional_newtype_admits_null_like_serde() {
+    let input = nebula_schema::InputContract::for_type::<Endpoint>().unwrap();
+    for (wire, expected) in [
+        (json!({"port": null}), None),
+        (json!({"port": 8080}), Some(Port(8080))),
+    ] {
+        let decoded: Endpoint = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(decoded.port, expected);
+        let typed: Endpoint = input
+            .validate_data(wire)
+            .unwrap()
+            .into_typed(&input)
+            .unwrap();
+        assert_eq!(typed.port, expected);
+    }
+    // The newtype's own domain still applies to non-null values.
+    assert!(input.validate_data(json!({"port": 70000})).is_err());
+    let output = nebula_schema::OutputContract::for_type::<Endpoint>().unwrap();
+    output
+        .validate_data(&serde_json::to_value(Endpoint { port: None }).unwrap())
+        .unwrap();
+    // A null default on the optional newtype is admitted and applied.
+    let defaulted = nebula_schema::InputContract::for_type::<DefaultedEndpoint>().unwrap();
+    let value: DefaultedEndpoint = defaulted
+        .validate_data(json!({}))
+        .unwrap()
+        .into_typed(&defaulted)
+        .unwrap();
+    assert_eq!(value.port, None);
+}
+
 fn six() -> u32 {
     6
 }

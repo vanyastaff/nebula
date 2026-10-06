@@ -42,12 +42,18 @@ fn alias_null_and_closed_domain_intersections_are_enforced() {
             {"key":"text","body":{"kind":"string"}}
         ]),
     );
-    assert!(
-        InputContract::from_graph(&aliases)
-            .unwrap()
+    // The occurrence that admits null decides it (serde's `Option<Newtype>`);
+    // the alias's wrapped occurrence still governs non-null values.
+    let aliases = InputContract::from_graph(&aliases).unwrap();
+    assert_eq!(
+        aliases
             .validate_data(Value::Null)
-            .is_err()
+            .unwrap()
+            .into_wire_data()
+            .unwrap(),
+        Value::Null
     );
+    assert!(aliases.validate_data(json!(7)).is_err());
     let closed = graph(
         json!({"target":"text","null":"allow","accepted_domain":{"closed":["allowed"]}}),
         json!([
@@ -91,12 +97,29 @@ fn alias_null_and_closed_domain_intersections_are_enforced() {
             .unwrap(),
         json!({"value":null})
     );
+    // A null default admitted by its own occurrence does not consult the
+    // alias's wrapped occurrence, as at runtime (`Option<Newtype>` defaults).
     let inner_rejects: SchemaGraphDocument = serde_json::from_value(json!({"version":3,"root":{"target":"record","null":"reject"},"definitions":[
         {"key":"record","body":{"kind":"record","properties":[{"key":"value","target":"alias","presence":"optional","null":"allow","input_default":null}],"additional_properties":"closed"}},
         {"key":"alias","body":{"kind":"alias","alias":{"target":"text","null":"reject"}}},
         {"key":"text","body":{"kind":"string"}}
     ]})).unwrap();
-    assert!(inner_rejects.admit().is_err());
+    assert_eq!(
+        InputContract::from_graph(&inner_rejects.admit().unwrap())
+            .unwrap()
+            .validate_data(json!({}))
+            .unwrap()
+            .into_wire_data()
+            .unwrap(),
+        json!({"value":null})
+    );
+    // A null default on an occurrence that rejects null is still refused.
+    let outer_rejects: SchemaGraphDocument = serde_json::from_value(json!({"version":3,"root":{"target":"record","null":"reject"},"definitions":[
+        {"key":"record","body":{"kind":"record","properties":[{"key":"value","target":"alias","presence":"optional","null":"reject","input_default":null}],"additional_properties":"closed"}},
+        {"key":"alias","body":{"kind":"alias","alias":{"target":"text","null":"allow"}}},
+        {"key":"text","body":{"kind":"string"}}
+    ]})).unwrap();
+    assert!(outer_rejects.admit().is_err());
 }
 
 #[tokio::test]

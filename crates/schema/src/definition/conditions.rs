@@ -157,12 +157,12 @@ fn scalar_body<'a>(
     core: &'a UseSiteCore,
 ) -> Result<(&'a Body, bool), ValidationReport> {
     let mut current = core;
-    let mut nullable = true;
+    // The outermost occurrence decides null, as runtime validation does.
+    let nullable = matches!(core.null, NullPolicy::Allow);
     for _ in 0..MAX_GRAPH_COMPARISON_STEPS {
         if current.protection != ValueProtection::Public {
             return Err(error("schema.condition.protected_reference"));
         }
-        nullable &= matches!(current.null, NullPolicy::Allow);
         let index = contract
             .graph
             .0

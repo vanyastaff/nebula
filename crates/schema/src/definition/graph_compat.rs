@@ -128,6 +128,7 @@ fn compare_uses<'a>(
 
 // An alias is an intersection of occurrence constraints, not a rename or a
 // fresh unconstrained use. Normalize that intersection before comparing bodies.
+// The null policy is the exception: the outermost occurrence decides it.
 fn normalize_alias_use(
     graph: &AdmittedSchemaGraph,
     root: &UseSiteCore,
@@ -151,11 +152,9 @@ fn normalize_alias_use(
             return Ok((effective, index));
         };
         let next = &alias.0;
-        effective.null = match (&effective.null, &next.null) {
-            (NullPolicy::Reject, _) | (_, NullPolicy::Reject) => NullPolicy::Reject,
-            (NullPolicy::Allow, next) => next.clone(),
-            (current, _) => current.clone(),
-        };
+        // Null alone is not intersected: the outermost occurrence decides it,
+        // as runtime validation and admission do (`Option<Newtype>` admits
+        // null without consulting the newtype's wrapped occurrence).
         effective.empty_string = intersect_empty(&effective.empty_string, &next.empty_string);
         effective.empty_collection =
             intersect_empty(&effective.empty_collection, &next.empty_collection);

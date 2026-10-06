@@ -446,8 +446,26 @@ fn alias_occurrence_intersections_preserve_protection_and_null_constraints() {
         json!({"target":"text","null":"reject","protection":"secret_utf8"}),
         json!([scalar("text", "string")]),
     );
-    assert_eq!(compare(&aliased, &direct), Assignability::Yes);
+    // The outermost occurrence decides null (an `Option<Newtype>` emits null
+    // although the newtype's wrapped occurrence rejects it); protection is
+    // still intersected through the alias.
+    let Assignability::No(reasons) = compare(&aliased, &direct) else {
+        panic!("a nullable producer must not satisfy a non-null consumer");
+    };
+    assert_eq!(
+        format!("{reasons:?}"),
+        r#"[GraphConstraintMismatch { code: "null" }]"#
+    );
     assert_eq!(compare(&direct, &aliased), Assignability::Yes);
+    let nonnull_aliased = graph(
+        json!({"target":"alias","null":"reject"}),
+        json!([
+            {"key":"alias","body":{"kind":"alias","alias":{
+                "target":"text","null":"reject","protection":"secret_utf8"}}},
+            scalar("text","string")
+        ]),
+    );
+    assert_eq!(compare(&nonnull_aliased, &direct), Assignability::Yes);
     let public = graph(root("text"), json!([scalar("text", "string")]));
     assert!(matches!(compare(&aliased, &public), Assignability::No(_)));
 }

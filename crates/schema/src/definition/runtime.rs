@@ -149,14 +149,9 @@ pub(super) fn validate_literal(
             if rejected {
                 return Err(error("value.null_rejected", &path));
             }
-            let index = graph
-                .0
-                .lookup
-                .get(&core.target)
-                .ok_or_else(|| error("schema.graph.dangling_reference", &path))?;
-            if let Body::Alias(alias) = &graph.0.graph.definitions[index.0].body {
-                pending.push((&alias.0, value, path));
-            }
+            // The occurrence that admits null decides it, as serde decodes an
+            // `Option<Newtype>` null as `None` without reaching the newtype:
+            // the wrapped alias occurrence is never consulted for this null.
             continue;
         }
         // An admitted null skips non-null value rules (PHASE5_PROPERTY.md);
