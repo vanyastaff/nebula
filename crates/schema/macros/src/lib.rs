@@ -8,10 +8,17 @@ use quote::quote;
 use syn::{DeriveInput, LitStr, parse_macro_input};
 
 mod attrs;
+mod codec_attrs;
 mod derive_enum;
 mod derive_enum_union;
+mod derive_property_type;
 mod derive_schema;
+mod named_conditions;
+mod schema_type;
 mod type_infer;
+
+#[cfg(test)]
+mod codec_authoring_tests;
 
 /// Canonical schema path; the shared final expansion pass resolves it for the
 /// invoking crate.
@@ -60,6 +67,17 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 
 /// Derive `HasSchema` (from `nebula-schema`).
 ///
+/// Emits `PropertyType` as the authoritative structural graph description, without
+/// claiming serde codec fidelity. The legacy `HasSchema` projection remains
+/// available where the graph is exactly representable. Standalone `Schema`
+/// retains its legacy generic and enum-shape restrictions; use `PropertyType`
+/// or `schema_type` for per-instantiation generic graphs. Single-field
+/// newtypes describe the wrapped root, including nullable and array roots.
+/// Descriptor owners must be `'static`. Direct recursive records use the graph
+/// and return an error when a legacy tree projection cannot represent recursion;
+/// mutually recursive standalone derives retain the legacy cache restriction.
+/// Use `schema_type(input|output|both)` to own serde and codec generation.
+///
 /// On a **struct** the schema is a record of typed fields. On an **enum** it is a
 /// tagged union (`SchemaKind::Union`) — one variant per enum variant, honoring
 /// serde's enum tagging (external by default, or adjacent via
@@ -79,14 +97,64 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 ///   → keys that may not be used by any field (reusing a removed field's key would
 ///   misread older documents), rejected at expansion if a field's resolved key or
 ///   a `#[serde(alias = ..)]` collides.
+///   `condition(name, C)` declares a checked named condition in the containing
+///   record; `field(identifier)` resolves the canonical inbound serde key and
+///   `root("/path")` uses an absolute pointer. Duplicate, undefined, recursive,
+///   and oversized named expansions are rejected.
 /// - `#[serde(...)]` — read for key alignment so the schema key equals the wire
 ///   key: `rename` / `rename_all` rename the field or variant, `skip` /
 ///   `skip_deserializing` drop it, `tag` / `content` select adjacent enum tagging.
 ///   `#[serde(flatten)]` is rejected (splicing is a follow-up).
-#[proc_macro_derive(Schema, attributes(property, field, validate, schema))]
+#[proc_macro_derive(Schema, attributes(property, field, validate, schema, serde))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let tokens = derive_schema::expand(input).unwrap_or_else(|error| error.to_compile_error());
+    let tokens = expand_legacy_schema(&input).unwrap_or_else(|error| error.to_compile_error());
+    nebula_macro_support::paths::resolve_generated_crate_paths(tokens).into()
+}
+
+fn expand_legacy_schema(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    // Legacy errors carry refusal contracts, not just unsupported lowering.
+    // Validate those contracts before generating the additional graph impl.
+    if input.generics.type_params().next().is_some()
+        || input.generics.const_params().next().is_some()
+    {
+        return derive_schema::expand(input.clone());
+    }
+    let newtype = matches!(&input.data, syn::Data::Struct(data) if matches!(data.fields, syn::Fields::Unnamed(_)))
+        || (matches!(input.data, syn::Data::Struct(_))
+            && codec_attrs::CodecAttrs::parse(&input.attrs)?.transparent);
+    let graph_projection = newtype || has_direct_recursion(input);
+    let legacy = if newtype {
+        derive_property_type::graph_has_schema(input)
+    } else {
+        let validated = derive_schema::expand(input.clone())?;
+        if graph_projection {
+            derive_property_type::graph_has_schema(input)
+        } else {
+            validated
+        }
+    };
+    // Cached legacy HasSchema already verifies SecretInput. Keeping that check
+    // in both impls duplicates diagnostics for a single invalid secret field.
+    let property = derive_property_type::expand_legacy_schema(input, graph_projection)?;
+    Ok(quote!(#property #legacy))
+}
+
+/// Derive a structural definition graph. This grants no serde codec witness.
+#[proc_macro_derive(PropertyType, attributes(property, field, validate, schema, serde))]
+pub fn derive_property_type(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let tokens =
+        derive_property_type::expand(&input).unwrap_or_else(|error| error.to_compile_error());
+    nebula_macro_support::paths::resolve_generated_crate_paths(tokens).into()
+}
+
+/// Own serde and schema generation for exactly `input`, `output`, or `both`.
+#[proc_macro_attribute]
+pub fn schema_type(options: TokenStream, input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let tokens =
+        schema_type::expand(options.into(), input).unwrap_or_else(|error| error.to_compile_error());
     nebula_macro_support::paths::resolve_generated_crate_paths(tokens).into()
 }
 
@@ -99,6 +167,47 @@ pub fn derive_enum_select(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let tokens = derive_enum::expand(input).unwrap_or_else(|error| error.to_compile_error());
     nebula_macro_support::paths::resolve_generated_crate_paths(tokens).into()
+}
+
+/// The legacy cache cannot initialize a schema that reaches itself. The graph
+/// registers the owner first; legacy discovery can then fail closed when that
+/// recursive graph has no exact tree projection.
+fn has_direct_recursion(input: &DeriveInput) -> bool {
+    let fields = match &input.data {
+        syn::Data::Struct(data) => data.fields.iter().collect::<Vec<_>>(),
+        syn::Data::Enum(data) => data
+            .variants
+            .iter()
+            .flat_map(|variant| variant.fields.iter())
+            .collect(),
+        syn::Data::Union(_) => return false,
+    };
+    fields
+        .iter()
+        .any(|field| refers_to_owner(&field.ty, &input.ident))
+}
+
+fn refers_to_owner(ty: &syn::Type, owner: &syn::Ident) -> bool {
+    match ty {
+        syn::Type::Path(path) => {
+            path.qself.as_ref().is_some_and(|qualified| refers_to_owner(&qualified.ty, owner))
+                || path.path.segments.iter().any(|segment| {
+                    segment.ident == *owner || segment.ident == "Self"
+                        || match &segment.arguments {
+                            syn::PathArguments::AngleBracketed(arguments) => arguments.args.iter().any(|argument| {
+                                matches!(argument, syn::GenericArgument::Type(ty) if refers_to_owner(ty, owner))
+                            }),
+                            _ => false,
+                        }
+                })
+        },
+        syn::Type::Array(array) => refers_to_owner(&array.elem, owner),
+        syn::Type::Reference(reference) => refers_to_owner(&reference.elem, owner),
+        syn::Type::Paren(parenthesis) => refers_to_owner(&parenthesis.elem, owner),
+        syn::Type::Group(group) => refers_to_owner(&group.elem, owner),
+        syn::Type::Tuple(tuple) => tuple.elems.iter().any(|ty| refers_to_owner(ty, owner)),
+        _ => false,
+    }
 }
 
 /// Validate a candidate schema field key against the `FieldKey` rules

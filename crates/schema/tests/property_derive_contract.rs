@@ -110,6 +110,17 @@ fn invalid_property_declarations_compile_fail() {
 #[test]
 fn nested_derive_cannot_remint_historical_schema_policy() {
     struct Historical;
+    impl nebula_schema::PropertyType for Historical {
+        fn define_schema_type(
+            _: &mut nebula_schema::SchemaTypeBuilder,
+        ) -> Result<nebula_schema::SchemaTypeUse, nebula_schema::ValidationReport> {
+            Err(
+                nebula_schema::ValidationError::builder("schema.unsupported_policy")
+                    .build()
+                    .into(),
+            )
+        }
+    }
     impl HasSchema for Historical {
         fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
             Ok(serde_json::from_value(json!({"fields": []})).expect("historical evidence"))

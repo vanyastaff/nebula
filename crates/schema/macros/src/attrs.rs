@@ -77,6 +77,33 @@ pub(crate) enum DefaultLit {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Null,
+    EmptyArray,
+}
+
+impl DefaultLit {
+    fn from_expression(expression: &Expr) -> syn::Result<Self> {
+        match expression {
+            Expr::Path(path) if path.qself.is_none() && path.path.is_ident("null") => {
+                Ok(Self::Null)
+            },
+            Expr::Array(array) if array.elems.is_empty() => Ok(Self::EmptyArray),
+            Expr::Lit(value) => match &value.lit {
+                Lit::Str(value) => Ok(Self::Str(value.value())),
+                Lit::Int(value) => Ok(Self::Int(value.base10_parse::<i64>()?)),
+                Lit::Float(value) => Ok(Self::Float(value.base10_parse::<f64>()?)),
+                Lit::Bool(value) => Ok(Self::Bool(value.value)),
+                _ => Err(syn::Error::new_spanned(
+                    expression,
+                    "default requires a scalar literal, null, or []",
+                )),
+            },
+            _ => Err(syn::Error::new_spanned(
+                expression,
+                "default requires a scalar literal, null, or []; arbitrary Rust defaults are unsupported",
+            )),
+        }
+    }
 }
 
 /// Options gathered from `#[validate(...)]`.
@@ -279,6 +306,7 @@ struct PropertyInput {
     required: bool,
     secret: bool,
     expressions: Option<PropertyExpressionMode>,
+    default: Option<DefaultLit>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -344,6 +372,7 @@ impl PropertyAttrs {
         }
         if let Some(input) = self.input {
             merge_flag(&mut out.secret, input.secret, "input(secret)")?;
+            merge_opt(&mut out.default, input.default, "input(default)")?;
             if input.expressions.is_some() && (out.no_expression || out.expression_required) {
                 return Err(syn::Error::new(
                     Span::call_site(),
@@ -596,6 +625,7 @@ impl Parse for DisplayEntry {
 
 enum InputEntry {
     KeyValue { name: syn::Ident, value: syn::Ident },
+    Default { name: syn::Ident, value: Expr },
     Flag(syn::Ident),
 }
 
@@ -606,10 +636,15 @@ impl Parse for PropertyInput {
         let entries: Punctuated<InputEntry, Token![,]> = Punctuated::parse_terminated(input)?;
         for entry in entries {
             let name = match &entry {
-                InputEntry::KeyValue { name, .. } | InputEntry::Flag(name) => name,
+                InputEntry::KeyValue { name, .. }
+                | InputEntry::Default { name, .. }
+                | InputEntry::Flag(name) => name,
             };
             record_setting(&mut seen, &name.to_string(), name.span())?;
             match entry {
+                InputEntry::Default { value, .. } => {
+                    out.default = Some(DefaultLit::from_expression(&value)?);
+                },
                 InputEntry::Flag(name) => match name.to_string().as_str() {
                     "required" => out.required = true,
                     "secret" => out.secret = true,
@@ -658,6 +693,12 @@ impl Parse for InputEntry {
         let name: syn::Ident = input.parse()?;
         if input.peek(Token![=]) {
             input.parse::<Token![=]>()?;
+            if name == "default" {
+                return Ok(Self::Default {
+                    name,
+                    value: input.parse()?,
+                });
+            }
             Ok(Self::KeyValue {
                 name,
                 value: input.parse()?,
@@ -1229,6 +1270,8 @@ pub(crate) struct SchemaStructAttrs {
     /// rejects a collision at expansion. Kept as `LitStr` so the span points at
     /// the offending literal in diagnostics.
     pub reserved: Vec<LitStr>,
+    /// Checked-condition declarations scoped to this data record.
+    pub conditions: Vec<(syn::Ident, Expr)>,
 }
 
 impl SchemaStructAttrs {
@@ -1248,6 +1291,7 @@ impl SchemaStructAttrs {
 enum SchemaEntry {
     Custom { value: LitStr },
     Reserved { keys: Vec<LitStr> },
+    Condition { name: syn::Ident, expression: Expr },
 }
 
 impl SchemaEntry {
@@ -1259,6 +1303,18 @@ impl SchemaEntry {
             },
             Self::Reserved { keys } => {
                 out.reserved.extend(keys);
+                Ok(())
+            },
+            Self::Condition { name, expression } => {
+                if out.conditions.iter().any(|(existing, _)| existing == &name) {
+                    return Err(syn::Error::new(name.span(), "duplicate named condition"));
+                }
+                crate::derive_schema::check_field_key(&name.to_string(), name.span())?;
+                nebula_macro_support::slot::validate_condition(
+                    &expression,
+                    nebula_macro_support::slot::ConditionScope::LocalRecord,
+                )?;
+                out.conditions.push((name, expression));
                 Ok(())
             },
         }
@@ -1273,6 +1329,17 @@ impl Parse for SchemaEntry {
         if input.peek(syn::token::Paren) {
             let content;
             syn::parenthesized!(content in input);
+            if name == "condition" {
+                let name = content.parse()?;
+                content.parse::<Token![,]>()?;
+                let expression = content.parse()?;
+                if !content.is_empty() {
+                    return Err(
+                        content.error("condition requires a name and one checked expression")
+                    );
+                }
+                return Ok(Self::Condition { name, expression });
+            }
             let keys: Punctuated<LitStr, Token![,]> =
                 content.parse_terminated(<LitStr as Parse>::parse, Token![,])?;
             return match name.to_string().as_str() {
@@ -1338,7 +1405,7 @@ pub(crate) enum RenameRule {
 }
 
 impl RenameRule {
-    fn parse(value: &str, span: Span) -> syn::Result<Self> {
+    pub(crate) fn parse(value: &str, span: Span) -> syn::Result<Self> {
         Ok(match value {
             "lowercase" => Self::Lower,
             "UPPERCASE" => Self::Upper,

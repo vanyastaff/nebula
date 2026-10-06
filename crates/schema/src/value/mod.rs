@@ -6,6 +6,7 @@ mod tree;
 mod tree_canonical;
 mod wire;
 
+pub(crate) use budget::ValueBudget;
 pub use canonical::canonical_json_v1;
 pub use nebula_validator::foundation::FieldPath as ValuePath;
 pub use tree::{AuthoredValue, CompiledValue, ResolvedValue, ScalarValue, ValueTree};

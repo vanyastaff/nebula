@@ -16,6 +16,10 @@ use super::{MAX_VALUE_DEPTH, MAX_VALUE_NODES, budget::ValueBudget};
 pub struct ScalarValue(Value);
 
 impl ScalarValue {
+    pub(crate) const fn null() -> Self {
+        Self(Value::Null)
+    }
+
     /// Borrow the scalar without allocating a validator view.
     #[must_use]
     pub const fn as_json(&self) -> &Value {
@@ -268,6 +272,16 @@ impl<E> ValueTree<E> {
             &ValueBudget::default(),
             expression_source,
         )
+    }
+
+    /// Check this tree against a caller-owned budget that later growth (for
+    /// example materialized defaults) continues to charge.
+    pub(crate) fn check_budget_into<'a>(
+        &'a self,
+        budget: &ValueBudget,
+        expression_source: impl Fn(&'a E) -> &'a str + Copy,
+    ) -> Result<(), ValidationError> {
+        self.check_budget_at(&ValuePath::root(), 0, budget, expression_source)
     }
 
     fn check_budget_at<'a>(

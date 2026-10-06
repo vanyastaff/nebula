@@ -321,7 +321,6 @@ pub struct RateLimitSettings {
         label = "Burst",
         description = "Back-to-back requests after idling; default 1"
     )]
-    #[serde(default)]
     pub burst: Option<u32>,
 }
 
@@ -370,10 +369,10 @@ impl RateLimitSettings {
 #[non_exhaustive]
 pub struct ResilienceOverride {
     /// Replaces the resource's declared rate, within its policy.
-    #[serde(default)]
     pub rate: Option<RateLimitSettings>,
     /// Replaces declared per-key limits, one entry per dimension.
-    #[serde(default)]
+    #[property(input(default = []))]
+    #[serde(default = "Vec::new")]
     pub keyed: Vec<KeyedOverride>,
 }
 

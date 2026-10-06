@@ -69,7 +69,7 @@ impl From<DemoError> for ResourceError {
 
 #[derive(Clone, Debug, serde::Deserialize, nebula_schema::Schema)]
 struct DemoConfig {
-    #[serde(default)]
+    #[serde(default = "String::new")]
     #[field(default = "")]
     label: String,
 }

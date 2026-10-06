@@ -2,9 +2,9 @@ error[E0308]: arguments to this function are incorrect
   --> tests/compile_fail/directional_assignable_swap.rs:13:13
    |
 13 |     let _ = explain_assignable(&input, &output);
-   |             ^^^^^^^^^^^^^^^^^^ ------  ------- expected `&DirectedSchema<Input>`, found `&DirectedSchema<nebula_schema::Output>`
+   |             ^^^^^^^^^^^^^^^^^^ ------  ------- expected `&DirectedSchema<nebula_schema::Input>`, found `&DirectedSchema<nebula_schema::Output>`
    |                                |
-   |                                expected `&DirectedSchema<nebula_schema::Output>`, found `&DirectedSchema<Input>`
+   |                                expected `&DirectedSchema<nebula_schema::Output>`, found `&DirectedSchema<nebula_schema::Input>`
    |
 note: function defined here
   --> src/compat/mod.rs

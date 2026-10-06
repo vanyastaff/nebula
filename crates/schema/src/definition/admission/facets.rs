@@ -234,6 +234,13 @@ fn literal_matches_use(
             return Err(AdmissionIssue::NonproductiveDefinition);
         }
         visited[current.0] = true;
+        // Null is an occurrence domain decided by the occurrence that admitted
+        // it above, exactly as runtime validation does: a wrapped alias
+        // occurrence (an `Option<Newtype>`'s newtype) and the terminal non-null
+        // body never remove an explicitly admitted nullable value.
+        if current_value.is_null() {
+            return Ok(true);
+        }
         let body = &graph.definitions[current.0].body;
         if let Body::Alias(alias) = body {
             current_value = literal_with_use_transformers(&alias.0, &current_value, purpose);
@@ -269,11 +276,13 @@ fn literal_matches_use_facets(
     value: &Value,
     purpose: LiteralPurpose,
 ) -> Result<bool, AdmissionIssue> {
+    // An admitted null skips the use-site value rules, exactly as runtime
+    // validation does; the null policy above is its only occurrence check.
     Ok(
         !(purpose == LiteralPurpose::InputDefault && core.expression == ExpressionMode::Required)
             && literal_matches_occurrence_policies(core, value)?
             && !matches!(&core.accepted_domain, AcceptedDomain::Closed(values) if !values.contains(value))
-            && rules_accept(&core.rules, value)?,
+            && (value.is_null() || rules_accept(&core.rules, value)?),
     )
 }
 

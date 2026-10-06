@@ -20,16 +20,21 @@ use crate::{
     value::{AuthoredValue, ValuePath, ValueTree},
 };
 
+mod output;
 mod preparation;
 mod root;
 mod scalar;
+pub(crate) use scalar::exact_integer;
 mod typed;
+pub(crate) use typed::decode_graph_wire;
 mod validation;
 mod values;
 
+pub use output::ValidatedOutput;
 pub use root::{RecordShape, RootShape, UnionShape};
 pub use scalar::{ScalarKind, ScalarSchema};
 pub use validation::PendingValidation;
+pub(crate) use values::ResolutionBudget;
 pub use values::{ResolvedLookup, ResolvedValues, ValidValues};
 
 const MODE_SELECTOR_KEY: &str = "mode";

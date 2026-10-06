@@ -169,12 +169,14 @@ pub mod __private {
     /// Schema contracts referenced by generated implementations.
     #[doc(hidden)]
     pub mod schema {
+        pub use nebula_schema::PropertyTypeContract as PropertyType;
         pub use nebula_schema::{
-            AuthoredValue, BooleanWidget, ExpressionMode, FieldKey, HasSchema, HasSelectOptions,
-            InputHint, ListWidget, NumberWidget, ObjectWidget, Property, RootShape, Rule,
-            ScalarSchema, Schema, SecretInput, SecretWidget, SelectOption, SelectWidget,
-            SerdeTagging, StringWidget, ValidSchema, ValidationError, ValidationReport,
-            VisibilityMode,
+            AdmittedSchemaGraph, AuthoredValue, BooleanWidget, ExpressionMode, FieldKey, HasSchema,
+            HasSelectOptions, InputCodec, InputHint, ListWidget, NumberWidget, ObjectWidget,
+            OutputCodec, Property, RootShape, Rule, ScalarSchema, Schema, SchemaDirection,
+            SchemaTypeBuilder, SchemaTypeUse, SecretInput, SecretWidget, SelectOption,
+            SelectWidget, SerdeTagging, StringWidget, ValidSchema, ValidationError,
+            ValidationReport, VisibilityMode,
         };
 
         pub mod error {
@@ -183,8 +185,8 @@ pub mod __private {
 
         pub mod __private {
             pub use nebula_schema::__private::{
-                LiteralFieldKey, field_key_from_validated_literal, serde_json, tracing,
-                union_newtype_payload,
+                LiteralFieldKey, field_key_from_validated_literal, serde, serde_json, tracing,
+                union_newtype_payload, validator,
             };
         }
     }

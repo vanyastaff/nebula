@@ -27,7 +27,7 @@ use super::*;
 
 #[derive(Clone, Debug, serde::Deserialize, nebula_schema::Schema)]
 struct LabelConfig {
-    #[serde(default)]
+    #[serde(default = "String::new")]
     #[field(default = "")]
     label: String,
 }

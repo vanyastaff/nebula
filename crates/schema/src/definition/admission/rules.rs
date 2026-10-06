@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use nebula_validator::{Rule, RuleView, ValueRule};
 
-use crate::FieldKey;
+use crate::{FieldKey, SerdeTagging};
 
 use super::super::{
     model::{
@@ -141,6 +141,14 @@ pub(super) fn check_selector(union: &UnionBody) -> Result<(), AdmissionIssue> {
         .is_some_and(|key| !has_variant(key))
     {
         return Err(AdmissionIssue::InvalidBounds);
+    }
+    // A default selector fills an absent adjacent tag during input preparation.
+    // An external union has no absent-selector wire form, so the facet would
+    // be inert there; refuse it instead of admitting a silent no-op.
+    if union.selector.default_variant.is_some()
+        && !matches!(union.tagging, SerdeTagging::Adjacent { .. })
+    {
+        return Err(AdmissionIssue::InapplicableFacet);
     }
     if union
         .selector

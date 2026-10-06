@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes: Derive Serde Projection
+
+- `#[derive(Schema)]` also emits `PropertyType` and projects the type's serde
+  attributes into the directional definition graph. A serde option without a
+  checked projection is a compile error naming the option; use a reviewed
+  `PropertyType`/codec adapter instead of silencing it.
+- Bare `#[serde(default)]` (field or container) is refused: optional presence
+  is not a codec witness. Migration: drop it on `Option<T>` fields (serde
+  already decodes a missing `Option` as `None`); otherwise pair a literal schema
+  default with a named serde default, for example
+  `#[property(input(default = []))]` plus `#[serde(default = "Vec::new")]`, or
+  `#[field(default = "")]` plus `#[serde(default = "String::new")]`. The
+  derived inbound definition calls that provider and refuses the graph with
+  `schema.codec.default_mismatch` unless it yields the literal default.
+- A struct variant's own `#[serde(rename_all = ..)]` (including its
+  `serialize`/`deserialize` form) renames that variant's payload fields in the
+  graph, as serde does; the container rule still renames variants only.
+- `skip_serializing_if` accepts only `Option::is_none` on an actual `Option<T>`.
+  Internally tagged enums (`tag` without `content`) and serde attributes on
+  newtype payloads need a reviewed codec adapter.
+- `#[schema_type(input | output | both)]` owns the serde derives and codec
+  fidelity declarations; structural `PropertyType` alone grants neither codec
+  provenance nor execution admission. Types read through `HasSchema` stay on
+  `#[derive(Schema)]` until their consumers read directional contracts,
+  because `ValidSchema::from_graph` refuses optional, defaulted and closed
+  records.
+- `validate(min_items)` is not part of the authoring grammar; use
+  `#[property(validate(items(min = n, max = n)))]`.
+
+### Added: Directional Schema Contracts
+
+- `InputContract` and `OutputContract` bind an admitted definition graph to one
+  direction. `InputContract::for_type::<T: InputCodec>()` /
+  `OutputContract::for_type::<T: OutputCodec>()` admit a type-owned codec;
+  `from_graph` admits an `AdmittedSchemaGraph`. Input contracts prepare
+  (`validate`, `validate_symbolic`, `validate_data`), resolve and decode
+  (`into_typed`) through custody-checked proofs; `OutputContract::validate_data`
+  checks literal outbound data without repairing it.
+- `RecordedSchemaContract` is durable directional evidence (`record()` on either
+  contract). Deserializing it grants no authority: `readmit_input` and
+  `readmit_output` re-admit it under the current epoch and reject the wrong
+  polarity or any altered commitment.
+- `explain_graph_assignable(producer, consumer)` and
+  `explain_graph_successor(successor, previous)` compare admitted graphs and
+  return `Yes`, `No` or `Unknown`, like the legacy schema relations.
+- `ValidSchema::to_admitted_graph` bridges a legacy schema to the graph layer,
+  refusing declarations the graph cannot express exactly.
+- `ValidSchema::ensure_public_output_domain` and
+  `AdmittedSchemaGraph::ensure_public_output_domain` refuse protected output
+  declarations, including optional and inactive branches, before an action
+  runs.
+- `ValidSchema::validate_output_data` validates literal output against an
+  admitted outbound schema, skipping aliases, transforms, defaults and
+  expression-required enforcement. It returns `ValidatedOutput`, an output-only
+  proof with no typed decode that cannot stand in for `ResolvedValues`.
+- New diagnostics: `SchemaIncompat::GraphConstraintMismatch { code }` for a
+  graph constraint that excludes producer values, and
+  `UnknownReason::UnprovenGraphConstraint { code }` for a constraint that
+  needs runtime evidence or exhausted the comparison budget. Both carry a
+  stable, payload-free category only.
+- Graph null semantics follow serde: the outermost occurrence that admits null
+  decides it, so `Option<Newtype>` accepts and emits `null` and admits a
+  `default = null` although the newtype's wrapped occurrence rejects null.
+  Every other alias constraint still intersects.
+- Graph input preparation charges materialized defaults, and resolution
+  charges every expression result, against one overall value budget before
+  the data is allocated (`value.limit_exceeded`). Unique graph arrays are
+  checked in expected linear time.
+
 ### Breaking Changes: Property Admission
 
 - Fresh schemas carry `policy_version: 2`. Hidden properties remain subject to

@@ -37,7 +37,25 @@ because they are roots; a scalar root's rules have the separate annotation below
 | `x-nebula-disabled` | Disabled option's `anyOf` entry in a single select, or `items.anyOf` entry in a multiple select; only when static options are projected. Also repeated in resolved-schema copies. | Literal `true`; absent for enabled options. | Presentation hint. The option's `const` remains in the allowed domain, and runtime membership checks do not exclude disabled options. Custom-value selects do not project these option entries. |
 | `x-nebula-mode-default-variant` | Mode field schema with a default variant; not the root of a serde-tagged union. | String containing the declared variant key. | Runtime can choose this variant when the selector is omitted. The corresponding standard `oneOf` branch permits an omitted `mode`; generic validation does not insert the selector. |
 
-## Current Limits
+## Directional definition graph extensions
+
+The wire-v3 `SchemaGraphDocument` is a separate definition format, rather than
+the Draft 2020-12 projection above. Its directional codec writer retains these
+extensions in recorded evidence:
+
+| Extension | Location | Meaning |
+|---|---|---|
+| `x-nebula-conditions` | Graph document root | Named checked conditions against canonical root inbound paths. Every entry is admitted and included in the input directional commitment, with the condition policy version. |
+| `x-nebula-local-conditions` | Graph document root | Object mapping definition anchors to local named-condition tables. Paths are relative to the anchored definition; every table is admitted and committed, including unused declarations. |
+| `x-nebula-property` | Property use site | Original property description retained for UI and descriptor fidelity. Executable facets are the checked native use-site fields; this annotation cannot override them. |
+
+Condition tables carry behavior. Removing or changing them changes directional
+contract identity even when the structural graph commitment is unchanged.
+Presentation-only extension changes preserve structural semantics but remain
+visible in exact recorded-document comparisons. Generic JSON Schema validation
+does not admit these graph declarations or mint runtime proofs.
+
+## Export budgets
 
 Export has two resource budgets: **1 MiB of compact JSON for an unelided,
 borrowed source descriptor**, and **8 MiB cumulatively for compact-JSON inputs

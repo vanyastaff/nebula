@@ -254,6 +254,17 @@ pub use definition::{
     MAX_GRAPH_IDENTIFIER_BYTES, MAX_GRAPH_REFERENCES, SCHEMA_GRAPH_WIRE_VERSION,
     SchemaAdmissionError, SchemaGraphDocument, SemanticCommitment,
 };
+
+mod collection_codec;
+mod type_schema;
+pub use definition::{
+    DirectionalCommitment, InputContract, OutputContract, RecordedSchemaContract,
+};
+pub use definition::{
+    GraphReference, GraphReferenceError, GraphRootKind, MAX_GRAPH_COMPARISON_STEPS,
+    explain_graph_assignable, explain_graph_successor,
+};
+pub use definition::{ResolvedInputValues, ValidInputValues};
 pub use directed::{DirectedSchema, Input, InputSchema, Output, OutputSchema, Polarity};
 pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
@@ -301,6 +312,10 @@ pub use field::{
     ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, Property, SecretField,
     SelectField, StringField, UnknownField,
 };
+pub use type_schema::PropertyType as PropertyTypeContract;
+pub use type_schema::{
+    InputCodec, OutputCodec, PropertyType, SchemaDirection, SchemaTypeBuilder, SchemaTypeUse,
+};
 /// Typed reference to a declared property location.
 ///
 /// This is a schema-declaration address, not a runtime JSON value path.
@@ -315,7 +330,7 @@ pub use loader::{
     MAX_LOADER_ITEMS, MAX_LOADER_PAGE_BYTES, OptionLoader, RecordLoader, RedactedLoaderContext,
 };
 pub use mode::{ExpressionMode, RequiredMode, VisibilityMode};
-pub use nebula_schema_macros::{EnumSelect, Schema, field_key};
+pub use nebula_schema_macros::{EnumSelect, PropertyType, Schema, field_key, schema_type};
 /// Re-exported for `#[derive(Schema)]` expansion and schema authors who build
 /// [`Rule`] / [`Predicate`] without importing `nebula-validator` directly.
 pub use nebula_validator::{Predicate, Rule};
@@ -329,7 +344,7 @@ pub use transformer::{RegexCapture, Transformer};
 pub use validated::{
     FieldHandle, PathResolveError, PathWalk, PendingValidation, RecordShape, ResolvedLookup,
     ResolvedValues, RootShape, ScalarKind, ScalarSchema, SchemaFlags, SchemaKind, SerdeTagging,
-    UnionShape, ValidSchema, ValidValues, is_opaque_field_node,
+    UnionShape, ValidSchema, ValidValues, ValidatedOutput, is_opaque_field_node,
 };
 pub use value::{
     AuthoredValue, CompiledValue, ContentId, EXPRESSION_KEY, MAX_EXPRESSION_ENTRIES,
@@ -356,7 +371,8 @@ pub mod __private {
     //! path — the latter only resolves if the deriving crate happens to have an
     //! unrenamed `serde_json` dependency of its own.
     pub use crate::key::LiteralFieldKey;
-    pub use {serde_json, tracing};
+    pub use nebula_validator as validator;
+    pub use {serde, serde_json, tracing};
 
     /// Build a [`FieldKey`](crate::FieldKey) from a string literal already
     /// checked by `nebula-schema-macros`.

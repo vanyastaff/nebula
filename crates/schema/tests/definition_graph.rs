@@ -653,7 +653,7 @@ fn root_empty_collection_and_body_specific_semantics_are_all_committed() {
     let union = json!({
         "version": 3, "root": { "target": "root" },
         "definitions": [
-            {"key":"root","body":{"kind":"union","tagging":"external","variants":[
+            {"key":"root","body":{"kind":"union","tagging":{"adjacent":{"tag":"kind","content":"value"}},"variants":[
                 {"key":"none","payload":null},{"key":"some","payload":{"target":"leaf","expression":"forbidden"}}
             ],"selector_normalization":{"default_variant":"none","aliases":{"legacy":"some"}}}},
             scalar("leaf", "string")
@@ -662,7 +662,7 @@ fn root_empty_collection_and_body_specific_semantics_are_all_committed() {
     assert_mutates(
         union.clone(),
         "/definitions/0/body/tagging",
-        json!({"adjacent":{"tag":"kind","content":"value"}}),
+        json!({"adjacent":{"tag":"type","content":"value"}}),
     );
     assert_mutates(
         union.clone(),
@@ -2207,11 +2207,7 @@ fn assert_validation_equivalence(lowered: &ValidSchema, expected: &ValidSchema, 
 }
 
 fn lowered(document: SchemaGraphDocument) -> ValidSchema {
-    document
-        .admit()
-        .expect("fixture admits")
-        .lower_to_valid_schema()
-        .expect("fixture lowers")
+    ValidSchema::from_graph(&document.admit().expect("fixture admits")).expect("fixture lowers")
 }
 
 #[test]
@@ -2417,8 +2413,7 @@ fn lower_rejects_optional_property_until_explicit_null_semantics_are_proven() {
     .admit()
     .unwrap();
 
-    let report = graph
-        .lower_to_valid_schema()
+    let report = ValidSchema::from_graph(&graph)
         .expect_err("optional explicit-null ambiguity must fail closed");
     assert_eq!(report_codes(&report), ["schema.graph.lower.occurrence"]);
 }
@@ -2456,10 +2451,7 @@ fn lower_rejects_valid_but_unrepresentable_root_and_definition_shapes() {
         ),
     ];
     for (document, expected) in cases {
-        let report = document
-            .admit()
-            .expect("fixture admits")
-            .lower_to_valid_schema()
+        let report = ValidSchema::from_graph(&document.admit().expect("fixture admits"))
             .expect_err("fixture must fail closed");
         assert_eq!(report_codes(&report), [expected]);
     }
@@ -2468,11 +2460,12 @@ fn lower_rejects_valid_but_unrepresentable_root_and_definition_shapes() {
 #[test]
 fn lower_rejects_unproven_facets_with_specific_codes() {
     let root_case = |root: Value| {
-        document_with_root(json!([scalar("root", "string")]), root)
-            .admit()
-            .unwrap()
-            .lower_to_valid_schema()
-            .unwrap_err()
+        ValidSchema::from_graph(
+            &document_with_root(json!([scalar("root", "string")]), root)
+                .admit()
+                .unwrap(),
+        )
+        .unwrap_err()
     };
     assert_eq!(
         report_codes(&root_case(
@@ -2507,38 +2500,41 @@ fn lower_rejects_unproven_facets_with_specific_codes() {
 
     let mut with_default = property("name", "text");
     with_default["input_default"] = json!("Ada");
-    let report = document_with_root(
-        json!([record("root", vec![with_default]), scalar("text", "string")]),
-        json!({"target":"root","null":"reject","expression":"forbidden"}),
+    let report = ValidSchema::from_graph(
+        &document_with_root(
+            json!([record("root", vec![with_default]), scalar("text", "string")]),
+            json!({"target":"root","null":"reject","expression":"forbidden"}),
+        )
+        .admit()
+        .unwrap(),
     )
-    .admit()
-    .unwrap()
-    .lower_to_valid_schema()
     .unwrap_err();
     assert_eq!(report_codes(&report), ["schema.graph.lower.default"]);
 
     let mut conditional_presence = property("name", "text");
     conditional_presence["presence"] = json!({"required_when":{"set":"/enabled"}});
-    let report = document_with_root(
-        json!([
-            record("root", vec![conditional_presence]),
-            scalar("text", "string")
-        ]),
-        json!({"target":"root","null":"reject","expression":"forbidden"}),
+    let report = ValidSchema::from_graph(
+        &document_with_root(
+            json!([
+                record("root", vec![conditional_presence]),
+                scalar("text", "string")
+            ]),
+            json!({"target":"root","null":"reject","expression":"forbidden"}),
+        )
+        .admit()
+        .unwrap(),
     )
-    .admit()
-    .unwrap()
-    .lower_to_valid_schema()
     .unwrap_err();
     assert_eq!(report_codes(&report), ["schema.graph.lower.occurrence"]);
 
-    let report = document_with_root(
-        json!([{"key":"root","body":{"kind":"string","intrinsic_rules":[{"min_length":1}]}}]),
-        json!({"target":"root","null":"reject","expression":"forbidden"}),
+    let report = ValidSchema::from_graph(
+        &document_with_root(
+            json!([{"key":"root","body":{"kind":"string","intrinsic_rules":[{"min_length":1}]}}]),
+            json!({"target":"root","null":"reject","expression":"forbidden"}),
+        )
+        .admit()
+        .unwrap(),
     )
-    .admit()
-    .unwrap()
-    .lower_to_valid_schema()
     .unwrap_err();
     assert_eq!(report_codes(&report), ["schema.graph.lower.rules"]);
 }
@@ -2572,10 +2568,7 @@ fn lower_rejects_record_shapes_outside_the_exact_flat_scalar_subset() {
         ),
     ];
     for (document, expected) in cases {
-        let report = document
-            .admit()
-            .expect("fixture admits")
-            .lower_to_valid_schema()
+        let report = ValidSchema::from_graph(&document.admit().expect("fixture admits"))
             .expect_err("fixture must fail closed");
         assert_eq!(report_codes(&report), [expected]);
     }
@@ -2597,8 +2590,7 @@ fn lower_rejects_reachable_recursive_graphs() {
     .admit()
     .expect("nullable optional recursion admits");
 
-    let report = graph
-        .lower_to_valid_schema()
+    let report = ValidSchema::from_graph(&graph)
         .expect_err("recursive admitted graph cannot lower to legacy record");
     assert_eq!(
         report_codes(&report),
