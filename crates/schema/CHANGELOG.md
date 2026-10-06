@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes: Derive Serde Projection
+
+- `#[derive(Schema)]` also emits `PropertyType` and projects the type's serde
+  attributes into the directional definition graph. A serde option without a
+  checked projection is a compile error naming the option; use a reviewed
+  `PropertyType`/codec adapter instead of silencing it.
+- Bare `#[serde(default)]` (field or container) is refused: optional presence
+  is not a codec witness. Migration: drop it on `Option<T>` fields (serde
+  already decodes a missing `Option` as `None`); otherwise pair a literal schema
+  default with a named serde default, for example
+  `#[property(input(default = []))]` plus `#[serde(default = "Vec::new")]`, or
+  `#[field(default = "")]` plus `#[serde(default = "String::new")]`.
+- `skip_serializing_if` accepts only `Option::is_none` on an actual `Option<T>`.
+  Internally tagged enums (`tag` without `content`) and serde attributes on
+  newtype payloads need a reviewed codec adapter.
+- `#[schema_type(input | output | both)]` owns the serde derives and codec
+  fidelity declarations; structural `PropertyType` alone grants neither codec
+  provenance nor execution admission. Types read through `HasSchema` stay on
+  `#[derive(Schema)]` until their consumers read directional contracts,
+  because `ValidSchema::from_graph` refuses optional, defaulted and closed
+  records.
+- `validate(min_items)` is not part of the authoring grammar; use
+  `#[property(validate(items(min = n, max = n)))]`.
+
 ### Breaking Changes: Property Admission
 
 - Fresh schemas carry `policy_version: 2`. Hidden properties remain subject to
