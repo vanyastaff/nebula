@@ -164,6 +164,88 @@ impl ValidSchema {
         } else {
             data
         };
+        let data = level_to_canonical(self.properties(), data, &ValuePath::root())?;
         values::validate_output(self.clone(), data)
     }
+}
+
+/// Invert the output projection's `emit_as` renames so validation reads the
+/// candidate by canonical declaration keys, at every declared nesting level.
+///
+/// A canonical key that the projection reserves for a renamed field is never
+/// emitted, so its presence on the wire is refused rather than validated.
+/// Recursion follows declared schema nesting only, never data depth.
+fn level_to_canonical(
+    fields: &[Property],
+    value: Value,
+    path: &ValuePath,
+) -> Result<Value, ValidationError> {
+    let Value::Object(entries) = value else {
+        return Ok(value);
+    };
+    let mut out = serde_json::Map::with_capacity(entries.len());
+    for (key, value) in entries {
+        if let Some(field) = fields.iter().find(|field| emitted(field) == key) {
+            let child = property_to_canonical(field, value, &path.push(field.key().as_str()))?;
+            out.insert(field.key().as_str().to_owned(), child);
+        } else if fields
+            .iter()
+            .any(|field| field.emit_as().is_some() && field.key().as_str() == key)
+        {
+            return Err(ValidationError::builder("schema.output.unprojected_key")
+                .at(path.push(&key))
+                .message("output carries a declaration key in place of its emitted name")
+                .build());
+        } else {
+            out.insert(key, value);
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+fn property_to_canonical(
+    field: &Property,
+    value: Value,
+    path: &ValuePath,
+) -> Result<Value, ValidationError> {
+    match (field, value) {
+        (Property::Object(object), value) => level_to_canonical(&object.fields, value, path),
+        (Property::List(list), Value::Array(items)) => match list.item.as_deref() {
+            Some(item) => items
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    property_to_canonical(item, value, &path.push(index.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            None => Ok(Value::Array(items)),
+        },
+        (Property::Mode(mode), Value::Object(mut envelope)) => {
+            let selector = match envelope.get(super::MODE_SELECTOR_KEY) {
+                Some(Value::String(selector)) => Some(selector.clone()),
+                Some(_) => None,
+                None => mode.default_variant.clone(),
+            };
+            let variant = selector
+                .as_deref()
+                .and_then(|key| mode.variants.iter().find(|variant| variant.key == key));
+            if let Some(variant) = variant
+                && let Some(payload) = envelope.remove(super::MODE_PAYLOAD_KEY)
+            {
+                let payload = property_to_canonical(
+                    &variant.field,
+                    payload,
+                    &path.push(super::MODE_PAYLOAD_KEY),
+                )?;
+                envelope.insert(super::MODE_PAYLOAD_KEY.to_owned(), payload);
+            }
+            Ok(Value::Object(envelope))
+        },
+        (_, value) => Ok(value),
+    }
+}
+
+fn emitted(field: &Property) -> &str {
+    field.emit_as().unwrap_or_else(|| field.key()).as_str()
 }

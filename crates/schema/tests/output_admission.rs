@@ -61,3 +61,49 @@ fn absent_nested_and_anonymous_protected_domains_reject_before_values() {
         assert!(schema.validate_output_data(json!({})).is_err());
     }
 }
+
+#[test]
+fn output_reads_emitted_names_at_every_level() {
+    let schema = Schema::builder()
+        .property(
+            Property::string(field_key!("name"))
+                .required()
+                .emit_as("wire_name")
+                .unwrap(),
+        )
+        .property(
+            Property::object(field_key!("outer")).required().property(
+                Property::string(field_key!("inner"))
+                    .required()
+                    .emit_as("wire_inner")
+                    .unwrap(),
+            ),
+        )
+        .build()
+        .unwrap();
+    // What the output projection emits is exactly what output admission reads.
+    let projected = schema
+        .validate(
+            nebula_schema::AuthoredValue::from_data(
+                json!({"name": "ok", "outer": {"inner": "deep"}}),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .resolve_data()
+        .unwrap()
+        .to_wire_json();
+    assert_eq!(
+        projected,
+        json!({"wire_name": "ok", "outer": {"wire_inner": "deep"}})
+    );
+    let proof = schema.validate_output_data(projected).unwrap();
+    assert_eq!(proof.get(&field_key!("name")), Some(&json!("ok")));
+    // Declaration keys are never emitted for renamed fields, at any level.
+    for unprojected in [
+        json!({"name": "ok", "outer": {"wire_inner": "deep"}}),
+        json!({"wire_name": "ok", "outer": {"inner": "deep"}}),
+    ] {
+        assert!(schema.validate_output_data(unprojected).is_err());
+    }
+}
