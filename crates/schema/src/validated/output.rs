@@ -1,9 +1,107 @@
 //! Literal outbound proof admission, distinct from authored input preparation.
 
+use std::sync::Arc;
+
 use serde_json::Value;
 
-use super::{ResolvedValues, SchemaKind, ValidSchema, values};
-use crate::{Property, ValidationError, ValidationReport, ValuePath};
+use super::{SchemaKind, ValidSchema, values};
+use crate::{FieldKey, Property, ResolvedValue, ValidationError, ValidationReport, ValuePath};
+
+/// Literal outbound data checked against one admitted output schema.
+///
+/// This is an output proof only. Output admission skips input preparation
+/// (aliases, transforms, defaults and expression-required enforcement), so it
+/// deliberately has no typed decode and cannot stand in for
+/// [`ResolvedValues`](crate::ResolvedValues), the resolved-input proof:
+///
+/// ```compile_fail
+/// use nebula_schema::{ResolvedValues, Schema};
+///
+/// fn consume_input(_: ResolvedValues) {}
+///
+/// let schema = Schema::builder().build().unwrap();
+/// let output = schema.validate_output_data(serde_json::json!({})).unwrap();
+/// consume_input(output);
+/// ```
+///
+/// ```compile_fail
+/// use nebula_schema::Schema;
+///
+/// let schema = Schema::builder().build().unwrap();
+/// let output = schema.validate_output_data(serde_json::json!({})).unwrap();
+/// let _: serde_json::Value = output.into_typed().unwrap();
+/// ```
+///
+/// The same output is otherwise inspectable:
+///
+/// ```
+/// use nebula_schema::Schema;
+///
+/// let schema = Schema::builder().build().unwrap();
+/// let output = schema.validate_output_data(serde_json::json!({})).unwrap();
+/// assert!(output.schema().ptr_eq(&schema));
+/// assert_eq!(output.into_json(), serde_json::json!({}));
+/// ```
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct ValidatedOutput {
+    schema: ValidSchema,
+    values: ResolvedValue,
+    warnings: Arc<[ValidationError]>,
+}
+
+impl ValidatedOutput {
+    pub(super) fn new(
+        schema: ValidSchema,
+        values: ResolvedValue,
+        warnings: Arc<[ValidationError]>,
+    ) -> Self {
+        Self {
+            schema,
+            values,
+            warnings,
+        }
+    }
+
+    /// Output schema snapshot this proof is bound to.
+    #[must_use]
+    pub const fn schema(&self) -> &ValidSchema {
+        &self.schema
+    }
+
+    /// Checked literal output data.
+    #[must_use]
+    pub const fn values(&self) -> &ResolvedValue {
+        &self.values
+    }
+
+    /// Non-fatal output validation diagnostics.
+    #[must_use]
+    pub fn warnings(&self) -> &[ValidationError] {
+        &self.warnings
+    }
+
+    /// Borrow a scalar output field.
+    #[must_use]
+    pub fn get(&self, key: &FieldKey) -> Option<&Value> {
+        match self.values.get(key.as_str()) {
+            Some(crate::ValueTree::Literal(value)) => Some(value.as_json()),
+            _ => None,
+        }
+    }
+
+    /// Borrow any output node using its RFC6901 location.
+    #[must_use]
+    pub fn get_path(&self, path: &ValuePath) -> Option<&ResolvedValue> {
+        self.values.get_path(path)
+    }
+
+    /// Return the checked output as JSON data.
+    #[must_use]
+    pub fn into_json(self) -> Value {
+        self.values.to_json()
+    }
+}
 
 impl ValidSchema {
     /// Reject protected output declarations before executing an action.
@@ -59,7 +157,7 @@ impl ValidSchema {
     /// # Errors
     /// Returns declaration, shape, value-budget, rule or conditional-policy errors.
     #[tracing::instrument(level = "debug", skip_all)]
-    pub fn validate_output_data(&self, data: Value) -> Result<ResolvedValues, ValidationReport> {
+    pub fn validate_output_data(&self, data: Value) -> Result<ValidatedOutput, ValidationReport> {
         self.ensure_public_output_domain()?;
         let data = if self.kind() == SchemaKind::Union {
             self.rewrite_union_wire(data)?

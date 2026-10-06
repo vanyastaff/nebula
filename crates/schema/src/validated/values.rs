@@ -182,9 +182,16 @@ pub(super) fn validate_input(
 pub(super) fn validate_output(
     schema: ValidSchema,
     data: Value,
-) -> Result<ResolvedValues, ValidationReport> {
+) -> Result<super::output::ValidatedOutput, ValidationReport> {
     let values = ResolvedValue::from_data(data)?;
-    complete(schema, values, &[], Arc::from([]), None)
+    let ResolvedValues {
+        schema,
+        values,
+        warnings,
+    } = complete(schema, values, &[], Arc::from([]), None)?;
+    Ok(super::output::ValidatedOutput::new(
+        schema, values, warnings,
+    ))
 }
 
 impl ValidValues {

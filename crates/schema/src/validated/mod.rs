@@ -30,6 +30,7 @@ pub(crate) use typed::decode_graph_wire;
 mod validation;
 mod values;
 
+pub use output::ValidatedOutput;
 pub use root::{RecordShape, RootShape, UnionShape};
 pub use scalar::{ScalarKind, ScalarSchema};
 pub use validation::PendingValidation;

@@ -344,7 +344,7 @@ pub use transformer::{RegexCapture, Transformer};
 pub use validated::{
     FieldHandle, PathResolveError, PathWalk, PendingValidation, RecordShape, ResolvedLookup,
     ResolvedValues, RootShape, ScalarKind, ScalarSchema, SchemaFlags, SchemaKind, SerdeTagging,
-    UnionShape, ValidSchema, ValidValues, is_opaque_field_node,
+    UnionShape, ValidSchema, ValidValues, ValidatedOutput, is_opaque_field_node,
 };
 pub use value::{
     AuthoredValue, CompiledValue, ContentId, EXPRESSION_KEY, MAX_EXPRESSION_ENTRIES,
