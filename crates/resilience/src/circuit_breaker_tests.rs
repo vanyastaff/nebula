@@ -636,11 +636,12 @@ fn late_closed_epoch_success_cannot_close_a_half_open_round() {
     .expect("valid config")
     .with_instant_source(clock.clone());
     let stale = cb.try_admit::<()>().expect("closed admits");
+    let stale_failure = cb.try_admit::<()>().expect("closed admits");
     cb.force_open();
     clock.advance(Duration::from_millis(100));
     let probe = cb.try_admit::<()>().expect("single probe");
 
-    // The pre-open transport completes while the probe is in flight.
+    // The pre-open transports complete while the probe is in flight.
     assert!(!cb.record_admitted_outcome(stale, Outcome::Success));
     assert_eq!(
         cb.circuit_state(),
@@ -651,16 +652,37 @@ fn late_closed_epoch_success_cannot_close_a_half_open_round() {
         cb.try_admit::<()>().is_err(),
         "the probe still owns the only slot"
     );
-    assert!(!cb.record_admitted_outcome(stale, Outcome::Failure));
+    assert!(!cb.record_admitted_outcome(stale_failure, Outcome::Failure));
     assert_eq!(
         cb.circuit_state(),
         CS::HalfOpen,
         "round not tripped by stale evidence"
     );
 
+    // Settling consumes the admission, so the probe cannot be settled twice.
     assert!(cb.record_admitted_outcome(probe, Outcome::Success));
     assert_eq!(cb.circuit_state(), CS::Closed);
-    // Once the round ended, the probe's admission is stale too.
-    assert!(!cb.record_admitted_outcome(probe, Outcome::Failure));
     assert_eq!(cb.stats().failures, 0);
+}
+
+#[test]
+fn an_admission_only_settles_on_the_breaker_that_issued_it() {
+    // Two fresh breakers share generation 0: without breaker identity, one's
+    // admission would settle on the other.
+    let config = CircuitBreakerConfig {
+        failure_threshold: 1,
+        min_operations: 1,
+        ..CircuitBreakerConfig::default()
+    };
+    let issuer = CircuitBreaker::new(config.clone()).expect("valid config");
+    let other = CircuitBreaker::new(config).expect("valid config");
+    let admission = issuer.try_admit::<()>().expect("closed admits");
+
+    assert!(!other.record_admitted_outcome(admission, Outcome::Failure));
+    assert_eq!(
+        other.circuit_state(),
+        CS::Closed,
+        "a foreign admission must not trip an unrelated breaker"
+    );
+    assert_eq!(other.stats().failures, 0);
 }

@@ -28,10 +28,14 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
+
+/// Source of process-unique breaker identities, so an [`Admission`] can only
+/// be settled on the breaker that issued it.
+static NEXT_BREAKER_ID: AtomicU64 = AtomicU64::new(1);
 
 use parking_lot::Mutex;
 
@@ -287,6 +291,8 @@ pub struct CircuitBreaker {
     sink: Arc<dyn EventSink>,
     state: Mutex<InnerState>,
     on_state_change: Option<StateChangeCallback>,
+    /// Process-unique identity carried by every [`Admission`] this breaker issues.
+    id: u64,
 }
 
 struct InnerState {
@@ -313,9 +319,32 @@ struct InnerState {
 /// an epoch the breaker has already left is discarded, so a late result can
 /// neither release another epoch's half-open probe slot nor close or trip a
 /// recovery round it never took part in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// It is deliberately neither `Clone` nor `Copy`: settling consumes it, so one
+/// admission can be settled at most once. It also carries the identity of the
+/// issuing breaker, and any other breaker discards it.
+///
+/// ```
+/// use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
+///
+/// let cb = CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap();
+/// let admission = cb.try_admit::<()>().unwrap();
+/// assert!(cb.record_admitted_outcome(admission, Outcome::Success));
+/// ```
+///
+/// ```compile_fail
+/// use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
+///
+/// let cb = CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap();
+/// let admission = cb.try_admit::<()>().unwrap();
+/// cb.record_admitted_outcome(admission, Outcome::Success);
+/// // A second settlement of the same admission does not compile.
+/// cb.record_admitted_outcome(admission, Outcome::Success);
+/// ```
+#[derive(Debug, PartialEq, Eq)]
 #[must_use = "an admission must be settled with record_admitted_outcome"]
 pub struct Admission {
+    breaker: u64,
     generation: u64,
     half_open_probe: bool,
 }
@@ -352,6 +381,7 @@ impl CircuitBreaker {
             instant_source: Arc::new(SystemInstant),
             sink: Arc::new(NoopSink),
             on_state_change: None,
+            id: NEXT_BREAKER_ID.fetch_add(1, Ordering::Relaxed),
         })
     }
 
@@ -763,6 +793,7 @@ impl CircuitBreaker {
         drop(inner);
         self.emit_transition(transition);
         result.map(|half_open_probe| Admission {
+            breaker: self.id,
             generation,
             half_open_probe,
         })
@@ -870,7 +901,16 @@ impl CircuitBreaker {
     /// admission was granted in. A late outcome is discarded: the transition
     /// that ended its epoch already reset the probe slots, and its evidence
     /// predates the current recovery round. Returns whether it was applied.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "taking the admission by value consumes it, so one admission settles at most once"
+    )]
     pub fn record_admitted_outcome(&self, admission: Admission, outcome: Outcome) -> bool {
+        // An admission from another breaker never settles here, even if the two
+        // breakers happen to share a generation number.
+        if admission.breaker != self.id {
+            return false;
+        }
         let mut inner = self.state.lock();
         if inner.generation != admission.generation {
             return false;

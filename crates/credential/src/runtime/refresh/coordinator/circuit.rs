@@ -34,18 +34,18 @@ struct DispatchProbe {
     /// Epoch-bound breaker permit. Outcomes are applied only while the
     /// breaker is still in the epoch this dispatch was admitted in, so a late
     /// closed-state result can neither release nor settle a later half-open
-    /// probe.
-    admission: Admission,
+    /// probe. `None` once settled: taking it is what makes settlement
+    /// happen at most once.
+    admission: Option<Admission>,
     provider_started: bool,
-    settled: bool,
 }
 impl Drop for DispatchProbe {
     fn drop(&mut self) {
-        if self.settled {
+        let Some(admission) = self.admission.take() else {
             return;
-        }
+        };
         if self.provider_started {
-            L1RefreshCoalescer::record_dispatch_failure(&self.breaker, self.admission);
+            L1RefreshCoalescer::record_dispatch_failure(&self.breaker, admission);
             self.metrics.transport_cancelled.inc();
             tracing::warn!(
                 circuit_outcome = "transport_cancelled",
@@ -56,7 +56,7 @@ impl Drop for DispatchProbe {
             // failure; it releases a half-open slot only if this admission
             // reserved one in the breaker's current epoch.
             self.breaker
-                .record_admitted_outcome(self.admission, Outcome::Cancelled);
+                .record_admitted_outcome(admission, Outcome::Cancelled);
             self.metrics.admission_cancelled.inc();
             tracing::debug!(
                 circuit_outcome = "admission_cancelled",
@@ -125,9 +125,8 @@ impl RefreshDispatchCircuit {
             key: self.inner.key.clone(),
             breaker,
             metrics: self.inner.metrics.clone(),
-            admission,
+            admission: Some(admission),
             provider_started: false,
-            settled: false,
         });
         self.inner.metrics.admitted.inc();
         tracing::debug!(
@@ -145,11 +144,12 @@ impl RefreshDispatchCircuit {
     }
     /// Settle the probe with a completed provider transport response.
     pub(crate) fn record_success(&self) {
-        if let Some(mut probe) = self.inner.probe.lock().take() {
-            probe.settled = true;
+        if let Some(mut probe) = self.inner.probe.lock().take()
+            && let Some(admission) = probe.admission.take()
+        {
             probe
                 .l1
-                .record_dispatch_success(&probe.key, &probe.breaker, probe.admission);
+                .record_dispatch_success(&probe.key, &probe.breaker, admission);
             probe.metrics.transport_success.inc();
             tracing::debug!(
                 circuit_outcome = "transport_success",
@@ -159,9 +159,10 @@ impl RefreshDispatchCircuit {
     }
     /// Settle the probe with a failed provider transport.
     pub(crate) fn record_failure(&self) {
-        if let Some(mut probe) = self.inner.probe.lock().take() {
-            probe.settled = true;
-            L1RefreshCoalescer::record_dispatch_failure(&probe.breaker, probe.admission);
+        if let Some(mut probe) = self.inner.probe.lock().take()
+            && let Some(admission) = probe.admission.take()
+        {
+            L1RefreshCoalescer::record_dispatch_failure(&probe.breaker, admission);
             probe.metrics.transport_failure.inc();
             tracing::debug!(
                 circuit_outcome = "transport_failure",
@@ -332,9 +333,8 @@ mod tests {
             key: "credential".to_owned(),
             breaker: breaker.clone(),
             metrics: metrics.clone(),
-            admission: first,
+            admission: Some(first),
             provider_started: true,
-            settled: false,
         });
         gate.record_success();
         breaker
