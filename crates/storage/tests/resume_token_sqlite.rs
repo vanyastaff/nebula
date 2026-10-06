@@ -20,7 +20,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use nebula_storage::sqlite::{SqliteExecutionStore, SqliteResumeTokenStore, init_schema};
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{ExecutionStore, ResumeTokenStore};
 use nebula_storage_port::{Scope, TransitionBatch, TransitionOutcome};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};

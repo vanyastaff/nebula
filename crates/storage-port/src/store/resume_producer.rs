@@ -21,7 +21,7 @@
 //!
 //! See ADR-0099 W-S3d.
 use crate::dto::ControlMsg;
-use crate::dto::resume_token::{ResumeTokenRow, TokenHash};
+use crate::dto::{ResumeTokenRow, TokenHash};
 use crate::error::StorageError;
 
 /// Atomic consume + Resume-enqueue for the `POST /resume` producer.

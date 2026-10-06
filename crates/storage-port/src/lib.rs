@@ -28,15 +28,6 @@ pub mod store;
 
 pub use backend::StorageBackendKind;
 pub use batch::{ExecutionReferenceTransition, TransitionBatch, TransitionOutcome};
-pub use dto::credential::{
-    CredentialAdmissionEpoch, CredentialAdmissionEpochError, CredentialCommit, CredentialCreate,
-    CredentialMaterial, CredentialMaterialEpoch, CredentialMaterialEpochError,
-    CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
-    CredentialReplacementFence, CredentialSelector, CredentialTombstone, CredentialVersion,
-    CredentialVersionError, MaterialUpdate, SecretBytes, StoredCredential, StoredCredentialHead,
-    StoredLiveCredential, StoredTombstonedCredential,
-};
-pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use dto::{
     AttemptGeneration, BeginDrainOutcome, CheckpointSaved, DestinationCapability,
     DestinationCapabilityParseError, EffectOccurrenceKey, EffectOccurrenceRecord,
@@ -57,6 +48,18 @@ pub use dto::{
     RequestFingerprint, RevisionCatalogError, RevisionInsertOutcome, RevisionRecordBytes,
     RevisionReferenceCounts, UnknownExecutionStatus, WorkerFlavorRecordFormat,
     WorkerFlavorRevisionRecord,
+};
+pub use dto::{
+    CredentialAdmissionEpoch, CredentialAdmissionEpochError, CredentialCommit, CredentialCreate,
+    CredentialMaterial, CredentialMaterialEpoch, CredentialMaterialEpochError,
+    CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
+    CredentialReplacementFence, CredentialSelector, CredentialTombstone, CredentialVersion,
+    CredentialVersionError, MaterialUpdate, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredLiveCredential, StoredTombstonedCredential,
+};
+pub use dto::{
+    ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError,
+    UnknownResumeTokenWaitKind,
 };
 pub use error::StorageError;
 pub use ids::{CredentialId, FencingToken, OperationCallId, OperationId};

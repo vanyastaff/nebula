@@ -51,7 +51,7 @@ use tokio_util::sync::CancellationToken;
 
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::ResumeTarget;
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 
 // Resume-token minting stores only SHA-256 hashes and zeroizes plaintext bearers.
 use base64::Engine as _;

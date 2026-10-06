@@ -111,7 +111,7 @@ impl Fixture {
     async fn park_with_resume_tokens(
         &self,
         id: ExecutionId,
-        rows: Vec<nebula_storage_port::dto::resume_token::ResumeTokenRow>,
+        rows: Vec<nebula_storage_port::dto::ResumeTokenRow>,
     ) {
         use nebula_storage_port::{TransitionBatch, TransitionOutcome};
         let fencing = self
@@ -477,7 +477,7 @@ both_backends!(
 );
 
 async fn webhook_resume_consumes_only_valid_tokens_and_enqueues_once(f: Fixture) {
-    use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+    use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
     let id = f.execution("paused").await;
     let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000);
     let hashes = (1..=4)
@@ -621,15 +621,15 @@ both_backends!(
 /// fails otherwise; the atomic consume always fails with a connection error.
 #[derive(Debug)]
 struct UnreachableProducer {
-    row: Option<nebula_storage_port::dto::resume_token::ResumeTokenRow>,
+    row: Option<nebula_storage_port::dto::ResumeTokenRow>,
 }
 
 #[async_trait::async_trait]
 impl nebula_storage_port::store::ResumeProducer for UnreachableProducer {
     async fn peek(
         &self,
-        _hash: &nebula_storage_port::dto::resume_token::TokenHash,
-    ) -> Result<Option<nebula_storage_port::dto::resume_token::ResumeTokenRow>, StorageError> {
+        _hash: &nebula_storage_port::dto::TokenHash,
+    ) -> Result<Option<nebula_storage_port::dto::ResumeTokenRow>, StorageError> {
         match &self.row {
             Some(row) => Ok(Some(row.clone())),
             None => Err(StorageError::Connection("peek: backend down".to_owned())),
@@ -638,7 +638,7 @@ impl nebula_storage_port::store::ResumeProducer for UnreachableProducer {
 
     async fn consume_and_enqueue_resume(
         &self,
-        _hash: &nebula_storage_port::dto::resume_token::TokenHash,
+        _hash: &nebula_storage_port::dto::TokenHash,
         _resume_msg: &nebula_storage_port::dto::ControlMsg,
     ) -> Result<bool, StorageError> {
         Err(StorageError::Connection("consume: backend down".to_owned()))
@@ -649,7 +649,7 @@ impl nebula_storage_port::store::ResumeProducer for UnreachableProducer {
 /// typed `source()`, and each failure is counted under its own outcome.
 #[tokio::test]
 async fn webhook_resume_failures_keep_the_storage_cause() {
-    use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+    use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
     use std::error::Error as _;
 
     let f = Fixture::in_memory();

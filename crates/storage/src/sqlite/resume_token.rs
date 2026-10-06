@@ -12,7 +12,7 @@
 
 use nebula_storage_port::Scope;
 use nebula_storage_port::StorageError;
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, TokenHash};
+use nebula_storage_port::dto::{ResumeTokenRow, TokenHash};
 use nebula_storage_port::store::ResumeTokenStore;
 use sqlx::{Row, SqlitePool};
 

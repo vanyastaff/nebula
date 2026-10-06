@@ -22,10 +22,7 @@ use nebula_metrics::{
 };
 use nebula_storage_port::{
     Scope, StorageError,
-    dto::{
-        ControlCommand, ControlMsg, ResumeTarget,
-        resume_token::{ResumeTokenWaitKind, TokenHash},
-    },
+    dto::{ControlCommand, ControlMsg, ResumeTarget, ResumeTokenWaitKind, TokenHash},
     store::{ControlQueue, ExecutionStore, ResumeProducer},
 };
 use nebula_tenancy::{ScopedControlQueue, ScopedExecutionStore};

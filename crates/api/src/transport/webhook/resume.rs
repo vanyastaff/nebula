@@ -64,7 +64,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use nebula_action::Clock;
-use nebula_storage_port::dto::resume_token::TokenHash;
+use nebula_storage_port::dto::TokenHash;
 use tracing::{debug, warn};
 
 use super::ratelimit::WebhookRateLimiter;

@@ -22,7 +22,7 @@ use nebula_execution::context::ExecutionBudget;
 use nebula_execution::output::ExecutionOutput;
 use nebula_execution::state::{AttemptOutcome, ExecutionState, WaitSignal, WaitWake};
 use nebula_storage_port::Scope;
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind};
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind};
 use nebula_workflow::DependencyGraph;
 use secrecy::SecretString;
 use tokio_util::sync::CancellationToken;

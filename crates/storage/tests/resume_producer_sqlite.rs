@@ -17,8 +17,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use nebula_storage::sqlite::{SqliteExecutionStore, SqliteResumeProducer, init_schema};
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, ResumeTarget};
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{ExecutionStore, ResumeProducer};
 use nebula_storage_port::{Scope, TransitionBatch, TransitionOutcome};
 use sqlx::Row;

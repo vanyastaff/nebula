@@ -19,7 +19,7 @@
 //!
 //! See ADR-0099 W-S3c (this trait) and W-S3e (the engine wiring).
 use crate::Scope;
-use crate::dto::resume_token::{ResumeTokenRow, TokenHash};
+use crate::dto::{ResumeTokenRow, TokenHash};
 use crate::error::StorageError;
 
 /// Read and lifecycle operations for the resume-token store.

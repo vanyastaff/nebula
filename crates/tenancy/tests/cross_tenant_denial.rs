@@ -28,7 +28,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nebula_core::WorkerFlavorRevisionId;
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::dto::{
     AcceptResourceEventRequest, AcquireResourceSourceLeaseRequest, CachedRecord,
     ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, CompleteResourceDeliveryRequest,
@@ -47,6 +46,7 @@ use nebula_storage_port::dto::{
     ResourceSubscriptionVersion, SharedResourceId, SharedResourceIdentity, StartReservation,
     StoredContractBundle, TransitionResourceSubscriptionRequest, TriggerRow,
 };
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{
     CheckpointStore, ClaimGeneration, ControlQueue, ControlStartAcceptance, ControlStartHandoff,
     ControlTurnCommit, ControlTurnCommitOutcome, ExecutionStore, ExecutionTurnHandoff,

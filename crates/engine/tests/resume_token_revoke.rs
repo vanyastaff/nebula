@@ -69,7 +69,7 @@ use nebula_storage::{
 };
 use nebula_storage_port::{
     FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
-    dto::{ExecutionRecord, WorkflowVersionRecord, resume_token::ResumeTokenRow},
+    dto::{ExecutionRecord, ResumeTokenRow, WorkflowVersionRecord},
     store::{ExecutionStore, ResumeTokenStore, WorkflowVersionStore},
 };
 use nebula_workflow::{
@@ -385,7 +385,7 @@ struct FailingRevokeStore;
 impl ResumeTokenStore for FailingRevokeStore {
     async fn consume(
         &self,
-        _token_hash: &nebula_storage_port::dto::resume_token::TokenHash,
+        _token_hash: &nebula_storage_port::dto::TokenHash,
     ) -> Result<Option<ResumeTokenRow>, StorageError> {
         Ok(None)
     }

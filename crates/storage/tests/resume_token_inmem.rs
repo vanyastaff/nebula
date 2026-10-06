@@ -18,7 +18,7 @@
 use std::time::Duration;
 
 use nebula_storage::{InMemoryExecutionStore, InMemoryResumeTokenStore};
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{ExecutionStore, ResumeTokenStore};
 use nebula_storage_port::{Scope, TransitionBatch, TransitionOutcome};
 

@@ -17,7 +17,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use chrono::{DateTime, Utc};
-use nebula_storage_port::dto::resume_token::ResumeTokenRow;
+use nebula_storage_port::dto::ResumeTokenRow;
 use nebula_storage_port::dto::{ControlMsg, ExecutionRecord};
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
 use nebula_storage_port::{

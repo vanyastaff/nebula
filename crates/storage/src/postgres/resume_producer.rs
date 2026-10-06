@@ -12,8 +12,8 @@
 //! transient fault rolls back, leaving the token live for retry.
 
 use nebula_storage_port::StorageError;
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, TokenHash};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg};
+use nebula_storage_port::dto::{ResumeTokenRow, TokenHash};
 use nebula_storage_port::store::ResumeProducer;
 use sqlx::PgPool;
 

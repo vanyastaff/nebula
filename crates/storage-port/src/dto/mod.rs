@@ -6,7 +6,7 @@
 //! Adapters map their backend rows to/from these DTOs at the port edge.
 
 mod control;
-pub mod credential;
+mod credential;
 mod credential_refresh_retry;
 mod execution;
 mod execution_history;
@@ -26,7 +26,7 @@ mod resource_lease;
 mod resource_recovery;
 mod resource_status;
 mod resource_subscription;
-pub mod resume_token;
+mod resume_token;
 mod revision_catalog;
 mod shared_resource;
 mod start_materialization;

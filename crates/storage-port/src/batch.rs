@@ -17,7 +17,7 @@
 //! ADR-0099 W-S3c.
 use chrono::{DateTime, Utc};
 
-use crate::dto::resume_token::ResumeTokenRow;
+use crate::dto::ResumeTokenRow;
 use crate::dto::{ControlMsg, ExecutionListing, JournalEntry};
 use crate::ids::FencingToken;
 use crate::scope::Scope;

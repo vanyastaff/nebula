@@ -52,8 +52,7 @@ use nebula_storage::{
 use nebula_storage_port::{
     Scope, StorageError,
     dto::{
-        ControlCommand, ControlMsg, ResumeTarget,
-        resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash},
+        ControlCommand, ControlMsg, ResumeTarget, ResumeTokenRow, ResumeTokenWaitKind, TokenHash,
     },
     store::{ResumeProducer, ResumeTokenStore},
 };
