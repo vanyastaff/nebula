@@ -475,6 +475,14 @@ fn make_engine(stores: &RecoveryStores, registry: Arc<ActionRegistry>) -> Workfl
         )
 }
 
+/// The target a webhook Resume carries: production webhook resumes always name
+/// the parked callback (only the bearer path produces them).
+fn webhook_target(callback_id: &str) -> Option<ResumeTarget> {
+    Some(ResumeTarget::Webhook {
+        callback_id: callback_id.to_owned(),
+    })
+}
+
 /// Single signal+timeout wait `wait ──main──> downstream`.
 fn build_single_registry(
     callback_id: &str,
@@ -660,7 +668,7 @@ async fn crashed_owner_resume_recovers_via_expired_lease() {
 
     tokio::time::timeout(
         Duration::from_secs(10),
-        dispatch_b.dispatch_resume(&scope, execution_id, None),
+        dispatch_b.dispatch_resume(&scope, execution_id, webhook_target("cb-recover")),
     )
     .await
     .expect("recovery must settle within 10s")
@@ -749,7 +757,9 @@ async fn live_owner_elsewhere_resume_defers() {
         &stores.execution,
     );
 
-    let result = dispatch_b.dispatch_resume(&scope, execution_id, None).await;
+    let result = dispatch_b
+        .dispatch_resume(&scope, execution_id, webhook_target("cb-live"))
+        .await;
     assert!(
         matches!(result, Err(ControlDispatchError::Deferred(_))),
         "a Resume to a live-owner-held execution must Defer, got {result:?}"
@@ -1283,7 +1293,9 @@ async fn transient_store_error_during_resume_defers_not_drops() {
     fail_reads.store(true, Ordering::SeqCst);
 
     let scope = nebula_engine::store_seam::single_tenant_scope();
-    let result = dispatch_b.dispatch_resume(&scope, execution_id, None).await;
+    let result = dispatch_b
+        .dispatch_resume(&scope, execution_id, webhook_target("cb-fault"))
+        .await;
 
     // The transient store error MUST Defer — not silently drop the Resume.
     assert!(
@@ -1304,7 +1316,7 @@ async fn transient_store_error_during_resume_defers_not_drops() {
     fail_reads.store(false, Ordering::SeqCst);
     let recovery_result = tokio::time::timeout(
         Duration::from_secs(10),
-        dispatch_b.dispatch_resume(&scope, execution_id, None),
+        dispatch_b.dispatch_resume(&scope, execution_id, webhook_target("cb-fault")),
     )
     .await
     .expect("re-delivery must settle within 10s");

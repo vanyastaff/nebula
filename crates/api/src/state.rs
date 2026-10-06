@@ -981,12 +981,16 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to {context} execution: {e}")))
     }
 
-    /// The shared execution control-command service over this state's stores.
+    /// The shared execution control-command service over this state's stores
+    /// (and the resume producer, when one is wired).
     pub(crate) fn execution_commands(&self) -> nebula_engine::ExecutionCommandService {
-        let service = nebula_engine::ExecutionCommandService::new(
+        let mut service = nebula_engine::ExecutionCommandService::new(
             Arc::clone(&self.execution_store),
             Arc::clone(&self.control_queue),
         );
+        if let Some(producer) = &self.resume_producer {
+            service = service.with_resume_producer(Arc::clone(producer));
+        }
         match &self.metrics_registry {
             Some(registry) => service.with_metrics((**registry).clone()),
             None => service,
