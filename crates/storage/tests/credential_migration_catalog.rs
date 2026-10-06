@@ -7,6 +7,7 @@ use std::{
     path::Path,
 };
 
+use nebula_storage::migration_catalog::{POSTGRES_ONLY_VERSIONS, REVIEWED_HEAD};
 use sha2::{Digest, Sha384};
 
 const PRE_0042_SHA384: &str = "fdd6413d8d014c945d1facf0595f91aefa8b605359e6890476df239720a47463615f2afee6c0edbc04c047aa5cd35182";
@@ -209,18 +210,19 @@ fn repository_catalog_matches_k2_contract() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
 
-    let expected_postgres = (1_u16..=64).collect::<Vec<_>>();
-    let expected_sqlite = (1_u16..=28)
-        .chain(30..=35)
-        .chain([
-            39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61,
-            62, 63, 64,
-        ])
+    let head = u16::try_from(REVIEWED_HEAD).expect("reviewed head fits u16");
+    let postgres_only = POSTGRES_ONLY_VERSIONS
+        .iter()
+        .map(|version| u16::try_from(*version).expect("version fits u16"))
+        .collect::<BTreeSet<_>>();
+    let expected_postgres = (1_u16..=head).collect::<Vec<_>>();
+    let expected_sqlite = (1_u16..=head)
+        .filter(|version| !postgres_only.contains(version))
         .collect::<Vec<_>>();
     assert_eq!(
         postgres.versions(),
         expected_postgres,
-        "Postgres must reserve every logical migration through version 0064"
+        "Postgres must hold every logical migration through the reviewed head"
     );
     assert_eq!(
         sqlite.versions(),
@@ -228,7 +230,7 @@ fn repository_catalog_matches_k2_contract() {
         "SQLite must contain the shared history and leave PostgreSQL-only versions reserved"
     );
 
-    for reserved in [29, 36, 37, 38, 60] {
+    for &reserved in &postgres_only {
         assert!(
             !sqlite.by_version().contains_key(&reserved),
             "PostgreSQL-only migration {reserved:04} must remain absent from SQLite"

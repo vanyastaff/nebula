@@ -7,7 +7,6 @@ fn _assert_object_safe(
     _c: &dyn NodeResultStore,
     _d: &dyn CheckpointStore,
     _e: &dyn IdempotencyGuard,
-    _f: &dyn IdempotencyStore,
     _g: &dyn WorkflowStore,
     _h: &dyn WorkflowVersionStore,
     _i: &dyn ControlQueue,
@@ -43,19 +42,12 @@ fn _assert_resource_runtime_object_safe(
 ) {
 }
 
-// Compile-time object-safety probe over the identity zoo: it is never
-// called, so the argument count is not an ergonomics concern.
-#[expect(clippy::too_many_arguments)]
 fn _assert_identity_object_safe(
-    _a: &dyn UserStore,
     _b: &dyn OrgStore,
     _c: &dyn WorkspaceStore,
     _d: &dyn MembershipStore,
     _e: &dyn ResourceStore,
     _f: &dyn TriggerStore,
-    _g: &dyn QuotaStore,
-    _h: &dyn AuditStore,
-    _i: &dyn BlobStore,
     _j: &dyn TenantProvisioningStore,
 ) {
 }

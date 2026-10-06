@@ -16,7 +16,6 @@ mod control_queue;
 mod control_turn;
 mod execution;
 mod execution_fence;
-mod idempotency_store;
 mod identity;
 mod iteration_checkpoint;
 mod job_dispatch;
@@ -29,15 +28,14 @@ mod resume_token;
 mod start_acceptance;
 mod turn_handoff;
 mod turn_recovery;
+mod webhook_activation;
 mod workflow;
 
 pub use control_queue::{SqliteControlQueue, SqliteJournalReader};
 pub use execution::{SqliteExecutionStore, SqliteIdempotencyGuard};
-pub use idempotency_store::{SqliteIdempotencyStore, SqliteWebhookActivationStore};
 pub use identity::{
-    SqliteAuditStore, SqliteBlobStore, SqliteMembershipStore, SqliteOrgStore, SqliteQuotaStore,
-    SqliteResourceStore, SqliteTenantProvisioningStore, SqliteTriggerStore, SqliteUserStore,
-    SqliteWorkspaceStore,
+    SqliteMembershipStore, SqliteOrgStore, SqliteResourceStore, SqliteTenantProvisioningStore,
+    SqliteTriggerStore, SqliteWorkspaceStore,
 };
 pub use iteration_checkpoint::SqliteCheckpointStore;
 pub use job_dispatch::SqliteJobDispatchQueue;
@@ -49,6 +47,7 @@ pub use resume_producer::SqliteResumeProducer;
 pub use resume_token::SqliteResumeTokenStore;
 pub use start_acceptance::SqliteStartAcceptanceStore;
 pub use turn_handoff::SqliteTurnHandoff;
+pub use webhook_activation::SqliteWebhookActivationStore;
 pub use workflow::{SqliteWorkflowStore, SqliteWorkflowVersionStore};
 
 /// Admit a canonical schema and apply every pending ordered migration under

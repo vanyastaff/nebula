@@ -5,15 +5,15 @@
 use std::sync::Arc;
 
 use nebula_storage_port::dto::{
-    AuditLogRow, BlobRow, OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome,
-    OrgMembershipRole, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
-    TenantDefaultWorkspaceCreate, TenantMembershipSnapshot, TenantOrgCreate,
-    TenantProvisioningConflict, TenantProvisioningOutcome, TenantProvisioningRequest, TriggerRow,
-    UserRow, WorkspaceMemberUpsert, WorkspaceMembershipRole, WorkspaceRow,
+    OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole, OrgRow,
+    PrincipalKind, ResourceRow, ScopeKind, TenantDefaultWorkspaceCreate, TenantMembershipSnapshot,
+    TenantOrgCreate, TenantProvisioningConflict, TenantProvisioningOutcome,
+    TenantProvisioningRequest, TriggerRow, WorkspaceMemberUpsert, WorkspaceMembershipRole,
+    WorkspaceRow,
 };
 use nebula_storage_port::store::{
-    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
-    TenantProvisioningStore, TriggerStore, UserStore, WorkspaceStore,
+    MembershipStore, OrgStore, ResourceStore, TenantProvisioningStore, TriggerStore,
+    WorkspaceStore,
 };
 use nebula_storage_port::{Scope, StorageError as PortStorageError};
 
@@ -22,39 +22,16 @@ use nebula_storage_port::{Scope, StorageError as PortStorageError};
 #[async_trait::async_trait]
 trait IdentityBackend: Send + Sync {
     fn name(&self) -> &'static str;
-    async fn user_store(&self) -> Arc<dyn UserStore>;
     async fn org_store(&self) -> Arc<dyn OrgStore>;
     async fn workspace_store(&self) -> Arc<dyn WorkspaceStore>;
     async fn membership_store(&self) -> Arc<dyn MembershipStore>;
     async fn tenant_provisioning_store(&self) -> Arc<dyn TenantProvisioningStore>;
     async fn resource_store(&self) -> Arc<dyn ResourceStore>;
     async fn trigger_store(&self) -> Arc<dyn TriggerStore>;
-    async fn quota_store(&self) -> Arc<dyn QuotaStore>;
-    async fn audit_store(&self) -> Arc<dyn AuditStore>;
-    async fn blob_store(&self) -> Arc<dyn BlobStore>;
 }
 
 
 // ── row builders ──────────────────────────────────────────────────────────
-
-fn user_row(id: &str, email: &str) -> UserRow {
-    UserRow {
-        id: id.into(),
-        email: email.into(),
-        email_verified_at: None,
-        display_name: "Test User".into(),
-        avatar_url: None,
-        password_hash: None,
-        created_at: "2026-01-01T00:00:00Z".into(),
-        last_login_at: None,
-        locked_until: None,
-        failed_login_count: 0,
-        mfa_enabled: false,
-        mfa_secret_envelope: None,
-        version: 0,
-        deleted_at: None,
-    }
-}
 
 fn org_row(id: &str, slug: &str) -> OrgRow {
     OrgRow {
@@ -177,101 +154,7 @@ fn trigger_row(id: &str, workspace_id: &str, slug: &str) -> TriggerRow {
     }
 }
 
-fn quota_row(org_id: &str, concurrent: i32) -> QuotaRow {
-    QuotaRow {
-        org_id: org_id.into(),
-        plan: "free".into(),
-        concurrent_executions_limit: 10,
-        executions_per_month_limit: None,
-        active_workflows_limit: None,
-        concurrent_executions: concurrent,
-        executions_this_month: 0,
-        month_reset_at: "2026-02-01T00:00:00Z".into(),
-        updated_at: "2026-01-01T00:00:00Z".into(),
-    }
-}
-
-fn audit_row(id: &str, org_id: &str, emitted_at: &str) -> AuditLogRow {
-    AuditLogRow {
-        id: id.into(),
-        org_id: org_id.into(),
-        workspace_id: None,
-        actor_kind: "system".into(),
-        actor_id: None,
-        action: "workflow.created".into(),
-        target_kind: None,
-        target_id: None,
-        details: None,
-        ip_address: None,
-        user_agent: None,
-        emitted_at: emitted_at.into(),
-    }
-}
-
-fn blob_row(id: &str, workspace_id: &str, expires_at: Option<&str>) -> BlobRow {
-    BlobRow {
-        id: id.into(),
-        workspace_id: workspace_id.into(),
-        execution_id: None,
-        kind: "attachment".into(),
-        content_type: None,
-        size_bytes: 3,
-        checksum: None,
-        storage_mode: "db".into(),
-        data: Some(vec![1, 2, 3]),
-        external_ref: None,
-        metadata: None,
-        created_at: "2026-01-01T00:00:00Z".into(),
-        expires_at: expires_at.map(ToString::to_string),
-    }
-}
-
 // ── shared contract assertions ────────────────────────────────────────────
-
-async fn assert_user_contract(b: &dyn IdentityBackend) {
-    let s = b.user_store().await;
-    s.create(user_row("usr_1", "a@example.com"))
-        .await
-        .expect("create user");
-    // duplicate id ⇒ Duplicate
-    assert!(s.create(user_row("usr_1", "z@example.com")).await.is_err());
-    // duplicate active email (case-insensitive) ⇒ Duplicate
-    assert!(s.create(user_row("usr_2", "A@EXAMPLE.COM")).await.is_err());
-    // round-trip + email lookup
-    assert_eq!(
-        s.get("usr_1").await.expect("get").unwrap().email,
-        "a@example.com"
-    );
-    assert_eq!(
-        s.get_by_email("A@example.com")
-            .await
-            .expect("get_by_email")
-            .unwrap()
-            .id,
-        "usr_1"
-    );
-    // CAS conflict
-    assert!(
-        s.update(user_row("usr_1", "a@example.com"), 99)
-            .await
-            .is_err()
-    );
-    let mut updated = user_row("usr_1", "a@example.com");
-    updated.display_name = "Renamed".into();
-    updated.version = 1;
-    s.update(updated, 0).await.expect("CAS update");
-    assert_eq!(
-        s.get("usr_1").await.unwrap().unwrap().display_name,
-        "Renamed"
-    );
-    // soft-delete hides the row and frees the email
-    s.soft_delete("usr_1").await.expect("soft_delete");
-    assert!(s.get("usr_1").await.unwrap().is_none());
-    assert!(s.get_by_email("a@example.com").await.unwrap().is_none());
-    s.create(user_row("usr_3", "a@example.com"))
-        .await
-        .expect("email freed after soft-delete");
-}
 
 async fn assert_org_contract(b: &dyn IdentityBackend) {
     let s = b.org_store().await;
@@ -1210,61 +1093,5 @@ async fn assert_trigger_contract(b: &dyn IdentityBackend) {
     );
     s.soft_delete(&a, "trg_1").await.expect("soft_delete");
     assert!(s.get(&a, "trg_1").await.unwrap().is_none());
-}
-
-async fn assert_quota_contract(b: &dyn IdentityBackend) {
-    let s = b.quota_store().await;
-    s.upsert(quota_row("org_1", 0)).await.expect("upsert");
-    assert_eq!(
-        s.get("org_1").await.unwrap().unwrap().concurrent_executions,
-        0
-    );
-    assert_eq!(s.adjust_concurrent("org_1", 3).await.expect("adjust"), 3);
-    assert_eq!(s.adjust_concurrent("org_1", -1).await.expect("adjust"), 2);
-    // cannot go below zero
-    assert!(s.adjust_concurrent("org_1", -10).await.is_err());
-    assert_eq!(
-        s.get("org_1").await.unwrap().unwrap().concurrent_executions,
-        2
-    );
-    // missing org ⇒ NotFound
-    assert!(s.adjust_concurrent("org_missing", 1).await.is_err());
-}
-
-async fn assert_audit_contract(b: &dyn IdentityBackend) {
-    let s = b.audit_store().await;
-    s.append(audit_row("aud_1", "org_1", "2026-01-01T00:00:00Z"))
-        .await
-        .expect("append");
-    s.append(audit_row("aud_2", "org_1", "2026-01-02T00:00:00Z"))
-        .await
-        .expect("append");
-    s.append(audit_row("aud_x", "org_2", "2026-01-03T00:00:00Z"))
-        .await
-        .expect("append");
-    let rows = s.list_for_org("org_1", 10).await.expect("list");
-    assert_eq!(rows.len(), 2, "org-scoped");
-    // newest first
-    assert_eq!(rows[0].id, "aud_2");
-    assert_eq!(rows[1].id, "aud_1");
-    // limit honoured
-    assert_eq!(s.list_for_org("org_1", 1).await.unwrap().len(), 1);
-}
-
-async fn assert_blob_contract(b: &dyn IdentityBackend) {
-    let s = b.blob_store().await;
-    s.put(blob_row("blb_1", "ws_a", None)).await.expect("put");
-    s.put(blob_row("blb_2", "ws_a", Some("2000-01-01T00:00:00Z")))
-        .await
-        .expect("put expiring");
-    assert_eq!(s.get("ws_a", "blb_1").await.unwrap().unwrap().size_bytes, 3);
-    // cross-workspace get is a miss
-    assert!(s.get("ws_b", "blb_1").await.unwrap().is_none());
-    // evict_expired removes the past-expiry blob only
-    assert_eq!(s.evict_expired().await.expect("evict"), 1);
-    assert!(s.get("ws_a", "blb_2").await.unwrap().is_none());
-    assert!(s.get("ws_a", "blb_1").await.unwrap().is_some());
-    s.delete("ws_a", "blb_1").await.expect("delete");
-    assert!(s.get("ws_a", "blb_1").await.unwrap().is_none());
 }
 

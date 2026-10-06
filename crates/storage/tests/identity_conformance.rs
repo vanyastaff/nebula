@@ -1,9 +1,9 @@
 //! Identity-zoo behavioral conformance matrix (spec-16 §5 / §9, §6.1) on the
 //! in-memory and SQLite adapters.
 //!
-//! One backend-agnostic contract suite for the nine identity aggregates
-//! (`User`, `Org`, `Workspace`, `Membership`, `Resource`, `Trigger`,
-//! `Quota`, `Audit`, `Blob`); the shared assertions encode the abstract contract
+//! One backend-agnostic contract suite for the tenant directory and workspace
+//! objects (`Org`, `Workspace`, `Membership`, tenant provisioning, `Resource`,
+//! `Trigger`); the shared assertions encode the abstract contract
 //! every adapter must satisfy. The PostgreSQL arm lives in
 //! `identity_conformance_postgres` (an evidence binary that needs a live
 //! database).
@@ -34,9 +34,6 @@ impl IdentityBackend for InMemoryBackend {
     fn name(&self) -> &'static str {
         "InMemory"
     }
-    async fn user_store(&self) -> Arc<dyn UserStore> {
-        Arc::new(nebula_storage::inmem::InMemoryUserStore::new())
-    }
     async fn org_store(&self) -> Arc<dyn OrgStore> {
         Arc::new(self.directory.org_store())
     }
@@ -54,15 +51,6 @@ impl IdentityBackend for InMemoryBackend {
     }
     async fn trigger_store(&self) -> Arc<dyn TriggerStore> {
         Arc::new(nebula_storage::inmem::InMemoryTriggerStore::new())
-    }
-    async fn quota_store(&self) -> Arc<dyn QuotaStore> {
-        Arc::new(nebula_storage::inmem::InMemoryQuotaStore::new())
-    }
-    async fn audit_store(&self) -> Arc<dyn AuditStore> {
-        Arc::new(nebula_storage::inmem::InMemoryAuditStore::new())
-    }
-    async fn blob_store(&self) -> Arc<dyn BlobStore> {
-        Arc::new(nebula_storage::inmem::InMemoryBlobStore::new())
     }
 }
 
@@ -108,16 +96,6 @@ impl SqliteBackend {
 impl IdentityBackend for SqliteBackend {
     fn name(&self) -> &'static str {
         "Sqlite(:memory:)"
-    }
-    async fn user_store(&self) -> Arc<dyn UserStore> {
-        #[cfg(feature = "sqlite")]
-        {
-            Arc::new(nebula_storage::sqlite::SqliteUserStore::new(
-                self.pool().await,
-            ))
-        }
-        #[cfg(not(feature = "sqlite"))]
-        unimplemented!("built without the `sqlite` feature")
     }
     async fn org_store(&self) -> Arc<dyn OrgStore> {
         #[cfg(feature = "sqlite")]
@@ -179,36 +157,6 @@ impl IdentityBackend for SqliteBackend {
         #[cfg(not(feature = "sqlite"))]
         unimplemented!("built without the `sqlite` feature")
     }
-    async fn quota_store(&self) -> Arc<dyn QuotaStore> {
-        #[cfg(feature = "sqlite")]
-        {
-            Arc::new(nebula_storage::sqlite::SqliteQuotaStore::new(
-                self.pool().await,
-            ))
-        }
-        #[cfg(not(feature = "sqlite"))]
-        unimplemented!("built without the `sqlite` feature")
-    }
-    async fn audit_store(&self) -> Arc<dyn AuditStore> {
-        #[cfg(feature = "sqlite")]
-        {
-            Arc::new(nebula_storage::sqlite::SqliteAuditStore::new(
-                self.pool().await,
-            ))
-        }
-        #[cfg(not(feature = "sqlite"))]
-        unimplemented!("built without the `sqlite` feature")
-    }
-    async fn blob_store(&self) -> Arc<dyn BlobStore> {
-        #[cfg(feature = "sqlite")]
-        {
-            Arc::new(nebula_storage::sqlite::SqliteBlobStore::new(
-                self.pool().await,
-            ))
-        }
-        #[cfg(not(feature = "sqlite"))]
-        unimplemented!("built without the `sqlite` feature")
-    }
 }
 
 fn sqlite_skip() -> Option<&'static str> {
@@ -260,7 +208,6 @@ macro_rules! identity_matrix {
     };
 }
 
-identity_matrix!(user_store_contract, assert_user_contract);
 identity_matrix!(org_store_contract, assert_org_contract);
 identity_matrix!(workspace_store_contract, assert_workspace_contract);
 identity_matrix!(membership_store_contract, assert_membership_contract);
@@ -285,9 +232,6 @@ identity_matrix!(membership_lockout, assert_membership_lockout);
 identity_matrix!(tenant_provisioning, assert_tenant_provisioning);
 identity_matrix!(resource_store_contract, assert_resource_contract);
 identity_matrix!(trigger_store_contract, assert_trigger_contract);
-identity_matrix!(quota_store_contract, assert_quota_contract);
-identity_matrix!(audit_store_contract, assert_audit_contract);
-identity_matrix!(blob_store_contract, assert_blob_contract);
 
 /// File SQLite exercises real competing connections rather than relying only
 /// on shared-cache memory's lock behavior.

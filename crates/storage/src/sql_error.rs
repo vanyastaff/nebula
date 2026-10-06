@@ -66,13 +66,6 @@ pub(crate) fn decode_u64(value: i64, column: &'static str) -> Result<u64, Storag
         .map_err(|_| StorageError::Corrupt(format!("column `{column}` holds a negative counter")))
 }
 
-/// Decode a 32-bit counter or limit stored as a 64-bit SQL integer. A value
-/// outside the `i32` range is corrupt data, never a truncated number.
-pub(crate) fn decode_i32(value: i64, column: &'static str) -> Result<i32, StorageError> {
-    i32::try_from(value)
-        .map_err(|_| StorageError::Corrupt(format!("column `{column}` is outside the i32 range")))
-}
-
 /// Encode a non-negative counter for a signed 64-bit SQL column. A value
 /// past `i64::MAX` is rejected input, never a wrapped negative number.
 pub(crate) fn encode_u64(value: u64, column: &'static str) -> Result<i64, StorageError> {
@@ -179,10 +172,6 @@ mod tests {
         assert_eq!(decode_u64(7, "version").ok(), Some(7));
         assert!(matches!(
             decode_u64(-1, "version"),
-            Err(StorageError::Corrupt(_))
-        ));
-        assert!(matches!(
-            decode_i32(i64::from(i32::MAX) + 1, "limit"),
             Err(StorageError::Corrupt(_))
         ));
         assert!(matches!(

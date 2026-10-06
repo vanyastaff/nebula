@@ -1271,10 +1271,11 @@ mod sqlite_lock_tests;
 mod tests {
     use super::{GENERAL_CATALOG_SUPPORTED_FLOOR, catalog};
 
-    /// Deliberately spelled with literals: this is the tripwire that makes a
-    /// new catalog head a decision rather than a side effect. Deriving either
-    /// value from the migrator would make it pass automatically and prove
-    /// nothing.
+    /// The tripwire that makes a new catalog head a decision rather than a
+    /// side effect: the head is compared with the literal
+    /// [`crate::migration_catalog::REVIEWED_HEAD`], never derived from the
+    /// migrator, so a new migration fails here until it is reviewed below and
+    /// acknowledged there.
     ///
     /// Head 0045 (`port_operation_ledger`) reviewed against the floor: it
     /// creates one new table and touches no existing relation, so it needs no
@@ -1435,10 +1436,17 @@ mod tests {
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
+        use crate::migration_catalog::REVIEWED_HEAD;
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 64);
+        assert_eq!(
+            catalog::catalog_head(&super::SQLITE_MIGRATOR),
+            REVIEWED_HEAD
+        );
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 64);
+        assert_eq!(
+            catalog::catalog_head(&super::POSTGRES_MIGRATOR),
+            REVIEWED_HEAD
+        );
     }
 
     /// The setup guard must never hold a descriptor on the database file.

@@ -12,7 +12,6 @@ mod control_queue;
 mod control_turn;
 mod execution;
 mod execution_fence;
-mod idempotency_store;
 mod identity;
 mod iteration_checkpoint;
 mod job_dispatch;
@@ -27,15 +26,14 @@ mod resume_token;
 mod start_acceptance;
 mod turn_handoff;
 mod turn_recovery;
+mod webhook_activation;
 mod workflow;
 
 pub use control_queue::InMemoryControlQueue;
 pub use execution::{InMemoryExecutionStore, InMemoryIdempotencyGuard};
-pub use idempotency_store::{InMemoryIdempotencyStore, InMemoryWebhookActivationStore};
 pub use identity::{
-    InMemoryAuditStore, InMemoryBlobStore, InMemoryIdentityDirectory, InMemoryMembershipStore,
-    InMemoryOrgStore, InMemoryQuotaStore, InMemoryResourceStore, InMemoryTriggerStore,
-    InMemoryUserStore, InMemoryWorkspaceStore,
+    InMemoryIdentityDirectory, InMemoryMembershipStore, InMemoryOrgStore, InMemoryResourceStore,
+    InMemoryTriggerStore, InMemoryWorkspaceStore,
 };
 pub use iteration_checkpoint::InMemoryCheckpointStore;
 pub use job_dispatch::InMemoryJobDispatchQueue;
@@ -51,4 +49,5 @@ pub use start_acceptance::InMemoryStartAcceptanceStore;
 pub use turn_handoff::InMemoryTurnHandoff;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) use turn_handoff::{acceptance_label, control_acceptance_label};
+pub use webhook_activation::InMemoryWebhookActivationStore;
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};

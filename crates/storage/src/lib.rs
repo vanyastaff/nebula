@@ -86,6 +86,7 @@ mod workflow_activation;
 mod execution_listing;
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 mod migration;
+pub mod migration_catalog;
 /// The one `sqlx` error → `StorageError` mapping of the SQL backends.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod sql_error;
@@ -95,10 +96,10 @@ pub mod test_support;
 
 pub use inmem::{
     InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
-    InMemoryIdempotencyGuard, InMemoryIdempotencyStore, InMemoryJournalReader,
-    InMemoryNodeResultStore, InMemoryPlanFlavorCatalog, InMemoryResourceRuntime,
-    InMemoryResourceStatusStore, InMemoryResumeProducer, InMemoryResumeTokenStore,
-    InMemoryWebhookActivationStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    InMemoryIdempotencyGuard, InMemoryJournalReader, InMemoryNodeResultStore,
+    InMemoryPlanFlavorCatalog, InMemoryResourceRuntime, InMemoryResourceStatusStore,
+    InMemoryResumeProducer, InMemoryResumeTokenStore, InMemoryWebhookActivationStore,
+    InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
 };
 /// The one storage error of the crate: the port's.
 pub use nebula_storage_port::StorageError;

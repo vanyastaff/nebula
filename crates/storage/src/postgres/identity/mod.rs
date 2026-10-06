@@ -19,26 +19,18 @@
 //! [`sqlx::types::Json`]; binary columns are `BYTEA`. A stored value that
 //! does not decode is [`StorageError::Corrupt`].
 
-mod audit;
-mod blob;
 mod membership;
 mod org;
-mod quota;
 mod resource;
 mod tenant_provisioning;
 mod trigger;
-mod user;
 mod workspace;
 
-pub use audit::PgAuditStore;
-pub use blob::PgBlobStore;
 pub use membership::PgMembershipStore;
 pub use org::PgOrgStore;
-pub use quota::PgQuotaStore;
 pub use resource::PgResourceStore;
 pub use tenant_provisioning::PgTenantProvisioningStore;
 pub use trigger::PgTriggerStore;
-pub use user::PgUserStore;
 pub use workspace::PgWorkspaceStore;
 
 use nebula_storage_port::{Scope, StorageError};
@@ -47,7 +39,7 @@ use sqlx::postgres::PgRow;
 use sqlx::types::Json;
 use sqlx::{PgConnection, PgPool, Row};
 
-use crate::sql_error::{decode_i32, decode_u64, encode_u64, storage_error};
+use crate::sql_error::{decode_u64, encode_u64, storage_error};
 
 // ── column decoders ──────────────────────────────────────────────────────
 
@@ -72,11 +64,6 @@ where
 /// The row's optimistic-concurrency `version`.
 fn version(row: &PgRow) -> Result<u64, StorageError> {
     decode_u64(required(row, "version")?, "version")
-}
-
-/// A 32-bit counter or limit stored as BIGINT.
-fn int32(row: &PgRow, column: &'static str) -> Result<i32, StorageError> {
-    decode_i32(required(row, column)?, column)
 }
 
 /// A NOT NULL JSONB column.

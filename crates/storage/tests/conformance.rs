@@ -31,8 +31,7 @@ use harness::{
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
     assert_expired_rollbacks_are_released, assert_get_published_is_highest_numbered,
     assert_history_is_scope_isolated, assert_history_orders_filters_and_pages,
-    assert_idempotency_first_writer_wins, assert_idempotency_store_cross_scope_isolated,
-    assert_idempotency_store_first_writer, assert_job_dispatch_exact_flavor,
+    assert_idempotency_first_writer_wins, assert_job_dispatch_exact_flavor,
     assert_job_dispatch_fencing, assert_job_dispatch_requires_primary_plugin,
     assert_job_dispatch_routes_by_plugin, assert_job_dispatch_routes_by_plugin_superset,
     assert_job_dispatch_same_processor_aba_is_fenced, assert_journal_visibility_and_scope,
@@ -126,14 +125,6 @@ matrix!(
 matrix!(
     journal_visibility_and_scope,
     assert_journal_visibility_and_scope
-);
-matrix!(
-    idempotency_store_first_writer,
-    assert_idempotency_store_first_writer
-);
-matrix!(
-    idempotency_store_cross_scope_isolated,
-    assert_idempotency_store_cross_scope_isolated
 );
 matrix!(
     webhook_activation_and_scope,
@@ -395,10 +386,6 @@ scoped_matrix!(
 scoped_matrix!(
     scoped_control_queue_outbox_and_fencing,
     assert_control_queue_outbox_and_fencing
-);
-scoped_matrix!(
-    scoped_idempotency_store_first_writer,
-    assert_idempotency_store_first_writer
 );
 scoped_matrix!(
     scoped_workflow_store_contract,

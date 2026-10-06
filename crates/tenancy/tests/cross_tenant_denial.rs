@@ -29,11 +29,11 @@ use std::time::Duration;
 
 use nebula_core::WorkerFlavorRevisionId;
 use nebula_storage_port::dto::{
-    AcceptResourceEventRequest, AcquireResourceSourceLeaseRequest, CachedRecord,
-    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, CompleteResourceDeliveryRequest,
-    ControlCommand, ControlMsg, EffectOccurrenceKey, EffectOccurrenceRecord, EffectSlotBinding,
-    EffectSlotId, EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace, ExecutionRecord,
-    FrozenOutcomeEvidence, HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
+    AcceptResourceEventRequest, AcquireResourceSourceLeaseRequest, ClaimResourceDeliveriesRequest,
+    ClaimResourceHandoffsRequest, CompleteResourceDeliveryRequest, ControlCommand, ControlMsg,
+    EffectOccurrenceKey, EffectOccurrenceRecord, EffectSlotBinding, EffectSlotId, EventEnvelope,
+    EventOccurrenceKey, EventOccurrenceNamespace, ExecutionRecord, FrozenOutcomeEvidence,
+    HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
     HeartbeatResourceSourceLeaseRequest, KnownOutcome, MaterializedStart, OperationAdvance,
     OperationCommand, OperationLedgerError, OperationRecord, OutcomeEvidenceSource, PrepareOutcome,
     PutResourceSubscriptionRequest, ReleaseResourceDeliveryRequest,
@@ -50,7 +50,7 @@ use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{
     CheckpointStore, ClaimGeneration, ControlQueue, ControlStartAcceptance, ControlStartHandoff,
     ControlTurnCommit, ControlTurnCommitOutcome, ExecutionStore, ExecutionTurnHandoff,
-    IdempotencyStore, JobClaimToken, OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome,
+    JobClaimToken, OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome,
     ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceSourceLeaseStore,
     ResourceStore, ResourceSubscriptionStore, SharedResourceStore, StartAcceptanceStore,
     StartMaterialization, StartMaterializationError, TriggerStore, TurnAcceptance, TurnHandoff,
@@ -62,10 +62,10 @@ use nebula_storage_port::{
 };
 use nebula_tenancy::{
     ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionStore, ScopedExecutionTurnHandoff,
-    ScopedIdempotencyStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
-    ScopedResourceEventFanoutStore, ScopedResourceExecutionHandoffStore,
-    ScopedResourceSourceLeaseStore, ScopedResourceStore, ScopedResourceSubscriptionStore,
-    ScopedSharedResourceStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
+    ScopedOperationLedger, ScopedOperationLedgerAdjudicator, ScopedResourceEventFanoutStore,
+    ScopedResourceExecutionHandoffStore, ScopedResourceSourceLeaseStore, ScopedResourceStore,
+    ScopedResourceSubscriptionStore, ScopedSharedResourceStore, ScopedStartAcceptanceStore,
+    ScopedTriggerStore,
 };
 
 fn scope_a() -> Scope {
@@ -286,62 +286,6 @@ impl ExecutionStore for MockExecStore {
     }
 }
 
-// ── Mock idempotency store ────────────────────────────────────────────────
-// Keyed by `{ws}:{org}:{cache_key}` like the real backends: the store
-// folds the scope in, and the decorator substitutes its bound scope before
-// the call lands here, so two tenants' keyspaces are disjoint.
-
-#[derive(Default)]
-struct MockIdemStore {
-    rows: Mutex<HashMap<String, CachedRecord>>,
-}
-
-impl std::fmt::Debug for MockIdemStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("MockIdemStore")
-    }
-}
-
-fn idem_key(scope: &Scope, cache_key: &str) -> String {
-    format!("{}:{}:{}", scope.workspace_id, scope.org_id, cache_key)
-}
-
-#[async_trait::async_trait]
-impl IdempotencyStore for MockIdemStore {
-    async fn get(
-        &self,
-        scope: &Scope,
-        cache_key: &str,
-    ) -> Result<Option<CachedRecord>, StorageError> {
-        Ok(self
-            .rows
-            .lock()
-            .expect("mock lock")
-            .get(&idem_key(scope, cache_key))
-            .cloned())
-    }
-
-    async fn put(
-        &self,
-        scope: &Scope,
-        cache_key: String,
-        record: CachedRecord,
-        _ttl: Duration,
-    ) -> Result<(), StorageError> {
-        // First-writer-wins, like the real stores.
-        self.rows
-            .lock()
-            .expect("mock lock")
-            .entry(idem_key(scope, &cache_key))
-            .or_insert(record);
-        Ok(())
-    }
-
-    async fn evict_expired(&self) -> Result<u64, StorageError> {
-        Ok(0)
-    }
-}
-
 // ── Mock control queue ────────────────────────────────────────────────────
 // Records every enqueued message verbatim so the test can inspect the
 // scope the decorator stamped.
@@ -442,16 +386,6 @@ impl ControlQueue for MockControlQueue {
     }
 }
 
-fn cached(body: &[u8]) -> CachedRecord {
-    CachedRecord {
-        status: 200,
-        headers: b"h".to_vec(),
-        body: body.to_vec(),
-        fingerprint: b"fp".to_vec(),
-        expires_at: "2999-01-01T00:00:00Z".into(),
-    }
-}
-
 // ── Abuse case 1: confused deputy / cross-tenant row access ───────────────
 
 #[tokio::test]
@@ -520,59 +454,6 @@ async fn cross_tenant_commit_never_applies() {
         .expect("A row present");
     assert_eq!(row.version, 0, "victim row must be unmodified");
     assert_eq!(row.state, serde_json::json!({}), "victim state intact");
-}
-
-// ── Abuse case 2: idempotency replay-oracle ───────────────────────────────
-
-#[tokio::test]
-async fn cross_tenant_idempotency_keys_are_isolated() {
-    let mock: Arc<MockIdemStore> = Arc::new(MockIdemStore::default());
-    let tenant_a = ScopedIdempotencyStore::new(mock.clone(), scope_a());
-    let tenant_b = ScopedIdempotencyStore::new(mock.clone(), scope_b());
-
-    // Both tenants use the *same raw key*, and each passes the *other
-    // tenant's* scope as the per-call arg — proving the decorator ignores
-    // it and substitutes its bound scope, so the stored keys still differ.
-    tenant_a
-        .put(
-            &scope_b(),
-            "POST /pay:idem-1".into(),
-            cached(b"A-response"),
-            Duration::from_mins(1),
-        )
-        .await
-        .expect("A put");
-
-    // B probes the same raw key: must be a clean miss (no replay oracle).
-    let probe = tenant_b
-        .get(&scope_a(), "POST /pay:idem-1")
-        .await
-        .expect("B get must not error");
-    assert!(
-        probe.is_none(),
-        "tenant B must not observe tenant A's dedup entry"
-    );
-
-    // B poisons its own namespace with the same raw key; A's entry must
-    // survive untouched (no cross-tenant poisoning).
-    tenant_b
-        .put(
-            &scope_a(),
-            "POST /pay:idem-1".into(),
-            cached(b"B-poison"),
-            Duration::from_mins(1),
-        )
-        .await
-        .expect("B put");
-    let a_entry = tenant_a
-        .get(&scope_b(), "POST /pay:idem-1")
-        .await
-        .expect("A get")
-        .expect("A entry present");
-    assert_eq!(
-        a_entry.body, b"A-response",
-        "tenant A's response must be unpoisoned by tenant B"
-    );
 }
 
 // ── Abuse case 3: control-queue confused deputy ───────────────────────────

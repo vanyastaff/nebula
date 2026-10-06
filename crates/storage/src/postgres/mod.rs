@@ -15,7 +15,6 @@ mod control_queue;
 mod control_turn;
 mod execution;
 mod execution_fence;
-mod idempotency_store;
 mod identity;
 mod iteration_checkpoint;
 mod job_dispatch;
@@ -29,14 +28,14 @@ mod resume_token;
 mod start_acceptance;
 mod turn_handoff;
 mod turn_recovery;
+mod webhook_activation;
 mod workflow;
 
 pub use control_queue::{PgControlQueue, PgJournalReader};
 pub use execution::{PgExecutionStore, PgIdempotencyGuard};
-pub use idempotency_store::{PgIdempotencyStore, PgWebhookActivationStore};
 pub use identity::{
-    PgAuditStore, PgBlobStore, PgMembershipStore, PgOrgStore, PgQuotaStore, PgResourceStore,
-    PgTenantProvisioningStore, PgTriggerStore, PgUserStore, PgWorkspaceStore,
+    PgMembershipStore, PgOrgStore, PgResourceStore, PgTenantProvisioningStore, PgTriggerStore,
+    PgWorkspaceStore,
 };
 pub use iteration_checkpoint::PgCheckpointStore;
 pub use job_dispatch::PgJobDispatchQueue;
@@ -49,6 +48,7 @@ pub use resume_producer::PgResumeProducer;
 pub use resume_token::PgResumeTokenStore;
 pub use start_acceptance::PgStartAcceptanceStore;
 pub use turn_handoff::PgTurnHandoff;
+pub use webhook_activation::PgWebhookActivationStore;
 pub use workflow::{PgWorkflowStore, PgWorkflowVersionStore};
 
 /// Admit a canonical schema and apply every pending ordered migration under

@@ -26,15 +26,14 @@ use nebula_core::{
     PluginSetId, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId, WorkspaceId,
 };
 use nebula_storage_port::dto::{
-    CachedRecord, ContractBundleRecord, ControlCommand, ControlMsg, JobDispatchMsg, JournalEntry,
+    ContractBundleRecord, ControlCommand, ControlMsg, JobDispatchMsg, JournalEntry,
     MaterializedStart, NewExecution, ResumeTarget, WebhookActivationRecord, WebhookMode,
     WorkflowRecord, WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionStore,
-    IdempotencyGuard, IdempotencyStore, JobClaimToken, JobDispatchQueue, StartAcceptanceStore,
-    StartContractIdentity, StartMaterialization, WebhookActivationStore, WorkflowStore,
-    WorkflowVersionStore,
+    IdempotencyGuard, JobClaimToken, JobDispatchQueue, StartAcceptanceStore, StartContractIdentity,
+    StartMaterialization, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_storage_port::{
     BeginDrainOutcome, ExecutionReferenceTransition, FencingToken, PlanFlavorCatalogAdmin,
@@ -61,8 +60,6 @@ pub(crate) trait Backend: Send + Sync {
     /// [`Backend::execution_store`] so a `commit`'s journal entries are
     /// observable.
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader>;
-    /// A durable idempotent-replay cache backed by this backend.
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore>;
     /// A webhook-activation store backed by this backend.
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore>;
     /// A workflow-row store backed by this backend (spec-16 split).
@@ -105,7 +102,6 @@ pub(crate) trait SqlJobTimestampFixture: Backend {
 pub(crate) struct InMemoryBackend {
     store: nebula_storage::inmem::InMemoryExecutionStore,
     guard: nebula_storage::inmem::InMemoryIdempotencyGuard,
-    idem_store: nebula_storage::inmem::InMemoryIdempotencyStore,
     webhook: nebula_storage::inmem::InMemoryWebhookActivationStore,
     workflow: nebula_storage::inmem::InMemoryWorkflowStore,
     workflow_version: nebula_storage::inmem::InMemoryWorkflowVersionStore,
@@ -126,7 +122,6 @@ impl Default for InMemoryBackend {
         Self {
             store,
             guard: nebula_storage::inmem::InMemoryIdempotencyGuard::new(),
-            idem_store: nebula_storage::inmem::InMemoryIdempotencyStore::new(),
             webhook: nebula_storage::inmem::InMemoryWebhookActivationStore::new(),
             workflow,
             workflow_version,
@@ -154,9 +149,6 @@ impl Backend for InMemoryBackend {
         Arc::new(nebula_storage::inmem::InMemoryJournalReader::new(
             &self.store,
         ))
-    }
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
-        Arc::new(self.idem_store.clone())
     }
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
         Arc::new(self.webhook.clone())
@@ -298,16 +290,6 @@ impl Backend for SqliteBackend {
     }
     #[cfg(not(feature = "sqlite"))]
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
-        unimplemented!("build with --features sqlite to exercise the SQLite backend")
-    }
-    #[cfg(feature = "sqlite")]
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
-        Arc::new(nebula_storage::sqlite::SqliteIdempotencyStore::new(
-            self.pool().await,
-        ))
-    }
-    #[cfg(not(feature = "sqlite"))]
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
     #[cfg(feature = "sqlite")]
@@ -505,16 +487,6 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
-        unimplemented!("build with --features postgres to exercise the Postgres backend")
-    }
-    #[cfg(feature = "postgres")]
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
-        Arc::new(nebula_storage::postgres::PgIdempotencyStore::new(
-            self.pool().await,
-        ))
-    }
-    #[cfg(not(feature = "postgres"))]
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
     #[cfg(feature = "postgres")]
@@ -1931,108 +1903,6 @@ pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
     );
 }
 
-/// The durable idempotent-replay cache is first-writer-wins: a second
-/// `put` on the same key keeps the original record + fingerprint (replay
-/// race). Purely within `scope_a`, so it is decorator-transparent and runs
-/// in both the raw and scoped matrices.
-pub(crate) async fn assert_idempotency_store_first_writer(backend: &dyn Backend) {
-    let store = backend.idempotency_store().await;
-    let raw_key = "POST /x:idem-1".to_string();
-    let first = CachedRecord {
-        status: 200,
-        headers: b"h1".to_vec(),
-        body: b"first".to_vec(),
-        fingerprint: b"fp-first".to_vec(),
-        expires_at: "2999-01-01T00:00:00Z".into(),
-    };
-    let second = CachedRecord {
-        status: 500,
-        headers: b"h2".to_vec(),
-        body: b"second".to_vec(),
-        fingerprint: b"fp-second".to_vec(),
-        expires_at: "2999-01-01T00:00:00Z".into(),
-    };
-    store
-        .put(
-            &scope_a(),
-            raw_key.clone(),
-            first.clone(),
-            std::time::Duration::from_mins(1),
-        )
-        .await
-        .expect("put #1");
-    store
-        .put(
-            &scope_a(),
-            raw_key.clone(),
-            second,
-            std::time::Duration::from_mins(1),
-        )
-        .await
-        .expect("put #2 (must be a no-op)");
-    let got = store
-        .get(&scope_a(), &raw_key)
-        .await
-        .expect("get")
-        .unwrap_or_else(|| panic!("[{}] cached record must be present", backend.name()));
-    assert_eq!(
-        got.body,
-        b"first",
-        "[{}] first-writer-wins: the original body must survive a replay race",
-        backend.name()
-    );
-    assert_eq!(
-        got.fingerprint,
-        b"fp-first",
-        "[{}] the original fingerprint must survive (replay-mismatch detection)",
-        backend.name()
-    );
-}
-
-/// Tenant isolation of the durable replay cache: the store folds the scope
-/// into the stored key, so the *same raw key* under a different scope is a
-/// clean miss — tenant A can neither read nor poison tenant B's entry
-/// (replay-oracle mitigation, §6.1).
-///
-/// This passes an explicit foreign scope to probe the adapter's raw
-/// scope-fold, so — like the other `cross_scope_*` assertions — it runs
-/// only in the raw matrix. The decorator substitutes the per-call scope
-/// away by design, so decorator-level cross-tenant denial is proven in
-/// `cross_tenant_denial.rs` instead.
-pub(crate) async fn assert_idempotency_store_cross_scope_isolated(backend: &dyn Backend) {
-    let store = backend.idempotency_store().await;
-    let raw_key = "POST /x:idem-1".to_string();
-    let record = CachedRecord {
-        status: 200,
-        headers: b"h1".to_vec(),
-        body: b"a-only".to_vec(),
-        fingerprint: b"fp-a".to_vec(),
-        expires_at: "2999-01-01T00:00:00Z".into(),
-    };
-    store
-        .put(
-            &scope_a(),
-            raw_key.clone(),
-            record,
-            std::time::Duration::from_mins(1),
-        )
-        .await
-        .expect("put under scope A");
-
-    // A different tenant probing the *same raw key* is a clean miss — the
-    // store-side scope fold makes it a different stored key, never tenant
-    // A's record.
-    let cross = store
-        .get(&scope_b(), &raw_key)
-        .await
-        .expect("get cross-scope key");
-    assert!(
-        cross.is_none(),
-        "[{}] a cross-tenant cache key must not resolve to another tenant's record",
-        backend.name()
-    );
-}
-
 /// Webhook activation upsert → resolve → deactivate, with tenant
 /// isolation: the same slug in a different tenant does not resolve, and a
 /// deactivated activation stops routing.
@@ -2369,13 +2239,6 @@ impl<B: Backend> Backend for ScopedBackend<B> {
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
         Arc::new(nebula_tenancy::ScopedExecutionJournalReader::new(
             self.inner.journal_reader().await,
-            scope_a(),
-        ))
-    }
-
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
-        Arc::new(nebula_tenancy::ScopedIdempotencyStore::new(
-            self.inner.idempotency_store().await,
             scope_a(),
         ))
     }

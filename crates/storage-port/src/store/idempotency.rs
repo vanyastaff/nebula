@@ -1,7 +1,5 @@
-//! Idempotency traits (per-attempt guard + durable hybrid replay store).
-use std::time::Duration;
+//! Per-attempt idempotency guard.
 
-use crate::dto::CachedRecord;
 use crate::error::StorageError;
 use crate::scope::Scope;
 
@@ -24,39 +22,4 @@ pub trait IdempotencyGuard: Send + Sync + std::fmt::Debug {
         node_id: &str,
         attempt: u32,
     ) -> Result<bool, StorageError>;
-}
-
-/// Durable idempotent-replay response store (in-memory + durable hybrid).
-///
-/// First-writer-wins: `put` for an existing key is a no-op (the original
-/// record stays). `scope` is an explicit parameter (consistent with
-/// [`IdempotencyGuard::check_and_mark`] and the rest of the port) — the
-/// backend folds it into the stored key so tenant A can neither probe
-/// nor poison tenant B's dedup entry (§6.1 replay-oracle), rather than
-/// relying on the caller to hand in a pre-namespaced string. A
-/// [`StorageError`] from `get` must NOT be treated as a cache miss —
-/// silently dropping replay protection on corruption is forbidden (storage
-/// errors must surface, not masquerade as cache misses).
-#[async_trait::async_trait]
-pub trait IdempotencyStore: Send + Sync + std::fmt::Debug {
-    /// Look up a cached record by `cache_key` within `scope`.
-    async fn get(
-        &self,
-        scope: &Scope,
-        cache_key: &str,
-    ) -> Result<Option<CachedRecord>, StorageError>;
-
-    /// Persist a record under `cache_key` within `scope` with `ttl`
-    /// (first-writer-wins).
-    async fn put(
-        &self,
-        scope: &Scope,
-        cache_key: String,
-        record: CachedRecord,
-        ttl: Duration,
-    ) -> Result<(), StorageError>;
-
-    /// Drop expired rows; returns the number reclaimed (in-memory backends
-    /// may report `0`).
-    async fn evict_expired(&self) -> Result<u64, StorageError>;
 }

@@ -11,7 +11,6 @@ mod credential_refresh_retry;
 mod execution;
 mod execution_history;
 mod execution_listing;
-mod idempotency;
 mod identity;
 mod iteration_checkpoint;
 mod job_dispatch;
@@ -58,10 +57,8 @@ pub use execution_listing::{
     ExecutionListing, ExecutionListingStatus, ExecutionStatusSet, MicrosInstant,
     UnknownExecutionStatus,
 };
-pub use idempotency::CachedRecord;
 pub use identity::{
-    AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
-    TriggerRow, UserRow, WorkspaceRow,
+    MembershipRow, OrgRow, PrincipalKind, ResourceRow, ScopeKind, TriggerRow, WorkspaceRow,
 };
 pub use iteration_checkpoint::{
     CheckpointSaved, IterationCheckpoint, IterationCheckpointError, IterationCheckpointKey,

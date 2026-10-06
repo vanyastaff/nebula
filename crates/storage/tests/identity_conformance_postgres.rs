@@ -61,11 +61,6 @@ impl IdentityBackend for PostgresBackend {
     fn name(&self) -> &'static str {
         "Postgres"
     }
-    async fn user_store(&self) -> Arc<dyn UserStore> {
-        Arc::new(nebula_storage::postgres::PgUserStore::new(
-            self.pool().await,
-        ))
-    }
     async fn org_store(&self) -> Arc<dyn OrgStore> {
         Arc::new(nebula_storage::postgres::PgOrgStore::new(self.pool().await))
     }
@@ -94,21 +89,6 @@ impl IdentityBackend for PostgresBackend {
             self.pool().await,
         ))
     }
-    async fn quota_store(&self) -> Arc<dyn QuotaStore> {
-        Arc::new(nebula_storage::postgres::PgQuotaStore::new(
-            self.pool().await,
-        ))
-    }
-    async fn audit_store(&self) -> Arc<dyn AuditStore> {
-        Arc::new(nebula_storage::postgres::PgAuditStore::new(
-            self.pool().await,
-        ))
-    }
-    async fn blob_store(&self) -> Arc<dyn BlobStore> {
-        Arc::new(nebula_storage::postgres::PgBlobStore::new(
-            self.pool().await,
-        ))
-    }
 }
 
 // ── matrix ────────────────────────────────────────────────────────────────
@@ -125,7 +105,6 @@ macro_rules! identity_matrix {
     };
 }
 
-identity_matrix!(user_store_contract, assert_user_contract);
 identity_matrix!(org_store_contract, assert_org_contract);
 identity_matrix!(workspace_store_contract, assert_workspace_contract);
 identity_matrix!(membership_store_contract, assert_membership_contract);
@@ -150,9 +129,6 @@ identity_matrix!(membership_lockout, assert_membership_lockout);
 identity_matrix!(tenant_provisioning, assert_tenant_provisioning);
 identity_matrix!(resource_store_contract, assert_resource_contract);
 identity_matrix!(trigger_store_contract, assert_trigger_contract);
-identity_matrix!(quota_store_contract, assert_quota_contract);
-identity_matrix!(audit_store_contract, assert_audit_contract);
-identity_matrix!(blob_store_contract, assert_blob_contract);
 
 /// Provisioning and ordinary workspace writes use the same per-org lock.
 /// Whichever transaction wins, the organization can retain only one live

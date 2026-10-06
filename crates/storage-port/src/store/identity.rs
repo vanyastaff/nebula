@@ -1,35 +1,17 @@
-//! Identity-zoo store traits.
+//! Tenant directory and workspace-object store traits.
 //!
-//! These declare the contract; adapter implementations for InMemory/SQLite/
-//! Postgres land later. Every tenant-scoped query is keyed by `Scope` (or a
-//! parent id) so cross-tenant reads return `None`, never another tenant's
-//! row.
-use std::sync::Arc;
+//! Every tenant-scoped query is keyed by `Scope` (or a parent id) so
+//! cross-tenant reads return `None`, never another tenant's row. User accounts
+//! are not here: they are Plane-A persistence (`nebula_storage::auth`).
 
 use crate::dto::{
-    AuditLogRow, BlobRow, MembershipRow, OrgMemberRemoveOutcome, OrgMemberUpsert,
-    OrgMemberUpsertOutcome, OrgRow, PrincipalKind, PrincipalOrgMembership, QuotaRow, ResourceRow,
-    ScopeKind, TenantMembershipSnapshot, TenantProvisioningOutcome, TenantProvisioningRequest,
-    TriggerRow, UserRow, WorkspaceMemberUpsert, WorkspaceMembership, WorkspaceRow,
+    MembershipRow, OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgRow,
+    PrincipalKind, PrincipalOrgMembership, ResourceRow, ScopeKind, TenantMembershipSnapshot,
+    TenantProvisioningOutcome, TenantProvisioningRequest, TriggerRow, WorkspaceMemberUpsert,
+    WorkspaceMembership, WorkspaceRow,
 };
 use crate::error::StorageError;
 use crate::scope::Scope;
-
-/// `users` aggregate. Users are global (not workspace-scoped) but lookups
-/// stay first-writer-wins on email among active rows.
-#[async_trait::async_trait]
-pub trait UserStore: Send + Sync + std::fmt::Debug {
-    /// Insert a new user (duplicate active email ⇒ `Duplicate`).
-    async fn create(&self, row: UserRow) -> Result<(), StorageError>;
-    /// Read a user by id.
-    async fn get(&self, id: &str) -> Result<Option<Arc<UserRow>>, StorageError>;
-    /// Resolve an active user by (case-insensitive) email.
-    async fn get_by_email(&self, email: &str) -> Result<Option<Arc<UserRow>>, StorageError>;
-    /// CAS-update a user row; `expected_version` must match.
-    async fn update(&self, row: UserRow, expected_version: u64) -> Result<(), StorageError>;
-    /// Soft-delete a user.
-    async fn soft_delete(&self, id: &str) -> Result<(), StorageError>;
-}
 
 /// `orgs` aggregate.
 #[async_trait::async_trait]
@@ -233,42 +215,4 @@ pub trait TriggerStore: Send + Sync + std::fmt::Debug {
     ) -> Result<(), StorageError>;
     /// Soft-delete a trigger.
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError>;
-}
-
-/// `org_quotas` + `org_quota_usage` aggregate (org-scoped, CAS counters).
-#[async_trait::async_trait]
-pub trait QuotaStore: Send + Sync + std::fmt::Debug {
-    /// Read the quota row for an org.
-    async fn get(&self, org_id: &str) -> Result<Option<QuotaRow>, StorageError>;
-    /// Upsert the quota limits + usage row.
-    async fn upsert(&self, row: QuotaRow) -> Result<(), StorageError>;
-    /// Atomically adjust the concurrent-execution counter by `delta`,
-    /// returning the new value. Rejects going below zero.
-    async fn adjust_concurrent(&self, org_id: &str, delta: i32) -> Result<i32, StorageError>;
-}
-
-/// `audit_log` aggregate (append-only, org/workspace-scoped).
-#[async_trait::async_trait]
-pub trait AuditStore: Send + Sync + std::fmt::Debug {
-    /// Append one audit-log row.
-    async fn append(&self, row: AuditLogRow) -> Result<(), StorageError>;
-    /// List recent audit rows for an org, newest first, capped by `limit`.
-    async fn list_for_org(
-        &self,
-        org_id: &str,
-        limit: u32,
-    ) -> Result<Vec<AuditLogRow>, StorageError>;
-}
-
-/// `blobs` aggregate (workspace-scoped).
-#[async_trait::async_trait]
-pub trait BlobStore: Send + Sync + std::fmt::Debug {
-    /// Persist a blob row.
-    async fn put(&self, row: BlobRow) -> Result<(), StorageError>;
-    /// Read a blob row by id within a workspace.
-    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<BlobRow>, StorageError>;
-    /// Delete a blob row.
-    async fn delete(&self, workspace_id: &str, id: &str) -> Result<(), StorageError>;
-    /// Delete expired temp blobs; returns the count deleted.
-    async fn evict_expired(&self) -> Result<u64, StorageError>;
 }

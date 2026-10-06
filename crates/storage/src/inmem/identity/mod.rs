@@ -16,26 +16,18 @@
 //! the relational contract the conformance matrix asserts. Error variants
 //! match the SQL backends; messages never carry stored values.
 
-mod audit;
-mod blob;
 mod directory;
 mod membership;
 mod org;
-mod quota;
 mod resource;
 mod trigger;
-mod user;
 mod workspace;
 
-pub use audit::InMemoryAuditStore;
-pub use blob::InMemoryBlobStore;
 pub use directory::InMemoryIdentityDirectory;
 pub use membership::InMemoryMembershipStore;
 pub use org::InMemoryOrgStore;
-pub use quota::InMemoryQuotaStore;
 pub use resource::InMemoryResourceStore;
 pub use trigger::InMemoryTriggerStore;
-pub use user::InMemoryUserStore;
 pub use workspace::InMemoryWorkspaceStore;
 
 use nebula_storage_port::{Scope, StorageError};

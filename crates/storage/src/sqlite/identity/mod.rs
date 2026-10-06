@@ -18,26 +18,18 @@
 //! opaque TEXT round-tripped through `serde_json`; binary columns are
 //! `BLOB`. A stored value that does not decode is [`StorageError::Corrupt`].
 
-mod audit;
-mod blob;
 mod membership;
 mod org;
-mod quota;
 mod resource;
 mod tenant_provisioning;
 mod trigger;
-mod user;
 mod workspace;
 
-pub use audit::SqliteAuditStore;
-pub use blob::SqliteBlobStore;
 pub use membership::SqliteMembershipStore;
 pub use org::SqliteOrgStore;
-pub use quota::SqliteQuotaStore;
 pub use resource::SqliteResourceStore;
 pub use tenant_provisioning::SqliteTenantProvisioningStore;
 pub use trigger::SqliteTriggerStore;
-pub use user::SqliteUserStore;
 pub use workspace::SqliteWorkspaceStore;
 
 use nebula_storage_port::{Scope, StorageError};
@@ -45,7 +37,7 @@ use serde::de::DeserializeOwned;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
-use crate::sql_error::{decode_i32, decode_u64, encode_u64, storage_error};
+use crate::sql_error::{decode_u64, encode_u64, storage_error};
 
 // ── column decoders ──────────────────────────────────────────────────────
 
@@ -79,11 +71,6 @@ fn version(row: &SqliteRow) -> Result<u64, StorageError> {
 /// A boolean stored as an INTEGER `0` / `1`.
 fn flag(row: &SqliteRow, column: &'static str) -> Result<bool, StorageError> {
     Ok(required::<i64>(row, column)? != 0)
-}
-
-/// A 32-bit counter or limit stored as INTEGER.
-fn int32(row: &SqliteRow, column: &'static str) -> Result<i32, StorageError> {
-    decode_i32(required(row, column)?, column)
 }
 
 /// A NOT NULL JSON TEXT column.
