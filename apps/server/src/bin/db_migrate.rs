@@ -1,4 +1,8 @@
-//! Admitted PostgreSQL migration operator.
+//! Apply the PostgreSQL migration catalog to `DATABASE_URL`.
+//!
+//! The same admission every server start runs: a fresh database is migrated
+//! to head, a database whose ledger is a canonical prefix is brought forward,
+//! and any other database is refused with the reason.
 
 #![forbid(unsafe_code)]
 #![expect(
@@ -6,21 +10,11 @@
     reason = "binary edge: bounded startup diagnostics must reach stderr without Debug rendering"
 )]
 
-use nebula_storage::{
-    LedgerAdoptionError, LedgerAdoptionOutcome,
-    credential::{CredentialStoreStartupError, PgCredentialPersistence},
-    postgres,
-};
+use nebula_storage::postgres;
 use nebula_storage_port::StorageError;
 use secrecy::{ExposeSecret as _, SecretString};
 use sqlx::postgres::PgPoolOptions;
 use thiserror::Error;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MigrationRoute {
-    Complete,
-    AggregateOwnerAdmission,
-}
 
 #[derive(Debug, Error, PartialEq, Eq)]
 enum MigrationOperatorError {
@@ -28,72 +22,35 @@ enum MigrationOperatorError {
     MissingDatabaseUrl,
     #[error("database is unavailable")]
     DatabaseUnavailable,
-    #[error("database schema setup failed")]
-    GeneralAdmissionFailed,
-    #[error("aggregate-owned schema admission failed: {0}")]
-    AggregateAdmissionFailed(#[source] CredentialStoreStartupError),
-    #[error("usage: nebula-db-migrate [migrate | adopt <through-version>]")]
+    #[error("usage: nebula-db-migrate [migrate]")]
     UnknownCommand,
-    #[error("adopt baseline `{argument}` is not a migration version")]
-    InvalidBaseline { argument: String },
-    #[error("ledger adoption failed: {0}")]
-    AdoptionFailed(#[source] LedgerAdoptionError),
+    /// The schema setup message is value-free by construction: it names
+    /// migration numbers and the remedy, never URLs or driver text.
+    #[error("{0}")]
+    SchemaRejected(String),
+    #[error("database schema setup failed")]
+    SetupFailed,
 }
 
-fn migration_route(
-    general_admission: Result<(), StorageError>,
-) -> Result<MigrationRoute, MigrationOperatorError> {
-    match general_admission {
-        Ok(()) => Ok(MigrationRoute::Complete),
-        Err(StorageError::Configuration(_)) => Ok(MigrationRoute::AggregateOwnerAdmission),
-        Err(_) => Err(MigrationOperatorError::GeneralAdmissionFailed),
-    }
-}
-
-/// What the operator asked this invocation to do.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Command {
-    /// Apply pending migrations through catalog and aggregate admission.
-    Migrate,
-    /// Stamp a ledger onto a database provisioned before ordered migrations.
-    Adopt { through_version: i64 },
-}
-
-fn parse_command(arguments: &[String]) -> Result<Command, MigrationOperatorError> {
+fn parse_arguments(arguments: &[String]) -> Result<(), MigrationOperatorError> {
     match arguments {
-        [] => Ok(Command::Migrate),
-        [verb] if verb == "migrate" => Ok(Command::Migrate),
-        [verb, version] if verb == "adopt" => version
-            .parse()
-            .map(|through_version| Command::Adopt { through_version })
-            .map_err(|_| MigrationOperatorError::InvalidBaseline {
-                argument: version.clone(),
-            }),
+        [] => Ok(()),
+        [verb] if verb == "migrate" => Ok(()),
         _ => Err(MigrationOperatorError::UnknownCommand),
     }
 }
 
-async fn adopt(pool: &sqlx::PgPool, through_version: i64) -> Result<(), MigrationOperatorError> {
-    match postgres::adopt_ledger(pool, through_version).await {
-        Ok(LedgerAdoptionOutcome::Adopted { through_version }) => {
-            eprintln!("adopted: ledger stamped through migration {through_version}");
-            Ok(())
-        },
-        Ok(LedgerAdoptionOutcome::AlreadyLedgered) => {
-            eprintln!("no change: database already has a migration ledger");
-            Ok(())
-        },
-        Ok(LedgerAdoptionOutcome::FreshDatabase) => {
-            eprintln!("no change: database is empty, run `migrate` instead");
-            Ok(())
-        },
-        Err(error) => Err(MigrationOperatorError::AdoptionFailed(error)),
+fn setup_failure(error: StorageError) -> MigrationOperatorError {
+    match error {
+        StorageError::Configuration(reason) => MigrationOperatorError::SchemaRejected(reason),
+        StorageError::Connection(_) => MigrationOperatorError::DatabaseUnavailable,
+        _ => MigrationOperatorError::SetupFailed,
     }
 }
 
 async fn run() -> Result<(), MigrationOperatorError> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let command = parse_command(&arguments)?;
+    parse_arguments(&arguments)?;
 
     let database_url = std::env::var("DATABASE_URL")
         .map(SecretString::from)
@@ -103,47 +60,22 @@ async fn run() -> Result<(), MigrationOperatorError> {
         .await
         .map_err(|_| MigrationOperatorError::DatabaseUnavailable)?;
 
-    if let Command::Adopt { through_version } = command {
-        let result = adopt(&pool, through_version).await;
-        pool.close().await;
-        return result;
-    }
-
-    match migration_route(postgres::init_schema(&pool).await)? {
-        MigrationRoute::Complete => {
-            pool.close().await;
-        },
-        MigrationRoute::AggregateOwnerAdmission => {
-            pool.close().await;
-            let ready_store = PgCredentialPersistence::connect(database_url.expose_secret())
-                .await
-                .map_err(MigrationOperatorError::AggregateAdmissionFailed)?;
-            drop(ready_store);
-        },
-    }
-
-    Ok(())
+    let result = postgres::init_schema(&pool).await.map_err(setup_failure);
+    pool.close().await;
+    result
 }
 
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
         eprintln!("error: {error}");
-
-        let mut source = std::error::Error::source(&error);
-        while let Some(source_error) = source {
-            eprintln!("  caused by: {source_error}");
-            source = std::error::Error::source(source_error);
-        }
-
         std::process::exit(1);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, MigrationOperatorError, MigrationRoute, migration_route, parse_command};
-    use nebula_storage::credential::CredentialStoreStartupError;
+    use super::{MigrationOperatorError, parse_arguments, setup_failure};
     use nebula_storage_port::StorageError;
 
     fn arguments(values: &[&str]) -> Vec<String> {
@@ -151,98 +83,40 @@ mod tests {
     }
 
     #[test]
-    fn no_arguments_still_means_migrate() {
-        assert_eq!(parse_command(&arguments(&[])), Ok(Command::Migrate));
-        assert_eq!(
-            parse_command(&arguments(&["migrate"])),
-            Ok(Command::Migrate)
-        );
-    }
-
-    #[test]
-    fn adopt_requires_an_explicit_numeric_baseline() {
-        assert_eq!(
-            parse_command(&arguments(&["adopt", "40"])),
-            Ok(Command::Adopt {
-                through_version: 40
-            }),
-            "the operator states which migration level the live schema is at"
-        );
-        assert_eq!(
-            parse_command(&arguments(&["adopt", "head"])),
-            Err(MigrationOperatorError::InvalidBaseline {
-                argument: "head".to_owned()
-            }),
-            "a non-numeric baseline must be refused rather than guessed"
-        );
-        assert_eq!(
-            parse_command(&arguments(&["adopt"])),
-            Err(MigrationOperatorError::UnknownCommand),
-            "adoption must never default to a baseline the operator did not state"
-        );
+    fn no_arguments_or_migrate_runs_the_catalog() {
+        assert_eq!(parse_arguments(&arguments(&[])), Ok(()));
+        assert_eq!(parse_arguments(&arguments(&["migrate"])), Ok(()));
     }
 
     #[test]
     fn unknown_verbs_are_refused() {
-        assert_eq!(
-            parse_command(&arguments(&["revert"])),
-            Err(MigrationOperatorError::UnknownCommand)
-        );
-    }
-
-    #[test]
-    fn successful_general_admission_completes_without_fallback() {
-        assert_eq!(migration_route(Ok(())), Ok(MigrationRoute::Complete));
-    }
-
-    #[test]
-    fn only_configuration_rejection_routes_to_aggregate_owner() {
-        assert_eq!(
-            migration_route(Err(StorageError::Configuration(
-                "private schema detail".to_owned()
-            ))),
-            Ok(MigrationRoute::AggregateOwnerAdmission)
-        );
-    }
-
-    #[test]
-    fn operational_and_unknown_general_failures_never_fallback() {
-        for error in [
-            StorageError::Connection("private driver detail".to_owned()),
-            StorageError::Internal("private invariant detail".to_owned()),
-        ] {
+        for verb in [&["revert"][..], &["adopt", "40"][..]] {
             assert_eq!(
-                migration_route(Err(error)),
-                Err(MigrationOperatorError::GeneralAdmissionFailed)
+                parse_arguments(&arguments(verb)),
+                Err(MigrationOperatorError::UnknownCommand)
             );
         }
     }
 
     #[test]
-    fn operator_errors_are_closed_and_secret_free() {
-        for error in [
-            MigrationOperatorError::MissingDatabaseUrl,
-            MigrationOperatorError::DatabaseUnavailable,
-            MigrationOperatorError::GeneralAdmissionFailed,
-            MigrationOperatorError::AggregateAdmissionFailed(
-                CredentialStoreStartupError::Unavailable,
-            ),
-        ] {
-            let display = error.to_string();
-            let debug = format!("{error:?}");
-            assert!(!display.contains("private"));
-            assert!(!debug.contains("private"));
-        }
+    fn a_schema_rejection_keeps_its_value_free_reason() {
+        let error = setup_failure(StorageError::Configuration(
+            "database schema rejected: migration 0001 has a different checksum".to_owned(),
+        ));
+        assert_eq!(
+            error.to_string(),
+            "database schema rejected: migration 0001 has a different checksum"
+        );
     }
 
     #[test]
-    fn aggregate_admission_error_preserves_the_closed_typed_source() {
-        let error = MigrationOperatorError::AggregateAdmissionFailed(
-            CredentialStoreStartupError::Unavailable,
-        );
-        let source = std::error::Error::source(&error)
-            .expect("aggregate admission failure must preserve its safe source");
-
-        assert_eq!(source.to_string(), "credential store unavailable");
+    fn operational_failures_never_echo_driver_text() {
+        for error in [
+            StorageError::Connection("private driver detail".to_owned()),
+            StorageError::Internal("private invariant detail".to_owned()),
+        ] {
+            let rendered = setup_failure(error).to_string();
+            assert!(!rendered.contains("private"), "{rendered}");
+        }
     }
 }

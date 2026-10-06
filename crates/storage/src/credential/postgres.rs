@@ -48,9 +48,9 @@ use tokio::sync::Notify;
 
 use super::{
     CredentialStoreStartupError, pending::PgPendingStateStore, refresh_claim::PgRefreshClaimRepo,
-    retry_gate, schema::postgres as schema,
+    retry_gate,
 };
-use crate::migration::setup_postgres_pool_with;
+use crate::migration::{CatalogOnly, setup_postgres_pool_with};
 
 /// Connections a PostgreSQL credential store pools unless told otherwise:
 /// SQLx's own default, kept so existing deployments see no change.
@@ -192,7 +192,7 @@ impl PgCredentialPersistence {
             .connect_with(options)
             .await
             .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        setup_postgres_pool_with::<schema::CredentialAdmission>(pool.clone()).await?;
+        setup_postgres_pool_with::<CatalogOnly>(pool.clone()).await?;
 
         Ok(Self::from_admitted_pool(pool))
     }

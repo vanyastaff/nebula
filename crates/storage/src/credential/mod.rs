@@ -25,8 +25,8 @@ pub mod key_provider;
 pub mod keyring;
 pub mod layer;
 pub mod provider_cache;
-#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
-mod schema;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod startup;
 
 #[cfg(any(
     test,
@@ -79,13 +79,10 @@ pub use refresh_claim::{
     ReauthEscalation, RefreshClaim, RefreshClaimReclaimer, RefreshClaimRepo, ReplicaId, RepoError,
     SentinelEscalationPolicy, SentinelState,
 };
-#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
-pub use schema::{
-    AdmissionReason as CredentialSchemaAdmissionReason, CredentialStoreStartupError,
-    UnsupportedSchemaVersion,
-};
 #[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteCredentialPersistence, SqliteCredentialRefreshSchedule};
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub use startup::CredentialStoreStartupError;
 
 /// Crate-local helpers for constructing credential lifecycle test commands.
 /// Gated on `sqlite` because all callers are `#[cfg(all(test, feature = "sqlite"))]` test modules.

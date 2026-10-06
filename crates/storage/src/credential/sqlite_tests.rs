@@ -11,9 +11,10 @@ use nebula_storage_port::{
 use crate::credential::test_support::{make_credential, make_replacement};
 
 use super::{
-    ReadinessTestGate, SQLITE_MIGRATOR, SqliteCredentialPersistence, TerminalSetupTestGate, schema,
+    ReadinessTestGate, SQLITE_MIGRATOR, SqliteCredentialPersistence, TerminalSetupTestGate,
 };
-use crate::credential::{CredentialSchemaAdmissionReason, CredentialStoreStartupError};
+use crate::credential::CredentialStoreStartupError;
+use crate::migration::catalog::CatalogRejection;
 
 fn version(value: i64) -> CredentialVersion {
     CredentialVersion::try_from(value).expect("test version must be valid")
@@ -442,14 +443,14 @@ async fn rejected_memory_admission_preserves_logical_state() {
         .expect("fixture rows must snapshot");
 
     let mut connection = pool.acquire().await.expect("single memory connection");
-    let error = schema::admit(&mut connection)
-        .await
-        .expect_err("unledgered memory database must fail closed");
+    let error = CredentialStoreStartupError::from(
+        crate::migration::catalog::admit_sqlite(&mut connection)
+            .await
+            .expect_err("unledgered memory database must fail closed"),
+    );
     assert!(matches!(
         error,
-        CredentialStoreStartupError::UnsupportedSchemaVersion(ref unsupported)
-            if unsupported.reason()
-                == &CredentialSchemaAdmissionReason::UnledgeredDatabase
+        CredentialStoreStartupError::UnsupportedSchema(CatalogRejection::UnledgeredDatabase)
     ));
     drop(connection);
 

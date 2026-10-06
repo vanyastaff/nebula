@@ -52,13 +52,13 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{
     CredentialStoreStartupError, pending::SqlitePendingStateStore,
-    refresh_claim::SqliteRefreshClaimRepo, retry_gate, schema::sqlite as schema,
+    refresh_claim::SqliteRefreshClaimRepo, retry_gate,
 };
 #[cfg(test)]
 use crate::migration::SQLITE_MIGRATOR;
 use crate::migration::{
-    acquire_sqlite_file_setup_guard, acquire_sqlite_memory_setup_guard,
-    complete_sqlite_terminal_section, setup_sqlite_connection_with,
+    CatalogOnly, acquire_sqlite_file_setup_guard, acquire_sqlite_memory_setup_guard,
+    catalog::admit_sqlite, complete_sqlite_terminal_section, setup_sqlite_connection_with,
 };
 
 #[cfg(test)]
@@ -242,8 +242,8 @@ impl SqliteCredentialPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`CredentialStoreStartupError::UnsupportedSchemaVersion`] for a
-    /// reachable but unsupported schema, or
+    /// Returns [`CredentialStoreStartupError::UnsupportedSchema`] for a
+    /// reachable database whose migration ledger this build does not admit, or
     /// [`CredentialStoreStartupError::Unavailable`] for connection, lock, or
     /// migration failure. Neither error retains the URL or a driver message.
     pub async fn connect(url: &str) -> Result<Self, CredentialStoreStartupError> {
@@ -328,7 +328,7 @@ impl SqliteCredentialPersistence {
             if let Some(gate) = terminal_gate {
                 gate.wait(&pool).await;
             }
-            setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
+            setup_sqlite_connection_with::<CatalogOnly>(&mut connection).await?;
             drop(connection);
             Ok(Self::from_ready_pool(pool))
         })
@@ -379,7 +379,10 @@ impl SqliteCredentialPersistence {
             let mut probe = sqlx::SqliteConnection::connect_with(&probe_options)
                 .await
                 .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-            schema::admit(&mut probe).await?;
+            // Admit the ledger read-only before opening the file writable:
+            // opening a foreign database writable can change it (journal
+            // mode, sidecars) before setup rejects it.
+            admit_sqlite(&mut probe).await?;
             probe
                 .close()
                 .await
@@ -404,7 +407,7 @@ impl SqliteCredentialPersistence {
             if let Some(gate) = terminal_gate {
                 gate.wait(&pool).await;
             }
-            setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
+            setup_sqlite_connection_with::<CatalogOnly>(&mut connection).await?;
             drop(connection);
             Ok(Self::from_ready_pool(pool))
         })

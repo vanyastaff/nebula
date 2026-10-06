@@ -6,21 +6,10 @@ use std::future::Future;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use tracing::{Instrument as _, Span};
 
-// Adoption is entirely `sqlx::migrate` ledger manipulation, so it exists only
-// where a backend does. Without this gate the module's `use sqlx::migrate::..`
-// fails to resolve under `--no-default-features`, which an `--all-features`
-// clippy pass cannot see.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) mod adopt;
 pub(crate) mod catalog;
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use catalog::{CatalogAdmission, CatalogSetupError};
-
-// Prefixes below 0040 require aggregate-owner validation before destructive
-// transforms. General schema bootstrap accepts only Fresh or 0040+ catalogs.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-const GENERAL_CATALOG_SUPPORTED_FLOOR: i64 = 40;
 
 #[cfg(feature = "sqlite")]
 pub(crate) static SQLITE_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
@@ -80,9 +69,11 @@ pub(crate) trait AdmissionPolicy<Connection> {
     ) -> impl Future<Output = Result<CatalogAdmission, Self::Error>> + Send + '_;
 }
 
+/// The setup admission every store uses: the database's migration ledger must
+/// be absent (fresh) or a canonical prefix of this build's catalog.
 #[derive(Clone, Copy)]
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-struct CatalogOnly;
+pub(crate) struct CatalogOnly;
 
 #[cfg(feature = "sqlite")]
 impl AdmissionPolicy<sqlx::SqliteConnection> for CatalogOnly {
@@ -93,7 +84,7 @@ impl AdmissionPolicy<sqlx::SqliteConnection> for CatalogOnly {
     fn admit(
         connection: &mut sqlx::SqliteConnection,
     ) -> impl Future<Output = Result<CatalogAdmission, Self::Error>> + Send + '_ {
-        catalog::admit_sqlite(connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
+        catalog::admit_sqlite(connection)
     }
 }
 
@@ -106,7 +97,7 @@ impl AdmissionPolicy<sqlx::PgConnection> for CatalogOnly {
     fn admit(
         connection: &mut sqlx::PgConnection,
     ) -> impl Future<Output = Result<CatalogAdmission, Self::Error>> + Send + '_ {
-        catalog::admit_postgres(connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
+        catalog::admit_postgres(connection)
     }
 }
 
@@ -171,9 +162,12 @@ where
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn storage_setup_error(error: CatalogSetupError) -> nebula_storage_port::StorageError {
     match error {
-        CatalogSetupError::Rejected(_) => nebula_storage_port::StorageError::Configuration(
-            "database schema is not a supported canonical migration prefix".to_owned(),
-        ),
+        CatalogSetupError::Rejected(rejection) => {
+            nebula_storage_port::StorageError::Configuration(format!(
+                "database schema rejected: {rejection}; recreate the database \
+                 (`task db:reset`) or run the build that created it"
+            ))
+        },
         CatalogSetupError::Unavailable => nebula_storage_port::StorageError::Connection(
             "database schema setup unavailable".to_owned(),
         ),
@@ -1030,126 +1024,6 @@ pub(crate) async fn setup_sqlite_pool(pool: sqlx::SqlitePool) -> Result<(), Cata
     .await
 }
 
-/// Adopt an unledgered SQLite database by stamping a canonical ledger.
-///
-/// Runs inside one transaction and re-admits the stamped ledger before
-/// committing, so a database that would still be rejected is left exactly as
-/// it was rather than carrying a half-written ledger.
-#[cfg(feature = "sqlite")]
-pub(crate) async fn adopt_sqlite_ledger(
-    pool: &sqlx::SqlitePool,
-    through_version: i64,
-) -> Result<adopt::LedgerAdoptionOutcome, adopt::LedgerAdoptionError> {
-    use adopt::{AdoptionPlan, LedgerAdoptionError};
-
-    let mut connection = pool
-        .acquire()
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-
-    let observation = catalog::sqlite::observe(&mut connection)
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-    let through_version =
-        match adopt::plan_adoption(&unlocked_sqlite_migrator(), &observation, through_version)? {
-            AdoptionPlan::Skip(outcome) => return Ok(outcome),
-            AdoptionPlan::Stamp { through_version } => through_version,
-        };
-
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *connection)
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-
-    let stamped = adopt::stamp_ledger(
-        &mut *connection,
-        &unlocked_sqlite_migrator(),
-        through_version,
-    )
-    .await;
-    let verified = match stamped {
-        Ok(()) => catalog::sqlite::admit(&mut connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
-            .await
-            .map(|_| ())
-            .map_err(|_| LedgerAdoptionError::RejectedAfterStamp),
-        Err(error) => Err(error),
-    };
-
-    match verified {
-        Ok(()) => {
-            sqlx::query("COMMIT")
-                .execute(&mut *connection)
-                .await
-                .map_err(|_| LedgerAdoptionError::Unavailable)?;
-            Ok(adopt::LedgerAdoptionOutcome::Adopted { through_version })
-        },
-        Err(error) => {
-            // The caller already has a failure to report; a rollback that
-            // itself fails must not mask it.
-            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
-            Err(error)
-        },
-    }
-}
-
-/// Adopt an unledgered PostgreSQL database by stamping a canonical ledger.
-///
-/// Same contract as [`adopt_sqlite_ledger`].
-#[cfg(feature = "postgres")]
-pub(crate) async fn adopt_postgres_ledger(
-    pool: &sqlx::PgPool,
-    through_version: i64,
-) -> Result<adopt::LedgerAdoptionOutcome, adopt::LedgerAdoptionError> {
-    use adopt::{AdoptionPlan, LedgerAdoptionError};
-
-    let mut connection = pool
-        .acquire()
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-
-    let observation = catalog::postgres::observe(&mut connection)
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-    let through_version =
-        match adopt::plan_adoption(&unlocked_postgres_migrator(), &observation, through_version)? {
-            AdoptionPlan::Skip(outcome) => return Ok(outcome),
-            AdoptionPlan::Stamp { through_version } => through_version,
-        };
-
-    sqlx::query("BEGIN")
-        .execute(&mut *connection)
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-
-    let stamped = adopt::stamp_ledger(
-        &mut *connection,
-        &unlocked_postgres_migrator(),
-        through_version,
-    )
-    .await;
-    let verified = match stamped {
-        Ok(()) => catalog::postgres::admit(&mut connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
-            .await
-            .map(|_| ())
-            .map_err(|_| LedgerAdoptionError::RejectedAfterStamp),
-        Err(error) => Err(error),
-    };
-
-    match verified {
-        Ok(()) => {
-            sqlx::query("COMMIT")
-                .execute(&mut *connection)
-                .await
-                .map_err(|_| LedgerAdoptionError::Unavailable)?;
-            Ok(adopt::LedgerAdoptionOutcome::Adopted { through_version })
-        },
-        Err(error) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
-            Err(error)
-        },
-    }
-}
-
 #[cfg(feature = "postgres")]
 async fn postgres_lock_key<E>(connection: &mut sqlx::PgConnection) -> Result<i64, E>
 where
@@ -1269,7 +1143,7 @@ mod sqlite_lock_tests;
 
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 mod tests {
-    use super::{GENERAL_CATALOG_SUPPORTED_FLOOR, catalog};
+    use super::catalog;
 
     /// The tripwire that makes a new catalog head a decision rather than a
     /// side effect: the head is compared with the literal
@@ -1435,7 +1309,6 @@ mod tests {
     /// The rejection is terminal and atomic; it is never classified as a lock.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
-        assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         use crate::migration_catalog::REVIEWED_HEAD;
         #[cfg(feature = "sqlite")]
         assert_eq!(

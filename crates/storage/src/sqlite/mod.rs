@@ -54,35 +54,12 @@ pub use workflow::{SqliteWorkflowStore, SqliteWorkflowVersionStore};
 /// the serialized Nebula SQLite setup guard.
 ///
 /// # Errors
-/// Returns a closed, redacted connection or configuration error if setup
-/// cannot prove that the database has a supported canonical migration history
-/// at the catalog-only upgrade floor and enabled foreign-key enforcement.
+/// Returns a closed, redacted connection error if the database or its setup
+/// lock is unavailable, and a configuration error naming the rejection if the
+/// migration ledger is not a canonical prefix of this build's catalog (a
+/// database created by another build or edited by hand; reset it).
 pub async fn init_schema(pool: &sqlx::SqlitePool) -> Result<(), nebula_storage_port::StorageError> {
     crate::migration::setup_sqlite_pool(pool.clone())
         .await
         .map_err(crate::migration::storage_setup_error)
-}
-
-/// Adopt a database provisioned before the ordered migration ledger existed.
-///
-/// Databases created by the previous idempotent `init_schema` carry the
-/// `port_*` schema with no `_sqlx_migrations` ledger, so [`init_schema`] now
-/// refuses them and the owning process cannot start. This stamps a ledger
-/// recording migrations `1..=through_version` as already applied, which is an
-/// operator assertion that the live schema is what those migrations produce —
-/// it is deliberately never performed automatically at startup.
-///
-/// The stamp runs in one transaction and the resulting ledger is re-admitted
-/// before commit, so a database that would still be rejected is left exactly
-/// as it was rather than carrying a half-written ledger.
-///
-/// # Errors
-/// Returns [`crate::LedgerAdoptionError`] if the database cannot be read or written,
-/// if `through_version` names no canonical migration, or if the stamped ledger
-/// would still be rejected by schema setup.
-pub async fn adopt_ledger(
-    pool: &sqlx::SqlitePool,
-    through_version: i64,
-) -> Result<crate::LedgerAdoptionOutcome, crate::LedgerAdoptionError> {
-    crate::migration::adopt_sqlite_ledger(pool, through_version).await
 }

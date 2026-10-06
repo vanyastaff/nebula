@@ -87,6 +87,9 @@ mod execution_listing;
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 mod migration;
 pub mod migration_catalog;
+/// Why schema setup refused a database's migration ledger.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub use migration::catalog::CatalogRejection as SchemaRejection;
 /// The one `sqlx` error → `StorageError` mapping of the SQL backends.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod sql_error;
@@ -107,10 +110,3 @@ pub use nebula_storage_port::StorageError;
 pub use postgres::{PgResourceRuntime, PgResourceStatusStore};
 #[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteResourceRuntime, SqliteResourceStatusStore};
-// Mirrors the gating on `migration::adopt`: with no backend feature there is no
-// migration catalog to adopt a database into, and `sqlx` — which adoption is
-// written entirely against — is not even a dependency. `mod migration` also
-// builds under bare `test` for its catalog cases; adoption cannot, so this gate
-// is narrower than that one on purpose.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub use migration::adopt::{LedgerAdoptionError, LedgerAdoptionOutcome};

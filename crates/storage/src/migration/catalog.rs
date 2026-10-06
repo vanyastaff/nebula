@@ -49,10 +49,17 @@ pub(crate) enum CatalogAdmission {
     CanonicalPrefix { latest: i64 },
 }
 
+/// Why a reachable database's migration ledger is not a canonical prefix of
+/// this build's catalog — the database was created by another build, edited
+/// by hand, or holds foreign tables. Value-free: it names migration numbers
+/// only.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CatalogRejection {
+pub enum CatalogRejection {
+    /// The ledger relation exists but holds no rows.
     EmptyLedger,
+    /// User tables exist without a migration ledger.
     UnledgeredDatabase,
+    /// The ledger relation does not have the SQLx ledger shape.
     #[cfg_attr(
         not(any(feature = "sqlite", feature = "postgres")),
         expect(
@@ -61,32 +68,78 @@ pub(crate) enum CatalogRejection {
         )
     )]
     InvalidMigrationLedger,
-    BelowSupportedFloor {
-        latest: i64,
-    },
+    /// A recorded migration did not complete.
     FailedMigration {
+        /// The migration number.
         migration: i64,
     },
+    /// A migration number is recorded twice.
     DuplicateMigration {
+        /// The migration number.
         migration: i64,
     },
+    /// The recorded order differs from the catalog's.
     NonCanonicalOrder {
+        /// The catalog's migration at this position.
         expected: i64,
+        /// The recorded migration at this position.
         actual: i64,
     },
+    /// A SQLite ledger records a PostgreSQL-only migration.
     ReservedForOtherBackend {
+        /// The migration number.
         migration: i64,
     },
+    /// The ledger records a migration this build does not know.
     UnknownMigration {
+        /// The migration number.
         migration: i64,
     },
+    /// A recorded migration's description differs from this build's.
     DescriptionMismatch {
+        /// The migration number.
         migration: i64,
     },
+    /// A recorded migration's checksum differs from this build's.
     ChecksumMismatch {
+        /// The migration number.
         migration: i64,
     },
 }
+
+impl std::fmt::Display for CatalogRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyLedger => f.write_str("the migration ledger is empty"),
+            Self::UnledgeredDatabase => f.write_str("tables exist without a migration ledger"),
+            Self::InvalidMigrationLedger => f.write_str("the migration ledger shape is invalid"),
+            Self::FailedMigration { migration } => {
+                write!(f, "migration {migration:04} did not complete")
+            },
+            Self::DuplicateMigration { migration } => {
+                write!(f, "migration {migration:04} is recorded twice")
+            },
+            Self::NonCanonicalOrder { expected, actual } => write!(
+                f,
+                "migration {actual:04} is recorded where {expected:04} belongs"
+            ),
+            Self::ReservedForOtherBackend { migration } => {
+                write!(f, "migration {migration:04} belongs to the other backend")
+            },
+            Self::UnknownMigration { migration } => {
+                write!(f, "migration {migration:04} is unknown to this build")
+            },
+            Self::DescriptionMismatch { migration } => {
+                write!(f, "migration {migration:04} has a different description")
+            },
+            Self::ChecksumMismatch { migration } => {
+                write!(f, "migration {migration:04} has a different checksum")
+            },
+        }
+    }
+}
+
+impl std::error::Error for CatalogRejection {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -105,7 +158,6 @@ impl From<CatalogRejection> for CatalogSetupError {
 pub(crate) fn classify(
     policy: &CatalogPolicy,
     observation: &CatalogObservation,
-    supported_floor: i64,
 ) -> Result<CatalogAdmission, CatalogRejection> {
     let rows = match &observation.migration_ledger {
         MigrationLedger::Absent => {
@@ -125,9 +177,6 @@ pub(crate) fn classify(
         .last()
         .map(|row| row.version)
         .ok_or(CatalogRejection::EmptyLedger)?;
-    if latest < supported_floor {
-        return rejected(CatalogRejection::BelowSupportedFloor { latest });
-    }
     Ok(CatalogAdmission::CanonicalPrefix { latest })
 }
 
@@ -337,11 +386,10 @@ pub(crate) mod sqlite {
 
     pub(crate) async fn admit(
         connection: &mut SqliteConnection,
-        supported_floor: i64,
     ) -> Result<CatalogAdmission, CatalogSetupError> {
         let policy = sqlite_policy();
         let observation = observe(connection).await?;
-        classify(&policy, &observation, supported_floor).map_err(Into::into)
+        classify(&policy, &observation).map_err(Into::into)
     }
 
     pub(crate) async fn observe(
@@ -460,7 +508,7 @@ pub(crate) mod sqlite {
 }
 
 #[cfg(feature = "sqlite")]
-pub(crate) use sqlite::{admit as admit_sqlite, observe as observe_sqlite};
+pub(crate) use sqlite::admit as admit_sqlite;
 
 #[cfg(feature = "postgres")]
 pub(crate) mod postgres {
@@ -497,11 +545,10 @@ pub(crate) mod postgres {
 
     pub(crate) async fn admit(
         connection: &mut PgConnection,
-        supported_floor: i64,
     ) -> Result<CatalogAdmission, CatalogSetupError> {
         let policy = postgres_policy();
         let observation = observe(connection).await?;
-        classify(&policy, &observation, supported_floor).map_err(Into::into)
+        classify(&policy, &observation).map_err(Into::into)
     }
 
     pub(crate) async fn observe(
@@ -620,4 +667,4 @@ pub(crate) mod postgres {
 }
 
 #[cfg(feature = "postgres")]
-pub(crate) use postgres::{admit as admit_postgres, observe as observe_postgres};
+pub(crate) use postgres::admit as admit_postgres;
