@@ -150,7 +150,7 @@ The Rust patterns that make this invariant easy to uphold: sealed traits, typest
 
 **[L1]** Durable is not enough — runs must be explainable. Execution state, append-only journal, structured errors, and metrics let an operator answer what happened and why a run failed without reading Rust source.
 
-**[L1]** Observability is a first-class contract, not polish. SLIs, SLOs, structured event schema for `port_execution_journal` (the legacy `execution_journal` table has no writer), and the core analysis loop live in `docs/OBSERVABILITY.md`.
+**[L1]** Observability is a first-class contract, not polish. SLIs, SLOs, structured event schema for `execution_journal`, and the core analysis loop live in `docs/OBSERVABILITY.md`.
 
 **[L2]** Where a feature is still thin (e.g. lease enforcement at §11.6), say so — do not imply full auditability from partial signals.
 
@@ -418,7 +418,7 @@ individually durable merely because the enclosing node will be checkpointed.
 | Artifact                           | Status                                                               | Operator-visible truth                                                                                                                                                           |
 | ---------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `executions` row + state JSON      | **Durable** (CAS + fencing via `ExecutionStore::commit`)             | Source of truth                                                                                                                                                                  |
-| `port_execution_journal` (append-only)  | **Durable when appended in the same `TransitionBatch`**              | Replayable history coupled to the state it describes                                                                                                                            |
+| `execution_journal` (append-only)       | **Durable when appended in the same `TransitionBatch`**              | Replayable history coupled to the state it describes                                                                                                                            |
 | `execution_control_queue` (outbox) | **Durable when appended in the same `TransitionBatch`**              | At-least-once dispatch + cancel signals (§12.2); a separately enqueued start is a migration gap until reconciled                                                                 |
 | stateful-action checkpoint         | **Durable when written (fenced) on SQLite/PostgreSQL; an optimization, never the source of truth** | Journaled stateful actions write an iteration checkpoint after each passed barrier, under the execution lease fence, through the SQLite/PostgreSQL `CheckpointStore` adapters (in-memory for dev/tests); a resume verifies it against the operation ledger. A missing or failed checkpoint falls back to replaying from iteration 0; non-journaled stateful actions are not checkpointed |
 | execution lease                    | **Port methods exist; enforcement status must be demonstrated**      | Do not imply lease safety unless runtime acquisition, renewal, release, and fencing tests are green                                                                              |

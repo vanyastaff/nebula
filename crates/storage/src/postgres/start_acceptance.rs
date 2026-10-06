@@ -60,13 +60,13 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
             }
         }
         if let Some(key) = start.idempotency() {
-            let inserted = sqlx::query("INSERT INTO port_start_key_reservations (workspace_id, org_id, start_key, fingerprint_version, fingerprint, execution_id, created_at_ms) VALUES ($1, $2, $3, $4, $5, $6, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint) ON CONFLICT (workspace_id, org_id, start_key) DO NOTHING")
+            let inserted = sqlx::query("INSERT INTO start_key_reservations (workspace_id, org_id, start_key, fingerprint_version, fingerprint, execution_id, created_at) VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp()) ON CONFLICT (org_id, workspace_id, start_key) DO NOTHING")
                 .bind(&start.scope().workspace_id).bind(&start.scope().org_id).bind(key.key())
                 .bind(i32::from(key.fingerprint().version())).bind(key.fingerprint().digest().as_slice())
                 .bind(start.execution_id())
                 .execute(&mut *transaction).await.map_err(sql_error)?.rows_affected();
             if inserted == 0 {
-                let stored = sqlx::query("SELECT fingerprint_version, fingerprint, execution_id FROM port_start_key_reservations WHERE workspace_id = $1 AND org_id = $2 AND start_key = $3 FOR SHARE")
+                let stored = sqlx::query("SELECT fingerprint_version, fingerprint, execution_id FROM start_key_reservations WHERE workspace_id = $1 AND org_id = $2 AND start_key = $3 FOR SHARE")
                     .bind(&start.scope().workspace_id).bind(&start.scope().org_id).bind(key.key())
                     .fetch_one(&mut *transaction).await.map_err(sql_error)?;
                 let version: i32 = stored.try_get("fingerprint_version").map_err(sql_error)?;
@@ -92,7 +92,7 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
             .execute(&mut *transaction)
             .await
             .map_err(sql_error)?;
-        if let Some(stored) = sqlx::query("SELECT workspace_id, org_id, commitment_format, commitment FROM port_execution_contract_bundles WHERE execution_id = $1")
+        if let Some(stored) = sqlx::query("SELECT workspace_id, org_id, commitment_format, commitment FROM execution_contract_bundles WHERE execution_id = $1")
             .bind(start.execution_id()).fetch_optional(&mut *transaction).await.map_err(sql_error)? {
             let workspace: String = stored.try_get("workspace_id").map_err(sql_error)?;
             let org: String = stored.try_get("org_id").map_err(sql_error)?;
@@ -109,7 +109,7 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
             return Ok(StartMaterialization::RevisionRejected(rejection));
         }
         let plan: Vec<u8> = sqlx::query_scalar(
-            "SELECT record_bytes FROM port_executable_plan_revisions WHERE executable_plan_id = $1",
+            "SELECT record_bytes FROM executable_plan_revisions WHERE executable_plan_id = $1",
         )
         .bind(ids.plan().as_bytes().as_slice())
         .fetch_one(&mut *transaction)
@@ -136,12 +136,12 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
             nebula_storage_port::dto::ContractBundleFormat::V2Json => "v2_json",
             _ => return Err(StartMaterializationError::InvalidEnvelope),
         };
-        sqlx::query("INSERT INTO port_execution_contract_bundles (execution_id, workspace_id, org_id, bundle_id, executable_plan_id, worker_flavor_id, record_format, record_bytes, commitment_format, commitment) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'v1_sha256', $9)")
+        sqlx::query("INSERT INTO execution_contract_bundles (execution_id, workspace_id, org_id, bundle_id, executable_plan_id, worker_flavor_id, record_format, record_bytes, commitment_format, commitment) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'v1_sha256', $9)")
             .bind(start.execution_id()).bind(&start.scope().workspace_id).bind(&start.scope().org_id)
             .bind(start.bundle().identity().bundle_id().as_bytes().as_slice()).bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
             .bind(record_format).bind(start.bundle().bytes()).bind(commitment.as_slice()).execute(&mut *transaction).await.map_err(sql_error)?;
-        sqlx::query("INSERT INTO port_execution_revision_refs (execution_id, execution_contract_bundle_id, executable_plan_id, worker_flavor_id, reference_state) VALUES ($1, $2, $3, $4, 'live')")
-            .bind(start.execution_id()).bind(start.bundle().identity().bundle_id().as_bytes().as_slice())
+        sqlx::query("INSERT INTO execution_revision_references (org_id, workspace_id, execution_id, execution_contract_bundle_id, executable_plan_id, worker_flavor_id, reference_state) VALUES ($1, $2, $3, $4, $5, $6, 'live')")
+            .bind(&start.scope().org_id).bind(&start.scope().workspace_id).bind(start.execution_id()).bind(start.bundle().identity().bundle_id().as_bytes().as_slice())
             .bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
             .execute(&mut *transaction).await.map_err(sql_error)?;
         transaction
@@ -158,7 +158,7 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
         scope: &nebula_storage_port::Scope,
         key: &str,
     ) -> Result<Option<nebula_storage_port::dto::StartReservation>, StorageError> {
-        let row = sqlx::query("SELECT fingerprint_version, fingerprint, execution_id FROM port_start_key_reservations WHERE workspace_id = $1 AND org_id = $2 AND start_key = $3")
+        let row = sqlx::query("SELECT fingerprint_version, fingerprint, execution_id FROM start_key_reservations WHERE workspace_id = $1 AND org_id = $2 AND start_key = $3")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(key).fetch_optional(&self.pool).await.map_err(storage_error)?;
         row.map(|row| {
             let version = row
@@ -188,7 +188,7 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
         scope: &nebula_storage_port::Scope,
         execution_id: &str,
     ) -> Result<Option<nebula_storage_port::dto::StoredContractBundle>, StorageError> {
-        let row = sqlx::query("SELECT bundle_id, executable_plan_id, worker_flavor_id, record_format, record_bytes FROM port_execution_contract_bundles WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3")
+        let row = sqlx::query("SELECT bundle_id, executable_plan_id, worker_flavor_id, record_format, record_bytes FROM execution_contract_bundles WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3")
             .bind(execution_id).bind(&scope.workspace_id).bind(&scope.org_id).fetch_optional(&self.pool).await.map_err(storage_error)?;
         row.map(|row| {
             let invalid =
@@ -245,8 +245,8 @@ impl StartReservationMaintenance for PgStartAcceptanceStore {
     ) -> Result<u64, StorageError> {
         let retention_ms = i64::try_from(retention.as_millis()).unwrap_or(i64::MAX);
         let deleted = sqlx::query(
-            "DELETE FROM port_start_key_reservations \
-             WHERE created_at_ms < ((EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint - $1)",
+            "DELETE FROM start_key_reservations \
+             WHERE created_at < clock_timestamp() - $1 * INTERVAL '1 millisecond'",
         )
         .bind(retention_ms)
         .execute(&self.pool)
@@ -269,7 +269,7 @@ async fn admit_exact_pair(
     worker_flavor_id: nebula_core::WorkerFlavorRevisionId,
 ) -> Result<Option<StartRevisionRejection>, StorageError> {
     let Some(plan_row) = sqlx::query(
-        "SELECT worker_flavor_id, lifecycle FROM port_executable_plan_revisions \
+        "SELECT worker_flavor_id, lifecycle FROM executable_plan_revisions \
          WHERE executable_plan_id = $1 FOR UPDATE",
     )
     .bind(plan_id.as_bytes().as_slice())
@@ -295,7 +295,7 @@ async fn admit_exact_pair(
     }
 
     let Some(flavor_row) = sqlx::query(
-        "SELECT lifecycle FROM port_worker_flavor_revisions WHERE worker_flavor_id = $1 FOR UPDATE",
+        "SELECT lifecycle FROM worker_flavor_revisions WHERE worker_flavor_id = $1 FOR UPDATE",
     )
     .bind(worker_flavor_id.as_bytes().as_slice())
     .fetch_optional(&mut **tx)

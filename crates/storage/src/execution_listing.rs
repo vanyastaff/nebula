@@ -14,24 +14,8 @@ pub(crate) fn decode_status(stored: &str) -> Result<ExecutionListingStatus, Stor
         .map_err(|_| StorageError::Corrupt("execution status column holds an unknown value".into()))
 }
 
-/// Decode the `created_at_us` sort key.
+/// Decode an instant SQLite stores as integer microseconds.
 pub(crate) fn decode_sort_key(micros: i64) -> Result<MicrosInstant, StorageError> {
     MicrosInstant::from_micros(micros)
-        .ok_or_else(|| StorageError::Corrupt("execution creation key is out of range".into()))
-}
-
-/// Decode an RFC 3339 timestamp stored as text (SQLite).
-#[cfg(feature = "sqlite")]
-pub(crate) fn decode_text_instant(stored: &str) -> Result<MicrosInstant, StorageError> {
-    chrono::DateTime::parse_from_rfc3339(stored)
-        .map(|instant| MicrosInstant::floor(instant.with_timezone(&chrono::Utc)))
-        .map_err(|_| StorageError::Corrupt("execution timestamp is not RFC 3339".into()))
-}
-
-/// Encode an instant as the RFC 3339 text SQLite stores.
-#[cfg(feature = "sqlite")]
-pub(crate) fn encode_text_instant(instant: MicrosInstant) -> String {
-    instant
-        .to_datetime()
-        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+        .ok_or_else(|| StorageError::Corrupt("execution instant is out of range".into()))
 }

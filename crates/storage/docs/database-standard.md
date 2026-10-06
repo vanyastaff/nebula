@@ -27,6 +27,19 @@ Every constraint and index is named explicitly, identically on both backends:
 predicate as one word: `__live` (`deleted_at IS NULL`), `__unrevoked`, `__unconsumed`,
 `__published`, … — `uq_workspaces__org_id_slug__live`, `uq_workspaces__org_id__live_default`.
 
+A name is at most 63 bytes: PostgreSQL silently truncates longer identifiers, which
+would drop the predicate suffix and split the two backends' catalogs. A name that
+does not fit is shortened by these steps, in order, stopping as soon as it fits:
+
+1. drop the tenant columns `org_id_workspace_id` from `<cols>`;
+2. drop the `_id` suffix of every column in `<cols>`/`<rule>`;
+3. write a length rule's `_length` as `_len`;
+4. keep only the first column of `<cols>`.
+
+The prefix, the table and the predicate suffix are never shortened —
+`ix_execution_revision_references__worker_flavor__rollback`. The
+`schema_object_names` test rejects a name over 63 bytes.
+
 Type checks that PostgreSQL gets from its column types (`ck_<table>__<col>_json`,
 boolean `ck_<table>__<col>` on flags) exist on SQLite only; every other name exists on both.
 PostgreSQL reports violated constraints by name; SQLite reports UNIQUE violations by column
@@ -71,6 +84,11 @@ memory. Caller-supplied instants are stored as given (truncated).
   not liveness: an adapter that creates a row beneath a soft-deletable parent checks the
   parent is live in the same transaction (PostgreSQL: `FOR SHARE` on the parent row, so a
   concurrent soft delete serializes with it) and answers `NotFound` otherwise.
+- Deletion is two-step. Soft delete is the archive: reversible, invisible to reads, no
+  new children. Purge is the permanent step: it hard-deletes the aggregate and its
+  contents through `ON DELETE CASCADE` foreign keys, so every foreign key from a child to
+  its owning parent cascades. Purge, restore and workspace transfer are tracked in
+  issue 1159.
 - Ordered reads order by bytes (`COLLATE "C"` on PostgreSQL), so every backend returns the
   same order.
 

@@ -58,6 +58,23 @@ pub(crate) fn storage_error_for(entity: &'static str, error: sqlx::Error) -> Sto
     }
 }
 
+/// [`storage_error`], with a write rejected for a missing parent row reported
+/// as `NotFound { entity, id }` — for writes whose only parent is that entity.
+pub(crate) fn foreign_key_not_found(
+    error: sqlx::Error,
+    entity: &'static str,
+    id: &str,
+) -> StorageError {
+    match &error {
+        sqlx::Error::Database(database)
+            if matches!(database.kind(), ErrorKind::ForeignKeyViolation) =>
+        {
+            StorageError::not_found(entity, id)
+        },
+        _ => storage_error(error),
+    }
+}
+
 /// Decode a non-negative counter (version, fencing generation, sequence)
 /// stored as a signed SQL integer. A negative value is corrupt data, never a
 /// wrapped `u64`.

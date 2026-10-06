@@ -136,7 +136,7 @@ impl<'a> IterationCheckpointKey<'a> {
     /// takes no length cap of its own: action metadata admission already
     /// bounds it, and any version it admits must address a checkpoint. The
     /// tenant scope is taken as the execution was admitted under it — `Scope`
-    /// and `port_executions` bound neither part — so every admitted execution
+    /// and `executions` bound neither part — so every admitted execution
     /// can be checkpointed, and a scope-enforcing decorator's
     /// [`rescoped`](Self::rescoped) address is held to the same rule.
     pub fn new(
@@ -447,7 +447,7 @@ mod tests {
     }
 
     /// Any scope an execution was admitted under addresses a checkpoint —
-    /// neither `Scope` nor `port_executions` bounds it — while the
+    /// neither `Scope` nor `executions` bounds it — while the
     /// checkpoint's own parts stay bounded.
     #[test]
     fn a_key_takes_any_admitted_scope_and_bounds_its_own_parts() {

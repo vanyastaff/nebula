@@ -14,6 +14,11 @@ const MAX_EXECUTION_STATE_BYTES: usize = 64 * 1024 * 1024;
 #[path = "support/postgres_schema.rs"]
 mod postgres_schema;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
+
 #[tokio::test]
 async fn postgres_uses_its_canonical_json_size_for_writes_and_bounded_reads() {
     // An evidence binary never passes without a database: absence is a loud
@@ -27,6 +32,7 @@ async fn postgres_uses_its_canonical_json_size_for_writes_and_bounded_reads() {
     nebula_storage::postgres::init_schema(&pool).await.unwrap();
     let store = nebula_storage::postgres::PgExecutionStore::new(pool.clone());
     let scope = Scope::new("state-bound-workspace", "state-bound-organization");
+    pool.seed_execution_parents(&scope, "workflow").await;
 
     let exact = serde_json::Value::String("x".repeat(MAX_EXECUTION_STATE_BYTES - 2));
     store
@@ -50,17 +56,16 @@ async fn postgres_uses_its_canonical_json_size_for_writes_and_bounded_reads() {
     let oversized = serde_json::Value::String("x".repeat(MAX_EXECUTION_STATE_BYTES - 1));
     let timestamp = chrono::Utc::now();
     sqlx::query(
-        "INSERT INTO port_executions \
+        "INSERT INTO executions \
          (id, workspace_id, org_id, workflow_id, status, state, version, \
-          fencing_generation, created_at, updated_at, created_at_us) \
-         VALUES ($1, $2, $3, 'workflow', 'created', $4, 0, 0, $5, $5, $6)",
+          fencing_generation, created_at, updated_at) \
+         VALUES ($1, $2, $3, 'workflow', 'created', $4, 0, 0, $5, $5)",
     )
     .bind("oversized")
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
     .bind(oversized)
     .bind(timestamp)
-    .bind(timestamp.timestamp_micros())
     .execute(&pool)
     .await
     .unwrap();

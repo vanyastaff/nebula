@@ -45,7 +45,7 @@ impl ResumeProducer for SqliteResumeProducer {
         let row = sqlx::query(
             "SELECT token_hash, workspace_id, org_id, execution_id, \
                     node_key, wait_kind, callback_label, created_at, expires_at \
-             FROM port_resume_tokens \
+             FROM resume_tokens \
              WHERE token_hash = ?",
         )
         .bind(token_hash.as_bytes())
@@ -84,7 +84,7 @@ impl ResumeProducer for SqliteResumeProducer {
         // `DELETE … RETURNING` (rows-affected == 1) IS the single-use replay
         // gate: a raced/replayed/absent hash deletes zero rows.
         let deleted = sqlx::query(
-            "DELETE FROM port_resume_tokens \
+            "DELETE FROM resume_tokens \
              WHERE token_hash = ? \
              RETURNING token_hash",
         )

@@ -1,7 +1,7 @@
 //! Resume-token DTO for the W-S3c mint-on-park token store.
 //!
 //! [`TokenHash`] is the 32-byte SHA-256 of the plaintext bearer token
-//! (hashed-at-rest; the hash is the primary key in `port_resume_tokens`).
+//! (hashed-at-rest; the hash is the primary key in `resume_tokens`).
 //! [`ResumeTokenRow`] is the full persisted record; it carries the mint
 //! scope, the execution and node that parked, and the wait kind — but
 //! NEVER the plaintext token.  The plaintext lives only in the engine's
@@ -15,7 +15,7 @@ use crate::Scope;
 
 /// 32-byte SHA-256 digest of a plaintext resume token.
 ///
-/// Stored as the primary key in `port_resume_tokens` (BYTEA / BLOB).
+/// Stored as the primary key in `resume_tokens` (BYTEA / BLOB).
 /// The bytes are the raw hash output — not hex, not base64 — so
 /// case-folding collations cannot break exact-match lookups.
 ///
@@ -102,7 +102,7 @@ impl std::str::FromStr for ResumeTokenWaitKind {
     }
 }
 
-/// One row in `port_resume_tokens`.
+/// One row in `resume_tokens`.
 ///
 /// Produced by the engine at signal-park time and inserted in the
 /// same [`crate::TransitionBatch`] transaction as the `Waiting` state

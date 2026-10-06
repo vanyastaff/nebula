@@ -84,7 +84,7 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
         .filter(|path| {
             fs::read_to_string(path)
                 .expect("Rust source must be UTF-8")
-                .contains("INSERT INTO port_execution_revision_refs")
+                .contains("INSERT INTO execution_revision_references")
         })
         .collect::<Vec<_>>();
     reference_insert_sites.sort();
@@ -97,7 +97,7 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
     assert_eq!(
         reference_insert_sites, expected_insert_sites,
         "only the execution-owner start-materialization adapters may insert \
-         `port_execution_revision_refs`"
+         `execution_revision_references`"
     );
 
     // Terminal dereference and rollback retention are storage-owned reference
@@ -110,7 +110,7 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
         .filter(|path| {
             fs::read_to_string(path)
                 .expect("Rust source must be UTF-8")
-                .contains("UPDATE port_execution_revision_refs")
+                .contains("UPDATE execution_revision_references")
         })
         .collect::<Vec<_>>();
     reference_update_sites.sort();
@@ -124,11 +124,11 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
     expected_update_sites.sort();
     assert_eq!(
         reference_update_sites, expected_update_sites,
-        "only the execution-owner terminal and rollback-cleanup adapters may update `port_execution_revision_refs`"
+        "only the execution-owner terminal and rollback-cleanup adapters may update `execution_revision_references`"
     );
 
     for reference_mutation in [
-        "DELETE FROM port_execution_revision_refs",
+        "DELETE FROM execution_revision_references",
         "activate_execution_revision",
         "persist_execution_revision_ref",
     ] {

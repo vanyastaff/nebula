@@ -4663,7 +4663,7 @@ fn final_state_node_key() -> NodeKey {
 /// deliberately NOT atomic with the terminal transition: mint-on-park rides the
 /// `TransitionBatch` so state and token can't diverge on a crash, but the
 /// terminal-side cleanup is a separate call. A crash in the window leaves only
-/// un-reachable dead token rows, backstopped by the `port_resume_tokens`
+/// un-reachable dead token rows, backstopped by the `resume_tokens`
 /// `ON DELETE CASCADE` FK and the no-op of a resume targeting a terminal
 /// execution (see the `nebula_storage_port::store::resume_token` module docs).
 ///

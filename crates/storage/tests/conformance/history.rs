@@ -11,7 +11,7 @@ use nebula_storage_port::{
     TransitionBatch, TransitionOutcome,
 };
 
-use super::{Backend, scope_a, scope_b};
+use super::{Backend, scope_a, scope_b, seed_workflow};
 
 fn micros(seconds: i64) -> chrono::DateTime<chrono::Utc> {
     chrono::DateTime::from_timestamp_micros(1_759_665_600_000_000 + seconds * 1_000_000 + 123_456)
@@ -59,6 +59,7 @@ fn whole_history() -> ExecutionHistoryQuery {
 pub(crate) async fn assert_status_projection_follows_commit(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_listing").await;
     store
         .create(&s, "exe_listing", "wf_listing", serde_json::json!({}))
         .await
@@ -143,6 +144,8 @@ pub(crate) async fn assert_history_orders_filters_and_pages(backend: &dyn Backen
     let store = backend.execution_store().await;
     let s = scope_a();
     let ids = ["exe_h1", "exe_h2", "exe_h3", "exe_h4", "exe_h5"];
+    seed_workflow(backend, &s, "wf_even").await;
+    seed_workflow(backend, &s, "wf_odd").await;
     for (index, id) in ids.iter().enumerate() {
         let workflow = if index % 2 == 0 { "wf_even" } else { "wf_odd" };
         store
@@ -281,6 +284,8 @@ pub(crate) async fn assert_history_orders_filters_and_pages(backend: &dyn Backen
 /// one tenant's rows pages only the caller's tenant.
 pub(crate) async fn assert_history_is_scope_isolated(backend: &dyn Backend) {
     let store = backend.execution_store().await;
+    seed_workflow(backend, &scope_a(), "wf_1").await;
+    seed_workflow(backend, &scope_b(), "wf_1").await;
     store
         .create(&scope_a(), "exe_iso_a", "wf_1", serde_json::json!({}))
         .await

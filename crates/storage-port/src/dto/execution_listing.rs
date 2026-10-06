@@ -203,8 +203,8 @@ impl fmt::Debug for ExecutionStatusSet {
 }
 
 /// An instant at microsecond precision — the precision every execution
-/// backend stores (PostgreSQL `timestamptz`, the integer `created_at_us` sort
-/// key, the in-memory reference adapter).
+/// backend stores (PostgreSQL `timestamptz`, SQLite integer microseconds, the
+/// in-memory reference adapter).
 ///
 /// Carrying listing and history instants in this type makes every backend
 /// compare, order and round-trip them identically: a nanosecond reading can

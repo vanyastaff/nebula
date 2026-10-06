@@ -27,6 +27,7 @@ async fn in_memory_control_start_handoff() {
         execution,
         catalog: catalog.clone(),
         admin: catalog,
+        parents: None,
     })
     .await;
 }
@@ -57,9 +58,13 @@ async fn sqlite_control_start_handoff() {
         queue: Arc::new(SqliteControlQueue::new(pool.clone())),
         handoff: Arc::new(SqliteTurnHandoff::new(pool.clone())),
         recovery: Arc::new(SqliteTurnHandoff::new(pool.clone())),
-        starts: Arc::new(SqliteStartAcceptanceStore::new(pool)),
+        starts: Arc::new(SqliteStartAcceptanceStore::new(pool.clone())),
         catalog: catalog.clone(),
         admin: catalog,
+        parents: Some((
+            Arc::new(SqliteTenantProvisioningStore::new(pool.clone())),
+            Arc::new(SqliteWorkflowStore::new(pool)),
+        )),
     })
     .await;
 }
@@ -94,28 +99,32 @@ async fn sqlite_refusals_survive_observation_faults() {
         starts: Arc::new(SqliteStartAcceptanceStore::new(pool.clone())),
         catalog: catalog.clone(),
         admin: catalog,
+        parents: Some((
+            Arc::new(SqliteTenantProvisioningStore::new(pool.clone())),
+            Arc::new(SqliteWorkflowStore::new(pool.clone())),
+        )),
     };
     control_turn_oracle::refusals_survive_observation_faults(&ports, async |fault| {
         use control_turn_oracle::ObservationFault;
         let statements: &[&'static str] = match fault {
             ObservationFault::FailReceiptWrite => &[
-                "CREATE TRIGGER fault_fail_receipt BEFORE INSERT ON port_execution_control_observation_receipts BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END",
+                "CREATE TRIGGER fault_fail_receipt BEFORE INSERT ON execution_control_observation_receipts BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END",
             ],
             ObservationFault::FailJournalWrite => &[
-                "CREATE TRIGGER fault_fail_journal BEFORE INSERT ON port_execution_journal BEGIN SELECT RAISE(ABORT, 'injected journal failure'); END",
+                "CREATE TRIGGER fault_fail_journal BEFORE INSERT ON execution_journal BEGIN SELECT RAISE(ABORT, 'injected journal failure'); END",
             ],
             // A deferred foreign-key violation fails only at COMMIT, after
             // every statement of the refusal transaction succeeded.
             ObservationFault::LoseCommitAcknowledgement => &[
                 "CREATE TABLE IF NOT EXISTS fault_parent (id INTEGER PRIMARY KEY)",
                 "CREATE TABLE IF NOT EXISTS fault_child (parent INTEGER REFERENCES fault_parent(id) DEFERRABLE INITIALLY DEFERRED)",
-                "CREATE TRIGGER fault_lose_commit AFTER INSERT ON port_execution_journal BEGIN INSERT INTO fault_child VALUES (999); END",
+                "CREATE TRIGGER fault_lose_commit AFTER INSERT ON execution_journal BEGIN INSERT INTO fault_child VALUES (999); END",
             ],
             // CHECK constraints are bypassed on this one connection only, so
             // the stored snapshot stays present but undecodable.
             ObservationFault::CorruptReceiptSnapshot => &[
                 "PRAGMA ignore_check_constraints = ON",
-                "UPDATE port_execution_control_observation_receipts SET expected_flavor_id = X'01' WHERE outcome = 'flavor-mismatch'",
+                "UPDATE execution_control_observation_receipts SET expected_flavor_id = X'01' WHERE outcome = 'flavor-mismatch'",
                 "PRAGMA ignore_check_constraints = OFF",
             ],
             ObservationFault::Clear => &[

@@ -1,4 +1,5 @@
-//! PostgreSQL acceptance evidence for the dormant plan/flavor revision catalog.
+//! PostgreSQL acceptance evidence for the plan/flavor revision catalog and the
+//! execution revision references at the migration head.
 
 #![cfg(feature = "postgres")]
 
@@ -16,6 +17,12 @@ use sqlx::{
 #[path = "support/canonical_head.rs"]
 mod canonical_head;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
+use nebula_storage_port::Scope;
+
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -24,8 +31,6 @@ const LIVE_EXECUTION_ID: &str = "exe_01JAZ000000000000000000001";
 const ROLLBACK_EXECUTION_ID: &str = "exe_01JAZ000000000000000000002";
 const RELEASED_LIVE_EXECUTION_ID: &str = "exe_01JAZ000000000000000000003";
 const RELEASED_ROLLBACK_EXECUTION_ID: &str = "exe_01JAZ000000000000000000004";
-const INVALID_EXECUTION_ID: &str = "exe_81JAZ000000000000000000005";
-const LOWERCASE_EXECUTION_ID: &str = "exe_01JaZ000000000000000000006";
 const MISSING_EXECUTION_ID: &str = "exe_01JAZ000000000000000000099";
 
 fn revision_id(byte: u8) -> Vec<u8> {
@@ -105,14 +110,16 @@ fn unique_schema_name() -> String {
 }
 
 async fn seed_execution(pool: &PgPool, execution_id: &str, marker: &str) -> TestResult<()> {
+    pool.seed_execution_parents(&Scope::new("workspace-a", "org-a"), "workflow-a")
+        .await;
     sqlx::query(
-        "INSERT INTO port_executions (
+        "INSERT INTO executions (
              id, workspace_id, org_id, workflow_id, status, state,
-             version, created_at, updated_at, created_at_us
+             version, created_at, updated_at
          ) VALUES (
-             $1, 'workspace-a', 'org-a', 'workflow-a', 'Pending', $2::jsonb,
+             $1, 'workspace-a', 'org-a', 'workflow-a', 'created', $2::jsonb,
              7, '2026-07-27T00:00:00Z'::timestamptz,
-             '2026-07-27T00:00:01Z'::timestamptz, 1785110400000000
+             '2026-07-27T00:00:01Z'::timestamptz
          )",
     )
     .bind(execution_id)
@@ -130,7 +137,7 @@ async fn insert_worker_flavor(
     record_bytes: Option<Vec<u8>>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO port_worker_flavor_revisions (
+        "INSERT INTO worker_flavor_revisions (
              worker_flavor_id, record_format, lifecycle, record_bytes
          ) VALUES ($1, $2, $3, $4)",
     )
@@ -152,7 +159,7 @@ async fn insert_executable_plan(
     record_bytes: Option<Vec<u8>>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO port_executable_plan_revisions (
+        "INSERT INTO executable_plan_revisions (
              executable_plan_id, worker_flavor_id, record_format, lifecycle, record_bytes
          ) VALUES ($1, $2, $3, $4, $5)",
     )
@@ -178,13 +185,15 @@ async fn insert_revision_reference(
     worker_flavor_id: Vec<u8>,
     reference_state: &str,
     rollback_window_id: Option<Vec<u8>>,
-    retain_until_ms: Option<i64>,
+    retain_until_us: Option<i64>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO port_execution_revision_refs (
-             execution_id, execution_contract_bundle_id, executable_plan_id,
-             worker_flavor_id, reference_state, rollback_window_id, retain_until_ms
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO execution_revision_references (
+             org_id, workspace_id, execution_id, execution_contract_bundle_id,
+             executable_plan_id, worker_flavor_id, reference_state, rollback_window_id,
+             retain_until
+         ) VALUES ('org-a', 'workspace-a', $1, $2, $3, $4, $5, $6,
+                   to_timestamp($7::bigint / 1000000.0))",
     )
     .bind(execution_id)
     .bind(execution_contract_bundle_id)
@@ -192,7 +201,7 @@ async fn insert_revision_reference(
     .bind(worker_flavor_id)
     .bind(reference_state)
     .bind(rollback_window_id)
-    .bind(retain_until_ms)
+    .bind(retain_until_us)
     .execute(pool)
     .await?;
     Ok(())
@@ -346,7 +355,7 @@ async fn assert_closed_catalog_constraints(pool: &PgPool) -> TestResult<()> {
 
     let deleted_plan = sqlx::query(
         "SELECT worker_flavor_id, record_format, record_bytes
-         FROM port_executable_plan_revisions
+         FROM executable_plan_revisions
          WHERE executable_plan_id = $1",
     )
     .bind(revision_id(0x32))
@@ -373,42 +382,10 @@ async fn assert_closed_catalog_constraints(pool: &PgPool) -> TestResult<()> {
         ROLLBACK_EXECUTION_ID,
         RELEASED_LIVE_EXECUTION_ID,
         RELEASED_ROLLBACK_EXECUTION_ID,
-        INVALID_EXECUTION_ID,
-        LOWERCASE_EXECUTION_ID,
     ] {
         seed_execution(pool, execution_id, execution_id).await?;
     }
 
-    assert!(
-        insert_revision_reference(
-            pool,
-            INVALID_EXECUTION_ID,
-            opaque_id(0x41),
-            revision_id(0x31),
-            revision_id(0x11),
-            "live",
-            None,
-            None,
-        )
-        .await
-        .is_err(),
-        "execution references accept only canonical execution ids"
-    );
-    assert!(
-        insert_revision_reference(
-            pool,
-            LOWERCASE_EXECUTION_ID,
-            opaque_id(0x41),
-            revision_id(0x31),
-            revision_id(0x11),
-            "live",
-            None,
-            None,
-        )
-        .await
-        .is_err(),
-        "execution references reject lowercase Crockford characters"
-    );
     assert!(
         insert_revision_reference(
             pool,
@@ -485,7 +462,7 @@ async fn assert_closed_catalog_constraints(pool: &PgPool) -> TestResult<()> {
         "a reference must name the plan's exact worker flavor"
     );
 
-    for (reference_state, rollback_window_id, retain_until_ms, reason) in [
+    for (reference_state, rollback_window_id, retain_until_us, reason) in [
         ("unknown", None, None, "reference state is closed"),
         (
             "live",
@@ -527,7 +504,7 @@ async fn assert_closed_catalog_constraints(pool: &PgPool) -> TestResult<()> {
                 revision_id(0x11),
                 reference_state,
                 rollback_window_id,
-                retain_until_ms,
+                retain_until_us,
             )
             .await
             .is_err(),
@@ -581,8 +558,9 @@ async fn assert_closed_catalog_constraints(pool: &PgPool) -> TestResult<()> {
     .await?;
 
     let released_rollback = sqlx::query_as::<_, (Vec<u8>, i64)>(
-        "SELECT rollback_window_id, retain_until_ms
-         FROM port_execution_revision_refs
+        "SELECT rollback_window_id,
+                (extract(epoch FROM retain_until) * 1000000)::bigint
+         FROM execution_revision_references
          WHERE execution_id = $1",
     )
     .bind(RELEASED_ROLLBACK_EXECUTION_ID)
@@ -611,18 +589,18 @@ async fn assert_closed_catalog_constraints(pool: &PgPool) -> TestResult<()> {
 
     let blocks_before_expiry: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
-         FROM port_execution_revision_refs
+         FROM execution_revision_references
          WHERE reference_state = 'rollback'
-           AND $1 < retain_until_ms",
+           AND to_timestamp($1::bigint / 1000000.0) < retain_until",
     )
     .bind(999_i64)
     .fetch_one(pool)
     .await?;
     let blocks_at_expiry: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
-         FROM port_execution_revision_refs
+         FROM execution_revision_references
          WHERE reference_state = 'rollback'
-           AND $1 < retain_until_ms",
+           AND to_timestamp($1::bigint / 1000000.0) < retain_until",
     )
     .bind(1_000_i64)
     .fetch_one(pool)
@@ -630,33 +608,11 @@ async fn assert_closed_catalog_constraints(pool: &PgPool) -> TestResult<()> {
     assert_eq!(
         (blocks_before_expiry, blocks_at_expiry),
         (1, 0),
-        "the integer-millisecond retention boundary is blocking before, but expired at, equality"
-    );
-
-    let retain_until_type: String = sqlx::query_scalar(
-        "SELECT data_type
-         FROM information_schema.columns
-         WHERE table_schema = current_schema()
-           AND table_name = 'port_execution_revision_refs'
-           AND column_name = 'retain_until_ms'",
-    )
-    .fetch_one(pool)
-    .await?;
-    assert_eq!(
-        retain_until_type, "bigint",
-        "PostgreSQL retains only whole epoch milliseconds"
+        "the retention boundary is blocking before, but expired at, equality"
     );
 
     assert!(
-        sqlx::query("DELETE FROM port_executions WHERE id = $1")
-            .bind(LIVE_EXECUTION_ID)
-            .execute(pool)
-            .await
-            .is_err(),
-        "execution aggregate deletion is restrictive while an exact revision reference exists"
-    );
-    assert!(
-        sqlx::query("DELETE FROM port_executable_plan_revisions WHERE executable_plan_id = $1",)
+        sqlx::query("DELETE FROM executable_plan_revisions WHERE executable_plan_id = $1",)
             .bind(revision_id(0x31))
             .execute(pool)
             .await
@@ -664,20 +620,35 @@ async fn assert_closed_catalog_constraints(pool: &PgPool) -> TestResult<()> {
         "plan deletion is restrictive while exact revision references exist"
     );
     assert!(
-        sqlx::query("DELETE FROM port_worker_flavor_revisions WHERE worker_flavor_id = $1",)
+        sqlx::query("DELETE FROM worker_flavor_revisions WHERE worker_flavor_id = $1",)
             .bind(revision_id(0x11))
             .execute(pool)
             .await
             .is_err(),
         "flavor deletion is restrictive while plans depend on it"
     );
+    // The reference belongs to its execution and is purged with it.
+    sqlx::query("DELETE FROM executions WHERE id = $1")
+        .bind(LIVE_EXECUTION_ID)
+        .execute(pool)
+        .await?;
+    let orphaned: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM execution_revision_references WHERE execution_id = $1",
+    )
+    .bind(LIVE_EXECUTION_ID)
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(
+        orphaned, 0,
+        "an execution's revision reference cascades with it"
+    );
 
     let index_rows = sqlx::query_as::<_, (String, String)>(
         "SELECT indexname, indexdef
          FROM pg_indexes
          WHERE schemaname = current_schema()
-           AND indexname LIKE 'idx_port_%revision%'
-         ORDER BY indexname",
+           AND indexname LIKE 'ix_%revision%'
+         ORDER BY indexname COLLATE \"C\"",
     )
     .fetch_all(pool)
     .await?;
@@ -685,22 +656,37 @@ async fn assert_closed_catalog_constraints(pool: &PgPool) -> TestResult<()> {
         .iter()
         .map(|(name, _)| name.as_str())
         .collect::<Vec<_>>();
+    let declared = [
+        (
+            "ix_executable_plan_revisions__worker_flavor_id__undeleted",
+            None,
+        ),
+        (
+            "ix_execution_revision_references__executable_plan__rollback",
+            Some(false),
+        ),
+        (
+            "ix_execution_revision_references__executable_plan_id__live",
+            Some(true),
+        ),
+        (
+            "ix_execution_revision_references__worker_flavor__rollback",
+            Some(false),
+        ),
+        (
+            "ix_execution_revision_references__worker_flavor_execution__live",
+            Some(true),
+        ),
+    ];
     assert_eq!(
         index_names,
-        [
-            "idx_port_executable_plan_revisions_worker_flavor",
-            "idx_port_execution_revision_refs_live_flavor",
-            "idx_port_execution_revision_refs_live_plan",
-            "idx_port_execution_revision_refs_rollback_flavor",
-            "idx_port_execution_revision_refs_rollback_plan",
-        ],
-        "the dormant catalog carries only the five blocker/dependency indexes"
+        declared.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        "the catalog carries only the five blocker/dependency indexes"
     );
-    for (index_name, definition) in index_rows {
-        let expected_predicate = if index_name == "idx_port_executable_plan_revisions_worker_flavor"
-        {
+    for ((index_name, definition), (_, live)) in index_rows.into_iter().zip(declared) {
+        let expected_predicate = if live.is_none() {
             "WHERE (lifecycle <> 'deleted'::text)"
-        } else if index_name.contains("_live_") {
+        } else if live == Some(true) {
             "WHERE (reference_state = 'live'::text)"
         } else {
             "WHERE (reference_state = 'rollback'::text)"

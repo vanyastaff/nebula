@@ -35,6 +35,9 @@ pub(crate) fn execution_id(seed: u8) -> String {
     format!("exe-ckpt-{}-{seed:02x}", *NAMESPACE)
 }
 
+/// The workflow every case's executions run; SQL backends seed it first.
+pub(crate) const WORKFLOW: &str = "workflow";
+
 const NODE: &str = "loop";
 const ACTION: &str = "billing.poll";
 const VERSION: &str = "1.0.0";
@@ -60,7 +63,7 @@ async fn create_execution(executions: &dyn ExecutionStore, scope: &Scope, execut
         .create(
             scope,
             execution,
-            "workflow",
+            WORKFLOW,
             serde_json::json!({"status":"Created"}),
         )
         .await

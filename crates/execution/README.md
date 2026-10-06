@@ -65,7 +65,7 @@ Patterns:
   `W3cTraceContext` for M3.5 distributed trace propagation across async boundaries.
 - `ExecutionResult` — post-execution summary: status, timing, node counts, outputs.
 - `JournalEntry` — audit log entry type; its `error` field is a typed `ErrorEnvelope`, never
-  free text. No production path appends one yet: `port_execution_journal` rows are written
+  free text. No production path appends one yet: `execution_journal` rows are written
   through `nebula_storage_port::dto::JournalEntry` with an opaque `payload`.
 - `NodeOutput`, `ExecutionOutput` — node output data with metadata.
 - `NodeAttempt` — individual attempt tracking (attempt number, started/finished timestamps,
@@ -116,7 +116,7 @@ Patterns:
 - **[L2-§11.5]** `JournalEntry` describes the durable journal's append-only, replayable event
   shape; its `error` field carries a typed `ErrorEnvelope`. The seam this section used to name
   (`crates/storage/src/execution_repo.rs`, `ExecutionRepo::append_journal`) does not exist in
-  the tree. The live seam is `port_execution_journal` through
+  the tree. The live seam is `execution_journal` through
   `nebula_storage_port::dto::JournalEntry`.
   Checkpoint state is best-effort: a checkpoint write failure logs and does not abort; work
   since the last successful checkpoint may be replayed or lost.
@@ -142,7 +142,7 @@ Patterns:
 - Not the engine orchestrator — see `nebula-engine` (drives these types).
 - Not the storage implementation — see `nebula-storage-port` (`ExecutionStore`, `CheckpointStore`,
   port traits) and `nebula-storage` (adapters backing the `executions`
-  table, `port_execution_journal`, `execution_control_queue`). The `ExecutionControlQueue`
+  table, `execution_journal`, `execution_control_queue`). The `ExecutionControlQueue`
   (durable outbox for cancel/dispatch signals) and the `Transactional Outbox` pattern live
   in `nebula-storage`, not here.
 - Not a retry scheduler — this crate records the state shapes; `nebula-engine` drives
@@ -191,7 +191,7 @@ behavior by itself.
 | Artifact | Status | Notes |
 |---|---|---|
 | `executions` row + state JSON | **Durable** (CAS via `ExecutionStore::commit`) | Source of truth |
-| `port_execution_journal` | **Durable** (append-only) | Replayable history; written via `nebula_storage_port::dto::JournalEntry`. The legacy `execution_journal` table has no writer |
+| `execution_journal` | **Durable** (append-only) | Replayable history; written via `nebula_storage_port::dto::JournalEntry` |
 | `execution_control_queue` | **Durable** (outbox) | At-least-once cancel/dispatch |
 | `stateful_checkpoints` | **Best-effort** | Failure logs, does not abort; may replay |
 | `executions.lease_holder` / `lease_expires_at` (Layer 1) | **Durable + enforced** (M2.2, ADR-0008/0015) | Heartbeat-driven; multi-runner takeover via TTL expiry |

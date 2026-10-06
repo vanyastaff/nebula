@@ -10,8 +10,12 @@
 #[path = "support/operation_ledger_oracle.rs"]
 mod oracle;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
 use std::str::FromStr;
 
+use execution_parents::SeedExecutionParents;
 use nebula_storage::sqlite::{SqliteOperationLedger, init_schema};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -34,6 +38,9 @@ async fn fresh_pool() -> SqlitePool {
     init_schema(&pool)
         .await
         .expect("apply the ordered SQLite migration catalog");
+    for scope in [oracle::scope(), oracle::other_scope()] {
+        pool.seed_execution_parents(&scope, oracle::WORKFLOW).await;
+    }
     pool
 }
 
@@ -69,6 +76,7 @@ async fn terminal_evidence_commits_with_the_journal_and_survives_reopen() {
         .unwrap();
     init_schema(&pool).await.unwrap();
     let scope = oracle::scope();
+    pool.seed_execution_parents(&scope, oracle::WORKFLOW).await;
     let executions = nebula_storage::sqlite::SqliteExecutionStore::new(pool.clone());
     executions
         .create(
@@ -140,7 +148,7 @@ async fn terminal_evidence_commits_with_the_journal_and_survives_reopen() {
         .await
         .unwrap();
     let journal_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM port_execution_journal WHERE execution_id = 'reopen-execution'",
+        "SELECT COUNT(*) FROM execution_journal WHERE execution_id = 'reopen-execution'",
     )
     .fetch_one(&pool)
     .await

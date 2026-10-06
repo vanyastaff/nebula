@@ -257,8 +257,8 @@ impl ControlQueue for SqliteControlQueue {
              WHERE status = 'Pending' AND id IN ( \
                  SELECT c.id FROM port_control_queue c \
                  WHERE c.status = 'Pending' AND EXISTS ( \
-                     SELECT 1 FROM port_execution_revision_refs r \
-                     JOIN port_executions e ON e.id = r.execution_id \
+                     SELECT 1 FROM execution_revision_references r \
+                     JOIN executions e ON e.id = r.execution_id \
                      WHERE r.execution_id = c.execution_id \
                        AND e.workspace_id = c.workspace_id AND e.org_id = c.org_id \
                        AND r.worker_flavor_id = ? AND r.reference_state = 'live' \
@@ -450,7 +450,7 @@ impl SqliteJournalReader {
     /// then yields an empty journal, never another tenant's entries.
     async fn scope_ok(&self, scope: &Scope, execution_id: &str) -> Result<bool, StorageError> {
         let row = sqlx::query(
-            "SELECT 1 AS ok FROM port_executions \
+            "SELECT 1 AS ok FROM executions \
              WHERE id = ? AND workspace_id = ? AND org_id = ?",
         )
         .bind(execution_id)
@@ -474,7 +474,7 @@ impl ExecutionJournalReader for SqliteJournalReader {
             return Ok(Vec::new());
         }
         let rows = sqlx::query(
-            "SELECT seq, payload FROM port_execution_journal \
+            "SELECT seq, payload FROM execution_journal \
              WHERE execution_id = ? ORDER BY seq",
         )
         .bind(execution_id)
@@ -502,7 +502,7 @@ impl ExecutionJournalReader for SqliteJournalReader {
             return Ok(Vec::new());
         }
         let rows = sqlx::query(
-            "SELECT seq, payload FROM port_execution_journal \
+            "SELECT seq, payload FROM execution_journal \
              WHERE execution_id = ? AND seq > ? ORDER BY seq",
         )
         .bind(execution_id)

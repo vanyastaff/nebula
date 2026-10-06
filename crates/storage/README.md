@@ -249,16 +249,15 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   at most 512 bytes, rejected before durable access otherwise); `read_occurrences`
   lists a node's slots in one snapshot, ordered by backend preparation time then
   label bytes (PostgreSQL pins `COLLATE "C"`). An optional `ProviderIdempotencyKey` is
-  stored inside the existing `port_operation_protocol` JSON of the prepare
+  stored inside the existing `operation_protocol_records` JSON of the prepare
   transaction — omitted when absent, so keyless records keep their bytes and no
   migration is needed — and participates in the prepare identity check. The shared
   oracle `tests/support/operation_ledger_oracle.rs` proves both for all three adapters.
 
-- **[L2-§11.5]** `TransitionBatch::journal` backs the durable `port_execution_journal`
+- **[L2-§11.5]** `TransitionBatch::journal` backs the durable `execution_journal`
   (append-only, replayable) and is committed with the state transition. No production caller
-  fills the batch's journal rows yet (#1013); the legacy `execution_journal` table has no
-  INSERT writer. `CheckpointStore` holds the **fenced iteration checkpoints** of journaled
-  stateful actions (migration 0062, `port_iteration_checkpoints`): one row per tenant,
+  fills the batch's journal rows yet (#1013). `CheckpointStore` holds the **fenced iteration checkpoints** of journaled
+  stateful actions (migration 0062, `iteration_checkpoints`): one row per tenant,
   execution, node, action key and action version, saved in one transaction under the
   execution fence the operation ledger shares (`execution_fence`), monotone (a lower
   iteration never replaces a higher one; an equal one must carry the same state digest),
@@ -467,13 +466,13 @@ only control-command outbox.
 
 | Artifact | Status | Notes |
 |---|---|---|
-| `port_executions` row + state JSON | **Durable** (CAS via `ExecutionStore` + `TransitionBatch`) | Source of truth |
-| `port_execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state. No production writer yet (#1013) — `TransitionBatch::journal` rows have no producer, and the legacy `execution_journal` table has no INSERT writer |
+| `executions` row + state JSON | **Durable** (CAS via `ExecutionStore` + `TransitionBatch`) | Source of truth |
+| `execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state. Written by the execution-control owner and the operation ledger; `TransitionBatch::journal` rows have no producer yet (#1013) |
 | `port_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2) |
-| iteration checkpoints (`port_iteration_checkpoints`) | **Durable + fenced** (SQLite/PostgreSQL; in-memory reference shares the execution store) | Saved under the live execution lease, monotone per `(tenant, execution, node, action key, action version)`, cascades with its execution. An unavailable save only skips the optimisation (the next attempt replays from an earlier checkpoint or iteration 0); never authority over effects — the operation ledger is. Verified by `iteration_checkpoint_conformance_{inmem,sqlite,postgres}` and the engine `journal_checkpoint` suite |
-| operation ledger slots (`port_operation_ledger` + `port_operation_protocol`) | **Durable + fenced** | One slot per journaled effect occurrence; prepare, grant, explain and outcome written under the live execution lease. Verified by `operation_ledger_conformance_{inmem,sqlite,postgres}` and the engine `effect_protocol` suite |
+| iteration checkpoints (`iteration_checkpoints`) | **Durable + fenced** (SQLite/PostgreSQL; in-memory reference shares the execution store) | Saved under the live execution lease, monotone per `(tenant, execution, node, action key, action version)`, cascades with its execution. An unavailable save only skips the optimisation (the next attempt replays from an earlier checkpoint or iteration 0); never authority over effects — the operation ledger is. Verified by `iteration_checkpoint_conformance_{inmem,sqlite,postgres}` and the engine `journal_checkpoint` suite |
+| operation ledger slots (`operation_ledger` + `operation_protocol_records`) | **Durable + fenced** | One slot per journaled effect occurrence; prepare, grant, explain and outcome written under the live execution lease. Verified by `operation_ledger_conformance_{inmem,sqlite,postgres}` and the engine `effect_protocol` suite |
 | recorded-read answers (observation slots of the operation ledger) | **Durable + fenced** | A model's or retrieval's answer an agent or action observed (`Effect::RecordedRead`), kept as plaintext JSON evidence (at most 1 MiB) in the slot's protocol record; the prompt is digested, never stored. **May contain user data** (whatever the model was asked about and answered): it is retained and removed with its execution like effect outputs, never logged or put in spans or metric labels, and not encrypted at rest beyond the backend's own storage encryption. The `observation` flag is an optional protocol field (no migration): a build from before 0.32.0 refuses to decode an observation's record |
-| agent turn checkpoints (`port_iteration_checkpoints`, turn number as the iteration) | **Durable + fenced** | The iteration checkpoint row, unchanged, for an agent's turn state (at most 1 MiB of JSON; larger is not saved and the agent replays from turn 0) after every passed `Continue`. An optimisation, as for iterations: recorded answers and effects replay from the ledger without a provider call |
+| agent turn checkpoints (`iteration_checkpoints`, turn number as the iteration) | **Durable + fenced** | The iteration checkpoint row, unchanged, for an agent's turn state (at most 1 MiB of JSON; larger is not saved and the agent replays from turn 0) after every passed `Continue`. An optimisation, as for iterations: recorded answers and effects replay from the ledger without a provider call |
 | lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0072) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
 | local idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. This is not a remote-effect ledger or atomicity guarantee. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
 | credential admission epoch (use revision) | **Durable + transactional** on SQLite/PostgreSQL; **replacement-only** in the in-memory pairing | Advanced with every closing write in one transaction (replace, won revoke claim, sentinel, escalation). The in-memory claim repository is a separate object and cannot advance it on claim transitions, so invariant I-A holds only on the SQL backends. Verified by the credential semantic oracle and the claim-side cases in `refresh_claim_conformance_{sqlite,postgres}` |

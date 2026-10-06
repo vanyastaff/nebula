@@ -551,7 +551,7 @@ impl WorkflowEngine {
                 // non-atomic: mint-on-park rides the `TransitionBatch` atomically,
                 // but revoke is a separate best-effort call. A crash in the window
                 // (terminal committed, revoke not yet run) leaves only un-reachable
-                // dead token rows — backstopped by the `port_resume_tokens`
+                // dead token rows — backstopped by the `resume_tokens`
                 // `ON DELETE CASCADE` FK and the no-op-resume against a terminal
                 // execution (see `nebula_storage_port::store::resume_token` module
                 // docs). So a revoke failure must NOT fail the already-terminal

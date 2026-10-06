@@ -139,8 +139,8 @@ impl Database {
             },
             Self::Sqlite { pool, .. } => {
                 sqlx::query(
-                    "UPDATE port_executions SET lease_expires_at_ms = 0 \
-                     WHERE lease_holder IS NOT NULL AND lease_expires_at_ms IS NOT NULL",
+                    "UPDATE executions SET lease_expires_at = 0 \
+                     WHERE lease_holder IS NOT NULL AND lease_expires_at IS NOT NULL",
                 )
                 .execute(pool)
                 .await
@@ -148,8 +148,8 @@ impl Database {
             },
             Self::Postgres { pool, .. } => {
                 sqlx::query(
-                    "UPDATE port_executions SET lease_expires_at_ms = 0 \
-                     WHERE lease_holder IS NOT NULL AND lease_expires_at_ms IS NOT NULL",
+                    "UPDATE executions SET lease_expires_at = to_timestamp(0) \
+                     WHERE lease_holder IS NOT NULL AND lease_expires_at IS NOT NULL",
                 )
                 .execute(pool)
                 .await

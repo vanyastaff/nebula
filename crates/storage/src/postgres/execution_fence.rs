@@ -5,6 +5,7 @@
 //! transaction ends, so the fence decided here cannot be invalidated (a lease
 //! renewal, takeover or release) before the caller's write commits.
 
+use chrono::{DateTime, Utc};
 use nebula_storage_port::{FencingToken, Scope};
 use sqlx::{Postgres, Row, Transaction};
 
@@ -24,25 +25,25 @@ pub(crate) async fn lock_execution(
     fencing: Option<FencingToken>,
 ) -> Result<(), FenceRefusal> {
     let row = sqlx::query(
-        "SELECT fencing_generation, lease_holder, lease_expires_at_ms FROM port_executions \
-         WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE",
+        "SELECT fencing_generation, lease_holder, lease_expires_at FROM executions \
+         WHERE org_id = $1 AND workspace_id = $2 AND id = $3 FOR UPDATE",
     )
-    .bind(execution_id)
-    .bind(&scope.workspace_id)
     .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(execution_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(unavailable)?
     .ok_or(FenceRefusal::LeaseRejected)?;
     if let Some(fencing) = fencing {
-        let now: i64 =
-            sqlx::query_scalar("SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")
-                .fetch_one(&mut **tx)
-                .await
-                .map_err(unavailable)?;
+        let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(unavailable)?;
         let generation: i64 = row.try_get("fencing_generation").map_err(unavailable)?;
         let holder: Option<String> = row.try_get("lease_holder").map_err(unavailable)?;
-        let expires: Option<i64> = row.try_get("lease_expires_at_ms").map_err(unavailable)?;
+        let expires: Option<DateTime<Utc>> =
+            row.try_get("lease_expires_at").map_err(unavailable)?;
         require_live_lease(
             fencing,
             u64::try_from(generation).map_err(|_| FenceRefusal::LeaseRejected)?,

@@ -44,7 +44,7 @@ impl ResumeProducer for PgResumeProducer {
         let row = sqlx::query(
             "SELECT token_hash, workspace_id, org_id, execution_id, \
                     node_key, wait_kind, callback_label, created_at, expires_at \
-             FROM port_resume_tokens \
+             FROM resume_tokens \
              WHERE token_hash = $1",
         )
         .bind(token_hash.as_bytes())
@@ -78,7 +78,7 @@ impl ResumeProducer for PgResumeProducer {
         // gate: a raced/replayed/absent hash deletes zero rows. The DELETE's
         // row lock serialises concurrent consumers — only one tx wins.
         let deleted = sqlx::query(
-            "DELETE FROM port_resume_tokens \
+            "DELETE FROM resume_tokens \
              WHERE token_hash = $1 \
              RETURNING token_hash",
         )

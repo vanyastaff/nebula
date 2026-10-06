@@ -1,5 +1,5 @@
 use nebula_storage_port::{
-    StorageError, TransitionOutcome,
+    Scope, StorageError, TransitionOutcome,
     store::{
         ControlObservationAcknowledgement as Ack, ControlTurnCommit,
         ControlTurnCommitOutcome as Outcome, ControlTurnTransition,
@@ -21,7 +21,7 @@ pub(super) async fn commit(
         let id = transition.execution_id();
         let mut tx = pool.begin().await.map_err(storage_error)?;
         // Aggregate first, then command: the same lock order as Start acceptance.
-        let Some(row) = sqlx::query("SELECT version, fencing_generation, lease_holder, lease_expires_at_ms FROM port_executions WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE")
+        let Some(row) = sqlx::query("SELECT version, fencing_generation, lease_holder, lease_expires_at FROM executions WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE")
             .bind(id).bind(&scope.workspace_id).bind(&scope.org_id)
             .fetch_optional(&mut *tx).await.map_err(storage_error)? else {
             tx.rollback().await.map_err(storage_error)?;
@@ -62,7 +62,7 @@ pub(super) async fn commit(
                 observation_acknowledgement,
             });
         }
-        let expected: Option<Vec<u8>> = sqlx::query_scalar("SELECT worker_flavor_id FROM port_execution_revision_refs WHERE execution_id = $1 AND reference_state = 'live'")
+        let expected: Option<Vec<u8>> = sqlx::query_scalar("SELECT worker_flavor_id FROM execution_revision_references WHERE execution_id = $1 AND reference_state = 'live'")
             .bind(id).fetch_optional(&mut *tx).await.map_err(storage_error)?;
         let Some(expected) = expected else {
             tx.rollback().await.map_err(storage_error)?;
@@ -93,7 +93,10 @@ pub(super) async fn commit(
             return Ok(Outcome::FlavorMismatch { snapshot, observation_acknowledgement });
         }
         let holder: Option<String> = row.try_get("lease_holder").map_err(storage_error)?;
-        let expiry: Option<i64> = row.try_get("lease_expires_at_ms").map_err(storage_error)?;
+        let expiry: Option<i64> = row
+        .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("lease_expires_at")
+        .map_err(storage_error)?
+        .map(|expiry| expiry.timestamp_millis());
         let now: i64 = sqlx::query_scalar("SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")
             .fetch_one(&mut *tx).await.map_err(storage_error)?;
         let fence = transition.fence();
@@ -146,8 +149,8 @@ pub(super) async fn commit(
         let timestamp = observation_timestamp(&mut tx).await?;
         let payload = crate::control_turn::refusal_payload(commit, current_generation,
             nebula_execution::ExecutionControlReason::ControlAccepted, timestamp)?;
-        append_observation(&mut tx, id, &payload).await?;
-        let accepted = sqlx::query("INSERT INTO port_execution_turn_acceptances (execution_id, workspace_id, org_id, last_accepted_fencing_generation, source_kind, source_queue_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(execution_id) DO UPDATE SET last_accepted_fencing_generation = excluded.last_accepted_fencing_generation, source_kind = excluded.source_kind, source_queue_id = excluded.source_queue_id WHERE port_execution_turn_acceptances.workspace_id = excluded.workspace_id AND port_execution_turn_acceptances.org_id = excluded.org_id")
+        append_observation(&mut tx, scope, id, &payload).await?;
+        let accepted = sqlx::query("INSERT INTO execution_turn_acceptances (execution_id, workspace_id, org_id, last_accepted_fencing_generation, source_kind, source_queue_id) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT(execution_id) DO UPDATE SET last_accepted_fencing_generation = excluded.last_accepted_fencing_generation, source_kind = excluded.source_kind, source_queue_id = excluded.source_queue_id WHERE execution_turn_acceptances.workspace_id = excluded.workspace_id AND execution_turn_acceptances.org_id = excluded.org_id")
             .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind(generation)
             .bind(crate::control_turn::source(commit)).bind(commit.claim().row_id().as_slice())
             .execute(&mut *tx).await.map_err(storage_error)?;
@@ -225,7 +228,7 @@ async fn record_refusal(
         reason,
         observation_timestamp(tx).await?,
     )?;
-    let inserted = sqlx::query("INSERT INTO port_execution_control_observation_receipts (execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome, expected_flavor_id, actual_flavor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome) DO NOTHING")
+    let inserted = sqlx::query("INSERT INTO execution_control_observation_receipts (execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome, expected_flavor_id, actual_flavor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome) DO NOTHING")
         .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind("control_queue")
         .bind(commit.claim().row_id().as_slice()).bind(claim_generation).bind("").bind(outcome)
         .bind(snapshot.map(|(expected,_)| expected.as_bytes().to_vec()))
@@ -234,7 +237,7 @@ async fn record_refusal(
     if inserted.rows_affected() == 0 {
         return Ok(Ack::AlreadyRecorded);
     }
-    append_observation(tx, id, &payload).await?;
+    append_observation(tx, scope, id, &payload).await?;
     Ok(Ack::Recorded)
 }
 
@@ -251,14 +254,17 @@ pub(super) async fn record_admission(
     let mut tx = pool.begin().await.map_err(storage_error)?;
     let id = refusal.execution_id();
     let scope = refusal.scope();
-    let Some(row) = sqlx::query("SELECT fencing_generation, lease_holder, lease_expires_at_ms FROM port_executions WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE")
+    let Some(row) = sqlx::query("SELECT fencing_generation, lease_holder, lease_expires_at FROM executions WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE")
         .bind(id).bind(&scope.workspace_id).bind(&scope.org_id)
         .fetch_optional(&mut *tx).await.map_err(storage_error)? else {
         return Ok(Admission::FencedOut);
     };
     let generation: i64 = row.try_get("fencing_generation").map_err(storage_error)?;
     let holder: Option<String> = row.try_get("lease_holder").map_err(storage_error)?;
-    let expiry: Option<i64> = row.try_get("lease_expires_at_ms").map_err(storage_error)?;
+    let expiry: Option<i64> = row
+        .try_get::<Option<chrono::DateTime<chrono::Utc>>, _>("lease_expires_at")
+        .map_err(storage_error)?
+        .map(|expiry| expiry.timestamp_millis());
     let now: i64 =
         sqlx::query_scalar("SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")
             .fetch_one(&mut *tx)
@@ -271,7 +277,7 @@ pub(super) async fn record_admission(
     {
         return Ok(Admission::FencedOut);
     }
-    let Some(marker) = sqlx::query("SELECT source_kind, source_queue_id FROM port_execution_turn_acceptances WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3 AND last_accepted_fencing_generation = $4")
+    let Some(marker) = sqlx::query("SELECT source_kind, source_queue_id FROM execution_turn_acceptances WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3 AND last_accepted_fencing_generation = $4")
         .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind(generation)
         .fetch_optional(&mut *tx).await.map_err(storage_error)? else {
         return Ok(Admission::MissingAcceptedTurn);
@@ -298,13 +304,13 @@ pub(super) async fn record_admission(
     // The owner is verified and the throttle attributed: the observation
     // below only follows that decision and never replaces it.
     let written = async {
-        let inserted = sqlx::query("INSERT INTO port_execution_control_observation_receipts (execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome, expected_flavor_id, actual_flavor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome) DO NOTHING")
+        let inserted = sqlx::query("INSERT INTO execution_control_observation_receipts (execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome, expected_flavor_id, actual_flavor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(execution_id, workspace_id, org_id, source_kind, source_queue_id, source_generation, decision_key, outcome) DO NOTHING")
             .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind(receipt_kind)
             .bind(row_id.as_slice()).bind(generation).bind(decision_key).bind("throttled")
             .bind(Option::<Vec<u8>>::None).bind(Option::<Vec<u8>>::None)
             .execute(&mut *tx).await.map_err(storage_error)?.rows_affected() == 1;
         if inserted {
-            append_observation(&mut tx, id, &payload).await?;
+            append_observation(&mut tx, scope, id, &payload).await?;
         }
         Ok::<bool, StorageError>(inserted)
     }
@@ -330,19 +336,23 @@ pub(super) async fn record_admission(
 /// Internal aggregate-owner append; caller already holds the scoped execution lock.
 pub(super) async fn append_observation(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    scope: &Scope,
     execution_id: &str,
     payload: &serde_json::Value,
 ) -> Result<(), StorageError> {
     let seq: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(seq), 0) + 1 FROM port_execution_journal WHERE execution_id = $1",
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM execution_journal WHERE execution_id = $1",
     )
     .bind(execution_id)
     .fetch_one(&mut **tx)
     .await
     .map_err(storage_error)?;
     sqlx::query(
-        "INSERT INTO port_execution_journal (execution_id, seq, payload) VALUES ($1, $2, $3)",
+        "INSERT INTO execution_journal (org_id, workspace_id, execution_id, seq, payload) \
+         VALUES ($1, $2, $3, $4, $5)",
     )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
     .bind(execution_id)
     .bind(seq)
     .bind(payload)
@@ -365,7 +375,7 @@ pub(super) async fn record_flavor(
     let mut tx = pool.begin().await.map_err(storage_error)?;
     let scope = request.claim().scope();
     let id = request.execution_id();
-    let Some(row) = sqlx::query("SELECT fencing_generation FROM port_executions WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE")
+    let Some(row) = sqlx::query("SELECT fencing_generation FROM executions WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE")
         .bind(id).bind(&scope.workspace_id).bind(&scope.org_id)
         .fetch_optional(&mut *tx).await.map_err(storage_error)? else { return Ok(Flavor::ClaimSuperseded); };
     let generation = u64::try_from(
@@ -395,7 +405,7 @@ pub(super) async fn record_flavor(
     let attempted_claim = request.claim().generation().get();
     let source_generation = i64::try_from(attempted_claim)
         .map_err(|_| StorageError::InvalidInput("claim generation is invalid".into()))?;
-    let Some(expected) = sqlx::query_scalar::<_,Vec<u8>>("SELECT worker_flavor_id FROM port_execution_revision_refs WHERE execution_id = $1 AND reference_state = 'live'")
+    let Some(expected) = sqlx::query_scalar::<_,Vec<u8>>("SELECT worker_flavor_id FROM execution_revision_references WHERE execution_id = $1 AND reference_state = 'live'")
         .bind(id).fetch_optional(&mut *tx).await.map_err(storage_error)? else { return Ok(Flavor::ClaimSuperseded); };
     let expected = nebula_core::WorkerFlavorRevisionId::from_bytes(
         expected
@@ -443,14 +453,14 @@ pub(super) async fn record_flavor(
                 .map_err(storage_error)?;
         let payload =
             crate::control_turn::flavor_refusal_payload(request, generation, reason, timestamp)?;
-        let inserted = sqlx::query("INSERT INTO port_execution_control_observation_receipts (execution_id,workspace_id,org_id,source_kind,source_queue_id,source_generation,decision_key,outcome,expected_flavor_id,actual_flavor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(execution_id,workspace_id,org_id,source_kind,source_queue_id,source_generation,decision_key,outcome) DO NOTHING")
+        let inserted = sqlx::query("INSERT INTO execution_control_observation_receipts (execution_id,workspace_id,org_id,source_kind,source_queue_id,source_generation,decision_key,outcome,expected_flavor_id,actual_flavor_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(execution_id,workspace_id,org_id,source_kind,source_queue_id,source_generation,decision_key,outcome) DO NOTHING")
             .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind("control_queue")
             .bind(request.claim().row_id().as_slice()).bind(source_generation).bind("").bind(receipt_outcome)
             .bind(snapshot.map(|(expected,_)| expected.as_bytes().to_vec()))
             .bind(snapshot.map(|(_,actual)| actual.as_bytes().to_vec()))
             .execute(&mut *tx).await.map_err(storage_error)?.rows_affected()==1;
         if inserted {
-            append_observation(&mut tx, id, &payload).await?;
+            append_observation(&mut tx, scope, id, &payload).await?;
         }
         Ok::<bool, StorageError>(inserted)
     }
@@ -479,7 +489,7 @@ async fn settle_flavor_observation(
     mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
     written: Result<bool, StorageError>,
     has_snapshot: bool,
-    scope: &nebula_storage_port::Scope,
+    scope: &Scope,
     id: &str,
     row_id: &[u8; 16],
     source_generation: i64,
@@ -528,7 +538,7 @@ async fn observation_timestamp(
 
 async fn read_flavor_receipt(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    scope: &nebula_storage_port::Scope,
+    scope: &Scope,
     id: &str,
     row_id: &[u8; 16],
     claim_generation: i64,
@@ -539,7 +549,7 @@ async fn read_flavor_receipt(
     ),
     StorageError,
 > {
-    let receipt = sqlx::query("SELECT expected_flavor_id, actual_flavor_id FROM port_execution_control_observation_receipts WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3 AND source_kind = 'control_queue' AND source_queue_id = $4 AND source_generation = $5 AND decision_key = '' AND outcome = 'flavor-mismatch'")
+    let receipt = sqlx::query("SELECT expected_flavor_id, actual_flavor_id FROM execution_control_observation_receipts WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3 AND source_kind = 'control_queue' AND source_queue_id = $4 AND source_generation = $5 AND decision_key = '' AND outcome = 'flavor-mismatch'")
         .bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind(row_id.as_slice()).bind(claim_generation)
         .fetch_one(&mut **tx).await.map_err(storage_error)?;
     let expected: Vec<u8> = receipt

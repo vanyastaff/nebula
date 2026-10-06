@@ -6463,8 +6463,8 @@ fn durable_failure_record_keeps_the_actions_own_text_out_of_every_surface() {
 
     let envelope = durable_error_envelope(&error);
 
-    // 1. The record itself. This exact value is what `port_executions.state` and
-    //    `port_execution_journal.payload` persist, since both columns are opaque JSON.
+    // 1. The record itself. This exact value is what `executions.state` and
+    //    `execution_journal.payload` persist, since both columns are opaque JSON.
     let record = serde_json::to_string(&envelope).expect("record is serializable");
     assert!(!record.contains(MARKER), "durable record leaked: {record}");
     assert_eq!(envelope.code().as_str(), "ACTION:FATAL");

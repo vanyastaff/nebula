@@ -42,6 +42,20 @@ use nebula_storage_port::{
     TransitionOutcome, WorkerFlavorRevisionRecord,
 };
 
+#[path = "../support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "the harness reaches each backend through its stores, not through a raw pool"
+)]
+mod execution_parents;
+
+/// Create the live workflow `workflow_id` names in `scope`: an execution
+/// references its workflow, which the SQL backends enforce.
+async fn seed_workflow(backend: &dyn Backend, scope: &Scope, workflow_id: &str) {
+    execution_parents::seed_workflow(backend.workflow_store().await.as_ref(), scope, workflow_id)
+        .await;
+}
+
 /// A storage backend under conformance test. Returns port handles built on
 /// that backend's concrete adapter.
 #[async_trait::async_trait]
@@ -80,6 +94,22 @@ pub(crate) trait Backend: Send + Sync {
     /// The exact plan/flavor catalog lifecycle admin backed by this backend,
     /// used to prove a drain causes materialized starts to fail closed.
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin>;
+    /// The tenant provisioning store of a backend that enforces that a
+    /// workspace-owned row has its workspace; `None` for the in-memory one.
+    async fn tenant_provisioning_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
+        None
+    }
+}
+
+/// Provision `scope` (when the backend checks tenants) and the live workflow
+/// an execution in it names.
+async fn seed_scope_and_workflow(backend: &dyn Backend, scope: &Scope, workflow_id: &str) {
+    if let Some(tenants) = backend.tenant_provisioning_store().await {
+        execution_parents::provision_scope(tenants.as_ref(), scope).await;
+    }
+    seed_workflow(backend, scope, workflow_id).await;
 }
 
 /// Test-only clock control for SQL job-dispatch retention assertions.
@@ -364,6 +394,14 @@ impl Backend for SqliteBackend {
             &nebula_metrics::MetricsRegistry::new(),
         ))
     }
+    #[cfg(feature = "sqlite")]
+    async fn tenant_provisioning_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
+        Some(Arc::new(
+            nebula_storage::sqlite::SqliteTenantProvisioningStore::new(self.pool().await),
+        ))
+    }
     #[cfg(not(feature = "sqlite"))]
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
@@ -565,6 +603,14 @@ impl Backend for PostgresBackend {
             &nebula_metrics::MetricsRegistry::new(),
         ))
     }
+    #[cfg(feature = "postgres")]
+    async fn tenant_provisioning_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
+        Some(Arc::new(
+            nebula_storage::postgres::PgTenantProvisioningStore::new(self.pool().await),
+        ))
+    }
     #[cfg(not(feature = "postgres"))]
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
@@ -649,46 +695,8 @@ fn scope_b() -> Scope {
 /// satisfy their foreign keys on the SQL backends. Replays are no-ops.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn provision_fixed_scopes(store: &dyn nebula_storage_port::store::TenantProvisioningStore) {
-    use nebula_storage_port::dto::{
-        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningOutcome,
-        TenantProvisioningRequest,
-    };
     for scope in [scope_a(), scope_b()] {
-        let org = TenantOrgCreate::new(
-            scope.org_id.clone(),
-            scope.org_id.clone(),
-            "Conformance".into(),
-            "conformance".into(),
-            "free".into(),
-            None,
-            serde_json::json!({}),
-        )
-        .expect("org values");
-        let workspace = TenantDefaultWorkspaceCreate::new(
-            scope.workspace_id.clone(),
-            "default".into(),
-            "Default".into(),
-            None,
-            "conformance".into(),
-            serde_json::json!({}),
-        )
-        .expect("workspace values");
-        let request = TenantProvisioningRequest::new(
-            org,
-            workspace,
-            PrincipalKind::User,
-            "conformance-owner".into(),
-            None,
-        )
-        .expect("provisioning request");
-        let outcome = store
-            .provision_tenant(request)
-            .await
-            .expect("provision fixed scope");
-        assert!(matches!(
-            outcome,
-            TenantProvisioningOutcome::Created | TenantProvisioningOutcome::Replayed
-        ));
+        execution_parents::provision_scope(store, &scope).await;
     }
 }
 
@@ -698,6 +706,7 @@ async fn provision_fixed_scopes(store: &dyn nebula_storage_port::store::TenantPr
 pub(crate) async fn assert_create_get_roundtrip(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_1", "wf_1", serde_json::json!({"k": 1}))
         .await
@@ -713,6 +722,7 @@ pub(crate) async fn assert_create_get_roundtrip(backend: &dyn Backend) {
 pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_cas", "wf_1", serde_json::json!({}))
         .await
@@ -742,6 +752,7 @@ pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
 pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) -> serde_json::Value {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_fence", "wf_1", serde_json::json!({}))
         .await
@@ -808,6 +819,7 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) ->
 pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) -> serde_json::Value {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_lease", "wf_1", serde_json::json!({}))
         .await
@@ -908,6 +920,7 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) -> s
 pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) -> serde_json::Value {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_triple", "wf_1", serde_json::json!({}))
         .await
@@ -1004,6 +1017,14 @@ pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) -> serde_json::V
 pub(crate) async fn assert_idempotency_first_writer_wins(backend: &dyn Backend) {
     let guard = backend.idempotency_guard().await;
     let s = scope_a();
+    // A mark belongs to its execution, which the SQL backends enforce.
+    seed_workflow(backend, &s, "wf_1").await;
+    backend
+        .execution_store()
+        .await
+        .create(&s, "exe_1", "wf_1", serde_json::json!({}))
+        .await
+        .expect("create the marked execution");
     let first = guard
         .check_and_mark(&s, "exe_1", "node_1", 1)
         .await
@@ -1024,6 +1045,7 @@ pub(crate) async fn assert_idempotency_first_writer_wins(backend: &dyn Backend) 
 /// tenant's row, never an error that leaks existence.
 pub(crate) async fn assert_cross_scope_get_is_none(backend: &dyn Backend) {
     let store = backend.execution_store().await;
+    seed_workflow(backend, &scope_a(), "wf_1").await;
     store
         .create(&scope_a(), "exe_x", "wf_1", serde_json::json!({}))
         .await
@@ -1040,6 +1062,7 @@ pub(crate) async fn assert_cross_scope_get_is_none(backend: &dyn Backend) {
 /// must not Apply (the row is invisible cross-tenant).
 pub(crate) async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend) {
     let store = backend.execution_store().await;
+    seed_workflow(backend, &scope_a(), "wf_1").await;
     store
         .create(&scope_a(), "exe_y", "wf_1", serde_json::json!({}))
         .await
@@ -1647,6 +1670,7 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
     let store = backend.execution_store().await;
     let queue = backend.control_queue().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_cq", "wf_1", serde_json::json!({}))
         .await
@@ -1762,6 +1786,7 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
     let store = backend.execution_store().await;
     let queue = backend.control_queue().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_rt").await;
     store
         .create(&s, "exe_rt", "wf_rt", serde_json::json!({}))
         .await
@@ -2064,6 +2089,7 @@ pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let reader = backend.journal_reader().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_j", "wf_1", serde_json::json!({}))
         .await
@@ -2501,6 +2527,12 @@ impl<B: Backend> Backend for ScopedBackend<B> {
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         self.inner.plan_flavor_catalog_admin().await
     }
+
+    async fn tenant_provisioning_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
+        self.inner.tenant_provisioning_store().await
+    }
 }
 
 /// A stable processor identity cannot acknowledge a control command whose
@@ -2522,6 +2554,7 @@ pub(crate) async fn assert_control_queue_same_processor_aba_is_fenced(
     let processor = [11u8; 16];
 
     let execution_id = "exe_control_aba";
+    seed_workflow(backend, &scope, "wf_control_aba").await;
     store
         .create(
             &scope,
@@ -2740,6 +2773,7 @@ async fn materialize_execution_reference(
         resume_target: None,
     };
     let workflow_id = workflow_id.to_string();
+    seed_scope_and_workflow(backend, scope, &workflow_id).await;
     backend
         .start_acceptance_store()
         .await
@@ -3612,6 +3646,7 @@ pub(crate) async fn assert_control_queue_release_returns_row_for_redelivery(back
     let processor = [21u8; 16];
 
     let execution_id = "exe_control_release";
+    seed_workflow(backend, &scope, "wf_control_release").await;
     store
         .create(
             &scope,

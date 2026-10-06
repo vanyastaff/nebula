@@ -32,13 +32,13 @@ mod postgres {
     }
 
     async fn sentinel(pool: &PgPool) -> Value {
-        let execution = sqlx::query("SELECT id, workspace_id, org_id, workflow_id, status, state, version, fencing_generation FROM port_executions WHERE id = 'migration-sentinel'")
+        let execution = sqlx::query("SELECT id, workspace_id, org_id, workflow_id, status, state, version, fencing_generation FROM executions WHERE id = 'migration-sentinel'")
             .fetch_optional(pool).await.unwrap().map(|row| json!({
                 "id":row.get::<String,_>("id"),"workspace_id":row.get::<String,_>("workspace_id"),"org_id":row.get::<String,_>("org_id"),
                 "workflow_id":row.get::<String,_>("workflow_id"),"status":row.get::<String,_>("status"),"state":row.get::<Value,_>("state"),
                 "version":row.get::<i64,_>("version"),"fencing_generation":row.get::<i64,_>("fencing_generation")
             }));
-        let journal = sqlx::query("SELECT seq, payload FROM port_execution_journal WHERE execution_id = 'migration-sentinel' ORDER BY seq")
+        let journal = sqlx::query("SELECT seq, payload FROM execution_journal WHERE execution_id = 'migration-sentinel' ORDER BY seq")
             .fetch_all(pool).await.unwrap().into_iter().map(|row| json!({"seq":row.get::<i64,_>("seq"),"payload":row.get::<Value,_>("payload")})).collect::<Vec<_>>();
         json!({"execution":execution,"journal":journal})
     }

@@ -18,7 +18,14 @@ use sqlx::{Row, SqlitePool};
 
 use crate::sql_error::storage_error;
 
-/// Decode one `port_resume_tokens` row (every column, as selected by
+/// An INTEGER-microsecond instant rendered as the DTO's RFC 3339 string.
+fn rfc3339(micros: i64) -> Result<String, StorageError> {
+    chrono::DateTime::from_timestamp_micros(micros)
+        .map(|instant| instant.to_rfc3339())
+        .ok_or_else(|| StorageError::Corrupt("resume token instant is out of range".into()))
+}
+
+/// Decode one `resume_tokens` row (every column, as selected by
 /// `RETURNING` or `SELECT`). The one decoder of the table for this backend.
 pub(super) fn decode_resume_token(
     row: &sqlx::sqlite::SqliteRow,
@@ -44,15 +51,18 @@ pub(super) fn decode_resume_token(
         row.try_get("node_key").map_err(storage_error)?,
         wait_kind,
         row.try_get("callback_label").map_err(storage_error)?,
-        row.try_get("created_at").map_err(storage_error)?,
-        row.try_get("expires_at").map_err(storage_error)?,
+        rfc3339(row.try_get("created_at").map_err(storage_error)?)?,
+        row.try_get::<Option<i64>, _>("expires_at")
+            .map_err(storage_error)?
+            .map(rfc3339)
+            .transpose()?,
     ))
 }
 
 /// SQLite-backed resume-token store.
 ///
 /// Wrap a pool whose schema was installed via [`super::init_schema`]
-/// (which applies the ordered migration containing `port_resume_tokens`).
+/// (which applies the ordered migration containing `resume_tokens`).
 #[derive(Clone, Debug)]
 pub struct SqliteResumeTokenStore {
     pool: SqlitePool,
@@ -76,7 +86,7 @@ impl ResumeTokenStore for SqliteResumeTokenStore {
         // statement so there is no window between finding and deleting the
         // row.  SQLite supports RETURNING since 3.35.
         let row = sqlx::query(
-            "DELETE FROM port_resume_tokens \
+            "DELETE FROM resume_tokens \
              WHERE token_hash = ? \
              RETURNING token_hash, workspace_id, org_id, execution_id, \
                        node_key, wait_kind, callback_label, created_at, expires_at",
@@ -95,11 +105,11 @@ impl ResumeTokenStore for SqliteResumeTokenStore {
         execution_id: &str,
     ) -> Result<u64, StorageError> {
         let result = sqlx::query(
-            "DELETE FROM port_resume_tokens \
-             WHERE workspace_id = ? AND org_id = ? AND execution_id = ?",
+            "DELETE FROM resume_tokens \
+             WHERE org_id = ? AND workspace_id = ? AND execution_id = ?",
         )
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(execution_id)
         .execute(&self.pool)
         .await

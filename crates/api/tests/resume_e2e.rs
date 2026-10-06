@@ -1108,8 +1108,11 @@ async fn seed_sqlite_webhook_token(
         use sha2::{Digest, Sha256};
         Sha256::digest(bearer.as_bytes()).to_vec()
     };
+    seed_sqlite_workflow(pool, scope, "wf-resume-producer").await;
+    // 2026-06-21T00:00:00Z in microseconds since the Unix epoch.
+    let created_at_us = 1_782_000_000_000_000_i64;
     sqlx::query(
-        "INSERT INTO port_executions \
+        "INSERT INTO executions \
          (id, workspace_id, org_id, workflow_id, status, state, version, \
           created_at, updated_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1118,17 +1121,17 @@ async fn seed_sqlite_webhook_token(
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
     .bind("wf-resume-producer")
-    .bind("Running")
+    .bind("running")
     .bind("{}")
     .bind(0_i64)
-    .bind("2026-06-21T00:00:00Z")
-    .bind("2026-06-21T00:00:00Z")
+    .bind(created_at_us)
+    .bind(created_at_us)
     .execute(pool)
     .await
     .expect("parent execution row insert must succeed");
 
     sqlx::query(
-        "INSERT INTO port_resume_tokens \
+        "INSERT INTO resume_tokens \
          (token_hash, workspace_id, org_id, execution_id, node_key, \
           wait_kind, callback_label, created_at, expires_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
@@ -1140,10 +1143,75 @@ async fn seed_sqlite_webhook_token(
     .bind("node_resume_producer")
     .bind("webhook")
     .bind(callback_label)
-    .bind("2026-06-21T00:00:00Z")
+    .bind(created_at_us)
     .execute(pool)
     .await
     .expect("direct token insert must succeed");
+}
+
+/// Provision `scope`'s org and workspace and the live workflow `workflow_id`
+/// the parent execution references. Idempotent per scope and workflow.
+async fn seed_sqlite_workflow(pool: &sqlx::SqlitePool, scope: &Scope, workflow_id: &str) {
+    use nebula_storage_port::dto::{
+        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningOutcome,
+        TenantProvisioningRequest, WorkflowRecord,
+    };
+    use nebula_storage_port::store::{TenantProvisioningStore, WorkflowStore};
+    let org = TenantOrgCreate::new(
+        scope.org_id.clone(),
+        scope.org_id.clone(),
+        "Fixture".into(),
+        "fixture".into(),
+        "free".into(),
+        None,
+        serde_json::json!({}),
+    )
+    .expect("org values");
+    let workspace = TenantDefaultWorkspaceCreate::new(
+        scope.workspace_id.clone(),
+        "default".into(),
+        "Default".into(),
+        None,
+        "fixture".into(),
+        serde_json::json!({}),
+    )
+    .expect("workspace values");
+    let request = TenantProvisioningRequest::new(
+        org,
+        workspace,
+        PrincipalKind::User,
+        "fixture-owner".into(),
+        None,
+    )
+    .expect("provisioning request");
+    let outcome = nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone())
+        .provision_tenant(request)
+        .await
+        .expect("provision the fixture scope");
+    assert!(matches!(
+        outcome,
+        TenantProvisioningOutcome::Created | TenantProvisioningOutcome::Replayed
+    ));
+    let workflows = nebula_storage::sqlite::SqliteWorkflowStore::new(pool.clone());
+    if workflows
+        .get(scope, workflow_id)
+        .await
+        .expect("read the fixture workflow")
+        .is_none()
+    {
+        workflows
+            .create(
+                scope,
+                WorkflowRecord {
+                    id: workflow_id.into(),
+                    scope: scope.clone(),
+                    version: 1,
+                    slug: workflow_id.into(),
+                },
+            )
+            .await
+            .expect("create the fixture workflow");
+    }
 }
 
 /// Count `Resume` rows in the SQLite `port_control_queue`.

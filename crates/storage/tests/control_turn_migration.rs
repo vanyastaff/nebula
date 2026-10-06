@@ -15,7 +15,7 @@ async fn resume_and_restart_are_valid_acceptance_sources() {
         .await
         .unwrap();
     for source in ["ControlResume", "ControlRestart"] {
-        sqlx::query("INSERT INTO port_execution_turn_acceptances (execution_id,workspace_id,org_id,last_accepted_fencing_generation,source_kind,source_queue_id) VALUES (?, 'workspace', 'org', 1, ?, zeroblob(16))")
+        sqlx::query("INSERT INTO execution_turn_acceptances (execution_id,workspace_id,org_id,last_accepted_fencing_generation,source_kind,source_queue_id) VALUES (?, 'workspace', 'org', 1, ?, zeroblob(16))")
             .bind(source).bind(source).execute(&pool).await.unwrap();
     }
 }

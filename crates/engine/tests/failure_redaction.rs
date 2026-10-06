@@ -351,7 +351,7 @@ async fn durable_failure_redaction_keeps_the_marker_out_of_every_surface() {
         "the failing node must finalize the execution as Failed"
     );
 
-    // 1. Durable state — `port_executions.state`, the row a post-mortem reads.
+    // 1. Durable state — `executions.state`, the row a post-mortem reads.
     let record = fixture
         .execution
         .get(&fixture.scope, &fixture.execution_id.to_string())
@@ -392,7 +392,7 @@ async fn durable_failure_redaction_keeps_the_marker_out_of_every_surface() {
         "the persisted record must carry the machine-readable code: {failure_record}"
     );
 
-    // 2. Journal — `port_execution_journal.payload`.
+    // 2. Journal — `execution_journal.payload`.
     //
     // Forward guard, deliberately not a non-empty assertion: the engine appends
     // no journal rows yet (every `TransitionBatch::new(..)` in

@@ -152,6 +152,12 @@ pub(super) struct Ports {
     pub(super) queue: Arc<dyn ControlQueue>,
     pub(super) catalog: Arc<dyn PlanFlavorCatalog>,
     pub(super) writer: Arc<dyn PlanFlavorCatalogWriter>,
+    /// The tenant and workflow stores a SQL backend's executions reference;
+    /// `None` in memory, which does not check them.
+    pub(super) parents: Option<(
+        Arc<dyn nebula_storage_port::store::TenantProvisioningStore>,
+        Arc<dyn nebula_storage_port::store::WorkflowStore>,
+    )>,
 }
 pub(super) fn in_memory(core: &Arc<nebula_storage::InMemoryExecutionStore>) -> Ports {
     let catalog = Arc::new(core.plan_flavor_catalog());
@@ -174,6 +180,7 @@ pub(super) fn in_memory(core: &Arc<nebula_storage::InMemoryExecutionStore>) -> P
         queue: Arc::new(nebula_storage::InMemoryControlQueue::new(core)),
         catalog: catalog.clone(),
         writer: catalog,
+        parents: None,
     }
 }
 pub(super) fn sqlite(pool: sqlx::SqlitePool) -> Ports {
@@ -196,9 +203,13 @@ pub(super) fn sqlite(pool: sqlx::SqlitePool) -> Ports {
             operation_ledger: Arc::new(SqliteOperationLedger::new(pool.clone())),
         },
         bundles: Arc::new(SqliteStartAcceptanceStore::new(pool.clone())),
-        queue: Arc::new(SqliteControlQueue::new(pool)),
+        queue: Arc::new(SqliteControlQueue::new(pool.clone())),
         catalog: catalog.clone(),
         writer: catalog,
+        parents: Some((
+            Arc::new(SqliteTenantProvisioningStore::new(pool.clone())),
+            Arc::new(SqliteWorkflowStore::new(pool)),
+        )),
     }
 }
 pub(super) fn postgres(pool: sqlx::PgPool) -> Ports {
@@ -221,9 +232,13 @@ pub(super) fn postgres(pool: sqlx::PgPool) -> Ports {
             operation_ledger: Arc::new(PgOperationLedger::new(pool.clone())),
         },
         bundles: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
-        queue: Arc::new(PgControlQueue::new(pool)),
+        queue: Arc::new(PgControlQueue::new(pool.clone())),
         catalog: catalog.clone(),
         writer: catalog,
+        parents: Some((
+            Arc::new(PgTenantProvisioningStore::new(pool.clone())),
+            Arc::new(PgWorkflowStore::new(pool)),
+        )),
     }
 }
 
@@ -283,6 +298,15 @@ pub(super) async fn admit(ports: Ports, count: &Arc<AtomicU32>, throttled: bool)
         nebula_core::WorkspaceId::new().to_string(),
         nebula_core::OrgId::new().to_string(),
     );
+    if let Some((tenants, workflows)) = &ports.parents {
+        super::execution_parents::seed_execution_parents(
+            tenants.as_ref(),
+            workflows.as_ref(),
+            &scope,
+            &workflow.id.to_string(),
+        )
+        .await;
+    }
     let id = ExecutionId::new();
     let input =
         serde_json::json!({"payload": "persisted predecessor output", "identity": id.to_string()});

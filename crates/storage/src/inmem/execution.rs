@@ -115,7 +115,7 @@ pub(super) struct QueuedJob {
 }
 
 /// Receipt identity, mirroring the SQL primary key of
-/// `port_execution_control_observation_receipts`: execution, source kind,
+/// `execution_control_observation_receipts`: execution, source kind,
 /// source row, source generation, decision key and outcome.
 pub(super) type ControlReceiptKey = (
     String,

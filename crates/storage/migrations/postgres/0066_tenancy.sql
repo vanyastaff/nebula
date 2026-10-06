@@ -47,7 +47,7 @@ CREATE TABLE workspaces (
     deleted_at   TIMESTAMPTZ,
     CONSTRAINT pk_workspaces PRIMARY KEY (id),
     CONSTRAINT uq_workspaces__org_id_id UNIQUE (org_id, id),
-    CONSTRAINT fk_workspaces__orgs FOREIGN KEY (org_id) REFERENCES orgs (id),
+    CONSTRAINT fk_workspaces__orgs FOREIGN KEY (org_id) REFERENCES orgs (id) ON DELETE CASCADE,
     CONSTRAINT ck_workspaces__version CHECK (version >= 0)
 );
 CREATE UNIQUE INDEX uq_workspaces__org_id_slug__live ON workspaces (org_id, slug)
@@ -64,7 +64,8 @@ CREATE TABLE org_memberships (
     added_by       TEXT,
     added_at       TIMESTAMPTZ NOT NULL,
     CONSTRAINT pk_org_memberships PRIMARY KEY (org_id, principal_kind, principal_id),
-    CONSTRAINT fk_org_memberships__orgs FOREIGN KEY (org_id) REFERENCES orgs (id),
+    CONSTRAINT fk_org_memberships__orgs
+        FOREIGN KEY (org_id) REFERENCES orgs (id) ON DELETE CASCADE,
     CONSTRAINT ck_org_memberships__principal_kind
         CHECK (principal_kind IN ('user', 'service_account')),
     CONSTRAINT ck_org_memberships__role
@@ -84,7 +85,7 @@ CREATE TABLE workspace_memberships (
     added_at       TIMESTAMPTZ NOT NULL,
     CONSTRAINT pk_workspace_memberships PRIMARY KEY (workspace_id, principal_kind, principal_id),
     CONSTRAINT fk_workspace_memberships__workspaces
-        FOREIGN KEY (org_id, workspace_id) REFERENCES workspaces (org_id, id),
+        FOREIGN KEY (org_id, workspace_id) REFERENCES workspaces (org_id, id) ON DELETE CASCADE,
     CONSTRAINT fk_workspace_memberships__org_memberships
         FOREIGN KEY (org_id, principal_kind, principal_id)
         REFERENCES org_memberships (org_id, principal_kind, principal_id) ON DELETE CASCADE,

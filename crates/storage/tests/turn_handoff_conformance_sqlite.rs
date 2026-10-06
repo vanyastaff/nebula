@@ -33,6 +33,11 @@ const PROCESSOR_B: [u8; 16] = [0xb2; 16];
 #[path = "support/job_turn_handoff_fixture.rs"]
 mod handoff_fixture;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
+
 fn scope() -> Scope {
     Scope::new(
         nebula_core::WorkspaceId::from_bytes([0x11; 16]).to_string(),
@@ -76,6 +81,9 @@ async fn fresh_pool() -> SqlitePool {
     init_schema(&pool)
         .await
         .expect("apply the ordered SQLite migration catalog");
+    for workflow in [handoff_fixture::workflow_id().to_string(), "wf".to_owned()] {
+        pool.seed_execution_parents(&scope(), &workflow).await;
+    }
     pool
 }
 

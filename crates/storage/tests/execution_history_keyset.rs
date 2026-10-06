@@ -2,7 +2,7 @@
 //!
 //! Rows created one after another almost never share a creation microsecond,
 //! so the conformance suite cannot reach the `id` half of the keyset. Here
-//! every row shares one `created_at_us`, and the ids differ only where byte
+//! every row shares one `created_at` microsecond, and the ids differ only where byte
 //! order and a locale collation disagree (`A` < `Z` < `_` < `a` by bytes), so
 //! paging one row at a time proves the backend orders and resumes by bytes —
 //! the order the reference adapter uses.
@@ -15,6 +15,11 @@ use nebula_storage_port::{ExecutionHistoryPageSize, ExecutionHistoryQuery, Scope
 #[cfg(feature = "postgres")]
 #[path = "support/postgres_schema.rs"]
 mod postgres_schema;
+
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
 
 const IDS: [&str; 5] = ["exe_A", "exe_Z", "exe__", "exe_a", "exe_b"];
 const CREATED_AT_US: i64 = 1_759_665_600_123_456;
@@ -58,16 +63,17 @@ async fn sqlite_ties_page_in_byte_order() {
     nebula_storage::sqlite::init_schema(&pool)
         .await
         .expect("schema");
+    pool.seed_execution_parents(&scope(), "wf").await;
     for id in IDS {
         sqlx::query(
-            "INSERT INTO port_executions (id, workspace_id, org_id, workflow_id, status, state, \
-             version, fencing_generation, created_at, updated_at, created_at_us) \
-             VALUES (?, ?, ?, 'wf', 'created', '{}', 0, 0, \
-                     '2025-10-05T12:00:00.123456+00:00', '2025-10-05T12:00:00.123456+00:00', ?)",
+            "INSERT INTO executions (id, workspace_id, org_id, workflow_id, status, state, \
+             version, fencing_generation, created_at, updated_at) \
+             VALUES (?, ?, ?, 'wf', 'created', '{}', 0, 0, ?, ?)",
         )
         .bind(id)
         .bind(&scope().workspace_id)
         .bind(&scope().org_id)
+        .bind(CREATED_AT_US)
         .bind(CREATED_AT_US)
         .execute(&pool)
         .await
@@ -94,17 +100,19 @@ async fn postgres_ties_page_in_byte_order() {
     nebula_storage::postgres::init_schema(&pool)
         .await
         .expect("schema");
+    pool.seed_execution_parents(&scope(), "wf").await;
+    let created_at =
+        chrono::DateTime::from_timestamp_micros(CREATED_AT_US).expect("fixed instant is in range");
     for id in IDS {
         sqlx::query(
-            "INSERT INTO port_executions (id, workspace_id, org_id, workflow_id, status, state, \
-             version, fencing_generation, created_at, updated_at, created_at_us) \
-             VALUES ($1, $2, $3, 'wf', 'created', '{}', 0, 0, \
-                     '2025-10-05T12:00:00.123456Z', '2025-10-05T12:00:00.123456Z', $4)",
+            "INSERT INTO executions (id, workspace_id, org_id, workflow_id, status, state, \
+             version, fencing_generation, created_at, updated_at) \
+             VALUES ($1, $2, $3, 'wf', 'created', '{}', 0, 0, $4, $4)",
         )
         .bind(id)
         .bind(&scope().workspace_id)
         .bind(&scope().org_id)
-        .bind(CREATED_AT_US)
+        .bind(created_at)
         .execute(&pool)
         .await
         .expect("seed");

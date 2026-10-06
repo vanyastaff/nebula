@@ -1,6 +1,6 @@
 ---
 name: Nebula observability contract
-description: SLI / SLO / error budget, structured event schema for port_execution_journal, core analysis loop for operators.
+description: SLI / SLO / error budget, structured event schema for execution_journal, core analysis loop for operators.
 status: accepted
 last-reviewed: 2026-04-17
 related: [PRODUCT_CANON.md, MATURITY.md]
@@ -38,10 +38,9 @@ Error budget = `1 - SLO`. Budgeting policy:
 - Budget burn > 50% in 24 hours pages the on-call.
 - Budget reset is rolling, not calendar — no "fresh budget on the 1st" effect.
 
-## 4. Structured event schema (port_execution_journal)
+## 4. Structured event schema (execution_journal)
 
-The live journal table is `port_execution_journal`, not the legacy
-`execution_journal`. Rows are appended through
+The journal table is `execution_journal`. Rows are appended through
 `nebula_storage_port::dto::JournalEntry` — an opaque `{seq, payload}` pair — in the
 same commit as the state transition (`TransitionBatch::journal`).
 
@@ -50,7 +49,7 @@ does not yet fill the batch's journal rows for node and execution lifecycle even
 The schema below is the planned event shape for those (the closed `JournalEntry`
 variant set in `crates/execution/src/journal.rs`).
 
-Every durable event appended to `port_execution_journal` follows this shape. The
+Every durable event appended to `execution_journal` follows this shape. The
 sketch below is a planned envelope, not the current variant fields — each
 `nebula_execution::journal::JournalEntry` variant today carries `timestamp`
 plus a few typed fields (node_key, error, reason, status, output_bytes),
@@ -148,7 +147,7 @@ Operator procedure for any failed or stuck run:
    listing projection the execution owner writes with every state snapshot
    (`TransitionBatch::new`, migration 0064), so it is never staler than the
    last commit.
-1. **What failed?** Query `port_execution_journal` by `execution_id` for the last event before the failure. The `event` tag + `payload.error` pins the failing step.
+1. **What failed?** Query `execution_journal` by `execution_id` for the last event before the failure. The `event` tag + `payload.error` pins the failing step.
 2. **When?** Compare the `execution_started` timestamp to the failure event timestamp; cross-reference with `trace_id` in the observability stack.
 3. **What changed?** Check recent deploys, config changes, dependency upgrades — `MATURITY.md` `frontier` crates are likely culprits if the run touched them.
 4. **What to try?** For transient classifications (per `nebula-error::Classify`): wait and retry. For permanent: open an issue with the journal excerpt. For "unknown": ask in #observability with the trace_id; do not retry blindly.
@@ -176,7 +175,7 @@ Standard labels: `credential_key` (e.g. `"github_token"`), `outcome` (`"success"
 
 > **SEC-01/02 metric emission status (2026-04-27).** Per credential security hardening (archived sub-spec; see the maintainers' private design vault) §6, the metric *names* are reserved here as part of the doc-sync stage (`docs/PRODUCT_CANON.md` §3.5 and §4.5 operational honesty: a new error path must register its observability surface alongside the code that emits it). Emission wiring is deferred to the metric-bus integration cascade — the security-hardening fix surfaces the rejection paths via typed `TokenHttpError` (bounded reader) and the `[*_redacted]` placeholder (sanitizer). When the credential-metrics emitter is wired through `parse_token_response`, both counters get bumped at the existing `Err(...)` returns; no new error semantics are introduced in this stage.
 
-**Analysis loop integration:** when investigating credential-related failures, include credential metrics alongside `port_execution_journal` events (only execution-control decisions are journaled today, §4.1). A spike in `refresh_failed_total` or `tamper_detection_total` is an early signal before execution failures surface.
+**Analysis loop integration:** when investigating credential-related failures, include credential metrics alongside `execution_journal` events (only execution-control decisions are journaled today, §4.1). A spike in `refresh_failed_total` or `tamper_detection_total` is an early signal before execution failures surface.
 
 ## 7. Credential refresh coordinator (two-tier L1+L2)
 
@@ -273,7 +272,7 @@ increase(nebula_credential_refresh_coord_sentinel_events_total{action="reauth_tr
 histogram_quantile(0.99, sum(rate(nebula_credential_refresh_coord_hold_duration_seconds_bucket[5m])) by (le))
 ```
 
-**Analysis loop integration:** an `outcome="exhausted"` crossing zero or a `reauth_triggered` increment is a paging-class event. Cross-reference the `credential.refresh.coordinate` span's `trace_id` with the `port_execution_journal` (no journal rows exist yet — #1013) to find which actions were waiting on the failed refresh. The sentinel event bus is deliberately non-authoritative; `reauth_triggered` is emitted only after the owner-qualified transaction commits, while an authoritative consumer still reads the credential aggregate rather than relying on event delivery.
+**Analysis loop integration:** an `outcome="exhausted"` crossing zero or a `reauth_triggered` increment is a paging-class event. Cross-reference the `credential.refresh.coordinate` span's `trace_id` with the `execution_journal` (no journal rows exist yet — #1013) to find which actions were waiting on the failed refresh. The sentinel event bus is deliberately non-authoritative; `reauth_triggered` is emitted only after the owner-qualified transaction commits, while an authoritative consumer still reads the credential aggregate rather than relying on event delivery.
 
 ## 8. Resource credential-hook settlement
 

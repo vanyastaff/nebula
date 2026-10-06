@@ -152,8 +152,16 @@ async fn fresh_pool() -> Option<PgPool> {
     init_schema(&pool)
         .await
         .expect("apply the ordered PostgreSQL migration catalog");
+    for workflow in [handoff_fixture::workflow_id().to_string(), "wf".to_owned()] {
+        pool.seed_execution_parents(&scope(), &workflow).await;
+    }
     Some(pool)
 }
+
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
 
 struct Fixture {
     store: PgExecutionStore,

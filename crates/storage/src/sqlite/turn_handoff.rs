@@ -111,13 +111,13 @@ impl SqliteTurnHandoff {
             let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(storage_error)?;
             // Lock the aggregate before its outbox row, matching execution commit.
             // Reclaim can race until the subsequent current-claim recheck locks it.
-            let Some(row) = sqlx::query("SELECT version, fencing_generation, lease_expires_at_ms FROM port_executions WHERE id = ? AND workspace_id = ? AND org_id = ?")
+            let Some(row) = sqlx::query("SELECT version, fencing_generation, lease_expires_at FROM executions WHERE id = ? AND workspace_id = ? AND org_id = ?")
                 .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .fetch_optional(&mut *tx).await.map_err(storage_error)? else {
                 tx.rollback().await.map_err(storage_error)?;
                 return Ok(ControlStartAcceptance::ClaimSuperseded);
             };
-            let current: Option<i64> = sqlx::query_scalar("SELECT 1 FROM port_control_queue c WHERE c.id = ? AND c.claim_generation = ? AND c.status = 'Processing' AND c.command = 'Start' AND c.execution_id = ? AND c.workspace_id = ? AND c.org_id = ? AND EXISTS (SELECT 1 FROM port_execution_revision_refs r WHERE r.execution_id = c.execution_id AND r.worker_flavor_id = ? AND r.reference_state = 'live')")
+            let current: Option<i64> = sqlx::query_scalar("SELECT 1 FROM port_control_queue c WHERE c.id = ? AND c.claim_generation = ? AND c.status = 'Processing' AND c.command = 'Start' AND c.execution_id = ? AND c.workspace_id = ? AND c.org_id = ? AND EXISTS (SELECT 1 FROM execution_revision_references r WHERE r.execution_id = c.execution_id AND r.worker_flavor_id = ? AND r.reference_state = 'live')")
                 .bind(handoff.claim().row_id().as_slice()).bind(claim_generation)
                 .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .bind(handoff.worker_flavor_revision_id().as_bytes().as_slice())
@@ -134,7 +134,11 @@ impl SqliteTurnHandoff {
             }
             let now: i64 = sqlx::query_scalar("SELECT CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)")
                 .fetch_one(&mut *tx).await.map_err(storage_error)?;
-            let previous_expiry: Option<i64> = row.try_get("lease_expires_at_ms").map_err(storage_error)?;
+            // Stored in microseconds; `now` is milliseconds.
+            let previous_expiry: Option<i64> = row
+                .try_get::<Option<i64>, _>("lease_expires_at")
+                .map_err(storage_error)?
+                .map(|expiry| expiry.div_euclid(1000));
             if previous_expiry.is_some_and(|expiry| expiry >= now) {
                 tx.rollback().await.map_err(storage_error)?;
                 return Ok(ControlStartAcceptance::TurnHeldByAnotherOwner);
@@ -145,8 +149,9 @@ impl SqliteTurnHandoff {
             let fence = FencingToken::from_generation(u64::try_from(generation)
                 .map_err(|_| StorageError::Internal("control handoff fence is invalid".into()))?);
             let expires = now.checked_add(normalized_ttl_ms(handoff.lease_ttl())?)
+                .and_then(|expires| expires.checked_mul(1000))
                 .ok_or_else(|| StorageError::Internal("control handoff lease deadline is invalid".into()))?;
-            let leased = sqlx::query("UPDATE port_executions SET lease_holder = ?, lease_expires_at_ms = ?, fencing_generation = ? WHERE id = ? AND workspace_id = ? AND org_id = ?")
+            let leased = sqlx::query("UPDATE executions SET lease_holder = ?, lease_expires_at = ?, fencing_generation = ? WHERE id = ? AND workspace_id = ? AND org_id = ?")
                 .bind(handoff.holder()).bind(expires).bind(generation).bind(handoff.execution_id())
                 .bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .execute(&mut *tx).await.map_err(storage_error)?;
@@ -154,7 +159,7 @@ impl SqliteTurnHandoff {
                 .bind(handoff.claim().row_id().as_slice()).bind(claim_generation)
                 .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .execute(&mut *tx).await.map_err(storage_error)?;
-            let recorded = sqlx::query("INSERT INTO port_execution_turn_acceptances (execution_id, workspace_id, org_id, last_accepted_fencing_generation, source_kind, source_queue_id) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(execution_id) DO UPDATE SET last_accepted_fencing_generation = excluded.last_accepted_fencing_generation, source_kind = excluded.source_kind, source_queue_id = excluded.source_queue_id WHERE port_execution_turn_acceptances.workspace_id = excluded.workspace_id AND port_execution_turn_acceptances.org_id = excluded.org_id")
+            let recorded = sqlx::query("INSERT INTO execution_turn_acceptances (execution_id, workspace_id, org_id, last_accepted_fencing_generation, source_kind, source_queue_id) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(execution_id) DO UPDATE SET last_accepted_fencing_generation = excluded.last_accepted_fencing_generation, source_kind = excluded.source_kind, source_queue_id = excluded.source_queue_id WHERE execution_turn_acceptances.workspace_id = excluded.workspace_id AND execution_turn_acceptances.org_id = excluded.org_id")
                 .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .bind(generation).bind("ControlStart").bind(handoff.claim().row_id().as_slice())
                 .execute(&mut *tx).await.map_err(storage_error)?;
@@ -169,7 +174,7 @@ impl SqliteTurnHandoff {
                 fence.generation(),
                 backend_timestamp(now)?,
             )?;
-            super::control_turn::append_observation(&mut tx, handoff.execution_id(), &payload).await?;
+            super::control_turn::append_observation(&mut tx, handoff.scope(), handoff.execution_id(), &payload).await?;
             tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown {
                 operation: "control_start_handoff",
             })?;
@@ -216,7 +221,7 @@ impl SqliteTurnHandoff {
                  WHERE q.id = ? AND q.status = 'Processing' AND q.claim_generation = ? \
                    AND q.execution_id = ? AND q.workspace_id = ? AND q.org_id = ? \
                    AND q.required_worker_flavor_id = ? \
-                   AND EXISTS (SELECT 1 FROM port_execution_revision_refs r \
+                   AND EXISTS (SELECT 1 FROM execution_revision_references r \
                                WHERE r.execution_id = q.execution_id \
                                  AND r.worker_flavor_id = ? \
                                  AND r.reference_state = 'live')",
@@ -240,19 +245,20 @@ impl SqliteTurnHandoff {
             // live-vs-expired and stamps the deadline, so a caller's clock
             // cannot fence out a healthy peer or mint an already-dead lease.
             let acquired: Option<i64> = sqlx::query_scalar(
-                "UPDATE port_executions \
+                "UPDATE executions \
                  SET lease_holder = ?, \
-                     lease_expires_at_ms = \
-                         CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER) + ?, \
+                     lease_expires_at = \
+                         CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER) + ?, \
                      fencing_generation = fencing_generation + 1 \
                  WHERE id = ? AND workspace_id = ? AND org_id = ? \
-                   AND (lease_expires_at_ms IS NULL \
-                        OR lease_expires_at_ms \
-                           < CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)) \
+                   AND (lease_expires_at IS NULL \
+                        OR lease_expires_at \
+                           < CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER)) \
                  RETURNING fencing_generation",
             )
             .bind(handoff.holder())
-            .bind(ttl_ms)
+            // Microseconds, as `lease_expires_at` is stored.
+            .bind(ttl_ms.saturating_mul(1000))
             .bind(handoff.execution_id())
             .bind(&handoff.scope().workspace_id)
             .bind(&handoff.scope().org_id)
@@ -266,7 +272,7 @@ impl SqliteTurnHandoff {
                 // and is worth it: a caller must not treat a missing execution
                 // as contention it can wait out.
                 let exists: Option<i64> = sqlx::query_scalar(
-                    "SELECT 1 FROM port_executions \
+                    "SELECT 1 FROM executions \
                      WHERE id = ? AND workspace_id = ? AND org_id = ?",
                 )
                 .bind(handoff.execution_id())
@@ -313,7 +319,7 @@ impl SqliteTurnHandoff {
                 ));
             }
 
-            let recorded = sqlx::query("INSERT INTO port_execution_turn_acceptances (execution_id, workspace_id, org_id, last_accepted_fencing_generation, source_kind, source_queue_id) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(execution_id) DO UPDATE SET last_accepted_fencing_generation = excluded.last_accepted_fencing_generation, source_kind = excluded.source_kind, source_queue_id = excluded.source_queue_id WHERE port_execution_turn_acceptances.workspace_id = excluded.workspace_id AND port_execution_turn_acceptances.org_id = excluded.org_id")
+            let recorded = sqlx::query("INSERT INTO execution_turn_acceptances (execution_id, workspace_id, org_id, last_accepted_fencing_generation, source_kind, source_queue_id) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(execution_id) DO UPDATE SET last_accepted_fencing_generation = excluded.last_accepted_fencing_generation, source_kind = excluded.source_kind, source_queue_id = excluded.source_queue_id WHERE execution_turn_acceptances.workspace_id = excluded.workspace_id AND execution_turn_acceptances.org_id = excluded.org_id")
                 .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .bind(generation).bind("Job").bind(handoff.claim().row_id().as_slice())
                 .execute(&mut *tx).await.map_err(storage_error)?;
@@ -342,7 +348,7 @@ impl SqliteTurnHandoff {
                 generation,
                 backend_timestamp(now)?,
             )?;
-            super::control_turn::append_observation(&mut tx, handoff.execution_id(), &payload).await?;
+            super::control_turn::append_observation(&mut tx, handoff.scope(), handoff.execution_id(), &payload).await?;
             tx.commit().await.map_err(|_| StorageError::AcknowledgementUnknown {
                 operation: "job_turn_handoff",
             })?;

@@ -7,7 +7,7 @@
 //! the lookup is an exact O(log n) B-tree seek with no collation ambiguity.
 //!
 //! `revoke_on_terminal` deletes all tokens for a `(scope, execution_id)`
-//! pair using the `idx_port_resume_tokens_execution` index.
+//! pair using the `ix_resume_tokens__org_id_workspace_id_execution_id` index.
 
 use chrono::{DateTime, Utc};
 use nebula_storage_port::Scope;
@@ -18,7 +18,7 @@ use sqlx::{PgPool, Row};
 
 use crate::sql_error::storage_error;
 
-/// Decode one `port_resume_tokens` row (every column, as selected by
+/// Decode one `resume_tokens` row (every column, as selected by
 /// `RETURNING` or `SELECT`). The one decoder of the table for this backend.
 ///
 /// `created_at`/`expires_at` are `TIMESTAMPTZ`, rendered back to the DTO's
@@ -57,7 +57,7 @@ pub(super) fn decode_resume_token(
 /// PostgreSQL-backed resume-token store.
 ///
 /// Wrap a pool whose schema was installed via [`super::init_schema`]
-/// (which applies the ordered migration containing `port_resume_tokens`).
+/// (which applies the ordered migration containing `resume_tokens`).
 #[derive(Clone, Debug)]
 pub struct PgResumeTokenStore {
     pool: PgPool,
@@ -81,7 +81,7 @@ impl ResumeTokenStore for PgResumeTokenStore {
         // primary-key lookup is an exact B-tree seek: no collation path,
         // no encoding ambiguity.
         let row = sqlx::query(
-            "DELETE FROM port_resume_tokens \
+            "DELETE FROM resume_tokens \
              WHERE token_hash = $1 \
              RETURNING token_hash, workspace_id, org_id, execution_id, \
                        node_key, wait_kind, callback_label, created_at, expires_at",
@@ -100,11 +100,11 @@ impl ResumeTokenStore for PgResumeTokenStore {
         execution_id: &str,
     ) -> Result<u64, StorageError> {
         let result = sqlx::query(
-            "DELETE FROM port_resume_tokens \
-             WHERE workspace_id = $1 AND org_id = $2 AND execution_id = $3",
+            "DELETE FROM resume_tokens \
+             WHERE org_id = $1 AND workspace_id = $2 AND execution_id = $3",
         )
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(execution_id)
         .execute(&self.pool)
         .await

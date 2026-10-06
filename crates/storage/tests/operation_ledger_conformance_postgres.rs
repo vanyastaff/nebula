@@ -13,6 +13,10 @@
 #[path = "support/operation_ledger_oracle.rs"]
 mod oracle;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
 use nebula_storage::postgres::{PgOperationLedger, init_schema};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -50,6 +54,9 @@ async fn pool() -> Option<PgPool> {
             init_schema(&pool)
                 .await
                 .expect("apply the ordered PostgreSQL migration catalog");
+            for scope in [oracle::scope(), oracle::other_scope()] {
+                pool.seed_execution_parents(&scope, oracle::WORKFLOW).await;
+            }
         })
         .await;
     Some(pool)
@@ -87,7 +94,7 @@ async fn exact_read_does_not_wait_for_a_concurrent_row_writer() {
 
     let mut writer = pool.begin().await.unwrap();
     sqlx::query(
-        "SELECT slot_id FROM port_operation_ledger \
+        "SELECT slot_id FROM operation_ledger \
          WHERE workspace_id = $1 AND org_id = $2 AND slot_id = $3 FOR UPDATE",
     )
     .bind(&scope.workspace_id)
@@ -141,6 +148,7 @@ async fn terminal_evidence_commits_with_the_journal_and_survives_reopen() {
         .unwrap();
     init_schema(&pool).await.unwrap();
     let scope = oracle::scope();
+    pool.seed_execution_parents(&scope, oracle::WORKFLOW).await;
     let executions = nebula_storage::postgres::PgExecutionStore::new(pool.clone());
     executions
         .create(
@@ -212,7 +220,7 @@ async fn terminal_evidence_commits_with_the_journal_and_survives_reopen() {
         .await
         .unwrap();
     let journal_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM port_execution_journal WHERE execution_id = 'reopen-execution'",
+        "SELECT COUNT(*) FROM execution_journal WHERE execution_id = 'reopen-execution'",
     )
     .fetch_one(&pool)
     .await

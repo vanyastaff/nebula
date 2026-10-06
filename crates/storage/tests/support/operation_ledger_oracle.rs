@@ -175,6 +175,9 @@ pub(crate) fn scope() -> Scope {
     Scope::new("ws-ledger", "org-ledger")
 }
 
+/// The workflow every case's executions run; SQL backends seed it first.
+pub(crate) const WORKFLOW: &str = "workflow";
+
 /// A second tenant, used to prove one tenant cannot reach another's slots.
 pub(crate) fn other_scope() -> Scope {
     Scope::new("ws-ledger-other", "org-ledger-other")
@@ -1244,7 +1247,7 @@ async fn create_leased_execution(
         .create(
             scope,
             execution,
-            "workflow",
+            WORKFLOW,
             serde_json::json!({"status":"Created"}),
         )
         .await

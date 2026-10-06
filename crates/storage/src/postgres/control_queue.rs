@@ -242,8 +242,8 @@ impl ControlQueue for PgControlQueue {
              WHERE id IN ( \
                  SELECT c.id FROM port_control_queue c \
                  WHERE c.status = 'Pending' AND EXISTS ( \
-                     SELECT 1 FROM port_execution_revision_refs r \
-                     JOIN port_executions e ON e.id = r.execution_id \
+                     SELECT 1 FROM execution_revision_references r \
+                     JOIN executions e ON e.id = r.execution_id \
                      WHERE r.execution_id = c.execution_id \
                        AND e.workspace_id = c.workspace_id AND e.org_id = c.org_id \
                        AND r.worker_flavor_id = $4 AND r.reference_state = 'live' \
@@ -423,7 +423,7 @@ impl PgJournalReader {
     /// journal, never another tenant's entries).
     async fn scope_ok(&self, scope: &Scope, execution_id: &str) -> Result<bool, StorageError> {
         let row = sqlx::query(
-            "SELECT 1 AS ok FROM port_executions \
+            "SELECT 1 AS ok FROM executions \
              WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
         )
         .bind(execution_id)
@@ -447,7 +447,7 @@ impl ExecutionJournalReader for PgJournalReader {
             return Ok(Vec::new());
         }
         let rows = sqlx::query(
-            "SELECT seq, payload FROM port_execution_journal \
+            "SELECT seq, payload FROM execution_journal \
              WHERE execution_id = $1 ORDER BY seq",
         )
         .bind(execution_id)
@@ -474,7 +474,7 @@ impl ExecutionJournalReader for PgJournalReader {
             return Ok(Vec::new());
         }
         let rows = sqlx::query(
-            "SELECT seq, payload FROM port_execution_journal \
+            "SELECT seq, payload FROM execution_journal \
              WHERE execution_id = $1 AND seq > $2 ORDER BY seq",
         )
         .bind(execution_id)

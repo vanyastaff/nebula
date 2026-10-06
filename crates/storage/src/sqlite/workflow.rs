@@ -248,8 +248,8 @@ impl WorkflowStore for SqliteWorkflowStore {
         update_workflow(&mut transaction, scope, &row, expected_version).await?;
         let ids = activation.revisions();
         let plan: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT p.record_bytes FROM port_executable_plan_revisions p \
-             JOIN port_worker_flavor_revisions f ON f.worker_flavor_id = p.worker_flavor_id \
+            "SELECT p.record_bytes FROM executable_plan_revisions p \
+             JOIN worker_flavor_revisions f ON f.worker_flavor_id = p.worker_flavor_id \
              WHERE p.executable_plan_id = ? AND p.worker_flavor_id = ? \
                AND p.lifecycle = 'active' AND f.lifecycle = 'active'",
         )

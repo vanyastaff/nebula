@@ -14,7 +14,7 @@ CREATE TABLE workflows (
     deleted_at   TIMESTAMPTZ,
     CONSTRAINT pk_workflows PRIMARY KEY (org_id, workspace_id, id),
     CONSTRAINT fk_workflows__workspaces
-        FOREIGN KEY (org_id, workspace_id) REFERENCES workspaces (org_id, id),
+        FOREIGN KEY (org_id, workspace_id) REFERENCES workspaces (org_id, id) ON DELETE CASCADE,
     CONSTRAINT ck_workflows__version CHECK (version >= 0)
 );
 CREATE UNIQUE INDEX uq_workflows__org_id_workspace_id_slug__live ON workflows (org_id, workspace_id, slug)
@@ -56,6 +56,6 @@ CREATE TABLE workflow_versions (
     CONSTRAINT ck_workflow_versions__activation_worker_flavor_id_length
         CHECK (octet_length(activation_worker_flavor_id) = 32)
 );
-CREATE INDEX ix_workflow_versions__org_id_workspace_id_workflow_id_number__published
+CREATE INDEX ix_workflow_versions__workflow_id_number__published
     ON workflow_versions (org_id, workspace_id, workflow_id, number)
     WHERE published;

@@ -16,6 +16,39 @@ use nebula_storage_port::{
     PlanFlavorCatalogWriter, PlanFlavorRevisionTarget, Scope, TransitionBatch,
 };
 
+/// The tenant and workflow stores a SQL backend's executions reference;
+/// empty for the in-memory backend, which does not check them.
+pub(super) struct Parents(
+    Option<(
+        std::sync::Arc<dyn nebula_storage_port::store::TenantProvisioningStore>,
+        std::sync::Arc<dyn nebula_storage_port::store::WorkflowStore>,
+    )>,
+);
+
+impl Parents {
+    pub(super) fn new(
+        stores: Option<(
+            std::sync::Arc<dyn nebula_storage_port::store::TenantProvisioningStore>,
+            std::sync::Arc<dyn nebula_storage_port::store::WorkflowStore>,
+        )>,
+    ) -> Self {
+        Self(stores)
+    }
+
+    /// Provision the fixture's scope and the workflow its executions name.
+    async fn seed(&self, fixture: &Fixture) {
+        if let Some((tenants, workflows)) = &self.0 {
+            super::execution_parents::seed_execution_parents(
+                tenants.as_ref(),
+                workflows.as_ref(),
+                &fixture.scope,
+                &fixture.workflow_id,
+            )
+            .await;
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Fixture {
     scope: Scope,
@@ -121,9 +154,11 @@ pub(super) async fn trigger_replay(
     queue: &dyn ControlQueue,
     writer: &dyn PlanFlavorCatalogWriter,
     admin: &dyn PlanFlavorCatalogAdmin,
+    parents: &Parents,
 ) {
     use nebula_storage_port::dto::TriggerStartKey;
     let fixture = Fixture::with_plan_seed(61);
+    parents.seed(&fixture).await;
     writer.insert(&fixture.pair).await.unwrap();
     let key = TriggerStartKey::new("trigger", "event");
     assert!(!format!("{key:?}").contains("event"));
@@ -209,6 +244,7 @@ pub(super) async fn trigger_replay(
     let mut foreign = fixture.fresh_execution();
     foreign.scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
     foreign.command.scope = foreign.scope.clone();
+    parents.seed(&foreign).await;
     let mut body: serde_json::Value = serde_json::from_slice(foreign.bundle.bytes()).unwrap();
     body["org_id"] = serde_json::json!(foreign.scope.org_id);
     body["workspace_id"] = serde_json::json!(foreign.scope.workspace_id);
@@ -306,8 +342,10 @@ pub(super) async fn run(
     queue: &dyn ControlQueue,
     writer: &dyn PlanFlavorCatalogWriter,
     admin: &dyn PlanFlavorCatalogAdmin,
+    parents: &Parents,
 ) -> RunEvidence {
     let fixture = Fixture::new();
+    parents.seed(&fixture).await;
     writer.insert(&fixture.pair).await.unwrap();
     assert!(matches!(
         starts
@@ -576,7 +614,7 @@ pub(super) async fn run(
             .unwrap()
             .is_none()
     );
-    let exact_route = exact_control_claim(starts, executions, queue, writer, admin).await;
+    let exact_route = exact_control_claim(starts, executions, queue, writer, admin, parents).await;
     let identity = stored.record().identity();
     let live_references_after_terminal = counts.live_executions();
     RunEvidence {
@@ -648,10 +686,13 @@ async fn exact_control_claim(
     queue: &dyn ControlQueue,
     writer: &dyn PlanFlavorCatalogWriter,
     admin: &dyn PlanFlavorCatalogAdmin,
+    parents: &Parents,
 ) -> serde_json::Value {
     let mut wrong = flavor_fixture(70);
+    parents.seed(&wrong).await;
     wrong.command.id = [0; 16];
     let mut matching = flavor_fixture(72);
+    parents.seed(&matching).await;
     matching.command.id = [0; 16];
     matching.command.id[15] = 4;
     for fixture in [&wrong, &matching] {
@@ -787,6 +828,7 @@ async fn exact_control_claim(
     );
 
     let missing = flavor_fixture(74);
+    parents.seed(&missing).await;
     let missing_outcome = starts.materialize_start(&missing.start(None)).await;
     let Ok(StartMaterialization::RevisionRejected(missing_rejection)) = missing_outcome else {
         panic!("a missing exact revision must be rejected before materialization");
@@ -804,6 +846,7 @@ async fn exact_control_claim(
         .is_some();
 
     let draining = flavor_fixture(76);
+    parents.seed(&draining).await;
     writer.insert(&draining.pair).await.unwrap();
     admin
         .begin_drain(PlanFlavorRevisionTarget::WorkerFlavor(

@@ -154,7 +154,7 @@ retry-механика. `journal.rs` (262) — WAL-события. `idempotency.
    уже обещана в §6.6 (`ExecutionTerminationCode` → `ErrorCode`).
 10. **Устранено: ложная doc-претензия в `lib.rs:25`.** Док утверждал, что [`JournalEntry`] «backs
     `execution_journal` append-only table». Производственного писателя у типа нет: единственные
-    упоминания — тесты. `port_execution_journal` пишется через
+    упоминания — тесты. `execution_journal` пишется через
     `nebula_storage_port::dto::JournalEntry` (`{seq, payload}`), payload непрозрачен для порта.
 
 ## 7. Роль в пост-0092 credential/resource модели

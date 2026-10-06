@@ -33,6 +33,32 @@ struct Ports {
     starts: Arc<dyn StartAcceptanceStore>,
     catalog: Arc<dyn PlanFlavorCatalogWriter>,
     admin: Arc<dyn PlanFlavorCatalogAdmin>,
+    /// The tenant and workflow stores a SQL backend's executions reference;
+    /// `None` on the in-memory backend, which does not check them.
+    parents: Option<(
+        Arc<dyn nebula_storage_port::store::TenantProvisioningStore>,
+        Arc<dyn nebula_storage_port::store::WorkflowStore>,
+    )>,
+}
+
+#[path = "execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "the oracle seeds through store handles, not through a raw pool"
+)]
+mod execution_parents;
+
+/// Provision `scope` and the workflow an execution in it names.
+async fn seed_parents(ports: &Ports, scope: &Scope, workflow: &str) {
+    if let Some((tenants, workflows)) = &ports.parents {
+        execution_parents::seed_execution_parents(
+            tenants.as_ref(),
+            workflows.as_ref(),
+            scope,
+            workflow,
+        )
+        .await;
+    }
 }
 
 struct Seed {
@@ -68,6 +94,7 @@ async fn seed(ports: &Ports) -> Seed {
     let org = OrgId::new();
     let workspace = WorkspaceId::new();
     let scope = Scope::new(workspace.to_string(), org.to_string());
+    seed_parents(ports, &scope, &workflow.to_string()).await;
     let pair = PlanFlavorRevisionRecord::graph_v1_json(
         plan,
         RevisionRecordBytes::try_from_vec(
@@ -450,12 +477,14 @@ async fn oracle(ports: Ports) {
 
     let execution = ExecutionId::new().to_string();
     let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
+    let workflow = WorkflowId::new().to_string();
+    seed_parents(&ports, &scope, &workflow).await;
     ports
         .execution
         .create(
             &scope,
             &execution,
-            &WorkflowId::new().to_string(),
+            &workflow,
             serde_json::json!({}),
         )
         .await

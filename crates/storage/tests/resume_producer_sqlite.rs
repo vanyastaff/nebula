@@ -13,9 +13,13 @@
 
 #![cfg(feature = "sqlite")]
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
 use std::str::FromStr;
 use std::time::Duration;
 
+use execution_parents::SeedExecutionParents;
 use nebula_storage::sqlite::{SqliteExecutionStore, SqliteResumeProducer, init_schema};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, ResumeTarget};
 use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
@@ -39,9 +43,12 @@ async fn fresh_pool() -> sqlx::SqlitePool {
         .expect("connect sqlite memory");
     init_schema(&pool)
         .await
-        .expect("install port schema including port_resume_tokens");
+        .expect("install port schema including resume_tokens");
+    pool.seed_execution_parents(&test_scope(), WORKFLOW).await;
     pool
 }
+
+const WORKFLOW: &str = "wf-sqlite-1";
 
 fn test_scope() -> Scope {
     Scope::new("ws-sqlite-rp", "org-sqlite-rp")
@@ -90,7 +97,7 @@ async fn seed_token(
         .create(
             scope,
             execution_id,
-            "wf-sqlite-1",
+            WORKFLOW,
             serde_json::json!({"s": "created"}),
         )
         .await

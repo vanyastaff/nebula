@@ -107,7 +107,7 @@ async fn a_durably_corrupted_plan_body_is_reported_as_corruption() {
     );
 
     sqlx::query(
-        "UPDATE port_executable_plan_revisions SET record_bytes = $1 \
+        "UPDATE executable_plan_revisions SET record_bytes = $1 \
          WHERE executable_plan_id = $2",
     )
     .bind(b"not a graph-v1 json document".as_slice())
@@ -143,7 +143,7 @@ async fn the_schema_refuses_a_record_format_the_catalog_cannot_read() {
     );
 
     let rejected = sqlx::query(
-        "UPDATE port_worker_flavor_revisions SET record_format = 'v2_cbor' \
+        "UPDATE worker_flavor_revisions SET record_format = 'v2_cbor' \
          WHERE worker_flavor_id = $1",
     )
     .bind(record.ids().worker_flavor().as_bytes().as_slice())
