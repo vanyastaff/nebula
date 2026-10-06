@@ -36,6 +36,15 @@ enum Message {
 
 #[schema_type(both)]
 #[derive(Debug, PartialEq)]
+enum VariantRenamed {
+    #[serde(rename_all = "camelCase")]
+    Record { some_value: u32 },
+    #[serde(rename_all(serialize = "SCREAMING_SNAKE_CASE", deserialize = "PascalCase"))]
+    Split { other_value: u32 },
+}
+
+#[schema_type(both)]
+#[derive(Debug, PartialEq)]
 #[serde(tag = "kind", content = "data")]
 enum Adjacent {
     #[serde(alias = "old")]
@@ -202,6 +211,56 @@ fn native_nullable_array_enum_and_recursive_roots_validate_exactly() {
             &Sequence::definition(SchemaDirection::Input).unwrap()
         )
         .is_err()
+    );
+}
+
+#[test]
+fn variant_rename_all_renames_struct_payload_fields_like_serde() {
+    let input = nebula_schema::InputContract::for_type::<VariantRenamed>().unwrap();
+    let output = nebula_schema::OutputContract::for_type::<VariantRenamed>().unwrap();
+    for (value, wire_in) in [
+        (
+            VariantRenamed::Record { some_value: 7 },
+            json!({"Record": {"someValue": 7}}),
+        ),
+        (
+            VariantRenamed::Split { other_value: 9 },
+            json!({"Split": {"OtherValue": 9}}),
+        ),
+    ] {
+        // Serde agrees with the schema on the inbound wire...
+        let decoded: VariantRenamed = serde_json::from_value(wire_in.clone()).unwrap();
+        assert_eq!(decoded, value);
+        let typed: VariantRenamed = input
+            .validate_data(wire_in)
+            .unwrap()
+            .into_typed(&input)
+            .unwrap();
+        assert_eq!(typed, value);
+        // ...and on the outbound wire.
+        output
+            .validate_data(&serde_json::to_value(&value).unwrap())
+            .unwrap();
+    }
+    assert_eq!(
+        serde_json::to_value(VariantRenamed::Split { other_value: 9 }).unwrap(),
+        json!({"Split": {"OTHER_VALUE": 9}})
+    );
+    // The unrenamed Rust spelling is not the wire key in either direction.
+    assert!(
+        input
+            .validate_data(json!({"Record": {"some_value": 7}}))
+            .is_err()
+    );
+    assert!(
+        output
+            .validate_data(&json!({"Record": {"some_value": 7}}))
+            .is_err()
+    );
+    assert!(
+        output
+            .validate_data(&json!({"Split": {"OtherValue": 9}}))
+            .is_err()
     );
 }
 

@@ -144,8 +144,12 @@ fn expand_projection(
                         quote!(<#ty as #schema::PropertyType>::define_schema_type(__builder)?.to_json())
                     },
                     Fields::Named(fields) => {
+                        // Serde applies a variant's own `rename_all` to the fields of
+                        // its struct payload; the container rule renames variants only.
                         let payload_projection = CodecAttrs {
                             deny_unknown: attrs.deny_unknown,
+                            input_rule: projection.input_rule,
+                            output_rule: projection.output_rule,
                             ..CodecAttrs::default()
                         };
                         let body = record(
