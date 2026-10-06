@@ -25,14 +25,14 @@ use crate::{
 const COOPERATIVE_NODE_INTERVAL: usize = 32;
 
 #[derive(Debug, Default)]
-struct ResolutionBudget {
+pub(crate) struct ResolutionBudget {
     nodes: usize,
     text_bytes: usize,
     visited_since_yield: usize,
 }
 
 impl ResolutionBudget {
-    async fn cooperate(&mut self) {
+    pub(crate) async fn cooperate(&mut self) {
         self.visited_since_yield = self.visited_since_yield.saturating_add(1);
         if self.visited_since_yield < COOPERATIVE_NODE_INTERVAL {
             return;
@@ -51,7 +51,11 @@ impl ResolutionBudget {
         .await;
     }
 
-    fn charge_node(&mut self, depth: usize, path: &ValuePath) -> Result<(), ValidationError> {
+    pub(crate) fn charge_node(
+        &mut self,
+        depth: usize,
+        path: &ValuePath,
+    ) -> Result<(), ValidationError> {
         let max_depth = usize::from(MAX_VALUE_DEPTH);
         if depth > max_depth {
             return Err(resolution_limit_exceeded("data depth", max_depth, path));
@@ -67,7 +71,11 @@ impl ResolutionBudget {
         Ok(())
     }
 
-    fn charge_text(&mut self, bytes: usize, path: &ValuePath) -> Result<(), ValidationError> {
+    pub(crate) fn charge_text(
+        &mut self,
+        bytes: usize,
+        path: &ValuePath,
+    ) -> Result<(), ValidationError> {
         self.text_bytes = self.text_bytes.saturating_add(bytes);
         if self.text_bytes > MAX_VALUE_TEXT_BYTES {
             return Err(resolution_limit_exceeded(
@@ -79,7 +87,7 @@ impl ResolutionBudget {
         Ok(())
     }
 
-    async fn charge_tree(
+    pub(crate) async fn charge_tree(
         &mut self,
         value: &ResolvedValue,
         path: &ValuePath,

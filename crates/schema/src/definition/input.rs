@@ -15,7 +15,7 @@ use super::{
 use crate::{
     AuthoredValue, CompiledValue, ExpressionContext, ExpressionMode, InputCodec, PendingValidation,
     ResolvedValue, ScalarValue, SecretValue, SerdeTagging, ValidationError, ValidationReport,
-    ValuePath, ValueTree,
+    ValuePath, ValueTree, validated::ResolutionBudget, value::ValueBudget,
 };
 
 /// Prepared input with unresolved programs and explicit validation obligations.
@@ -117,7 +117,13 @@ impl InputContract {
                 return Err(runtime::error("schema.reference.ambiguous", path));
             }
         }
-        values.check_budget(|expression| expression.source())?;
+        // The authored tree opens the overall budget; defaults materialized by
+        // preparation keep charging it, so growth fails before it is allocated.
+        let preparation = Preparation {
+            symbolic_paths: &symbolic_paths,
+            budget: ValueBudget::default(),
+        };
+        values.check_budget_into(&preparation.budget, |expression| expression.source())?;
         let mut expression_paths = Vec::new();
         let values = prepare(
             &self.graph,
@@ -126,7 +132,7 @@ impl InputContract {
             &ValuePath::root(),
             PreparationScope::default(),
             &mut expression_paths,
-            &symbolic_paths,
+            &preparation,
         )?;
         for path in &symbolic_paths {
             if contains_path(&values, path) {
@@ -238,12 +244,16 @@ impl ValidInputValues {
                 &ValuePath::root(),
             ));
         }
+        // One aggregate budget spans every expression result, so many
+        // individually admissible results cannot grow past the value limits.
+        let mut budget = ResolutionBudget::default();
         let values = resolve_node(
             &self.contract.graph,
             Some(&self.contract.graph.0.graph.root.0),
             self.values,
             ValuePath::root(),
             Some(context),
+            &mut budget,
         )
         .await?;
         complete(self.contract, values)
@@ -409,6 +419,13 @@ impl Default for PreparationScope {
     }
 }
 
+/// Per-call preparation state shared by every recursive occurrence.
+struct Preparation<'p> {
+    symbolic_paths: &'p [ValuePath],
+    /// Overall data budget of the prepared tree, charged incrementally.
+    budget: ValueBudget,
+}
+
 fn prepare<'a>(
     graph: &'a AdmittedSchemaGraph,
     mut core: Option<&'a UseSiteCore>,
@@ -416,7 +433,7 @@ fn prepare<'a>(
     path: &ValuePath,
     mut scope: PreparationScope,
     expressions: &mut Vec<ValuePath>,
-    symbolic_paths: &[ValuePath],
+    preparation: &Preparation<'_>,
 ) -> Result<CompiledValue, ValidationError> {
     let mut alias_hops = 0_usize;
     let mut occurrence_forbidden = scope.inherited_forbidden;
@@ -526,10 +543,17 @@ fn prepare<'a>(
                             selected = alias_value;
                         }
                     }
+                    let property_path = path.push(property.key.as_str());
                     if selected.is_none()
-                        && !symbolic_paths.contains(&path.push(property.key.as_str()))
+                        && !preparation.symbolic_paths.contains(&property_path)
                         && let Some(default) = &property.input_default
                     {
+                        // Charge before cloning: a default repeated across many
+                        // record occurrences must not allocate past the budget.
+                        preparation
+                            .budget
+                            .charge_data_text(property.key.as_str().len(), &property_path)?;
+                        preparation.budget.charge_json(default, &property_path)?;
                         selected = Some(AuthoredValue::from_data(default.clone())?);
                     }
                     if let Some(selected) = selected {
@@ -559,7 +583,7 @@ fn prepare<'a>(
                         &path.push(&key),
                         scope,
                         expressions,
-                        symbolic_paths,
+                        preparation,
                     )?,
                 );
             }
@@ -586,7 +610,7 @@ fn prepare<'a>(
                         &path.push(index.to_string()),
                         scope,
                         expressions,
-                        symbolic_paths,
+                        preparation,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -763,11 +787,22 @@ fn resolve_node<'a>(
     value: CompiledValue,
     path: ValuePath,
     context: Option<&'a dyn ExpressionContext>,
+    budget: &'a mut ResolutionBudget,
 ) -> ResolveFuture<'a> {
     Box::pin(async move {
+        budget.cooperate().await;
+        let depth = path.depth();
         match value {
-            ValueTree::Literal(value) => Ok(ValueTree::Literal(value)),
-            ValueTree::Secret(value) => Ok(ValueTree::Secret(value)),
+            ValueTree::Literal(value) => {
+                let value = ValueTree::Literal(value);
+                budget.charge_tree(&value, &path, depth).await?;
+                Ok(value)
+            },
+            ValueTree::Secret(value) => {
+                let value = ValueTree::Secret(value);
+                budget.charge_tree(&value, &path, depth).await?;
+                Ok(value)
+            },
             ValueTree::Expression(program) => {
                 let context = context.ok_or_else(|| {
                     ValidationError::builder("expression.forbidden")
@@ -782,22 +817,33 @@ fn resolve_node<'a>(
                         .private_source(cause)
                         .build()
                 })?;
-                let value = AuthoredValue::from_data(data)?;
-                let value = prepare(
-                    graph,
-                    core,
-                    value,
-                    &path,
-                    PreparationScope {
-                        evaluated: true,
-                        ..PreparationScope::default()
-                    },
-                    &mut Vec::new(),
-                    &[],
-                )?;
-                Ok(literal_skeleton(&value))
+                let value = {
+                    let value = AuthoredValue::from_data(data)?;
+                    let preparation = Preparation {
+                        symbolic_paths: &[],
+                        budget: ValueBudget::default(),
+                    };
+                    value
+                        .check_budget_into(&preparation.budget, |expression| expression.source())?;
+                    let value = prepare(
+                        graph,
+                        core,
+                        value,
+                        &path,
+                        PreparationScope {
+                            evaluated: true,
+                            ..PreparationScope::default()
+                        },
+                        &mut Vec::new(),
+                        &preparation,
+                    )?;
+                    literal_skeleton(&value)
+                };
+                budget.charge_tree(&value, &path, depth).await?;
+                Ok(value)
             },
             ValueTree::Object(values) => {
+                budget.charge_node(depth, &path)?;
                 let mut scope = core.map(|core| body(graph, core)).transpose()?;
                 while let Some(Body::Alias(alias)) = scope {
                     scope = Some(body(graph, &alias.0)?);
@@ -805,18 +851,20 @@ fn resolve_node<'a>(
                 let adjacent = adjacent_payload(scope, &values);
                 let mut output = indexmap::IndexMap::with_capacity(values.len());
                 for (key, value) in values {
+                    let child_path = path.push(&key);
+                    budget.charge_text(key.len(), &child_path)?;
                     let child = adjacent
                         .filter(|(content, _)| *content == key)
                         .map(|(_, core)| core)
                         .or_else(|| object_child(scope, &key));
-                    output.insert(
-                        key.clone(),
-                        resolve_node(graph, child, value, path.push(&key), context).await?,
-                    );
+                    let value =
+                        resolve_node(graph, child, value, child_path, context, budget).await?;
+                    output.insert(key, value);
                 }
                 Ok(ValueTree::Object(output))
             },
             ValueTree::List(values) => {
+                budget.charge_node(depth, &path)?;
                 let mut scope = core.map(|core| body(graph, core)).transpose()?;
                 while let Some(Body::Alias(alias)) = scope {
                     scope = Some(body(graph, &alias.0)?);
@@ -828,8 +876,15 @@ fn resolve_node<'a>(
                 let mut output = Vec::with_capacity(values.len());
                 for (index, value) in values.into_iter().enumerate() {
                     output.push(
-                        resolve_node(graph, child, value, path.push(index.to_string()), context)
-                            .await?,
+                        resolve_node(
+                            graph,
+                            child,
+                            value,
+                            path.push(index.to_string()),
+                            context,
+                            budget,
+                        )
+                        .await?,
                     );
                 }
                 Ok(ValueTree::List(output))

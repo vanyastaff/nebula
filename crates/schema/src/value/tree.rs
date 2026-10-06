@@ -274,6 +274,16 @@ impl<E> ValueTree<E> {
         )
     }
 
+    /// Check this tree against a caller-owned budget that later growth (for
+    /// example materialized defaults) continues to charge.
+    pub(crate) fn check_budget_into<'a>(
+        &'a self,
+        budget: &ValueBudget,
+        expression_source: impl Fn(&'a E) -> &'a str + Copy,
+    ) -> Result<(), ValidationError> {
+        self.check_budget_at(&ValuePath::root(), 0, budget, expression_source)
+    }
+
     fn check_budget_at<'a>(
         &'a self,
         path: &ValuePath,

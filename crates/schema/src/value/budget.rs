@@ -30,7 +30,7 @@ impl BudgetResource {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct ValueBudget {
+pub(crate) struct ValueBudget {
     data_nodes: Cell<usize>,
     data_text_bytes: Cell<usize>,
     expression_entries: Cell<usize>,
@@ -38,7 +38,7 @@ pub(super) struct ValueBudget {
 }
 
 impl ValueBudget {
-    pub(super) fn charge_data_node(&self, path: &ValuePath) -> Result<(), ValidationError> {
+    pub(crate) fn charge_data_node(&self, path: &ValuePath) -> Result<(), ValidationError> {
         self.charge(
             &self.data_nodes,
             1,
@@ -48,7 +48,7 @@ impl ValueBudget {
         )
     }
 
-    pub(super) fn charge_data_text(
+    pub(crate) fn charge_data_text(
         &self,
         bytes: usize,
         path: &ValuePath,
@@ -60,6 +60,33 @@ impl ValueBudget {
             MAX_VALUE_TEXT_BYTES,
             path,
         )
+    }
+
+    /// Charge the data nodes and text of `value` before it is materialized.
+    ///
+    /// The walk stops at the first exceeded limit, so its cost is bounded by
+    /// the remaining budget rather than by the size of `value`.
+    pub(crate) fn charge_json(
+        &self,
+        value: &serde_json::Value,
+        path: &ValuePath,
+    ) -> Result<(), ValidationError> {
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            self.charge_data_node(path)?;
+            match value {
+                serde_json::Value::String(text) => self.charge_data_text(text.len(), path)?,
+                serde_json::Value::Array(values) => pending.extend(values),
+                serde_json::Value::Object(values) => {
+                    for (key, value) in values {
+                        self.charge_data_text(key.len(), path)?;
+                        pending.push(value);
+                    }
+                },
+                _ => {},
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn charge_expression(

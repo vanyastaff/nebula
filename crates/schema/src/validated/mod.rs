@@ -34,6 +34,7 @@ pub use output::ValidatedOutput;
 pub use root::{RecordShape, RootShape, UnionShape};
 pub use scalar::{ScalarKind, ScalarSchema};
 pub use validation::PendingValidation;
+pub(crate) use values::ResolutionBudget;
 pub use values::{ResolvedLookup, ResolvedValues, ValidValues};
 
 const MODE_SELECTOR_KEY: &str = "mode";
