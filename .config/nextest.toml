@@ -53,7 +53,7 @@ filter = 'binary(/compile_fail/) | binary(=seam_action_schema_method_removed) | 
 test-group = 'trybuild'
 
 [[profile.default.overrides]]
-filter = 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
+filter = 'package(=nebula-storage) & binary(=nebula_storage) & test(/auth::postgres::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
 test-group = 'postgres-authority'
 
 [[profile.default.overrides]]
