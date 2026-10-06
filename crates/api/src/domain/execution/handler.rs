@@ -2,31 +2,39 @@
 
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
 use nebula_core::{ExecutionId, TenantContext, WorkflowId};
 
 use crate::{
     domain::{
-        execution::dto::{
-            ExecutionLogsResponse, ExecutionOutputsResponse, ExecutionResponse,
-            ListExecutionsResponse, RunningExecutionSummary, StartExecutionRequest,
+        execution::{
+            dto::{
+                ExecutionHistoryParams, ExecutionLogsResponse, ExecutionOutputsResponse,
+                ExecutionResponse, ListExecutionsResponse, StartExecutionRequest,
+            },
+            history,
         },
-        shared::PaginationParams,
         workflow::handler::extract_timestamp,
     },
     error::{ApiError, ApiResult, ProblemDetails},
-    extractors::ApiJson,
+    extractors::{ApiJson, ApiQuery},
     state::AppState,
     trace_capture::w3c_trace_context_for_control_queue,
 };
 
-/// List all executions (workspace-scoped) — returns running execution IDs with count.
+/// Execution history of the workspace, newest first.
+///
+/// Every status is included unless `status` narrows it; `workflow_id`
+/// narrows to one workflow. Pages are keyset-paged: pass `next_cursor` back
+/// as `cursor`. Executions created while paging never shift or repeat rows.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError::Internal`] if the execution repository is unavailable.
+/// - [`ApiError::Validation`] for a malformed filter or cursor, naming the
+///   parameter and its accepted form.
+/// - [`ApiError::Internal`] if the execution repository is unavailable.
 #[utoipa::path(
     get,
     path = "/orgs/{org}/workspaces/{ws}/executions",
@@ -35,10 +43,11 @@ use crate::{
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
-        PaginationParams,
+        ExecutionHistoryParams,
     ),
     responses(
-        (status = 200, description = "Page of running execution summaries.", body = ListExecutionsResponse),
+        (status = 200, description = "One page of execution history, newest first.", body = ListExecutionsResponse),
+        (status = 400, description = "Malformed filter or cursor.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 500, description = "Execution repository unavailable.", body = ProblemDetails),
@@ -47,36 +56,23 @@ use crate::{
 pub async fn list_executions(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
-    Query(params): Query<PaginationParams>,
+    ApiQuery(params): ApiQuery<ExecutionHistoryParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let running_ids = state.list_running_executions_scoped(&scope).await?;
-
-    let total = running_ids.len();
-
-    // Apply pagination over the running list.
-    let offset = params.offset();
-    let limit = params.limit();
-    let executions: Vec<RunningExecutionSummary> = running_ids
-        .iter()
-        .skip(offset)
-        .take(limit)
-        .map(|id| RunningExecutionSummary { id: id.to_string() })
-        .collect();
-
-    Ok(Json(ListExecutionsResponse {
-        executions,
-        total,
-        page: params.page,
-        page_size: params.limit(),
-    }))
+    let query = history::history_query(&params, None)?;
+    let page = state.execution_history_scoped(&scope, &query).await?;
+    Ok(Json(history::history_response(page)?))
 }
 
-/// List executions for a workflow — returns running executions for the workflow.
+/// Execution history of one workflow, newest first.
+///
+/// Same filters and paging as the workspace history.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError::Internal`] if the execution repository is unavailable.
+/// - [`ApiError::Validation`] for an invalid workflow identifier, filter or
+///   cursor.
+/// - [`ApiError::Internal`] if the execution repository is unavailable.
 #[utoipa::path(
     get,
     path = "/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions",
@@ -86,11 +82,11 @@ pub async fn list_executions(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
         ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
-        PaginationParams,
+        ExecutionHistoryParams,
     ),
     responses(
-        (status = 200, description = "Page of running execution summaries scoped to this workflow.", body = ListExecutionsResponse),
-        (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
+        (status = 200, description = "One page of this workflow's execution history, newest first.", body = ListExecutionsResponse),
+        (status = 400, description = "Invalid workflow identifier, filter or cursor.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 500, description = "Execution repository unavailable.", body = ProblemDetails),
@@ -100,36 +96,14 @@ pub async fn list_executions_for_workflow(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, workflow_id)): Path<(String, String, String)>,
-    Query(params): Query<PaginationParams>,
+    ApiQuery(params): ApiQuery<ExecutionHistoryParams>,
 ) -> ApiResult<Json<ListExecutionsResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let workflow_id_parsed = WorkflowId::parse(&workflow_id)
-        .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
-
-    // Scope the list to the requested workflow (#286, #288, #328) within
-    // the caller's tenant — the per-request decorator confines the read,
-    // closing the cross-tenant execution-ID leak the global
-    // `list_running()` would have allowed.
-    let running_ids = state
-        .list_running_executions_for_workflow_scoped(&scope, workflow_id_parsed)
-        .await?;
-
-    let total = running_ids.len();
-    let offset = params.offset();
-    let limit = params.limit();
-    let executions: Vec<RunningExecutionSummary> = running_ids
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|id| RunningExecutionSummary { id: id.to_string() })
-        .collect();
-
-    Ok(Json(ListExecutionsResponse {
-        executions,
-        total,
-        page: params.page,
-        page_size: params.limit(),
-    }))
+    // The per-request decorator confines the read to the caller's tenant
+    // (#286, #288, #328); the workflow filter only narrows within it.
+    let query = history::history_query(&params, Some(&workflow_id))?;
+    let page = state.execution_history_scoped(&scope, &query).await?;
+    Ok(Json(history::history_response(page)?))
 }
 
 /// Get all node outputs for an execution.

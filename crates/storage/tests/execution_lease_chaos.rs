@@ -128,7 +128,10 @@ async fn concurrent_acquire_release_preserves_unique_holder_and_fencing() {
                     .execution_id(id.clone())
                     .expected_version(before.version)
                     .fencing(stale)
-                    .new_state(serde_json::json!({"stale_write": true}))
+                    .state(
+                        serde_json::json!({"stale_write": true}),
+                        nebula_storage_port::ExecutionListing::CREATED,
+                    )
                     .build()
                     .expect("stale transition must be well formed");
                 assert!(matches!(

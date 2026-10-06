@@ -44,11 +44,11 @@ pub use dto::{
     DestinationCapabilityParseError, EffectOccurrenceKey, EffectOccurrenceRecord,
     EffectSlotBinding, EffectSlotId, ExecutablePlanRecordFormat, ExecutionHistoryCursor,
     ExecutionHistoryPage, ExecutionHistoryPageSize, ExecutionHistoryPageSizeError,
-    ExecutionHistoryQuery, ExecutionListing, ExecutionListingStatus, ExecutionSummary,
-    IterationCheckpoint,
-    IterationCheckpointError, IterationCheckpointKey, KnownOutcome, MAX_CHECKPOINT_ITERATION,
-    MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES, MAX_ITERATION_CHECKPOINT_STATE_BYTES,
-    MAX_OCCURRENCE_LABEL_BYTES, MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES, OccurrenceLabelViolation,
+    ExecutionHistoryQuery, ExecutionListing, ExecutionListingStatus, ExecutionStatusSet,
+    ExecutionSummary, IterationCheckpoint, IterationCheckpointError, IterationCheckpointKey,
+    KnownOutcome, MAX_CHECKPOINT_ITERATION, MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES,
+    MAX_ITERATION_CHECKPOINT_STATE_BYTES, MAX_OCCURRENCE_LABEL_BYTES,
+    MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES, MicrosInstant, OccurrenceLabelViolation,
     OperationLedgerError, OperationProtocolViolation, OperationRecord, OperationState,
     PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget, PrepareOutcome,
     PreparedEffectContract, PreparedEffectPolicy, PreparedEffectPolicyBuilder, PreparedOperation,
@@ -57,7 +57,8 @@ pub use dto::{
     RefreshRetryDiagnosticCodeError, RefreshRetryEvidence, RefreshRetryGate, RefreshRetryKind,
     RefreshRetryPhase, RefreshRetryProjection, RefreshRetrySnapshot, RefreshRetryTransition,
     RequestFingerprint, RevisionCatalogError, RevisionInsertOutcome, RevisionRecordBytes,
-    RevisionReferenceCounts, WorkerFlavorRecordFormat, WorkerFlavorRevisionRecord,
+    RevisionReferenceCounts, UnknownExecutionStatus, WorkerFlavorRecordFormat,
+    WorkerFlavorRevisionRecord,
 };
 pub use error::StorageError;
 pub use ids::{CredentialId, FencingToken, OperationCallId, OperationId};

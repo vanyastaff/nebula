@@ -105,7 +105,10 @@ async fn seed_token(
         .execution_id(execution_id)
         .expected_version(0)
         .fencing(fencing)
-        .new_state(serde_json::json!({"s": "waiting"}))
+        .state(
+            serde_json::json!({"s": "waiting"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .resume_tokens(vec![token_row])
         .build()
         .expect("well-formed batch must build");

@@ -80,16 +80,11 @@ async fn legacy_upgrade_never_grants_and_terminal_evidence_survives_reopen() {
     );
     previous.run(&pool).await.unwrap();
     let scope = oracle::scope();
+    // Seed the execution in the 0048 row shape: the current adapter writes
+    // columns (0064 listing projection) this legacy schema does not have.
+    sqlx::query("INSERT INTO port_executions(id, workspace_id, org_id, workflow_id, status, state, version, fencing_generation, created_at, updated_at) VALUES('upgrade-execution', ?, ?, 'workflow', 'Created', '{\"status\":\"Created\"}', 0, 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
+        .bind(&scope.workspace_id).bind(&scope.org_id).execute(&pool).await.unwrap();
     let executions = nebula_storage::sqlite::SqliteExecutionStore::new(pool.clone());
-    executions
-        .create(
-            &scope,
-            "upgrade-execution",
-            "workflow",
-            serde_json::json!({"status":"Created"}),
-        )
-        .await
-        .unwrap();
     let slot = EffectSlotId::from_storage_bytes([0x91; 16]);
     sqlx::query("INSERT INTO port_operation_ledger(slot_id, workspace_id, org_id, execution_id, node_key, occurrence, attempt_generation, fingerprint_version, fingerprint, destination, operation_id, state, prepared_at_ms) VALUES(?,?,?,'upgrade-execution','node','legacy',0,1,?,'stable_key',?,'prepared',0)")
         .bind(slot.as_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id).bind([0x11u8;32].as_slice()).bind([0x92u8;16].as_slice()).execute(&pool).await.unwrap();

@@ -142,7 +142,7 @@ impl WorkflowEngine {
                     .execution_id(&id)
                     .expected_version(*repo_version)
                     .fencing(fence)
-                    .new_state(state)
+                    .state(state, execution_listing(candidate))
                     .build()
                     .map_err(|_| EngineError::InvalidRecordedExecution)
             })

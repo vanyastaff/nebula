@@ -1052,7 +1052,7 @@ impl WorkflowEngine {
                 .execution_id(&id)
                 .expected_version(repo_version)
                 .fencing(lease_token)
-                .new_state(state_json)
+                .state(state_json, execution_listing(&exec_state))
                 .build()
                 .map_err(|e| EngineError::CheckpointFailed {
                     node_key: final_state_node_key(),
@@ -1497,7 +1497,7 @@ impl WorkflowEngine {
             .execution_id(id)
             .expected_version(repo_version)
             .fencing(lease_token)
-            .new_state(state_json)
+            .state(state_json, execution_listing(&exec_state))
             .build()
             .map_err(|e| EngineError::CheckpointFailed {
                 node_key: final_state_node_key(),
@@ -1755,7 +1755,7 @@ impl WorkflowEngine {
             .execution_id(id)
             .expected_version(repo_version)
             .fencing(lease_token)
-            .new_state(state_json)
+            .state(state_json, execution_listing(&exec_state))
             .build()
             .map_err(|e| EngineError::CheckpointFailed {
                 node_key: final_state_node_key(),

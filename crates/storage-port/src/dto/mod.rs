@@ -9,6 +9,8 @@ mod control;
 pub mod credential;
 mod credential_refresh_retry;
 mod execution;
+mod execution_history;
+mod execution_listing;
 mod idempotency;
 mod identity;
 mod iteration_checkpoint;
@@ -47,10 +49,14 @@ pub use credential_refresh_retry::{
     RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetryProjection,
     RefreshRetrySnapshot, RefreshRetryTransition,
 };
-pub use execution::{
+pub use execution::{ExecutionRecord, NewExecution};
+pub use execution_history::{
     ExecutionHistoryCursor, ExecutionHistoryPage, ExecutionHistoryPageSize,
-    ExecutionHistoryPageSizeError, ExecutionHistoryQuery, ExecutionListing,
-    ExecutionListingStatus, ExecutionRecord, ExecutionSummary, NewExecution, truncate_to_micros,
+    ExecutionHistoryPageSizeError, ExecutionHistoryQuery, ExecutionSummary,
+};
+pub use execution_listing::{
+    ExecutionListing, ExecutionListingStatus, ExecutionStatusSet, MicrosInstant,
+    UnknownExecutionStatus,
 };
 pub use idempotency::CachedRecord;
 pub use identity::{

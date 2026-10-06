@@ -11,8 +11,13 @@ use std::time::Duration;
 
 use nebula_storage_port::dto::ExecutionRecord;
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
-use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
+use nebula_storage_port::{
+    ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionListingStatus, ExecutionSummary,
+    FencingToken, MicrosInstant, Scope, StorageError, TransitionBatch, TransitionOutcome,
+};
 use sqlx::{Row, SqlitePool};
+
+use crate::execution_listing as listing;
 
 /// SQLite-backed execution aggregate. Wrap a pool whose schema was
 /// installed via [`super::init_schema`].
@@ -34,14 +39,19 @@ pub(super) fn conn_err(e: sqlx::Error) -> StorageError {
     StorageError::Connection(e.to_string())
 }
 
+/// Read an RFC 3339 text timestamp column of an execution row.
+fn text_datetime(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &str,
+) -> Result<chrono::DateTime<chrono::Utc>, StorageError> {
+    listing::decode_text_instant(&row.try_get::<String, _>(column).map_err(conn_err)?)
+        .map(MicrosInstant::to_datetime)
+}
+
 /// Clamp the lease TTL (≥1s, ≤24h) so a zero/absurd TTL cannot make a
 /// lease instantly dead or effectively eternal.
 fn normalized_ttl(ttl: Duration) -> Duration {
     Duration::from_secs_f64(ttl.as_secs_f64().clamp(1.0, 86_400.0))
-}
-
-fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339()
 }
 
 /// Insert a `Created` execution row inside an existing transaction.
@@ -59,20 +69,23 @@ pub(super) async fn insert_created_execution(
 ) -> Result<(), StorageError> {
     crate::execution_state::ensure_execution_state_size(initial_state)?;
     let state = serde_json::to_string(initial_state)?;
-    let ts = now_rfc3339();
+    let created_at = MicrosInstant::now();
+    let ts = listing::encode_text_instant(created_at);
     let res = sqlx::query(
         "INSERT INTO port_executions \
          (id, workspace_id, org_id, workflow_id, status, state, version, \
-          fencing_generation, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, 'Created', ?, 0, 0, ?, ?)",
+          fencing_generation, created_at, updated_at, created_at_us) \
+         VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)",
     )
     .bind(id)
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
     .bind(workflow_id)
+    .bind(ExecutionListingStatus::Created.as_str())
     .bind(&state)
     .bind(&ts)
     .bind(&ts)
+    .bind(created_at.as_micros())
     .execute(&mut **tx)
     .await;
     match res {
@@ -149,15 +162,15 @@ impl ExecutionStore for SqliteExecutionStore {
             workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
             scope: scope.clone(),
             version: row.try_get::<i64, _>("version").map_err(conn_err)? as u64,
-            status: row.try_get("status").map_err(conn_err)?,
+            status: listing::decode_status(&row.try_get::<String, _>("status").map_err(conn_err)?)?,
             state,
             lease_holder: row.try_get("lease_holder").map_err(conn_err)?,
             fencing: Some(
                 row.try_get::<i64, _>("fencing_generation")
                     .map_err(conn_err)? as u64,
             ),
-            created_at: row.try_get("created_at").map_err(conn_err)?,
-            updated_at: row.try_get("updated_at").map_err(conn_err)?,
+            created_at: text_datetime(&row, "created_at")?,
+            updated_at: text_datetime(&row, "updated_at")?,
         }))
     }
 
@@ -281,7 +294,8 @@ impl ExecutionStore for SqliteExecutionStore {
             "SELECT id, workspace_id, org_id, workflow_id, status, \
                     CASE WHEN length(CAST(state AS BLOB)) <= ? THEN state END AS state, version, \
                     lease_holder, fencing_generation, created_at, updated_at \
-             FROM port_executions",
+             FROM port_executions \
+             WHERE status IN ('created', 'running', 'paused', 'cancelling')",
         )
         .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
         .fetch_all(&self.pool)
@@ -302,51 +316,94 @@ impl ExecutionStore for SqliteExecutionStore {
                         row.try_get::<String, _>("org_id").map_err(conn_err)?,
                     ),
                     version: row.try_get::<i64, _>("version").map_err(conn_err)? as u64,
-                    status: row.try_get("status").map_err(conn_err)?,
+                    status: listing::decode_status(
+                        &row.try_get::<String, _>("status").map_err(conn_err)?,
+                    )?,
                     state,
                     lease_holder: row.try_get("lease_holder").map_err(conn_err)?,
                     fencing: Some(
                         row.try_get::<i64, _>("fencing_generation")
                             .map_err(conn_err)? as u64,
                     ),
-                    created_at: row.try_get("created_at").map_err(conn_err)?,
-                    updated_at: row.try_get("updated_at").map_err(conn_err)?,
+                    created_at: text_datetime(&row, "created_at")?,
+                    updated_at: text_datetime(&row, "updated_at")?,
                 })
             })
             .collect()
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        let rows =
-            sqlx::query("SELECT id FROM port_executions WHERE workspace_id = ? AND org_id = ?")
-                .bind(&scope.workspace_id)
-                .bind(&scope.org_id)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(conn_err)?;
-        rows.into_iter()
-            .map(|r| r.try_get::<String, _>("id").map_err(conn_err))
-            .collect()
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        let rows = sqlx::query(
-            "SELECT id FROM port_executions \
-             WHERE workspace_id = ? AND org_id = ? AND workflow_id = ?",
-        )
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(workflow_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(conn_err)?;
-        rows.into_iter()
-            .map(|r| r.try_get::<String, _>("id").map_err(conn_err))
-            .collect()
+        query: &ExecutionHistoryQuery,
+    ) -> Result<ExecutionHistoryPage, StorageError> {
+        let mut sql = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT id, workflow_id, status, created_at_us, started_at, finished_at, updated_at \
+             FROM port_executions WHERE workspace_id = ",
+        );
+        sql.push_bind(&scope.workspace_id)
+            .push(" AND org_id = ")
+            .push_bind(&scope.org_id);
+        if let Some(workflow_id) = query.workflow_id() {
+            sql.push(" AND workflow_id = ").push_bind(workflow_id);
+        }
+        if !query.statuses().is_all() {
+            sql.push(" AND status IN (");
+            let mut statuses = sql.separated(", ");
+            for status in query.statuses().iter() {
+                statuses.push_bind(status.as_str());
+            }
+            statuses.push_unseparated(")");
+        }
+        if let Some(bound) = query.created_after() {
+            sql.push(" AND created_at_us >= ")
+                .push_bind(bound.as_micros());
+        }
+        if let Some(bound) = query.created_before() {
+            sql.push(" AND created_at_us < ")
+                .push_bind(bound.as_micros());
+        }
+        if let Some(cursor) = query.cursor() {
+            let key = cursor.created_at().as_micros();
+            sql.push(" AND (created_at_us < ")
+                .push_bind(key)
+                .push(" OR (created_at_us = ")
+                .push_bind(key)
+                .push(" AND id < ")
+                .push_bind(cursor.id())
+                .push("))");
+        }
+        sql.push(" ORDER BY created_at_us DESC, id DESC LIMIT ")
+            .push_bind(i64::from(query.fetch_limit()));
+        let rows = sql.build().fetch_all(&self.pool).await.map_err(conn_err)?;
+        let summaries = rows
+            .into_iter()
+            .map(|row| {
+                let optional_instant = |column: &str| -> Result<_, StorageError> {
+                    row.try_get::<Option<String>, _>(column)
+                        .map_err(conn_err)?
+                        .as_deref()
+                        .map(listing::decode_text_instant)
+                        .transpose()
+                };
+                Ok(ExecutionSummary {
+                    id: row.try_get("id").map_err(conn_err)?,
+                    workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
+                    status: listing::decode_status(
+                        &row.try_get::<String, _>("status").map_err(conn_err)?,
+                    )?,
+                    created_at: listing::decode_sort_key(
+                        row.try_get("created_at_us").map_err(conn_err)?,
+                    )?,
+                    started_at: optional_instant("started_at")?,
+                    finished_at: optional_instant("finished_at")?,
+                    updated_at: listing::decode_text_instant(
+                        &row.try_get::<String, _>("updated_at").map_err(conn_err)?,
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        Ok(ExecutionHistoryPage::from_overfetched(summaries, query))
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -535,14 +592,19 @@ pub(super) async fn commit_locked(
         .filter(|value| i64::try_from(*value).is_ok())
         .ok_or_else(|| StorageError::Internal("execution version exhausted".into()))?;
     let new_state = serde_json::to_string(batch.new_state())?;
-    let ts = now_rfc3339();
+    let ts = listing::encode_text_instant(MicrosInstant::now());
+    let projection = batch.listing();
     sqlx::query(
-        "UPDATE port_executions SET state = ?, version = ?, updated_at = ? \
+        "UPDATE port_executions SET state = ?, version = ?, updated_at = ?, \
+                status = ?, started_at = ?, finished_at = ? \
          WHERE id = ? AND workspace_id = ? AND org_id = ?",
     )
     .bind(&new_state)
     .bind(new_version as i64)
     .bind(&ts)
+    .bind(projection.status().as_str())
+    .bind(projection.started_at().map(listing::encode_text_instant))
+    .bind(projection.finished_at().map(listing::encode_text_instant))
     .bind(&id)
     .bind(&batch.scope().workspace_id)
     .bind(&batch.scope().org_id)

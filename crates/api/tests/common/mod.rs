@@ -577,14 +577,35 @@ impl PortHandles {
             .map(|r| (r.version, r.state))
     }
 
-    /// List running execution ids as opaque strings (port equivalent of
-    /// the old `state.execution_repo.list_running()`; the port id form is
-    /// the canonical string, not a typed `ExecutionId`).
-    pub(crate) async fn running_executions(&self) -> Vec<String> {
-        use nebula_storage_port::store::ExecutionStore;
-        ExecutionStore::list_running(&self.exec_store, &port_scope())
+    /// Ids of every execution in the placeholder scope, any status (the port
+    /// id form is the canonical string, not a typed `ExecutionId`). Fixtures
+    /// stay far below one history page.
+    pub(crate) async fn executions_in_scope(&self) -> Vec<String> {
+        self.executions_with(nebula_storage_port::ExecutionHistoryQuery::new())
             .await
-            .expect("running_executions: port list_running must not error")
+    }
+
+    /// Ids of the non-terminal executions in the placeholder scope, through
+    /// the storage status filter.
+    pub(crate) async fn active_executions(&self) -> Vec<String> {
+        self.executions_with(
+            nebula_storage_port::ExecutionHistoryQuery::new()
+                .with_statuses(nebula_storage_port::ExecutionStatusSet::ACTIVE),
+        )
+        .await
+    }
+
+    async fn executions_with(
+        &self,
+        query: nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Vec<String> {
+        use nebula_storage_port::store::ExecutionStore;
+        let query = query.with_page_size(nebula_storage_port::ExecutionHistoryPageSize::MAX);
+        let page = ExecutionStore::list_history(&self.exec_store, &port_scope(), &query)
+            .await
+            .expect("executions_in_scope: port list_history must not error");
+        assert!(page.next_cursor.is_none(), "fixture exceeds one page");
+        page.items.into_iter().map(|summary| summary.id).collect()
     }
 }
 

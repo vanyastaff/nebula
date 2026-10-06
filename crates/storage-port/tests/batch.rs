@@ -12,7 +12,10 @@ fn builder_requires_core_fields_and_allows_empty_outbox_journal() {
         .execution_id("01J")
         .expected_version(3)
         .fencing(FencingToken::from_generation(7))
-        .state(serde_json::json!({"s":"running"}), ExecutionListing::CREATED)
+        .state(
+            serde_json::json!({"s":"running"}),
+            ExecutionListing::CREATED,
+        )
         .build()
         .expect("all required fields present");
     assert!(b.outbox().is_empty() && b.journal().is_empty());
@@ -139,7 +142,11 @@ fn appended_journal_keeps_existing_rows_first() {
         seq: None,
         payload: serde_json::json!({"n": 2}),
     }]);
-    let order: Vec<_> = appended.journal().iter().map(|e| e.payload["n"].clone()).collect();
+    let order: Vec<_> = appended
+        .journal()
+        .iter()
+        .map(|e| e.payload["n"].clone())
+        .collect();
     assert_eq!(order, vec![serde_json::json!(1), serde_json::json!(2)]);
     assert_eq!(appended.listing(), batch.listing());
 }

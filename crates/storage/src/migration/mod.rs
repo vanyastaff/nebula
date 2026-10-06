@@ -1323,6 +1323,19 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
+    /// Head 0064, on both backends, adds the execution listing projection
+    /// (`started_at`, `finished_at`, `created_at_us`), backfills it and
+    /// `status` from each execution row's own persisted state, and replaces
+    /// the scope/workflow indexes with keyset history indexes plus a partial
+    /// index of active rows. The backfill reads only values the execution
+    /// owner already wrote into the same row; it infers nothing from another
+    /// aggregate, grants no authority, and changes no state, version, lease,
+    /// or journal. A state without a known status keeps `created`. It is a
+    /// same-row projection, not an aggregate transform, and the floor remains
+    /// at 0040. Writers that predate it never update the projection, so they
+    /// must be stopped before it applies; PostgreSQL drops the backfill
+    /// default of `created_at_us` so such a writer's insert fails closed.
+    ///
     /// Head 0063, on both backends, creates only the empty
     /// `port_execution_control_observation_receipts` relation, its
     /// constraints, and a cascading foreign key to the execution row. No
@@ -1423,9 +1436,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 63);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 64);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 63);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 64);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

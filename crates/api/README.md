@@ -1053,9 +1053,9 @@ above for the enforcement guarantee.
 | `DELETE` | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}`                       | Delete workflow                                                            |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate`              | Compile, install exact revisions, and publish by CAS (§13 step 2)           |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute`               | Trigger workflow execution — 202 Accepted (§13 step 3)                     |
-| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | List executions for a workflow                                             |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | Execution history of a workflow (cursor, status/time filters)              |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | Start execution — 202 Accepted (§13 step 3)                                |
-| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/executions`                           | List all executions in workspace                                           |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/executions`                           | Execution history, newest first (cursor, status/workflow/time filters)    |
 | `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}`                    | Get execution status                                                       |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/cancel`             | Cancel execution — durable signal (§13 step 5)                             |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate`          | Terminate execution — durable signal (§12.2)                               |

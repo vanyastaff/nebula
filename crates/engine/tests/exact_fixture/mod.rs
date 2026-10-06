@@ -190,7 +190,7 @@ pub(crate) async fn materialize_state(
                     .execution_id(&execution_id)
                     .expected_version(version)
                     .fencing(fencing)
-                    .new_state(desired)
+                    .state(desired.clone(), listing_of(&desired))
                     .build()
                     .unwrap(),
             )
@@ -201,4 +201,17 @@ pub(crate) async fn materialize_state(
             .await
             .unwrap();
     }
+}
+
+/// Listing projection of a fixture snapshot read straight from its JSON: some
+/// fixtures store deliberately undecodable states, which list as `created`.
+fn listing_of(state: &serde_json::Value) -> nebula_storage_port::ExecutionListing {
+    fn field<T: serde::de::DeserializeOwned>(state: &serde_json::Value, key: &str) -> Option<T> {
+        serde_json::from_value(state.get(key)?.clone()).ok()
+    }
+    nebula_storage_port::ExecutionListing::new(
+        field(state, "status").unwrap_or(nebula_storage_port::ExecutionListingStatus::Created),
+        field(state, "started_at"),
+        field(state, "completed_at"),
+    )
 }

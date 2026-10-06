@@ -1910,7 +1910,10 @@ impl TestStores {
             .execution_id(execution_id.clone())
             .expected_version(record.version)
             .fencing(fence)
-            .new_state(serde_json::to_value(state).unwrap())
+            .state(
+                serde_json::to_value(&state).unwrap(),
+                execution_listing(&state),
+            )
             .build()
             .unwrap();
         assert!(matches!(
@@ -2300,10 +2303,11 @@ async fn graph_preflight_rejection_terminalizes_created_execution() {
 
     // The lease taken to perform the transition must be released afterward,
     // not left held.
-    let rows = stores.execution.list_all_running().await.unwrap();
-    let row = rows
-        .iter()
-        .find(|r| r.id == execution_id)
+    let row = stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
         .expect("row must still exist");
     assert!(
         row.lease_holder.is_none(),
@@ -2422,10 +2426,11 @@ async fn graph_preflight_rejection_uses_adopted_fence_and_terminalizes_execution
 
     // The handoff lease must be released after the failure write — nothing
     // else will ever touch this terminal row.
-    let rows = stores.execution.list_all_running().await.unwrap();
-    let row = rows
-        .iter()
-        .find(|r| r.id == execution_id)
+    let row = stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
         .expect("row must still exist");
     assert!(
         row.lease_holder.is_none(),
@@ -2839,18 +2844,12 @@ impl ExecutionStore for FailAtCommitN {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -5071,7 +5070,7 @@ impl ExecutionStore for ExternalMutateBeforeN {
                 .fencing(nebula_storage_port::FencingToken::from_generation(
                     record.fencing.unwrap_or(0),
                 ))
-                .new_state(state)
+                .state(state.clone(), listing_of(&state))
                 .build()
             {
                 let _ = self.inner.commit(external).await;
@@ -5115,18 +5114,12 @@ impl ExecutionStore for ExternalMutateBeforeN {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -5400,7 +5393,7 @@ async fn persist_final_state_retries_once_on_nonterminal_conflict() {
                 .execution_id(execution_id.to_string())
                 .expected_version(0)
                 .fencing(token)
-                .new_state(external_json)
+                .state(external_json.clone(), listing_of(&external_json))
                 .build()
                 .unwrap(),
         )
@@ -5519,7 +5512,7 @@ async fn persist_final_state_honors_external_terminal_transition() {
                 .execution_id(execution_id.to_string())
                 .expected_version(0)
                 .fencing(token)
-                .new_state(external_json)
+                .state(external_json.clone(), listing_of(&external_json))
                 .build()
                 .unwrap(),
         )
@@ -8282,4 +8275,17 @@ async fn status_publisher_republishes_after_its_lease_lapsed() {
         calls[1].starts_with(&format!("publish {row} ")),
         "{calls:?}"
     );
+}
+
+/// Listing projection of a fixture snapshot read straight from its JSON: some
+/// fixtures store deliberately undecodable states, which list as `created`.
+fn listing_of(state: &serde_json::Value) -> nebula_storage_port::ExecutionListing {
+    fn field<T: serde::de::DeserializeOwned>(state: &serde_json::Value, key: &str) -> Option<T> {
+        serde_json::from_value(state.get(key)?.clone()).ok()
+    }
+    nebula_storage_port::ExecutionListing::new(
+        field(state, "status").unwrap_or(nebula_storage_port::ExecutionListingStatus::Created),
+        field(state, "started_at"),
+        field(state, "completed_at"),
+    )
 }

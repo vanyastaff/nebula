@@ -16,11 +16,44 @@ use std::time::Duration;
 // cost — the contract the prior in-memory adapter guaranteed.
 use tokio::time::Instant;
 
+use chrono::{DateTime, Utc};
 use nebula_storage_port::dto::resume_token::ResumeTokenRow;
 use nebula_storage_port::dto::{ControlMsg, ExecutionRecord};
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
-use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
+use nebula_storage_port::{
+    ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionListing, ExecutionSummary, FencingToken,
+    MicrosInstant, Scope, StorageError, TransitionBatch, TransitionOutcome,
+};
 use parking_lot::Mutex;
+
+impl Row {
+    fn record(&self, id: &str) -> ExecutionRecord {
+        ExecutionRecord {
+            id: id.to_owned(),
+            workflow_id: self.workflow_id.clone(),
+            scope: self.scope.clone(),
+            version: self.version,
+            status: self.listing.status(),
+            state: self.state.clone(),
+            lease_holder: self.lease_holder.clone(),
+            fencing: Some(self.fencing_generation),
+            created_at: self.created_at.to_datetime(),
+            updated_at: self.updated_at.to_datetime(),
+        }
+    }
+
+    fn summary(&self, id: &str) -> ExecutionSummary {
+        ExecutionSummary {
+            id: id.to_owned(),
+            workflow_id: self.workflow_id.clone(),
+            status: self.listing.status(),
+            created_at: self.created_at,
+            started_at: self.listing.started_at(),
+            finished_at: self.listing.finished_at(),
+            updated_at: self.updated_at,
+        }
+    }
+}
 
 /// One persisted execution row plus its lease bookkeeping.
 #[derive(Debug, Clone)]
@@ -28,14 +61,19 @@ pub(super) struct Row {
     pub(super) scope: Scope,
     pub(super) workflow_id: String,
     pub(super) version: u64,
-    pub(super) status: String,
+    /// Listing projection of `state`, replaced with it on every commit.
+    pub(super) listing: ExecutionListing,
     pub(super) state: serde_json::Value,
+    /// Creation instant at the precision every backend stores.
+    pub(super) created_at: MicrosInstant,
+    /// Last state change.
+    pub(super) updated_at: MicrosInstant,
     /// Current lease holder, if any (alive only until `lease_expires_at`).
     pub(super) lease_holder: Option<String>,
     /// Deadline in this adapter's clock era (see
     /// [`InMemoryExecutionStore::with_clock`]), not this process's monotonic
     /// one.
-    pub(super) lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(super) lease_expires_at: Option<DateTime<Utc>>,
     /// Monotone fencing generation. Bumped every time the lease is
     /// (re)acquired by a different/expired holder, so a superseded
     /// holder's token no longer matches.
@@ -143,7 +181,7 @@ pub(super) struct StartKeyReservation {
     pub(super) fingerprint_version: u16,
     pub(super) fingerprint: [u8; 32],
     pub(super) execution_id: String,
-    pub(super) created_at: chrono::DateTime<chrono::Utc>,
+    pub(super) created_at: DateTime<Utc>,
 }
 
 /// Shared mutable core. One mutex guards the whole store so a `commit`
@@ -260,14 +298,17 @@ pub(super) fn insert_created_row(
             detail: format!("execution {id} already exists"),
         });
     }
+    let now = MicrosInstant::now();
     st.rows.insert(
         id.to_owned(),
         Row {
             scope: scope.clone(),
             workflow_id: workflow_id.to_owned(),
             version: 0,
-            status: "Created".to_owned(),
+            listing: ExecutionListing::CREATED,
             state: initial_state.clone(),
+            created_at: now,
+            updated_at: now,
             lease_holder: None,
             lease_expires_at: None,
             fencing_generation: 0,
@@ -313,18 +354,7 @@ impl ExecutionStore for InMemoryExecutionStore {
         match st.rows.get(id) {
             // Scope mismatch is an existence-preserving miss: never leak
             // another tenant's row.
-            Some(row) if &row.scope == scope => Ok(Some(ExecutionRecord {
-                id: id.to_string(),
-                workflow_id: row.workflow_id.clone(),
-                scope: row.scope.clone(),
-                version: row.version,
-                status: row.status.clone(),
-                state: row.state.clone(),
-                lease_holder: row.lease_holder.clone(),
-                fencing: Some(row.fencing_generation),
-                created_at: String::new(),
-                updated_at: String::new(),
-            })),
+            Some(row) if &row.scope == scope => Ok(Some(row.record(id))),
             _ => Ok(None),
         }
     }
@@ -433,43 +463,28 @@ impl ExecutionStore for InMemoryExecutionStore {
         Ok(st
             .rows
             .iter()
-            .map(|(id, row)| ExecutionRecord {
-                id: id.clone(),
-                workflow_id: row.workflow_id.clone(),
-                scope: row.scope.clone(),
-                version: row.version,
-                status: row.status.clone(),
-                state: row.state.clone(),
-                lease_holder: row.lease_holder.clone(),
-                fencing: Some(row.fencing_generation),
-                created_at: String::new(),
-                updated_at: String::new(),
-            })
+            .filter(|(_, row)| !row.listing.status().is_terminal())
+            .map(|(id, row)| row.record(id))
             .collect())
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        let st = self.inner.lock();
-        Ok(st
-            .rows
-            .iter()
-            .filter(|(_, r)| &r.scope == scope)
-            .map(|(id, _)| id.clone())
-            .collect())
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        let st = self.inner.lock();
-        Ok(st
-            .rows
-            .iter()
-            .filter(|(_, r)| &r.scope == scope && r.workflow_id == workflow_id)
-            .map(|(id, _)| id.clone())
-            .collect())
+        query: &ExecutionHistoryQuery,
+    ) -> Result<ExecutionHistoryPage, StorageError> {
+        let mut rows: Vec<ExecutionSummary> = {
+            let st = self.inner.lock();
+            st.rows
+                .iter()
+                .filter(|(_, row)| &row.scope == scope)
+                .map(|(id, row)| row.summary(id))
+                .filter(|summary| query.admits(summary))
+                .collect()
+        };
+        rows.sort_by(|a, b| b.key().cmp(&a.key()));
+        rows.truncate(usize::from(query.fetch_limit()));
+        Ok(ExecutionHistoryPage::from_overfetched(rows, query))
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -595,6 +610,8 @@ pub(super) fn commit_locked(
         })?;
         row.version = new_version;
         row.state = new_state;
+        row.listing = batch.listing();
+        row.updated_at = MicrosInstant::now();
         for payload in journal_payloads {
             row.journal.push((seq, payload));
             seq += 1;

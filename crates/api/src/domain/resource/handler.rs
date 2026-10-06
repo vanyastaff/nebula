@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::StatusCode,
 };
 use nebula_core::{Principal, ResourceId, TenantContext};
@@ -45,7 +45,7 @@ use crate::{
         shared::PaginationParams,
     },
     error::{ApiError, ApiResult, ProblemDetails},
-    extractors::ApiJson,
+    extractors::{ApiJson, ApiQuery},
     state::AppState,
 };
 
@@ -174,7 +174,7 @@ fn phase_from_seam(phase: &str) -> ResourcePhase {
 pub async fn list_resources(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
-    Query(params): Query<PaginationParams>,
+    ApiQuery(params): ApiQuery<PaginationParams>,
 ) -> ApiResult<Json<ListResourcesResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let store = state.resource_store.as_ref().ok_or_else(|| {

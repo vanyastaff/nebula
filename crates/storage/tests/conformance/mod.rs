@@ -591,7 +591,13 @@ impl Backend for PostgresBackend {
     }
 }
 
+mod history;
 mod requirements;
+
+pub(crate) use history::{
+    assert_history_is_scope_isolated, assert_history_orders_filters_and_pages,
+    assert_status_projection_follows_commit,
+};
 
 /// Postgres skip decision, resolved by feature flag so there is exactly
 /// one match arm for the `"Postgres"` literal (avoids overlapping-pattern
@@ -694,7 +700,7 @@ pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
         .execution_id("exe_cas")
         .expected_version(999) // deliberately wrong
         .fencing(token)
-        .new_state(serde_json::json!({"s": "running"}))
+        .state(serde_json::json!({"s": "running"}), nebula_storage_port::ExecutionListing::CREATED)
         .build()
         .expect("batch");
     let outcome = store.commit(batch).await.expect("commit");
@@ -735,7 +741,10 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) ->
         .execution_id("exe_fence")
         .expected_version(0)
         .fencing(stale)
-        .new_state(serde_json::json!({"s": "running"}))
+        .state(
+            serde_json::json!({"s": "running"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .build()
         .expect("batch");
     let outcome = store.commit(batch).await.expect("commit");
@@ -907,7 +916,10 @@ pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) -> serde_json::V
         .execution_id("exe_triple")
         .expected_version(0)
         .fencing(token)
-        .new_state(serde_json::json!({"s": "running"}))
+        .state(
+            serde_json::json!({"s": "running"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .outbox(vec![msg])
         .journal(vec![je])
         .build()
@@ -1016,7 +1028,7 @@ pub(crate) async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend)
         .execution_id("exe_y")
         .expected_version(0)
         .fencing(FencingToken::from_generation(0))
-        .new_state(serde_json::json!({"s": "hijacked"}))
+        .state(serde_json::json!({"s": "hijacked"}), nebula_storage_port::ExecutionListing::CREATED)
         .build()
         .expect("batch");
     let outcome = store.commit(batch).await;
@@ -1476,7 +1488,10 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
         .execution_id("exe_cq")
         .expected_version(0)
         .fencing(token)
-        .new_state(serde_json::json!({"s": "cancelling"}))
+        .state(
+            serde_json::json!({"s": "cancelling"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .outbox(vec![msg])
         .build()
         .expect("batch");
@@ -1595,7 +1610,10 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         .execution_id("exe_rt")
         .expected_version(0)
         .fencing(token)
-        .new_state(serde_json::json!({"s": "waiting"}))
+        .state(
+            serde_json::json!({"s": "waiting"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .outbox(vec![resume_msg])
         .build()
         .expect("batch for resume-target round-trip");
@@ -1648,7 +1666,10 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         .execution_id("exe_rt2")
         .expected_version(0)
         .fencing(token2)
-        .new_state(serde_json::json!({"s": "cancelling"}))
+        .state(
+            serde_json::json!({"s": "cancelling"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .outbox(vec![null_msg])
         .build()
         .expect("batch 2");
@@ -1884,7 +1905,10 @@ pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
         .execution_id("exe_j")
         .expected_version(0)
         .fencing(token)
-        .new_state(serde_json::json!({"s": "running"}))
+        .state(
+            serde_json::json!({"s": "running"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .journal(vec![
             JournalEntry {
                 seq: None,
@@ -2733,7 +2757,10 @@ pub(crate) async fn assert_terminal_commit_releases_live_reference(backend: &dyn
         .execution_id(execution_id.clone())
         .expected_version(0)
         .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed"}))
+        .state(
+            serde_json::json!({"status": "Completed"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .reference_transition(ExecutionReferenceTransition::ReleaseLive)
         .build()
         .expect("terminal release batch");
@@ -2776,7 +2803,10 @@ pub(crate) async fn assert_terminal_commit_retains_rollback_window(backend: &dyn
         .execution_id(execution_id.clone())
         .expected_version(0)
         .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed"}))
+        .state(
+            serde_json::json!({"status": "Completed"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .reference_transition(ExecutionReferenceTransition::RetainRollback {
             window_id: [0x71; 16],
             retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
@@ -2824,7 +2854,10 @@ pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transi
         .execution_id(execution_id.clone())
         .expected_version(0)
         .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed"}))
+        .state(
+            serde_json::json!({"status": "Completed"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .reference_transition(ExecutionReferenceTransition::RetainRollback {
             window_id: [0x72; 16],
             retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
@@ -2844,7 +2877,10 @@ pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transi
         .execution_id(execution_id.clone())
         .expected_version(1)
         .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed", "second": true}))
+        .state(
+            serde_json::json!({"status": "Completed", "second": true}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .reference_transition(ExecutionReferenceTransition::ReleaseLive)
         .build()
         .expect("incompatible release batch");
@@ -2901,7 +2937,10 @@ pub(crate) async fn assert_expired_rollbacks_are_released(backend: &dyn Backend)
         .execution_id(execution_id.clone())
         .expected_version(0)
         .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed"}))
+        .state(
+            serde_json::json!({"status": "Completed"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .reference_transition(ExecutionReferenceTransition::RetainRollback {
             window_id: [0x73; 16],
             retain_until: chrono::Utc::now() - chrono::TimeDelta::minutes(1),

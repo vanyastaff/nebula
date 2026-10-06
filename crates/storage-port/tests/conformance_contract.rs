@@ -60,8 +60,8 @@ impl ExecutionStore for StubExecutionStore {
             state: serde_json::json!({}),
             lease_holder: None,
             fencing: None,
-            created_at: "2026-05-15T00:00:00Z".into(),
-            updated_at: "2026-05-15T00:00:00Z".into(),
+            created_at: "2026-05-15T00:00:00Z".parse().unwrap(),
+            updated_at: "2026-05-15T00:00:00Z".parse().unwrap(),
         }))
     }
 
@@ -107,10 +107,7 @@ impl ExecutionStore for StubExecutionStore {
         _scope: &Scope,
         _query: &ExecutionHistoryQuery,
     ) -> Result<ExecutionHistoryPage, StorageError> {
-        Ok(ExecutionHistoryPage {
-            items: vec![],
-            next_cursor: None,
-        })
+        Ok(ExecutionHistoryPage::empty())
     }
 
     async fn count(&self, _scope: &Scope, _workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -128,7 +125,10 @@ async fn stale_fencing_token_commit_is_fenced_out() {
         .execution_id("exe_1")
         .expected_version(0)
         .fencing(FencingToken::from_generation(1))
-        .state(serde_json::json!({"s": "running"}), ExecutionListing::CREATED)
+        .state(
+            serde_json::json!({"s": "running"}),
+            ExecutionListing::CREATED,
+        )
         .build()
         .expect("valid batch");
     let outcome = store.commit(batch).await.expect("commit returns");

@@ -412,7 +412,7 @@ impl Harness {
             .execution_id(&id)
             .expected_version(record.version)
             .fencing(fencing)
-            .new_state(state)
+            .state(state.clone(), listing_of(&state))
             .build()
             .unwrap();
         assert!(matches!(
@@ -1138,4 +1138,17 @@ async fn undecodable_persisted_status_never_reaches_the_durable_queue_row() {
         "a decode failure must not re-publish the stored value into the durable queue row: \
          {persisted_error}"
     );
+}
+
+/// Listing projection of a fixture snapshot read straight from its JSON: some
+/// fixtures store deliberately undecodable states, which list as `created`.
+fn listing_of(state: &serde_json::Value) -> nebula_storage_port::ExecutionListing {
+    fn field<T: serde::de::DeserializeOwned>(state: &serde_json::Value, key: &str) -> Option<T> {
+        serde_json::from_value(state.get(key)?.clone()).ok()
+    }
+    nebula_storage_port::ExecutionListing::new(
+        field(state, "status").unwrap_or(nebula_storage_port::ExecutionListingStatus::Created),
+        field(state, "started_at"),
+        field(state, "completed_at"),
+    )
 }

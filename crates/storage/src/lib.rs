@@ -73,6 +73,9 @@ mod error;
 /// Backend-independent execution-lease fence, shared by every adapter that
 /// writes under a turn's lease so the fence cannot drift between ports.
 mod execution_fence;
+/// Column codec of the execution listing projection (SQL backends).
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod execution_listing;
 mod execution_state;
 /// Serialization format abstraction (JSON / MessagePack).
 pub mod format;

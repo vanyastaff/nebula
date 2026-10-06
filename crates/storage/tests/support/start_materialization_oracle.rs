@@ -529,7 +529,10 @@ pub(super) async fn run(
         .execution_id(fixture.execution_id.clone())
         .expected_version(0)
         .fencing(lease)
-        .new_state(serde_json::json!({"status":"Completed"}))
+        .state(
+            serde_json::json!({"status":"Completed"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .reference_transition(ExecutionReferenceTransition::ReleaseLive)
         .build()
         .unwrap();
@@ -754,7 +757,10 @@ async fn exact_control_claim(
                 .execution_id(matching.execution_id.clone())
                 .expected_version(0)
                 .fencing(lease)
-                .new_state(serde_json::json!({"status":"Completed"}))
+                .state(
+                    serde_json::json!({"status":"Completed"}),
+                    nebula_storage_port::ExecutionListing::CREATED,
+                )
                 .reference_transition(ExecutionReferenceTransition::ReleaseLive)
                 .build()
                 .unwrap(),

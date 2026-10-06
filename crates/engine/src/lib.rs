@@ -119,7 +119,7 @@ pub use daemon::{
 pub use engine::{
     ClaimedControlTurnOutcome, ClaimedControlTurnRequest, ClaimedStartOutcome, ClaimedStartRequest,
     DEFAULT_EVENT_CHANNEL_CAPACITY, DEFAULT_TIMER_SCAN_INTERVAL, RecoveryTurnOutcome,
-    RecoveryTurnRequest, WorkflowEngine,
+    RecoveryTurnRequest, WorkflowEngine, execution_listing,
 };
 pub use error::EngineError;
 pub use event::{ExecutionEvent, NodeFailedDetails};

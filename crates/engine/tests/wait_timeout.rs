@@ -807,18 +807,12 @@ impl ExecutionStore for FenceArmStore {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -1462,7 +1456,10 @@ async fn arm_wait_for_completion(stores: &WtStores, execution_id: ExecutionId) {
         .execution_id(&id)
         .expected_version(record.version)
         .fencing(token)
-        .new_state(serde_json::to_value(&state).unwrap())
+        .state(
+            serde_json::to_value(&state).unwrap(),
+            nebula_engine::execution_listing(&state),
+        )
         .build()
         .unwrap();
     assert!(matches!(

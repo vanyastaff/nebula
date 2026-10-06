@@ -920,47 +920,18 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))
     }
 
-    /// List running execution ids for the caller's tenant — read
-    /// through a freshly bound `ScopedExecutionStore`, so the listing is
-    /// that tenant only.
-    pub(crate) async fn list_running_executions_scoped(
+    /// One page of the caller's execution history — read through a freshly
+    /// bound `ScopedExecutionStore`, so the page is that tenant only.
+    pub(crate) async fn execution_history_scoped(
         &self,
         scope: &Scope,
-    ) -> Result<Vec<ExecutionId>, ApiError> {
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, ApiError> {
         let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
-        let ids = store
-            .list_running(scope)
+        store
+            .list_history(scope, query)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
-        ids.iter()
-            .map(|s| {
-                ExecutionId::parse(s).map_err(|e| {
-                    ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
-                })
-            })
-            .collect()
-    }
-
-    /// List running execution ids for one workflow within the caller's
-    /// tenant (same per-request-scoped `ExecutionStore` as
-    /// [`Self::list_running_executions_scoped`]).
-    pub(crate) async fn list_running_executions_for_workflow_scoped(
-        &self,
-        scope: &Scope,
-        workflow_id: nebula_core::id::WorkflowId,
-    ) -> Result<Vec<ExecutionId>, ApiError> {
-        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
-        let ids = store
-            .list_running_for_workflow(scope, &workflow_id.to_string())
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
-        ids.iter()
-            .map(|s| {
-                ExecutionId::parse(s).map_err(|e| {
-                    ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
-                })
-            })
-            .collect()
+            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))
     }
 
     /// Read an execution's persisted `(version, state-json)` for the

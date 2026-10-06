@@ -5,7 +5,10 @@ use std::time::Duration;
 
 use nebula_storage_port::dto::ExecutionRecord;
 use nebula_storage_port::store::ExecutionStore;
-use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
+use nebula_storage_port::{
+    ExecutionHistoryPage, ExecutionHistoryQuery, FencingToken, Scope, StorageError,
+    TransitionBatch, TransitionOutcome,
+};
 
 /// Wraps an [`ExecutionStore`] and forces every call into a single bound
 /// [`Scope`]. The caller-supplied `scope` argument is *ignored* — the
@@ -34,53 +37,6 @@ impl ScopedExecutionStore {
             inner,
             bound: scope,
         }
-    }
-
-    /// Rebuild a caller's batch with the bound scope substituted into the
-    /// batch itself *and* every outbox row.
-    ///
-    /// `TransitionBatch` is immutable with a private scope field, so a
-    /// caller structurally cannot mutate it post-build. Rebuilding here
-    /// (rather than comparing-and-rejecting) keeps the confused-deputy
-    /// mitigation uniform: a batch the engine built for the wrong tenant
-    /// is silently retargeted at the bound tenant, where the CAS will
-    /// simply miss (the id does not exist in the bound scope) and return
-    /// a non-Apply outcome — never a cross-tenant write, never an
-    /// existence-leaking error (§6.1).
-    fn rebind(&self, batch: &TransitionBatch) -> Result<TransitionBatch, StorageError> {
-        let outbox = batch
-            .outbox()
-            .iter()
-            .map(|m| {
-                let mut m = m.clone();
-                m.scope = self.bound.clone();
-                m
-            })
-            .collect();
-        // Re-scope every resume-token row to the bound tenant — same
-        // rationale as the outbox re-scope: the engine builds the batch for
-        // the resolved tenant, but a confused caller cannot override it.
-        // Dropping `resume_tokens` here would silently discard the minted
-        // token on every production park (W-S3a silent-drop class).
-        let resume_tokens = batch
-            .resume_tokens()
-            .iter()
-            .map(|row| {
-                let mut row = row.clone();
-                row.scope = self.bound.clone();
-                row
-            })
-            .collect();
-        TransitionBatch::builder()
-            .scope(self.bound.clone())
-            .execution_id(batch.execution_id())
-            .expected_version(batch.expected_version())
-            .fencing(batch.fencing())
-            .new_state(batch.new_state().clone())
-            .outbox(outbox)
-            .journal(batch.journal().to_vec())
-            .resume_tokens(resume_tokens)
-            .build()
     }
 }
 
@@ -122,9 +78,13 @@ impl ExecutionStore for ScopedExecutionStore {
         self.inner.get(&self.bound, id).await
     }
 
+    /// The batch is retargeted at the bound tenant — itself, every outbox
+    /// row and every resume-token row — rather than compared and rejected.
+    /// A batch built for the wrong tenant then simply misses the CAS (the
+    /// id does not exist in the bound scope): never a cross-tenant write,
+    /// never an existence-leaking error (§6.1).
     async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
-        let rebound = self.rebind(&batch)?;
-        self.inner.commit(rebound).await
+        self.inner.commit(batch.rebound_to(&self.bound)).await
     }
 
     async fn acquire_lease(
@@ -162,18 +122,12 @@ impl ExecutionStore for ScopedExecutionStore {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(&self.bound).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         _scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(&self.bound, workflow_id)
-            .await
+        query: &ExecutionHistoryQuery,
+    ) -> Result<ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(&self.bound, query).await
     }
 
     async fn count(&self, _scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {

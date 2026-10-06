@@ -130,7 +130,14 @@ impl Fixture {
             .execution_id(id.to_string())
             .expected_version(0)
             .fencing(fencing)
-            .new_state(json!({"status":"paused", "workflow_id":"wf_1"}))
+            .state(
+                json!({"status":"paused", "workflow_id":"wf_1"}),
+                nebula_storage_port::ExecutionListing::new(
+                    nebula_storage_port::ExecutionListingStatus::Paused,
+                    None,
+                    None,
+                ),
+            )
             .resume_tokens(rows)
             .build()
             .unwrap();

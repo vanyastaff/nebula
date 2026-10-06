@@ -6,7 +6,7 @@
 
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
 };
 use nebula_core::TenantContext;
 
@@ -21,11 +21,11 @@ use super::dto::{
 use crate::{
     domain::shared::AckResponse,
     error::{ApiError, ApiResult, ProblemDetails},
-    extractors::ApiJson,
     extractors::credential::{
         validate_credential_id, validate_credential_key, validate_credential_name,
         validate_data_is_object,
     },
+    extractors::{ApiJson, ApiQuery},
     middleware::auth::AuthenticatedPrincipal,
     state::AppState,
 };
@@ -57,7 +57,7 @@ pub async fn list_credentials(
     Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
-    Query(query): Query<ListCredentialsQuery>,
+    ApiQuery(query): ApiQuery<ListCredentialsQuery>,
 ) -> ApiResult<Json<ListCredentialsResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =

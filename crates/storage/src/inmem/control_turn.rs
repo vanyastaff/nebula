@@ -174,18 +174,11 @@ pub(super) fn commit(
                 *expected_version
             },
             ControlTurnTransition::Checkpoint(batch) => {
-                let mut journal = batch.journal().to_vec();
-                journal.push(nebula_storage_port::dto::JournalEntry { seq: None, payload });
-                let observed = nebula_storage_port::TransitionBatch::builder()
-                    .scope(scope.clone())
-                    .execution_id(id)
-                    .expected_version(batch.expected_version())
-                    .fencing(batch.fencing())
-                    .new_state(batch.new_state().clone())
-                    .outbox(batch.outbox().to_vec())
-                    .resume_tokens(batch.resume_tokens().to_vec())
-                    .journal(journal)
-                    .build()?;
+                let observed =
+                    batch.with_appended_journal([nebula_storage_port::dto::JournalEntry {
+                        seq: None,
+                        payload,
+                    }]);
                 match super::execution::commit_locked(&mut state, &observed)? {
                     TransitionOutcome::Applied { new_version } => new_version,
                     TransitionOutcome::FencedOut | TransitionOutcome::VersionConflict { .. } => {

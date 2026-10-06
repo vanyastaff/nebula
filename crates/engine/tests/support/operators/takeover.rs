@@ -125,7 +125,10 @@ impl ExecutionTurnHandoff for CheckpointBeforeCommit {
                 .execution_id(transition.execution_id())
                 .expected_version(row.version)
                 .fencing(transition.fence())
-                .new_state(serde_json::to_value(state).unwrap())
+                .state(
+                    serde_json::to_value(&state).unwrap(),
+                    nebula_engine::execution_listing(&state),
+                )
                 .build()
                 .unwrap();
             self.execution.commit(batch).await?;

@@ -191,21 +191,25 @@ impl AuthenticatedClient {
         .expect("SETUP: execution start request reaches profile")
     }
 
-    async fn running_total(&self, workflow_id: &str) -> usize {
+    /// Number of executions of `workflow_id`, any status (one history page).
+    async fn execution_total(&self, workflow_id: &str) -> usize {
         let response = self
             .client
-            .get(self.url(&format!(
-                "/workflows/{workflow_id}/executions?page=1&page_size=100"
-            )))
+            .get(self.url(&format!("/workflows/{workflow_id}/executions?limit=100")))
             .header(COOKIE, self.cookie.clone())
             .send()
             .await
             .expect("SETUP: execution list request reaches profile");
         let body = expect_json_status(response, StatusCode::OK, "list workflow executions").await;
-        body.get("total")
-            .and_then(Value::as_u64)
-            .and_then(|total| usize::try_from(total).ok())
-            .expect("SETUP: execution list carries a bounded total")
+        assert_eq!(
+            body.get("has_more").and_then(Value::as_bool),
+            Some(false),
+            "SETUP: the scenario fits in one history page"
+        );
+        body.get("items")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .expect("SETUP: execution history carries items")
     }
 
     async fn get_execution(&self, execution_id: &str) -> Value {
@@ -364,7 +368,7 @@ async fn startkey_scenario(backend: Backend) {
         "a replayed receipt must report the execution's persisted status"
     );
 
-    let before_mismatch = running.http.running_total(&workflow_id).await;
+    let before_mismatch = running.http.execution_total(&workflow_id).await;
     assert_eq!(
         before_mismatch, 1,
         "SETUP: same-fingerprint precondition must expose exactly one execution"
@@ -394,7 +398,7 @@ async fn startkey_scenario(backend: Backend) {
             .await;
     }
 
-    if running.http.running_total(&workflow_id).await != before_mismatch {
+    if running.http.execution_total(&workflow_id).await != before_mismatch {
         running.expected_red("startkey-execution-delta").await;
     }
     running.shutdown().await;

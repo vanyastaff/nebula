@@ -200,12 +200,12 @@ impl ExecutionStore for MockExecStore {
             workflow_id: workflow_id.to_string(),
             scope: scope.clone(),
             version: 0,
-            status: "created".into(),
+            status: nebula_storage_port::ExecutionListingStatus::Created,
             state: initial_state,
             lease_holder: None,
             fencing: None,
-            created_at: "2026-01-01T00:00:00Z".into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
+            created_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            updated_at: "2026-01-01T00:00:00Z".parse().unwrap(),
         };
         self.rows
             .lock()
@@ -273,16 +273,12 @@ impl ExecutionStore for MockExecStore {
         Ok(vec![])
     }
 
-    async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         _scope: &Scope,
-        _workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
+        _query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        Ok(nebula_storage_port::ExecutionHistoryPage::empty())
     }
 
     async fn count(&self, _scope: &Scope, _workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -507,7 +503,10 @@ async fn cross_tenant_commit_never_applies() {
         .execution_id("exe_y")
         .expected_version(0)
         .fencing(FencingToken::from_generation(0))
-        .new_state(serde_json::json!({"s": "hijacked"}))
+        .state(
+            serde_json::json!({"s": "hijacked"}),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .build()
         .expect("batch");
     let outcome = tenant_b.commit(attack).await.expect("commit returns");
@@ -1182,16 +1181,12 @@ impl ExecutionStore for TokenCapturingExecStore {
         Ok(vec![])
     }
 
-    async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         _scope: &Scope,
-        _workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
+        _query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        Ok(nebula_storage_port::ExecutionHistoryPage::empty())
     }
 
     async fn count(&self, _scope: &Scope, _workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -1233,7 +1228,7 @@ async fn scoped_execution_store_rebind_carries_resume_tokens() {
         .execution_id("exe-rebind-test")
         .expected_version(0)
         .fencing(FencingToken::from_generation(1))
-        .new_state(serde_json::json!({"s": "waiting"}))
+        .state(serde_json::json!({"s": "waiting"}), nebula_storage_port::ExecutionListing::CREATED)
         .resume_tokens(vec![token_row])
         .build()
         .expect("well-formed batch must build");

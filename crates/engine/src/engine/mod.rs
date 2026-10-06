@@ -618,10 +618,12 @@ impl Drop for RunningRegistration {
 mod checkpoint;
 mod frontier;
 mod input_ports;
+mod listing;
 mod outcome;
 mod persistence;
 mod resume;
 mod timer_scan;
+pub use listing::execution_listing;
 use outcome::*;
 pub use resume::{
     ClaimedStartOutcome, ClaimedStartRequest, RecoveryTurnOutcome, RecoveryTurnRequest,

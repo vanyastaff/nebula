@@ -8,7 +8,7 @@
 
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
 };
 use chrono::Utc;
@@ -28,7 +28,7 @@ use crate::{
         },
     },
     error::{ApiError, ApiResult, ProblemDetails},
-    extractors::ApiJson,
+    extractors::{ApiJson, ApiQuery},
     state::AppState,
 };
 
@@ -97,7 +97,7 @@ pub(crate) fn extract_timestamp(definition: &Value, key: &str) -> Option<i64> {
 pub async fn list_workflows(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
-    Query(params): Query<PaginationParams>,
+    ApiQuery(params): ApiQuery<PaginationParams>,
 ) -> ApiResult<Json<ListWorkflowsResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let offset = params.offset();

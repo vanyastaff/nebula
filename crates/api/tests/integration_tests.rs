@@ -1056,10 +1056,9 @@ async fn test_execution_list_all_empty() {
         .unwrap();
     let response_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response_data["executions"].as_array().unwrap().len(), 0);
-    assert_eq!(response_data["total"], 0);
-    assert_eq!(response_data["page"], 1);
-    assert_eq!(response_data["page_size"], 10);
+    assert_eq!(response_data["items"].as_array().unwrap().len(), 0);
+    assert_eq!(response_data["has_more"], false);
+    assert!(response_data.get("next_cursor").is_none());
 }
 
 #[tokio::test]
@@ -1135,8 +1134,8 @@ async fn test_execution_list_for_workflow_empty() {
         .unwrap();
     let response_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response_data["executions"].as_array().unwrap().len(), 0);
-    assert_eq!(response_data["total"], 0);
+    assert_eq!(response_data["items"].as_array().unwrap().len(), 0);
+    assert_eq!(response_data["has_more"], false);
 }
 
 #[tokio::test]
@@ -2622,7 +2621,7 @@ async fn cancel_timed_out_execution_rejected() {
 // honest capability contract: a public surface exists iff the engine honors it end-to-end.
 // The API's `start_execution` previously persisted a hand-rolled JSON with
 // `status: "pending"` — a string that is not in `ExecutionStatus` and that
-// neither `list_running` (storage filter) nor `ExecutionState::deserialize`
+// neither the storage status filter nor `ExecutionState::deserialize`
 // (engine resume path) would accept. Starting an execution therefore produced
 // a row the engine could never read back: split-brain schema.
 //
@@ -2634,7 +2633,7 @@ async fn cancel_timed_out_execution_rejected() {
 //      `resume_execution` performs.
 //   3. The deserialized `ExecutionStatus` is the canonical `Created`, not a synthetic "pending"
 //      variant.
-//   4. The `list_running` storage query — which filters on canonical status names — actually
+//   4. The storage status filter — which matches canonical status names — actually
 //      returns the newly-created execution ID (it did not before, because `"pending"` is not in the
 //      filter).
 #[tokio::test]
@@ -2784,15 +2783,14 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
         "#327 (and #311): workflow_input must be persisted so resume can replay entry nodes"
     );
 
-    // The list_running storage filter — which only accepts canonical statuses —
-    // must actually see the newly-created execution. Before the fix this list
-    // was empty because "pending" is not in the accepted set
-    // (created|running|paused|cancelling). The port lists running ids as
-    // their canonical opaque string form.
-    let running = handles.running_executions().await;
+    // The storage status filter — which only accepts canonical statuses —
+    // must actually see the newly-created execution among the active ones
+    // (created|running|paused|cancelling). The port lists ids in their
+    // canonical opaque string form.
+    let active = handles.active_executions().await;
     assert!(
-        running.contains(&execution_id.to_string()),
-        "#327: list_running must include the newly-created execution \
+        active.contains(&execution_id.to_string()),
+        "#327: the active-status filter must include the newly-created execution \
          (split-brain check — status is canonical and the filter matches)"
     );
 }
@@ -3087,7 +3085,7 @@ async fn test_execute_workflow_rejects_invalid_definition() {
         "rejected execute must not enqueue a Start signal"
     );
     assert!(
-        handles.running_executions().await.is_empty(),
+        handles.executions_in_scope().await.is_empty(),
         "rejected execute must not create a running execution"
     );
 }
@@ -3149,7 +3147,7 @@ async fn test_start_execution_rejects_invalid_definition() {
         "rejected start must not enqueue a Start signal"
     );
     assert!(
-        handles.running_executions().await.is_empty(),
+        handles.executions_in_scope().await.is_empty(),
         "rejected start must not create a running execution"
     );
 }
@@ -3208,7 +3206,7 @@ async fn execute_workflow_rejects_unactivated_workflow() {
         "rejected execute must not enqueue a Start signal"
     );
     assert!(
-        handles.running_executions().await.is_empty(),
+        handles.executions_in_scope().await.is_empty(),
         "rejected execute must not create a running execution"
     );
 }
@@ -3267,7 +3265,7 @@ async fn start_execution_rejects_unactivated_workflow() {
         "rejected start must not enqueue a Start signal"
     );
     assert!(
-        handles.running_executions().await.is_empty(),
+        handles.executions_in_scope().await.is_empty(),
         "rejected start must not create a running execution"
     );
 }
@@ -3320,7 +3318,7 @@ async fn execute_workflow_uses_activated_plan_when_authoring_definition_is_corru
         "one accepted start must be durably enqueued"
     );
     assert_eq!(
-        handles.running_executions().await.len(),
+        handles.executions_in_scope().await.len(),
         1,
         "one accepted start must materialize one running execution"
     );

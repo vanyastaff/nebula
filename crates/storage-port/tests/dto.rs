@@ -25,8 +25,8 @@ fn execution_record_roundtrips() {
         state: serde_json::json!({"s":"running"}),
         lease_holder: Some("nbl_1".into()),
         fencing: Some(7),
-        created_at: "2026-05-15T00:00:00Z".into(),
-        updated_at: "2026-05-15T00:00:01Z".into(),
+        created_at: "2026-05-15T00:00:00Z".parse().unwrap(),
+        updated_at: "2026-05-15T00:00:01Z".parse().unwrap(),
     };
     let s = serde_json::to_string(&rec).expect("serialize");
     let back: ExecutionRecord = serde_json::from_str(&s).expect("deserialize");

@@ -12,8 +12,13 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use nebula_storage_port::dto::ExecutionRecord;
 use nebula_storage_port::store::{ExecutionStore, IdempotencyGuard};
-use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
+use nebula_storage_port::{
+    ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionListingStatus, ExecutionSummary,
+    FencingToken, MicrosInstant, Scope, StorageError, TransitionBatch, TransitionOutcome,
+};
 use sqlx::{PgPool, Row};
+
+use crate::execution_listing as listing;
 
 /// Insert a `Created` execution row inside an existing transaction.
 ///
@@ -29,12 +34,12 @@ pub(super) async fn insert_created_execution(
     initial_state: &serde_json::Value,
 ) -> Result<(), StorageError> {
     crate::execution_state::ensure_execution_state_size(initial_state)?;
-    let now = Utc::now();
+    let now = MicrosInstant::now();
     let res = sqlx::query(
         "INSERT INTO port_executions \
          (id, workspace_id, org_id, workflow_id, status, state, version, \
-          fencing_generation, created_at, updated_at) \
-         SELECT $1, $2, $3, $4, 'Created', $5, 0, 0, $6, $6 \
+          fencing_generation, created_at, updated_at, created_at_us) \
+         SELECT $1, $2, $3, $4, $8, $5, 0, 0, $6, $6, $9 \
          WHERE octet_length($5::jsonb::text) <= $7",
     )
     .bind(id)
@@ -42,8 +47,10 @@ pub(super) async fn insert_created_execution(
     .bind(&scope.org_id)
     .bind(workflow_id)
     .bind(initial_state)
-    .bind(now)
+    .bind(now.to_datetime())
     .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
+    .bind(ExecutionListingStatus::Created.as_str())
+    .bind(now.as_micros())
     .execute(&mut **tx)
     .await;
     match res {
@@ -77,6 +84,17 @@ impl PgExecutionStore {
 
 pub(super) fn conn_err(e: sqlx::Error) -> StorageError {
     StorageError::Connection(e.to_string())
+}
+
+/// Read a nullable `timestamptz` listing column.
+fn optional_instant(
+    row: &sqlx::postgres::PgRow,
+    column: &str,
+) -> Result<Option<MicrosInstant>, StorageError> {
+    Ok(row
+        .try_get::<Option<DateTime<Utc>>, _>(column)
+        .map_err(conn_err)?
+        .map(MicrosInstant::floor))
 }
 
 /// Clamp the lease TTL (≥1s, ≤24h) so a zero/absurd TTL cannot make a
@@ -145,7 +163,7 @@ impl ExecutionStore for PgExecutionStore {
             workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
             scope: scope.clone(),
             version: row.try_get::<i64, _>("version").map_err(conn_err)? as u64,
-            status: row.try_get("status").map_err(conn_err)?,
+            status: listing::decode_status(&row.try_get::<String, _>("status").map_err(conn_err)?)?,
             state: row
                 .try_get::<Option<serde_json::Value>, _>("state")
                 .map_err(conn_err)?
@@ -155,8 +173,8 @@ impl ExecutionStore for PgExecutionStore {
                 row.try_get::<i64, _>("fencing_generation")
                     .map_err(conn_err)? as u64,
             ),
-            created_at: created.to_rfc3339(),
-            updated_at: updated.to_rfc3339(),
+            created_at: created,
+            updated_at: updated,
         }))
     }
 
@@ -307,7 +325,8 @@ impl ExecutionStore for PgExecutionStore {
             "SELECT id, workspace_id, org_id, workflow_id, status, \
                     CASE WHEN octet_length(state::text) <= $1 THEN state END AS state, version, \
                     lease_holder, fencing_generation, created_at, updated_at \
-             FROM port_executions",
+             FROM port_executions \
+             WHERE status IN ('created', 'running', 'paused', 'cancelling')",
         )
         .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
         .fetch_all(&self.pool)
@@ -325,7 +344,9 @@ impl ExecutionStore for PgExecutionStore {
                         row.try_get::<String, _>("org_id").map_err(conn_err)?,
                     ),
                     version: row.try_get::<i64, _>("version").map_err(conn_err)? as u64,
-                    status: row.try_get("status").map_err(conn_err)?,
+                    status: listing::decode_status(
+                        &row.try_get::<String, _>("status").map_err(conn_err)?,
+                    )?,
                     state: row
                         .try_get::<Option<serde_json::Value>, _>("state")
                         .map_err(conn_err)?
@@ -335,44 +356,76 @@ impl ExecutionStore for PgExecutionStore {
                         row.try_get::<i64, _>("fencing_generation")
                             .map_err(conn_err)? as u64,
                     ),
-                    created_at: created.to_rfc3339(),
-                    updated_at: updated.to_rfc3339(),
+                    created_at: created,
+                    updated_at: updated,
                 })
             })
             .collect()
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        let rows =
-            sqlx::query("SELECT id FROM port_executions WHERE workspace_id = $1 AND org_id = $2")
-                .bind(&scope.workspace_id)
-                .bind(&scope.org_id)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(conn_err)?;
-        rows.into_iter()
-            .map(|r| r.try_get::<String, _>("id").map_err(conn_err))
-            .collect()
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        let rows = sqlx::query(
-            "SELECT id FROM port_executions \
-             WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3",
-        )
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(workflow_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(conn_err)?;
-        rows.into_iter()
-            .map(|r| r.try_get::<String, _>("id").map_err(conn_err))
-            .collect()
+        query: &ExecutionHistoryQuery,
+    ) -> Result<ExecutionHistoryPage, StorageError> {
+        let mut sql = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT id, workflow_id, status, created_at_us, started_at, finished_at, updated_at \
+             FROM port_executions WHERE workspace_id = ",
+        );
+        sql.push_bind(&scope.workspace_id)
+            .push(" AND org_id = ")
+            .push_bind(&scope.org_id);
+        if let Some(workflow_id) = query.workflow_id() {
+            sql.push(" AND workflow_id = ").push_bind(workflow_id);
+        }
+        if !query.statuses().is_all() {
+            let statuses: Vec<&str> = query
+                .statuses()
+                .iter()
+                .map(ExecutionListingStatus::as_str)
+                .collect();
+            sql.push(" AND status = ANY(").push_bind(statuses).push(")");
+        }
+        if let Some(bound) = query.created_after() {
+            sql.push(" AND created_at_us >= ")
+                .push_bind(bound.as_micros());
+        }
+        if let Some(bound) = query.created_before() {
+            sql.push(" AND created_at_us < ")
+                .push_bind(bound.as_micros());
+        }
+        if let Some(cursor) = query.cursor() {
+            let key = cursor.created_at().as_micros();
+            sql.push(" AND (created_at_us < ")
+                .push_bind(key)
+                .push(" OR (created_at_us = ")
+                .push_bind(key)
+                .push(" AND id COLLATE \"C\" < ")
+                .push_bind(cursor.id())
+                .push("))");
+        }
+        sql.push(" ORDER BY created_at_us DESC, id COLLATE \"C\" DESC LIMIT ")
+            .push_bind(i64::from(query.fetch_limit()));
+        let rows = sql.build().fetch_all(&self.pool).await.map_err(conn_err)?;
+        let summaries = rows
+            .into_iter()
+            .map(|row| {
+                Ok(ExecutionSummary {
+                    id: row.try_get("id").map_err(conn_err)?,
+                    workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
+                    status: listing::decode_status(
+                        &row.try_get::<String, _>("status").map_err(conn_err)?,
+                    )?,
+                    created_at: listing::decode_sort_key(
+                        row.try_get("created_at_us").map_err(conn_err)?,
+                    )?,
+                    started_at: optional_instant(&row, "started_at")?,
+                    finished_at: optional_instant(&row, "finished_at")?,
+                    updated_at: MicrosInstant::floor(row.try_get("updated_at").map_err(conn_err)?),
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        Ok(ExecutionHistoryPage::from_overfetched(summaries, query))
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -562,7 +615,8 @@ pub(super) async fn commit_locked(
         .ok_or_else(|| StorageError::Internal("execution version exhausted".into()))?;
     let now = Utc::now();
     let update = sqlx::query(
-        "UPDATE port_executions SET state = $1, version = $2, updated_at = $3 \
+        "UPDATE port_executions SET state = $1, version = $2, updated_at = $3, \
+                status = $8, started_at = $9, finished_at = $10 \
          WHERE id = $4 AND workspace_id = $5 AND org_id = $6 \
            AND octet_length($1::jsonb::text) <= $7",
     )
@@ -573,6 +627,14 @@ pub(super) async fn commit_locked(
     .bind(&batch.scope().workspace_id)
     .bind(&batch.scope().org_id)
     .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
+    .bind(batch.listing().status().as_str())
+    .bind(batch.listing().started_at().map(MicrosInstant::to_datetime))
+    .bind(
+        batch
+            .listing()
+            .finished_at()
+            .map(MicrosInstant::to_datetime),
+    )
     .execute(&mut **tx)
     .await
     .map_err(conn_err)?;

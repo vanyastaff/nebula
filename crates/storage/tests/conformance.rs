@@ -30,6 +30,7 @@ use harness::{
     assert_control_queue_same_processor_aba_is_fenced, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
     assert_expired_rollbacks_are_released, assert_get_published_is_highest_numbered,
+    assert_history_is_scope_isolated, assert_history_orders_filters_and_pages,
     assert_idempotency_first_writer_wins, assert_idempotency_store_cross_scope_isolated,
     assert_idempotency_store_first_writer, assert_job_dispatch_exact_flavor,
     assert_job_dispatch_fencing, assert_job_dispatch_requires_primary_plugin,
@@ -38,6 +39,7 @@ use harness::{
     assert_live_lease_blocks_acquire, assert_non_resume_row_still_exhausts,
     assert_resume_row_exempt_from_reclaim_budget, assert_resume_target_survives_queue_round_trip,
     assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
+    assert_status_projection_follows_commit,
     assert_terminal_commit_rejects_incompatible_reference_transition,
     assert_terminal_commit_releases_live_reference, assert_terminal_commit_retains_rollback_window,
     assert_webhook_activation_and_scope, assert_webhook_system_surface,
@@ -138,6 +140,15 @@ matrix!(
     assert_webhook_activation_and_scope
 );
 matrix!(webhook_system_surface, assert_webhook_system_surface);
+matrix!(
+    status_projection_follows_commit,
+    assert_status_projection_follows_commit
+);
+matrix!(
+    history_orders_filters_and_pages,
+    assert_history_orders_filters_and_pages
+);
+matrix!(history_is_scope_isolated, assert_history_is_scope_isolated);
 matrix!(workflow_store_contract, assert_workflow_store_contract);
 matrix!(
     save_with_published_version_is_atomic,
@@ -359,6 +370,14 @@ macro_rules! scoped_matrix {
 }
 
 scoped_matrix!(scoped_create_get_roundtrip, assert_create_get_roundtrip);
+scoped_matrix!(
+    scoped_status_projection_follows_commit,
+    assert_status_projection_follows_commit
+);
+scoped_matrix!(
+    scoped_history_orders_filters_and_pages,
+    assert_history_orders_filters_and_pages
+);
 scoped_matrix!(scoped_cas_conflict_returns_actual, assert_cas_conflict);
 scoped_matrix!(
     scoped_stale_fencing_is_fenced_out,

@@ -74,7 +74,10 @@ pub(super) async fn run(ports: &Ports) {
         .execution_id(&seed.execution)
         .expected_version(original.version)
         .fencing(fence)
-        .new_state(state.clone())
+        .state(
+            state.clone(),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .outbox(vec![outbox.clone()])
         .build()
         .unwrap();
@@ -342,7 +345,10 @@ pub(super) async fn run(ports: &Ports) {
         .execution_id(&seed.execution)
         .expected_version(original.version)
         .fencing(fence)
-        .new_state(state.clone())
+        .state(
+            state.clone(),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .outbox(vec![collision])
         .build()
         .unwrap();
@@ -445,7 +451,10 @@ pub(super) async fn run(ports: &Ports) {
         .execution_id(&seed.execution)
         .expected_version(persisted.version)
         .fencing(fence)
-        .new_state(persisted.state.clone())
+        .state(
+            persisted.state.clone(),
+            nebula_storage_port::ExecutionListing::CREATED,
+        )
         .build()
         .unwrap();
     assert!(matches!(

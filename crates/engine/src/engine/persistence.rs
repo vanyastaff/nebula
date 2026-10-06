@@ -348,7 +348,7 @@ impl WorkflowEngine {
             .execution_id(&id)
             .expected_version(*repo_version)
             .fencing(token)
-            .new_state(state_json)
+            .state(state_json, execution_listing(exec_state))
             .resume_tokens(resume_tokens)
             .build()
             .map_err(|e| EngineError::CheckpointFailed {
@@ -517,6 +517,7 @@ impl WorkflowEngine {
     ) -> Result<Option<ExecutionStatus>, EngineError> {
         let id = execution_id.to_string();
         checkpoint::validate_checkpoint_size(exec_state)?;
+        let projection = execution_listing(exec_state);
 
         let build_batch = |version: u64,
                            json: serde_json::Value|
@@ -526,7 +527,7 @@ impl WorkflowEngine {
                 .execution_id(&id)
                 .expected_version(version)
                 .fencing(token)
-                .new_state(json)
+                .state(json, projection)
                 .build()
                 .map_err(|e| EngineError::CheckpointFailed {
                     node_key: final_state_node_key(),

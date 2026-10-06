@@ -6,7 +6,7 @@ use nebula_storage_port::store::{
     ControlStartAcceptance, ControlStartHandoff, ControlTurnCommit, ControlTurnCommitOutcome,
     ControlTurnTransition, ExecutionTurnHandoff, TurnAcceptance, TurnHandoff,
 };
-use nebula_storage_port::{Scope, StorageError, TransitionBatch};
+use nebula_storage_port::{Scope, StorageError};
 
 /// Forces tenant-facing durable handoff operations into one bound tenant.
 ///
@@ -35,40 +35,6 @@ impl ScopedExecutionTurnHandoff {
             inner,
             bound: scope,
         }
-    }
-
-    fn rebind_batch(&self, batch: &TransitionBatch) -> Result<TransitionBatch, StorageError> {
-        let outbox = batch
-            .outbox()
-            .iter()
-            .cloned()
-            .map(|mut message| {
-                message.scope = self.bound.clone();
-                message
-            })
-            .collect();
-        let resume_tokens = batch
-            .resume_tokens()
-            .iter()
-            .cloned()
-            .map(|mut token| {
-                token.scope = self.bound.clone();
-                token
-            })
-            .collect();
-        let mut builder = TransitionBatch::builder()
-            .scope(self.bound.clone())
-            .execution_id(batch.execution_id())
-            .expected_version(batch.expected_version())
-            .fencing(batch.fencing())
-            .new_state(batch.new_state().clone())
-            .outbox(outbox)
-            .journal(batch.journal().to_vec())
-            .resume_tokens(resume_tokens);
-        if let Some(reference_transition) = batch.reference_transition() {
-            builder = builder.reference_transition(reference_transition);
-        }
-        builder.build()
     }
 }
 
@@ -120,7 +86,7 @@ impl ExecutionTurnHandoff for ScopedExecutionTurnHandoff {
                 self.inner.commit_control_turn(&scoped_commit).await
             },
             ControlTurnTransition::Checkpoint(batch) => {
-                let scoped_batch = self.rebind_batch(batch)?;
+                let scoped_batch = batch.rebound_to(&self.bound);
                 let scoped_commit = ControlTurnCommit::new(
                     commit.claim().clone(),
                     commit.worker_flavor_revision_id(),
