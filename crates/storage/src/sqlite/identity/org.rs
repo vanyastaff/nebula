@@ -1,4 +1,4 @@
-//! `port_orgs`: tenants; slug is unique among active rows.
+//! `orgs`: tenants; slug is unique among active rows.
 
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::OrgRow;
@@ -7,8 +7,8 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::SqliteRow;
 
 use super::{
-    cas_disambiguate, encode_version, json, json_text, optional, required, soft_delete_by_id,
-    version,
+    cas_disambiguate, encode_instant, encode_version, instant, json, json_text, optional,
+    optional_instant, required, soft_delete_by_id, version,
 };
 use crate::sql_error::{storage_error, storage_error_for};
 
@@ -31,13 +31,13 @@ pub(super) fn decode_org(row: &SqliteRow) -> Result<OrgRow, StorageError> {
         id: required(row, "id")?,
         slug: required(row, "slug")?,
         display_name: required(row, "display_name")?,
-        created_at: required(row, "created_at")?,
+        created_at: instant(row, "created_at")?,
         created_by: required(row, "created_by")?,
         plan: required(row, "plan")?,
         billing_email: optional(row, "billing_email")?,
         settings: json(row, "settings")?,
         version: version(row)?,
-        deleted_at: optional(row, "deleted_at")?,
+        deleted_at: optional_instant(row, "deleted_at")?,
     })
 }
 
@@ -47,20 +47,20 @@ where
     E: sqlx::Executor<'c, Database = sqlx::Sqlite>,
 {
     sqlx::query(
-        "INSERT INTO port_orgs (id, slug, display_name, created_at, created_by, \
+        "INSERT INTO orgs (id, slug, display_name, created_at, created_by, \
          plan, billing_email, settings, version, deleted_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&org.id)
     .bind(&org.slug)
     .bind(&org.display_name)
-    .bind(&org.created_at)
+    .bind(encode_instant(org.created_at))
     .bind(&org.created_by)
     .bind(&org.plan)
     .bind(&org.billing_email)
     .bind(json_text(&org.settings))
     .bind(encode_version(org.version)?)
-    .bind(&org.deleted_at)
+    .bind(org.deleted_at.map(encode_instant))
     .execute(executor)
     .await
     .map_err(|error| storage_error_for("org", error))?;
@@ -74,7 +74,7 @@ impl OrgStore for SqliteOrgStore {
     }
 
     async fn get(&self, id: &str) -> Result<Option<OrgRow>, StorageError> {
-        sqlx::query("SELECT * FROM port_orgs WHERE id = ? AND deleted_at IS NULL")
+        sqlx::query("SELECT * FROM orgs WHERE id = ? AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -85,7 +85,7 @@ impl OrgStore for SqliteOrgStore {
     }
 
     async fn get_by_slug(&self, slug: &str) -> Result<Option<OrgRow>, StorageError> {
-        sqlx::query("SELECT * FROM port_orgs WHERE slug = ? AND deleted_at IS NULL")
+        sqlx::query("SELECT * FROM orgs WHERE slug = ? AND deleted_at IS NULL")
             .bind(slug)
             .fetch_optional(&self.pool)
             .await
@@ -97,7 +97,7 @@ impl OrgStore for SqliteOrgStore {
 
     async fn update(&self, row: OrgRow, expected_version: u64) -> Result<(), StorageError> {
         let res = sqlx::query(
-            "UPDATE port_orgs SET slug = ?, display_name = ?, plan = ?, \
+            "UPDATE orgs SET slug = ?, display_name = ?, plan = ?, \
              billing_email = ?, settings = ?, version = ? \
              WHERE id = ? AND deleted_at IS NULL AND version = ?",
         )
@@ -115,10 +115,10 @@ impl OrgStore for SqliteOrgStore {
         if res.rows_affected() > 0 {
             return Ok(());
         }
-        cas_disambiguate(&self.pool, "port_orgs", "org", &row.id, expected_version).await
+        cas_disambiguate(&self.pool, "orgs", "org", &row.id, expected_version).await
     }
 
     async fn soft_delete(&self, id: &str) -> Result<(), StorageError> {
-        soft_delete_by_id(&self.pool, "port_orgs", "org", id).await
+        soft_delete_by_id(&self.pool, "orgs", "org", id).await
     }
 }

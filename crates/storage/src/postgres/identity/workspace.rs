@@ -1,19 +1,17 @@
-//! `port_workspaces`: scoped by parent org; slug is unique among active rows
-//! per org, and an org has at most one active default workspace. Every
-//! mutation takes the org and workspace-id advisory locks first.
+//! `workspaces`: scoped by parent org; slug is unique among active rows per
+//! org, and an org has at most one active default workspace (both partial
+//! unique indexes). Workspace-grant writes share-lock the live workspace row,
+//! so they serialize with the row-level update and soft delete here.
 
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::WorkspaceRow;
 use nebula_storage_port::store::WorkspaceStore;
+use sqlx::PgPool;
 use sqlx::postgres::PgRow;
 use sqlx::types::Json;
-use sqlx::{PgConnection, PgPool};
 
-use super::{
-    cas_failure, encode_version, json, lock_workspace_identity, lock_workspace_org, now_rfc3339,
-    optional, required, version,
-};
-use crate::sql_error::{storage_error, storage_error_for};
+use super::{cas_failure, encode_version, json, optional, required, version};
+use crate::sql_error::{is_foreign_key_violation, storage_error, storage_error_for};
 
 /// Postgres-backed `workspaces` store.
 #[derive(Clone, Debug)]
@@ -46,13 +44,18 @@ pub(super) fn decode_workspace(row: &PgRow) -> Result<WorkspaceRow, StorageError
 }
 
 /// Insert `workspace` inside the caller's transaction — shared with tenant
-/// provisioning. The caller holds the advisory locks.
-pub(super) async fn insert_workspace(
-    connection: &mut PgConnection,
+/// provisioning. A taken id, active slug or active default is
+/// `Duplicate { entity: "workspace", .. }`; a missing parent org is
+/// `NotFound`.
+pub(super) async fn insert_workspace<'c, E>(
+    executor: E,
     workspace: &WorkspaceRow,
-) -> Result<(), StorageError> {
+) -> Result<(), StorageError>
+where
+    E: sqlx::Executor<'c, Database = sqlx::Postgres>,
+{
     sqlx::query(
-        "INSERT INTO port_workspaces (id, org_id, slug, display_name, \
+        "INSERT INTO workspaces (id, org_id, slug, display_name, \
          description, created_at, created_by, is_default, settings, version, \
          deleted_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
@@ -61,60 +64,33 @@ pub(super) async fn insert_workspace(
     .bind(&workspace.slug)
     .bind(&workspace.display_name)
     .bind(&workspace.description)
-    .bind(&workspace.created_at)
+    .bind(workspace.created_at)
     .bind(&workspace.created_by)
     .bind(workspace.is_default)
     .bind(Json(&workspace.settings))
     .bind(encode_version(workspace.version)?)
-    .bind(&workspace.deleted_at)
-    .execute(connection)
+    .bind(workspace.deleted_at)
+    .execute(executor)
     .await
-    .map_err(|error| storage_error_for("workspace", error))?;
-    Ok(())
-}
-
-async fn reject_second_active_default(
-    connection: &mut PgConnection,
-    row: &WorkspaceRow,
-) -> Result<(), StorageError> {
-    if !row.is_default || row.deleted_at.is_some() {
-        return Ok(());
-    }
-    let existing = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM port_workspaces \
-         WHERE org_id = $1 AND is_default = TRUE AND deleted_at IS NULL AND id <> $2",
-    )
-    .bind(&row.org_id)
-    .bind(&row.id)
-    .fetch_optional(connection)
-    .await
-    .map_err(storage_error)?;
-    if let Some(existing_id) = existing {
-        return Err(StorageError::Duplicate {
-            entity: "workspace",
-            detail: format!(
-                "organization {} already has active default workspace {existing_id}",
-                row.org_id
-            ),
-        });
-    }
+    .map_err(|error| {
+        if is_foreign_key_violation(&error) {
+            StorageError::not_found("org", workspace.org_id.clone())
+        } else {
+            storage_error_for("workspace", error)
+        }
+    })?;
     Ok(())
 }
 
 #[async_trait::async_trait]
 impl WorkspaceStore for PgWorkspaceStore {
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
-        lock_workspace_org(&mut tx, &row.org_id).await?;
-        lock_workspace_identity(&mut tx, &row.id).await?;
-        reject_second_active_default(&mut tx, &row).await?;
-        insert_workspace(&mut tx, &row).await?;
-        tx.commit().await.map_err(storage_error)
+        insert_workspace(&self.pool, &row).await
     }
 
     async fn get(&self, org_id: &str, id: &str) -> Result<Option<WorkspaceRow>, StorageError> {
         sqlx::query(
-            "SELECT * FROM port_workspaces \
+            "SELECT * FROM workspaces \
              WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL",
         )
         .bind(org_id)
@@ -133,7 +109,7 @@ impl WorkspaceStore for PgWorkspaceStore {
         slug: &str,
     ) -> Result<Option<WorkspaceRow>, StorageError> {
         sqlx::query(
-            "SELECT * FROM port_workspaces \
+            "SELECT * FROM workspaces \
              WHERE org_id = $1 AND slug = $2 AND deleted_at IS NULL",
         )
         .bind(org_id)
@@ -148,7 +124,7 @@ impl WorkspaceStore for PgWorkspaceStore {
 
     async fn list_for_org(&self, org_id: &str) -> Result<Vec<WorkspaceRow>, StorageError> {
         sqlx::query(
-            "SELECT * FROM port_workspaces \
+            "SELECT * FROM workspaces \
              WHERE org_id = $1 AND deleted_at IS NULL ORDER BY id",
         )
         .bind(org_id)
@@ -161,11 +137,8 @@ impl WorkspaceStore for PgWorkspaceStore {
     }
 
     async fn update(&self, row: WorkspaceRow, expected_version: u64) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
-        lock_workspace_org(&mut tx, &row.org_id).await?;
-        lock_workspace_identity(&mut tx, &row.id).await?;
         let res = sqlx::query(
-            "UPDATE port_workspaces SET slug = $1, display_name = $2, \
+            "UPDATE workspaces SET slug = $1, display_name = $2, \
              description = $3, is_default = $4, settings = $5, version = $6 \
              WHERE org_id = $7 AND id = $8 AND deleted_at IS NULL AND version = $9",
         )
@@ -178,41 +151,36 @@ impl WorkspaceStore for PgWorkspaceStore {
         .bind(&row.org_id)
         .bind(&row.id)
         .bind(encode_version(expected_version)?)
-        .execute(&mut *tx)
+        .execute(&self.pool)
         .await
         .map_err(|error| storage_error_for("workspace", error))?;
         if res.rows_affected() > 0 {
-            reject_second_active_default(&mut tx, &row).await?;
-            return tx.commit().await.map_err(storage_error);
+            return Ok(());
         }
         let current = sqlx::query_scalar::<_, i64>(
-            "SELECT version FROM port_workspaces WHERE org_id = $1 AND id = $2",
+            "SELECT version FROM workspaces WHERE org_id = $1 AND id = $2",
         )
         .bind(&row.org_id)
         .bind(&row.id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&self.pool)
         .await
         .map_err(storage_error)?;
         Err(cas_failure(current, "workspace", row.id, expected_version))
     }
 
     async fn soft_delete(&self, org_id: &str, id: &str) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(storage_error)?;
-        lock_workspace_org(&mut tx, org_id).await?;
-        lock_workspace_identity(&mut tx, id).await?;
         let res = sqlx::query(
-            "UPDATE port_workspaces SET deleted_at = $1 \
-             WHERE org_id = $2 AND id = $3 AND deleted_at IS NULL",
+            "UPDATE workspaces SET deleted_at = now() \
+             WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL",
         )
-        .bind(now_rfc3339())
         .bind(org_id)
         .bind(id)
-        .execute(&mut *tx)
+        .execute(&self.pool)
         .await
         .map_err(storage_error)?;
         if res.rows_affected() == 0 {
             return Err(StorageError::not_found("workspace", id));
         }
-        tx.commit().await.map_err(storage_error)
+        Ok(())
     }
 }

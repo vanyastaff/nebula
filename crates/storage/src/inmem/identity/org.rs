@@ -5,7 +5,7 @@ use nebula_storage_port::dto::OrgRow;
 use nebula_storage_port::store::OrgStore;
 
 use super::directory::SharedDirectory;
-use super::{duplicate, now_rfc3339, version_conflict};
+use super::{duplicate, version_conflict};
 
 /// In-memory `orgs` store — standalone, or a projection of an
 /// [`InMemoryIdentityDirectory`](super::InMemoryIdentityDirectory).
@@ -93,7 +93,7 @@ impl OrgStore for InMemoryOrgStore {
         else {
             return Err(StorageError::not_found("org", id));
         };
-        row.deleted_at = Some(now_rfc3339());
+        row.deleted_at = Some(chrono::Utc::now());
         Ok(())
     }
 }

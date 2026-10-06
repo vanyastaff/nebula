@@ -9,10 +9,10 @@ use nebula_storage_port::dto::{
 use nebula_storage_port::store::TenantProvisioningStore;
 use sqlx::SqlitePool;
 
-use super::membership::decode_membership;
-use super::now_rfc3339;
+use super::membership::org_role;
 use super::org::{decode_org, insert_org};
 use super::workspace::{decode_workspace, insert_workspace};
+use super::{encode_instant, optional};
 use crate::sql_error::storage_error;
 
 /// SQLite atomic tenant-provisioning store.
@@ -38,24 +38,23 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
     ) -> Result<TenantProvisioningOutcome, StorageError> {
         let org_values = request.org();
         let workspace_values = request.default_workspace();
-        let created_at = now_rfc3339();
-        let org = org_values.materialize(created_at.clone());
+        let created_at = chrono::Utc::now();
+        let org = org_values.materialize(created_at);
         let workspace = workspace_values.materialize(org.id.clone(), created_at);
         let mut tx = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage_error)?;
-        let org_rows = sqlx::query(
-            "SELECT * FROM port_orgs WHERE id = ?1 OR (slug = ?2 AND deleted_at IS NULL)",
-        )
-        .bind(&org.id)
-        .bind(&org.slug)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage_error)?;
+        let org_rows =
+            sqlx::query("SELECT * FROM orgs WHERE id = ?1 OR (slug = ?2 AND deleted_at IS NULL)")
+                .bind(&org.id)
+                .bind(&org.slug)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(storage_error)?;
         let workspace_rows = sqlx::query(
-            "SELECT * FROM port_workspaces \
+            "SELECT * FROM workspaces \
              WHERE id = ?2 OR (org_id = ?1 AND (slug = ?3 OR is_default = 1) AND deleted_at IS NULL)",
         )
         .bind(&org.id)
@@ -65,8 +64,8 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         .await
         .map_err(storage_error)?;
         let owner_row = sqlx::query(
-            "SELECT * FROM port_memberships \
-             WHERE scope_kind = 'org' AND scope_id = ?1 AND principal_kind = ?2 AND principal_id = ?3",
+            "SELECT role, added_by FROM org_memberships \
+             WHERE org_id = ?1 AND principal_kind = ?2 AND principal_id = ?3",
         )
         .bind(&org.id)
         .bind(request.owner_principal_kind().as_str())
@@ -83,14 +82,13 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
             [only] => workspace_values.matches_persisted(&org.id, &decode_workspace(only)?),
             _ => false,
         };
-        let exact_owner = owner_row
-            .as_ref()
-            .map(decode_membership)
-            .transpose()?
-            .is_some_and(|row| {
-                row.role == OrgMembershipRole::Owner.as_str()
-                    && row.added_by.as_deref() == request.owner_added_by()
-            });
+        let exact_owner = match &owner_row {
+            Some(row) => {
+                org_role(row)? == OrgMembershipRole::Owner
+                    && optional::<String>(row, "added_by")?.as_deref() == request.owner_added_by()
+            },
+            None => false,
+        };
         if exact_org && exact_workspace && exact_owner {
             return Ok(TenantProvisioningOutcome::Replayed);
         }
@@ -101,18 +99,18 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         }
 
         insert_org(&mut *tx, &org).await?;
-        insert_workspace(&mut tx, &workspace).await?;
+        insert_workspace(&mut *tx, &workspace).await?;
         sqlx::query(
-            "INSERT INTO port_memberships \
-             (scope_kind, scope_id, principal_kind, principal_id, role, added_at, added_by) \
-             VALUES ('org', ?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO org_memberships \
+             (org_id, principal_kind, principal_id, role, added_by, added_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
         .bind(&org.id)
         .bind(request.owner_principal_kind().as_str())
         .bind(request.owner_principal_id())
         .bind(OrgMembershipRole::Owner.as_str())
-        .bind(now_rfc3339())
         .bind(request.owner_added_by())
+        .bind(encode_instant(created_at))
         .execute(&mut *tx)
         .await
         .map_err(storage_error)?;

@@ -1,6 +1,6 @@
 //! Atomic tenant provisioning: org + default workspace + owner grant in one
-//! transaction under the org, slug and workspace-id advisory locks,
-//! replay-safe for an identical request.
+//! transaction under the org-id and org-slug advisory locks, replay-safe for
+//! an identical request.
 
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::{
@@ -10,10 +10,10 @@ use nebula_storage_port::dto::{
 use nebula_storage_port::store::TenantProvisioningStore;
 use sqlx::PgPool;
 
-use super::membership::decode_membership;
+use super::membership::org_role;
 use super::org::{decode_org, insert_org};
 use super::workspace::{decode_workspace, insert_workspace};
-use super::{advisory_xact_lock, lock_workspace_identity, lock_workspace_org, now_rfc3339};
+use super::{advisory_xact_lock, optional};
 use crate::sql_error::storage_error;
 
 /// PostgreSQL atomic tenant-provisioning store.
@@ -42,11 +42,10 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
     ) -> Result<TenantProvisioningOutcome, StorageError> {
         let org_values = request.org();
         let workspace_values = request.default_workspace();
-        let created_at = now_rfc3339();
-        let org = org_values.materialize(created_at.clone());
+        let created_at = chrono::Utc::now();
+        let org = org_values.materialize(created_at);
         let workspace = workspace_values.materialize(org.id.clone(), created_at);
         let mut tx = self.pool.begin().await.map_err(storage_error)?;
-        lock_workspace_org(&mut tx, &org.id).await?;
         // Sorted so concurrent provisioners acquire the pair in one order.
         let mut lock_keys = [
             format!("tenant-provisioning:id:{}", org.id),
@@ -57,17 +56,16 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
             advisory_xact_lock(&mut tx, key).await?;
         }
         let org_rows = sqlx::query(
-            "SELECT * FROM port_orgs WHERE id = $1 OR (slug = $2 AND deleted_at IS NULL) FOR UPDATE",
+            "SELECT * FROM orgs WHERE id = $1 OR (slug = $2 AND deleted_at IS NULL) FOR UPDATE",
         )
         .bind(&org.id)
         .bind(&org.slug)
         .fetch_all(&mut *tx)
         .await
         .map_err(storage_error)?;
-        lock_workspace_identity(&mut tx, &workspace.id).await?;
         let workspace_rows = sqlx::query(
-            "SELECT * FROM port_workspaces \
-             WHERE id = $2 OR (org_id = $1 AND (slug = $3 OR is_default = TRUE) AND deleted_at IS NULL) \
+            "SELECT * FROM workspaces \
+             WHERE id = $2 OR (org_id = $1 AND (slug = $3 OR is_default) AND deleted_at IS NULL) \
              FOR UPDATE",
         )
         .bind(&org.id)
@@ -77,9 +75,8 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         .await
         .map_err(storage_error)?;
         let owner_row = sqlx::query(
-            "SELECT * FROM port_memberships \
-             WHERE scope_kind = 'org' AND scope_id = $1 AND principal_kind = $2 AND principal_id = $3 \
-             FOR UPDATE",
+            "SELECT role, added_by FROM org_memberships \
+             WHERE org_id = $1 AND principal_kind = $2 AND principal_id = $3 FOR UPDATE",
         )
         .bind(&org.id)
         .bind(request.owner_principal_kind().as_str())
@@ -96,14 +93,13 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
             [only] => workspace_values.matches_persisted(&org.id, &decode_workspace(only)?),
             _ => false,
         };
-        let exact_owner = owner_row
-            .as_ref()
-            .map(decode_membership)
-            .transpose()?
-            .is_some_and(|row| {
-                row.role == OrgMembershipRole::Owner.as_str()
-                    && row.added_by.as_deref() == request.owner_added_by()
-            });
+        let exact_owner = match &owner_row {
+            Some(row) => {
+                org_role(row)? == OrgMembershipRole::Owner
+                    && optional::<String>(row, "added_by")?.as_deref() == request.owner_added_by()
+            },
+            None => false,
+        };
         if exact_org && exact_workspace && exact_owner {
             return Ok(TenantProvisioningOutcome::Replayed);
         }
@@ -111,24 +107,28 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
             return Ok(EXISTING_STATE);
         }
 
+        // Another writer may take the org id, slug or the workspace id first.
         match insert_org(&mut *tx, &org).await {
             Ok(()) => {},
-            // Another writer took the id or slug first.
             Err(StorageError::Duplicate { .. }) => return Ok(EXISTING_STATE),
             Err(error) => return Err(error),
         }
-        insert_workspace(&mut tx, &workspace).await?;
+        match insert_workspace(&mut *tx, &workspace).await {
+            Ok(()) => {},
+            Err(StorageError::Duplicate { .. }) => return Ok(EXISTING_STATE),
+            Err(error) => return Err(error),
+        }
         sqlx::query(
-            "INSERT INTO port_memberships \
-             (scope_kind, scope_id, principal_kind, principal_id, role, added_at, added_by) \
-             VALUES ('org', $1, $2, $3, $4, $5, $6)",
+            "INSERT INTO org_memberships \
+             (org_id, principal_kind, principal_id, role, added_by, added_at) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&org.id)
         .bind(request.owner_principal_kind().as_str())
         .bind(request.owner_principal_id())
         .bind(OrgMembershipRole::Owner.as_str())
-        .bind(now_rfc3339())
         .bind(request.owner_added_by())
+        .bind(created_at)
         .execute(&mut *tx)
         .await
         .map_err(storage_error)?;

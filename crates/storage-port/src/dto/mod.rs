@@ -57,9 +57,7 @@ pub use execution_listing::{
     ExecutionListing, ExecutionListingStatus, ExecutionStatusSet, MicrosInstant,
     UnknownExecutionStatus,
 };
-pub use identity::{
-    MembershipRow, OrgRow, PrincipalKind, ResourceRow, ScopeKind, TriggerRow, WorkspaceRow,
-};
+pub use identity::{OrgRow, PrincipalKind, ResourceRow, TriggerRow, WorkspaceRow};
 pub use iteration_checkpoint::{
     CheckpointSaved, IterationCheckpoint, IterationCheckpointError, IterationCheckpointKey,
     MAX_CHECKPOINT_ITERATION, MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES,
@@ -69,8 +67,8 @@ pub use job_dispatch::JobDispatchMsg;
 pub use journal::JournalEntry;
 pub use membership::{
     MembershipRoleParseError, OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome,
-    OrgMembershipRole, PrincipalOrgMembership, TenantMembershipSnapshot, WorkspaceMemberUpsert,
-    WorkspaceMembership, WorkspaceMembershipRole,
+    OrgMembership, OrgMembershipRole, PrincipalOrgMembership, TenantMembershipSnapshot,
+    WorkspaceMemberUpsert, WorkspaceMembership, WorkspaceMembershipRole,
 };
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
 pub use operation_ledger::{

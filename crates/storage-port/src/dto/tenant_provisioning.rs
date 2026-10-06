@@ -1,5 +1,7 @@
 //! Atomic tenant-provisioning command and outcome.
 
+use chrono::{DateTime, Utc};
+
 use super::{OrgRow, PrincipalKind, WorkspaceRow};
 
 /// Organization values supplied to initial tenant provisioning.
@@ -106,7 +108,7 @@ impl TenantOrgCreate {
 
     /// Materialize a new live organization row with backend-authored time.
     #[must_use]
-    pub fn materialize(&self, created_at: String) -> OrgRow {
+    pub fn materialize(&self, created_at: DateTime<Utc>) -> OrgRow {
         OrgRow {
             id: self.id.clone(),
             slug: self.slug.clone(),
@@ -213,7 +215,7 @@ impl TenantDefaultWorkspaceCreate {
 
     /// Materialize a new live default workspace row with backend-authored time.
     #[must_use]
-    pub fn materialize(&self, org_id: String, created_at: String) -> WorkspaceRow {
+    pub fn materialize(&self, org_id: String, created_at: DateTime<Utc>) -> WorkspaceRow {
         WorkspaceRow {
             id: self.id.clone(),
             org_id,

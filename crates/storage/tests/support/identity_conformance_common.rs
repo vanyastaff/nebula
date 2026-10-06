@@ -4,12 +4,13 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use nebula_storage_port::dto::{
-    OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole, OrgRow,
-    PrincipalKind, ResourceRow, ScopeKind, TenantDefaultWorkspaceCreate, TenantMembershipSnapshot,
-    TenantOrgCreate, TenantProvisioningConflict, TenantProvisioningOutcome,
-    TenantProvisioningRequest, TriggerRow, WorkspaceMemberUpsert, WorkspaceMembershipRole,
-    WorkspaceRow,
+    OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembership,
+    OrgMembershipRole, OrgRow, PrincipalKind, ResourceRow, TenantDefaultWorkspaceCreate,
+    TenantMembershipSnapshot, TenantOrgCreate, TenantProvisioningConflict,
+    TenantProvisioningOutcome, TenantProvisioningRequest, TriggerRow, WorkspaceMemberUpsert,
+    WorkspaceMembershipRole, WorkspaceRow,
 };
 use nebula_storage_port::store::{
     MembershipStore, OrgStore, ResourceStore, TenantProvisioningStore, TriggerStore,
@@ -33,12 +34,18 @@ trait IdentityBackend: Send + Sync {
 
 // ── row builders ──────────────────────────────────────────────────────────
 
+/// 2026-01-01T00:00:00.123456Z — whole microseconds, so it round-trips
+/// exactly through every backend.
+fn created_at() -> DateTime<Utc> {
+    DateTime::from_timestamp_micros(1_767_225_600_123_456).unwrap()
+}
+
 fn org_row(id: &str, slug: &str) -> OrgRow {
     OrgRow {
         id: id.into(),
         slug: slug.into(),
         display_name: "Test Org".into(),
-        created_at: "2026-01-01T00:00:00Z".into(),
+        created_at: created_at(),
         created_by: "usr_1".into(),
         plan: "free".into(),
         billing_email: None,
@@ -55,7 +62,7 @@ fn workspace_row(id: &str, org_id: &str, slug: &str) -> WorkspaceRow {
         slug: slug.into(),
         display_name: "Test Workspace".into(),
         description: None,
-        created_at: "2026-01-01T00:00:00Z".into(),
+        created_at: created_at(),
         created_by: "usr_1".into(),
         is_default: false,
         settings: serde_json::json!({}),
@@ -154,6 +161,35 @@ fn trigger_row(id: &str, workspace_id: &str, slug: &str) -> TriggerRow {
     }
 }
 
+// ── membership probes ─────────────────────────────────────────────────────
+
+/// The user's explicit organization role.
+async fn org_role_of(
+    store: &Arc<dyn MembershipStore>,
+    org_id: &str,
+    principal_id: &str,
+) -> Option<OrgMembershipRole> {
+    store
+        .get_tenant_membership(org_id, None, PrincipalKind::User, principal_id)
+        .await
+        .unwrap()
+        .org_role
+}
+
+/// The user's explicit role in a live workspace.
+async fn workspace_role_of(
+    store: &Arc<dyn MembershipStore>,
+    org_id: &str,
+    workspace_id: &str,
+    principal_id: &str,
+) -> Option<WorkspaceMembershipRole> {
+    store
+        .get_tenant_membership(org_id, Some(workspace_id), PrincipalKind::User, principal_id)
+        .await
+        .unwrap()
+        .workspace_role
+}
+
 // ── shared contract assertions ────────────────────────────────────────────
 
 async fn assert_org_contract(b: &dyn IdentityBackend) {
@@ -161,29 +197,61 @@ async fn assert_org_contract(b: &dyn IdentityBackend) {
     s.create(org_row("org_1", "acme"))
         .await
         .expect("create org");
-    assert!(s.create(org_row("org_2", "acme")).await.is_err());
+    assert_eq!(
+        s.get("org_1").await.unwrap(),
+        Some(org_row("org_1", "acme")),
+        "an org must round-trip unchanged"
+    );
+    assert!(matches!(
+        s.create(org_row("org_2", "acme")).await,
+        Err(PortStorageError::Duplicate { .. })
+    ));
     assert_eq!(s.get_by_slug("acme").await.unwrap().unwrap().id, "org_1");
-    assert!(s.update(org_row("org_1", "acme"), 7).await.is_err());
+    assert!(matches!(
+        s.update(org_row("org_1", "acme"), 7).await,
+        Err(PortStorageError::Conflict { .. })
+    ));
     s.soft_delete("org_1").await.expect("soft_delete");
     assert!(s.get("org_1").await.unwrap().is_none());
     assert!(s.get_by_slug("acme").await.unwrap().is_none());
+    s.create(org_row("org_2", "acme"))
+        .await
+        .expect("a deleted org frees its slug");
 }
 
 async fn assert_workspace_contract(b: &dyn IdentityBackend) {
+    let orgs = b.org_store().await;
+    orgs.create(org_row("org_1", "one")).await.unwrap();
+    orgs.create(org_row("org_2", "two")).await.unwrap();
     let s = b.workspace_store().await;
     s.create(workspace_row("ws_1", "org_1", "main"))
         .await
         .expect("create ws");
+    assert_eq!(
+        s.get("org_1", "ws_1").await.unwrap(),
+        Some(workspace_row("ws_1", "org_1", "main")),
+        "a workspace must round-trip unchanged"
+    );
     // same slug, different org ⇒ allowed
     s.create(workspace_row("ws_2", "org_2", "main"))
         .await
         .expect("slug unique per org");
     // duplicate slug within org ⇒ Duplicate
-    assert!(
-        s.create(workspace_row("ws_3", "org_1", "main"))
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        s.create(workspace_row("ws_3", "org_1", "main")).await,
+        Err(PortStorageError::Duplicate { .. })
+    ));
+    // workspace ids are unique across organizations
+    assert!(matches!(
+        s.create(workspace_row("ws_1", "org_2", "alias")).await,
+        Err(PortStorageError::Duplicate { .. })
+    ));
+    // a workspace needs its parent org
+    assert!(matches!(
+        s.create(workspace_row("ws_orphan", "org_missing", "orphan"))
+            .await,
+        Err(PortStorageError::NotFound { .. })
+    ));
     // cross-org get is a miss (no existence oracle)
     assert!(s.get("org_2", "ws_1").await.unwrap().is_none());
     assert_eq!(
@@ -196,6 +264,10 @@ async fn assert_workspace_contract(b: &dyn IdentityBackend) {
     );
     assert!(s.get_by_slug("org_2", "missing").await.unwrap().is_none());
     assert_eq!(s.list_for_org("org_1").await.unwrap().len(), 1);
+    assert!(matches!(
+        s.soft_delete("org_2", "ws_1").await,
+        Err(PortStorageError::NotFound { .. })
+    ));
 
     let mut default = workspace_row("ws_default", "org_1", "default");
     default.is_default = true;
@@ -246,26 +318,25 @@ async fn assert_membership_contract(b: &dyn IdentityBackend) {
             .unwrap(),
         OrgMemberUpsertOutcome::Applied
     );
-    let got = s
-        .get(ScopeKind::Org, "org_1", PrincipalKind::User, "usr_1")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(got.role, "OrgOwner");
-    assert!(chrono::DateTime::parse_from_rfc3339(&got.added_at).is_ok());
     assert_eq!(
-        s.list_for_scope(ScopeKind::Org, "org_1")
-            .await
-            .unwrap()
-            .len(),
-        1
+        org_role_of(&s, "org_1", "usr_1").await,
+        Some(OrgMembershipRole::Owner)
     );
-    assert!(
-        s.get(ScopeKind::Org, "org_2", PrincipalKind::User, "usr_1")
-            .await
-            .unwrap()
-            .is_none()
+    assert_eq!(
+        s.list_org_members("org_1").await.unwrap(),
+        [OrgMembership {
+            principal_kind: PrincipalKind::User,
+            principal_id: "usr_1".into(),
+            role: OrgMembershipRole::Owner,
+        }]
     );
+    assert_eq!(org_role_of(&s, "org_2", "usr_1").await, None);
+    assert!(s.list_org_members("org_2").await.unwrap().is_empty());
+    assert!(matches!(
+        s.upsert_org_member_guarded(org_member("org_2", "usr_1", OrgMembershipRole::Owner))
+            .await,
+        Err(PortStorageError::NotFound { .. })
+    ));
     assert_eq!(
         s.remove_org_member_guarded("org_1", PrincipalKind::User, "usr_1")
             .await
@@ -278,18 +349,30 @@ async fn assert_membership_contract(b: &dyn IdentityBackend) {
             .unwrap(),
         OrgMemberUpsertOutcome::Applied
     );
+    let mut service = org_member("org_1", "svc", OrgMembershipRole::Member);
+    service.principal_kind = PrincipalKind::ServiceAccount;
+    s.upsert_org_member_guarded(service).await.unwrap();
+    let listed = s.list_org_members("org_1").await.unwrap();
+    let order: Vec<_> = listed
+        .iter()
+        .map(|member| (member.principal_kind, member.principal_id.as_str()))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            (PrincipalKind::ServiceAccount, "svc"),
+            (PrincipalKind::User, "usr_1"),
+            (PrincipalKind::User, "usr_2"),
+        ],
+        "members are ordered by principal kind, then id"
+    );
     assert_eq!(
         s.remove_org_member_guarded("org_1", PrincipalKind::User, "usr_1")
             .await
             .unwrap(),
         OrgMemberRemoveOutcome::Removed
     );
-    assert!(
-        s.get(ScopeKind::Org, "org_1", PrincipalKind::User, "usr_1")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(org_role_of(&s, "org_1", "usr_1").await, None);
 }
 
 async fn assert_membership_snapshot(b: &dyn IdentityBackend) {
@@ -363,32 +446,20 @@ async fn assert_membership_snapshot(b: &dyn IdentityBackend) {
     assert!(matches!(
         s.upsert_workspace_member(workspace_member("org_b", "ws_a", "same"))
             .await,
-        Err(nebula_storage_port::StorageError::NotFound { .. })
+        Err(PortStorageError::NotFound { .. })
     ));
     assert!(
         !s.remove_workspace_member("org_b", "ws_a", PrincipalKind::User, "same")
             .await
             .unwrap()
     );
-    assert_eq!(
-        s.get_tenant_membership("org_a", Some("missing"), PrincipalKind::User, "same")
-            .await
-            .unwrap()
-            .workspace_role,
-        None
-    );
+    assert_eq!(workspace_role_of(&s, "org_a", "missing", "same").await, None);
     workspaces.soft_delete("org_a", "ws_a").await.unwrap();
-    assert_eq!(
-        s.get_tenant_membership("org_a", Some("ws_a"), PrincipalKind::User, "same")
-            .await
-            .unwrap()
-            .workspace_role,
-        None
-    );
+    assert_eq!(workspace_role_of(&s, "org_a", "ws_a", "same").await, None);
     assert!(matches!(
         s.upsert_workspace_member(workspace_member("org_a", "ws_a", "same"))
             .await,
-        Err(nebula_storage_port::StorageError::NotFound { .. })
+        Err(PortStorageError::NotFound { .. })
     ));
 
     workspaces
@@ -403,74 +474,13 @@ async fn assert_membership_snapshot(b: &dyn IdentityBackend) {
     orgs.soft_delete("org_b").await.unwrap();
     assert!(matches!(
         s.upsert_workspace_member(service_grant).await,
-        Err(nebula_storage_port::StorageError::NotFound { .. })
+        Err(PortStorageError::NotFound { .. })
     ));
     assert!(
         !s.remove_workspace_member("org_b", "ws_b", PrincipalKind::ServiceAccount, "same")
             .await
             .unwrap()
     );
-}
-
-async fn assert_membership_live_and_deleted_workspace_aliases(b: &dyn IdentityBackend) {
-    let orgs = b.org_store().await;
-    let workspaces = b.workspace_store().await;
-    let store = b.membership_store().await;
-    orgs.create(org_row("org_a", "a")).await.unwrap();
-    orgs.create(org_row("org_b", "b")).await.unwrap();
-    workspaces
-        .create(workspace_row("shared", "org_a", "a"))
-        .await
-        .unwrap();
-    store
-        .upsert_org_member_guarded(org_member("org_a", "user", OrgMembershipRole::Owner))
-        .await
-        .unwrap();
-    store
-        .upsert_workspace_member(workspace_member("org_a", "shared", "user"))
-        .await
-        .unwrap();
-    workspaces
-        .create(workspace_row("shared", "org_b", "b"))
-        .await
-        .unwrap();
-    for deleted_alias in [false, true] {
-        if deleted_alias {
-            workspaces.soft_delete("org_a", "shared").await.unwrap();
-        }
-        for org_id in ["org_a", "org_b"] {
-            assert_eq!(
-                store
-                    .get_tenant_membership(org_id, Some("shared"), PrincipalKind::User, "user")
-                    .await
-                    .unwrap()
-                    .workspace_role,
-                None
-            );
-            assert!(matches!(
-                store
-                    .upsert_workspace_member(workspace_member(org_id, "shared", "user"))
-                    .await,
-                Err(nebula_storage_port::StorageError::NotFound { .. })
-            ));
-            assert!(
-                !store
-                    .remove_workspace_member(org_id, "shared", PrincipalKind::User, "user")
-                    .await
-                    .unwrap()
-            );
-        }
-        // Rejection must leave the historical grant intact for explicit repair.
-        assert_eq!(
-            store
-                .get(ScopeKind::Workspace, "shared", PrincipalKind::User, "user")
-                .await
-                .unwrap()
-                .unwrap()
-                .role,
-            "WorkspaceEditor"
-        );
-    }
 }
 
 async fn assert_workspace_member_listing_and_org_removal_cleanup(b: &dyn IdentityBackend) {
@@ -535,21 +545,11 @@ async fn assert_workspace_member_listing_and_org_removal_cleanup(b: &dyn Identit
             .unwrap(),
         OrgMemberRemoveOutcome::Removed
     );
-    for workspace_id in ["active", "deleted"] {
-        assert!(
-            store
-                .get(
-                    ScopeKind::Workspace,
-                    workspace_id,
-                    PrincipalKind::User,
-                    "owner"
-                )
-                .await
-                .unwrap()
-                .is_none(),
-            "org removal must clear grants for {workspace_id}"
-        );
-    }
+    assert_eq!(
+        workspace_role_of(&store, "org", "active", "owner").await,
+        None,
+        "org removal must clear the principal's workspace grants"
+    );
     assert_eq!(
         store
             .list_workspace_members("org", "active")
@@ -568,7 +568,8 @@ async fn assert_workspace_member_listing_and_org_removal_cleanup(b: &dyn Identit
             .await
             .unwrap()
             .len(),
-        1
+        1,
+        "re-joining the org must not revive removed workspace grants"
     );
     orgs.soft_delete("org").await.unwrap();
     assert!(matches!(
@@ -599,13 +600,7 @@ async fn assert_workspace_upsert_requires_org_membership_and_serializes_removal(
             .await,
         Err(PortStorageError::NotFound { .. })
     ));
-    assert!(
-        store
-            .get(ScopeKind::Workspace, "ws", PrincipalKind::User, "absent")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(workspace_role_of(&store, "org", "ws", "absent").await, None);
 
     store
         .upsert_org_member_guarded(org_member("org", "target", OrgMembershipRole::Member))
@@ -619,74 +614,11 @@ async fn assert_workspace_upsert_requires_org_membership_and_serializes_removal(
     );
     assert_eq!(removal.unwrap(), OrgMemberRemoveOutcome::Removed);
     assert!(upsert.is_ok() || matches!(upsert, Err(PortStorageError::NotFound { .. })));
-    assert!(
-        store
-            .get(ScopeKind::Org, "org", PrincipalKind::User, "target")
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        store
-            .get(ScopeKind::Workspace, "ws", PrincipalKind::User, "target")
-            .await
-            .unwrap()
-            .is_none(),
+    assert_eq!(org_role_of(&store, "org", "target").await, None);
+    assert_eq!(
+        workspace_role_of(&store, "org", "ws", "target").await,
+        None,
         "removal must reject or cascade a concurrent workspace grant"
-    );
-}
-
-async fn assert_ambiguous_workspace_blocks_org_removal(b: &dyn IdentityBackend) {
-    let orgs = b.org_store().await;
-    let workspaces = b.workspace_store().await;
-    let store = b.membership_store().await;
-    orgs.create(org_row("org_a", "a")).await.unwrap();
-    orgs.create(org_row("org_b", "b")).await.unwrap();
-    workspaces
-        .create(workspace_row("shared", "org_a", "a"))
-        .await
-        .unwrap();
-    store
-        .upsert_org_member_guarded(org_member("org_a", "owner", OrgMembershipRole::Owner))
-        .await
-        .unwrap();
-    store
-        .upsert_org_member_guarded(org_member("org_a", "admin", OrgMembershipRole::Admin))
-        .await
-        .unwrap();
-    store
-        .upsert_workspace_member(workspace_member("org_a", "shared", "owner"))
-        .await
-        .unwrap();
-    workspaces
-        .create(workspace_row("shared", "org_b", "b"))
-        .await
-        .unwrap();
-    workspaces.soft_delete("org_b", "shared").await.unwrap();
-
-    assert!(matches!(
-        store.list_workspace_members("org_a", "shared").await,
-        Err(PortStorageError::NotFound { .. })
-    ));
-    assert!(matches!(
-        store
-            .remove_org_member_guarded("org_a", PrincipalKind::User, "owner")
-            .await,
-        Err(PortStorageError::Corrupt(_))
-    ));
-    assert!(
-        store
-            .get(ScopeKind::Org, "org_a", PrincipalKind::User, "owner")
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        store
-            .get(ScopeKind::Workspace, "shared", PrincipalKind::User, "owner")
-            .await
-            .unwrap()
-            .is_some()
     );
 }
 
@@ -700,12 +632,7 @@ async fn assert_membership_lockout(b: &dyn IdentityBackend) {
             .unwrap(),
         OrgMemberUpsertOutcome::WouldLockOut
     );
-    assert!(
-        s.list_for_scope(ScopeKind::Org, "org_lock")
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(s.list_org_members("org_lock").await.unwrap().is_empty());
     for role in [OrgMembershipRole::Owner, OrgMembershipRole::Admin] {
         assert_eq!(
             s.upsert_org_member_guarded(org_member("org_lock", "first", role))
@@ -779,10 +706,11 @@ async fn assert_membership_lockout(b: &dyn IdentityBackend) {
             OrgMemberUpsertOutcome::Applied
         )
     ));
-    let rows = s.list_for_scope(ScopeKind::Org, "org_lock").await.unwrap();
+    let members = s.list_org_members("org_lock").await.unwrap();
     assert_eq!(
-        rows.iter()
-            .filter(|row| OrgMembershipRole::parse(&row.role).unwrap().is_privileged())
+        members
+            .iter()
+            .filter(|member| member.role.is_privileged())
             .count(),
         1
     );
@@ -810,22 +738,15 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
         .get("org_bootstrap", "ws_bootstrap")
         .await
         .unwrap();
-    let observed_owner = memberships
-        .get(
-            ScopeKind::Org,
-            "org_bootstrap",
-            PrincipalKind::User,
-            "owner",
-        )
-        .await
-        .unwrap();
+    let observed_members = memberships.list_org_members("org_bootstrap").await.unwrap();
     assert_eq!(
         outcomes,
         [
             TenantProvisioningOutcome::Created,
             TenantProvisioningOutcome::Replayed
         ],
-        "persisted org={observed_org:?}, workspace={observed_workspace:?}, owner={observed_owner:?}"
+        "persisted org={observed_org:?}, workspace={observed_workspace:?}, \
+         members={observed_members:?}"
     );
     let persisted_org = orgs.get("org_bootstrap").await.unwrap().unwrap();
     assert!(request.org().matches_persisted(&persisted_org));
@@ -839,33 +760,22 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
             .default_workspace()
             .matches_persisted("org_bootstrap", &persisted_workspace)
     );
-    let owner_before = memberships
-        .get(
-            ScopeKind::Org,
-            "org_bootstrap",
-            PrincipalKind::User,
-            "owner",
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(owner_before.role, OrgMembershipRole::Owner.as_str());
-    assert_eq!(owner_before.added_by.as_deref(), Some("bootstrap"));
+    assert_eq!(
+        persisted_org.created_at, persisted_workspace.created_at,
+        "provisioning stamps one instant"
+    );
+    assert_eq!(
+        memberships.list_org_members("org_bootstrap").await.unwrap(),
+        [OrgMembership {
+            principal_kind: PrincipalKind::User,
+            principal_id: "owner".into(),
+            role: OrgMembershipRole::Owner,
+        }]
+    );
     assert_eq!(
         store.provision_tenant(request.clone()).await.unwrap(),
         TenantProvisioningOutcome::Replayed
     );
-    let owner_after = memberships
-        .get(
-            ScopeKind::Org,
-            "org_bootstrap",
-            PrincipalKind::User,
-            "owner",
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(owner_after.added_at, owner_before.added_at);
 
     memberships
         .upsert_org_member_guarded(org_member(
@@ -888,18 +798,8 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
         TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
     );
     assert_eq!(
-        memberships
-            .get(
-                ScopeKind::Org,
-                "org_bootstrap",
-                PrincipalKind::User,
-                "owner"
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .role,
-        OrgMembershipRole::Member.as_str()
+        org_role_of(&memberships, "org_bootstrap", "owner").await,
+        Some(OrgMembershipRole::Member)
     );
 
     let same_slug_org = TenantOrgCreate::new(
@@ -954,15 +854,7 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
         TenantProvisioningOutcome::Replayed
     );
 
-    let id_collision_request =
-        tenant_request("org_workspace_id", "workspace-id", "ws_global_collision");
-    assert_eq!(
-        store
-            .provision_tenant(id_collision_request.clone())
-            .await
-            .unwrap(),
-        TenantProvisioningOutcome::Created
-    );
+    // A workspace id taken by another organization blocks provisioning.
     orgs.create(org_row("org_workspace_alias", "workspace-alias"))
         .await
         .unwrap();
@@ -975,9 +867,17 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
         .await
         .unwrap();
     assert_eq!(
-        store.provision_tenant(id_collision_request).await.unwrap(),
+        store
+            .provision_tenant(tenant_request(
+                "org_workspace_id",
+                "workspace-id",
+                "ws_global_collision"
+            ))
+            .await
+            .unwrap(),
         TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
     );
+    assert!(orgs.get("org_workspace_id").await.unwrap().is_none());
 
     let race_a = tenant_request("org_race_a", "race-a", "ws_race_shared");
     let race_b = tenant_request("org_race_b", "race-b", "ws_race_shared");
@@ -1023,7 +923,7 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
     );
     assert!(
         memberships
-            .list_for_scope(ScopeKind::Org, "org_partial")
+            .list_org_members("org_partial")
             .await
             .unwrap()
             .is_empty()

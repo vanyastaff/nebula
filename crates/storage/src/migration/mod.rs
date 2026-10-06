@@ -146,6 +146,25 @@ fn record_setup_failure(error: &impl SchemaSetupFailure) {
     }
 }
 
+/// Log why the migrator stopped — the failing version and the database's
+/// diagnostic for the DDL — so an `Unavailable` setup is explainable. The
+/// diagnostic names schema objects, never row values.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn record_migration_failure(backend: &'static str, error: &sqlx::migrate::MigrateError) {
+    let version = match error {
+        sqlx::migrate::MigrateError::ExecuteMigration(_, version) => Some(*version),
+        _ => None,
+    };
+    tracing::error!(
+        target: "nebula_storage::migration",
+        backend,
+        stage = "migrate",
+        version = ?version,
+        error = %error,
+        "schema migration failed"
+    );
+}
+
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn require_current_head<E>(admission: CatalogAdmission, expected_head: i64) -> Result<(), E>
 where
@@ -397,7 +416,10 @@ where
     unlocked_sqlite_migrator()
         .run_direct(None, &mut *connection, false)
         .await
-        .map_err(|_| P::Error::from(CatalogSetupError::Unavailable))?;
+        .map_err(|error| {
+            record_migration_failure("sqlite", &error);
+            P::Error::from(CatalogSetupError::Unavailable)
+        })?;
     let postflight = P::admit(connection).await?;
     require_current_head::<P::Error>(postflight, catalog::catalog_head(&SQLITE_MIGRATOR))?;
     sqlite_foreign_keys_enabled::<P::Error>(connection).await
@@ -1078,7 +1100,10 @@ where
     unlocked_postgres_migrator()
         .run_direct(None, &mut *connection, false)
         .await
-        .map_err(|_| P::Error::from(CatalogSetupError::Unavailable))?;
+        .map_err(|error| {
+            record_migration_failure("postgres", &error);
+            P::Error::from(CatalogSetupError::Unavailable)
+        })?;
     let postflight = postgres_read_only_admission::<P>(connection).await?;
     require_current_head::<P::Error>(postflight, catalog::catalog_head(&POSTGRES_MIGRATOR))
 }
@@ -1202,7 +1227,7 @@ mod tests {
     /// (ADR-005): each replaces one aggregate's tables with standard ones and
     /// preserves no rows. No deployed database exists to carry forward; the
     /// series is squashed into the baseline when the last aggregate lands.
-    /// 0065: identity.
+    /// 0065: identity. 0066: tenancy.
     ///
     /// Head 0064, on both backends, adds the execution listing projection
     /// (`started_at`, `finished_at`, `created_at_us`), backfills it and

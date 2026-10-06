@@ -108,11 +108,11 @@ async fn seed_execution(pool: &PgPool, execution_id: &str, marker: &str) -> Test
     sqlx::query(
         "INSERT INTO port_executions (
              id, workspace_id, org_id, workflow_id, status, state,
-             version, created_at, updated_at
+             version, created_at, updated_at, created_at_us
          ) VALUES (
              $1, 'workspace-a', 'org-a', 'workflow-a', 'Pending', $2::jsonb,
              7, '2026-07-27T00:00:00Z'::timestamptz,
-             '2026-07-27T00:00:01Z'::timestamptz
+             '2026-07-27T00:00:01Z'::timestamptz, 1785110400000000
          )",
     )
     .bind(execution_id)

@@ -1,7 +1,7 @@
 //! SQLite identity-zoo stores over the port-scoped schema — one file per
 //! aggregate, sharing the column decoders and CAS helpers below.
 //!
-//! Each aggregate is a `port_*` table in the ordered SQLite migrations. Every tenant- or
+//! Each aggregate is a table in the ordered SQLite migrations. Every tenant- or
 //! parent-scoped query carries its scope predicate (`WHERE org_id = ?`,
 //! `WHERE workspace_id = ? AND org_id = ?`, …) and active-row reads add
 //! `AND deleted_at IS NULL`, so a cross-scope `get` yields `Ok(None)` and
@@ -32,6 +32,7 @@ pub use tenant_provisioning::SqliteTenantProvisioningStore;
 pub use trigger::SqliteTriggerStore;
 pub use workspace::SqliteWorkspaceStore;
 
+use chrono::{DateTime, Utc};
 use nebula_storage_port::{Scope, StorageError};
 use serde::de::DeserializeOwned;
 use sqlx::sqlite::SqliteRow;
@@ -94,6 +95,26 @@ fn parse_json<T: DeserializeOwned>(text: &str, column: &'static str) -> Result<T
         .map_err(|_| StorageError::Corrupt(format!("column `{column}` is not the expected JSON")))
 }
 
+/// A NOT NULL instant stored as INTEGER microseconds since the Unix epoch.
+fn instant(row: &SqliteRow, column: &'static str) -> Result<DateTime<Utc>, StorageError> {
+    decode_instant(required(row, column)?, column)
+}
+
+/// A nullable instant stored as INTEGER microseconds since the Unix epoch.
+fn optional_instant(
+    row: &SqliteRow,
+    column: &'static str,
+) -> Result<Option<DateTime<Utc>>, StorageError> {
+    optional(row, column)?
+        .map(|micros| decode_instant(micros, column))
+        .transpose()
+}
+
+fn decode_instant(micros: i64, column: &'static str) -> Result<DateTime<Utc>, StorageError> {
+    DateTime::from_timestamp_micros(micros)
+        .ok_or_else(|| StorageError::Corrupt(format!("column `{column}` is not a valid instant")))
+}
+
 // ── column encoders ──────────────────────────────────────────────────────
 
 fn json_text(value: &serde_json::Value) -> String {
@@ -104,12 +125,23 @@ fn encode_version(version: u64) -> Result<i64, StorageError> {
     encode_u64(version, "version")
 }
 
+/// An instant as INTEGER microseconds since the Unix epoch (sub-microsecond
+/// precision is truncated, as in PostgreSQL `TIMESTAMPTZ`).
+fn encode_instant(instant: DateTime<Utc>) -> i64 {
+    instant.timestamp_micros()
+}
+
+/// The current instant as INTEGER microseconds since the Unix epoch.
+fn now_micros() -> i64 {
+    encode_instant(Utc::now())
+}
+
 // ── CAS and soft delete ──────────────────────────────────────────────────
 
-/// Current time as an RFC 3339 string — the soft-delete / eviction stamp
-/// format the port DTOs use (consistent with the in-memory backend).
+/// Current time as an RFC 3339 string — the soft-delete stamp of the
+/// aggregates that still store instants as text (resources, triggers).
 fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339()
+    Utc::now().to_rfc3339()
 }
 
 /// The error for a zero-row CAS `UPDATE`, given the row's current version:
@@ -174,8 +206,8 @@ async fn cas_disambiguate_scoped(
     Err(cas_failure(current, entity, id, expected_version))
 }
 
-/// Soft-delete a single-PK `id` row (active rows only); zero rows ⇒
-/// `NotFound`.
+/// Soft-delete a single-PK `id` row of a microsecond-instant table (active
+/// rows only); zero rows ⇒ `NotFound`.
 async fn soft_delete_by_id(
     pool: &SqlitePool,
     table: &str,
@@ -184,7 +216,7 @@ async fn soft_delete_by_id(
 ) -> Result<(), StorageError> {
     let sql = format!("UPDATE {table} SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL");
     let res = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(now_rfc3339())
+        .bind(now_micros())
         .bind(id)
         .execute(pool)
         .await

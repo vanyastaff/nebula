@@ -1,49 +1,60 @@
-//! The shared tenant directory: orgs, workspaces and memberships behind one
-//! lock, plus atomic tenant provisioning over it.
+//! The shared tenant directory: orgs, workspaces and grants behind one lock,
+//! plus atomic tenant provisioning over it.
+//!
+//! The maps mirror the relational schema: workspace ids are unique across
+//! organizations, an organization grant is keyed by `(org, principal)`, and
+//! a workspace grant by `(workspace, principal)` beneath its organization
+//! grant — removing the organization grant removes the workspace grants.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::{
-    MembershipRow, OrgMembershipRole, OrgRow, PrincipalKind, ScopeKind, TenantProvisioningConflict,
-    TenantProvisioningOutcome, TenantProvisioningRequest, WorkspaceRow,
+    OrgMembershipRole, OrgRow, PrincipalKind, TenantProvisioningConflict,
+    TenantProvisioningOutcome, TenantProvisioningRequest, WorkspaceMembershipRole, WorkspaceRow,
 };
 use nebula_storage_port::store::TenantProvisioningStore;
 use parking_lot::Mutex;
 
 use super::membership::InMemoryMembershipStore;
-use super::now_rfc3339;
 use super::org::InMemoryOrgStore;
 use super::workspace::InMemoryWorkspaceStore;
 
-/// Workspace key: `(org_id, workspace_id)` so a cross-org `get` misses.
-pub(super) type WorkspaceKey = (String, String);
+/// Grant key: `(scope_id, principal_kind, principal_id)`, where the scope is
+/// the organization or the workspace.
+pub(super) type GrantKey = (String, PrincipalKind, String);
 
-/// Membership key: `(scope_kind, scope_id, principal_kind, principal_id)`,
-/// with each kind keyed by its stable text form.
-pub(super) type MembershipKey = (String, String, String, String);
-
-pub(super) fn membership_key(
-    scope_kind: ScopeKind,
+pub(super) fn grant_key(
     scope_id: &str,
     principal_kind: PrincipalKind,
     principal_id: &str,
-) -> MembershipKey {
-    (
-        scope_kind.as_str().to_owned(),
-        scope_id.to_owned(),
-        principal_kind.as_str().to_owned(),
-        principal_id.to_owned(),
-    )
+) -> GrantKey {
+    (scope_id.to_owned(), principal_kind, principal_id.to_owned())
+}
+
+/// An organization grant.
+#[derive(Debug, Clone)]
+pub(super) struct OrgGrant {
+    pub(super) role: OrgMembershipRole,
+    pub(super) added_by: Option<String>,
+}
+
+/// A workspace grant; `org_id` is the workspace's organization.
+#[derive(Debug, Clone)]
+pub(super) struct WorkspaceGrant {
+    pub(super) org_id: String,
+    pub(super) role: WorkspaceMembershipRole,
 }
 
 /// Directory rows and grants share a snapshot and mutation critical section.
 #[derive(Debug, Default)]
 pub(super) struct DirectoryState {
     pub(super) orgs: HashMap<String, OrgRow>,
-    pub(super) workspaces: HashMap<WorkspaceKey, WorkspaceRow>,
-    pub(super) memberships: HashMap<MembershipKey, MembershipRow>,
+    /// Keyed by workspace id, unique across organizations.
+    pub(super) workspaces: HashMap<String, WorkspaceRow>,
+    pub(super) org_grants: HashMap<GrantKey, OrgGrant>,
+    pub(super) workspace_grants: HashMap<GrantKey, WorkspaceGrant>,
 }
 
 impl DirectoryState {
@@ -53,43 +64,13 @@ impl DirectoryState {
             .is_some_and(|row| row.deleted_at.is_none())
     }
 
-    /// A live workspace whose id belongs to no other org. Grants are keyed by
-    /// workspace id alone, so a second parent — even a deleted one — makes
-    /// the identity ambiguous and its grants are never reused.
-    pub(super) fn live_unambiguous_workspace(&self, org_id: &str, workspace_id: &str) -> bool {
+    /// A live workspace under `org_id` in a live organization.
+    pub(super) fn live_workspace(&self, org_id: &str, workspace_id: &str) -> bool {
         self.live_org(org_id)
             && self
                 .workspaces
-                .get(&(org_id.to_owned(), workspace_id.to_owned()))
-                .is_some_and(|row| row.deleted_at.is_none())
-            && !self
-                .workspaces
-                .values()
-                .any(|row| row.id == workspace_id && row.org_id != org_id)
-    }
-
-    /// Every workspace id of `org_id`, refusing an org that shares a
-    /// workspace id with another org.
-    pub(super) fn unambiguous_workspace_ids(
-        &self,
-        org_id: &str,
-    ) -> Result<HashSet<String>, StorageError> {
-        let ids = self
-            .workspaces
-            .values()
-            .filter(|row| row.org_id == org_id)
-            .map(|row| row.id.clone())
-            .collect::<HashSet<_>>();
-        if self
-            .workspaces
-            .values()
-            .any(|row| row.org_id != org_id && ids.contains(&row.id))
-        {
-            return Err(StorageError::Corrupt(
-                "a workspace id belongs to more than one org".into(),
-            ));
-        }
-        Ok(ids)
+                .get(workspace_id)
+                .is_some_and(|row| row.org_id == org_id && row.deleted_at.is_none())
     }
 }
 
@@ -146,38 +127,30 @@ impl TenantProvisioningStore for InMemoryIdentityDirectory {
         let mut state = self.inner.lock();
         let org_request = request.org();
         let workspace_request = request.default_workspace();
-        let owner_key = membership_key(
-            ScopeKind::Org,
+        let owner_key = grant_key(
             org_request.id(),
             request.owner_principal_kind(),
             request.owner_principal_id(),
         );
         let org = state.orgs.get(org_request.id());
-        let workspace = state.workspaces.get(&(
-            org_request.id().to_owned(),
-            workspace_request.id().to_owned(),
-        ));
-        let owner = state.memberships.get(&owner_key);
+        let workspace = state.workspaces.get(workspace_request.id());
+        let owner = state.org_grants.get(&owner_key);
 
         let active_org_collision = state.orgs.values().any(|row| {
             row.id != org_request.id() && row.deleted_at.is_none() && row.slug == org_request.slug()
         });
         let active_workspace_collision = state.workspaces.values().any(|row| {
-            let exact_identity = row.id == workspace_request.id() && row.org_id == org_request.id();
-            if exact_identity {
-                return false;
-            }
-            let id_collision = row.id == workspace_request.id();
-            let live_sibling = row.org_id == org_request.id() && row.deleted_at.is_none();
-            id_collision
-                || (live_sibling && (row.slug == workspace_request.slug() || row.is_default))
+            row.id != workspace_request.id()
+                && row.org_id == org_request.id()
+                && row.deleted_at.is_none()
+                && (row.slug == workspace_request.slug() || row.is_default)
         });
         if org.is_some_and(|row| org_request.matches_persisted(row))
             && workspace
                 .is_some_and(|row| workspace_request.matches_persisted(org_request.id(), row))
-            && owner.is_some_and(|row| {
-                row.role == OrgMembershipRole::Owner.as_str()
-                    && row.added_by.as_deref() == request.owner_added_by()
+            && owner.is_some_and(|grant| {
+                grant.role == OrgMembershipRole::Owner
+                    && grant.added_by.as_deref() == request.owner_added_by()
             })
             && !active_org_collision
             && !active_workspace_collision
@@ -196,27 +169,19 @@ impl TenantProvisioningStore for InMemoryIdentityDirectory {
             ));
         }
 
-        let created_at = now_rfc3339();
+        let created_at = chrono::Utc::now();
         state.orgs.insert(
             org_request.id().to_owned(),
-            org_request.materialize(created_at.clone()),
+            org_request.materialize(created_at),
         );
         state.workspaces.insert(
-            (
-                org_request.id().to_owned(),
-                workspace_request.id().to_owned(),
-            ),
+            workspace_request.id().to_owned(),
             workspace_request.materialize(org_request.id().to_owned(), created_at),
         );
-        state.memberships.insert(
+        state.org_grants.insert(
             owner_key,
-            MembershipRow {
-                scope_kind: ScopeKind::Org,
-                scope_id: org_request.id().to_owned(),
-                principal_kind: request.owner_principal_kind(),
-                principal_id: request.owner_principal_id().to_owned(),
-                role: OrgMembershipRole::Owner.as_str().to_owned(),
-                added_at: now_rfc3339(),
+            OrgGrant {
+                role: OrgMembershipRole::Owner,
                 added_by: request.owner_added_by().map(ToOwned::to_owned),
             },
         );

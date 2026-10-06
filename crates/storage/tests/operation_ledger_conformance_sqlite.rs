@@ -51,13 +51,11 @@ async fn ledger() -> Option<(
 operation_ledger_conformance_suite!(ledger());
 
 #[tokio::test]
-async fn legacy_upgrade_never_grants_and_terminal_evidence_survives_reopen() {
-    use std::borrow::Cow;
-
+async fn terminal_evidence_commits_with_the_journal_and_survives_reopen() {
     use nebula_storage_port::dto::{
-        AttemptGeneration, DestinationCapability, EffectSlotBinding, EffectSlotId,
-        FrozenOutcomeEvidence, KnownOutcome, OperationAdvance, OperationCommand,
-        OutcomeEvidenceSource, RequestFingerprint,
+        AttemptGeneration, DestinationCapability, EffectSlotBinding, FrozenOutcomeEvidence,
+        KnownOutcome, OperationAdvance, OperationCommand, OutcomeEvidenceSource,
+        RequestFingerprint,
     };
     use nebula_storage_port::store::{ExecutionStore, OperationLedger};
     let directory = tempfile::tempdir().unwrap();
@@ -69,57 +67,34 @@ async fn legacy_upgrade_never_grants_and_terminal_evidence_survives_reopen() {
         .connect_with(options.clone())
         .await
         .unwrap();
-    let mut previous = sqlx::migrate!("./migrations/sqlite");
-    previous.migrations = Cow::Owned(
-        previous
-            .migrations
-            .iter()
-            .filter(|migration| migration.version <= 48)
-            .cloned()
-            .collect(),
-    );
-    previous.run(&pool).await.unwrap();
-    let scope = oracle::scope();
-    // Seed the execution in the 0048 row shape: the current adapter writes
-    // columns (0064 listing projection) this legacy schema does not have.
-    sqlx::query("INSERT INTO port_executions(id, workspace_id, org_id, workflow_id, status, state, version, fencing_generation, created_at, updated_at) VALUES('upgrade-execution', ?, ?, 'workflow', 'Created', '{\"status\":\"Created\"}', 0, 0, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')")
-        .bind(&scope.workspace_id).bind(&scope.org_id).execute(&pool).await.unwrap();
-    let executions = nebula_storage::sqlite::SqliteExecutionStore::new(pool.clone());
-    let slot = EffectSlotId::from_storage_bytes([0x91; 16]);
-    sqlx::query("INSERT INTO port_operation_ledger(slot_id, workspace_id, org_id, execution_id, node_key, occurrence, attempt_generation, fingerprint_version, fingerprint, destination, operation_id, state, prepared_at_ms) VALUES(?,?,?,'upgrade-execution','node','legacy',0,1,?,'stable_key',?,'prepared',0)")
-        .bind(slot.as_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id).bind([0x11u8;32].as_slice()).bind([0x92u8;16].as_slice()).execute(&pool).await.unwrap();
     init_schema(&pool).await.unwrap();
+    let scope = oracle::scope();
+    let executions = nebula_storage::sqlite::SqliteExecutionStore::new(pool.clone());
+    executions
+        .create(
+            &scope,
+            "reopen-execution",
+            "workflow",
+            serde_json::json!({"status":"Created"}),
+        )
+        .await
+        .unwrap();
     let ledger = SqliteOperationLedger::new(pool.clone());
     let fence = executions
         .acquire_lease(
             &scope,
-            "upgrade-execution",
+            "reopen-execution",
             "runner",
             std::time::Duration::from_secs(30),
         )
         .await
         .unwrap()
         .unwrap();
-    let legacy = ledger.read_exact(&scope, slot).await.unwrap();
-    assert!(legacy.protocol().is_none());
-    assert!(
-        ledger
-            .advance(
-                &scope,
-                slot,
-                fence,
-                &OperationCommand::GrantInvocation {
-                    expected_revision: 0
-                }
-            )
-            .await
-            .is_err()
-    );
-    let binding = EffectSlotBinding {
+    let fresh = EffectSlotBinding {
         scope: &scope,
-        execution_id: "upgrade-execution",
+        execution_id: "reopen-execution",
         node_key: "node",
-        occurrence: "legacy",
+        occurrence: "fresh",
         attempt_generation: AttemptGeneration::new(1),
         fingerprint: RequestFingerprint::new(1, [0x11; 32]),
         destination: DestinationCapability::StableKey,
@@ -127,27 +102,6 @@ async fn legacy_upgrade_never_grants_and_terminal_evidence_survives_reopen() {
         provider_key: None,
         concurrent_with: None,
         observation: false,
-    };
-    assert_eq!(
-        ledger
-            .prepare(&binding, fence)
-            .await
-            .unwrap()
-            .operation()
-            .slot_id(),
-        slot
-    );
-    assert!(
-        ledger
-            .read_exact(&scope, slot)
-            .await
-            .unwrap()
-            .protocol()
-            .is_none()
-    );
-    let fresh = EffectSlotBinding {
-        occurrence: "fresh",
-        ..binding
     };
     let fresh_slot = ledger
         .prepare(&fresh, fence)
@@ -186,7 +140,7 @@ async fn legacy_upgrade_never_grants_and_terminal_evidence_survives_reopen() {
         .await
         .unwrap();
     let journal_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM port_execution_journal WHERE execution_id = 'upgrade-execution'",
+        "SELECT COUNT(*) FROM port_execution_journal WHERE execution_id = 'reopen-execution'",
     )
     .fetch_one(&pool)
     .await

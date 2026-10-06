@@ -1,6 +1,6 @@
 //! In-memory identity-zoo stores — one file per aggregate.
 //!
-//! The tenant directory (orgs, workspaces, memberships, provisioning) shares
+//! The tenant directory (orgs, workspaces, grants, provisioning) shares
 //! one `parking_lot::Mutex` so parent checks, membership reads and guarded
 //! mutations observe one logical snapshot; other aggregates own independent
 //! maps. Tenant-scoped lookups fold the parent id (org / workspace) or
@@ -32,8 +32,8 @@ pub use workspace::InMemoryWorkspaceStore;
 
 use nebula_storage_port::{Scope, StorageError};
 
-/// Current time as an RFC 3339 string (the soft-delete / eviction stamp
-/// format the port DTOs use; consistent with the SQL backends).
+/// Current time as an RFC 3339 string — the soft-delete stamp of the
+/// aggregates that still store instants as text (resources, triggers).
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }

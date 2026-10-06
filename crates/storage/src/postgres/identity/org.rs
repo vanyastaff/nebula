@@ -1,4 +1,4 @@
-//! `port_orgs`: tenants; slug is unique among active rows.
+//! `orgs`: tenants; slug is unique among active rows.
 
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::OrgRow;
@@ -48,20 +48,20 @@ where
     E: sqlx::Executor<'c, Database = sqlx::Postgres>,
 {
     sqlx::query(
-        "INSERT INTO port_orgs (id, slug, display_name, created_at, created_by, \
+        "INSERT INTO orgs (id, slug, display_name, created_at, created_by, \
          plan, billing_email, settings, version, deleted_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(&org.id)
     .bind(&org.slug)
     .bind(&org.display_name)
-    .bind(&org.created_at)
+    .bind(org.created_at)
     .bind(&org.created_by)
     .bind(&org.plan)
     .bind(&org.billing_email)
     .bind(Json(&org.settings))
     .bind(encode_version(org.version)?)
-    .bind(&org.deleted_at)
+    .bind(org.deleted_at)
     .execute(executor)
     .await
     .map_err(|error| storage_error_for("org", error))?;
@@ -75,7 +75,7 @@ impl OrgStore for PgOrgStore {
     }
 
     async fn get(&self, id: &str) -> Result<Option<OrgRow>, StorageError> {
-        sqlx::query("SELECT * FROM port_orgs WHERE id = $1 AND deleted_at IS NULL")
+        sqlx::query("SELECT * FROM orgs WHERE id = $1 AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(&self.pool)
             .await
@@ -86,7 +86,7 @@ impl OrgStore for PgOrgStore {
     }
 
     async fn get_by_slug(&self, slug: &str) -> Result<Option<OrgRow>, StorageError> {
-        sqlx::query("SELECT * FROM port_orgs WHERE slug = $1 AND deleted_at IS NULL")
+        sqlx::query("SELECT * FROM orgs WHERE slug = $1 AND deleted_at IS NULL")
             .bind(slug)
             .fetch_optional(&self.pool)
             .await
@@ -98,7 +98,7 @@ impl OrgStore for PgOrgStore {
 
     async fn update(&self, row: OrgRow, expected_version: u64) -> Result<(), StorageError> {
         let res = sqlx::query(
-            "UPDATE port_orgs SET slug = $1, display_name = $2, plan = $3, \
+            "UPDATE orgs SET slug = $1, display_name = $2, plan = $3, \
              billing_email = $4, settings = $5, version = $6 \
              WHERE id = $7 AND deleted_at IS NULL AND version = $8",
         )
@@ -116,10 +116,10 @@ impl OrgStore for PgOrgStore {
         if res.rows_affected() > 0 {
             return Ok(());
         }
-        cas_disambiguate(&self.pool, "port_orgs", "org", &row.id, expected_version).await
+        cas_disambiguate(&self.pool, "orgs", "org", &row.id, expected_version).await
     }
 
     async fn soft_delete(&self, id: &str) -> Result<(), StorageError> {
-        soft_delete_by_id(&self.pool, "port_orgs", "org", id).await
+        soft_delete_by_id(&self.pool, "orgs", "org", id).await
     }
 }

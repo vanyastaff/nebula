@@ -32,7 +32,7 @@ async fn sqlite_accepts_the_limit_and_rejects_an_oversized_raw_row_on_read() {
         "INSERT INTO port_executions \
          (id, workspace_id, org_id, workflow_id, status, state, version, \
           fencing_generation, created_at, updated_at) \
-         VALUES (?, ?, ?, 'workflow', 'Created', ?, 0, 0, ?, ?)",
+         VALUES (?, ?, ?, 'workflow', 'created', ?, 0, 0, ?, ?)",
     )
     .bind("oversized")
     .bind(&scope.workspace_id)

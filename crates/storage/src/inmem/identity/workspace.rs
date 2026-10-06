@@ -1,12 +1,13 @@
-//! Workspaces: scoped by parent org; slug is unique among active rows per
-//! org, and an org has at most one active default workspace.
+//! Workspaces: ids are unique across organizations; reads are scoped by the
+//! parent org. Slug is unique among active rows per org, and an org has at
+//! most one active default workspace.
 
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::WorkspaceRow;
 use nebula_storage_port::store::WorkspaceStore;
 
 use super::directory::SharedDirectory;
-use super::{duplicate, now_rfc3339, version_conflict};
+use super::{duplicate, version_conflict};
 
 /// In-memory `workspaces` store — standalone, or a projection of an
 /// [`InMemoryIdentityDirectory`](super::InMemoryIdentityDirectory).
@@ -42,10 +43,7 @@ fn check_active_uniqueness<'a>(
             return Err(duplicate("workspace", "slug"));
         }
         if wants_default && other.is_default {
-            return Err(StorageError::Duplicate {
-                entity: "workspace",
-                detail: "the organization already has an active default workspace".into(),
-            });
+            return Err(duplicate("workspace", "default marker"));
         }
         Ok(())
     })
@@ -54,14 +52,15 @@ fn check_active_uniqueness<'a>(
 #[async_trait::async_trait]
 impl WorkspaceStore for InMemoryWorkspaceStore {
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError> {
-        let key = (row.org_id.clone(), row.id.clone());
         let mut state = self.inner.lock();
-        let workspaces = &mut state.workspaces;
-        if workspaces.contains_key(&key) {
+        if !state.orgs.contains_key(&row.org_id) {
+            return Err(StorageError::not_found("org", row.org_id));
+        }
+        if state.workspaces.contains_key(&row.id) {
             return Err(duplicate("workspace", "id"));
         }
-        check_active_uniqueness(workspaces.values(), &row)?;
-        workspaces.insert(key, row);
+        check_active_uniqueness(state.workspaces.values(), &row)?;
+        state.workspaces.insert(row.id.clone(), row);
         Ok(())
     }
 
@@ -70,8 +69,8 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
             .inner
             .lock()
             .workspaces
-            .get(&(org_id.to_owned(), id.to_owned()))
-            .filter(|row| row.deleted_at.is_none())
+            .get(id)
+            .filter(|row| row.org_id == org_id && row.deleted_at.is_none())
             .cloned())
     }
 
@@ -104,10 +103,12 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
     }
 
     async fn update(&self, row: WorkspaceRow, expected_version: u64) -> Result<(), StorageError> {
-        let key = (row.org_id.clone(), row.id.clone());
         let mut state = self.inner.lock();
-        let workspaces = &mut state.workspaces;
-        let Some(current) = workspaces.get(&key).filter(|w| w.deleted_at.is_none()) else {
+        let Some(current) = state
+            .workspaces
+            .get(&row.id)
+            .filter(|w| w.org_id == row.org_id && w.deleted_at.is_none())
+        else {
             return Err(StorageError::not_found("workspace", row.id));
         };
         if current.version != expected_version {
@@ -119,8 +120,8 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
                 actual,
             ));
         }
-        check_active_uniqueness(workspaces.values(), &row)?;
-        workspaces.insert(key, row);
+        check_active_uniqueness(state.workspaces.values(), &row)?;
+        state.workspaces.insert(row.id.clone(), row);
         Ok(())
     }
 
@@ -128,12 +129,12 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
         let mut state = self.inner.lock();
         let Some(row) = state
             .workspaces
-            .get_mut(&(org_id.to_owned(), id.to_owned()))
-            .filter(|row| row.deleted_at.is_none())
+            .get_mut(id)
+            .filter(|row| row.org_id == org_id && row.deleted_at.is_none())
         else {
             return Err(StorageError::not_found("workspace", id));
         };
-        row.deleted_at = Some(now_rfc3339());
+        row.deleted_at = Some(chrono::Utc::now());
         Ok(())
     }
 }

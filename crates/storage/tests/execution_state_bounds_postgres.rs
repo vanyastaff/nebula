@@ -52,14 +52,15 @@ async fn postgres_uses_its_canonical_json_size_for_writes_and_bounded_reads() {
     sqlx::query(
         "INSERT INTO port_executions \
          (id, workspace_id, org_id, workflow_id, status, state, version, \
-          fencing_generation, created_at, updated_at) \
-         VALUES ($1, $2, $3, 'workflow', 'Created', $4, 0, 0, $5, $5)",
+          fencing_generation, created_at, updated_at, created_at_us) \
+         VALUES ($1, $2, $3, 'workflow', 'created', $4, 0, 0, $5, $5, $6)",
     )
     .bind("oversized")
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
     .bind(oversized)
     .bind(timestamp)
+    .bind(timestamp.timestamp_micros())
     .execute(&pool)
     .await
     .unwrap();

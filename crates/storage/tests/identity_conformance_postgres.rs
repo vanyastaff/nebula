@@ -110,16 +110,8 @@ identity_matrix!(workspace_store_contract, assert_workspace_contract);
 identity_matrix!(membership_store_contract, assert_membership_contract);
 identity_matrix!(membership_snapshot, assert_membership_snapshot);
 identity_matrix!(
-    membership_live_and_deleted_workspace_aliases,
-    assert_membership_live_and_deleted_workspace_aliases
-);
-identity_matrix!(
     workspace_member_listing_and_org_removal_cleanup,
     assert_workspace_member_listing_and_org_removal_cleanup
-);
-identity_matrix!(
-    ambiguous_workspace_blocks_org_removal,
-    assert_ambiguous_workspace_blocks_org_removal
 );
 identity_matrix!(
     workspace_upsert_requires_org_membership_and_serializes_removal,
@@ -130,9 +122,9 @@ identity_matrix!(tenant_provisioning, assert_tenant_provisioning);
 identity_matrix!(resource_store_contract, assert_resource_contract);
 identity_matrix!(trigger_store_contract, assert_trigger_contract);
 
-/// Provisioning and ordinary workspace writes use the same per-org lock.
-/// Whichever transaction wins, the organization can retain only one live
-/// default workspace.
+/// Provisioning races an ordinary default-workspace create. Whichever
+/// transaction wins, the organization retains only one live default
+/// workspace (`uq_workspaces__active_default`).
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_provisioning_serializes_with_workspace_create() {
@@ -148,17 +140,18 @@ async fn postgres_provisioning_serializes_with_workspace_create() {
         provisioning.provision_tenant(request),
         workspaces.create(competing)
     );
+    // The competing create either precedes the org (no parent) or follows
+    // the provisioned default.
     match (provisioning_result, workspace_result) {
-        (Ok(TenantProvisioningOutcome::Created), Err(PortStorageError::Duplicate { .. }))
-        | (
-            Ok(TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)),
-            Ok(()),
+        (
+            Ok(TenantProvisioningOutcome::Created),
+            Err(PortStorageError::Duplicate { .. } | PortStorageError::NotFound { .. }),
         ) => {},
         outcomes => panic!("unexpected provisioning/workspace race outcomes: {outcomes:?}"),
     }
 
     let active_defaults: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM port_workspaces \
+        "SELECT COUNT(*) FROM workspaces \
          WHERE org_id = $1 AND is_default = TRUE AND deleted_at IS NULL",
     )
     .bind("org_default_race")
@@ -168,135 +161,48 @@ async fn postgres_provisioning_serializes_with_workspace_create() {
     assert_eq!(active_defaults, 1);
 }
 
-/// Alias creation and membership cleanup share the workspace-id lock. This
-/// prevents a new cross-org alias from appearing between the cascade's
-/// ambiguity check and its deletion of grants keyed only by workspace id.
+/// Roles and principal kinds are closed vocabularies in the schema: a row
+/// outside them cannot be written, whatever the writer.
 #[cfg(feature = "postgres")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn postgres_workspace_alias_create_serializes_with_membership_cascade() {
+#[tokio::test]
+async fn postgres_membership_vocabularies_are_closed_by_the_schema() {
     let backend = PostgresBackend::default();
     let pool = backend.pool().await;
     let orgs = backend.org_store().await;
     let workspaces = backend.workspace_store().await;
-    let memberships = backend.membership_store().await;
-
-    orgs.create(org_row("org_alias_source", "alias-source"))
-        .await
-        .unwrap();
-    orgs.create(org_row("org_alias_target", "alias-target"))
-        .await
-        .unwrap();
+    let store = backend.membership_store().await;
+    orgs.create(org_row("org", "org")).await.unwrap();
     workspaces
-        .create(workspace_row("ws_alias_race", "org_alias_source", "source"))
+        .create(workspace_row("ws", "org", "ws"))
         .await
         .unwrap();
-    memberships
-        .upsert_org_member_guarded(org_member(
-            "org_alias_source",
-            "target",
-            OrgMembershipRole::Owner,
-        ))
+    store
+        .upsert_org_member_guarded(org_member("org", "owner", OrgMembershipRole::Owner))
         .await
         .unwrap();
-    memberships
-        .upsert_org_member_guarded(org_member(
-            "org_alias_source",
-            "admin",
-            OrgMembershipRole::Admin,
-        ))
+    store
+        .upsert_workspace_member(workspace_member("org", "ws", "owner"))
         .await
         .unwrap();
-    memberships
-        .upsert_workspace_member(workspace_member(
-            "org_alias_source",
-            "ws_alias_race",
-            "target",
-        ))
-        .await
-        .unwrap();
-
-    let mut blocker = pool.begin().await.unwrap();
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind("tenant-workspace-id:ws_alias_race")
-        .execute(&mut *blocker)
-        .await
-        .unwrap();
-
-    let alias_create =
-        workspaces.create(workspace_row("ws_alias_race", "org_alias_target", "target"));
-    let cascade =
-        memberships.remove_org_member_guarded("org_alias_source", PrincipalKind::User, "target");
-    tokio::pin!(alias_create, cascade);
-
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(200), &mut alias_create)
-            .await
-            .is_err(),
-        "alias creation must wait for the workspace-id lock"
-    );
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(200), &mut cascade)
-            .await
-            .is_err(),
-        "membership cascade must wait for the workspace-id lock"
-    );
-    blocker.commit().await.unwrap();
-
-    let (alias_result, cascade_result) = tokio::join!(alias_create, cascade);
-    alias_result.unwrap();
-    match cascade_result {
-        Ok(OrgMemberRemoveOutcome::Removed) => {
-            assert!(
-                memberships
-                    .get(
-                        ScopeKind::Org,
-                        "org_alias_source",
-                        PrincipalKind::User,
-                        "target"
-                    )
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-            assert!(
-                memberships
-                    .get(
-                        ScopeKind::Workspace,
-                        "ws_alias_race",
-                        PrincipalKind::User,
-                        "target"
-                    )
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-        },
-        Err(PortStorageError::Corrupt(_)) => {
-            assert!(
-                memberships
-                    .get(
-                        ScopeKind::Org,
-                        "org_alias_source",
-                        PrincipalKind::User,
-                        "target"
-                    )
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-            assert!(
-                memberships
-                    .get(
-                        ScopeKind::Workspace,
-                        "ws_alias_race",
-                        PrincipalKind::User,
-                        "target"
-                    )
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-        },
-        outcome => panic!("unexpected membership cascade outcome: {outcome:?}"),
+    for statement in [
+        "UPDATE org_memberships SET role = 'unknown'",
+        "UPDATE org_memberships SET role = 'WorkspaceAdmin'",
+        "UPDATE org_memberships SET principal_kind = 'robot'",
+        "UPDATE workspace_memberships SET role = 'OrgOwner'",
+    ] {
+        assert!(
+            sqlx::query(statement).execute(&pool).await.is_err(),
+            "the schema must reject `{statement}`"
+        );
     }
+    assert_eq!(
+        store
+            .get_tenant_membership("org", Some("ws"), PrincipalKind::User, "owner")
+            .await
+            .unwrap(),
+        TenantMembershipSnapshot {
+            org_role: Some(OrgMembershipRole::Owner),
+            workspace_role: Some(WorkspaceMembershipRole::Editor),
+        }
+    );
 }

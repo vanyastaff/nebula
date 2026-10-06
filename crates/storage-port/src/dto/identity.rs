@@ -1,11 +1,11 @@
 //! Tenant directory and workspace-object row DTOs.
 //!
 //! Ids surface as opaque `String`s (the typed-id encode/decode happens at the
-//! adapter edge); JSON columns surface as `serde_json::Value`; timestamps
-//! surface as RFC 3339 strings.
+//! adapter edge); JSON columns surface as `serde_json::Value`.
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// `orgs` row (migration 0003).
+/// An organization: the tenant root.
 // guard-justified: `settings` is `serde_json::Value` (not `Eq` — can
 // hold a float); the clippy `Eq`-derivable hint is a false positive for
 // JSON-bearing rows.
@@ -14,102 +14,63 @@ use serde::{Deserialize, Serialize};
 pub struct OrgRow {
     /// `org_` ULID (opaque string form).
     pub id: String,
-    /// Org slug.
+    /// Org slug, unique among active orgs.
     pub slug: String,
     /// Display name.
     pub display_name: String,
-    /// Creation timestamp.
-    pub created_at: String,
-    /// First user (opaque string form; no FK to preserve history).
+    /// When the org was created.
+    pub created_at: DateTime<Utc>,
+    /// The principal that created the org (opaque string form).
     pub created_by: String,
     /// Plan tier.
     pub plan: String,
     /// Billing email.
     pub billing_email: Option<String>,
-    /// Org settings blob.
+    /// Org settings document.
     pub settings: serde_json::Value,
     /// Optimistic-CAS version.
     pub version: u64,
-    /// Soft-delete timestamp.
-    pub deleted_at: Option<String>,
+    /// When the org was soft-deleted.
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
-/// `workspaces` row (migration 0004).
+/// A workspace inside an organization.
 // guard-justified: `settings` is `serde_json::Value` (not `Eq` — can
 // hold a float); the clippy `Eq`-derivable hint is a false positive for
 // JSON-bearing rows.
 #[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceRow {
-    /// `ws_` ULID (opaque string form).
+    /// `ws_` ULID (opaque string form), unique across organizations.
     pub id: String,
     /// Owning org id (opaque string form).
     pub org_id: String,
-    /// Workspace slug.
+    /// Workspace slug, unique among the org's active workspaces.
     pub slug: String,
     /// Display name.
     pub display_name: String,
     /// Description.
     pub description: Option<String>,
-    /// Creation timestamp.
-    pub created_at: String,
-    /// Creator id (opaque string form).
+    /// When the workspace was created.
+    pub created_at: DateTime<Utc>,
+    /// The principal that created the workspace (opaque string form).
     pub created_by: String,
     /// Whether this is the org's default workspace.
     pub is_default: bool,
-    /// Workspace settings blob.
+    /// Workspace settings document.
     pub settings: serde_json::Value,
     /// Optimistic-CAS version.
     pub version: u64,
-    /// Soft-delete timestamp.
-    pub deleted_at: Option<String>,
+    /// When the workspace was soft-deleted.
+    pub deleted_at: Option<DateTime<Utc>>,
 }
 
-/// Which membership table / scope domain a [`MembershipRow`] belongs to.
-///
-/// Stored verbatim as the `scope_kind` text column (`"org"` /
-/// `"workspace"`). Modelled as a closed enum so an authorization domain
-/// can never be a free-form string — an unknown value fails closed at the
-/// adapter edge rather than silently widening access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ScopeKind {
-    /// Org-level membership (`org_members`).
-    Org,
-    /// Workspace-level membership (`workspace_members`).
-    Workspace,
-}
-
-impl ScopeKind {
-    /// Stable text form stored in the backend `scope_kind` column.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Org => "org",
-            Self::Workspace => "workspace",
-        }
-    }
-
-    /// Parse the backend `scope_kind` text. An unrecognized value is
-    /// rejected (fail-closed: never coerce an unknown authz domain).
-    ///
-    /// # Errors
-    /// Returns the offending string when it is neither `"org"` nor
-    /// `"workspace"`.
-    pub fn parse(text: &str) -> Result<Self, String> {
-        match text {
-            "org" => Ok(Self::Org),
-            "workspace" => Ok(Self::Workspace),
-            other => Err(other.to_string()),
-        }
-    }
-}
-
-/// Which kind of principal holds a [`MembershipRow`].
+/// Which kind of principal holds a membership or a token.
 ///
 /// Stored verbatim as the `principal_kind` text column (`"user"` /
-/// `"service_account"`). Closed enum for the same fail-closed reason as
-/// [`ScopeKind`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// `"service_account"`). A closed enum: an unknown stored value fails closed
+/// at the adapter edge rather than widening access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PrincipalKind {
     /// A human user.
     User,
@@ -140,29 +101,6 @@ impl PrincipalKind {
             other => Err(other.to_string()),
         }
     }
-}
-
-/// `org_members` / `workspace_members` row (migration 0005).
-///
-/// `scope_id` is the org id (for org members) or workspace id (for workspace
-/// members); `scope_kind` distinguishes the two so one DTO serves both
-/// membership tables.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MembershipRow {
-    /// Org vs workspace membership domain.
-    pub scope_kind: ScopeKind,
-    /// Org or workspace id (opaque string form).
-    pub scope_id: String,
-    /// User vs service-account principal.
-    pub principal_kind: PrincipalKind,
-    /// Principal id (opaque string form).
-    pub principal_id: String,
-    /// Role name.
-    pub role: String,
-    /// When the principal was added/invited.
-    pub added_at: String,
-    /// Who added the principal (opaque string form), if recorded.
-    pub added_by: Option<String>,
 }
 
 /// `resources` row (migration 0009).

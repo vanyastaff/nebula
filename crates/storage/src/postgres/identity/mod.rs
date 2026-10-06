@@ -2,7 +2,7 @@
 //! aggregate, sharing the column decoders, CAS helpers and advisory locks
 //! below.
 //!
-//! Each aggregate is a `port_*` table in the ordered PostgreSQL migrations. Every tenant- or
+//! Each aggregate is a table in the ordered PostgreSQL migrations. Every tenant- or
 //! parent-scoped query carries its scope predicate (`WHERE org_id = $1`,
 //! `WHERE workspace_id = $1 AND org_id = $2`, …) and active-row reads add
 //! `AND deleted_at IS NULL`, so a cross-scope `get` yields `Ok(None)` and
@@ -85,24 +85,7 @@ fn encode_version(version: u64) -> Result<i64, StorageError> {
 
 // ── advisory locks ───────────────────────────────────────────────────────
 
-/// Serialize every workspace mutation of one org (default-workspace and
-/// slug invariants) for the rest of the transaction.
-async fn lock_workspace_org(
-    connection: &mut PgConnection,
-    org_id: &str,
-) -> Result<(), StorageError> {
-    advisory_xact_lock(connection, &format!("tenant-workspace-org:{org_id}")).await
-}
-
-/// Serialize every mutation of one workspace id across orgs (grants are
-/// keyed by workspace id alone).
-async fn lock_workspace_identity(
-    connection: &mut PgConnection,
-    workspace_id: &str,
-) -> Result<(), StorageError> {
-    advisory_xact_lock(connection, &format!("tenant-workspace-id:{workspace_id}")).await
-}
-
+/// Hold a transaction-scoped advisory lock on `key`.
 async fn advisory_xact_lock(connection: &mut PgConnection, key: &str) -> Result<(), StorageError> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(key)
@@ -114,8 +97,8 @@ async fn advisory_xact_lock(connection: &mut PgConnection, key: &str) -> Result<
 
 // ── CAS and soft delete ──────────────────────────────────────────────────
 
-/// Current time as an RFC 3339 string — the soft-delete / eviction stamp
-/// format the port DTOs use (consistent with the other backends).
+/// Current time as an RFC 3339 string — the soft-delete stamp of the
+/// aggregates that still store instants as text (resources, triggers).
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -182,17 +165,16 @@ async fn cas_disambiguate_scoped(
     Err(cas_failure(current, entity, id, expected_version))
 }
 
-/// Soft-delete a single-PK `id` row (active rows only); zero rows ⇒
-/// `NotFound`.
+/// Soft-delete a single-PK `id` row of a `TIMESTAMPTZ` table (active rows
+/// only), stamped by the database clock; zero rows ⇒ `NotFound`.
 async fn soft_delete_by_id(
     pool: &PgPool,
     table: &str,
     entity: &'static str,
     id: &str,
 ) -> Result<(), StorageError> {
-    let sql = format!("UPDATE {table} SET deleted_at = $1 WHERE id = $2 AND deleted_at IS NULL");
+    let sql = format!("UPDATE {table} SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL");
     let res = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(now_rfc3339())
         .bind(id)
         .execute(pool)
         .await

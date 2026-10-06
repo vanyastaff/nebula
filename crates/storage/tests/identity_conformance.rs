@@ -213,16 +213,8 @@ identity_matrix!(workspace_store_contract, assert_workspace_contract);
 identity_matrix!(membership_store_contract, assert_membership_contract);
 identity_matrix!(membership_snapshot, assert_membership_snapshot);
 identity_matrix!(
-    membership_live_and_deleted_workspace_aliases,
-    assert_membership_live_and_deleted_workspace_aliases
-);
-identity_matrix!(
     workspace_member_listing_and_org_removal_cleanup,
     assert_workspace_member_listing_and_org_removal_cleanup
-);
-identity_matrix!(
-    ambiguous_workspace_blocks_org_removal,
-    assert_ambiguous_workspace_blocks_org_removal
 );
 identity_matrix!(
     workspace_upsert_requires_org_membership_and_serializes_removal,
@@ -256,95 +248,48 @@ async fn membership_lockout_file_sqlite() {
     pool.close().await;
 }
 
+/// Roles and principal kinds are closed vocabularies in the schema: a row
+/// outside them cannot be written, whatever the writer.
 #[cfg(feature = "sqlite")]
 #[tokio::test]
-async fn membership_corrupt_roles_fail_closed_sqlite() {
+async fn membership_vocabularies_are_closed_by_the_schema_sqlite() {
     let backend = SqliteBackend::default();
     let pool = backend.pool().await;
     let orgs = backend.org_store().await;
     let workspaces = backend.workspace_store().await;
     let store = backend.membership_store().await;
     orgs.create(org_row("org", "org")).await.unwrap();
-    store
-        .upsert_org_member_guarded(org_member("org", "owner", OrgMembershipRole::Owner))
-        .await
-        .unwrap();
-    for role in ["unknown", "WorkspaceAdmin"] {
-        sqlx::query("UPDATE port_memberships SET role = ? WHERE scope_kind = 'org'")
-            .bind(role)
-            .execute(&pool)
-            .await
-            .unwrap();
-        assert!(matches!(
-            store
-                .get_tenant_membership("org", None, PrincipalKind::User, "owner")
-                .await,
-            Err(nebula_storage_port::StorageError::Corrupt(_))
-        ));
-        assert!(matches!(
-            store
-                .list_orgs_for_principal(PrincipalKind::User, "owner")
-                .await,
-            Err(nebula_storage_port::StorageError::Corrupt(_))
-        ));
-        assert!(matches!(
-            store
-                .upsert_org_member_guarded(org_member(
-                    "org",
-                    "replacement",
-                    OrgMembershipRole::Admin
-                ))
-                .await,
-            Err(nebula_storage_port::StorageError::Corrupt(_))
-        ));
-        assert!(matches!(
-            store
-                .remove_org_member_guarded("org", PrincipalKind::User, "owner")
-                .await,
-            Err(nebula_storage_port::StorageError::Corrupt(_))
-        ));
-        assert_eq!(
-            store
-                .list_for_scope(ScopeKind::Org, "org")
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            store
-                .get(ScopeKind::Org, "org", PrincipalKind::User, "owner")
-                .await
-                .unwrap()
-                .unwrap()
-                .role,
-            role
-        );
-    }
-    sqlx::query("UPDATE port_memberships SET role = 'OrgOwner' WHERE scope_kind = 'org'")
-        .execute(&pool)
-        .await
-        .unwrap();
     workspaces
         .create(workspace_row("ws", "org", "ws"))
+        .await
+        .unwrap();
+    store
+        .upsert_org_member_guarded(org_member("org", "owner", OrgMembershipRole::Owner))
         .await
         .unwrap();
     store
         .upsert_workspace_member(workspace_member("org", "ws", "owner"))
         .await
         .unwrap();
-    sqlx::query("UPDATE port_memberships SET role = 'OrgOwner' WHERE scope_kind = 'workspace'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert!(matches!(
+    for statement in [
+        "UPDATE org_memberships SET role = 'unknown'",
+        "UPDATE org_memberships SET role = 'WorkspaceAdmin'",
+        "UPDATE org_memberships SET principal_kind = 'robot'",
+        "UPDATE workspace_memberships SET role = 'OrgOwner'",
+    ] {
+        assert!(
+            sqlx::query(statement).execute(&pool).await.is_err(),
+            "the schema must reject `{statement}`"
+        );
+    }
+    assert_eq!(
         store
             .get_tenant_membership("org", Some("ws"), PrincipalKind::User, "owner")
-            .await,
-        Err(nebula_storage_port::StorageError::Corrupt(_))
-    ));
-    assert!(matches!(
-        store.list_workspace_members("org", "ws").await,
-        Err(nebula_storage_port::StorageError::Corrupt(_))
-    ));
+            .await
+            .unwrap(),
+        TenantMembershipSnapshot {
+            org_role: Some(OrgMembershipRole::Owner),
+            workspace_role: Some(WorkspaceMembershipRole::Editor),
+        }
+    );
 }
