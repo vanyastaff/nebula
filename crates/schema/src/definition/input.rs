@@ -768,6 +768,16 @@ fn normalize_union(
                             tag.as_str().to_owned(),
                             ValueTree::Literal(ScalarValue::try_from(Value::String(target))?),
                         );
+                    } else if !values.contains_key(tag.as_str())
+                        && let Some(default) = &union.selector.default_variant
+                    {
+                        // An absent adjacent tag selects the admitted default.
+                        values.insert(
+                            tag.as_str().to_owned(),
+                            ValueTree::Literal(ScalarValue::try_from(Value::String(
+                                default.as_str().to_owned(),
+                            ))?),
+                        );
                     }
                 },
                 SerdeTagging::External => {},

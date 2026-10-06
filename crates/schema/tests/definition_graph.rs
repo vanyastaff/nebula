@@ -653,7 +653,7 @@ fn root_empty_collection_and_body_specific_semantics_are_all_committed() {
     let union = json!({
         "version": 3, "root": { "target": "root" },
         "definitions": [
-            {"key":"root","body":{"kind":"union","tagging":"external","variants":[
+            {"key":"root","body":{"kind":"union","tagging":{"adjacent":{"tag":"kind","content":"value"}},"variants":[
                 {"key":"none","payload":null},{"key":"some","payload":{"target":"leaf","expression":"forbidden"}}
             ],"selector_normalization":{"default_variant":"none","aliases":{"legacy":"some"}}}},
             scalar("leaf", "string")
@@ -662,7 +662,7 @@ fn root_empty_collection_and_body_specific_semantics_are_all_committed() {
     assert_mutates(
         union.clone(),
         "/definitions/0/body/tagging",
-        json!({"adjacent":{"tag":"kind","content":"value"}}),
+        json!({"adjacent":{"tag":"type","content":"value"}}),
     );
     assert_mutates(
         union.clone(),

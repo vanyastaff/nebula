@@ -123,6 +123,46 @@ fn alias_null_and_closed_domain_intersections_are_enforced() {
 }
 
 #[test]
+fn adjacent_union_default_selector_fills_an_absent_tag() {
+    let union = |tagging: Value| {
+        serde_json::from_value::<SchemaGraphDocument>(json!({"version":3,
+        "root":{"target":"choice","null":"reject"},
+        "definitions":[
+            {"key":"choice","body":{"kind":"union","tagging":tagging,"variants":[
+                {"key":"none","payload":null},
+                {"key":"some","payload":{"target":"text","null":"reject"}}
+            ],"selector_normalization":{"default_variant":"none"}}},
+            {"key":"text","body":{"kind":"string"}}
+        ]}))
+        .unwrap()
+        .admit()
+    };
+    let adjacent = InputContract::from_graph(
+        &union(json!({"adjacent":{"tag":"kind","content":"data"}})).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        adjacent
+            .validate_data(json!({}))
+            .unwrap()
+            .into_wire_data()
+            .unwrap(),
+        json!({"kind":"none"})
+    );
+    // An explicit selector is never replaced by the default.
+    assert_eq!(
+        adjacent
+            .validate_data(json!({"kind":"some","data":"x"}))
+            .unwrap()
+            .into_wire_data()
+            .unwrap(),
+        json!({"kind":"some","data":"x"})
+    );
+    // External tagging has no absent-selector form: the facet is refused.
+    assert!(union(json!("external")).is_err());
+}
+
+#[test]
 fn unique_arrays_compare_whole_values_in_linear_time() {
     let unique = |element: &str, kind: &str, nullability: &str| {
         InputContract::from_graph(&graph(
