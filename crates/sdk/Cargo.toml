@@ -67,14 +67,7 @@ derive = []
 testing = ["dep:uuid"]
 http = ["dep:reqwest", "dep:httpdate", "dep:tracing", "dep:zeroize"]
 # HTTP resource adapter: `integration::resource::http`.
-resource-http = [
-  "dep:reqwest",
-  "dep:http",
-  "dep:bytes",
-  "dep:base64",
-  "dep:zeroize",
-  "dep:tracing",
-]
+resource-http = ["dep:reqwest", "dep:http", "dep:bytes", "dep:base64", "dep:zeroize", "dep:tracing"]
 
 [package.metadata.docs.rs]
 all-features = true

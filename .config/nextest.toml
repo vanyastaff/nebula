@@ -108,6 +108,15 @@ default-filter = 'not binary(=runtime_repair_red_scenarios)'
 filter = 'binary(/compile_fail/) | binary(=seam_action_schema_method_removed) | (package(=nebula-validator) & binary(=ui))'
 slow-timeout = { period = "120s", terminate-after = 4 }
 
+# The nebula-sdk external-consumer contracts build an isolated fixture
+# workspace and run one `cargo check`/`clippy` per probe. Even with a warm
+# fixture cache the public-perimeter contract takes ~90s locally, and any
+# change under the SDK's dependency closure makes the first run cold. Same
+# cold-compile headroom as the trybuild binaries (agent profile only).
+[[profile.agent.overrides]]
+filter = 'package(=nebula-sdk) & binary(/_external_contract$/)'
+slow-timeout = { period = "120s", terminate-after = 4 }
+
 [profile.chaos]
 # Long-running chaos profile (e.g. nightly-chaos.yml).
 # Inherits nothing from `ci` — the chaos-full plane intentionally runs
