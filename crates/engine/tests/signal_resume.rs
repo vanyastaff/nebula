@@ -128,8 +128,8 @@ impl StatelessAction for WebhookWaitNode {
 /// The callback every webhook wait in this file parks on.
 const WEBHOOK_CALLBACK: &str = "test-webhook-signal";
 
-/// The target a webhook Resume carries: an untargeted Resume never satisfies a
-/// webhook wait, so every Resume here names the parked callback.
+/// The target a webhook Resume carries: production webhook resumes always name
+/// the parked callback (only the bearer path produces them).
 fn webhook_target() -> Option<nebula_engine::ResumeTarget> {
     Some(nebula_engine::ResumeTarget::Webhook {
         callback_id: WEBHOOK_CALLBACK.to_owned(),

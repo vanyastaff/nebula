@@ -502,74 +502,20 @@ async fn webhook_resume_does_not_satisfy_approval_gate() {
     let echo_a = Arc::new(AtomicU32::new(0));
     let echo_b = Arc::new(AtomicU32::new(0));
     let stores = Stores::new();
-    let (registry, workflow_id) =
-        webhook_and_approval_subgraphs(&stores, Arc::clone(&echo_a), Arc::clone(&echo_b)).await;
 
-    let dispatch = build(registry, &stores);
-    let scope = nebula_engine::store_seam::single_tenant_scope();
-    let execution_id = stores.create_execution(workflow_id).await;
-
-    dispatch
-        .dispatch_start(&scope, execution_id)
-        .await
-        .expect("dispatch_start must park the webhook wait and the approval gate");
-    assert_eq!(
-        stores.persisted_status(execution_id).await,
-        ExecutionStatus::Paused,
-        "execution must be Paused with both signal nodes parked"
-    );
-
-    // A webhook Resume for "boss" must arm ONLY the webhook wait, never the
-    // approval gate — despite the colliding "boss" identity.
-    dispatch
-        .dispatch_resume(
-            &scope,
-            execution_id,
-            Some(ResumeTarget::Webhook {
-                callback_id: "boss".to_owned(),
-            }),
-        )
-        .await
-        .expect("webhook-targeted dispatch_resume must satisfy only the webhook wait");
-
-    assert_eq!(
-        echo_a.load(Ordering::SeqCst),
-        1,
-        "the webhook wait's downstream must run exactly once"
-    );
-    assert_eq!(
-        echo_b.load(Ordering::SeqCst),
-        0,
-        "the APPROVAL gate's downstream must NOT run — a webhook Resume must never \
-         satisfy an approval gate (kind-confusion safety rule)"
-    );
-    assert_eq!(
-        stores.persisted_status(execution_id).await,
-        ExecutionStatus::Paused,
-        "execution must stay Paused — the approval gate is still awaiting approval"
-    );
-}
-
-/// One subgraph parks `Webhook { callback_id: "boss" }` (→ `echo_a`), the other
-/// `Approval { approver: "boss" }` (→ `echo_b`).
-async fn webhook_and_approval_subgraphs(
-    stores: &Stores,
-    echo_a: Arc<AtomicU32>,
-    echo_b: Arc<AtomicU32>,
-) -> (Arc<ActionRegistry>, nebula_core::WorkflowId) {
     let registry = Arc::new(ActionRegistry::new());
     register_stateless(&registry, WebhookWaitX);
     register_stateless(&registry, ApprovalWaitBoss);
     register_stateless(
         &registry,
         CountingEcho {
-            invocation_count: echo_a,
+            invocation_count: Arc::clone(&echo_a),
         },
     );
     register_stateless(
         &registry,
         CountingEchoB {
-            invocation_count: echo_b,
+            invocation_count: Arc::clone(&echo_b),
         },
     );
 
@@ -618,27 +564,7 @@ async fn webhook_and_approval_subgraphs(
         schema_version: CURRENT_SCHEMA_VERSION,
     };
     stores.save_workflow(&wf).await;
-    (registry, workflow_id)
-}
 
-/// **An untargeted Resume never satisfies an approval or webhook gate.**
-///
-/// An approval is satisfied only by its approver and a webhook wait only by its
-/// verified bearer — both arrive as a [`ResumeTarget`]. A Resume with no target
-/// carries no identity and so no authority over either: with one webhook wait
-/// and one approval gate parked, an untargeted Resume arms neither, and both
-/// still resume through their own target afterwards.
-///
-/// **Falsifiability**: restore the untargeted all-arm (`None => true` in
-/// `arm_signal_waits_under_lease`) → both gates arm → `echo_a == 1` /
-/// `echo_b == 1` and the execution Completes → RED.
-#[tokio::test]
-async fn untargeted_resume_never_satisfies_approval_or_webhook_gates() {
-    let echo_a = Arc::new(AtomicU32::new(0));
-    let echo_b = Arc::new(AtomicU32::new(0));
-    let stores = Stores::new();
-    let (registry, workflow_id) =
-        webhook_and_approval_subgraphs(&stores, Arc::clone(&echo_a), Arc::clone(&echo_b)).await;
     let dispatch = build(registry, &stores);
     let scope = nebula_engine::store_seam::single_tenant_scope();
     let execution_id = stores.create_execution(workflow_id).await;
@@ -649,44 +575,90 @@ async fn untargeted_resume_never_satisfies_approval_or_webhook_gates() {
         .expect("dispatch_start must park the webhook wait and the approval gate");
     assert_eq!(
         stores.persisted_status(execution_id).await,
-        ExecutionStatus::Paused
+        ExecutionStatus::Paused,
+        "execution must be Paused with both signal nodes parked"
     );
 
+    // A webhook Resume for "boss" must arm ONLY the webhook wait, never the
+    // approval gate — despite the colliding "boss" identity.
     dispatch
-        .dispatch_resume(&scope, execution_id, None)
+        .dispatch_resume(
+            &scope,
+            execution_id,
+            Some(ResumeTarget::Webhook {
+                callback_id: "boss".to_owned(),
+            }),
+        )
         .await
-        .expect("an untargeted Resume with nothing it may arm is an ack, not an error");
+        .expect("webhook-targeted dispatch_resume must satisfy only the webhook wait");
+
     assert_eq!(
-        (echo_a.load(Ordering::SeqCst), echo_b.load(Ordering::SeqCst)),
-        (0, 0),
-        "an untargeted Resume must satisfy neither the webhook wait nor the approval gate"
+        echo_a.load(Ordering::SeqCst),
+        1,
+        "the webhook wait's downstream must run exactly once"
+    );
+    assert_eq!(
+        echo_b.load(Ordering::SeqCst),
+        0,
+        "the APPROVAL gate's downstream must NOT run — a webhook Resume must never \
+         satisfy an approval gate (kind-confusion safety rule)"
     );
     assert_eq!(
         stores.persisted_status(execution_id).await,
         ExecutionStatus::Paused,
-        "both gates are still parked"
+        "execution must stay Paused — the approval gate is still awaiting approval"
+    );
+}
+
+/// **W-S3a — an untargeted Resume preserves the W-S2b all-arm behavior.**
+///
+/// With `resume_target == None`, a Resume arms EVERY signal-`Waiting` node — so
+/// both independent webhook waits complete in one pass and the execution runs to
+/// `Completed` with both downstream probes fired exactly once.
+///
+/// **Falsifiability**: make `None` arm nothing (or only the first node) → one
+/// wait stays `Waiting` → the execution stays `Paused` and at least one
+/// `echo == 1` assertion fails → RED.
+#[tokio::test]
+async fn untargeted_resume_keeps_legacy_all_arm() {
+    let echo_a = Arc::new(AtomicU32::new(0));
+    let echo_b = Arc::new(AtomicU32::new(0));
+    let stores = Stores::new();
+    let (registry, workflow_id) =
+        two_webhook_subgraphs(&stores, Arc::clone(&echo_a), Arc::clone(&echo_b)).await;
+    let dispatch = build(registry, &stores);
+    let scope = nebula_engine::store_seam::single_tenant_scope();
+    let execution_id = stores.create_execution(workflow_id).await;
+
+    dispatch
+        .dispatch_start(&scope, execution_id)
+        .await
+        .expect("dispatch_start must park both webhook waits");
+    assert_eq!(
+        stores.persisted_status(execution_id).await,
+        ExecutionStatus::Paused
     );
 
-    for target in [
-        ResumeTarget::Webhook {
-            callback_id: "boss".to_owned(),
-        },
-        ResumeTarget::Approval {
-            approver: "boss".to_owned(),
-        },
-    ] {
-        dispatch
-            .dispatch_resume(&scope, execution_id, Some(target))
-            .await
-            .expect("each gate still resumes through its own target");
-    }
+    // Untargeted Resume — arms ALL signal waits (W-S2b behavior).
+    dispatch
+        .dispatch_resume(&scope, execution_id, None)
+        .await
+        .expect("untargeted dispatch_resume must satisfy every signal wait");
+
     assert_eq!(
-        (echo_a.load(Ordering::SeqCst), echo_b.load(Ordering::SeqCst)),
-        (1, 1)
+        echo_a.load(Ordering::SeqCst),
+        1,
+        "echo_a must run — an untargeted Resume arms every signal wait"
+    );
+    assert_eq!(
+        echo_b.load(Ordering::SeqCst),
+        1,
+        "echo_b must run — an untargeted Resume arms every signal wait"
     );
     assert_eq!(
         stores.persisted_status(execution_id).await,
-        ExecutionStatus::Completed
+        ExecutionStatus::Completed,
+        "execution must Complete — both waits armed in one untargeted pass"
     );
 }
 

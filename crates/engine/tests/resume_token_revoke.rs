@@ -340,8 +340,8 @@ impl StatelessAction for WebhookParkNode {
 /// The callback the parked webhook node waits on.
 const WEBHOOK_CALLBACK: &str = "w-s3e-integration-cb";
 
-/// The target a webhook Resume carries: an untargeted Resume never satisfies a
-/// webhook wait.
+/// The target a webhook Resume carries: production webhook resumes always name
+/// the parked callback (only the bearer path produces them).
 fn webhook_target() -> Option<nebula_engine::ResumeTarget> {
     Some(nebula_engine::ResumeTarget::Webhook {
         callback_id: WEBHOOK_CALLBACK.to_owned(),

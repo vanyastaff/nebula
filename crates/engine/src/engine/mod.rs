@@ -513,8 +513,8 @@ struct ResumeRequest {
     /// [`WorkflowEngine::resume_live`] maps to [`ResumeDelivery::LoopGone`].
     ack: oneshot::Sender<ResumeOutcome>,
     /// Which parked signal wait this Resume targets (W-S3a). `Some(target)`
-    /// arms only the kind+identity match; `None` arms every signal wait except
-    /// approval and webhook gates, which demand their target.
+    /// arms only the kind+identity match; `None` arms every signal wait (the
+    /// W-S2b untargeted behavior).
     resume_target: Option<ResumeTarget>,
 }
 
@@ -4056,21 +4056,6 @@ fn matches_resume_target(
     }
 }
 
-/// Whether an untargeted Resume (no [`ResumeTarget`]) may satisfy this wait.
-///
-/// The authority rule: an approval gate is satisfied only by its approver and a
-/// webhook wait only by its verified bearer, so both demand a matching
-/// [`ResumeTarget`] — an untargeted Resume carries no identity and so no
-/// authority over them. Every other signal wait (an `Execution` completion
-/// wait, or a legacy row with no persisted identity) keeps the untargeted
-/// all-arm behavior.
-fn untargeted_resume_may_arm(ns: &nebula_execution::state::NodeExecutionState) -> bool {
-    !matches!(
-        ns.wait_signal,
-        Some(WaitSignal::Approval { .. } | WaitSignal::Webhook { .. })
-    )
-}
-
 /// Arm — for Phase-0b completion — every signal-`Waiting` node selected by
 /// `resume_target`, returning the armed node keys (ADR-0099 W-S3a).
 ///
@@ -4085,9 +4070,8 @@ fn untargeted_resume_may_arm(ns: &nebula_execution::state::NodeExecutionState) -
 ///   identity. This is the structural close of both confused-deputy bugs (one
 ///   Resume satisfying a sibling wait; a webhook Resume satisfying an approval
 ///   gate).
-/// - `None` → an untargeted Resume: arms every signal-`Waiting` node that
-///   carries no authority-bearing identity (see [`untargeted_resume_may_arm`]).
-///   Approval and webhook gates are never satisfied without their target.
+/// - `None` → the legacy untargeted Resume: arms every signal-`Waiting` node
+///   (preserves the W-S2b behavior).
 ///
 /// Mutates only the in-memory `exec_state` (via [`arm_wait_completion`], the
 /// paired `next_attempt_at`/`wait_wake` write); the CALLER owns the lease and
@@ -4110,7 +4094,7 @@ fn arm_signal_waits_under_lease(
                 && is_signal_wait(ns)
                 && match resume_target {
                     Some(target) => matches_resume_target(ns, target),
-                    None => untargeted_resume_may_arm(ns),
+                    None => true,
                 }
         })
         .map(|(id, _)| id.clone())

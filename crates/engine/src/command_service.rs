@@ -301,10 +301,10 @@ impl ExecutionCommandService {
     ///   is refused (`NotFound` / [`ExecutionCommandError::AwaitedNotTerminal`]).
     /// - A webhook wait cannot be signalled here — it resumes only through
     ///   [`Self::resume_webhook`] with its verified bearer.
-    /// - There is deliberately no untargeted resume: this service only ever
-    ///   enqueues identity-targeted signals. The runtime independently refuses
-    ///   to let an untargeted Resume satisfy approval or webhook gates, so
-    ///   neither layer alone is trusted with that authority.
+    /// - There is deliberately no untargeted resume: the storage-port contract
+    ///   has an untargeted Resume arm *every* signal wait (approval and webhook
+    ///   gates included, kept for already-queued messages), so this service
+    ///   only ever enqueues identity-targeted signals.
     ///
     /// The signal is acknowledged only once it is durably on the control
     /// queue; it never travels over the event bus.

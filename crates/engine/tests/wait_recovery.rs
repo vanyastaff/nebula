@@ -475,8 +475,8 @@ fn make_engine(stores: &RecoveryStores, registry: Arc<ActionRegistry>) -> Workfl
         )
 }
 
-/// The target a webhook Resume carries: an untargeted Resume never satisfies a
-/// webhook wait, so every Resume here names the parked callback.
+/// The target a webhook Resume carries: production webhook resumes always name
+/// the parked callback (only the bearer path produces them).
 fn webhook_target(callback_id: &str) -> Option<ResumeTarget> {
     Some(ResumeTarget::Webhook {
         callback_id: callback_id.to_owned(),
