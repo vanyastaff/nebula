@@ -561,3 +561,128 @@ async fn call_skips_instant_reads_without_slow_threshold() {
         "the default configuration performs no timing reads on call()"
     );
 }
+
+#[test]
+fn remaining_cooldown_observes_the_same_clock_without_consuming_a_probe() {
+    use crate::clock::MockInstant;
+    let clock = Arc::new(MockInstant::new());
+    let cb = CircuitBreaker::new(CircuitBreakerConfig {
+        reset_timeout: Duration::from_millis(100),
+        max_half_open_operations: 1,
+        ..CircuitBreakerConfig::default()
+    })
+    .expect("valid config")
+    .with_instant_source(clock.clone());
+    assert_eq!(cb.remaining_open_duration(), None);
+    cb.force_open();
+    assert_eq!(
+        cb.remaining_open_duration(),
+        Some(Duration::from_millis(100))
+    );
+    clock.advance(Duration::from_millis(40));
+    assert_eq!(
+        cb.remaining_open_duration(),
+        Some(Duration::from_millis(60))
+    );
+    assert!(cb.try_acquire::<()>().is_err());
+    clock.advance(Duration::from_millis(60));
+    assert_eq!(cb.remaining_open_duration(), Some(Duration::ZERO));
+    assert_eq!(cb.circuit_state(), CS::Open);
+    assert!(cb.try_acquire::<()>().is_ok());
+    assert_eq!(cb.remaining_open_duration(), None);
+    assert_eq!(cb.circuit_state(), CS::HalfOpen);
+    assert!(cb.try_acquire::<()>().is_err());
+    cb.record_outcome(Outcome::Cancelled);
+    assert!(cb.try_acquire::<()>().is_ok());
+}
+
+#[test]
+fn admission_reports_whether_it_reserved_a_half_open_probe() {
+    use crate::clock::MockInstant;
+    let clock = Arc::new(MockInstant::new());
+    let cb = CircuitBreaker::new(CircuitBreakerConfig {
+        reset_timeout: Duration::from_millis(100),
+        max_half_open_operations: 1,
+        ..CircuitBreakerConfig::default()
+    })
+    .expect("valid config")
+    .with_instant_source(clock.clone());
+    let closed = cb.try_admit::<()>().expect("closed admits");
+    assert!(!closed.is_half_open_probe());
+    cb.force_open();
+    clock.advance(Duration::from_millis(100));
+    let probe = cb
+        .try_admit::<()>()
+        .expect("elapsed cooldown admits one probe");
+    assert!(probe.is_half_open_probe());
+    assert!(cb.try_admit::<()>().is_err(), "exactly one half-open probe");
+    assert!(cb.record_admitted_outcome(probe, Outcome::Cancelled));
+    assert!(
+        cb.try_admit::<()>()
+            .expect("slot released")
+            .is_half_open_probe()
+    );
+}
+
+#[test]
+fn late_closed_epoch_success_cannot_close_a_half_open_round() {
+    use crate::clock::MockInstant;
+    let clock = Arc::new(MockInstant::new());
+    let cb = CircuitBreaker::new(CircuitBreakerConfig {
+        reset_timeout: Duration::from_millis(100),
+        max_half_open_operations: 1,
+        ..CircuitBreakerConfig::default()
+    })
+    .expect("valid config")
+    .with_instant_source(clock.clone());
+    let stale = cb.try_admit::<()>().expect("closed admits");
+    let stale_failure = cb.try_admit::<()>().expect("closed admits");
+    cb.force_open();
+    clock.advance(Duration::from_millis(100));
+    let probe = cb.try_admit::<()>().expect("single probe");
+
+    // The pre-open transports complete while the probe is in flight.
+    assert!(!cb.record_admitted_outcome(stale, Outcome::Success));
+    assert_eq!(
+        cb.circuit_state(),
+        CS::HalfOpen,
+        "round not closed by stale evidence"
+    );
+    assert!(
+        cb.try_admit::<()>().is_err(),
+        "the probe still owns the only slot"
+    );
+    assert!(!cb.record_admitted_outcome(stale_failure, Outcome::Failure));
+    assert_eq!(
+        cb.circuit_state(),
+        CS::HalfOpen,
+        "round not tripped by stale evidence"
+    );
+
+    // Settling consumes the admission, so the probe cannot be settled twice.
+    assert!(cb.record_admitted_outcome(probe, Outcome::Success));
+    assert_eq!(cb.circuit_state(), CS::Closed);
+    assert_eq!(cb.stats().failures, 0);
+}
+
+#[test]
+fn an_admission_only_settles_on_the_breaker_that_issued_it() {
+    // Two fresh breakers share generation 0: without breaker identity, one's
+    // admission would settle on the other.
+    let config = CircuitBreakerConfig {
+        failure_threshold: 1,
+        min_operations: 1,
+        ..CircuitBreakerConfig::default()
+    };
+    let issuer = CircuitBreaker::new(config.clone()).expect("valid config");
+    let other = CircuitBreaker::new(config).expect("valid config");
+    let admission = issuer.try_admit::<()>().expect("closed admits");
+
+    assert!(!other.record_admitted_outcome(admission, Outcome::Failure));
+    assert_eq!(
+        other.circuit_state(),
+        CS::Closed,
+        "a foreign admission must not trip an unrelated breaker"
+    );
+    assert_eq!(other.stats().failures, 0);
+}

@@ -27,17 +27,18 @@
 
 use nebula_metrics::{
     Counter, Histogram, MetricsRegistry, MetricsResult,
-    NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL, NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_CIRCUIT_TOTAL, NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
+    NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIMED_CLAIMS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_RESULTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL,
     NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CANDIDATES_TOTAL,
-    NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL, refresh_coord_claim_outcome,
-    refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_result_outcome,
-    refresh_coord_sentinel_action, refresh_scheduler_candidate_outcome,
-    refresh_scheduler_cycle_outcome,
+    NEBULA_CREDENTIAL_REFRESH_SCHEDULER_CYCLES_TOTAL, refresh_coord_circuit_outcome,
+    refresh_coord_claim_outcome, refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome,
+    refresh_coord_result_outcome, refresh_coord_sentinel_action,
+    refresh_scheduler_candidate_outcome, refresh_scheduler_cycle_outcome,
 };
 
 /// Pre-bound handles for refresh-coordinator metrics. Cheaply cloneable
@@ -45,6 +46,7 @@ use nebula_metrics::{
 #[derive(Clone, Debug)]
 pub struct RefreshCoordMetrics {
     pub(crate) scheduler: RefreshSchedulerMetrics,
+    pub(crate) circuit: RefreshCircuitMetrics,
     // claims_total
     pub(crate) claims_acquired: Counter,
     pub(crate) claims_contended: Counter,
@@ -72,6 +74,38 @@ pub struct RefreshCoordMetrics {
     pub(crate) hold_duration: Histogram,
 }
 
+/// Fixed-label transport circuit observations, independent of durable outcome.
+#[derive(Clone, Debug)]
+pub(crate) struct RefreshCircuitMetrics {
+    pub(crate) admitted: Counter,
+    pub(crate) open: Counter,
+    pub(crate) probe_busy: Counter,
+    pub(crate) transport_success: Counter,
+    pub(crate) transport_failure: Counter,
+    pub(crate) transport_cancelled: Counter,
+    pub(crate) admission_cancelled: Counter,
+}
+impl RefreshCircuitMetrics {
+    pub(crate) fn with_registry(registry: &MetricsRegistry) -> MetricsResult<Self> {
+        let interner = registry.interner();
+        let counter = |outcome| {
+            registry.counter_labeled(
+                NEBULA_CREDENTIAL_REFRESH_COORD_CIRCUIT_TOTAL,
+                &interner.single("outcome", outcome),
+            )
+        };
+        Ok(Self {
+            admitted: counter(refresh_coord_circuit_outcome::ADMITTED)?,
+            open: counter(refresh_coord_circuit_outcome::OPEN)?,
+            probe_busy: counter(refresh_coord_circuit_outcome::PROBE_BUSY)?,
+            transport_success: counter(refresh_coord_circuit_outcome::TRANSPORT_SUCCESS)?,
+            transport_failure: counter(refresh_coord_circuit_outcome::TRANSPORT_FAILURE)?,
+            transport_cancelled: counter(refresh_coord_circuit_outcome::TRANSPORT_CANCELLED)?,
+            admission_cancelled: counter(refresh_coord_circuit_outcome::ADMISSION_CANCELLED)?,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CoordinatedRefreshResult {
     Success,
@@ -94,6 +128,7 @@ impl RefreshCoordMetrics {
 
         Ok(Self {
             scheduler: RefreshSchedulerMetrics::with_registry(registry)?,
+            circuit: RefreshCircuitMetrics::with_registry(registry)?,
             claims_acquired: registry.counter_labeled(
                 NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL,
                 &claim_label(refresh_coord_claim_outcome::ACQUIRED),

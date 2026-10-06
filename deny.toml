@@ -133,7 +133,8 @@ deny = [
 
   # Shared wire data is consumed through the technical API and curated SDK.
   { crate = "nebula-api-contract", wrappers = [
-    "nebula-api", "nebula-sdk",
+    "nebula-api",
+    "nebula-sdk",
   ], reason = "Transport contract is Core shared infrastructure; supported consumers are API and SDK" },
 
   # nebula-storage-port is the Core-tier storage contract: object-safe

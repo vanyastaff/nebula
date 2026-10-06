@@ -1251,6 +1251,30 @@ pub mod refresh_coord_result_outcome {
     pub const FAILURE: &str = "failure";
 }
 
+/// Counter: process-local circuit observations around admitted refresh transport.
+///
+/// The closed outcome labels never carry tenant, credential or provider data.
+pub const NEBULA_CREDENTIAL_REFRESH_COORD_CIRCUIT_TOTAL: &str =
+    "nebula_credential_refresh_coord_circuit_total";
+
+/// Outcome labels for [`NEBULA_CREDENTIAL_REFRESH_COORD_CIRCUIT_TOTAL`].
+pub mod refresh_coord_circuit_outcome {
+    /// A real circuit probe was acquired before durable provider admission.
+    pub const ADMITTED: &str = "admitted";
+    /// An open circuit refused dispatch during its measured cooldown.
+    pub const OPEN: &str = "open";
+    /// The half-open probe limit refused another dispatch.
+    pub const PROBE_BUSY: &str = "probe_busy";
+    /// The provider operation closure returned a complete transport response.
+    pub const TRANSPORT_SUCCESS: &str = "transport_success";
+    /// The provider operation closure returned a transport error.
+    pub const TRANSPORT_FAILURE: &str = "transport_failure";
+    /// An operation was interrupted after the provider boundary.
+    pub const TRANSPORT_CANCELLED: &str = "transport_cancelled";
+    /// A probe was abandoned before the provider operation began.
+    pub const ADMISSION_CANCELLED: &str = "admission_cancelled";
+}
+
 /// Histogram: how long a holder owned the L2 claim row.
 ///
 /// Observed in seconds when the coordinator finalizes or drops its lease.

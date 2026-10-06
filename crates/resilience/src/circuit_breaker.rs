@@ -28,10 +28,14 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
+
+/// Source of process-unique breaker identities, so an [`Admission`] can only
+/// be settled on the breaker that issued it.
+static NEXT_BREAKER_ID: AtomicU64 = AtomicU64::new(1);
 
 use parking_lot::Mutex;
 
@@ -287,6 +291,8 @@ pub struct CircuitBreaker {
     sink: Arc<dyn EventSink>,
     state: Mutex<InnerState>,
     on_state_change: Option<StateChangeCallback>,
+    /// Process-unique identity carried by every [`Admission`] this breaker issues.
+    id: u64,
 }
 
 struct InnerState {
@@ -301,6 +307,54 @@ struct InnerState {
     consecutive_opens: u32,
     /// Number of slow calls observed since the counters were last reset.
     slow_calls: u32,
+    /// Incremented on every state transition; names the epoch an
+    /// [`Admission`] was granted in.
+    generation: u64,
+}
+
+/// A permit granted by [`CircuitBreaker::try_admit`], bound to the breaker
+/// epoch (state-machine generation) it was admitted in.
+///
+/// Settle it with [`CircuitBreaker::record_admitted_outcome`]: an outcome from
+/// an epoch the breaker has already left is discarded, so a late result can
+/// neither release another epoch's half-open probe slot nor close or trip a
+/// recovery round it never took part in.
+///
+/// It is deliberately neither `Clone` nor `Copy`: settling consumes it, so one
+/// admission can be settled at most once. It also carries the identity of the
+/// issuing breaker, and any other breaker discards it.
+///
+/// ```
+/// use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
+///
+/// let cb = CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap();
+/// let admission = cb.try_admit::<()>().unwrap();
+/// assert!(cb.record_admitted_outcome(admission, Outcome::Success));
+/// ```
+///
+/// ```compile_fail
+/// use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
+///
+/// let cb = CircuitBreaker::new(CircuitBreakerConfig::default()).unwrap();
+/// let admission = cb.try_admit::<()>().unwrap();
+/// cb.record_admitted_outcome(admission, Outcome::Success);
+/// // A second settlement of the same admission does not compile.
+/// cb.record_admitted_outcome(admission, Outcome::Success);
+/// ```
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "an admission must be settled with record_admitted_outcome"]
+pub struct Admission {
+    breaker: u64,
+    generation: u64,
+    half_open_probe: bool,
+}
+
+impl Admission {
+    /// Whether this admission reserved a half-open probe slot.
+    #[must_use]
+    pub const fn is_half_open_probe(&self) -> bool {
+        self.half_open_probe
+    }
 }
 
 impl CircuitBreaker {
@@ -322,10 +376,12 @@ impl CircuitBreaker {
                 half_open_successes: 0,
                 consecutive_opens: 0,
                 slow_calls: 0,
+                generation: 0,
             }),
             instant_source: Arc::new(SystemInstant),
             sink: Arc::new(NoopSink),
             on_state_change: None,
+            id: NEXT_BREAKER_ID.fetch_add(1, Ordering::Relaxed),
         })
     }
 
@@ -426,6 +482,7 @@ impl CircuitBreaker {
         };
         inner.half_open_probes = 0;
         inner.half_open_successes = 0;
+        inner.generation = inner.generation.wrapping_add(1);
         self.atomic_state.store(STATE_OPEN, Ordering::Relaxed);
         drop(inner);
         if prev != CircuitState::Open {
@@ -444,6 +501,7 @@ impl CircuitBreaker {
         let mut inner = self.state.lock();
         let prev = to_circuit_state(inner.state);
         Self::reset_counters(&mut inner);
+        inner.generation = inner.generation.wrapping_add(1);
         self.atomic_state.store(STATE_CLOSED, Ordering::Relaxed);
         drop(inner);
         if prev != CircuitState::Closed {
@@ -684,16 +742,31 @@ impl CircuitBreaker {
     /// Returns `Err(CallError::CircuitOpen)` when the circuit is open
     /// or the half-open probe limit has been reached.
     pub fn try_acquire<E>(&self) -> Result<(), CallError<E>> {
+        self.try_admit().map(|_| ())
+    }
+
+    /// Like [`try_acquire`](Self::try_acquire), but returns an epoch-bound
+    /// [`Admission`] that says whether a half-open probe slot was reserved.
+    ///
+    /// Settle it with [`record_admitted_outcome`](Self::record_admitted_outcome)
+    /// so that a result arriving after the breaker changed state is discarded
+    /// instead of being applied to a recovery round it did not belong to.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(CallError::CircuitOpen)` when the circuit is open
+    /// or the half-open probe limit has been reached.
+    pub fn try_admit<E>(&self) -> Result<Admission, CallError<E>> {
         let mut transition: Option<(CircuitState, CircuitState)> = None;
         let mut inner = self.state.lock();
         let result = match inner.state {
-            State::Closed => Ok(()),
+            State::Closed => Ok(false),
             State::HalfOpen => {
                 if inner.half_open_probes >= self.config.max_half_open_operations {
                     Err(CallError::CircuitOpen)
                 } else {
                     inner.half_open_probes = inner.half_open_probes.saturating_add(1);
-                    Ok(())
+                    Ok(true)
                 }
             },
             State::Open { opened_at } => {
@@ -707,15 +780,26 @@ impl CircuitBreaker {
                     inner.slow_calls = 0;
                     inner.half_open_successes = 0;
                     inner.half_open_probes = 1; // this call is the first probe
+                    inner.generation = inner.generation.wrapping_add(1);
                     self.atomic_state.store(STATE_HALF_OPEN, Ordering::Relaxed);
                     transition = Some((prev, CircuitState::HalfOpen));
-                    Ok(())
+                    Ok(true)
                 } else {
                     Err(CallError::CircuitOpen)
                 }
             },
         };
+        let generation = inner.generation;
         drop(inner);
+        self.emit_transition(transition);
+        result.map(|half_open_probe| Admission {
+            breaker: self.id,
+            generation,
+            half_open_probe,
+        })
+    }
+
+    fn emit_transition(&self, transition: Option<(CircuitState, CircuitState)>) {
         if let Some((from, to)) = transition {
             self.sink
                 .record(ResilienceEvent::CircuitStateChanged { from, to });
@@ -723,7 +807,6 @@ impl CircuitBreaker {
                 cb(from, to);
             }
         }
-        result
     }
 
     /// Whether the failure count has reached the configured threshold.
@@ -753,6 +836,7 @@ impl CircuitBreaker {
         inner.half_open_probes = 0;
         inner.half_open_successes = 0;
         inner.consecutive_opens += 1;
+        inner.generation = inner.generation.wrapping_add(1);
         self.atomic_state.store(STATE_OPEN, Ordering::Relaxed);
         (prev, CircuitState::Open)
     }
@@ -780,6 +864,7 @@ impl CircuitBreaker {
     fn close_from_half_open(&self, inner: &mut InnerState) -> (CircuitState, CircuitState) {
         let prev = to_circuit_state(inner.state);
         Self::reset_counters(inner);
+        inner.generation = inner.generation.wrapping_add(1);
         self.atomic_state.store(STATE_CLOSED, Ordering::Relaxed);
         (prev, CircuitState::Closed)
     }
@@ -804,8 +889,44 @@ impl CircuitBreaker {
     /// forgiveness). This means that interleaved successes slowly erase past failures,
     /// preventing the breaker from tripping on intermittent errors.
     pub fn record_outcome(&self, outcome: Outcome) {
-        let mut transition: Option<(CircuitState, CircuitState)> = None;
         let mut inner = self.state.lock();
+        let transition = self.apply_outcome(&mut inner, outcome);
+        drop(inner);
+        self.emit_transition(transition);
+    }
+
+    /// Settle an [`Admission`] from [`try_admit`](Self::try_admit).
+    ///
+    /// The outcome is applied only while the breaker is still in the epoch the
+    /// admission was granted in. A late outcome is discarded: the transition
+    /// that ended its epoch already reset the probe slots, and its evidence
+    /// predates the current recovery round. Returns whether it was applied.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "taking the admission by value consumes it, so one admission settles at most once"
+    )]
+    pub fn record_admitted_outcome(&self, admission: Admission, outcome: Outcome) -> bool {
+        // An admission from another breaker never settles here, even if the two
+        // breakers happen to share a generation number.
+        if admission.breaker != self.id {
+            return false;
+        }
+        let mut inner = self.state.lock();
+        if inner.generation != admission.generation {
+            return false;
+        }
+        let transition = self.apply_outcome(&mut inner, outcome);
+        drop(inner);
+        self.emit_transition(transition);
+        true
+    }
+
+    fn apply_outcome(
+        &self,
+        inner: &mut InnerState,
+        outcome: Outcome,
+    ) -> Option<(CircuitState, CircuitState)> {
+        let mut transition: Option<(CircuitState, CircuitState)> = None;
         match outcome {
             Outcome::Cancelled => {
                 // Never count cancellations as failures, but release the probe slot
@@ -814,7 +935,7 @@ impl CircuitBreaker {
             },
             Outcome::Success => {
                 if inner.state == State::HalfOpen {
-                    transition = self.record_half_open_success(&mut inner);
+                    transition = self.record_half_open_success(inner);
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
                     inner.total = inner.total.saturating_add(1);
@@ -830,9 +951,9 @@ impl CircuitBreaker {
                     inner.total = inner.total.saturating_add(1);
 
                     if inner.state == State::HalfOpen {
-                        transition = Some(self.trip_open_from_half_open(&mut inner));
-                    } else if self.should_trip_on_failure(&inner) {
-                        transition = Some(self.trip_open(&mut inner));
+                        transition = Some(self.trip_open_from_half_open(inner));
+                    } else if self.should_trip_on_failure(inner) {
+                        transition = Some(self.trip_open(inner));
                     }
                 }
             },
@@ -840,11 +961,11 @@ impl CircuitBreaker {
                 inner.slow_calls = inner.slow_calls.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
                 if inner.state == State::HalfOpen {
-                    transition = self.record_half_open_success(&mut inner);
+                    transition = self.record_half_open_success(inner);
                 } else {
                     inner.failures = inner.failures.saturating_sub(1);
-                    if self.slow_rate_trips(&inner) {
-                        transition = Some(self.trip_open(&mut inner));
+                    if self.slow_rate_trips(inner) {
+                        transition = Some(self.trip_open(inner));
                     }
                 }
             },
@@ -853,20 +974,13 @@ impl CircuitBreaker {
                 inner.failures = inner.failures.saturating_add(1);
                 inner.total = inner.total.saturating_add(1);
                 if inner.state == State::HalfOpen {
-                    transition = Some(self.trip_open_from_half_open(&mut inner));
-                } else if self.should_trip_on_failure(&inner) || self.slow_rate_trips(&inner) {
-                    transition = Some(self.trip_open(&mut inner));
+                    transition = Some(self.trip_open_from_half_open(inner));
+                } else if self.should_trip_on_failure(inner) || self.slow_rate_trips(inner) {
+                    transition = Some(self.trip_open(inner));
                 }
             },
         }
-        drop(inner);
-        if let Some((from, to)) = transition {
-            self.sink
-                .record(ResilienceEvent::CircuitStateChanged { from, to });
-            if let Some(ref cb) = self.on_state_change {
-                cb(from, to);
-            }
-        }
+        transition
     }
 
     /// Returns the current circuit state (lock-free atomic read).
@@ -875,6 +989,28 @@ impl CircuitBreaker {
             STATE_OPEN => CircuitState::Open,
             STATE_HALF_OPEN => CircuitState::HalfOpen,
             _ => CircuitState::Closed,
+        }
+    }
+
+    /// Remaining monotonic cooldown while the circuit is open.
+    ///
+    /// This observation does not transition to half-open or reserve a probe.
+    /// An elapsed open cooldown returns `Some(Duration::ZERO)` until an actual
+    /// [`try_acquire`](Self::try_acquire) performs the transition. Closed and
+    /// half-open circuits return `None`.
+    #[must_use]
+    pub fn remaining_open_duration(&self) -> Option<Duration> {
+        let inner = self.state.lock();
+        match inner.state {
+            State::Open { opened_at } => Some(
+                self.effective_reset_timeout(inner.consecutive_opens)
+                    .saturating_sub(
+                        self.instant_source
+                            .now()
+                            .saturating_duration_since(opened_at),
+                    ),
+            ),
+            State::Closed | State::HalfOpen => None,
         }
     }
 

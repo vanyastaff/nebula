@@ -100,7 +100,9 @@ use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc, time::Duratio
 
 use lru::LruCache;
 use nebula_resilience::CircuitState;
-use nebula_resilience::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, Outcome};
+use nebula_resilience::circuit_breaker::{
+    Admission, CircuitBreaker, CircuitBreakerConfig, Outcome,
+};
 use tokio::sync::oneshot;
 
 /// In-flight refresh entry.
@@ -391,6 +393,47 @@ impl L1RefreshCoalescer {
     #[cfg(test)]
     pub(crate) fn available_permits(&self) -> usize {
         self.refresh_semaphore.available_permits()
+    }
+
+    /// The actual breaker used by the private command-dispatch gate.
+    pub(crate) fn dispatch_breaker(&self, key: &str) -> Arc<CircuitBreaker> {
+        self.get_or_create_cb(key)
+    }
+
+    /// Install a breaker with a controllable clock under a dispatch key.
+    #[cfg(test)]
+    pub(crate) fn install_dispatch_breaker(&self, key: &str, breaker: Arc<CircuitBreaker>) {
+        self.circuit_breakers.lock().put(key.to_owned(), breaker);
+    }
+
+    /// Observe a failed transport on the exact breaker and epoch acquired
+    /// before dispatch. A result from an epoch the breaker already left is
+    /// discarded.
+    pub(crate) fn record_dispatch_failure(breaker: &Arc<CircuitBreaker>, admission: Admission) {
+        breaker.record_admitted_outcome(admission, Outcome::Failure);
+    }
+
+    /// A completed transport resets only its own retained LRU incarnation,
+    /// and only when its outcome belonged to the breaker's current epoch and
+    /// left the circuit closed.
+    pub(crate) fn record_dispatch_success(
+        &self,
+        key: &str,
+        breaker: &Arc<CircuitBreaker>,
+        admission: Admission,
+    ) {
+        if !breaker.record_admitted_outcome(admission, Outcome::Success)
+            || breaker.circuit_state() != CircuitState::Closed
+        {
+            return;
+        }
+        let mut breakers = self.circuit_breakers.lock();
+        if breakers
+            .peek(key)
+            .is_some_and(|current| Arc::ptr_eq(current, breaker))
+        {
+            breakers.pop(key);
+        }
     }
 
     /// Records a refresh failure for circuit breaker tracking.
