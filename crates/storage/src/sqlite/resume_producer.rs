@@ -99,31 +99,9 @@ impl ResumeProducer for SqliteResumeProducer {
             return Ok(false);
         }
 
-        // Exactly one row deleted — enqueue the Resume in the SAME transaction.
-        // Bindings byte-identical to the execution-store outbox append.
-        let resume_target_json: Option<String> = resume_msg
-            .resume_target
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(StorageError::from)?;
-        sqlx::query(
-            "INSERT INTO port_control_queue \
-             (id, execution_id, workspace_id, org_id, command, status, \
-              w3c_traceparent, reclaim_count, resume_target) \
-             VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)",
-        )
-        .bind(resume_msg.id.as_slice())
-        .bind(&resume_msg.execution_id)
-        .bind(&resume_msg.scope.workspace_id)
-        .bind(&resume_msg.scope.org_id)
-        .bind(resume_msg.command.as_str())
-        .bind(resume_msg.w3c_traceparent.as_deref())
-        .bind(i64::from(resume_msg.reclaim_count))
-        .bind(resume_target_json)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage_error)?;
+        // Exactly one row deleted — enqueue the Resume in the SAME transaction,
+        // through the execution-store outbox's own insert.
+        super::control_queue::insert_control_message(&mut *tx, resume_msg).await?;
 
         tx.commit().await.map_err(storage_error)?;
         Ok(true)

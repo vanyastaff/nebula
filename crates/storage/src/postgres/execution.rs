@@ -659,29 +659,7 @@ pub(super) async fn commit_locked(
     }
 
     for msg in batch.outbox() {
-        let resume_target_json: Option<String> = msg
-            .resume_target
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(StorageError::from)?;
-        sqlx::query(
-            "INSERT INTO port_control_queue \
-             (id, execution_id, workspace_id, org_id, command, status, \
-              w3c_traceparent, reclaim_count, resume_target) \
-             VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8)",
-        )
-        .bind(msg.id.as_slice())
-        .bind(&msg.execution_id)
-        .bind(&msg.scope.workspace_id)
-        .bind(&msg.scope.org_id)
-        .bind(msg.command.as_str())
-        .bind(msg.w3c_traceparent.as_deref())
-        .bind(i32::try_from(msg.reclaim_count).unwrap_or(i32::MAX))
-        .bind(resume_target_json)
-        .execute(&mut **tx)
-        .await
-        .map_err(storage_error)?;
+        super::control_queue::insert_control_message(&mut **tx, msg).await?;
     }
 
     // Insert resume-token rows in the same transaction as the

@@ -299,13 +299,13 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
     let stale = fixture.seed(execution).await;
 
     // Age the claim so the sweep is guaranteed to see it, rather than racing
-    // the clock. Postgres's reclaim predicate is `processed_at_ms < cutoff`
+    // the clock. Postgres's reclaim predicate is `processed_at < cutoff`
     // (strict) while the in-memory model uses `elapsed >= reclaim_after`
     // (inclusive), so a zero window reclaims immediately on one backend and
     // never on the other — a boundary divergence worth naming, and one this
     // test must not depend on either way.
     sqlx::query(
-        "UPDATE port_job_dispatch_queue SET processed_at_ms = 0 \
+        "UPDATE job_dispatch_queue SET processed_at = to_timestamp(0) \
          WHERE status = 'Processing' AND execution_id = $1",
     )
     .bind(execution)

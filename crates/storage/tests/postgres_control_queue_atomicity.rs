@@ -2,12 +2,16 @@
 
 #![cfg(feature = "postgres")]
 
-use nebula_storage::postgres::{PgControlQueue, init_schema};
-use nebula_storage_port::StorageError;
-use nebula_storage_port::store::ControlQueue;
+use nebula_storage::postgres::{PgControlQueue, PgExecutionStore, init_schema};
+use nebula_storage_port::store::{ControlQueue, ExecutionStore};
+use nebula_storage_port::{Scope, StorageError};
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
 #[path = "support/postgres_schema.rs"]
 mod postgres_schema;
+
+use execution_parents::SeedExecutionParents as _;
 
 fn database_url() -> Option<String> {
     match std::env::var("DATABASE_URL") {
@@ -38,31 +42,42 @@ async fn decoding_failure_rolls_back_every_claimed_row() {
         .await
         .unwrap();
     init_schema(&pool).await.unwrap();
+    let scope = Scope::new("workspace", "org");
+    pool.seed_execution_parents(&scope, "workflow").await;
+    PgExecutionStore::new(pool.clone())
+        .create(&scope, "execution", "workflow", serde_json::json!({}))
+        .await
+        .unwrap();
+    // The schema admits any JSON document as a resume target; one that is no
+    // `ResumeTarget` fails only when the claim decodes it.
     let row_id = [0x41_u8; 16];
     sqlx::query(
-        "INSERT INTO port_control_queue \
-         (id, execution_id, workspace_id, org_id, command, status) \
-         VALUES ($1, $2, $3, $4, $5, 'Pending')",
+        "INSERT INTO execution_control_queue \
+         (org_id, workspace_id, execution_id, id, command, status, resume_target) \
+         VALUES ($1, $2, $3, $4, 'Resume', 'Pending', '{\"unexpected\": true}')",
     )
-    .bind(row_id.as_slice())
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
     .bind("execution")
-    .bind("workspace")
-    .bind("org")
-    .bind("malformed-command")
+    .bind(row_id.as_slice())
     .execute(&pool)
     .await
     .unwrap();
 
     let queue = PgControlQueue::new(pool.clone());
     let result = queue.claim_pending(&[0x51; 16], 256).await;
-    assert!(matches!(result, Err(StorageError::Serialization(_))));
+    assert!(
+        matches!(result, Err(StorageError::Corrupt(_))),
+        "an undecodable row must fail the claim, got {result:?}"
+    );
 
-    let (status, generation): (String, i64) =
-        sqlx::query_as("SELECT status, claim_generation FROM port_control_queue WHERE id = $1")
-            .bind(row_id.as_slice())
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let (status, generation): (String, i64) = sqlx::query_as(
+        "SELECT status, claim_generation FROM execution_control_queue WHERE id = $1",
+    )
+    .bind(row_id.as_slice())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
     assert_eq!(status, "Pending");
     assert_eq!(generation, 0);
 }

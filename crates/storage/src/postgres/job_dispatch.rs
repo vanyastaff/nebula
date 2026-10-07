@@ -1,4 +1,4 @@
-//! Postgres [`JobDispatchQueue`] over the port-scoped schema.
+//! Postgres [`JobDispatchQueue`] over `job_dispatch_queue`.
 //!
 //! `claim_pending` uses `FOR UPDATE SKIP LOCKED` so multiple consumers can
 //! drain the queue concurrently without double-dispatch.  The routing
@@ -12,18 +12,18 @@
 //! in the same statement.  `available_plugins` is bound twice — once as
 //! `text[]` for `= ANY` and once as `JSONB` for `<@`.
 //!
-//! PERF: `<@` is NOT GIN-accelerated — `jsonb_ops` indexes `@>` / existence,
-//! not `<@` — so it runs as a filter over the rows the `(status,
-//! required_plugin_key)` B-tree returns.  Fine pre-fleet; a `<@`-indexable
-//! representation (text[] + `array_ops`, or a tag-membership table) is the
-//! tracked pre-production follow-up. See migration
-//! `0031_job_dispatch_and_trigger_dedup.sql`.
+//! PERF: `<@` is not index-accelerated (`jsonb_ops` indexes `@>` / existence,
+//! not `<@`), so it runs as a filter over the rows the pending
+//! `(required_worker_flavor_id, required_plugin_key, id)` index returns. Fine
+//! pre-fleet; a `<@`-indexable representation (text[] + `array_ops`, or a
+//! tag-membership table) is the pre-production follow-up.
 //!
 //! Ids are raw 16-byte ULID (`BYTEA`).  `required_plugins` is a `JSONB` array.
+//! Claim, terminal and sweep instants come from the database clock
+//! (`clock_timestamp()`).
 
 use std::time::Duration;
 
-use chrono::Utc;
 use hex;
 use nebula_core::{PluginKey, WorkerFlavorRevisionId};
 use nebula_storage_port::dto::JobDispatchMsg;
@@ -33,7 +33,8 @@ use nebula_storage_port::store::{
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
-use crate::sql_error::storage_error;
+use super::control_queue::{age_micros, decode_reclaim_count, encode_reclaim_count};
+use crate::sql_error::{foreign_key_not_found, storage_error};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -159,8 +160,7 @@ fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageErro
         required_plugins,
         row.try_get::<Option<String>, _>("w3c_traceparent")
             .map_err(storage_error)?,
-        row.try_get::<i32, _>("reclaim_count")
-            .map_err(storage_error)? as u32,
+        decode_reclaim_count(row.try_get("reclaim_count").map_err(storage_error)?)?,
         WorkerFlavorRevisionId::from_bytes(
             row.try_get::<Vec<u8>, _>("required_worker_flavor_id")
                 .map_err(storage_error)?
@@ -198,7 +198,7 @@ impl PgJobDispatchQueue {
     /// path stays a single statement.
     async fn unacknowledgeable(&self, claim: &JobClaimToken) -> Result<StorageError, StorageError> {
         let exists: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM port_job_dispatch_queue \
+            "SELECT 1 FROM job_dispatch_queue \
                  WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
         )
         .bind(claim.row_id().as_slice())
@@ -226,28 +226,38 @@ impl JobDispatchQueue for PgJobDispatchQueue {
     #[tracing::instrument(level = "debug", skip(self, msg), fields(id = ?msg.id, command = msg.command.as_str()))]
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError> {
         let plugins = plugins_to_jsonb(&msg.required_plugins);
+        // A job for an execution absent from its tenant is `NotFound`; a
+        // taken id is `Duplicate { entity: "job_dispatch" }`.
         sqlx::query(
-            "INSERT INTO port_job_dispatch_queue \
-             (id, execution_id, workspace_id, org_id, command, status, \
-              payload, event_id, required_plugin_key, \
-              required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id) \
+            "INSERT INTO job_dispatch_queue \
+             (org_id, workspace_id, execution_id, id, command, status, \
+              payload, event_id, required_worker_flavor_id, required_plugin_key, \
+              required_plugins, w3c_traceparent, reclaim_count) \
              VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8, $9, $10, $11, $12)",
         )
-        .bind(msg.id.as_slice())
-        .bind(&msg.execution_id)
-        .bind(&msg.scope.workspace_id)
         .bind(&msg.scope.org_id)
+        .bind(&msg.scope.workspace_id)
+        .bind(&msg.execution_id)
+        .bind(msg.id.as_slice())
         .bind(msg.command.as_str())
         .bind(&msg.payload)
         .bind(msg.event_id.as_deref())
+        .bind(msg.required_worker_flavor_id.as_bytes().as_slice())
         .bind(msg.required_plugin_key.as_str())
         .bind(&plugins)
         .bind(msg.w3c_traceparent.as_deref())
-        .bind(i32::try_from(msg.reclaim_count).unwrap_or(i32::MAX))
-        .bind(msg.required_worker_flavor_id.as_bytes().as_slice())
+        .bind(encode_reclaim_count(msg.reclaim_count)?)
         .execute(&self.pool)
         .await
-        .map_err(storage_error)?;
+        .map_err(|error| {
+            match foreign_key_not_found(error, "execution", &msg.execution_id) {
+                StorageError::Duplicate { detail, .. } => StorageError::Duplicate {
+                    entity: "job_dispatch",
+                    detail,
+                },
+                other => other,
+            }
+        })?;
         tracing::debug!(target: "nebula_storage::postgres", "job_dispatch: enqueued");
         Ok(())
     }
@@ -263,29 +273,26 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         if available_plugins.is_empty() {
             return Ok(Vec::new());
         }
-        // `processed_at_ms` is epoch-millis (BIGINT) — same representation as
-        // `port_control_queue`, so reclaim cutoff arithmetic is identical on both dialects.
-        let now_ms = Utc::now().timestamp_millis();
         let plugin_strs: Vec<&str> = available_plugins.iter().map(PluginKey::as_str).collect();
         // `required_plugins <@ $available_jsonb`: JSONB "is contained by" operator
         // (NOT GIN-accelerated — see the module PERF note; runs as a filter over
         // the pre-filtered rows).  A job's `required_plugins` must be a subset of
         // the available JSONB array.  Built via `plugins_to_jsonb` — the same
-        // helper `enqueue` uses — so `$3` (text[]) and `$4` (jsonb) are always
+        // helper `enqueue` uses — so `$2` (text[]) and `$3` (jsonb) are always
         // derived from the same source and can never diverge.
         let available_jsonb = plugins_to_jsonb(available_plugins);
         let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let rows = sqlx::query(
-            "UPDATE port_job_dispatch_queue \
-             SET status = 'Processing', processed_by = $1, processed_at_ms = $2, \
+            "UPDATE job_dispatch_queue \
+             SET status = 'Processing', processed_by = $1, processed_at = clock_timestamp(), \
                  claim_generation = claim_generation + 1 \
              WHERE id IN ( \
-                 SELECT id FROM port_job_dispatch_queue \
-                 WHERE status = 'Pending' AND required_worker_flavor_id = $6 \
-                   AND required_plugin_key = ANY($3) \
-                   AND required_plugins <@ $4 \
+                 SELECT id FROM job_dispatch_queue \
+                 WHERE status = 'Pending' AND required_worker_flavor_id = $5 \
+                   AND required_plugin_key = ANY($2) \
+                   AND required_plugins <@ $3 \
                  ORDER BY id \
-                 LIMIT $5 \
+                 LIMIT $4 \
                  FOR UPDATE SKIP LOCKED \
              ) \
              RETURNING id, execution_id, workspace_id, org_id, command, \
@@ -294,7 +301,6 @@ impl JobDispatchQueue for PgJobDispatchQueue {
                        claim_generation",
         )
         .bind(processor.as_slice())
-        .bind(now_ms)
         .bind(&plugin_strs)
         .bind(&available_jsonb)
         .bind(i64::from(batch_size))
@@ -316,14 +322,12 @@ impl JobDispatchQueue for PgJobDispatchQueue {
     }
 
     async fn mark_dispatched(&self, claim: &JobClaimToken) -> Result<(), StorageError> {
-        let terminal_at_ms = Utc::now().timestamp_millis();
         let rows_updated = sqlx::query(
-            "UPDATE port_job_dispatch_queue \
-             SET status = 'Dispatched', processed_at_ms = $1 \
-             WHERE id = $2 AND workspace_id = $3 AND org_id = $4 \
-               AND status = 'Processing' AND claim_generation = $5",
+            "UPDATE job_dispatch_queue \
+             SET status = 'Dispatched', processed_at = clock_timestamp() \
+             WHERE id = $1 AND workspace_id = $2 AND org_id = $3 \
+               AND status = 'Processing' AND claim_generation = $4",
         )
-        .bind(terminal_at_ms)
         .bind(claim.row_id().as_slice())
         .bind(&claim.scope().workspace_id)
         .bind(&claim.scope().org_id)
@@ -339,15 +343,13 @@ impl JobDispatchQueue for PgJobDispatchQueue {
     }
 
     async fn mark_failed(&self, claim: &JobClaimToken, error: &str) -> Result<(), StorageError> {
-        let terminal_at_ms = Utc::now().timestamp_millis();
         let rows_updated = sqlx::query(
-            "UPDATE port_job_dispatch_queue \
-             SET status = 'Failed', error_message = $1, processed_at_ms = $2 \
-             WHERE id = $3 AND workspace_id = $4 AND org_id = $5 \
-               AND status = 'Processing' AND claim_generation = $6",
+            "UPDATE job_dispatch_queue \
+             SET status = 'Failed', error_message = $1, processed_at = clock_timestamp() \
+             WHERE id = $2 AND workspace_id = $3 AND org_id = $4 \
+               AND status = 'Processing' AND claim_generation = $5",
         )
         .bind(error)
-        .bind(terminal_at_ms)
         .bind(claim.row_id().as_slice())
         .bind(&claim.scope().workspace_id)
         .bind(&claim.scope().org_id)
@@ -367,22 +369,18 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         reclaim_after: Duration,
         max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError> {
-        // `processed_at_ms` is epoch-millis (BIGINT) — same representation and
-        // cutoff arithmetic as `port_control_queue`, so reclaim fires at the
-        // identical instant on both dialects.
-        let terminal_at_ms = Utc::now().timestamp_millis();
-        let cutoff_ms = terminal_at_ms
-            .saturating_sub(i64::try_from(reclaim_after.as_millis()).unwrap_or(i64::MAX));
+        // Same clock and cutoff arithmetic as `execution_control_queue`.
+        let reclaim_after = age_micros(reclaim_after);
         let exhausted = sqlx::query(
-            "UPDATE port_job_dispatch_queue \
+            "UPDATE job_dispatch_queue \
              SET status = 'Failed', \
                  error_message = 'reclaim exhausted: presumed dead', \
-                 processed_at_ms = $1 \
-             WHERE status = 'Processing' AND processed_at_ms < $2 \
-               AND reclaim_count >= $3",
+                 processed_at = clock_timestamp() \
+             WHERE status = 'Processing' \
+               AND processed_at < clock_timestamp() - $1 * INTERVAL '1 microsecond' \
+               AND reclaim_count >= $2",
         )
-        .bind(terminal_at_ms)
-        .bind(cutoff_ms)
+        .bind(reclaim_after)
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
         .await
@@ -393,13 +391,14 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         // mints a value strictly greater than the token this reclaim just
         // invalidated. Resetting it would let a stale token match again.
         let reclaimed = sqlx::query(
-            "UPDATE port_job_dispatch_queue \
+            "UPDATE job_dispatch_queue \
              SET status = 'Pending', reclaim_count = reclaim_count + 1, \
-                 processed_by = NULL, processed_at_ms = NULL \
-             WHERE status = 'Processing' AND processed_at_ms < $1 \
+                 processed_by = NULL, processed_at = NULL \
+             WHERE status = 'Processing' \
+               AND processed_at < clock_timestamp() - $1 * INTERVAL '1 microsecond' \
                AND reclaim_count < $2",
         )
-        .bind(cutoff_ms)
+        .bind(reclaim_after)
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
         .await
@@ -412,14 +411,12 @@ impl JobDispatchQueue for PgJobDispatchQueue {
     }
 
     async fn cleanup(&self, retention: Duration) -> Result<u64, StorageError> {
-        let cutoff_ms = Utc::now()
-            .timestamp_millis()
-            .saturating_sub(i64::try_from(retention.as_millis()).unwrap_or(i64::MAX));
         let deleted = sqlx::query(
-            "DELETE FROM port_job_dispatch_queue \
-             WHERE status IN ('Dispatched', 'Failed') AND processed_at_ms < $1",
+            "DELETE FROM job_dispatch_queue \
+             WHERE status IN ('Dispatched', 'Failed') \
+               AND processed_at < clock_timestamp() - $1 * INTERVAL '1 microsecond'",
         )
-        .bind(cutoff_ms)
+        .bind(age_micros(retention))
         .execute(&self.pool)
         .await
         .map_err(storage_error)?

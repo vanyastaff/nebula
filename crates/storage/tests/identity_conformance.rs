@@ -157,7 +157,19 @@ impl IdentityBackend for SqliteBackend {
         #[cfg(not(feature = "sqlite"))]
         unimplemented!("built without the `sqlite` feature")
     }
+    #[cfg(feature = "sqlite")]
+    async fn seed_trigger_parents(&self, scope: &Scope, workflow_id: &str) {
+        use execution_parents::SeedExecutionParents as _;
+        self.pool()
+            .await
+            .seed_execution_parents(scope, workflow_id)
+            .await;
+    }
 }
+
+#[cfg(feature = "sqlite")]
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
 
 fn sqlite_skip() -> Option<&'static str> {
     if cfg!(feature = "sqlite") {

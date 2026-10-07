@@ -89,7 +89,17 @@ impl IdentityBackend for PostgresBackend {
             self.pool().await,
         ))
     }
+    async fn seed_trigger_parents(&self, scope: &Scope, workflow_id: &str) {
+        use execution_parents::SeedExecutionParents as _;
+        self.pool()
+            .await
+            .seed_execution_parents(scope, workflow_id)
+            .await;
+    }
 }
+
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
 
 // ── matrix ────────────────────────────────────────────────────────────────
 

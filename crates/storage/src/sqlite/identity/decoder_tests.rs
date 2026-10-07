@@ -99,11 +99,11 @@ async fn decode_trigger_null_required_workflow_id_is_err() {
         "CREATE TABLE t (id TEXT NOT NULL, workspace_id TEXT NOT NULL, \
          workflow_id TEXT, slug TEXT NOT NULL, display_name TEXT NOT NULL, \
          kind TEXT NOT NULL, config TEXT NOT NULL DEFAULT '{}', \
-         state TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL, \
-         version INTEGER NOT NULL DEFAULT 0, run_as TEXT, webhook_path TEXT, deleted_at TEXT)",
+         state TEXT NOT NULL, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, \
+         version INTEGER NOT NULL DEFAULT 0, run_as TEXT, webhook_path TEXT, deleted_at INTEGER)",
         // `workflow_id` is NOT NULL in the schema but NULL here.
         "INSERT INTO t VALUES ('trg-1', 'ws-1', NULL, 'my-trg', 'My Trigger', \
-         'webhook', '{}', 'active', '2024-01-01T00:00:00Z', 'user-1', 0, NULL, NULL, NULL)",
+         'webhook', '{}', 'active', 1704067200000000, 'user-1', 0, NULL, NULL, NULL)",
         decode_trigger,
     )
     .await;

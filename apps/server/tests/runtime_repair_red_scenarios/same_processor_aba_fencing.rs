@@ -8,9 +8,18 @@ use std::time::Duration;
 
 use nebula_core::PluginKey;
 use nebula_storage::inmem::{InMemoryExecutionStore, InMemoryJobDispatchQueue};
-use nebula_storage::sqlite::{SqliteJobDispatchQueue, init_schema as sqlite_init_schema};
-use nebula_storage_port::dto::{ControlCommand, JobDispatchMsg};
-use nebula_storage_port::store::{JobClaim, JobClaimToken, JobDispatchQueue};
+use nebula_storage::sqlite::{
+    SqliteExecutionStore, SqliteJobDispatchQueue, SqliteTenantProvisioningStore,
+    SqliteWorkflowStore, init_schema as sqlite_init_schema,
+};
+use nebula_storage_port::dto::{
+    ControlCommand, JobDispatchMsg, PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate,
+    TenantProvisioningRequest, WorkflowRecord,
+};
+use nebula_storage_port::store::{
+    ExecutionStore, JobClaim, JobClaimToken, JobDispatchQueue, TenantProvisioningStore,
+    WorkflowStore,
+};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use uuid::Uuid;
@@ -88,6 +97,67 @@ fn make_job(
         0,
         nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
     )
+}
+
+/// Provision the scenario's tenant, a workflow, and the execution each job
+/// belongs to: a SQL job row references its execution, which references its
+/// workflow and tenant.
+async fn seed_job_parents(
+    tenants: &dyn TenantProvisioningStore,
+    workflows: &dyn WorkflowStore,
+    executions: &dyn ExecutionStore,
+    scenario: &Scenario,
+) {
+    let scope = &scenario.jobs[0].scope;
+    let org = TenantOrgCreate::new(
+        scope.org_id.clone(),
+        scope.org_id.clone(),
+        "ABA fencing".into(),
+        "fixture".into(),
+        "free".into(),
+        None,
+        serde_json::json!({}),
+    )
+    .expect("SETUP: org values");
+    let workspace = TenantDefaultWorkspaceCreate::new(
+        scope.workspace_id.clone(),
+        "default".into(),
+        "Default".into(),
+        None,
+        "fixture".into(),
+        serde_json::json!({}),
+    )
+    .expect("SETUP: workspace values");
+    let request =
+        TenantProvisioningRequest::new(org, workspace, PrincipalKind::User, "fixture".into(), None)
+            .expect("SETUP: provisioning request");
+    tenants
+        .provision_tenant(request)
+        .await
+        .expect("SETUP: provision the scenario tenant");
+    workflows
+        .create(
+            scope,
+            WorkflowRecord {
+                id: "aba_fencing_workflow".into(),
+                scope: scope.clone(),
+                version: 1,
+                slug: "aba-fencing".into(),
+            },
+        )
+        .await
+        .expect("SETUP: create the scenario workflow");
+    for job in &scenario.jobs {
+        executions
+            .create(
+                scope,
+                &job.execution_id,
+                "aba_fencing_workflow",
+                serde_json::json!({}),
+            )
+            .await
+            .expect("SETUP: create the job's execution");
+    }
 }
 
 /// Claim both jobs as generation N and keep the tokens that claim minted.
@@ -262,13 +332,20 @@ async fn same_processor_id_aba_file_sqlite() {
     sqlite_init_schema(&pool)
         .await
         .expect("SETUP: install SQLite component schema");
+    seed_job_parents(
+        &SqliteTenantProvisioningStore::new(pool.clone()),
+        &SqliteWorkflowStore::new(pool.clone()),
+        &SqliteExecutionStore::new(pool.clone()),
+        &scenario,
+    )
+    .await;
     let queue = SqliteJobDispatchQueue::new(pool.clone());
 
     let generation_n = enqueue_and_claim_generation_n(&queue, &scenario).await;
     let ids = scenario.ids();
     let backdated = sqlx::query(
-        "UPDATE port_job_dispatch_queue \
-         SET processed_at_ms = 0 \
+        "UPDATE job_dispatch_queue \
+         SET processed_at = 0 \
          WHERE status = 'Processing' AND (id = ? OR id = ?)",
     )
     .bind(ids[0].as_slice())
@@ -285,7 +362,7 @@ async fn same_processor_id_aba_file_sqlite() {
     let _generation_n_plus_one = reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
     let (late_ack, late_nack) = stale_generation_n_results(&queue, &generation_n).await;
 
-    let deleted = sqlx::query("DELETE FROM port_job_dispatch_queue WHERE id = ? OR id = ?")
+    let deleted = sqlx::query("DELETE FROM job_dispatch_queue WHERE id = ? OR id = ?")
         .bind(ids[0].as_slice())
         .bind(ids[1].as_slice())
         .execute(&pool)
@@ -305,7 +382,10 @@ async fn same_processor_id_aba_file_sqlite() {
 #[cfg(feature = "postgres")]
 #[tokio::test]
 async fn same_processor_id_aba_live_postgres() {
-    use nebula_storage::postgres::{PgJobDispatchQueue, init_schema as postgres_init_schema};
+    use nebula_storage::postgres::{
+        PgExecutionStore, PgJobDispatchQueue, PgTenantProvisioningStore, PgWorkflowStore,
+        init_schema as postgres_init_schema,
+    };
     use sqlx::postgres::PgPoolOptions;
 
     let database_url =
@@ -319,13 +399,20 @@ async fn same_processor_id_aba_live_postgres() {
     postgres_init_schema(&pool)
         .await
         .expect("SETUP: install PostgreSQL component schema");
+    seed_job_parents(
+        &PgTenantProvisioningStore::new(pool.clone()),
+        &PgWorkflowStore::new(pool.clone()),
+        &PgExecutionStore::new(pool.clone()),
+        &scenario,
+    )
+    .await;
     let queue = PgJobDispatchQueue::new(pool.clone());
 
     let generation_n = enqueue_and_claim_generation_n(&queue, &scenario).await;
     let ids = scenario.ids();
     let backdated = sqlx::query(
-        "UPDATE port_job_dispatch_queue \
-         SET processed_at_ms = 0 \
+        "UPDATE job_dispatch_queue \
+         SET processed_at = to_timestamp(0) \
          WHERE status = 'Processing' AND (id = $1 OR id = $2)",
     )
     .bind(ids[0].as_slice())
@@ -342,7 +429,7 @@ async fn same_processor_id_aba_live_postgres() {
     let _generation_n_plus_one = reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
     let (late_ack, late_nack) = stale_generation_n_results(&queue, &generation_n).await;
 
-    let deleted = sqlx::query("DELETE FROM port_job_dispatch_queue WHERE id = $1 OR id = $2")
+    let deleted = sqlx::query("DELETE FROM job_dispatch_queue WHERE id = $1 OR id = $2")
         .bind(ids[0].as_slice())
         .bind(ids[1].as_slice())
         .execute(&pool)

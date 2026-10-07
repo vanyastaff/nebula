@@ -1242,7 +1242,9 @@ mod tests {
     /// preserves no rows. No deployed database exists to carry forward; the
     /// series is squashed into the baseline when the last aggregate lands.
     /// 0065: identity. 0066: tenancy. 0067: workflows. 0068: executions (with
-    /// the revision catalog they reference).
+    /// the revision catalog they reference). 0069: dispatch (execution
+    /// control and job queues, triggers, trigger start reservations, webhook
+    /// activations).
     ///
     /// Head 0064, on both backends, adds the execution listing projection
     /// (`started_at`, `finished_at`, `created_at_us`), backfills it and

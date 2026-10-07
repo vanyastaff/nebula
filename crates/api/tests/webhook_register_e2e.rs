@@ -9,12 +9,12 @@
 //!    proving the guard is load-bearing.
 //!
 //! 2. **Secret-once invariant**: the 201 body contains `signing_secret`
-//!    (`whsec_<base64>`).  The `port_triggers` config blob and
-//!    `port_webhook_activations` row must NOT contain the plaintext secret —
+//!    (`whsec_<base64>`).  The `triggers` config blob and
+//!    `webhook_activations` row must NOT contain the plaintext secret —
 //!    only the `secret_id` (credential PK) is stored.
 //!
 //! 3. **Happy path**: 201 with valid `webhook_url` + `activation_id`; the
-//!    `port_triggers` row and `port_webhook_activations` row are both durably
+//!    `triggers` row and `webhook_activations` row are both durably
 //!    written after the call returns.
 //!
 //! 4. **3-store compensation on activation failure**: if `activate_and_persist`
@@ -634,7 +634,7 @@ async fn register_rejects_inline_provider_authority_before_writes() {
 /// T2 — Secret-once invariant: signing_secret appears in 201 body but NOT in
 /// the stored rows.
 ///
-/// After a successful registration the `port_triggers.config` must reference
+/// After a successful registration the `triggers.config` must reference
 /// the credential by `secret_id` only.  The plaintext `whsec_` string must not
 /// appear anywhere in the persisted config JSON or in the activation record.
 #[tokio::test]
@@ -690,36 +690,36 @@ async fn register_happy_path_secret_not_in_rows() {
         "signing_secret must use the whsec_ prefix"
     );
 
-    // The port_triggers row must NOT contain the plaintext whsec_ value.
+    // The triggers row must NOT contain the plaintext whsec_ value.
     let trigger_rows = trigger_store.list(&scope).await.expect("list must succeed");
     assert!(
         !trigger_rows.is_empty(),
-        "port_triggers must have at least one row after registration"
+        "triggers must have at least one row after registration"
     );
     for row in &trigger_rows {
         let config_str = serde_json::to_string(&row.config).expect("config serializes");
         assert!(
             !config_str.contains(&resp.signing_secret),
-            "port_triggers config must NOT contain the plaintext signing_secret; \
+            "triggers config must NOT contain the plaintext signing_secret; \
              found it in row {:?}",
             row.id
         );
     }
 
-    // The port_webhook_activations row must NOT contain the plaintext whsec_ value.
+    // The webhook_activations row must NOT contain the plaintext whsec_ value.
     let activation_rows = activation_store
         .list_all_active()
         .await
         .expect("list_all_active must succeed");
     assert!(
         !activation_rows.is_empty(),
-        "port_webhook_activations must have at least one row after registration"
+        "webhook_activations must have at least one row after registration"
     );
     for record in &activation_rows {
         let record_str = serde_json::to_string(record).expect("record serializes");
         assert!(
             !record_str.contains(&resp.signing_secret),
-            "port_webhook_activations must NOT contain the plaintext signing_secret; \
+            "webhook_activations must NOT contain the plaintext signing_secret; \
              found it in record for trigger {:?}",
             record.trigger_id
         );
@@ -728,7 +728,7 @@ async fn register_happy_path_secret_not_in_rows() {
 
 /// T3 — Happy path: 201 with valid URL + activation_id; durable rows written.
 ///
-/// Verifies that both `port_triggers` and `port_webhook_activations` have
+/// Verifies that both `triggers` and `webhook_activations` have
 /// rows after the call, and that `webhook_url` is a valid HTTPS URL.
 #[tokio::test]
 async fn register_happy_path_rows_written() {
@@ -787,16 +787,16 @@ async fn register_happy_path_rows_written() {
         "activation_id must be non-empty"
     );
 
-    // port_triggers row must exist.
+    // triggers row must exist.
     let trigger_rows = trigger_store.list(&scope).await.expect("list must succeed");
     assert_eq!(
         trigger_rows.len(),
         1,
-        "exactly one port_triggers row expected after registration; got {}",
+        "exactly one triggers row expected after registration; got {}",
         trigger_rows.len()
     );
 
-    // port_webhook_activations row must exist.
+    // webhook_activations row must exist.
     let activation_rows = activation_store
         .list_all_active()
         .await
@@ -804,7 +804,7 @@ async fn register_happy_path_rows_written() {
     assert_eq!(
         activation_rows.len(),
         1,
-        "exactly one port_webhook_activations row expected after registration; got {}",
+        "exactly one webhook_activations row expected after registration; got {}",
         activation_rows.len()
     );
     assert_eq!(
@@ -959,10 +959,10 @@ async fn register_without_transport_returns_503() {
 /// the credential row (step 3) and trigger spec row (step 4) are written, so
 /// the compensation path must delete both.
 ///
-/// After the call, `port_triggers` must have a soft-deleted row and the
+/// After the call, `triggers` must have a soft-deleted row and the
 /// credential store must be empty (as if the call never happened).
 ///
-/// Note: `port_webhook_activations` is not written in this failure path
+/// Note: `webhook_activations` is not written in this failure path
 /// (activation fails before it reaches the store write), so it remains empty.
 ///
 /// RED-on-revert proof: comment out both `compensate_delete_credential` calls
@@ -1196,13 +1196,13 @@ async fn register_activation_row_has_node_key_trigger_id_and_spec_link() {
     .expect("happy-path registration must succeed");
     assert_eq!(status, StatusCode::CREATED);
 
-    // The port_triggers row carries the trg_ PK (server-generated).
+    // The triggers row carries the trg_ PK (server-generated).
     let trigger_rows = trigger_store.list(&scope).await.expect("list must succeed");
     assert_eq!(trigger_rows.len(), 1, "exactly one trigger row expected");
     let spec_pk = trigger_rows[0].id.clone();
     assert!(
         spec_pk.starts_with("trg_"),
-        "port_triggers PK must start with trg_; got {spec_pk:?}"
+        "triggers PK must start with trg_; got {spec_pk:?}"
     );
 
     // The activation row's trigger_id must be the NodeKey (for dispatch routing),
@@ -1229,7 +1229,7 @@ async fn register_activation_row_has_node_key_trigger_id_and_spec_link() {
     assert_eq!(
         row.spec_trigger_id,
         Some(spec_pk.clone()),
-        "activation row.spec_trigger_id must be the port_triggers PK ({spec_pk:?}); \
+        "activation row.spec_trigger_id must be the triggers PK ({spec_pk:?}); \
          got {:?}",
         row.spec_trigger_id
     );

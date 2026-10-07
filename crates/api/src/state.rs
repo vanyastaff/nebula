@@ -374,17 +374,17 @@ pub struct AppState {
     /// based on `ApiConfig.idempotency.backend`.
     pub idempotency_store: Option<Arc<dyn IdempotencyStore>>,
 
-    /// Optional trigger config store (ADR-0096 — spec-16 `port_triggers`).
+    /// Optional trigger config store (ADR-0096 — spec-16 `triggers`).
     ///
     /// The **undecorated** base store. Per-request / per-tenant code wraps it
     /// in `nebula_tenancy::ScopedTriggerStore::new(store, scope)` at the call
     /// site; the bootstrap pathway calls through it via `TriggerStoreSpecLookup`
     /// which always supplies the activation row's own `scope`.
     ///
-    /// Required for the webhook-bootstrap READ path: each `port_webhook_activations`
+    /// Required for the webhook-bootstrap READ path: each `webhook_activations`
     /// row carries only routing/token/scope/workflow/mode data; the handler-build
     /// inputs (`provider`, `secret_id`, replay knobs) live in
-    /// `port_triggers.config.webhook_activation`. Wire this alongside
+    /// `triggers.config.webhook_activation`. Wire this alongside
     /// `webhook_activation_store` so `bootstrap_webhook_activations` can
     /// reconstruct a handler after a restart.
     ///
@@ -1180,7 +1180,7 @@ impl AppState {
         self
     }
 
-    /// Attach the trigger config store (ADR-0096 — `port_triggers`).
+    /// Attach the trigger config store (ADR-0096 — `triggers`).
     ///
     /// The **undecorated** base store. The bootstrap pathway wraps it in a
     /// `TriggerStoreSpecLookup` (see

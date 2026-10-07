@@ -139,7 +139,7 @@ fn now_micros() -> i64 {
 // ── CAS and soft delete ──────────────────────────────────────────────────
 
 /// Current time as an RFC 3339 string — the soft-delete stamp of the
-/// aggregates that still store instants as text (resources, triggers).
+/// aggregates that still store instants as text (resources).
 fn now_rfc3339() -> String {
     Utc::now().to_rfc3339()
 }

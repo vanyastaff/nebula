@@ -117,7 +117,7 @@ impl SqliteTurnHandoff {
                 tx.rollback().await.map_err(storage_error)?;
                 return Ok(ControlStartAcceptance::ClaimSuperseded);
             };
-            let current: Option<i64> = sqlx::query_scalar("SELECT 1 FROM port_control_queue c WHERE c.id = ? AND c.claim_generation = ? AND c.status = 'Processing' AND c.command = 'Start' AND c.execution_id = ? AND c.workspace_id = ? AND c.org_id = ? AND EXISTS (SELECT 1 FROM execution_revision_references r WHERE r.execution_id = c.execution_id AND r.worker_flavor_id = ? AND r.reference_state = 'live')")
+            let current: Option<i64> = sqlx::query_scalar("SELECT 1 FROM execution_control_queue c WHERE c.id = ? AND c.claim_generation = ? AND c.status = 'Processing' AND c.command = 'Start' AND c.execution_id = ? AND c.workspace_id = ? AND c.org_id = ? AND EXISTS (SELECT 1 FROM execution_revision_references r WHERE r.execution_id = c.execution_id AND r.worker_flavor_id = ? AND r.reference_state = 'live')")
                 .bind(handoff.claim().row_id().as_slice()).bind(claim_generation)
                 .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .bind(handoff.worker_flavor_revision_id().as_bytes().as_slice())
@@ -155,7 +155,7 @@ impl SqliteTurnHandoff {
                 .bind(handoff.holder()).bind(expires).bind(generation).bind(handoff.execution_id())
                 .bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .execute(&mut *tx).await.map_err(storage_error)?;
-            let completed = sqlx::query("UPDATE port_control_queue SET status = 'Completed' WHERE id = ? AND claim_generation = ? AND status = 'Processing' AND execution_id = ? AND workspace_id = ? AND org_id = ?")
+            let completed = sqlx::query("UPDATE execution_control_queue SET status = 'Completed' WHERE id = ? AND claim_generation = ? AND status = 'Processing' AND execution_id = ? AND workspace_id = ? AND org_id = ?")
                 .bind(handoff.claim().row_id().as_slice()).bind(claim_generation)
                 .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .execute(&mut *tx).await.map_err(storage_error)?;
@@ -217,7 +217,7 @@ impl SqliteTurnHandoff {
                 // names. A valid token from one job paired with another
                 // execution id would otherwise lease the wrong aggregate and
                 // acknowledge — dropping — the job that was actually claimed.
-                "SELECT 1 FROM port_job_dispatch_queue q \
+                "SELECT 1 FROM job_dispatch_queue q \
                  WHERE q.id = ? AND q.status = 'Processing' AND q.claim_generation = ? \
                    AND q.execution_id = ? AND q.workspace_id = ? AND q.org_id = ? \
                    AND q.required_worker_flavor_id = ? \
@@ -294,16 +294,16 @@ impl SqliteTurnHandoff {
             // Retention is measured from the terminal transition, and this is
             // one: a claim that spent longer than the retention window in
             // preflight would otherwise be eligible for deletion the moment the
-            // handoff lands, because `processed_at_ms` would still hold the
+            // handoff lands, because `processed_at` would still hold the
             // claim time.
-            let acknowledged = sqlx::query(
-                "UPDATE port_job_dispatch_queue \
-                 SET status = 'Dispatched', \
-                     processed_at_ms = \
-                         CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER) \
+            let acknowledge = format!(
+                "UPDATE job_dispatch_queue \
+                 SET status = 'Dispatched', processed_at = {} \
                  WHERE id = ? AND status = 'Processing' AND claim_generation = ? \
                    AND execution_id = ? AND workspace_id = ? AND org_id = ?",
-            )
+                super::control_queue::NOW_MICROS
+            );
+            let acknowledged = sqlx::query(sqlx::AssertSqlSafe(acknowledge))
             .bind(handoff.claim().row_id().as_slice())
             .bind(claim_generation)
             .bind(handoff.execution_id())

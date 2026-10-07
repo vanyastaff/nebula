@@ -292,7 +292,29 @@ pub(super) struct Ports {
     pub bundles: Arc<dyn StartAcceptanceStore>,
     pub catalog: Arc<dyn PlanFlavorCatalog>,
     pub writer: Arc<dyn PlanFlavorCatalogWriter>,
+    pub parents: Parents,
 }
+
+/// The pool whose tenant and workflow rows an execution references; the
+/// in-memory backend does not check references between aggregates.
+pub(super) enum Parents {
+    Unchecked,
+    Sqlite(sqlx::SqlitePool),
+    Postgres(sqlx::PgPool),
+}
+
+impl Parents {
+    /// Provision `scope` and the live workflow `workflow_id` in it.
+    async fn seed(&self, scope: &Scope, workflow_id: &str) {
+        use super::execution_parents::SeedExecutionParents as _;
+        match self {
+            Self::Unchecked => {},
+            Self::Sqlite(pool) => pool.seed_execution_parents(scope, workflow_id).await,
+            Self::Postgres(pool) => pool.seed_execution_parents(scope, workflow_id).await,
+        }
+    }
+}
+
 pub(super) enum Backend {
     Memory(Arc<nebula_storage::InMemoryExecutionStore>),
     Sqlite {
@@ -344,14 +366,14 @@ impl Backend {
         let deleted = match self {
             Self::Memory(_) => return,
             Self::Sqlite { pool, .. } => {
-                sqlx::query("DELETE FROM port_control_queue WHERE status = 'Completed'")
+                sqlx::query("DELETE FROM execution_control_queue WHERE status = 'Completed'")
                     .execute(pool)
                     .await
                     .unwrap()
                     .rows_affected()
             },
             Self::Postgres { pool, .. } => {
-                sqlx::query("DELETE FROM port_control_queue WHERE status = 'Completed'")
+                sqlx::query("DELETE FROM execution_control_queue WHERE status = 'Completed'")
                     .execute(pool)
                     .await
                     .unwrap()
@@ -460,6 +482,7 @@ impl Backend {
                     bundles: Arc::new(InMemoryStartAcceptanceStore::new(core)),
                     catalog: catalog.clone(),
                     writer: catalog,
+                    parents: Parents::Unchecked,
                 }
             },
             Self::Sqlite { pool, .. } => {
@@ -484,6 +507,7 @@ impl Backend {
                     bundles: Arc::new(SqliteStartAcceptanceStore::new(pool.clone())),
                     catalog: catalog.clone(),
                     writer: catalog,
+                    parents: Parents::Sqlite(pool.clone()),
                 }
             },
             Self::Postgres { pool, .. } => {
@@ -508,6 +532,7 @@ impl Backend {
                     bundles: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
                     catalog: catalog.clone(),
                     writer: catalog,
+                    parents: Parents::Postgres(pool.clone()),
                 }
             },
         }
@@ -536,6 +561,7 @@ async fn materialize(
         nebula_core::WorkspaceId::new().to_string(),
         nebula_core::OrgId::new().to_string(),
     );
+    ports.parents.seed(&scope, &workflow.id.to_string()).await;
     let id = ExecutionId::new();
     let input =
         serde_json::json!({"accepted_input": id.to_string(), "payload":"predecessor persisted"});

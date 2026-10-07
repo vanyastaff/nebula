@@ -29,6 +29,10 @@ trait IdentityBackend: Send + Sync {
     async fn tenant_provisioning_store(&self) -> Arc<dyn TenantProvisioningStore>;
     async fn resource_store(&self) -> Arc<dyn ResourceStore>;
     async fn trigger_store(&self) -> Arc<dyn TriggerStore>;
+    /// Provision `scope` and the live workflow `workflow_id` a trigger
+    /// belongs to — a SQL backend's foreign keys; nothing in memory, which
+    /// does not check references between aggregates.
+    async fn seed_trigger_parents(&self, _scope: &Scope, _workflow_id: &str) {}
 }
 
 
@@ -1078,9 +1082,15 @@ async fn assert_trigger_contract(b: &dyn IdentityBackend) {
     let s = b.trigger_store().await;
     let a = Scope::new("ws_a", "org_a");
     let other = Scope::new("ws_b", "org_b");
+    b.seed_trigger_parents(&a, "wf_1").await;
     s.create(&a, trigger_row("trg_1", "ws_a", "cron"))
         .await
         .expect("create");
+    assert_eq!(
+        s.get(&a, "trg_1").await.unwrap(),
+        Some(trigger_row("trg_1", "ws_a", "cron")),
+        "a trigger round-trips, its instants included"
+    );
     assert!(s.get(&other, "trg_1").await.unwrap().is_none());
     assert_eq!(s.list(&a).await.unwrap().len(), 1);
     assert!(

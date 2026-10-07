@@ -4,7 +4,7 @@
 //! prove the atomic consume+enqueue seam at the storage level:
 //!  1. `peek` returns a committed token WITHOUT burning it.
 //!  2. `consume_and_enqueue_resume` burns the token AND inserts the Resume into
-//!     `port_control_queue` in one transaction.
+//!     `execution_control_queue` in one transaction.
 //!  3. A replay returns `Ok(false)` and inserts no second Resume.
 //!  4. **Atomicity gate**: when the control INSERT fails inside the tx, the token
 //!     DELETE is rolled back — the token survives and no Resume is written.
@@ -131,7 +131,7 @@ async fn seed_token(
 }
 
 async fn resume_count(pool: &sqlx::SqlitePool) -> i64 {
-    sqlx::query("SELECT COUNT(*) AS n FROM port_control_queue WHERE command = 'Resume'")
+    sqlx::query("SELECT COUNT(*) AS n FROM execution_control_queue WHERE command = 'Resume'")
         .fetch_one(pool)
         .await
         .expect("count query must succeed")
@@ -248,7 +248,7 @@ async fn sqlite_replay_returns_false_and_writes_nothing() {
 /// token survives and no Resume is written.
 ///
 /// We force the INSERT to fail with a temporary aborting trigger on
-/// `port_control_queue`.
+/// `execution_control_queue`.
 /// Falsifiability: a non-atomic `commit`-the-delete-then-insert producer would
 /// burn the token and return `Err` with the token gone → `peek` returns `None`
 /// → the `is_some()` assertion fails → this is exactly the P1 bug.
@@ -270,8 +270,8 @@ async fn sqlite_failed_enqueue_rolls_back_the_burn() {
     // Make the in-tx control INSERT fail without corrupting the canonical
     // migration-owned schema.
     sqlx::query(
-        "CREATE TRIGGER fail_port_control_queue_insert
-         BEFORE INSERT ON port_control_queue
+        "CREATE TRIGGER fail_control_queue_insert
+         BEFORE INSERT ON execution_control_queue
          BEGIN
              SELECT RAISE(ABORT, 'injected control enqueue failure');
          END",
@@ -299,7 +299,7 @@ async fn sqlite_failed_enqueue_rolls_back_the_burn() {
     );
 
     // Clear the fault and prove the retry now succeeds + writes exactly one Resume.
-    sqlx::query("DROP TRIGGER fail_port_control_queue_insert")
+    sqlx::query("DROP TRIGGER fail_control_queue_insert")
         .execute(&pool)
         .await
         .expect("fault trigger must be removed");

@@ -122,7 +122,7 @@ impl PgTurnHandoff {
                 tx.rollback().await.map_err(storage_error)?;
                 return Ok(ControlStartAcceptance::ClaimSuperseded);
             };
-            let current: Option<i32> = sqlx::query_scalar("SELECT 1 FROM port_control_queue c WHERE c.id = $1 AND c.claim_generation = $2 AND c.status = 'Processing' AND c.command = 'Start' AND c.execution_id = $3 AND c.workspace_id = $4 AND c.org_id = $5 AND EXISTS (SELECT 1 FROM execution_revision_references r WHERE r.execution_id = c.execution_id AND r.worker_flavor_id = $6 AND r.reference_state = 'live') FOR UPDATE OF c")
+            let current: Option<i32> = sqlx::query_scalar("SELECT 1 FROM execution_control_queue c WHERE c.id = $1 AND c.claim_generation = $2 AND c.status = 'Processing' AND c.command = 'Start' AND c.execution_id = $3 AND c.workspace_id = $4 AND c.org_id = $5 AND EXISTS (SELECT 1 FROM execution_revision_references r WHERE r.execution_id = c.execution_id AND r.worker_flavor_id = $6 AND r.reference_state = 'live') FOR UPDATE OF c")
                 .bind(handoff.claim().row_id().as_slice()).bind(claim_generation)
                 .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .bind(handoff.worker_flavor_revision_id().as_bytes().as_slice())
@@ -159,7 +159,7 @@ impl PgTurnHandoff {
                 .bind(handoff.holder()).bind(expires).bind(generation).bind(handoff.execution_id())
                 .bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .execute(&mut *tx).await.map_err(storage_error)?;
-            let completed = sqlx::query("UPDATE port_control_queue SET status = 'Completed' WHERE id = $1 AND claim_generation = $2 AND status = 'Processing' AND execution_id = $3 AND workspace_id = $4 AND org_id = $5")
+            let completed = sqlx::query("UPDATE execution_control_queue SET status = 'Completed' WHERE id = $1 AND claim_generation = $2 AND status = 'Processing' AND execution_id = $3 AND workspace_id = $4 AND org_id = $5")
                 .bind(handoff.claim().row_id().as_slice()).bind(claim_generation)
                 .bind(handoff.execution_id()).bind(&handoff.scope().workspace_id).bind(&handoff.scope().org_id)
                 .execute(&mut *tx).await.map_err(storage_error)?;
@@ -217,7 +217,7 @@ impl PgTurnHandoff {
                 // names. A valid token from one job paired with another
                 // execution id would otherwise lease the wrong aggregate and
                 // acknowledge — dropping — the job that was actually claimed.
-                "SELECT 1 FROM port_job_dispatch_queue q \
+                "SELECT 1 FROM job_dispatch_queue q \
                  JOIN execution_revision_references r ON r.execution_id = q.execution_id \
                  WHERE q.id = $1 AND q.status = 'Processing' AND q.claim_generation = $2 \
                    AND q.execution_id = $3 AND q.workspace_id = $4 AND q.org_id = $5 \
@@ -288,12 +288,11 @@ impl PgTurnHandoff {
             // Retention is measured from the terminal transition, and this is
             // one: a claim that spent longer than the retention window in
             // preflight would otherwise be eligible for deletion the moment the
-            // handoff lands, because `processed_at_ms` would still hold the
+            // handoff lands, because `processed_at` would still hold the
             // claim time.
             let acknowledged = sqlx::query(
-                "UPDATE port_job_dispatch_queue \
-                 SET status = 'Dispatched', \
-                     processed_at_ms = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint \
+                "UPDATE job_dispatch_queue \
+                 SET status = 'Dispatched', processed_at = clock_timestamp() \
                  WHERE id = $1 AND status = 'Processing' AND claim_generation = $2 \
                    AND execution_id = $3 AND workspace_id = $4 AND org_id = $5",
             )

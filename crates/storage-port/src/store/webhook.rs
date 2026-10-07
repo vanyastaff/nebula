@@ -35,16 +35,14 @@ pub trait WebhookActivationStore: Send + Sync + std::fmt::Debug {
     ///
     /// If `token_hash` is the all-zeros sentinel (`[0u8; 32]`) this method
     /// returns `Ok(None)` **without querying the backend**.  The sentinel
-    /// means "no token assigned yet" and is excluded from the partial unique
-    /// index on `port_webhook_activations`; querying for it would either
-    /// return garbage or match many rows.
+    /// means "no token assigned yet"; the SQL backends store it as a NULL
+    /// token hash, so no row could match it.
     ///
     /// # Fail-closed parsing
     ///
-    /// Mode and token-hash fields are parsed with the same fail-closed
-    /// defaults as [`WebhookActivationStore::resolve`]: an unrecognised mode
-    /// text falls back to `Test`; a malformed or short blob falls back to
-    /// the zero sentinel.
+    /// A stored mode or token hash that does not decode is
+    /// [`StorageError::Corrupt`], never a defaulted value — the same rule as
+    /// [`WebhookActivationStore::resolve`].
     async fn resolve_by_token(
         &self,
         token_hash: &[u8; 32],

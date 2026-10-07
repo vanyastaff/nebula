@@ -1,17 +1,17 @@
 //! Restart-durability of the webhook bootstrap READ path (ADR-0096, PR-3a).
 //!
 //! Proves that `bootstrap_webhook_activations` can reconstruct a webhook
-//! handler after a process restart by reading `port_triggers.config.webhook_activation`
+//! handler after a process restart by reading `triggers.config.webhook_activation`
 //! through `TriggerStoreSpecLookup`.
 //!
 //! # Acceptance criteria
 //!
-//! 1. Happy path: one active `port_webhook_activations` row + one matching
-//!    `port_triggers` row with a valid `webhook_activation` spec → `loaded==1,
+//! 1. Happy path: one active `webhook_activations` row + one matching
+//!    `triggers` row with a valid `webhook_activation` spec → `loaded==1,
 //!    skipped==0`.
 //!
 //! 2. Cross-tenant isolation (RED-on-revert): `scope_a` and `scope_b` both
-//!    have a `port_triggers` row for the same `trigger_id`, but with different
+//!    have a `triggers` row for the same `trigger_id`, but with different
 //!    `secret_id` values. Only `scope_b`'s secret is known to the resolver.
 //!    The `scope_b` activation row must load successfully (`loaded==1`).
 //!    On revert (drop scope binding so the lookup is unscoped): the lookup
@@ -145,7 +145,7 @@ fn build_action_registry() -> ActionRegistry {
     registry
 }
 
-/// Seed a `port_triggers` row with `kind=webhook` and a `webhook_activation`
+/// Seed a `triggers` row with `kind=webhook` and a `webhook_activation`
 /// config namespace under `scope`, using the given `provider` tag and `secret_id`.
 async fn seed_trigger_row(
     store: &dyn TriggerStore,
@@ -183,7 +183,7 @@ async fn seed_trigger_row(
         .expect("TriggerRow creation must succeed; duplicate id means the store was not empty");
 }
 
-/// Seed an active `port_webhook_activations` row for `TRIGGER_ID` under `scope`.
+/// Seed an active `webhook_activations` row for `TRIGGER_ID` under `scope`.
 ///
 /// `spec_trigger_id` is set to `TRIGGER_ID` so the bootstrap reconstruct can
 /// find the spec row via `TriggerStoreSpecLookup::lookup`.  This matches the
@@ -272,13 +272,13 @@ async fn bootstrap_skips_empty_resolved_secret_before_factory() {
 
 /// Cross-tenant isolation — strengthened RED-on-revert guard.
 ///
-/// Setup: BOTH `scope_a` and `scope_b` have a `port_triggers` row for the same
+/// Setup: BOTH `scope_a` and `scope_b` have a `triggers` row for the same
 /// `trigger_id`. The rows carry different `secret_id` values:
 ///
 /// - `scope_a` row → `SECRET_ID_A` (NOT in the resolver — unknown).
 /// - `scope_b` row → `SECRET_ID_B` (known to the resolver).
 ///
-/// Only `scope_b` has an active `port_webhook_activations` row.
+/// Only `scope_b` has an active `webhook_activations` row.
 ///
 /// Correct outcome (scope binding intact):
 ///   `lookup(scope_b, TRIGGER_ID)` returns `scope_b`'s spec → `SECRET_ID_B`

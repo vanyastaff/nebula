@@ -111,6 +111,22 @@ relational_matrix!(
     workspace_owned_rows_require_their_workspace,
     assert_workspace_owned_rows_require_their_workspace
 );
+relational_matrix!(
+    queue_rows_require_their_execution,
+    harness::assert_queue_rows_require_their_execution
+);
+relational_matrix!(
+    queue_rows_cascade_with_their_execution,
+    harness::assert_queue_rows_cascade_with_their_execution
+);
+relational_matrix!(
+    dispatch_writes_require_live_parents,
+    harness::assert_dispatch_writes_require_live_parents
+);
+relational_matrix!(
+    triggers_cascade_with_their_workflow,
+    harness::assert_triggers_cascade_with_their_workflow
+);
 
 matrix!(
     deleted_workflow_hides_its_versions,

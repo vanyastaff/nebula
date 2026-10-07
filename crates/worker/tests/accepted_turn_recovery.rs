@@ -1,5 +1,7 @@
 //! Actual WorkerRuntime restart from queue-independent accepted-turn markers.
 
+#[path = "../../engine/tests/support/execution_parents.rs"]
+mod execution_parents;
 #[path = "accepted_turn_recovery/support.rs"]
 mod support;
 

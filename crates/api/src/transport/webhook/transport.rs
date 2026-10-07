@@ -577,9 +577,9 @@ pub struct PersistParams {
     pub ctx_template: TriggerRuntimeContext,
     /// The workflow trigger-binding NodeKey — the dispatch routing key used by
     /// `do_emit_prod` to resolve the binding in `ValidatedWorkflow.trigger_bindings`.
-    /// NOT the `port_triggers` spec-row PK (that is `spec_trigger_id`).
+    /// NOT the `triggers` spec-row PK (that is `spec_trigger_id`).
     pub trigger_id: String,
-    /// The `port_triggers` spec-row PK (`trg_` prefix) — stored as the ADR-0101
+    /// The `triggers` spec-row PK (`trg_` prefix) — stored as the ADR-0101
     /// L1 spec link so bootstrap reconstruct can re-resolve the webhook spec via
     /// `TriggerSpecLookup::lookup` without conflating it with the routing NodeKey.
     pub spec_trigger_id: String,
@@ -658,7 +658,7 @@ pub async fn activate_and_persist(
     // Step 3: build the B-world record.
     //
     // `trigger_id` is the dispatch routing NodeKey (used by `do_emit_prod`).
-    // `spec_trigger_id` is the ADR-0101 L1 spec link (the `port_triggers` PK)
+    // `spec_trigger_id` is the ADR-0101 L1 spec link (the `triggers` PK)
     // used by bootstrap reconstruct to re-resolve the webhook spec.
     // `slug` is set to the trigger UUID string so the port store has a unique,
     // human-readable identifier for the activation.  This field is used only

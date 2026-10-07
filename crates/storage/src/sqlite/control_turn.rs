@@ -29,7 +29,7 @@ pub(super) async fn commit(
         };
         let claim_generation = i64::try_from(commit.claim().generation().get())
             .map_err(|_| StorageError::InvalidInput("control claim generation is invalid".into()))?;
-        let Some(command) = sqlx::query("SELECT command, resume_target, claim_generation FROM port_control_queue WHERE id = ? AND execution_id = ? AND workspace_id = ? AND org_id = ? AND status = 'Processing'")
+        let Some(command) = sqlx::query("SELECT command, resume_target, claim_generation FROM execution_control_queue WHERE id = ? AND execution_id = ? AND workspace_id = ? AND org_id = ? AND status = 'Processing'")
             .bind(commit.claim().row_id().as_slice()).bind(id).bind(&scope.workspace_id).bind(&scope.org_id)
             .fetch_optional(&mut *tx).await.map_err(storage_error)? else {
             tx.rollback().await.map_err(storage_error)?;
@@ -158,7 +158,7 @@ pub(super) async fn commit(
         if accepted.rows_affected() != 1 {
             return Err(StorageError::Internal("control turn scope changed".into()));
         }
-        let completed = sqlx::query("UPDATE port_control_queue SET status = 'Completed', error_message = NULL WHERE id = ? AND execution_id = ? AND workspace_id = ? AND org_id = ? AND claim_generation = ? AND status = 'Processing'")
+        let completed = sqlx::query("UPDATE execution_control_queue SET status = 'Completed', error_message = NULL WHERE id = ? AND execution_id = ? AND workspace_id = ? AND org_id = ? AND claim_generation = ? AND status = 'Processing'")
             .bind(commit.claim().row_id().as_slice()).bind(id).bind(&scope.workspace_id).bind(&scope.org_id).bind(claim_generation)
             .execute(&mut *tx).await.map_err(storage_error)?;
         if completed.rows_affected() != 1 {
@@ -388,7 +388,7 @@ pub(super) async fn record_flavor(
             .map_err(storage_error)?,
     )
     .map_err(|_| StorageError::Internal("stored execution generation is invalid".into()))?;
-    let Some(command) = sqlx::query("SELECT command, resume_target, claim_generation FROM port_control_queue WHERE id = ? AND execution_id = ? AND workspace_id = ? AND org_id = ? AND status = 'Processing'")
+    let Some(command) = sqlx::query("SELECT command, resume_target, claim_generation FROM execution_control_queue WHERE id = ? AND execution_id = ? AND workspace_id = ? AND org_id = ? AND status = 'Processing'")
         .bind(request.claim().row_id().as_slice()).bind(id).bind(&scope.workspace_id).bind(&scope.org_id)
         .fetch_optional(&mut *tx).await.map_err(storage_error)? else { return Ok(Flavor::ClaimSuperseded); };
     let command_kind: String = command.try_get("command").map_err(storage_error)?;

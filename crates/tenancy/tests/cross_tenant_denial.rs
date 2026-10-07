@@ -529,7 +529,7 @@ async fn cross_tenant_control_enqueue_is_stamped_with_bound_scope() {
 // ── Abuse case 5: ResourceStore / TriggerStore BOLA/IDOR ──────────────────
 // `ResourceStore`/`TriggerStore` take a caller-supplied `&Scope` exactly
 // like `ExecutionStore`. The real adapters partition `port_resources` /
-// `port_triggers` solely by that argument's `(workspace_id, org_id)` and
+// `triggers` solely by that argument's `(workspace_id, org_id)` and
 // never read `row.workspace_id` for the key — so the mocks below key the
 // same way. Without a `Scoped*` wrapper a non-HTTP consumer could pass an
 // arbitrary scope: cross-tenant read on `get`/`list`, cross-tenant write

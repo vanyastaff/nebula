@@ -290,7 +290,7 @@ async fn validate_one(
     ctx_factory: &dyn WebhookActivationContextFactory,
     spec_lookup: &dyn TriggerSpecLookup,
 ) -> Result<(), BootstrapError> {
-    // Use spec_trigger_id (the port_triggers PK, `trg_` prefix) as the spec
+    // Use spec_trigger_id (the `triggers` PK, `trg_` prefix) as the spec
     // lookup key — NOT trigger_id (the dispatch routing NodeKey).  Legacy rows
     // written before ADR-0101 have spec_trigger_id = None; skip them with
     // MissingSpec so we never confuse a NodeKey for a spec-row PK.

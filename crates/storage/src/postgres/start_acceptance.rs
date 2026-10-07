@@ -37,7 +37,7 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
         scope: &nebula_storage_port::Scope,
         key: &nebula_storage_port::dto::TriggerStartKey<'_>,
     ) -> Result<Option<String>, StorageError> {
-        sqlx::query_scalar("SELECT execution_id FROM port_trigger_dedup_inbox WHERE workspace_id = $1 AND org_id = $2 AND trigger_id = $3 AND event_id = $4").bind(&scope.workspace_id).bind(&scope.org_id).bind(key.trigger_id()).bind(key.event_id()).fetch_optional(&self.pool).await.map_err(storage_error)
+        sqlx::query_scalar("SELECT execution_id FROM trigger_start_reservations WHERE workspace_id = $1 AND org_id = $2 AND trigger_id = $3 AND event_id = $4").bind(&scope.workspace_id).bind(&scope.org_id).bind(key.trigger_id()).bind(key.event_id()).fetch_optional(&self.pool).await.map_err(storage_error)
     }
 
     #[tracing::instrument(skip_all, fields(execution_id = %start.execution_id()), err)]
@@ -50,11 +50,11 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
         let mut transaction = self.pool.begin().await.map_err(sql_error)?;
 
         if let Some(key) = start.trigger() {
-            let inserted = sqlx::query("INSERT INTO port_trigger_dedup_inbox (workspace_id, org_id, trigger_id, event_id, execution_id, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (workspace_id, org_id, trigger_id, event_id) DO NOTHING")
-                .bind(&start.scope().workspace_id).bind(&start.scope().org_id).bind(key.trigger_id()).bind(key.event_id()).bind(start.execution_id()).bind(chrono::Utc::now().to_rfc3339())
+            let inserted = sqlx::query("INSERT INTO trigger_start_reservations (workspace_id, org_id, trigger_id, event_id, execution_id, created_at) VALUES ($1, $2, $3, $4, $5, clock_timestamp()) ON CONFLICT (org_id, workspace_id, trigger_id, event_id) DO NOTHING")
+                .bind(&start.scope().workspace_id).bind(&start.scope().org_id).bind(key.trigger_id()).bind(key.event_id()).bind(start.execution_id())
                 .execute(&mut *transaction).await.map_err(sql_error)?.rows_affected();
             if inserted == 0 {
-                let execution_id = sqlx::query_scalar("SELECT execution_id FROM port_trigger_dedup_inbox WHERE workspace_id = $1 AND org_id = $2 AND trigger_id = $3 AND event_id = $4 FOR SHARE")
+                let execution_id = sqlx::query_scalar("SELECT execution_id FROM trigger_start_reservations WHERE workspace_id = $1 AND org_id = $2 AND trigger_id = $3 AND event_id = $4 FOR SHARE")
                     .bind(&start.scope().workspace_id).bind(&start.scope().org_id).bind(key.trigger_id()).bind(key.event_id()).fetch_one(&mut *transaction).await.map_err(sql_error)?;
                 return Ok(StartMaterialization::Replayed { execution_id });
             }
@@ -128,7 +128,7 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
             StorageError::Duplicate { .. } => StartMaterializationError::MaterializationConflict,
             other => StartMaterializationError::Storage(other),
         })?;
-        sqlx::query("INSERT INTO port_control_queue (id, execution_id, workspace_id, org_id, command, status, w3c_traceparent, reclaim_count, resume_target) VALUES ($1, $2, $3, $4, 'Start', 'Pending', $5, 0, NULL)")
+        sqlx::query("INSERT INTO execution_control_queue (id, execution_id, workspace_id, org_id, command, status, w3c_traceparent, reclaim_count, resume_target) VALUES ($1, $2, $3, $4, 'Start', 'Pending', $5, 0, NULL)")
             .bind(start.command().id.as_slice()).bind(start.execution_id()).bind(&start.scope().workspace_id).bind(&start.scope().org_id)
             .bind(start.command().w3c_traceparent.as_deref()).execute(&mut *transaction).await.map_err(sql_error)?;
         let record_format = match start.bundle().format() {

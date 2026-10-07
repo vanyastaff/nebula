@@ -9,9 +9,9 @@
 //!    ⇒ 404 (no existence oracle leak).
 //! 3. Credential mint — the authenticated credential command gateway writes
 //!    the `whsec_` secret.
-//! 4. Spec write — `TriggerStore::create` writes the `port_triggers` row.
+//! 4. Spec write — `TriggerStore::create` writes the `triggers` row.
 //! 5. Handler build + `activate_and_persist` — in-memory routing entry +
-//!    `port_webhook_activations` row.
+//!    `webhook_activations` row.
 //! 6. HTTP 201 with `{ webhook_url, signing_secret (once), activation_id }`.
 //!
 //! Compensation on step-4 failure: best-effort credential delete.
@@ -387,7 +387,7 @@ pub async fn register_webhook(
                 // `NodeKey::new(&row.trigger_id)` to resolve the binding in
                 // `ValidatedWorkflow.trigger_bindings`.
                 trigger_id: body.trigger_id.clone(),
-                // ADR-0101 L1 spec link: the port_triggers PK so bootstrap
+                // ADR-0101 L1 spec link: the `triggers` PK so bootstrap
                 // reconstruct can re-resolve the webhook spec via
                 // TriggerSpecLookup::lookup.
                 spec_trigger_id: trigger_row_id.clone(),

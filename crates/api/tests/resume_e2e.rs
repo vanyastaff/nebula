@@ -1214,10 +1214,10 @@ async fn seed_sqlite_workflow(pool: &sqlx::SqlitePool, scope: &Scope, workflow_i
     }
 }
 
-/// Count `Resume` rows in the SQLite `port_control_queue`.
+/// Count `Resume` rows in the SQLite `execution_control_queue`.
 async fn sqlite_resume_count(pool: &sqlx::SqlitePool) -> i64 {
     use sqlx::Row;
-    sqlx::query("SELECT COUNT(*) AS n FROM port_control_queue WHERE command = 'Resume'")
+    sqlx::query("SELECT COUNT(*) AS n FROM execution_control_queue WHERE command = 'Resume'")
         .fetch_one(pool)
         .await
         .expect("count query must succeed")
@@ -1285,7 +1285,7 @@ async fn open_sqlite_pool() -> sqlx::SqlitePool {
 ///
 /// A real `SqliteResumeProducer` consumes the token and enqueues the `Resume`
 /// in ONE transaction. We force the control-queue INSERT to fail INSIDE that
-/// transaction with a temporary aborting trigger on `port_control_queue`, so
+/// transaction with a temporary aborting trigger on `execution_control_queue`, so
 /// the `DELETE` of the token is rolled back with it. The handler returns 503,
 /// and:
 /// - (a) the token row STILL exists (peek-able) — it survived the rolled-back tx;
@@ -1311,8 +1311,8 @@ async fn burn_iff_enqueued_resume_survives_failed_enqueue() {
     // corrupting the canonical migration-owned schema. The token DELETE must
     // roll back with it.
     sqlx::query(
-        "CREATE TRIGGER fail_port_control_queue_insert
-         BEFORE INSERT ON port_control_queue
+        "CREATE TRIGGER fail_control_queue_insert
+         BEFORE INSERT ON execution_control_queue
          BEGIN
              SELECT RAISE(ABORT, 'injected control enqueue failure');
          END",
@@ -1347,7 +1347,7 @@ async fn burn_iff_enqueued_resume_survives_failed_enqueue() {
     );
 
     // Clear the fault so the retry can enqueue.
-    sqlx::query("DROP TRIGGER fail_port_control_queue_insert")
+    sqlx::query("DROP TRIGGER fail_control_queue_insert")
         .execute(&pool)
         .await
         .expect("fault trigger must be removed");
@@ -1415,7 +1415,7 @@ async fn happy_path_atomic_round_trip() {
     use sqlx::Row;
     let rows = sqlx::query(
         "SELECT execution_id, workspace_id, org_id, command, resume_target \
-         FROM port_control_queue",
+         FROM execution_control_queue",
     )
     .fetch_all(&pool)
     .await

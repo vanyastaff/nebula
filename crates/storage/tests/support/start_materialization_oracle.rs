@@ -705,7 +705,24 @@ async fn exact_control_claim(
     let mut foreign = matching.command.clone();
     foreign.id[15] = 2;
     foreign.scope = wrong.scope.clone();
-    queue.enqueue(&foreign).await.unwrap();
+    // A SQL control row names its execution's tenant, so a row for another
+    // tenant's execution cannot exist there; the in-memory queue accepts it
+    // and must still never claim it.
+    let foreign_enqueue = queue.enqueue(&foreign).await;
+    if parents.0.is_some() {
+        assert!(
+            matches!(
+                foreign_enqueue,
+                Err(nebula_storage_port::StorageError::NotFound {
+                    entity: "execution",
+                    ..
+                })
+            ),
+            "a control row naming another tenant's execution must be NotFound, got {foreign_enqueue:?}"
+        );
+    } else {
+        foreign_enqueue.unwrap();
+    }
     let mut unpinned = matching.command.clone();
     unpinned.id[15] = 3;
     unpinned.execution_id = ExecutionId::new().to_string();
@@ -814,12 +831,19 @@ async fn exact_control_claim(
         "released references must reject new terminal duplicate delivery"
     );
     let untouched = queue.claim_pending(&[96; 16], 2).await.unwrap();
+    // The foreign-tenant row exists only in memory (see above); on SQL the
+    // batch reaches the rejected terminal duplicate instead.
+    let expected_untouched = if parents.0.is_some() {
+        [unpinned.id, repeated.id]
+    } else {
+        [foreign.id, unpinned.id]
+    };
     assert_eq!(
         untouched
             .iter()
             .map(|claim| claim.msg.id)
             .collect::<std::collections::BTreeSet<_>>(),
-        [foreign.id, unpinned.id].into_iter().collect()
+        expected_untouched.into_iter().collect()
     );
     assert!(
         untouched

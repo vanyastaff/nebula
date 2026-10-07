@@ -33,7 +33,8 @@ use nebula_storage_port::dto::{
 use nebula_storage_port::store::{
     ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionStore,
     IdempotencyGuard, JobClaimToken, JobDispatchQueue, StartAcceptanceStore, StartContractIdentity,
-    StartMaterialization, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    StartMaterialization, TriggerStore, WebhookActivationStore, WorkflowStore,
+    WorkflowVersionStore,
 };
 use nebula_storage_port::{
     BeginDrainOutcome, ExecutionReferenceTransition, FencingToken, PlanFlavorCatalogAdmin,
@@ -101,6 +102,18 @@ pub(crate) trait Backend: Send + Sync {
     ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
         None
     }
+    /// The trigger store of a backend that checks a trigger's workflow;
+    /// `None` for the in-memory one.
+    async fn trigger_store(&self) -> Option<Arc<dyn TriggerStore>> {
+        None
+    }
+    /// Hard-delete the row `id` of `table` (`executions` or `workflows`) in
+    /// `scope`, as purge will (issue 1159), so a relational case observes
+    /// what cascades with it. Whether a row was deleted; `false` for the
+    /// in-memory backend, which has no purge.
+    async fn purge(&self, _table: &'static str, _scope: &Scope, _id: &str) -> bool {
+        false
+    }
 }
 
 /// Provision `scope` (when the backend checks tenants) and the live workflow
@@ -110,6 +123,25 @@ async fn seed_scope_and_workflow(backend: &dyn Backend, scope: &Scope, workflow_
         execution_parents::provision_scope(tenants.as_ref(), scope).await;
     }
     seed_workflow(backend, scope, workflow_id).await;
+}
+
+/// Create the execution `execution_id` in `scope`, with its tenant and
+/// workflow: a queue row belongs to its execution, which the SQL backends
+/// enforce. Idempotent.
+async fn seed_execution(backend: &dyn Backend, scope: &Scope, execution_id: &str) {
+    seed_scope_and_workflow(backend, scope, "wf_queued").await;
+    let store = backend.execution_store().await;
+    if store
+        .get(scope, execution_id)
+        .await
+        .expect("read the fixture execution")
+        .is_none()
+    {
+        store
+            .create(scope, execution_id, "wf_queued", serde_json::json!({}))
+            .await
+            .expect("create the fixture execution");
+    }
 }
 
 /// Test-only clock control for SQL job-dispatch retention assertions.
@@ -261,16 +293,17 @@ impl SqlJobTimestampFixture for SqliteBackend {
         job_id: &[u8; 16],
         age: std::time::Duration,
     ) -> Result<(), StorageError> {
-        let age_ms = i64::try_from(age.as_millis()).unwrap_or(i64::MAX);
-        let timestamp_ms = chrono::Utc::now().timestamp_millis().saturating_sub(age_ms);
-        let rows_updated =
-            sqlx::query("UPDATE port_job_dispatch_queue SET processed_at_ms = ? WHERE id = ?")
-                .bind(timestamp_ms)
-                .bind(job_id.as_slice())
-                .execute(&self.pool().await)
-                .await
-                .map_err(|error| StorageError::Connection(error.to_string()))?
-                .rows_affected();
+        let age_micros = i64::try_from(age.as_micros()).unwrap_or(i64::MAX);
+        let rows_updated = sqlx::query(
+            "UPDATE job_dispatch_queue SET processed_at = \
+             CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER) - ? WHERE id = ?",
+        )
+        .bind(age_micros)
+        .bind(job_id.as_slice())
+        .execute(&self.pool().await)
+        .await
+        .map_err(|error| StorageError::Connection(error.to_string()))?
+        .rows_affected();
         if rows_updated != 1 {
             return Err(StorageError::NotFound {
                 entity: "job_dispatch",
@@ -402,6 +435,25 @@ impl Backend for SqliteBackend {
             nebula_storage::sqlite::SqliteTenantProvisioningStore::new(self.pool().await),
         ))
     }
+    #[cfg(feature = "sqlite")]
+    async fn trigger_store(&self) -> Option<Arc<dyn TriggerStore>> {
+        Some(Arc::new(nebula_storage::sqlite::SqliteTriggerStore::new(
+            self.pool().await,
+        )))
+    }
+    #[cfg(feature = "sqlite")]
+    async fn purge(&self, table: &'static str, scope: &Scope, id: &str) -> bool {
+        let sql = format!("DELETE FROM {table} WHERE org_id = ? AND workspace_id = ? AND id = ?");
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(id)
+            .execute(&self.pool().await)
+            .await
+            .expect("purge the row")
+            .rows_affected()
+            == 1
+    }
     #[cfg(not(feature = "sqlite"))]
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
@@ -470,16 +522,17 @@ impl SqlJobTimestampFixture for PostgresBackend {
         job_id: &[u8; 16],
         age: std::time::Duration,
     ) -> Result<(), StorageError> {
-        let age_ms = i64::try_from(age.as_millis()).unwrap_or(i64::MAX);
-        let timestamp_ms = chrono::Utc::now().timestamp_millis().saturating_sub(age_ms);
-        let rows_updated =
-            sqlx::query("UPDATE port_job_dispatch_queue SET processed_at_ms = $1 WHERE id = $2")
-                .bind(timestamp_ms)
-                .bind(job_id.as_slice())
-                .execute(&self.pool().await)
-                .await
-                .map_err(|error| StorageError::Connection(error.to_string()))?
-                .rows_affected();
+        let age_micros = i64::try_from(age.as_micros()).unwrap_or(i64::MAX);
+        let rows_updated = sqlx::query(
+            "UPDATE job_dispatch_queue \
+             SET processed_at = clock_timestamp() - $1 * INTERVAL '1 microsecond' WHERE id = $2",
+        )
+        .bind(age_micros)
+        .bind(job_id.as_slice())
+        .execute(&self.pool().await)
+        .await
+        .map_err(|error| StorageError::Connection(error.to_string()))?
+        .rows_affected();
         if rows_updated != 1 {
             return Err(StorageError::NotFound {
                 entity: "job_dispatch",
@@ -611,15 +664,40 @@ impl Backend for PostgresBackend {
             nebula_storage::postgres::PgTenantProvisioningStore::new(self.pool().await),
         ))
     }
+    #[cfg(feature = "postgres")]
+    async fn trigger_store(&self) -> Option<Arc<dyn TriggerStore>> {
+        Some(Arc::new(nebula_storage::postgres::PgTriggerStore::new(
+            self.pool().await,
+        )))
+    }
+    #[cfg(feature = "postgres")]
+    async fn purge(&self, table: &'static str, scope: &Scope, id: &str) -> bool {
+        let sql =
+            format!("DELETE FROM {table} WHERE org_id = $1 AND workspace_id = $2 AND id = $3");
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(id)
+            .execute(&self.pool().await)
+            .await
+            .expect("purge the row")
+            .rows_affected()
+            == 1
+    }
     #[cfg(not(feature = "postgres"))]
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
 }
 
+mod dispatch;
 mod history;
 mod requirements;
 
+pub(crate) use dispatch::{
+    assert_dispatch_writes_require_live_parents, assert_queue_rows_cascade_with_their_execution,
+    assert_queue_rows_require_their_execution, assert_triggers_cascade_with_their_workflow,
+};
 pub(crate) use history::{
     assert_history_is_scope_isolated, assert_history_orders_filters_and_pages,
     assert_status_projection_follows_commit,
@@ -1779,8 +1857,8 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
 /// claim. A `None` target also round-trips correctly (backward compatibility
 /// with legacy rows).
 ///
-/// **Falsifiability**: before the `resume_target TEXT` column was added to
-/// `port_control_queue`, `claim_pending` hardcoded `resume_target: None` and
+/// **Falsifiability**: without the `resume_target` column on
+/// `execution_control_queue`, `claim_pending` hardcoded `resume_target: None` and
 /// the `Some(target)` assertion failed → RED.
 pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn Backend) {
     let store = backend.execution_store().await;
@@ -1940,6 +2018,7 @@ async fn enqueue_and_climb_reclaim_count(
         reclaim_count: 0,
         resume_target: None,
     };
+    seed_execution(backend, &s, "exe_reclaim").await;
     queue.enqueue(&msg).await.expect("enqueue reclaim row");
 
     let runner = [0xCC_u8; 16];
@@ -2214,6 +2293,7 @@ pub(crate) async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
     // Upsert a record with all three ADR-0096 fields set to non-default
     // values and verify exact round-trip (no tautological `is_some()`).
     let token = [0xde_u8; 32];
+    seed_scope_and_workflow(backend, &s, "wf_abc").await;
     let mut extended = WebhookActivationRecord::new("trg_2", s.clone(), "prod-hook", true);
     extended.workflow_id = Some("wf_abc".to_string());
     extended.mode = WebhookMode::Prod;
@@ -2278,6 +2358,8 @@ pub(crate) async fn assert_webhook_system_surface(backend: &dyn Backend) {
     // and workflow_id so exact-value asserts are meaningful.
     let hash_a: [u8; 32] = [0xa1; 32];
     let hash_b: [u8; 32] = [0xb2; 32];
+    seed_scope_and_workflow(backend, &sa, "wf_a").await;
+    seed_scope_and_workflow(backend, &sb, "wf_b").await;
 
     let mut row_a = WebhookActivationRecord::new("trg_sys_a", sa.clone(), "sys-hook-a", true);
     row_a.workflow_id = Some("wf_a".to_string());
@@ -2532,6 +2614,14 @@ impl<B: Backend> Backend for ScopedBackend<B> {
         &self,
     ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
         self.inner.tenant_provisioning_store().await
+    }
+
+    async fn trigger_store(&self) -> Option<Arc<dyn TriggerStore>> {
+        self.inner.trigger_store().await
+    }
+
+    async fn purge(&self, table: &'static str, scope: &Scope, id: &str) -> bool {
+        self.inner.purge(table, scope, id).await
     }
 }
 
@@ -3086,6 +3176,13 @@ fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg 
     )
 }
 
+/// Enqueue `job` after creating the execution it names (a job belongs to its
+/// execution, which the SQL backends enforce).
+async fn enqueue_job(backend: &dyn Backend, queue: &dyn JobDispatchQueue, job: &JobDispatchMsg) {
+    seed_execution(backend, &job.scope, &job.execution_id).await;
+    queue.enqueue(job).await.expect("enqueue job");
+}
+
 /// `claim_pending` only delivers rows whose required plugin is in the worker's
 /// `available_plugins`; a row requiring an unavailable plugin is not delivered.
 pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) {
@@ -3093,8 +3190,8 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) 
 
     let job_a = make_job(0x10, "plugin.alpha", &["plugin.alpha"]);
     let job_b = make_job(0x11, "plugin.beta", &["plugin.beta"]);
-    q.enqueue(&job_a).await.expect("enqueue alpha");
-    q.enqueue(&job_b).await.expect("enqueue beta");
+    enqueue_job(backend, q.as_ref(), &job_a).await;
+    enqueue_job(backend, q.as_ref(), &job_b).await;
 
     let proc = [9u8; 16];
     // Advertise only alpha — must NOT receive beta.
@@ -3159,7 +3256,7 @@ pub(crate) async fn assert_job_dispatch_requires_primary_plugin(backend: &dyn Ba
             .parse::<PluginKey>()
             .expect("conformance test plugin key must be valid"),
     ];
-    queue.enqueue(&job).await.expect("enqueue malformed job");
+    enqueue_job(backend, queue.as_ref(), &job).await;
 
     let claims = queue
         .claim_pending(
@@ -3189,7 +3286,7 @@ pub(crate) async fn assert_sql_job_cleanup_uses_terminal_transition(
 ) {
     let queue = backend.job_dispatch_queue().await;
     let job = make_job(0x13, "plugin.alpha", &["plugin.alpha"]);
-    queue.enqueue(&job).await.expect("enqueue cleanup job");
+    enqueue_job(backend, queue.as_ref(), &job).await;
     let claim = queue
         .claim_pending(
             &[9; 16],
@@ -3247,7 +3344,7 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 
     // ── mark_dispatched fencing ───────────────────────────────────────────────
     let job_d = make_job(0x20, "plugin.x", &["plugin.x"]);
-    q.enqueue(&job_d).await.expect("enqueue job_d");
+    enqueue_job(backend, q.as_ref(), &job_d).await;
 
     let claimed = q
         .claim_pending(
@@ -3316,7 +3413,7 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 
     // ── mark_failed fencing ───────────────────────────────────────────────────
     let job_f = make_job(0x21, "plugin.x", &["plugin.x"]);
-    q.enqueue(&job_f).await.expect("enqueue job_f");
+    enqueue_job(backend, q.as_ref(), &job_f).await;
 
     let claimed_f = q
         .claim_pending(
@@ -3367,7 +3464,7 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 
 /// How long a claim must age before `reclaim_stuck` will take it back.
 ///
-/// The SQL backends compare wall-clock epoch-millis while the in-memory
+/// The SQL backends compare wall-clock microsecond instants while the in-memory
 /// backend compares `tokio::time::Instant`s; a real sleep advances both, so
 /// one shared assertion can drive all three. The margin is generous because
 /// the assertion is about ordering, not about a deadline.
@@ -3392,7 +3489,7 @@ pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(
     let processor = [7u8; 16];
 
     let job = make_job(0x22, "plugin.aba", &["plugin.aba"]);
-    q.enqueue(&job).await.expect("enqueue aba job");
+    enqueue_job(backend, q.as_ref(), &job).await;
 
     let first = q
         .claim_pending(
@@ -3505,7 +3602,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
 
     // Job requires alpha AND beta (required_plugins covers both; invariant upheld).
     let job = make_job(0x60, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
-    q.enqueue(&job).await.expect("enqueue superset job");
+    enqueue_job(backend, q.as_ref(), &job).await;
 
     let proc = [0xAAu8; 16];
 
@@ -3573,7 +3670,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
 
     // 4. Strict-superset worker (re-enqueue to get a fresh Pending row).
     let job2 = make_job(0x61, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
-    q.enqueue(&job2).await.expect("enqueue superset job 2");
+    enqueue_job(backend, q.as_ref(), &job2).await;
     let claimed_by_superset = q
         .claim_pending(
             &proc,
@@ -3611,9 +3708,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
     //    conforming job (required_plugins ⊇ {required_plugin_key}) to confirm
     //    it stays Pending.
     let job3 = make_job(0x62, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
-    q.enqueue(&job3)
-        .await
-        .expect("enqueue job for empty-advertised check");
+    enqueue_job(backend, q.as_ref(), &job3).await;
     let claimed_empty_adv = q
         .claim_pending(
             &proc,
@@ -3742,8 +3837,8 @@ pub(crate) async fn assert_job_dispatch_exact_flavor(backend: &dyn Backend) {
     wrong.required_worker_flavor_id = other_flavor;
     let mut matching = make_job(0x62, "exact.flavor", &["exact.flavor"]);
     matching.required_worker_flavor_id = matching_flavor;
-    queue.enqueue(&wrong).await.unwrap();
-    queue.enqueue(&matching).await.unwrap();
+    enqueue_job(backend, queue.as_ref(), &wrong).await;
+    enqueue_job(backend, queue.as_ref(), &matching).await;
 
     let claims = queue
         .claim_pending(&processor, 1, &plugins, matching_flavor)
