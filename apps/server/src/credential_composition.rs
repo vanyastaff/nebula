@@ -36,42 +36,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::credential_adapters::{RegistryCredentialSchema, ReqwestOAuthTransport};
+use crate::deployment_database::DeploymentDatabase;
 
 const DEVELOPMENT_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 const CREDENTIAL_EVENT_BUFFER: usize = 256;
-
-/// The deployment database pool the execution backend opened; credentials
-/// live in it beside tenancy (a credential belongs to a live workspace) and
-/// share that one pool — no second pool opens on the same database.
-#[derive(Clone)]
-pub(crate) enum DeploymentDatabase {
-    /// The process-local `sqlite::memory:` database of the memory execution
-    /// backend.
-    Memory(sqlx::SqlitePool),
-    /// The single-process SQLite database file.
-    Sqlite(sqlx::SqlitePool),
-    /// The shared PostgreSQL database.
-    #[cfg(feature = "postgres")]
-    Postgres(sqlx::PgPool),
-}
-
-impl DeploymentDatabase {
-    const fn backend(&self) -> &'static str {
-        match self {
-            Self::Memory(_) => "memory",
-            Self::Sqlite(_) => "sqlite",
-            #[cfg(feature = "postgres")]
-            Self::Postgres(_) => "postgres",
-        }
-    }
-}
-
-impl std::fmt::Debug for DeploymentDatabase {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Locators can carry passwords or tenant-specific paths.
-        formatter.write_str(self.backend())
-    }
-}
 
 /// Fully composed first-party credential runtime parts.
 pub(crate) struct CredentialRuntime {
@@ -849,26 +817,6 @@ mod tests {
         assert_eq!(consumed.state, "restart-state");
 
         second_runtime.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn deployment_database_debug_never_echoes_its_locator() {
-        let path = "sqlite://var/lib/tenant-private/nebula.db";
-        let pool = sqlx::SqlitePool::connect_lazy(path).expect("lazy SQLite pool");
-        assert_eq!(
-            format!("{:?}", DeploymentDatabase::Sqlite(pool.clone())),
-            "sqlite"
-        );
-        assert_eq!(format!("{:?}", DeploymentDatabase::Memory(pool)), "memory");
-        #[cfg(feature = "postgres")]
-        {
-            let dsn = "postgres://operator:super-secret@example.invalid/tenant-private";
-            let pool = sqlx::PgPool::connect_lazy(dsn).expect("lazy PostgreSQL pool");
-            assert_eq!(
-                format!("{:?}", DeploymentDatabase::Postgres(pool)),
-                "postgres"
-            );
-        }
     }
 }
 

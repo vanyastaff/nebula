@@ -8,6 +8,7 @@ use nebula_metrics::MetricsRegistry;
 use crate::compose::{ExecutionStoreBundle, TransportInitError};
 #[cfg(feature = "runtime-repair-red")]
 use crate::compose::{ProfileBackendLifecycle, WorkerStoreProjection};
+use crate::deployment_database::DeploymentDatabase;
 
 pub(crate) async fn build_execution_stores(
     api_config: &ApiConfig,
@@ -127,9 +128,7 @@ async fn build_memory_execution_stores(
         tenant_directory: crate::tenant_directory::TenantDirectoryStores::sqlite(
             deployment_database.clone(),
         ),
-        deployment_database: crate::credential_composition::DeploymentDatabase::Memory(
-            deployment_database,
-        ),
+        deployment_database: DeploymentDatabase::Memory(deployment_database),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store: Arc::new(workflow_store),
@@ -276,9 +275,7 @@ async fn build_sqlite_execution_stores(
 
     Ok(ExecutionStoreBundle {
         tenant_directory: crate::tenant_directory::TenantDirectoryStores::sqlite(pool.clone()),
-        deployment_database: crate::credential_composition::DeploymentDatabase::Sqlite(
-            pool.clone(),
-        ),
+        deployment_database: DeploymentDatabase::Sqlite(pool.clone()),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store,
@@ -424,9 +421,7 @@ async fn build_postgres_execution_stores(
 
     Ok(ExecutionStoreBundle {
         tenant_directory: crate::tenant_directory::TenantDirectoryStores::postgres(pool.clone()),
-        deployment_database: crate::credential_composition::DeploymentDatabase::Postgres(
-            pool.clone(),
-        ),
+        deployment_database: DeploymentDatabase::Postgres(pool.clone()),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store,

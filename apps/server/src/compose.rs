@@ -26,6 +26,7 @@ use nebula_storage::credential::KeyProvider;
 use crate::{
     credential_composition::{compose_first_party_runtime, resolve_first_party_keyring},
     credential_runtime::{ServerCredentialAuthority, ServerCredentialGateway},
+    deployment_database::{DeploymentDatabase, validate_backend_selection},
     email::{SmtpEmailPort, SmtpEmailPortBuildError},
     execution_binding_resolver::ServerExecutionBindingResolver,
     transport::ServerTransport,
@@ -101,7 +102,7 @@ pub(crate) enum TransportInitError {
         not(feature = "postgres"),
         expect(
             dead_code,
-            reason = "constructed only in the postgres-gated build_pg_idempotency_store / build_pg_auth_backend arms"
+            reason = "constructed only in the postgres-gated identity composition"
         )
     )]
     ContextFactory(String),
@@ -111,9 +112,7 @@ pub(crate) enum TransportInitError {
     /// This fires when an operator selects a backend that the current build
     /// cannot provide. Per ADR-0048 fail-closed contract, the binary
     /// refuses to boot rather than silently fall back to in-memory dedup.
-    #[error(
-        "API_IDEMPOTENCY_BACKEND={requested} requires {requirement}; set API_IDEMPOTENCY_BACKEND=memory or land the missing wiring"
-    )]
+    #[error("API_IDEMPOTENCY_BACKEND={requested} requires {requirement}")]
     IdempotencyBackendUnavailable {
         /// Backend the operator requested.
         requested: &'static str,
@@ -124,16 +123,14 @@ pub(crate) enum TransportInitError {
     /// build cannot satisfy.
     ///
     /// Today this fires when an operator sets
-    /// `API_AUTH_BACKEND=postgres` without the `nebula-api/postgres`
-    /// cargo feature compiled in, or without `DATABASE_URL` reachable.
+    /// `API_AUTH_BACKEND=postgres` without a PostgreSQL deployment pool
+    /// or the `postgres` cargo feature compiled in.
     /// Mirrors the fail-closed posture of
     /// [`Self::IdempotencyBackendUnavailable`] — silently falling back
     /// to the in-memory identity backend would be a publicly-known
     /// auth-bypass surface in any deployment that thought it had
     /// requested durable identity.
-    #[error(
-        "API_AUTH_BACKEND={requested} requires {requirement}; set API_AUTH_BACKEND=memory or land the missing wiring"
-    )]
+    #[error("API_AUTH_BACKEND={requested} requires {requirement}")]
     AuthBackendUnavailable {
         /// Backend the operator requested.
         requested: &'static str,
@@ -230,7 +227,7 @@ pub(crate) enum TransportInitError {
 pub(crate) struct ExecutionStoreBundle {
     /// The deployment database behind the tenant directory. Credentials are
     /// opened on it: a credential belongs to a live workspace there.
-    pub(super) deployment_database: crate::credential_composition::DeploymentDatabase,
+    pub(super) deployment_database: DeploymentDatabase,
     /// Tenant-directory projections created from one backend authority.
     pub(super) tenant_directory: crate::tenant_directory::TenantDirectoryStores,
     pub(super) revision_catalog: Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
@@ -376,6 +373,7 @@ impl ServerRuntime {
     ) -> Result<(), ServerRunError> {
         let mut api_config = ApiConfig::from_env()?;
         // Reject startup inputs before opening or migrating deployment storage.
+        validate_backend_selection(&api_config)?;
         let bind_address =
             resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
         let registry =
@@ -401,6 +399,7 @@ impl ServerRuntime {
         // opt-in bootstrap verifies its stable owner against this backend.
         let oauth_config = std::mem::take(&mut api_config.auth.oauth);
         let auth_backend = build_auth_backend(
+            &execution_bundle.deployment_database,
             api_config.auth.backend.clone(),
             oauth_config,
             Arc::clone(&email_port),
@@ -409,6 +408,8 @@ impl ServerRuntime {
             keyring.identity_legacy(),
         )
         .await?;
+        let idempotency_store =
+            build_idempotency_store(&api_config, &execution_bundle.deployment_database)?;
         let tenant_provisioner = execution_bundle.tenant_directory.provisioner();
         crate::tenant_bootstrap::bootstrap_tenant(
             tenant_bootstrap,
@@ -440,12 +441,6 @@ impl ServerRuntime {
             Some(binding_resolver),
         )?;
         state = transport.prepare_state(state, bind_address)?;
-        // Attach the idempotency store inside the async context so the
-        // PG-backed path can await sqlx pool construction. Memory-backed
-        // builds resolve immediately; PG-backed builds also fail closed
-        // here when the feature is missing or `DATABASE_URL` is unset
-        // (per ADR-0048).
-        let idempotency_store = build_idempotency_store(&api_config).await?;
         state = state.with_idempotency_store(idempotency_store);
         // The webhook execution resolver and authenticated command controller
         // share the same service instance. Only the resolver retains direct
@@ -865,22 +860,16 @@ pub(crate) fn build_email_port(
 ///
 /// `Memory` builds an in-process [`InMemoryAuthBackend`] wired to the
 /// shared `email_port` so verification / reset mails flow through the
-/// same transport the rest of the app uses. `Postgres` requires the
-/// `nebula-api/postgres` cargo feature **and** a reachable
-/// `DATABASE_URL`; either missing component fails closed with
-/// [`TransportInitError::AuthBackendUnavailable`] (silent fallback to
-/// in-memory would be an undetected auth-bypass for any operator who
-/// thought they had requested durable identity).
+/// same transport the rest of the app uses. `Postgres` takes the admitted
+/// deployment pool; it never opens a separate identity database or falls back.
 ///
 /// Both arms receive the SAME `Arc<dyn EmailPort>` — the in-memory
 /// backend drops its built-in default echo sink in favour of the
 /// shared transport so callers can introspect deliveries against one
 /// known port instead of guessing which sink owns the inbox.
 ///
-/// Today this builder constructs its own `sqlx::Pool<Postgres>`
-/// alongside the idempotency pool; consolidating the two onto one
-/// shared pool is a follow-up.
 pub(crate) async fn build_auth_backend(
+    database: &DeploymentDatabase,
     backend_kind: AuthBackendKind,
     oauth_config: OAuthProvidersConfig,
     email_port: Arc<dyn EmailPort>,
@@ -904,6 +893,7 @@ pub(crate) async fn build_auth_backend(
         },
         AuthBackendKind::Postgres => {
             build_pg_auth_backend(
+                database,
                 email_port,
                 metrics_registry,
                 oauth_runtime,
@@ -921,12 +911,11 @@ pub(crate) async fn build_auth_backend(
 /// "dedup state is lost on restart and across runners" failure mode is
 /// visible in operational logs (per ADR-0048).
 ///
-/// `Postgres` requires the `nebula-api/postgres` cargo feature **and** a
-/// reachable `DATABASE_URL`; either missing component fails closed with
-/// [`TransportInitError::IdempotencyBackendUnavailable`] (a silent
-/// fallback to memory is rejected: it would mask a misconfigured deployment).
-pub(crate) async fn build_idempotency_store(
+/// `Postgres` uses the admitted deployment pool. An incompatible database
+/// fails closed without falling back or opening an independent pool.
+pub(crate) fn build_idempotency_store(
     api_config: &ApiConfig,
+    database: &DeploymentDatabase,
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
     match api_config.idempotency.backend {
         IdempotencyBackend::Memory => {
@@ -938,7 +927,7 @@ pub(crate) async fn build_idempotency_store(
             );
             Ok(Arc::new(store))
         },
-        IdempotencyBackend::Postgres => build_pg_idempotency_store(api_config).await,
+        IdempotencyBackend::Postgres => build_pg_idempotency_store(api_config, database),
     }
 }
 
@@ -964,32 +953,23 @@ fn warn_short_sweep_interval(sweep_interval_secs: u64) {
 }
 
 #[cfg(feature = "postgres")]
-async fn build_pg_idempotency_store(
+fn build_pg_idempotency_store(
     api_config: &ApiConfig,
+    database: &DeploymentDatabase,
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
     use nebula_storage::http_idempotency::PgHttpIdempotencyStore;
-    use sqlx::postgres::PgPoolOptions;
 
     use nebula_api::middleware::idempotency::StorageBackedIdempotencyStore;
 
-    let url = std::env::var("DATABASE_URL").map_err(|_| {
-        TransportInitError::IdempotencyBackendUnavailable {
+    let DeploymentDatabase::Postgres(pool) = database else {
+        return Err(TransportInitError::IdempotencyBackendUnavailable {
             requested: "postgres",
-            requirement: "DATABASE_URL must be set when API_IDEMPOTENCY_BACKEND=postgres",
-        }
-    })?;
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .connect(&url)
-        .await
-        .map_err(|err| {
-            TransportInitError::ContextFactory(format!(
-                "idempotency: failed to connect to DATABASE_URL for PG-backed store: {err}"
-            ))
-        })?;
+            requirement: "an admitted PostgreSQL deployment pool",
+        });
+    };
     warn_short_sweep_interval(api_config.idempotency.sweep_interval_secs);
     tracing::info!(backend = "postgres", "idempotency: PG-backed store wired");
-    let pg_repo = Arc::new(PgHttpIdempotencyStore::new(pool));
+    let pg_repo = Arc::new(PgHttpIdempotencyStore::new(pool.clone()));
     let store: Arc<dyn IdempotencyStore> = Arc::new(StorageBackedIdempotencyStore::new(
         pg_repo,
         Duration::from_secs(api_config.idempotency.ttl_secs),
@@ -998,17 +978,19 @@ async fn build_pg_idempotency_store(
 }
 
 #[cfg(not(feature = "postgres"))]
-async fn build_pg_idempotency_store(
+fn build_pg_idempotency_store(
     _api_config: &ApiConfig,
+    _database: &DeploymentDatabase,
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
     Err(TransportInitError::IdempotencyBackendUnavailable {
         requested: "postgres",
-        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + PgHttpIdempotencyStore",
+        requirement: "the nebula-server/postgres cargo feature",
     })
 }
 
 #[cfg(feature = "postgres")]
 async fn build_pg_auth_backend(
+    database: &DeploymentDatabase,
     email_port: Arc<dyn EmailPort>,
     metrics_registry: Option<Arc<MetricsRegistry>>,
     oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,
@@ -1019,22 +1001,12 @@ async fn build_pg_auth_backend(
     use nebula_storage::auth::{
         identity_secret::IdentitySecretCodec, postgres::PgIdentitySecretMigrator,
     };
-    use sqlx::postgres::PgPoolOptions;
-
-    let url =
-        std::env::var("DATABASE_URL").map_err(|_| TransportInitError::AuthBackendUnavailable {
+    let DeploymentDatabase::Postgres(pool) = database else {
+        return Err(TransportInitError::AuthBackendUnavailable {
             requested: "postgres",
-            requirement: "DATABASE_URL must be set when API_AUTH_BACKEND=postgres",
-        })?;
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .connect(&url)
-        .await
-        .map_err(|err| {
-            TransportInitError::ContextFactory(format!(
-                "auth: failed to connect to DATABASE_URL for PG-backed backend: {err}"
-            ))
-        })?;
+            requirement: "an admitted PostgreSQL deployment pool",
+        });
+    };
     tracing::info!(
         backend = "postgres",
         "auth: PG-backed identity backend wired"
@@ -1055,7 +1027,7 @@ async fn build_pg_auth_backend(
                     "auth: identity secret migration failed: {error}"
                 ))
             })?;
-    let backend = PgAuthBackend::new(pool, email_port, metrics_registry, identity_secrets);
+    let backend = PgAuthBackend::new(pool.clone(), email_port, metrics_registry, identity_secrets);
     let backend = match oauth_runtime {
         Some(runtime) => backend.with_oauth_runtime(runtime),
         None => backend,
@@ -1066,6 +1038,7 @@ async fn build_pg_auth_backend(
 
 #[cfg(not(feature = "postgres"))]
 async fn build_pg_auth_backend(
+    _database: &DeploymentDatabase,
     _email_port: Arc<dyn EmailPort>,
     _metrics_registry: Option<Arc<MetricsRegistry>>,
     _oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,

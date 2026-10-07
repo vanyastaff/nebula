@@ -10,6 +10,7 @@ mod compose;
 mod credential_adapters;
 mod credential_composition;
 mod credential_runtime;
+mod deployment_database;
 mod email;
 mod execution_binding_resolver;
 mod execution_store_backends;

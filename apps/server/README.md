@@ -22,6 +22,9 @@ cargo run -p nebula-server -- --transport realtime
 Argument errors are reported before telemetry or database initialization.
 Credential keys, worker artifact identity, tenant bootstrap settings and the
 selected bind-address override are checked before opening deployment storage.
+PostgreSQL auth and HTTP replay require `API_EXECUTION_BACKEND=postgres` and
+reuse its admitted pool. Incompatible backend selections fail before storage
+creation; these adapters never open independent connections from `DATABASE_URL`.
 
 All operator-facing configuration lives in environment variables; the
 canonical registry is `crates/api/src/config/env.rs`. The composition
@@ -207,10 +210,10 @@ cargo build --release -p nebula-server --features postgres
 
 ## Identity backend and Plane-A OAuth
 
-`API_AUTH_BACKEND` selects the Plane-A identity store independently from the
-execution and idempotency stores. The selection is fail-closed: requesting
-Postgres without the feature, `DATABASE_URL`, or a reachable database aborts
-startup instead of silently losing users, sessions, or PATs into memory.
+`API_AUTH_BACKEND` selects the Plane-A identity adapter. PostgreSQL requires
+the PostgreSQL execution deployment and shares its admitted pool with HTTP
+replay, tenancy and credentials. Missing feature support, incompatible backend
+selection or unavailable storage aborts startup without a memory fallback.
 
 | `API_AUTH_BACKEND` | Identity backend | Durability |
 |--------------------|------------------|------------|

@@ -61,6 +61,24 @@ async fn rejected_startup(overrides: &[(&str, &str)], diagnostic: &str) {
 }
 
 #[tokio::test]
+async fn postgres_auth_requires_postgres_deployment_before_opening_sqlite() {
+    rejected_startup(
+        &[("API_AUTH_BACKEND", "postgres")],
+        "API_AUTH_BACKEND=postgres requires API_EXECUTION_BACKEND=postgres",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn postgres_replay_requires_postgres_deployment_before_opening_sqlite() {
+    rejected_startup(
+        &[("API_IDEMPOTENCY_BACKEND", "postgres")],
+        "API_IDEMPOTENCY_BACKEND=postgres requires API_EXECUTION_BACKEND=postgres",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn missing_credential_key_does_not_create_database() {
     rejected_startup(&[("NEBULA_CRED_DEV_KEY", "0")], "NEBULA_CRED_MASTER_KEY").await;
 }
