@@ -18,7 +18,6 @@ fn hex_id(bytes: &[u8]) -> String {
 ///
 /// Artifact identity comes from the trusted deployment manifest; storage and
 /// polling settings have local defaults.
-#[derive(Debug)]
 pub struct WorkerConfig {
     /// Digest of the selected worker artifact set from the deployment manifest.
     /// `NEBULA_WORKER_ARTIFACT_SET_DIGEST` is required (64 lowercase hex digits).
@@ -57,6 +56,21 @@ pub struct WorkerConfig {
     /// same processor id can acknowledge each other's claimed commands (at-least-once
     /// violation).
     pub processor_id: [u8; 16],
+}
+
+impl std::fmt::Debug for WorkerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkerConfig")
+            .field("artifact_set_digest", &self.artifact_set_digest)
+            .field(
+                "database_url",
+                &self.database_url.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("db_path", &self.db_path)
+            .field("processor_id", &self.processor_id)
+            .finish()
+    }
 }
 
 /// Errors produced while loading [`WorkerConfig`] from the environment.
