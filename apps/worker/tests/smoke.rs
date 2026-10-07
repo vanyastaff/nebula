@@ -43,9 +43,17 @@ use nebula_worker_bin::compose::build_core_flavor_runtime;
 use nebula_worker_bin::compose::build_core_flavor_runtime_for_runtime_repair_red;
 
 #[derive(Debug)]
-struct UnavailableCredentialResolver;
+struct UnavailableCredentialResolver {
+    observes_availability: bool,
+}
 
 impl nebula_credential::CredentialSlotResolver for UnavailableCredentialResolver {
+    fn as_availability_observer(
+        &self,
+    ) -> Option<&dyn nebula_credential::CredentialAvailabilityObserver> {
+        self.observes_availability.then_some(self as &_)
+    }
+
     fn resolve_slot<'a>(
         &'a self,
         _scope: &'a nebula_credential::TenantScope,
@@ -65,6 +73,34 @@ impl nebula_credential::CredentialSlotResolver for UnavailableCredentialResolver
         >,
     > {
         Box::pin(async { Err(nebula_credential::CredentialSlotResolveError::Unavailable) })
+    }
+
+    fn into_availability_observer(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn nebula_credential::CredentialAvailabilityObserver>> {
+        self.observes_availability.then_some(self as Arc<_>)
+    }
+}
+
+impl nebula_credential::CredentialAvailabilityObserver for UnavailableCredentialResolver {
+    fn observe_availability<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _credential_id: nebula_credential::CredentialId,
+        _expected_key: nebula_credential::CredentialKey,
+        _cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::CredentialAvailabilityObservation,
+                        nebula_credential::CredentialObserveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(nebula_credential::CredentialObserveError::Unavailable) })
     }
 }
 
@@ -139,7 +175,9 @@ impl TestStores {
             versions: Arc::new(versions),
             workflows: Arc::new(workflows),
             resource_runtime: Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new()),
-            credential_resolver: Arc::new(UnavailableCredentialResolver),
+            credential_resolver: Arc::new(UnavailableCredentialResolver {
+                observes_availability: true,
+            }),
         }
     }
 
@@ -423,8 +461,30 @@ async fn core_flavor_runtime_processes_materialized_start() {
     );
 }
 
-/// `build_core_flavor_runtime` always produces the `core` plugin key —
-/// the flavour binary's contract is that it statically links exactly one plugin.
+#[tokio::test]
+async fn core_flavor_refuses_a_resolver_without_availability_observation() {
+    let stores = TestStores::new();
+    let mut revisions = stores.revision_inputs();
+    revisions.credential_resolver = Arc::new(UnavailableCredentialResolver {
+        observes_availability: false,
+    });
+    let result = build_core_flavor_runtime(
+        stores.execution_stores(),
+        stores.turn_handoff(),
+        stores.turn_handoff(),
+        [0x01u8; 16],
+        revisions,
+        stores.resource_fanout_inputs(),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(nebula_worker_bin::compose::ComposeError::MissingCredentialObserver)
+        ),
+        "a production worker must not admit resources without availability observation"
+    );
+}
+
 #[tokio::test]
 async fn core_flavor_runtime_advertises_core_plugin_key() {
     let stores = TestStores::new();

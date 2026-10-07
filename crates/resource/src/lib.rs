@@ -437,7 +437,9 @@ pub use topology_tag::TopologyTag;
 // overhead or pull in the extra tokio task. Engine enables this feature when
 // it enables its own `rotation` feature.
 #[cfg(feature = "rotation")]
-pub use credential_fanout::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, RotationOutcome};
+pub use credential_fanout::{
+    Bind, ResourceFanoutDriver, ResourceFanoutIndex, ResourceFanoutSpawnError, RotationOutcome,
+};
 
 /// Prelude — common types for resource authors and engine integrators.
 ///

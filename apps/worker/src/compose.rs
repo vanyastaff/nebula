@@ -67,6 +67,10 @@ pub enum ComposeError {
     #[error("resource wiring failed: {0}")]
     ResourceWiring(#[from] nebula_engine::ResourceWiringError),
 
+    /// The credential projection cannot check availability before resource use.
+    #[error("worker resources require credential availability observation")]
+    MissingCredentialObserver,
+
     /// The workflow-start owner rejected the deployment execution budget.
     #[error("workflow-start service construction failed: {0}")]
     WorkflowStart(#[from] WorkflowStartBuildError),
@@ -276,6 +280,8 @@ pub struct CoreFlavorRevisionInputs {
     /// Contract reader on the same persistence backend as admitted executions.
     pub bundles: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
     /// Read/project-only credential capability on the deployment credential store.
+    /// Must expose both borrowed and owned availability observers for background
+    /// reconciliation and per-acquire admission.
     pub credential_resolver: Arc<dyn CredentialSlotResolver>,
 }
 
@@ -290,26 +296,25 @@ enum EngineEvidenceInputs {
 /// per-acquire credential admission through `resolver`'s availability
 /// observer — every new credentialed unit reads its credential's
 /// availability first, so a credential store outage refuses new
-/// credentialed egress. A resolver without an observer leaves bound rows on
-/// the interim row gate, with a warning.
+/// credentialed egress. A resolver without an observer is rejected at startup.
 fn resource_manager_config(
     metrics: &MetricsRegistry,
     shared_limits: Option<Arc<dyn nebula_engine::resource::rate_limit::ErasedLimitStore>>,
     resolver: &Arc<dyn CredentialSlotResolver>,
-) -> nebula_engine::resource::ManagerConfig {
+) -> Result<nebula_engine::resource::ManagerConfig, ComposeError> {
+    // Reconciliation borrows the observer; per-acquire admission owns it.
+    resolver
+        .as_availability_observer()
+        .ok_or(ComposeError::MissingCredentialObserver)?;
+    let observer = Arc::clone(resolver)
+        .into_availability_observer()
+        .ok_or(ComposeError::MissingCredentialObserver)?;
     let mut config = nebula_engine::resource::ManagerConfig::default()
         .with_metrics_registry(Arc::new(metrics.clone()));
     if let Some(store) = shared_limits {
         config = config.with_shared_limit_store(store);
     }
-    if let Some(observer) = Arc::clone(resolver).into_availability_observer() {
-        return config.with_credential_observer(observer);
-    }
-    tracing::warn!(
-        "credential resolver has no availability observer: credential-bound resources admit \
-         new work without a per-acquire availability read (interim row gate)"
-    );
-    config
+    Ok(config.with_credential_observer(observer))
 }
 
 fn build_core_flavor_runtime_impl(
@@ -354,7 +359,7 @@ fn build_core_flavor_runtime_impl(
         &metrics,
         resource_fanout.shared_limits.clone(),
         &revisions.credential_resolver,
-    );
+    )?;
     let engine = WorkflowEngine::new(action_runtime, metrics.clone())?
         .with_execution_stores(execution_stores.clone())
         .with_credential_resolver(revisions.credential_resolver)
@@ -810,6 +815,12 @@ mod tests {
     }
 
     impl CredentialSlotResolver for ObservingResolver {
+        fn as_availability_observer(
+            &self,
+        ) -> Option<&dyn nebula_credential::CredentialAvailabilityObserver> {
+            self.observer.then_some(self as &_)
+        }
+
         fn resolve_slot<'a>(
             &'a self,
             _scope: &'a nebula_credential::TenantScope,
@@ -864,7 +875,8 @@ mod tests {
     fn the_worker_manager_reads_credential_availability_per_acquire() {
         let resolver: Arc<dyn CredentialSlotResolver> =
             Arc::new(ObservingResolver { observer: true });
-        let config = resource_manager_config(&MetricsRegistry::new(), None, &resolver);
+        let config = resource_manager_config(&MetricsRegistry::new(), None, &resolver)
+            .expect("resolver supplies an observer");
         assert!(
             config.credential_observer.is_some(),
             "the composed manager is strict"
@@ -873,10 +885,12 @@ mod tests {
 
         let resolver: Arc<dyn CredentialSlotResolver> =
             Arc::new(ObservingResolver { observer: false });
-        let config = resource_manager_config(&MetricsRegistry::new(), None, &resolver);
         assert!(
-            config.credential_observer.is_none(),
-            "a resolver without an observer leaves the interim row gate"
+            matches!(
+                resource_manager_config(&MetricsRegistry::new(), None, &resolver),
+                Err(ComposeError::MissingCredentialObserver)
+            ),
+            "a resolver without an observer cannot configure worker resources"
         );
     }
 

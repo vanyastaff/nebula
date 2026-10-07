@@ -14,7 +14,7 @@ keywords.workspace = true
 
 [dependencies]
 nebula-core = { path = "../core" }
-nebula-engine = { path = "../engine" }
+nebula-engine = { path = "../engine", features = ["rotation"] }
 nebula-storage-port = { path = "../storage-port" }
 
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+nebula-credential = { path = "../credential" }
 nebula-metrics = { path = "../metrics" }
 nebula-orchestrator = { path = "../orchestrator" }
 nebula-plugin = { path = "../plugin" }

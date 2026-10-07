@@ -1565,12 +1565,15 @@ mod fanout_dispatch {
 
         let index = Arc::new(index);
         let bus = Arc::new(EventBus::new(16));
-        let driver = crate::ResourceFanoutDriver::spawn(
+        let mut driver = crate::ResourceFanoutDriver::try_spawn(
             Arc::clone(&index),
             Arc::clone(&manager),
-            Arc::clone(&bus),
             None,
-        );
+            Some(Arc::clone(&bus)),
+            None,
+            Arc::new(|| {}),
+        )
+        .expect("valid signal-only driver");
         bus.emit(CredentialEvent::Revoked {
             credential_id: first_credential,
         });
@@ -1605,6 +1608,13 @@ mod fanout_dispatch {
 
         ledger.revoke_release.add_permits(1);
         driver.abort();
+        assert!(
+            driver
+                .wait()
+                .await
+                .expect_err("abort cancels parent")
+                .is_cancelled()
+        );
     }
 
     #[tokio::test]

@@ -116,6 +116,8 @@ pub use daemon::{
     EventSource, EventSourceAdapter, EventSourceRuntime, RestartPolicy, RoutingError,
     RoutingResolver,
 };
+#[cfg(feature = "rotation")]
+pub use engine::ResourceReconciliationStartupError;
 pub use engine::{
     ClaimedControlTurnOutcome, ClaimedControlTurnRequest, ClaimedStartOutcome, ClaimedStartRequest,
     DEFAULT_EVENT_CHANNEL_CAPACITY, DEFAULT_TIMER_SCAN_INTERVAL, RecoveryTurnOutcome,

@@ -689,6 +689,50 @@ async fn without_an_observer_a_projection_block_suspends_the_same_way() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn resolver_only_driver_observes_persisted_availability_without_hints() {
+    let fixture = Fixture::new(true).await;
+    let resolver: Arc<dyn CredentialSlotResolver> = fixture.credential.clone();
+    let mut driver = ResourceFanoutDriver::try_spawn(
+        Arc::clone(&fixture.index),
+        Arc::clone(&fixture.manager),
+        Some(resolver),
+        None,
+        None,
+        Arc::new(|| {}),
+    )
+    .expect("resolver-only driver");
+    tokio::time::timeout(WAKE, fixture.credential.observed.notified())
+        .await
+        .expect("initial durable scan");
+
+    fixture.credential.set(Script::Blocked(REAUTH_BLOCK, 1));
+    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::time::timeout(WAKE, async {
+        while fixture.suspension().is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("periodic durable scan suspends without an event");
+    assert!(
+        fixture.credential.observations() >= 2,
+        "periodic scan reads durable availability again"
+    );
+    assert_eq!(
+        fixture.suspension().and_then(|s| s.reason_for("db")),
+        Some(CredentialUnavailableReason::ReauthRequired)
+    );
+    driver.abort();
+    assert!(
+        driver
+            .wait()
+            .await
+            .expect_err("cancelled parent")
+            .is_cancelled()
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_reauth_event_triggers_a_targeted_availability_scan() {
     let fixture = Fixture::new(true).await;
     // A context-less binding of the same credential: an availability scan
@@ -718,13 +762,15 @@ async fn a_reauth_event_triggers_a_targeted_availability_scan() {
     let bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let mut events = fixture.manager.subscribe_events();
     let resolver: Arc<dyn CredentialSlotResolver> = fixture.credential.clone();
-    let driver = ResourceFanoutDriver::spawn_with_resolver(
+    let driver = ResourceFanoutDriver::try_spawn(
         Arc::clone(&fixture.index),
         Arc::clone(&fixture.manager),
         Some(resolver),
-        Arc::clone(&bus),
+        Some(Arc::clone(&bus)),
         None,
-    );
+        Arc::new(|| {}),
+    )
+    .expect("valid bound resource manager");
     // The driver's first periodic scan runs at once; let it finish before
     // the credential changes.
     tokio::time::timeout(WAKE, fixture.credential.observed.notified())

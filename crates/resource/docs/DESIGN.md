@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | `frontier` — redesign frontier; production bind-population still missing |
+| **Status** | `frontier` — stored activation and credential reconciliation are implemented; first-party resource kinds and remaining admission limits are not complete |
 | **Layer** | Domain (engine-owned resource lifecycle; depends on credential/schema/eventbus, consumed by action/engine/sdk/plugin) |
-| **Redesign role** | **Touched — фронт текущего credential/resource redesign.** Уже принял ADR-0093 (teardown-контракт + topology bind-inversion) и шаг 5 ADR-0092 (перенос `credential_fanout/` из engine). Открытый хвост — production bind-population (§M12.4). |
+| **Redesign role** | **Touched — фронт текущего credential/resource redesign.** Уже принял ADR-0093 (teardown-контракт + topology bind-inversion) и шаг 5 ADR-0092 (перенос `credential_fanout/` из engine). Stored activation связывает credential slots до публикации строки, если работает reconciliation driver. Core plugin пока не предоставляет resource kinds. |
 | **Related** | ADR-0092 step 5, ADR-0093, PRODUCT_CANON L2-§11.4 (release best-effort on crash) / L2-§13.3 (attributable lifecycle) / §3.5 (что есть «Resource») |
 
 ---
@@ -129,11 +129,18 @@ Sized`, `destroy(…, cx: TeardownCx)`, дефолты у `check`/`destroy`);
 
 ## 8. Forward design / открытые вопросы
 
+The worker starts resolver-backed credential reconciliation before command consumption
+and supervises its task. Optional event buses accelerate durable scans; their closure
+does not stop a resolver-backed driver. Shutdown joins the driver and its child work
+before manager teardown. The first-party worker refuses a credential resolver without
+both availability-observer forms, so its admission path cannot silently become interim.
+This completes deployment wiring, not a catalog of first-party resource integrations.
+
 - **Сохранённые строки ресурсов активируются (2026-09-23).** Движок регистрирует строки, которые
   называет манифест выполнения, через `ResourceActivatorRegistry::register` с `RegisterRequest::row_id`;
   `SlotIdentity::from_row_bindings` включает id строки в ключ реестра, так что две строки одного вида
   в одном scope не заменяют друг друга. Путь без `rotation`: reverse index по-прежнему не наполняется.
-- **Production bind-population (§M12.4) — главный незакрытый хвост.** `register_and_bind` имеет quiesce-контракт, но живого вызывающего пути нет. Credential→slot резолвер существует и работает на execution-пути с 2026-09-13 (`CredentialSlotResolver`, impl `CredentialProjectionRuntime`), но `slot_bindings` он не наполняет: reverse index наполняет отдельный producer, которого нет, и единственный вызов `WorkflowEngine::register_resource_and_bind` сам никем не вызывается. Пока producer'а нет, статус крейта остаётся `frontier`. Это следующий resource-follow-up.
+- **Stored activation and credential reconciliation.** `StoredResourceActivator` resolves a stored row's credential slots and calls `register_and_bind` while a resolver-backed driver is live. Bindings are staged before publication and removed when the row retires. Durable credential projection drives reconciliation; optional events only wake it. A host without that driver opts out of the rotation index. The worker supplies the plugin factory allowlist, but the core plugin currently contributes no resource kinds; this is generic integration support, not a shipped catalog of resource providers.
 - **Несинхронизированные breaking-коммиты.** На ветке `dreamy-kare-8698d4` лежат ещё 4 breaking-коммита redesign API, не влитые в этот worktree; их надо re-derive против пост-0093 состояния перед мержем (риск дрейфа `RegistrationSpec`/topology API).
 - ~~**Долг по докам — это риск онбординга, а не косметика.**~~ **Closed by Batch D (2026-07-02)** — see §6 above.
 - **Phase-5 target design, implementation pending** —

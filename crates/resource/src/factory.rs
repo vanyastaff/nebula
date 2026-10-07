@@ -48,13 +48,14 @@
 //!    `ResourceFactory`; metadata, `TypeId`, and registration identity are
 //!    projections of one crate-issued typed activator.
 //!
-//! # Latent-by-design on landing
+//! # Stored-resource activation
 //!
-//! The `register` arm ships with zero production callers (only tests call
-//! typed registration today; `api/state.rs` holds the registry for config
-//! validation only, never live-registration). This is correct and intentional
-//! — the bind-population producer that gives `register` a production caller
-//! is the named M12.4 follow-up.
+//! The engine activates persisted rows through this registry when an execution
+//! binds them. The worker supplies the linked plugins' typed factories; the API
+//! uses the same registry for configuration validation without opening resources.
+//! With a live reconciliation driver, `register_and_bind` stages credential
+//! bindings before publishing the resource row. The core plugin currently has
+//! no resource kinds; this path serves plugins that contribute those factories.
 
 use std::{
     any::TypeId,

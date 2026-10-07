@@ -563,13 +563,15 @@ impl Fixture {
     #[cfg(feature = "rotation")]
     fn start_fanout(&mut self) -> nebula_resource::ResourceFanoutDriver {
         self.live_fanout = true;
-        nebula_resource::ResourceFanoutDriver::spawn_with_resolver(
+        nebula_resource::ResourceFanoutDriver::try_spawn(
             Arc::clone(&self.fanout),
             Arc::clone(&self.manager),
             Some(Arc::clone(&self.resolver) as Arc<dyn CredentialSlotResolver>),
-            Arc::clone(&self.credential_events),
+            Some(Arc::clone(&self.credential_events)),
             None,
+            Arc::new(|| {}),
         )
+        .expect("fan-out starts")
     }
 
     fn context(&self, with_credentials: bool) -> ActivationContext<'_> {

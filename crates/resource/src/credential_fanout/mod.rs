@@ -25,7 +25,7 @@ pub mod driver;
 pub mod index;
 mod orchestrator;
 
-pub use driver::ResourceFanoutDriver;
+pub use driver::{ResourceFanoutDriver, ResourceFanoutSpawnError};
 pub use index::{Bind, ResourceFanoutIndex, RotationOutcome};
 
 #[cfg(test)]

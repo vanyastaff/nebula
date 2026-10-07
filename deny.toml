@@ -246,6 +246,8 @@ deny = [
     # The core-flavor worker binary wires credential runtime alongside the
     # engine/resource composition root so slot guards can be resolved at run time.
     "nebula-worker-bin",
+    # Dev-only: worker lifecycle tests supply a read-only projection resolver.
+    "nebula-worker",
   ], reason = "Credential contracts and credential-owned resolver/refresh/lease runtime are shared infra; the listed Business/Exec/API consumers, first-party backends, test/composition harnesses, and server composition root may depend on them (no upward deps from core/*)" },
 
   # nebula-expression is a Core-tier expression evaluator. The wrapper

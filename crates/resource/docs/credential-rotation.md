@@ -11,12 +11,27 @@ These event buses carry ephemeral observations. Delivery may be lost, duplicated
 or reordered; fan-out is not durable revoke authority or an audit log. Persisted
 credential state and its owning runtime remain authoritative.
 
+## Worker lifecycle
+
+The worker starts reconciliation before consuming execution commands. Stored rows
+activate lazily through the linked plugins' factories and bind their resolved
+credential slots before becoming discoverable. The core plugin currently contributes
+no resource kinds; this wiring supports plugins with resource factories.
+
+The driver can run without hint buses. Closing a hint bus leaves resolver-backed
+durable scans running. Startup input or manager-affinity errors are typed failures;
+unexpected driver completion or panic stops the worker. Shutdown cancels and joins
+the driver, including its tracked children and lifecycle callback, before tearing
+down the resource manager. Reconciliation reads credential projection and never
+becomes a second credential writer.
+
 
 ## Material replacement recovery
 
-With `spawn_with_resolver`, `MaterialReplaced` queues an owner-qualified durable
+`ResourceFanoutDriver::try_spawn` accepts a credential resolver and optional credential
+and lease hint buses. With a resolver, `MaterialReplaced` queues an owner-qualified durable
 projection outside the event receive loop, while `Refreshed` requests a coalesced
-durable scan. On startup and every 30 seconds, the driver reconciles live slot metadata
+durable scan. On startup and then at jittered intervals of 15–30 seconds, the driver reconciles live slot metadata
 only when the same credential, slot and exact resource row has a published reverse-index
 binding. A `SlotBinding` without a credential ID therefore remains explicitly opted out
 of rotation even if its slot contains projection metadata. Direct material dispatch and
@@ -299,8 +314,8 @@ Who suspends and reopens:
 ### Strict per-acquire admission
 
 A manager configured with a credential availability observer
-(`ManagerConfig::with_credential_observer`; the worker takes it from its
-credential resolver) is **strict**: every new unit of work on a
+(`ManagerConfig::with_credential_observer`; the worker requires both borrowed and owned
+observers from its credential resolver and rejects missing observers at startup) is **strict**: every new unit of work on a
 credential-bound row reads the bound credentials' availability first (Design
 CONTRACT: every new credentialed unit reads availability first; no cached
 admission; an outage denies). Each row reports its profile
@@ -474,10 +489,10 @@ the design package. Long-lived subscriptions (`LISTEN` / `NOTIFY`, IMAP
 `IDLE`) are not supported: the unit deadline stays capped at five minutes,
 and an interval profile needs an ADR revising the per-unit rule.
 
-**Default.** A manager without an observer stays `InterimRowGate`; the
-default is not flipped here. The plan is a composition-time rejection of a
-manager that has credential-bound rows and no observer (MIGRATION P8),
-landing before the API freeze (P10).
+**Default.** The technical library still permits `InterimRowGate` for a manager
+without an observer. First-party worker composition instead requires both borrowed
+and owned availability observers and rejects a missing observer at startup.
+A host using the interim profile does not inherit the worker's strict admission contract.
 
 ### What suspension does not cover
 

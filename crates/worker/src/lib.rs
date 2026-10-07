@@ -11,6 +11,7 @@
 //! 3. Drains the durable control queue through [`ControlConsumer`].
 //! 4. Recovers accepted turns abandoned by a previous owner and wakes overdue timers.
 //! 5. Drains durable resource-event deliveries and execution handoffs.
+//! 6. Reconciles live resource credentials against durable credential projection.
 //!
 //! ## Wiring honesty
 //!
@@ -123,6 +124,17 @@ pub enum WorkerBuildError {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WorkerRuntimeError {
+    /// A component returned before the runtime was asked to stop.
+    #[error("worker component `{component}` stopped unexpectedly")]
+    ComponentStopped {
+        /// Which component stopped.
+        component: &'static str,
+    },
+
+    /// Resource reconciliation could not start; command consumption never began.
+    #[error("resource reconciliation could not start: {0}")]
+    ResourceReconciliationStartup(#[source] nebula_engine::ResourceReconciliationStartupError),
+
     /// A supervised component panicked or was cancelled.
     ///
     /// Surfaced rather than swallowed: a worker whose control consumer died is
@@ -163,6 +175,7 @@ enum Component {
     TimerScanner,
     AcceptedTurnRecovery,
     ResourceFanout,
+    ResourceReconciliation,
     ResourceStatus,
     EngineShutdownRelay,
 }
@@ -174,6 +187,7 @@ impl Component {
             Self::TimerScanner => "timer-scanner",
             Self::AcceptedTurnRecovery => "accepted-turn-recovery",
             Self::ResourceFanout => "resource-fanout",
+            Self::ResourceReconciliation => "resource-reconciliation",
             Self::ResourceStatus => "resource-status",
             Self::EngineShutdownRelay => "engine-shutdown-relay",
         }
@@ -234,28 +248,48 @@ impl WorkerRuntime {
             "worker runtime starting"
         );
 
-        // One cancellation tree, and every top-level task joined.
-        //
-        // The timer scanner used to be spawned and its `JoinHandle` dropped.
-        // A detached task that panics takes its failure with it: the worker
-        // keeps serving, parked executions silently stop waking, and nothing
-        // reports it. Joining every sibling means a component death is an error the
-        // app can act on, and cancelling the token stops the siblings rather
-        // than leaving them running against a half-dead runtime.
-        // Each task reports which component it is, so a failure is attributed
-        // rather than guessed. A task that panics yields only a `JoinError`, so
-        // the id map carries the label the payload no longer can.
+        // Every component shares cancellation and is joined. The id map
+        // preserves its name when a panic returns only a JoinError.
         let mut components: JoinSet<ComponentOutcome> = JoinSet::new();
         let mut labels: HashMap<tokio::task::Id, Component> = HashMap::new();
 
-        // Relay this runtime's stop to the engine before anything else.
-        //
-        // The engine holds each in-flight execution's lease, and only the
-        // engine can release it: a dropped dispatch future runs
-        // `LeaseGuard::drop`, which cannot `await`. Without this relay a
-        // graceful restart leaves every parked execution's lease alive for its
-        // full TTL, so the successor that just started — the whole reason for
-        // the restart — is fenced out of work nobody is doing.
+        // Claim reconciliation before any command can activate resource rows.
+        // Pure-action engines have no resource subsystem and return None.
+        if let Some(mut driver) = self
+            .engine
+            .spawn_resource_rotation_fanout(None, None)
+            .map_err(WorkerRuntimeError::ResourceReconciliationStartup)?
+        {
+            let reconciliation_shutdown = shutdown.clone();
+            let handle = components.spawn(async move {
+                let joined = tokio::select! {
+                    result = driver.wait() => result,
+                    () = reconciliation_shutdown.cancelled() => {
+                        driver.abort();
+                        driver.wait().await
+                    },
+                };
+                match joined {
+                    Ok(()) => Ok(Component::ResourceReconciliation),
+                    Err(error)
+                        if error.is_cancelled() && reconciliation_shutdown.is_cancelled() =>
+                    {
+                        Ok(Component::ResourceReconciliation)
+                    },
+                    Err(source) => Err((
+                        Component::ResourceReconciliation,
+                        WorkerRuntimeError::ComponentJoin {
+                            component: Component::ResourceReconciliation.label(),
+                            source,
+                        },
+                    )),
+                }
+            });
+            labels.insert(handle.id(), Component::ResourceReconciliation);
+        }
+
+        // Relay shutdown before starting work so in-flight turns can release
+        // their durable leases instead of leaving the next worker to await TTL.
         let engine_shutdown = self.engine.shutdown_token();
         let relay_shutdown = shutdown.clone();
         let handle = components.spawn(async move {
@@ -293,12 +327,7 @@ impl WorkerRuntime {
             let scanner = tokio_util::task::AbortOnDropHandle::new(
                 scanner_engine.spawn_timer_scanner(scan_interval, scanner_shutdown),
             );
-            // The scanner owns its own task, so its failure has to be carried
-            // out deliberately. Discarding the `JoinError` here would report a
-            // panicked scanner as a clean stop: the runtime would keep serving
-            // with nothing waking parked executions, and the supervision loop
-            // would neither record the error nor stop the siblings — the exact
-            // silence joining the task was meant to end.
+            // Preserve the child failure for the common supervision loop.
             match scanner.await {
                 Ok(()) => Ok(Component::TimerScanner),
                 Err(source) => Err((
@@ -359,10 +388,16 @@ impl WorkerRuntime {
         let mut first_failure = None;
         while let Some(joined) = components.join_next().await {
             let failure = match joined {
-                Ok(Ok(component)) => {
+                Ok(Ok(component)) if shutdown.is_cancelled() => {
                     tracing::debug!(component = component.label(), "worker component stopped");
                     None
                 },
+                Ok(Ok(component)) => Some((
+                    component,
+                    WorkerRuntimeError::ComponentStopped {
+                        component: component.label(),
+                    },
+                )),
                 // A task this runtime supervises failed inside itself.
                 Ok(Err((component, source))) => Some((component, source)),
                 // The supervised task itself panicked or was cancelled; the id

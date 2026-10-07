@@ -84,6 +84,40 @@ impl nebula_credential::CredentialSlotResolver for RuntimeRepairCredentialResolv
     > {
         Box::pin(async { Err(nebula_credential::CredentialSlotResolveError::SourceUnavailable) })
     }
+
+    fn as_availability_observer(
+        &self,
+    ) -> Option<&dyn nebula_credential::CredentialAvailabilityObserver> {
+        Some(self)
+    }
+
+    fn into_availability_observer(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn nebula_credential::CredentialAvailabilityObserver>> {
+        Some(self)
+    }
+}
+
+impl nebula_credential::CredentialAvailabilityObserver for RuntimeRepairCredentialResolver {
+    fn observe_availability<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _credential_id: nebula_credential::CredentialId,
+        _expected_key: nebula_credential::CredentialKey,
+        _cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::CredentialAvailabilityObservation,
+                        nebula_credential::CredentialObserveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(nebula_credential::CredentialObserveError::Unavailable) })
+    }
 }
 
 /// Explicit closed configuration for the app-owned RED profile.
