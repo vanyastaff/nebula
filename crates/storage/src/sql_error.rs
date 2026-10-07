@@ -151,10 +151,7 @@ fn postgres_code_is_transient(sqlstate: &str) -> bool {
 
 /// SQLite `BUSY` and `LOCKED`: primary codes 5 and 6, including their
 /// extended forms (the primary code is the low byte).
-#[cfg_attr(
-    not(feature = "sqlite"),
-    expect(dead_code, reason = "only SQLite errors carry SQLite result codes")
-)]
+#[cfg(any(feature = "sqlite", test))]
 fn sqlite_code_is_transient(code: &str) -> bool {
     code.parse::<u32>()
         .is_ok_and(|extended| matches!(extended & 0xff, 5 | 6))

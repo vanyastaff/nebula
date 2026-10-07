@@ -38,7 +38,7 @@
 - `src/auth/` — Plane-A account persistence (users, sessions, PATs, OAuth state, external identities, MFA, identity secrets, session-token digests): traits and rows in `auth`, PostgreSQL implementations in `auth/postgres/`. Outside the port contract by design.
 - `src/http_idempotency/` — the API's idempotent-replay response cache (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); separate from the execution adapter's per-attempt `IdempotencyGuard`.
 - `src/webhook_activation.rs` — the webhook activation spec persisted in `triggers.config`.
-- `src/sql_error.rs` — the one `sqlx::Error` → `StorageError` classification (value-free; dialect chosen by error type) plus `decode_u64` / `decode_i32` / `encode_u64`. Every SQL adapter maps errors through it except `*/resource_runtime.rs`, which still has its own classifier (known debt: its `corrupt()` mixes corrupt data, counter exhaustion and caller TTL).
+- `src/sql_error.rs` — the one `sqlx::Error` → `StorageError` classification (value-free; dialect chosen by error type) plus `decode_u64` / `decode_i32` / `encode_u64`. The resource-runtime policy delegates driver errors here while preserving domain conflicts, missing parents and uncertain commit outcomes.
 - `src/auth/postgres/oauth_login.rs` + `src/auth/oauth_login.rs` — storage-owned Plane-A
   OAuth finalization: every call performs no network I/O and atomically records
   either user/stable-link/session or an MFA challenge-without-session outcome.

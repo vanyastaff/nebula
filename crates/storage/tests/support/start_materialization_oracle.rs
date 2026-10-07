@@ -325,13 +325,6 @@ pub(super) async fn trigger_replay(
 }
 
 pub(super) struct RunEvidence {
-    #[cfg_attr(
-        not(any(feature = "sqlite", feature = "postgres")),
-        expect(
-            dead_code,
-            reason = "only deployment-backend cases inspect the stored bundle"
-        )
-    )]
     pub(super) stored: nebula_storage_port::dto::StoredContractBundle,
     pub(super) observations: serde_json::Value,
 }

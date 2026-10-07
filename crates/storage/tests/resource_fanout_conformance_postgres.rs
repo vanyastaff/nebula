@@ -296,6 +296,102 @@ async fn cleanup(admin: PgPool, pool: PgPool, schema: String) {
     admin.close().await;
 }
 
+#[tokio::test]
+async fn resource_error_negative_persisted_sequence_is_corrupt_through_get() {
+    let (admin, pool, schema) = isolated_pool().await.expect("PostgreSQL is required");
+    let store = PgResourceRuntime::new(pool.clone());
+    let scope = test_scope();
+    let source_id = resolve_test_resource(&store, &scope).await;
+    let resource_id = SharedResourceId::from_bytes([92; 16]);
+    // PostgreSQL identity columns permit explicit import values through
+    // OVERRIDING SYSTEM VALUE; all schema constraints remain enabled.
+    sqlx::query(
+        "INSERT INTO shared_resources \
+         (org_id, workspace_id, id, sequence, kind, compatibility_version, \
+          configuration_identity, slot_identity, identity_digest) \
+         OVERRIDING SYSTEM VALUE \
+         SELECT org_id, workspace_id, $1, -1, kind, compatibility_version, \
+                configuration_identity, slot_identity, identity_digest \
+         FROM shared_resources WHERE org_id = $2 AND workspace_id = $3 AND id = $4",
+    )
+    .bind(resource_id.into_bytes().as_slice())
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(source_id.into_bytes().as_slice())
+    .execute(&pool)
+    .await
+    .expect("schema permits a negative persisted sequence without disabling constraints");
+
+    let result = SharedResourceStore::get(&store, &scope, resource_id).await;
+    cleanup(admin, pool, schema).await;
+    std::assert_matches!(result, Err(StorageError::Corrupt(_)));
+}
+
+#[tokio::test]
+async fn resource_error_injected_sqlstates_preserve_classification_and_redact_messages() {
+    let (admin, pool, schema) = isolated_pool().await.expect("PostgreSQL is required");
+    let store = PgResourceRuntime::new(pool.clone());
+    let scope = test_scope();
+    // The trigger supplies driver errors at the public resolve seam. These are
+    // injected SQLSTATEs, not evidence of an actual deadlock or exhausted server.
+    let mut results = Vec::new();
+    for code in [
+        "40001", "40P01", "53000", "08006", "57014", "42501", "23505",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE OR REPLACE FUNCTION abort_shared_resource_insert() RETURNS trigger \
+             LANGUAGE plpgsql AS $$ BEGIN \
+             RAISE EXCEPTION USING ERRCODE = '{code}', MESSAGE = 'FIXTURE_DIAGNOSTIC_SECRET'; \
+             END $$"
+        )))
+        .execute(&pool)
+        .await
+        .expect("install test-owned driver error function");
+        sqlx::query(
+            "CREATE TRIGGER shared_resource_insert_abort BEFORE INSERT ON shared_resources \
+             FOR EACH ROW EXECUTE FUNCTION abort_shared_resource_insert()",
+        )
+        .execute(&pool)
+        .await
+        .expect("install test-owned driver error trigger");
+
+        let result = store
+            .resolve(ResolveSharedResourceRequest::new(
+                scope.clone(),
+                test_identity(),
+            ))
+            .await;
+        results.push((code, result));
+        sqlx::query("DROP TRIGGER shared_resource_insert_abort ON shared_resources")
+            .execute(&pool)
+            .await
+            .expect("remove test-owned trigger before the next injection");
+    }
+    cleanup(admin, pool, schema).await;
+    for (code, result) in results {
+        let error = result.expect_err("injected INSERT must fail through resolve");
+        assert!(
+            !format!("{error:?} {error}").contains("FIXTURE_DIAGNOSTIC_SECRET"),
+            "driver message must not cross the storage port"
+        );
+        let classified = match code {
+            "40001" | "40P01" | "53000" | "08006" | "57014" => {
+                matches!(error, StorageError::Connection(_))
+            },
+            "42501" => matches!(error, StorageError::Internal(_)),
+            "23505" => matches!(
+                error,
+                StorageError::Conflict {
+                    entity: "resource runtime",
+                    ..
+                }
+            ),
+            _ => unreachable!("fixture SQLSTATE is closed"),
+        };
+        assert!(classified, "injected SQLSTATE {code} returned {error:?}");
+    }
+}
+
 fn test_scope() -> Scope {
     Scope::new("pg-resource-ws", "pg-resource-org")
 }

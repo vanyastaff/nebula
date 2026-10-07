@@ -107,8 +107,9 @@ provides the adapters:
   user-version fencing, explicit old-key rotation, and repeated verification;
   the Postgres auth backend is not exposed until convergence succeeds.
 - `StorageError` — re-exported from `nebula-storage-port`; `sqlx` failures are
-  classified once, value-free, in `sql_error` (the resource-runtime adapters still
-  carry their own classifier).
+  classified once, value-free, in `sql_error`. The shared resource-runtime policy
+  preserves identity conflicts, missing parents and uncertain commit outcomes;
+  it delegates driver and row-decoding errors to that common classification.
 
 The paired credential baseline `0006_credentials.sql` makes owner identity,
 structural live/tombstoned state, incident identity, the closed refresh-retry

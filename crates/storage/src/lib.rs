@@ -90,6 +90,8 @@ pub mod migration_catalog;
 /// Why schema setup refused a database's migration ledger.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub use migration::catalog::CatalogRejection as SchemaRejection;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod resource_runtime_error;
 /// The one `sqlx` error → `StorageError` mapping of the SQL backends.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod sql_error;

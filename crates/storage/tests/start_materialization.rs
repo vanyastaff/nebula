@@ -33,7 +33,10 @@ async fn in_memory_materialization_contract() {
     let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&executions);
     let queue = nebula_storage::inmem::InMemoryControlQueue::new(&executions);
     let catalog = executions.plan_flavor_catalog();
-    let oracle::RunEvidence { observations, .. } = oracle::run(
+    let oracle::RunEvidence {
+        stored,
+        observations,
+    } = oracle::run(
         &starts,
         &executions,
         &queue,
@@ -42,6 +45,13 @@ async fn in_memory_materialization_contract() {
         &oracle::Parents::new(None),
     )
     .await;
+    assert_eq!(
+        starts
+            .read_contract_bundle(stored.scope(), stored.execution_id())
+            .await
+            .unwrap(),
+        Some(stored)
+    );
     write_observations(
         "in-memory",
         "NEBULA_START_AUTHORITY_IN_MEMORY_OBSERVATIONS_PATH",

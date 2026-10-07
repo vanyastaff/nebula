@@ -5,7 +5,9 @@
 //! representable range, or a timestamp that is not RFC 3339 is
 //! [`StorageError::Corrupt`], never a guessed value.
 
-use nebula_storage_port::{ExecutionListingStatus, MicrosInstant, StorageError};
+#[cfg(feature = "sqlite")]
+use nebula_storage_port::MicrosInstant;
+use nebula_storage_port::{ExecutionListingStatus, StorageError};
 
 /// Decode a stored status.
 pub(crate) fn decode_status(stored: &str) -> Result<ExecutionListingStatus, StorageError> {
@@ -15,6 +17,7 @@ pub(crate) fn decode_status(stored: &str) -> Result<ExecutionListingStatus, Stor
 }
 
 /// Decode an instant SQLite stores as integer microseconds.
+#[cfg(feature = "sqlite")]
 pub(crate) fn decode_sort_key(micros: i64) -> Result<MicrosInstant, StorageError> {
     MicrosInstant::from_micros(micros)
         .ok_or_else(|| StorageError::Corrupt("execution instant is out of range".into()))

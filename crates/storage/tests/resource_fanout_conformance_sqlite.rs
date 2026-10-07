@@ -90,6 +90,54 @@ async fn runtime() -> (SqliteResourceRuntime, SqliteExpiryControl) {
 resource_fanout_conformance_suite!(runtime());
 
 #[tokio::test]
+async fn resource_error_closed_pool_is_connection_failure_through_resolve() {
+    let pool = pool().await;
+    let store = SqliteResourceRuntime::new(pool.clone());
+    pool.close().await;
+    std::assert_matches!(
+        store
+            .resolve(ResolveSharedResourceRequest::new(
+                test_scope(),
+                test_identity()
+            ))
+            .await,
+        Err(StorageError::Connection(_))
+    );
+}
+
+#[tokio::test]
+async fn resource_error_negative_persisted_sequence_is_corrupt_through_get() {
+    let pool = pool().await;
+    let store = SqliteResourceRuntime::new(pool.clone());
+    let scope = test_scope();
+    let resource_id = match store
+        .resolve(ResolveSharedResourceRequest::new(
+            scope.clone(),
+            test_identity(),
+        ))
+        .await
+        .expect("valid shared resource resolves")
+    {
+        ResolveSharedResourceOutcome::Created(record)
+        | ResolveSharedResourceOutcome::Existing(record) => record.id(),
+    };
+    sqlx::query(
+        "UPDATE shared_resources SET sequence = -1 \
+         WHERE org_id = ? AND workspace_id = ? AND id = ?",
+    )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(resource_id.into_bytes().as_slice())
+    .execute(&pool)
+    .await
+    .expect("schema permits a negative persisted sequence without disabling constraints");
+
+    let result = SharedResourceStore::get(&store, &scope, resource_id).await;
+    pool.close().await;
+    std::assert_matches!(result, Err(StorageError::Corrupt(_)));
+}
+
+#[tokio::test]
 async fn digest_collision_and_generation_overflow_use_test_owned_pool() {
     let pool = pool().await;
     let store = SqliteResourceRuntime::new(pool.clone());
