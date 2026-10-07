@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::{
-    LiveResourceStatus, ResourceStatusPhase, ResourceStatusSnapshot, StatusWorkerId,
+    LiveResourceStatus, ResourceRow, ResourceStatusPhase, ResourceStatusSnapshot, StatusWorkerId,
 };
-use nebula_storage_port::store::ResourceStatusStore;
+use nebula_storage_port::store::{ResourceStatusStore, ResourceStore};
 
 /// Backend-owned time control used by the conformance target.
 #[async_trait::async_trait]
@@ -23,9 +23,46 @@ const LIVE_TTL: Duration = Duration::from_mins(1);
 /// round trip to a real server, short enough that waiting it out is cheap.
 const SHORT_TTL: Duration = Duration::from_millis(500);
 const RESOURCE: &str = "res_status_primary";
+const SECOND_RESOURCE: &str = "res_status_second";
 
 fn scope() -> Scope {
     Scope::new("status-ws", "status-org")
+}
+
+/// The scope the cases publish status in. A snapshot belongs to its stored
+/// resource on the SQL backends, so their fixtures provision this scope and
+/// call [`seed_published_resources`] first; the in-memory store does not check
+/// references between aggregates.
+pub(crate) fn published_scope() -> Scope {
+    scope()
+}
+
+/// Create, in the already provisioned [`published_scope`], every stored
+/// resource the cases publish status for.
+pub(crate) async fn seed_published_resources(resources: &dyn ResourceStore) {
+    for id in [RESOURCE, SECOND_RESOURCE] {
+        resources
+            .create(
+                &scope(),
+                ResourceRow {
+                    id: id.to_owned(),
+                    workspace_id: scope().workspace_id,
+                    slug: id.to_owned(),
+                    display_name: "Status fixture".to_owned(),
+                    kind: "fixture".to_owned(),
+                    config: serde_json::json!({}),
+                    credential_bindings: std::collections::BTreeMap::new(),
+                    topology: None,
+                    resilience_override: None,
+                    created_at: "2026-01-01T00:00:00Z".to_owned(),
+                    created_by: "fixture".to_owned(),
+                    version: 1,
+                    deleted_at: None,
+                },
+            )
+            .await
+            .expect("create the published resource");
+    }
 }
 
 fn worker(name: &str) -> StatusWorkerId {
@@ -190,7 +227,7 @@ pub(crate) async fn withdraw_worker_removes_everything(store: impl ResourceStatu
     let beta = worker("worker-beta");
     for owner in [&alpha, &beta] {
         store.heartbeat(owner, LIVE_TTL).await.expect("heartbeat");
-        for resource_id in [RESOURCE, "res_status_second"] {
+        for resource_id in [RESOURCE, SECOND_RESOURCE] {
             store
                 .publish(
                     &scope(),
@@ -206,7 +243,7 @@ pub(crate) async fn withdraw_worker_removes_everything(store: impl ResourceStatu
         .await
         .expect("withdraw worker");
 
-    for resource_id in [RESOURCE, "res_status_second"] {
+    for resource_id in [RESOURCE, SECOND_RESOURCE] {
         let statuses = store
             .live_for(&scope(), resource_id)
             .await

@@ -165,6 +165,11 @@ impl IdentityBackend for SqliteBackend {
             .seed_execution_parents(scope, workflow_id)
             .await;
     }
+    #[cfg(feature = "sqlite")]
+    async fn seed_resource_parents(&self, scope: &Scope) {
+        execution_parents::provision_scope(self.tenant_provisioning_store().await.as_ref(), scope)
+            .await;
+    }
 }
 
 #[cfg(feature = "sqlite")]

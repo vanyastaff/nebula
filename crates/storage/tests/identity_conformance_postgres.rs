@@ -96,6 +96,10 @@ impl IdentityBackend for PostgresBackend {
             .seed_execution_parents(scope, workflow_id)
             .await;
     }
+    async fn seed_resource_parents(&self, scope: &Scope) {
+        execution_parents::provision_scope(self.tenant_provisioning_store().await.as_ref(), scope)
+            .await;
+    }
 }
 
 #[path = "support/execution_parents.rs"]

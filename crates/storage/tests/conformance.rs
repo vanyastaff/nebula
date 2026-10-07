@@ -127,6 +127,18 @@ relational_matrix!(
     triggers_cascade_with_their_workflow,
     harness::assert_triggers_cascade_with_their_workflow
 );
+relational_matrix!(
+    resources_require_a_live_workspace,
+    harness::resources::assert_resources_require_a_live_workspace
+);
+relational_matrix!(
+    resource_status_needs_a_live_resource,
+    harness::resources::assert_resource_status_needs_a_live_resource
+);
+relational_matrix!(
+    resource_rows_cascade_with_their_owner,
+    harness::resources::assert_resource_rows_cascade_with_their_owner
+);
 
 matrix!(
     deleted_workflow_hides_its_versions,

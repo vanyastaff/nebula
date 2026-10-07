@@ -5,7 +5,6 @@
 //! deleted). The port carries `created_at` / `deleted_at` as RFC 3339 text;
 //! they are stored as INTEGER microseconds and read back at that precision.
 
-use chrono::{DateTime, SecondsFormat, Utc};
 use nebula_storage_port::dto::TriggerRow;
 use nebula_storage_port::store::TriggerStore;
 use nebula_storage_port::{Scope, StorageError};
@@ -13,8 +12,8 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use super::{
-    cas_disambiguate_scoped, encode_instant, encode_version, instant, json, json_text, now_micros,
-    optional, optional_instant, required, version,
+    cas_disambiguate_scoped, decode_text_instant, encode_version, instant, json, json_text,
+    now_micros, optional, optional_instant, required, version,
 };
 use crate::sql_error::{storage_error, storage_error_for};
 
@@ -36,16 +35,8 @@ impl SqliteTriggerStore {
     }
 }
 
-/// A port instant (RFC 3339 text) as INTEGER microseconds.
 fn encode_text_instant(value: &str, column: &'static str) -> Result<i64, StorageError> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|instant| encode_instant(instant.with_timezone(&Utc)))
-        .map_err(|_| StorageError::InvalidInput(format!("trigger `{column}` is not RFC 3339")))
-}
-
-/// A stored instant as the port's RFC 3339 text.
-fn decode_text_instant(instant: DateTime<Utc>) -> String {
-    instant.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+    super::encode_text_instant("trigger", value, column)
 }
 
 pub(super) fn decode_trigger(row: &SqliteRow) -> Result<TriggerRow, StorageError> {

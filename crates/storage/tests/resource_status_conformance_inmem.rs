@@ -2,6 +2,10 @@
 
 #[macro_use]
 #[path = "support/resource_status_oracle.rs"]
+#[expect(
+    dead_code,
+    reason = "the in-memory store does not check a snapshot's resource, so nothing seeds it"
+)]
 mod oracle;
 
 use std::sync::{Arc, Mutex};

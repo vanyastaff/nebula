@@ -24,8 +24,10 @@ struct State {
 /// In-memory reference implementation of [`ResourceStatusStore`].
 ///
 /// One mutex guards both maps, matching the transaction boundary required of
-/// deployment adapters, and liveness is judged in the same epoch milliseconds
-/// the SQL backends store. This adapter is for tests and conformance, not a
+/// deployment adapters, and liveness is judged at millisecond precision, the
+/// precision every backend's TTL arithmetic uses. It does not check that a
+/// snapshot's stored resource exists (a reference between aggregates the SQL
+/// backends enforce). This adapter is for tests and conformance, not a
 /// supported persistence backend.
 #[derive(Clone)]
 pub struct InMemoryResourceStatusStore {

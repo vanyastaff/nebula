@@ -32,11 +32,11 @@ pub use tenant_provisioning::SqliteTenantProvisioningStore;
 pub use trigger::SqliteTriggerStore;
 pub use workspace::SqliteWorkspaceStore;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use nebula_storage_port::{Scope, StorageError};
 use serde::de::DeserializeOwned;
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqliteConnection, SqlitePool};
 
 use crate::sql_error::{decode_u64, encode_u64, storage_error};
 
@@ -136,13 +136,48 @@ fn now_micros() -> i64 {
     encode_instant(Utc::now())
 }
 
-// ── CAS and soft delete ──────────────────────────────────────────────────
-
-/// Current time as an RFC 3339 string — the soft-delete stamp of the
-/// aggregates that still store instants as text (resources).
-fn now_rfc3339() -> String {
-    Utc::now().to_rfc3339()
+/// A port instant carried as RFC 3339 text (`entity`'s `column`), as
+/// INTEGER microseconds.
+fn encode_text_instant(
+    entity: &'static str,
+    value: &str,
+    column: &'static str,
+) -> Result<i64, StorageError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|instant| encode_instant(instant.with_timezone(&Utc)))
+        .map_err(|_| StorageError::InvalidInput(format!("{entity} `{column}` is not RFC 3339")))
 }
+
+/// A stored instant as the port's RFC 3339 text.
+fn decode_text_instant(instant: DateTime<Utc>) -> String {
+    instant.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+}
+
+// ── live parents ─────────────────────────────────────────────────────────
+
+/// Check `scope`'s workspace and its org are live inside the caller's
+/// `BEGIN IMMEDIATE` transaction, which serializes the check with a
+/// concurrent archive (the foreign key proves existence only); missing or
+/// archived is `NotFound`.
+pub(crate) async fn ensure_live_workspace(
+    connection: &mut SqliteConnection,
+    scope: &Scope,
+) -> Result<(), StorageError> {
+    let workspace = sqlx::query(
+        "SELECT w.id FROM workspaces w JOIN orgs o ON o.id = w.org_id \
+         WHERE w.org_id = ? AND w.id = ? AND w.deleted_at IS NULL AND o.deleted_at IS NULL",
+    )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .fetch_optional(connection)
+    .await
+    .map_err(storage_error)?;
+    workspace
+        .map(|_| ())
+        .ok_or_else(|| StorageError::not_found("workspace", scope.workspace_id.clone()))
+}
+
+// ── CAS and soft delete ──────────────────────────────────────────────────
 
 /// The error for a zero-row CAS `UPDATE`, given the row's current version:
 /// the row is gone (or soft-deleted) ⇒ `NotFound`; the version moved ⇒
@@ -185,7 +220,8 @@ async fn cas_disambiguate(
     Err(cas_failure(current, entity, id, expected_version))
 }
 
-/// Explain a zero-row CAS `UPDATE` on a workspace-scoped table.
+/// Explain a zero-row CAS `UPDATE` on a workspace-scoped soft-deletable
+/// table: an archived row is `NotFound`, never a spurious `Conflict`.
 async fn cas_disambiguate_scoped(
     pool: &SqlitePool,
     table: &str,
@@ -194,11 +230,13 @@ async fn cas_disambiguate_scoped(
     id: &str,
     expected_version: u64,
 ) -> Result<(), StorageError> {
-    let sql =
-        format!("SELECT version FROM {table} WHERE workspace_id = ? AND org_id = ? AND id = ?");
+    let sql = format!(
+        "SELECT version FROM {table} \
+         WHERE org_id = ? AND workspace_id = ? AND id = ? AND deleted_at IS NULL"
+    );
     let current = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -228,8 +266,8 @@ async fn soft_delete_by_id(
     }
 }
 
-/// Soft-delete a workspace-scoped `id` row (active rows only); zero rows ⇒
-/// `NotFound`.
+/// Soft-delete a workspace-scoped `id` row of a microsecond-instant table
+/// (active rows only); zero rows ⇒ `NotFound`.
 async fn soft_delete_scoped(
     pool: &SqlitePool,
     table: &str,
@@ -239,12 +277,12 @@ async fn soft_delete_scoped(
 ) -> Result<(), StorageError> {
     let sql = format!(
         "UPDATE {table} SET deleted_at = ? \
-         WHERE workspace_id = ? AND org_id = ? AND id = ? AND deleted_at IS NULL"
+         WHERE org_id = ? AND workspace_id = ? AND id = ? AND deleted_at IS NULL"
     );
     let res = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(now_rfc3339())
-        .bind(&scope.workspace_id)
+        .bind(now_micros())
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(id)
         .execute(pool)
         .await

@@ -33,7 +33,8 @@ pub use tenant_provisioning::PgTenantProvisioningStore;
 pub use trigger::PgTriggerStore;
 pub use workspace::PgWorkspaceStore;
 
-use nebula_storage_port::{Scope, StorageError};
+use chrono::{DateTime, SecondsFormat, Utc};
+use nebula_storage_port::{MicrosInstant, Scope, StorageError};
 use serde::de::DeserializeOwned;
 use sqlx::postgres::PgRow;
 use sqlx::types::Json;
@@ -83,6 +84,23 @@ fn encode_version(version: u64) -> Result<i64, StorageError> {
     encode_u64(version, "version")
 }
 
+/// A port instant carried as RFC 3339 text (`entity`'s `column`), at
+/// storage precision.
+fn encode_text_instant(
+    entity: &'static str,
+    value: &str,
+    column: &'static str,
+) -> Result<DateTime<Utc>, StorageError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|instant| MicrosInstant::floor(instant.with_timezone(&Utc)).to_datetime())
+        .map_err(|_| StorageError::InvalidInput(format!("{entity} `{column}` is not RFC 3339")))
+}
+
+/// A stored instant as the port's RFC 3339 text.
+fn decode_text_instant(instant: DateTime<Utc>) -> String {
+    instant.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+}
+
 // ── advisory locks ───────────────────────────────────────────────────────
 
 /// Hold a transaction-scoped advisory lock on `key`.
@@ -95,13 +113,32 @@ async fn advisory_xact_lock(connection: &mut PgConnection, key: &str) -> Result<
     Ok(())
 }
 
-// ── CAS and soft delete ──────────────────────────────────────────────────
+// ── live parents ─────────────────────────────────────────────────────────
 
-/// Current time as an RFC 3339 string — the soft-delete stamp of the
-/// aggregates that still store instants as text (resources).
-fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339()
+/// Share-lock `scope`'s workspace while it and its org are live, so a
+/// concurrent archive serializes with a write beneath it (the foreign key
+/// proves existence only); missing or archived is `NotFound`.
+pub(crate) async fn lock_live_workspace(
+    connection: &mut PgConnection,
+    scope: &Scope,
+) -> Result<(), StorageError> {
+    let workspace = sqlx::query(
+        "SELECT w.id FROM workspaces w JOIN orgs o ON o.id = w.org_id \
+         WHERE w.org_id = $1 AND w.id = $2 \
+           AND w.deleted_at IS NULL AND o.deleted_at IS NULL \
+         FOR SHARE OF w",
+    )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .fetch_optional(connection)
+    .await
+    .map_err(storage_error)?;
+    workspace
+        .map(|_| ())
+        .ok_or_else(|| StorageError::not_found("workspace", scope.workspace_id.clone()))
 }
+
+// ── CAS and soft delete ──────────────────────────────────────────────────
 
 /// The error for a zero-row CAS `UPDATE`, given the row's current version:
 /// the row is gone (or soft-deleted) ⇒ `NotFound`; the version moved ⇒
@@ -144,7 +181,8 @@ async fn cas_disambiguate(
     Err(cas_failure(current, entity, id, expected_version))
 }
 
-/// Explain a zero-row CAS `UPDATE` on a workspace-scoped table.
+/// Explain a zero-row CAS `UPDATE` on a workspace-scoped soft-deletable
+/// table: an archived row is `NotFound`, never a spurious `Conflict`.
 async fn cas_disambiguate_scoped(
     pool: &PgPool,
     table: &str,
@@ -153,11 +191,13 @@ async fn cas_disambiguate_scoped(
     id: &str,
     expected_version: u64,
 ) -> Result<(), StorageError> {
-    let sql =
-        format!("SELECT version FROM {table} WHERE workspace_id = $1 AND org_id = $2 AND id = $3");
+    let sql = format!(
+        "SELECT version FROM {table} \
+         WHERE org_id = $1 AND workspace_id = $2 AND id = $3 AND deleted_at IS NULL"
+    );
     let current = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -186,8 +226,8 @@ async fn soft_delete_by_id(
     }
 }
 
-/// Soft-delete a workspace-scoped `id` row (active rows only); zero rows ⇒
-/// `NotFound`.
+/// Soft-delete a workspace-scoped `id` row of a `TIMESTAMPTZ` table (active
+/// rows only), stamped by the database clock; zero rows ⇒ `NotFound`.
 async fn soft_delete_scoped(
     pool: &PgPool,
     table: &str,
@@ -196,13 +236,12 @@ async fn soft_delete_scoped(
     id: &str,
 ) -> Result<(), StorageError> {
     let sql = format!(
-        "UPDATE {table} SET deleted_at = $1 \
-         WHERE workspace_id = $2 AND org_id = $3 AND id = $4 AND deleted_at IS NULL"
+        "UPDATE {table} SET deleted_at = now() \
+         WHERE org_id = $1 AND workspace_id = $2 AND id = $3 AND deleted_at IS NULL"
     );
     let res = sqlx::query(sqlx::AssertSqlSafe(sql))
-        .bind(now_rfc3339())
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(id)
         .execute(pool)
         .await

@@ -68,6 +68,14 @@ fn other_scope() -> Scope {
     Scope::new("resource-ws-other", "resource-org-other")
 }
 
+/// Every scope the cases resolve shared resources in. A shared resource
+/// belongs to its workspace on the SQL backends, so their fixtures provision
+/// these first; the in-memory store does not check references between
+/// aggregates.
+pub(crate) fn tenant_scopes() -> [Scope; 2] {
+    [scope(), other_scope()]
+}
+
 fn identity(configuration: &[u8], slot: &[u8]) -> SharedResourceIdentity {
     SharedResourceIdentity::new(
         ResourceKind::new("telegram.bot").expect("valid kind"),
@@ -1107,7 +1115,7 @@ pub(crate) fn opaque_debug_contract(store: &impl std::fmt::Debug) {
 }
 
 async fn seed_global_recovery_deliveries(store: &impl ResourceRuntimeUnderTest) -> [Scope; 2] {
-    let scopes = [scope(), other_scope()];
+    let scopes = tenant_scopes();
     for (index, target_scope) in scopes.iter().enumerate() {
         let resource_id = resolved_id(
             &resolve(

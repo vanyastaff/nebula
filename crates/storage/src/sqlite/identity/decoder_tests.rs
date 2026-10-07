@@ -79,11 +79,12 @@ async fn decode_resource_null_required_kind_is_err() {
     let result = with_null_row(
         "CREATE TABLE t (id TEXT NOT NULL, workspace_id TEXT NOT NULL, slug TEXT NOT NULL, \
          display_name TEXT NOT NULL, kind TEXT, config TEXT NOT NULL DEFAULT '{}', \
-         created_at TEXT NOT NULL, created_by TEXT NOT NULL, \
-         version INTEGER NOT NULL DEFAULT 0, deleted_at TEXT)",
+         credential_bindings TEXT NOT NULL DEFAULT '{}', topology TEXT, \
+         resilience_override TEXT, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, \
+         version INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER)",
         // `kind` is NOT NULL in the schema but NULL here.
-        "INSERT INTO t VALUES ('res-1', 'ws-1', 'my-res', 'My Resource', NULL, '{}', \
-         '2024-01-01T00:00:00Z', 'user-1', 0, NULL)",
+        "INSERT INTO t VALUES ('res-1', 'ws-1', 'my-res', 'My Resource', NULL, '{}', '{}', \
+         NULL, NULL, 1704067200000000, 'user-1', 0, NULL)",
         decode_resource,
     )
     .await;

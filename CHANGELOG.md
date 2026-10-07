@@ -11,6 +11,20 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Resources on the database standard (migration 0071).** `port_resources`,
+  the resource runtime status tables and the shared-resource runtime tables are
+  replaced by `resources`, `resource_status_snapshots`,
+  `resource_status_heartbeats`, `shared_resources`, `resource_subscriptions`,
+  `resource_source_leases`, `resource_events`, `resource_deliveries` and
+  `resource_execution_handoffs`; existing rows are dropped. Stored and shared
+  resources belong to their workspace (`ON DELETE CASCADE`): creating a stored
+  resource or resolving a shared resource in a missing or archived workspace is
+  `NotFound`. Publishing status for a missing or archived stored resource is
+  `NotFound`, and an archived resource reports no live status. Instants are
+  microsecond `TIMESTAMPTZ` / INTEGER columns and fencing generations
+  non-negative integers (a generation past `i64::MAX` is exhausted). Reset
+  local databases.
+
 - **Credentials live in the deployment database (migration 0070).** The
   credential store, refresh claims, refresh incidents (renamed
   `credential_refresh_incidents`) and pending interactions move onto the

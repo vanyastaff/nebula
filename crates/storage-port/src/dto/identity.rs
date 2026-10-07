@@ -103,7 +103,7 @@ impl PrincipalKind {
     }
 }
 
-/// `resources` row (migration 0009).
+/// `resources` row (migration 0071).
 // guard-justified: `config` is `serde_json::Value` (not `Eq` — can
 // hold a float); the clippy `Eq`-derivable hint is a false positive for
 // JSON-bearing rows.

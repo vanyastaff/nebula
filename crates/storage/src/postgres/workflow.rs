@@ -73,23 +73,7 @@ async fn insert_workflow(
     scope: &Scope,
     row: &WorkflowRecord,
 ) -> Result<(), StorageError> {
-    let workspace = sqlx::query(
-        "SELECT w.id FROM workspaces w JOIN orgs o ON o.id = w.org_id \
-         WHERE w.org_id = $1 AND w.id = $2 \
-           AND w.deleted_at IS NULL AND o.deleted_at IS NULL \
-         FOR SHARE OF w",
-    )
-    .bind(&scope.org_id)
-    .bind(&scope.workspace_id)
-    .fetch_optional(&mut *connection)
-    .await
-    .map_err(storage_error)?;
-    if workspace.is_none() {
-        return Err(StorageError::not_found(
-            "workspace",
-            scope.workspace_id.clone(),
-        ));
-    }
+    super::identity::lock_live_workspace(&mut *connection, scope).await?;
     sqlx::query(
         "INSERT INTO workflows (org_id, workspace_id, id, slug, version) \
          VALUES ($1, $2, $3, $4, $5)",

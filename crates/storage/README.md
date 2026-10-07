@@ -378,6 +378,17 @@ subscriptions into deliveries in one transaction. A Delivered completion creates
 the delivery-keyed execution-start handoff in that same transaction; future engine
 consumers recover it through the bounded handoff claim port.
 
+Migration `0071_resources_standard` moves the resource aggregate onto the database
+standard: `resources` (stored definitions) and `shared_resources` belong to their
+workspace (`ON DELETE CASCADE`; creating either requires a live workspace);
+`resource_status_snapshots` belong to their stored resource (publishing requires it live,
+an archived resource has no live status) and `resource_status_heartbeats` are the
+publishing workers' leases; `resource_subscriptions`, `resource_source_leases`,
+`resource_events`, `resource_deliveries` and `resource_execution_handoffs` cascade from
+their shared resource. An occurrence is unique per resource in the schema; a shared
+resource's identity exceeds a B-tree key, so its uniqueness stays the adapter's,
+serialized on the identity digest.
+
 PostgreSQL setup holds the established database/schema-scoped advisory lock
 through preflight, migration, and postflight on one retired session. SQLite
 uses the shared Nebula file lock or process-wide memory guard and verifies

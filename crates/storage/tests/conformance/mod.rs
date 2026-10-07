@@ -107,12 +107,35 @@ pub(crate) trait Backend: Send + Sync {
     async fn trigger_store(&self) -> Option<Arc<dyn TriggerStore>> {
         None
     }
-    /// Hard-delete the row `id` of `table` (`executions` or `workflows`) in
-    /// `scope`, as purge will (issue 1159), so a relational case observes
-    /// what cascades with it. Whether a row was deleted; `false` for the
-    /// in-memory backend, which has no purge.
+    /// Hard-delete the row `id` of `table` (`executions`, `workflows` or
+    /// `resources`) in `scope`, as purge will (issue 1159), so a relational
+    /// case observes what cascades with it. Whether a row was deleted; `false`
+    /// for the in-memory backend, which has no purge.
     async fn purge(&self, _table: &'static str, _scope: &Scope, _id: &str) -> bool {
         false
+    }
+    /// Archive (`purge == false`) or hard-delete `scope`'s workspace, as the
+    /// tenant lifecycle will (issue 1159). Whether a row changed; `false` for
+    /// the in-memory backend.
+    async fn retire_workspace(&self, _scope: &Scope, _purge: bool) -> bool {
+        false
+    }
+    /// The stored-resource store of a backend that checks a resource's
+    /// workspace; `None` for the in-memory one.
+    async fn resource_store(&self) -> Option<Arc<dyn nebula_storage_port::store::ResourceStore>> {
+        None
+    }
+    /// The resource status store of a backend that checks a snapshot's
+    /// resource; `None` for the in-memory one.
+    async fn resource_status_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::ResourceStatusStore>> {
+        None
+    }
+    /// The shared-resource runtime of a backend that checks a shared
+    /// resource's workspace; `None` for the in-memory one.
+    async fn resource_runtime(&self) -> Option<Arc<dyn resources::SharedResourceRuntime>> {
+        None
     }
 }
 
@@ -454,6 +477,42 @@ impl Backend for SqliteBackend {
             .rows_affected()
             == 1
     }
+    #[cfg(feature = "sqlite")]
+    async fn retire_workspace(&self, scope: &Scope, purge: bool) -> bool {
+        let sql = if purge {
+            "DELETE FROM workspaces WHERE org_id = ? AND id = ?"
+        } else {
+            "UPDATE workspaces SET deleted_at = 1 WHERE org_id = ? AND id = ?"
+        };
+        sqlx::query(sql)
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .execute(&self.pool().await)
+            .await
+            .expect("retire the workspace")
+            .rows_affected()
+            == 1
+    }
+    #[cfg(feature = "sqlite")]
+    async fn resource_store(&self) -> Option<Arc<dyn nebula_storage_port::store::ResourceStore>> {
+        Some(Arc::new(nebula_storage::sqlite::SqliteResourceStore::new(
+            self.pool().await,
+        )))
+    }
+    #[cfg(feature = "sqlite")]
+    async fn resource_status_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::ResourceStatusStore>> {
+        Some(Arc::new(
+            nebula_storage::sqlite::SqliteResourceStatusStore::new(self.pool().await),
+        ))
+    }
+    #[cfg(feature = "sqlite")]
+    async fn resource_runtime(&self) -> Option<Arc<dyn resources::SharedResourceRuntime>> {
+        Some(Arc::new(
+            nebula_storage::sqlite::SqliteResourceRuntime::new(self.pool().await),
+        ))
+    }
     #[cfg(not(feature = "sqlite"))]
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
@@ -684,6 +743,42 @@ impl Backend for PostgresBackend {
             .rows_affected()
             == 1
     }
+    #[cfg(feature = "postgres")]
+    async fn retire_workspace(&self, scope: &Scope, purge: bool) -> bool {
+        let sql = if purge {
+            "DELETE FROM workspaces WHERE org_id = $1 AND id = $2"
+        } else {
+            "UPDATE workspaces SET deleted_at = now() WHERE org_id = $1 AND id = $2"
+        };
+        sqlx::query(sql)
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .execute(&self.pool().await)
+            .await
+            .expect("retire the workspace")
+            .rows_affected()
+            == 1
+    }
+    #[cfg(feature = "postgres")]
+    async fn resource_store(&self) -> Option<Arc<dyn nebula_storage_port::store::ResourceStore>> {
+        Some(Arc::new(nebula_storage::postgres::PgResourceStore::new(
+            self.pool().await,
+        )))
+    }
+    #[cfg(feature = "postgres")]
+    async fn resource_status_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::ResourceStatusStore>> {
+        Some(Arc::new(
+            nebula_storage::postgres::PgResourceStatusStore::new(self.pool().await),
+        ))
+    }
+    #[cfg(feature = "postgres")]
+    async fn resource_runtime(&self) -> Option<Arc<dyn resources::SharedResourceRuntime>> {
+        Some(Arc::new(nebula_storage::postgres::PgResourceRuntime::new(
+            self.pool().await,
+        )))
+    }
     #[cfg(not(feature = "postgres"))]
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
@@ -693,6 +788,7 @@ impl Backend for PostgresBackend {
 mod dispatch;
 mod history;
 mod requirements;
+pub(crate) mod resources;
 
 pub(crate) use dispatch::{
     assert_dispatch_writes_require_live_parents, assert_queue_rows_cascade_with_their_execution,

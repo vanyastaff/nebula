@@ -1,5 +1,10 @@
-//! `port_resources`: workspace-scoped; slug is unique among active rows per
-//! workspace scope.
+//! `resources`: the resource definitions a workspace stores; slug is unique
+//! among live rows of a workspace.
+//!
+//! A resource belongs to its workspace: create share-locks the live workspace
+//! first (`NotFound` when it or its org is missing or archived). The port
+//! carries `created_at` / `deleted_at` as RFC 3339 text; they are stored as
+//! `TIMESTAMPTZ` and read back at microsecond precision.
 
 use nebula_storage_port::dto::ResourceRow;
 use nebula_storage_port::store::ResourceStore;
@@ -9,10 +14,15 @@ use sqlx::postgres::PgRow;
 use sqlx::types::Json;
 
 use super::{
-    cas_disambiguate_scoped, encode_version, json, optional, optional_json, required,
-    soft_delete_scoped, version,
+    cas_disambiguate_scoped, decode_text_instant, encode_text_instant, encode_version, json,
+    lock_live_workspace, optional, optional_json, required, soft_delete_scoped, version,
 };
 use crate::sql_error::{storage_error, storage_error_for};
+
+/// Columns [`decode_resource`] reads.
+const RESOURCE_COLUMNS: &str = "id, workspace_id, slug, display_name, kind, config, \
+     credential_bindings, topology, resilience_override, created_at, created_by, version, \
+     deleted_at";
 
 /// Postgres-backed `resources` store.
 #[derive(Clone, Debug)]
@@ -39,25 +49,33 @@ fn decode_resource(row: &PgRow) -> Result<ResourceRow, StorageError> {
         credential_bindings: json(row, "credential_bindings")?,
         topology: optional_json(row, "topology")?,
         resilience_override: optional_json(row, "resilience_override")?,
-        created_at: required(row, "created_at")?,
+        created_at: decode_text_instant(required(row, "created_at")?),
         created_by: required(row, "created_by")?,
         version: version(row)?,
-        deleted_at: optional(row, "deleted_at")?,
+        deleted_at: optional(row, "deleted_at")?.map(decode_text_instant),
     })
 }
 
 #[async_trait::async_trait]
 impl ResourceStore for PgResourceStore {
     async fn create(&self, scope: &Scope, row: ResourceRow) -> Result<(), StorageError> {
+        let created_at = encode_text_instant("resource", &row.created_at, "created_at")?;
+        let deleted_at = row
+            .deleted_at
+            .as_deref()
+            .map(|value| encode_text_instant("resource", value, "deleted_at"))
+            .transpose()?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        lock_live_workspace(&mut tx, scope).await?;
         sqlx::query(
-            "INSERT INTO port_resources (id, workspace_id, org_id, slug, \
-             display_name, kind, config, credential_bindings, topology, \
-             resilience_override, created_at, created_by, version, deleted_at) \
+            "INSERT INTO resources (org_id, workspace_id, id, slug, display_name, kind, \
+             config, credential_bindings, topology, resilience_override, created_at, \
+             created_by, version, deleted_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
-        .bind(&row.id)
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .bind(&row.id)
         .bind(&row.slug)
         .bind(&row.display_name)
         .bind(&row.kind)
@@ -65,45 +83,49 @@ impl ResourceStore for PgResourceStore {
         .bind(Json(&row.credential_bindings))
         .bind(row.topology.as_ref().map(Json))
         .bind(row.resilience_override.as_ref().map(Json))
-        .bind(&row.created_at)
+        .bind(created_at)
         .bind(&row.created_by)
         .bind(encode_version(row.version)?)
-        .bind(&row.deleted_at)
-        .execute(&self.pool)
+        .bind(deleted_at)
+        .execute(&mut *tx)
         .await
         .map_err(|error| storage_error_for("resource", error))?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(())
     }
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ResourceRow>, StorageError> {
-        sqlx::query(
-            "SELECT * FROM port_resources \
-             WHERE workspace_id = $1 AND org_id = $2 AND id = $3 AND deleted_at IS NULL",
-        )
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(storage_error)?
-        .as_ref()
-        .map(decode_resource)
-        .transpose()
+        let sql = format!(
+            "SELECT {RESOURCE_COLUMNS} FROM resources \
+             WHERE org_id = $1 AND workspace_id = $2 AND id = $3 AND deleted_at IS NULL"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .as_ref()
+            .map(decode_resource)
+            .transpose()
     }
 
     async fn list(&self, scope: &Scope) -> Result<Vec<ResourceRow>, StorageError> {
-        sqlx::query(
-            "SELECT * FROM port_resources \
-             WHERE workspace_id = $1 AND org_id = $2 AND deleted_at IS NULL ORDER BY id",
-        )
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(storage_error)?
-        .iter()
-        .map(decode_resource)
-        .collect()
+        let sql = format!(
+            "SELECT {RESOURCE_COLUMNS} FROM resources \
+             WHERE org_id = $1 AND workspace_id = $2 AND deleted_at IS NULL \
+             ORDER BY id COLLATE \"C\""
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .iter()
+            .map(decode_resource)
+            .collect()
     }
 
     async fn update(
@@ -113,10 +135,10 @@ impl ResourceStore for PgResourceStore {
         expected_version: u64,
     ) -> Result<(), StorageError> {
         let res = sqlx::query(
-            "UPDATE port_resources SET slug = $1, display_name = $2, kind = $3, \
+            "UPDATE resources SET slug = $1, display_name = $2, kind = $3, \
              config = $4, credential_bindings = $5, topology = $6, resilience_override = $7, \
              version = $8 \
-             WHERE workspace_id = $9 AND org_id = $10 AND id = $11 \
+             WHERE org_id = $9 AND workspace_id = $10 AND id = $11 \
              AND deleted_at IS NULL AND version = $12",
         )
         .bind(&row.slug)
@@ -127,8 +149,8 @@ impl ResourceStore for PgResourceStore {
         .bind(row.topology.as_ref().map(Json))
         .bind(row.resilience_override.as_ref().map(Json))
         .bind(encode_version(row.version)?)
-        .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(&row.id)
         .bind(encode_version(expected_version)?)
         .execute(&self.pool)
@@ -139,7 +161,7 @@ impl ResourceStore for PgResourceStore {
         }
         cas_disambiguate_scoped(
             &self.pool,
-            "port_resources",
+            "resources",
             "resource",
             scope,
             &row.id,
@@ -149,6 +171,6 @@ impl ResourceStore for PgResourceStore {
     }
 
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {
-        soft_delete_scoped(&self.pool, "port_resources", "resource", scope, id).await
+        soft_delete_scoped(&self.pool, "resources", "resource", scope, id).await
     }
 }

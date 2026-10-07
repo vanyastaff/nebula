@@ -1246,7 +1246,10 @@ mod tests {
     /// control and job queues, triggers, trigger start reservations, webhook
     /// activations). 0070: credentials (credentials owned by their workspace,
     /// their provider-operation claims and incidents, pending interactive
-    /// state).
+    /// state). 0071: resources (stored resources owned by their workspace
+    /// with the runtime status workers publish for them, shared resources
+    /// owned by their workspace with their subscriptions, source leases,
+    /// events, deliveries and execution handoffs).
     ///
     /// Head 0064, on both backends, adds the execution listing projection
     /// (`started_at`, `finished_at`, `created_at_us`), backfills it and

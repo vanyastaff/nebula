@@ -33,6 +33,9 @@ trait IdentityBackend: Send + Sync {
     /// belongs to — a SQL backend's foreign keys; nothing in memory, which
     /// does not check references between aggregates.
     async fn seed_trigger_parents(&self, _scope: &Scope, _workflow_id: &str) {}
+    /// Provision `scope`, whose workspace a resource belongs to — a SQL
+    /// backend's foreign key; nothing in memory.
+    async fn seed_resource_parents(&self, _scope: &Scope) {}
 }
 
 
@@ -1048,9 +1051,15 @@ async fn assert_resource_contract(b: &dyn IdentityBackend) {
     let s = b.resource_store().await;
     let a = Scope::new("ws_a", "org_a");
     let other = Scope::new("ws_b", "org_b");
+    b.seed_resource_parents(&a).await;
     s.create(&a, resource_row("res_1", "ws_a", "db"))
         .await
         .expect("create");
+    assert_eq!(
+        s.get(&a, "res_1").await.unwrap(),
+        Some(resource_row("res_1", "ws_a", "db")),
+        "a resource round-trips, its instants included"
+    );
     assert!(
         s.create(&a, resource_row("res_2", "ws_a", "db"))
             .await

@@ -1,4 +1,13 @@
-//! SQLite persistence for the shared-resource runtime aggregate.
+//! SQLite persistence for the shared-resource runtime aggregate, over
+//! `shared_resources`, `resource_subscriptions`, `resource_source_leases`,
+//! `resource_events`, `resource_deliveries` and `resource_execution_handoffs`.
+//!
+//! Every mutation runs under `BEGIN IMMEDIATE`, SQLite's single writer. A
+//! shared resource belongs to its workspace: resolving one checks the
+//! workspace is live inside that transaction (`NotFound` when it or its org is
+//! missing or archived), and everything beneath a shared resource cascades
+//! from it. Instants are INTEGER microseconds read from SQLite's clock;
+//! fencing generations and subscription versions are non-negative INTEGERs.
 
 use std::str::FromStr as _;
 
@@ -33,7 +42,8 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row as _, Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
-const NOW_MS_SQL: &str = "SELECT CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)";
+const NOW_MICROS_SQL: &str =
+    "SELECT CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER)";
 
 /// SQLite implementation of all shared-resource runtime persistence roles.
 #[derive(Clone, Debug)]
@@ -115,6 +125,10 @@ fn corrupt() -> StorageError {
     StorageError::Internal("resource runtime persisted value is invalid".to_owned())
 }
 
+fn exhausted() -> StorageError {
+    StorageError::Internal("resource generation exhausted".to_owned())
+}
+
 fn fenced(entity: &'static str) -> StorageError {
     tracing::warn!(storage.outcome = "fenced", storage.entity = entity);
     StorageError::FencedOut {
@@ -131,20 +145,38 @@ fn id16(bytes: Vec<u8>) -> Result<[u8; 16], StorageError> {
     bytes.try_into().map_err(|_| corrupt())
 }
 
-fn decode_u64(bytes: Vec<u8>) -> Result<u64, StorageError> {
-    Ok(u64::from_be_bytes(bytes.try_into().map_err(|_| corrupt())?))
+/// A stored generation or version (a non-negative INTEGER).
+fn decode_counter(value: i64) -> Result<u64, StorageError> {
+    u64::try_from(value).map_err(|_| corrupt())
 }
 
-fn expiry(ms: i64) -> Result<DateTime<Utc>, StorageError> {
-    DateTime::from_timestamp_millis(ms).ok_or_else(corrupt)
+/// A generation or version as the INTEGER it is stored as; past `i64::MAX`
+/// the counter is exhausted.
+fn encode_counter(value: u64) -> Result<i64, StorageError> {
+    i64::try_from(value).map_err(|_| exhausted())
 }
 
-fn ttl_ms(ttl: ResourceLeaseTtl) -> Result<i64, StorageError> {
-    i64::try_from(ttl.get().as_millis()).map_err(|_| corrupt())
+/// The generation after `current`, within the stored range.
+fn next_counter(current: u64) -> Result<u64, StorageError> {
+    let next = current.checked_add(1).ok_or_else(exhausted)?;
+    encode_counter(next)?;
+    Ok(next)
 }
 
-async fn now_ms(transaction: &mut Transaction<'_, Sqlite>) -> Result<i64, StorageError> {
-    sqlx::query_scalar(NOW_MS_SQL)
+/// A stored instant (INTEGER microseconds since the Unix epoch).
+fn instant(micros: i64) -> Result<DateTime<Utc>, StorageError> {
+    DateTime::from_timestamp_micros(micros).ok_or_else(corrupt)
+}
+
+/// `ttl` past `now`, both in microseconds.
+fn expiry_after(now: i64, ttl: ResourceLeaseTtl) -> Result<i64, StorageError> {
+    let ttl = i64::try_from(ttl.get().as_micros()).map_err(|_| corrupt())?;
+    now.checked_add(ttl).ok_or_else(corrupt)
+}
+
+/// SQLite's clock, in microseconds.
+async fn now_micros(transaction: &mut Transaction<'_, Sqlite>) -> Result<i64, StorageError> {
+    sqlx::query_scalar(NOW_MICROS_SQL)
         .fetch_one(&mut **transaction)
         .await
         .map_err(unavailable)
@@ -196,7 +228,9 @@ fn decode_subscription(row: &SqliteRow) -> Result<ResourceSubscriptionRecord, St
             &row.try_get::<String, _>("state").map_err(unavailable)?,
         )
         .map_err(|_| corrupt())?,
-        ResourceSubscriptionVersion::new(decode_u64(row.try_get("version").map_err(unavailable)?)?),
+        ResourceSubscriptionVersion::new(decode_counter(
+            row.try_get("version").map_err(unavailable)?,
+        )?),
         u64::try_from(row.try_get::<i64, _>("sequence").map_err(unavailable)?)
             .map_err(|_| corrupt())?,
     ))
@@ -225,7 +259,8 @@ impl SharedResourceStore for SqliteResourceRuntime {
         request: ResolveSharedResourceRequest,
     ) -> Result<ResolveSharedResourceOutcome, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let rows = sqlx::query("SELECT sequence, id, kind, compatibility_version, configuration_identity, slot_identity FROM port_shared_resources WHERE workspace_id = ? AND org_id = ? AND identity_digest = ?")
+        super::identity::ensure_live_workspace(&mut transaction, request.scope()).await?;
+        let rows = sqlx::query("SELECT sequence, id, kind, compatibility_version, configuration_identity, slot_identity FROM shared_resources WHERE workspace_id = ? AND org_id = ? AND identity_digest = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.identity().digest().as_slice())
             .fetch_all(&mut *transaction).await.map_err(unavailable)?;
         for row in rows {
@@ -236,14 +271,11 @@ impl SharedResourceStore for SqliteResourceRuntime {
             }
         }
         let id = SharedResourceId::from_bytes(*Uuid::new_v4().as_bytes());
-        sqlx::query("INSERT INTO port_shared_resources (id, workspace_id, org_id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(id.into_bytes().as_slice()).bind(&request.scope().workspace_id).bind(&request.scope().org_id)
+        let sequence: i64 = sqlx::query_scalar("INSERT INTO shared_resources (org_id, workspace_id, id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING sequence")
+            .bind(&request.scope().org_id).bind(&request.scope().workspace_id).bind(id.into_bytes().as_slice())
             .bind(request.identity().kind().as_str()).bind(i64::from(request.identity().compatibility_version().get()))
             .bind(request.identity().configuration_bytes()).bind(request.identity().slot_bytes()).bind(request.identity().digest().as_slice())
-            .execute(&mut *transaction).await.map_err(unavailable)?;
-        let sequence: i64 = sqlx::query_scalar("SELECT sequence FROM port_shared_resources WHERE workspace_id = ? AND org_id = ? AND id = ?")
-            .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(id.into_bytes().as_slice())
-            .fetch_one(&mut *transaction).await.map_err(unavailable)?;
+            .fetch_one(&mut *transaction).await.map_err(|error| foreign_key_or_unavailable(error, "workspace"))?;
         let record = SharedResourceRecord::new(
             id,
             request.identity().clone(),
@@ -258,7 +290,7 @@ impl SharedResourceStore for SqliteResourceRuntime {
         scope: &Scope,
         resource_id: SharedResourceId,
     ) -> Result<Option<SharedResourceRecord>, StorageError> {
-        sqlx::query("SELECT sequence, id, kind, compatibility_version, configuration_identity, slot_identity FROM port_shared_resources WHERE workspace_id = ? AND org_id = ? AND id = ?")
+        sqlx::query("SELECT sequence, id, kind, compatibility_version, configuration_identity, slot_identity FROM shared_resources WHERE workspace_id = ? AND org_id = ? AND id = ?")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(resource_id.into_bytes().as_slice())
             .fetch_optional(&self.pool).await.map_err(unavailable)?.map(|row| decode_resource(&row)).transpose()
     }
@@ -271,7 +303,7 @@ impl SharedResourceStore for SqliteResourceRuntime {
     ) -> Result<SharedResourcePage, StorageError> {
         let after = after.map_or(0, ReconciliationCursor::sequence);
         let after = i64::try_from(after).unwrap_or(i64::MAX);
-        let rows = sqlx::query("SELECT sequence, id, kind, compatibility_version, configuration_identity, slot_identity FROM port_shared_resources WHERE workspace_id = ? AND org_id = ? AND sequence > ? ORDER BY sequence LIMIT ?")
+        let rows = sqlx::query("SELECT sequence, id, kind, compatibility_version, configuration_identity, slot_identity FROM shared_resources WHERE workspace_id = ? AND org_id = ? AND sequence > ? ORDER BY sequence LIMIT ?")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(after).bind(i64::from(page_size.get()))
             .fetch_all(&self.pool).await.map_err(unavailable)?;
         let resources = rows
@@ -297,7 +329,7 @@ impl ResourceSubscriptionStore for SqliteResourceRuntime {
         request: PutResourceSubscriptionRequest,
     ) -> Result<PutResourceSubscriptionOutcome, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let existing = sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM port_resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND consumer_kind = ? AND consumer_identity = ?")
+        let existing = sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND consumer_kind = ? AND consumer_identity = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id)
             .bind(request.resource_id().into_bytes().as_slice()).bind(request.consumer_kind().as_str())
             .bind(request.consumer_identity_bytes()).fetch_optional(&mut *transaction).await.map_err(unavailable)?;
@@ -308,14 +340,11 @@ impl ResourceSubscriptionStore for SqliteResourceRuntime {
         }
         let id = ResourceSubscriptionId::from_bytes(*Uuid::new_v4().as_bytes());
         let version = ResourceSubscriptionVersion::new(1);
-        sqlx::query("INSERT INTO port_resource_subscriptions (id, workspace_id, org_id, resource_id, consumer_kind, consumer_identity, state, version) VALUES (?, ?, ?, ?, ?, ?, 'active', ?)")
-            .bind(id.into_bytes().as_slice()).bind(&request.scope().workspace_id).bind(&request.scope().org_id)
-            .bind(request.resource_id().into_bytes().as_slice()).bind(request.consumer_kind().as_str())
-            .bind(request.consumer_identity_bytes()).bind(version.get().to_be_bytes().as_slice())
-            .execute(&mut *transaction).await.map_err(|error| foreign_key_or_unavailable(error, "shared resource"))?;
-        let sequence: i64 = sqlx::query_scalar("SELECT sequence FROM port_resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND id = ?")
-            .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(id.into_bytes().as_slice())
-            .fetch_one(&mut *transaction).await.map_err(unavailable)?;
+        let sequence: i64 = sqlx::query_scalar("INSERT INTO resource_subscriptions (org_id, workspace_id, resource_id, id, consumer_kind, consumer_identity, state, version) VALUES (?, ?, ?, ?, ?, ?, 'active', ?) RETURNING sequence")
+            .bind(&request.scope().org_id).bind(&request.scope().workspace_id)
+            .bind(request.resource_id().into_bytes().as_slice()).bind(id.into_bytes().as_slice()).bind(request.consumer_kind().as_str())
+            .bind(request.consumer_identity_bytes()).bind(encode_counter(version.get())?)
+            .fetch_one(&mut *transaction).await.map_err(|error| foreign_key_or_unavailable(error, "shared resource"))?;
         let record = ResourceSubscriptionRecord::new(
             id,
             request.resource_id(),
@@ -335,7 +364,7 @@ impl ResourceSubscriptionStore for SqliteResourceRuntime {
         scope: &Scope,
         subscription_id: ResourceSubscriptionId,
     ) -> Result<Option<ResourceSubscriptionRecord>, StorageError> {
-        sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM port_resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND id = ?")
+        sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND id = ?")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(subscription_id.into_bytes().as_slice())
             .fetch_optional(&self.pool).await.map_err(unavailable)?.map(|row| decode_subscription(&row)).transpose()
     }
@@ -349,7 +378,7 @@ impl ResourceSubscriptionStore for SqliteResourceRuntime {
     ) -> Result<ResourceSubscriptionPage, StorageError> {
         let after =
             i64::try_from(after.map_or(0, ReconciliationCursor::sequence)).unwrap_or(i64::MAX);
-        let rows = sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM port_resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND state = 'active' AND sequence > ? ORDER BY sequence LIMIT ?")
+        let rows = sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND state = 'active' AND sequence > ? ORDER BY sequence LIMIT ?")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(resource_id.into_bytes().as_slice()).bind(after).bind(i64::from(page_size.get()))
             .fetch_all(&self.pool).await.map_err(unavailable)?;
         decode_subscription_page(&rows, page_size)
@@ -363,7 +392,7 @@ impl ResourceSubscriptionStore for SqliteResourceRuntime {
     ) -> Result<ResourceSubscriptionPage, StorageError> {
         let after =
             i64::try_from(after.map_or(0, ReconciliationCursor::sequence)).unwrap_or(i64::MAX);
-        let rows = sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM port_resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND sequence > ? ORDER BY sequence LIMIT ?")
+        let rows = sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND sequence > ? ORDER BY sequence LIMIT ?")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(after).bind(i64::from(page_size.get()))
             .fetch_all(&self.pool).await.map_err(unavailable)?;
         decode_subscription_page(&rows, page_size)
@@ -374,7 +403,7 @@ impl ResourceSubscriptionStore for SqliteResourceRuntime {
         scope: &Scope,
         resource_id: SharedResourceId,
     ) -> Result<u64, StorageError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM port_resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND state = 'active'")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND state = 'active'")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(resource_id.into_bytes().as_slice())
             .fetch_one(&self.pool).await.map_err(unavailable)?;
         u64::try_from(count).map_err(|_| corrupt())
@@ -386,7 +415,7 @@ impl ResourceSubscriptionStore for SqliteResourceRuntime {
         request: TransitionResourceSubscriptionRequest,
     ) -> Result<ResourceSubscriptionRecord, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let row = sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM port_resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND id = ?")
+        let row = sqlx::query("SELECT sequence, id, resource_id, consumer_kind, consumer_identity, state, version FROM resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND id = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.subscription_id().into_bytes().as_slice())
             .fetch_optional(&mut *transaction).await.map_err(unavailable)?.ok_or_else(|| missing("resource subscription"))?;
         let current = decode_subscription(&row)?;
@@ -412,9 +441,9 @@ impl ResourceSubscriptionStore for SqliteResourceRuntime {
                 actual: current.version().get(),
             });
         }
-        let next = current.version().get().checked_add(1).ok_or_else(corrupt)?;
-        sqlx::query("UPDATE port_resource_subscriptions SET state = ?, version = ? WHERE workspace_id = ? AND org_id = ? AND id = ?")
-            .bind(request.target_state().as_str()).bind(next.to_be_bytes().as_slice())
+        let next = next_counter(current.version().get())?;
+        sqlx::query("UPDATE resource_subscriptions SET state = ?, version = ? WHERE workspace_id = ? AND org_id = ? AND id = ?")
+            .bind(request.target_state().as_str()).bind(encode_counter(next)?)
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.subscription_id().into_bytes().as_slice())
             .execute(&mut *transaction).await.map_err(unavailable)?;
         let updated = ResourceSubscriptionRecord::new(
@@ -436,8 +465,9 @@ fn decode_source_lease(
     row: &SqliteRow,
     resource_id: SharedResourceId,
 ) -> Result<ResourceSourceLease, StorageError> {
-    let generation =
-        ResourceLeaseGeneration::new(decode_u64(row.try_get("generation").map_err(unavailable)?)?);
+    let generation = ResourceLeaseGeneration::new(decode_counter(
+        row.try_get("generation").map_err(unavailable)?,
+    )?);
     Ok(ResourceSourceLease::new(
         resource_id,
         ResourceLeaseHolder::new(row.try_get::<String, _>("holder").map_err(unavailable)?)
@@ -446,7 +476,7 @@ fn decode_source_lease(
             id16(row.try_get("claim_id").map_err(unavailable)?)?,
             generation,
         ),
-        expiry(row.try_get("expires_at_ms").map_err(unavailable)?)?,
+        instant(row.try_get("expires_at").map_err(unavailable)?)?,
     ))
 }
 
@@ -458,38 +488,33 @@ impl ResourceSourceLeaseStore for SqliteResourceRuntime {
         request: AcquireResourceSourceLeaseRequest,
     ) -> Result<AcquireResourceSourceLeaseOutcome, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let existing = sqlx::query("SELECT holder, claim_id, generation, expires_at_ms FROM port_resource_source_leases WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
+        let now = now_micros(&mut transaction).await?;
+        let existing = sqlx::query("SELECT holder, claim_id, generation, expires_at FROM resource_source_leases WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.resource_id().into_bytes().as_slice())
             .fetch_optional(&mut *transaction).await.map_err(unavailable)?;
-        let generation =
-            if let Some(row) = &existing {
-                let current = decode_source_lease(row, request.resource_id())?;
-                if now < current.expires_at().timestamp_millis() {
-                    transaction.commit().await.map_err(commit_unknown)?;
-                    return Ok(AcquireResourceSourceLeaseOutcome::Contended {
-                        expires_at: current.expires_at(),
-                    });
-                }
-                current.token().generation().checked_next().map_err(|_| {
-                    StorageError::Internal("resource generation exhausted".to_owned())
-                })?
-            } else {
-                ResourceLeaseGeneration::new(1)
-            };
-        let expires_at_ms = now
-            .checked_add(ttl_ms(request.ttl())?)
-            .ok_or_else(corrupt)?;
+        let generation = if let Some(row) = &existing {
+            let current = decode_source_lease(row, request.resource_id())?;
+            if instant(now)? < current.expires_at() {
+                transaction.commit().await.map_err(commit_unknown)?;
+                return Ok(AcquireResourceSourceLeaseOutcome::Contended {
+                    expires_at: current.expires_at(),
+                });
+            }
+            ResourceLeaseGeneration::new(next_counter(current.token().generation().get())?)
+        } else {
+            ResourceLeaseGeneration::new(1)
+        };
+        let expires_at = expiry_after(now, request.ttl())?;
         let claim_id = Uuid::new_v4();
-        sqlx::query("INSERT INTO port_resource_source_leases (workspace_id, org_id, resource_id, holder, claim_id, generation, expires_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (workspace_id, org_id, resource_id) DO UPDATE SET holder = excluded.holder, claim_id = excluded.claim_id, generation = excluded.generation, expires_at_ms = excluded.expires_at_ms")
-            .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.resource_id().into_bytes().as_slice())
-            .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(generation.get().to_be_bytes().as_slice())
-            .bind(expires_at_ms).execute(&mut *transaction).await.map_err(|error| foreign_key_or_unavailable(error, "shared resource"))?;
+        sqlx::query("INSERT INTO resource_source_leases (org_id, workspace_id, resource_id, holder, claim_id, generation, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (org_id, workspace_id, resource_id) DO UPDATE SET holder = excluded.holder, claim_id = excluded.claim_id, generation = excluded.generation, expires_at = excluded.expires_at")
+            .bind(&request.scope().org_id).bind(&request.scope().workspace_id).bind(request.resource_id().into_bytes().as_slice())
+            .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(encode_counter(generation.get())?)
+            .bind(expires_at).execute(&mut *transaction).await.map_err(|error| foreign_key_or_unavailable(error, "shared resource"))?;
         let lease = ResourceSourceLease::new(
             request.resource_id(),
             request.holder().clone(),
             ResourceSourceLeaseToken::new(claim_id, generation),
-            expiry(expires_at_ms)?,
+            instant(expires_at)?,
         );
         transaction.commit().await.map_err(commit_unknown)?;
         Ok(AcquireResourceSourceLeaseOutcome::Acquired(lease))
@@ -501,19 +526,17 @@ impl ResourceSourceLeaseStore for SqliteResourceRuntime {
         request: HeartbeatResourceSourceLeaseRequest,
     ) -> Result<ResourceSourceLease, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let expires_at_ms = now
-            .checked_add(ttl_ms(request.ttl())?)
-            .ok_or_else(corrupt)?;
-        let result = sqlx::query("UPDATE port_resource_source_leases SET expires_at_ms = ? WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND claim_id = ? AND generation = ? AND expires_at_ms > ?")
-            .bind(expires_at_ms).bind(&request.scope().workspace_id).bind(&request.scope().org_id)
+        let now = now_micros(&mut transaction).await?;
+        let expires_at = expiry_after(now, request.ttl())?;
+        let result = sqlx::query("UPDATE resource_source_leases SET expires_at = ? WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND claim_id = ? AND generation = ? AND expires_at > ?")
+            .bind(expires_at).bind(&request.scope().workspace_id).bind(&request.scope().org_id)
             .bind(request.resource_id().into_bytes().as_slice()).bind(request.token().claim_id().as_bytes().as_slice())
-            .bind(request.token().generation().get().to_be_bytes().as_slice()).bind(now)
+            .bind(encode_counter(request.token().generation().get())?).bind(now)
             .execute(&mut *transaction).await.map_err(unavailable)?;
         if result.rows_affected() != 1 {
             return Err(fenced("resource source lease"));
         }
-        let row = sqlx::query("SELECT holder, claim_id, generation, expires_at_ms FROM port_resource_source_leases WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
+        let row = sqlx::query("SELECT holder, claim_id, generation, expires_at FROM resource_source_leases WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.resource_id().into_bytes().as_slice())
             .fetch_one(&mut *transaction).await.map_err(unavailable)?;
         let lease = decode_source_lease(&row, request.resource_id())?;
@@ -527,13 +550,25 @@ impl ResourceSourceLeaseStore for SqliteResourceRuntime {
         request: ReleaseResourceSourceLeaseRequest,
     ) -> Result<(), StorageError> {
         let mut transaction = self.begin_write().await?;
-        sqlx::query("UPDATE port_resource_source_leases SET expires_at_ms = 0 WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND claim_id = ? AND generation = ?")
+        sqlx::query("UPDATE resource_source_leases SET expires_at = 0 WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND claim_id = ? AND generation = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.resource_id().into_bytes().as_slice())
-            .bind(request.token().claim_id().as_bytes().as_slice()).bind(request.token().generation().get().to_be_bytes().as_slice())
+            .bind(request.token().claim_id().as_bytes().as_slice()).bind(encode_counter(request.token().generation().get())?)
             .execute(&mut *transaction).await.map_err(unavailable)?;
         transaction.commit().await.map_err(commit_unknown)?;
         Ok(())
     }
+}
+
+fn decode_envelope(row: &SqliteRow) -> Result<EventEnvelope, StorageError> {
+    EventEnvelope::try_from_vec(
+        u32::try_from(
+            row.try_get::<i64, _>("schema_version")
+                .map_err(unavailable)?,
+        )
+        .map_err(|_| corrupt())?,
+        row.try_get("canonical_payload").map_err(unavailable)?,
+    )
+    .map_err(|_| corrupt())
 }
 
 fn decode_event(row: &SqliteRow) -> Result<ResourceEventRecord, StorageError> {
@@ -547,18 +582,10 @@ fn decode_event(row: &SqliteRow) -> Result<ResourceEventRecord, StorageError> {
         .map_err(|_| corrupt())?,
         EventOccurrenceKey::try_from_vec(row.try_get("occurrence_key").map_err(unavailable)?)
             .map_err(|_| corrupt())?,
-        EventEnvelope::try_from_vec(
-            u32::try_from(
-                row.try_get::<i64, _>("schema_version")
-                    .map_err(unavailable)?,
-            )
-            .map_err(|_| corrupt())?,
-            row.try_get("canonical_payload").map_err(unavailable)?,
-        )
-        .map_err(|_| corrupt())?,
+        decode_envelope(row)?,
         ResourceEventAcceptance::new(
-            expiry(row.try_get("accepted_at_ms").map_err(unavailable)?)?,
-            ResourceLeaseGeneration::new(decode_u64(
+            instant(row.try_get("accepted_at").map_err(unavailable)?)?,
+            ResourceLeaseGeneration::new(decode_counter(
                 row.try_get("source_generation").map_err(unavailable)?,
             )?),
         ),
@@ -640,7 +667,7 @@ fn trace_completion_outcome(outcome: CompleteResourceDeliveryOutcome) {
 }
 
 fn decode_claimed_delivery(row: &SqliteRow) -> Result<ClaimedResourceDelivery, StorageError> {
-    let generation = ResourceLeaseGeneration::new(decode_u64(
+    let generation = ResourceLeaseGeneration::new(decode_counter(
         row.try_get("claim_generation").map_err(unavailable)?,
     )?);
     Ok(ClaimedResourceDelivery::new(
@@ -649,15 +676,7 @@ fn decode_claimed_delivery(row: &SqliteRow) -> Result<ClaimedResourceDelivery, S
         ResourceSubscriptionId::from_bytes(id16(
             row.try_get("subscription_id").map_err(unavailable)?,
         )?),
-        EventEnvelope::try_from_vec(
-            u32::try_from(
-                row.try_get::<i64, _>("schema_version")
-                    .map_err(unavailable)?,
-            )
-            .map_err(|_| corrupt())?,
-            row.try_get("canonical_payload").map_err(unavailable)?,
-        )
-        .map_err(|_| corrupt())?,
+        decode_envelope(row)?,
         ResourceDeliveryClaimToken::from_claim_bytes(
             id16(row.try_get("claim_id").map_err(unavailable)?)?,
             generation,
@@ -672,18 +691,10 @@ fn decode_claimed_handoff(row: &SqliteRow) -> Result<ClaimedResourceHandoff, Sto
         ResourceSubscriptionId::from_bytes(id16(
             row.try_get("subscription_id").map_err(unavailable)?,
         )?),
-        EventEnvelope::try_from_vec(
-            u32::try_from(
-                row.try_get::<i64, _>("schema_version")
-                    .map_err(unavailable)?,
-            )
-            .map_err(|_| corrupt())?,
-            row.try_get("canonical_payload").map_err(unavailable)?,
-        )
-        .map_err(|_| corrupt())?,
+        decode_envelope(row)?,
         ResourceHandoffClaimToken::from_claim_bytes(
             id16(row.try_get("claim_id").map_err(unavailable)?)?,
-            ResourceLeaseGeneration::new(decode_u64(
+            ResourceLeaseGeneration::new(decode_counter(
                 row.try_get("claim_generation").map_err(unavailable)?,
             )?),
         ),
@@ -698,12 +709,12 @@ async fn ensure_handoff(
     event_id: ResourceEventId,
     subscription_id: ResourceSubscriptionId,
 ) -> Result<(), StorageError> {
-    sqlx::query("INSERT OR IGNORE INTO port_resource_execution_handoffs (workspace_id, org_id, resource_id, delivery_id, event_id, subscription_id, status, claim_generation) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)")
-        .bind(&scope.workspace_id).bind(&scope.org_id).bind(resource_id.into_bytes().as_slice())
+    sqlx::query("INSERT INTO resource_execution_handoffs (org_id, workspace_id, resource_id, delivery_id, event_id, subscription_id, status, claim_generation) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0) ON CONFLICT (org_id, workspace_id, delivery_id) DO NOTHING")
+        .bind(&scope.org_id).bind(&scope.workspace_id).bind(resource_id.into_bytes().as_slice())
         .bind(delivery_id.into_bytes().as_slice()).bind(event_id.into_bytes().as_slice())
-        .bind(subscription_id.into_bytes().as_slice()).bind(0_u64.to_be_bytes().as_slice())
+        .bind(subscription_id.into_bytes().as_slice())
         .execute(&mut **transaction).await.map_err(unavailable)?;
-    let exact: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM port_resource_execution_handoffs WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND delivery_id = ? AND event_id = ? AND subscription_id = ?")
+    let exact: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM resource_execution_handoffs WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND delivery_id = ? AND event_id = ? AND subscription_id = ?")
         .bind(&scope.workspace_id).bind(&scope.org_id).bind(resource_id.into_bytes().as_slice())
         .bind(delivery_id.into_bytes().as_slice()).bind(event_id.into_bytes().as_slice())
         .bind(subscription_id.into_bytes().as_slice()).fetch_one(&mut **transaction).await.map_err(unavailable)?;
@@ -731,55 +742,51 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
         request: AcceptResourceEventRequest,
     ) -> Result<AcceptResourceEventOutcome, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let live_source: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM port_resource_source_leases WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND claim_id = ? AND generation = ? AND expires_at_ms > ?")
+        let now = now_micros(&mut transaction).await?;
+        let live_source: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM resource_source_leases WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND claim_id = ? AND generation = ? AND expires_at > ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.resource_id().into_bytes().as_slice())
-            .bind(request.source_token().claim_id().as_bytes().as_slice()).bind(request.source_token().generation().get().to_be_bytes().as_slice()).bind(now)
+            .bind(request.source_token().claim_id().as_bytes().as_slice()).bind(encode_counter(request.source_token().generation().get())?).bind(now)
             .fetch_one(&mut *transaction).await.map_err(unavailable)?;
         if live_source != 1 {
             return Err(fenced("resource source lease"));
         }
 
-        let occurrence_digest = request.occurrence_digest();
-        let rows = sqlx::query("SELECT id, resource_id, occurrence_namespace, occurrence_key, schema_version, canonical_payload, accepted_at_ms, source_generation, state FROM port_resource_events WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND occurrence_digest = ?")
+        let existing = sqlx::query("SELECT id, resource_id, occurrence_namespace, occurrence_key, schema_version, canonical_payload, accepted_at, source_generation, state FROM resource_events WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND occurrence_namespace = ? AND occurrence_key = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.resource_id().into_bytes().as_slice())
-            .bind(occurrence_digest.as_slice()).fetch_all(&mut *transaction).await.map_err(unavailable)?;
-        for row in rows {
+            .bind(request.namespace().as_str()).bind(request.occurrence_key_bytes())
+            .fetch_optional(&mut *transaction).await.map_err(unavailable)?;
+        if let Some(row) = existing {
             let event = decode_event(&row)?;
-            if event.namespace() == request.namespace()
-                && event.occurrence_key_bytes() == request.occurrence_key_bytes()
-            {
-                let outcome = if event.envelope() == request.envelope() {
-                    AcceptResourceEventOutcome::Replayed {
-                        event_id: event.id(),
-                    }
-                } else {
-                    AcceptResourceEventOutcome::Conflict {
-                        event_id: event.id(),
-                    }
-                };
-                transaction.commit().await.map_err(commit_unknown)?;
-                trace_acceptance_outcome(&outcome);
-                return Ok(outcome);
-            }
+            let outcome = if event.envelope() == request.envelope() {
+                AcceptResourceEventOutcome::Replayed {
+                    event_id: event.id(),
+                }
+            } else {
+                AcceptResourceEventOutcome::Conflict {
+                    event_id: event.id(),
+                }
+            };
+            transaction.commit().await.map_err(commit_unknown)?;
+            trace_acceptance_outcome(&outcome);
+            return Ok(outcome);
         }
 
         let event_id = ResourceEventId::from_bytes(*Uuid::new_v4().as_bytes());
-        sqlx::query("INSERT INTO port_resource_events (id, workspace_id, org_id, resource_id, occurrence_namespace, occurrence_key, occurrence_digest, schema_version, canonical_payload, envelope_digest, accepted_at_ms, source_generation, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')")
-            .bind(event_id.into_bytes().as_slice()).bind(&request.scope().workspace_id).bind(&request.scope().org_id)
-            .bind(request.resource_id().into_bytes().as_slice()).bind(request.namespace().as_str()).bind(request.occurrence_key_bytes())
-            .bind(occurrence_digest.as_slice()).bind(i64::from(request.envelope().schema_version())).bind(request.envelope().canonical_payload())
+        sqlx::query("INSERT INTO resource_events (org_id, workspace_id, resource_id, id, occurrence_namespace, occurrence_key, schema_version, canonical_payload, envelope_digest, accepted_at, source_generation, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')")
+            .bind(&request.scope().org_id).bind(&request.scope().workspace_id).bind(request.resource_id().into_bytes().as_slice())
+            .bind(event_id.into_bytes().as_slice()).bind(request.namespace().as_str()).bind(request.occurrence_key_bytes())
+            .bind(i64::from(request.envelope().schema_version())).bind(request.envelope().canonical_payload())
             .bind(request.envelope().digest().as_slice()).bind(now)
-            .bind(request.source_token().generation().get().to_be_bytes().as_slice())
+            .bind(encode_counter(request.source_token().generation().get())?)
             .execute(&mut *transaction).await.map_err(unavailable)?;
-        let inserted = sqlx::query("INSERT INTO port_resource_deliveries (id, workspace_id, org_id, resource_id, event_id, subscription_id, status, claim_generation) SELECT randomblob(16), workspace_id, org_id, resource_id, ?, id, 'pending', ? FROM port_resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND state = 'active'")
-            .bind(event_id.into_bytes().as_slice()).bind(0_u64.to_be_bytes().as_slice())
+        let inserted = sqlx::query("INSERT INTO resource_deliveries (org_id, workspace_id, resource_id, id, event_id, subscription_id, status, claim_generation) SELECT org_id, workspace_id, resource_id, randomblob(16), ?, id, 'pending', 0 FROM resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND state = 'active'")
+            .bind(event_id.into_bytes().as_slice())
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id)
             .bind(request.resource_id().into_bytes().as_slice())
             .execute(&mut *transaction).await.map_err(unavailable)?;
         let delivery_count = u32::try_from(inserted.rows_affected()).map_err(|_| corrupt())?;
         if delivery_count == 0 {
-            sqlx::query("UPDATE port_resource_events SET state = 'complete' WHERE workspace_id = ? AND org_id = ? AND id = ?")
+            sqlx::query("UPDATE resource_events SET state = 'complete' WHERE workspace_id = ? AND org_id = ? AND id = ?")
                 .bind(&request.scope().workspace_id).bind(&request.scope().org_id)
                 .bind(event_id.into_bytes().as_slice()).execute(&mut *transaction).await.map_err(unavailable)?;
         }
@@ -797,7 +804,7 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
         scope: &Scope,
         event_id: ResourceEventId,
     ) -> Result<Option<ResourceEventRecord>, StorageError> {
-        sqlx::query("SELECT id, resource_id, occurrence_namespace, occurrence_key, schema_version, canonical_payload, accepted_at_ms, source_generation, state FROM port_resource_events WHERE workspace_id = ? AND org_id = ? AND id = ?")
+        sqlx::query("SELECT id, resource_id, occurrence_namespace, occurrence_key, schema_version, canonical_payload, accepted_at, source_generation, state FROM resource_events WHERE workspace_id = ? AND org_id = ? AND id = ?")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(event_id.into_bytes().as_slice())
             .fetch_optional(&self.pool).await.map_err(unavailable)?.map(|row| decode_event(&row)).transpose()
     }
@@ -808,27 +815,24 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
         request: ClaimResourceDeliveriesRequest,
     ) -> Result<Vec<ClaimedResourceDelivery>, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let rows = sqlx::query("SELECT d.id, d.event_id, d.subscription_id, d.claim_generation, e.schema_version, e.canonical_payload FROM port_resource_deliveries d JOIN port_resource_events e ON e.workspace_id = d.workspace_id AND e.org_id = d.org_id AND e.id = d.event_id WHERE d.workspace_id = ? AND d.org_id = ? AND d.status = 'pending' AND (d.claim_id IS NULL OR d.claim_expires_at_ms <= ?) ORDER BY d.sequence LIMIT ?")
+        let now = now_micros(&mut transaction).await?;
+        let rows = sqlx::query("SELECT d.id, d.event_id, d.subscription_id, d.claim_generation, e.schema_version, e.canonical_payload FROM resource_deliveries d JOIN resource_events e ON e.workspace_id = d.workspace_id AND e.org_id = d.org_id AND e.id = d.event_id WHERE d.workspace_id = ? AND d.org_id = ? AND d.status = 'pending' AND (d.claim_id IS NULL OR d.claim_expires_at <= ?) ORDER BY d.sequence LIMIT ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(now).bind(i64::from(request.batch_size().get()))
             .fetch_all(&mut *transaction).await.map_err(unavailable)?;
         let mut prepared = Vec::with_capacity(rows.len());
         for row in rows {
-            let current = decode_u64(row.try_get("claim_generation").map_err(unavailable)?)?;
-            let next = current.checked_add(1).ok_or_else(|| {
-                StorageError::Internal("resource generation exhausted".to_owned())
-            })?;
+            let next = next_counter(decode_counter(
+                row.try_get("claim_generation").map_err(unavailable)?,
+            )?)?;
             prepared.push((row, next, Uuid::new_v4()));
         }
-        let expires_at_ms = now
-            .checked_add(ttl_ms(request.ttl())?)
-            .ok_or_else(corrupt)?;
+        let expires_at = expiry_after(now, request.ttl())?;
         let mut claimed = Vec::with_capacity(prepared.len());
         for (row, generation, claim_id) in prepared {
             let delivery_id =
                 ResourceDeliveryId::from_bytes(id16(row.try_get("id").map_err(unavailable)?)?);
-            sqlx::query("UPDATE port_resource_deliveries SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at_ms = ? WHERE workspace_id = ? AND org_id = ? AND id = ?")
-                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(generation.to_be_bytes().as_slice()).bind(expires_at_ms)
+            sqlx::query("UPDATE resource_deliveries SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at = ? WHERE workspace_id = ? AND org_id = ? AND id = ?")
+                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(encode_counter(generation)?).bind(expires_at)
                 .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(delivery_id.into_bytes().as_slice())
                 .execute(&mut *transaction).await.map_err(unavailable)?;
             claimed.push(ClaimedResourceDelivery::new(
@@ -837,15 +841,7 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
                 ResourceSubscriptionId::from_bytes(id16(
                     row.try_get("subscription_id").map_err(unavailable)?,
                 )?),
-                EventEnvelope::try_from_vec(
-                    u32::try_from(
-                        row.try_get::<i64, _>("schema_version")
-                            .map_err(unavailable)?,
-                    )
-                    .map_err(|_| corrupt())?,
-                    row.try_get("canonical_payload").map_err(unavailable)?,
-                )
-                .map_err(|_| corrupt())?,
+                decode_envelope(&row)?,
                 ResourceDeliveryClaimToken::new(claim_id, ResourceLeaseGeneration::new(generation)),
             ));
         }
@@ -860,18 +856,16 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
         request: HeartbeatResourceDeliveryRequest,
     ) -> Result<ClaimedResourceDelivery, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let expires_at_ms = now
-            .checked_add(ttl_ms(request.ttl())?)
-            .ok_or_else(corrupt)?;
-        let updated = sqlx::query("UPDATE port_resource_deliveries SET claim_expires_at_ms = ? WHERE workspace_id = ? AND org_id = ? AND id = ? AND status = 'pending' AND claim_id = ? AND claim_generation = ? AND claim_expires_at_ms > ?")
-            .bind(expires_at_ms).bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
-            .bind(request.token().claim_id().as_bytes().as_slice()).bind(request.token().generation().get().to_be_bytes().as_slice()).bind(now)
+        let now = now_micros(&mut transaction).await?;
+        let expires_at = expiry_after(now, request.ttl())?;
+        let updated = sqlx::query("UPDATE resource_deliveries SET claim_expires_at = ? WHERE workspace_id = ? AND org_id = ? AND id = ? AND status = 'pending' AND claim_id = ? AND claim_generation = ? AND claim_expires_at > ?")
+            .bind(expires_at).bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
+            .bind(request.token().claim_id().as_bytes().as_slice()).bind(encode_counter(request.token().generation().get())?).bind(now)
             .execute(&mut *transaction).await.map_err(unavailable)?;
         if updated.rows_affected() != 1 {
             return Err(fenced("resource delivery"));
         }
-        let row = sqlx::query("SELECT d.id, d.event_id, d.subscription_id, d.claim_id, d.claim_generation, e.schema_version, e.canonical_payload FROM port_resource_deliveries d JOIN port_resource_events e ON e.workspace_id = d.workspace_id AND e.org_id = d.org_id AND e.id = d.event_id WHERE d.workspace_id = ? AND d.org_id = ? AND d.id = ?")
+        let row = sqlx::query("SELECT d.id, d.event_id, d.subscription_id, d.claim_id, d.claim_generation, e.schema_version, e.canonical_payload FROM resource_deliveries d JOIN resource_events e ON e.workspace_id = d.workspace_id AND e.org_id = d.org_id AND e.id = d.event_id WHERE d.workspace_id = ? AND d.org_id = ? AND d.id = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
             .fetch_one(&mut *transaction).await.map_err(unavailable)?;
         let claim = decode_claimed_delivery(&row)?;
@@ -885,9 +879,9 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
         request: ReleaseResourceDeliveryRequest,
     ) -> Result<(), StorageError> {
         let mut transaction = self.begin_write().await?;
-        sqlx::query("UPDATE port_resource_deliveries SET claim_holder = NULL, claim_id = NULL, claim_expires_at_ms = NULL WHERE workspace_id = ? AND org_id = ? AND id = ? AND status = 'pending' AND claim_id = ? AND claim_generation = ?")
+        sqlx::query("UPDATE resource_deliveries SET claim_holder = NULL, claim_id = NULL, claim_expires_at = NULL WHERE workspace_id = ? AND org_id = ? AND id = ? AND status = 'pending' AND claim_id = ? AND claim_generation = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
-            .bind(request.token().claim_id().as_bytes().as_slice()).bind(request.token().generation().get().to_be_bytes().as_slice())
+            .bind(request.token().claim_id().as_bytes().as_slice()).bind(encode_counter(request.token().generation().get())?)
             .execute(&mut *transaction).await.map_err(unavailable)?;
         transaction.commit().await.map_err(commit_unknown)?;
         Ok(())
@@ -899,8 +893,8 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
         request: CompleteResourceDeliveryRequest,
     ) -> Result<CompleteResourceDeliveryOutcome, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let row = sqlx::query("SELECT resource_id, event_id, subscription_id, status, terminal_reason, requested_status, requested_terminal_reason, claim_id, claim_generation, claim_expires_at_ms, terminal_claim_id, terminal_claim_generation FROM port_resource_deliveries WHERE workspace_id = ? AND org_id = ? AND id = ?")
+        let now = now_micros(&mut transaction).await?;
+        let row = sqlx::query("SELECT resource_id, event_id, subscription_id, status, terminal_reason, requested_status, requested_terminal_reason, claim_id, claim_generation, claim_expires_at, terminal_claim_id, terminal_claim_generation FROM resource_deliveries WHERE workspace_id = ? AND org_id = ? AND id = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
             .fetch_optional(&mut *transaction).await.map_err(unavailable)?.ok_or_else(|| fenced("resource delivery"))?;
         let event_id =
@@ -910,7 +904,7 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
         let subscription_id = ResourceSubscriptionId::from_bytes(id16(
             row.try_get("subscription_id").map_err(unavailable)?,
         )?);
-        let subscription_state: String = sqlx::query_scalar("SELECT state FROM port_resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND id = ?")
+        let subscription_state: String = sqlx::query_scalar("SELECT state FROM resource_subscriptions WHERE workspace_id = ? AND org_id = ? AND resource_id = ? AND id = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(resource_id.into_bytes().as_slice()).bind(subscription_id.into_bytes().as_slice())
             .fetch_one(&mut *transaction).await.map_err(unavailable)?;
         let effective_completion = effective_completion(request.completion(), &subscription_state)?;
@@ -932,8 +926,8 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
                     .map_err(unavailable)?
                     .ok_or_else(corrupt)?,
             )?;
-            let terminal_generation = decode_u64(
-                row.try_get::<Option<Vec<u8>>, _>("terminal_claim_generation")
+            let terminal_generation = decode_counter(
+                row.try_get::<Option<i64>, _>("terminal_claim_generation")
                     .map_err(unavailable)?
                     .ok_or_else(corrupt)?,
             )?;
@@ -954,7 +948,7 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
                 )
                 .await?;
             }
-            let event_state: String = sqlx::query_scalar("SELECT state FROM port_resource_events WHERE workspace_id = ? AND org_id = ? AND id = ?")
+            let event_state: String = sqlx::query_scalar("SELECT state FROM resource_events WHERE workspace_id = ? AND org_id = ? AND id = ?")
                 .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(event_id.into_bytes().as_slice())
                 .fetch_one(&mut *transaction).await.map_err(unavailable)?;
             transaction.commit().await.map_err(commit_unknown)?;
@@ -970,15 +964,14 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
                 .map_err(unavailable)?
                 .ok_or_else(|| fenced("resource delivery"))?,
         )?;
-        let claim_generation = decode_u64(
-            row.try_get::<Vec<u8>, _>("claim_generation")
+        let claim_generation = decode_counter(
+            row.try_get::<i64, _>("claim_generation")
                 .map_err(unavailable)?,
         )?;
-        let claim_expires_at_ms: Option<i64> =
-            row.try_get("claim_expires_at_ms").map_err(unavailable)?;
+        let claim_expires_at: Option<i64> = row.try_get("claim_expires_at").map_err(unavailable)?;
         if claim_id != *request.token().claim_id().as_bytes()
             || claim_generation != request.token().generation().get()
-            || claim_expires_at_ms.is_none_or(|deadline| now >= deadline)
+            || claim_expires_at.is_none_or(|deadline| now >= deadline)
         {
             return Err(fenced("resource delivery"));
         }
@@ -996,15 +989,15 @@ impl ResourceEventFanoutStore for SqliteResourceRuntime {
             )
             .await?;
         }
-        sqlx::query("UPDATE port_resource_deliveries SET status = ?, terminal_reason = ?, requested_status = ?, requested_terminal_reason = ?, terminal_claim_id = claim_id, terminal_claim_generation = claim_generation, claim_holder = NULL, claim_id = NULL, claim_expires_at_ms = NULL WHERE workspace_id = ? AND org_id = ? AND id = ?")
+        sqlx::query("UPDATE resource_deliveries SET status = ?, terminal_reason = ?, requested_status = ?, requested_terminal_reason = ?, terminal_claim_id = claim_id, terminal_claim_generation = claim_generation, claim_holder = NULL, claim_id = NULL, claim_expires_at = NULL WHERE workspace_id = ? AND org_id = ? AND id = ?")
             .bind(next_status).bind(terminal_reason).bind(requested_status).bind(requested_terminal_reason).bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
             .execute(&mut *transaction).await.map_err(unavailable)?;
-        let has_pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM port_resource_deliveries WHERE workspace_id = ? AND org_id = ? AND event_id = ? AND status = 'pending')")
+        let has_pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM resource_deliveries WHERE workspace_id = ? AND org_id = ? AND event_id = ? AND status = 'pending')")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(event_id.into_bytes().as_slice())
             .fetch_one(&mut *transaction).await.map_err(unavailable)?;
         let event_became_terminal = !has_pending;
         if event_became_terminal {
-            sqlx::query("UPDATE port_resource_events SET state = 'complete' WHERE workspace_id = ? AND org_id = ? AND id = ?")
+            sqlx::query("UPDATE resource_events SET state = 'complete' WHERE workspace_id = ? AND org_id = ? AND id = ?")
                 .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(event_id.into_bytes().as_slice())
                 .execute(&mut *transaction).await.map_err(unavailable)?;
         }
@@ -1026,29 +1019,25 @@ impl ResourceExecutionHandoffStore for SqliteResourceRuntime {
         request: ClaimResourceHandoffsRequest,
     ) -> Result<Vec<ClaimedResourceHandoff>, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let rows = sqlx::query("SELECT h.delivery_id, h.event_id, h.subscription_id, h.claim_generation, e.schema_version, e.canonical_payload FROM port_resource_execution_handoffs h JOIN port_resource_events e ON e.workspace_id = h.workspace_id AND e.org_id = h.org_id AND e.resource_id = h.resource_id AND e.id = h.event_id WHERE h.workspace_id = ? AND h.org_id = ? AND h.status = 'pending' AND (h.claim_id IS NULL OR h.claim_expires_at_ms <= ?) ORDER BY h.sequence LIMIT ?")
+        let now = now_micros(&mut transaction).await?;
+        let rows = sqlx::query("SELECT h.delivery_id, h.event_id, h.subscription_id, h.claim_generation, e.schema_version, e.canonical_payload FROM resource_execution_handoffs h JOIN resource_events e ON e.workspace_id = h.workspace_id AND e.org_id = h.org_id AND e.resource_id = h.resource_id AND e.id = h.event_id WHERE h.workspace_id = ? AND h.org_id = ? AND h.status = 'pending' AND (h.claim_id IS NULL OR h.claim_expires_at <= ?) ORDER BY h.sequence LIMIT ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(now).bind(i64::from(request.batch_size().get()))
             .fetch_all(&mut *transaction).await.map_err(unavailable)?;
         let mut prepared = Vec::with_capacity(rows.len());
         for row in rows {
-            let generation = decode_u64(row.try_get("claim_generation").map_err(unavailable)?)?
-                .checked_add(1)
-                .ok_or_else(|| {
-                    StorageError::Internal("resource generation exhausted".to_owned())
-                })?;
+            let generation = next_counter(decode_counter(
+                row.try_get("claim_generation").map_err(unavailable)?,
+            )?)?;
             prepared.push((row, generation, Uuid::new_v4()));
         }
-        let expires_at_ms = now
-            .checked_add(ttl_ms(request.ttl())?)
-            .ok_or_else(corrupt)?;
+        let expires_at = expiry_after(now, request.ttl())?;
         let mut claims = Vec::with_capacity(prepared.len());
         for (row, generation, claim_id) in prepared {
             let delivery_id = ResourceDeliveryId::from_bytes(id16(
                 row.try_get("delivery_id").map_err(unavailable)?,
             )?);
-            sqlx::query("UPDATE port_resource_execution_handoffs SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at_ms = ? WHERE workspace_id = ? AND org_id = ? AND delivery_id = ?")
-                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(generation.to_be_bytes().as_slice()).bind(expires_at_ms)
+            sqlx::query("UPDATE resource_execution_handoffs SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at = ? WHERE workspace_id = ? AND org_id = ? AND delivery_id = ?")
+                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(encode_counter(generation)?).bind(expires_at)
                 .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(delivery_id.into_bytes().as_slice())
                 .execute(&mut *transaction).await.map_err(unavailable)?;
             claims.push(ClaimedResourceHandoff::new(
@@ -1057,15 +1046,7 @@ impl ResourceExecutionHandoffStore for SqliteResourceRuntime {
                 ResourceSubscriptionId::from_bytes(id16(
                     row.try_get("subscription_id").map_err(unavailable)?,
                 )?),
-                EventEnvelope::try_from_vec(
-                    u32::try_from(
-                        row.try_get::<i64, _>("schema_version")
-                            .map_err(unavailable)?,
-                    )
-                    .map_err(|_| corrupt())?,
-                    row.try_get("canonical_payload").map_err(unavailable)?,
-                )
-                .map_err(|_| corrupt())?,
+                decode_envelope(&row)?,
                 ResourceHandoffClaimToken::new(claim_id, ResourceLeaseGeneration::new(generation)),
             ));
         }
@@ -1080,18 +1061,16 @@ impl ResourceExecutionHandoffStore for SqliteResourceRuntime {
         request: HeartbeatResourceHandoffRequest,
     ) -> Result<ClaimedResourceHandoff, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let expires_at_ms = now
-            .checked_add(ttl_ms(request.ttl())?)
-            .ok_or_else(corrupt)?;
-        let updated = sqlx::query("UPDATE port_resource_execution_handoffs SET claim_expires_at_ms = ? WHERE workspace_id = ? AND org_id = ? AND delivery_id = ? AND status = 'pending' AND claim_id = ? AND claim_generation = ? AND claim_expires_at_ms > ?")
-            .bind(expires_at_ms).bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
-            .bind(request.token().claim_id().as_bytes().as_slice()).bind(request.token().generation().get().to_be_bytes().as_slice()).bind(now)
+        let now = now_micros(&mut transaction).await?;
+        let expires_at = expiry_after(now, request.ttl())?;
+        let updated = sqlx::query("UPDATE resource_execution_handoffs SET claim_expires_at = ? WHERE workspace_id = ? AND org_id = ? AND delivery_id = ? AND status = 'pending' AND claim_id = ? AND claim_generation = ? AND claim_expires_at > ?")
+            .bind(expires_at).bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
+            .bind(request.token().claim_id().as_bytes().as_slice()).bind(encode_counter(request.token().generation().get())?).bind(now)
             .execute(&mut *transaction).await.map_err(unavailable)?;
         if updated.rows_affected() != 1 {
             return Err(fenced("resource execution handoff"));
         }
-        let row = sqlx::query("SELECT h.delivery_id, h.event_id, h.subscription_id, h.claim_id, h.claim_generation, e.schema_version, e.canonical_payload FROM port_resource_execution_handoffs h JOIN port_resource_events e ON e.workspace_id = h.workspace_id AND e.org_id = h.org_id AND e.resource_id = h.resource_id AND e.id = h.event_id WHERE h.workspace_id = ? AND h.org_id = ? AND h.delivery_id = ?")
+        let row = sqlx::query("SELECT h.delivery_id, h.event_id, h.subscription_id, h.claim_id, h.claim_generation, e.schema_version, e.canonical_payload FROM resource_execution_handoffs h JOIN resource_events e ON e.workspace_id = h.workspace_id AND e.org_id = h.org_id AND e.resource_id = h.resource_id AND e.id = h.event_id WHERE h.workspace_id = ? AND h.org_id = ? AND h.delivery_id = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
             .fetch_one(&mut *transaction).await.map_err(unavailable)?;
         let claim = decode_claimed_handoff(&row)?;
@@ -1105,9 +1084,9 @@ impl ResourceExecutionHandoffStore for SqliteResourceRuntime {
         request: ResourceHandoffClaimRequest,
     ) -> Result<(), StorageError> {
         let mut transaction = self.begin_write().await?;
-        sqlx::query("UPDATE port_resource_execution_handoffs SET claim_holder = NULL, claim_id = NULL, claim_expires_at_ms = NULL WHERE workspace_id = ? AND org_id = ? AND delivery_id = ? AND status = 'pending' AND claim_id = ? AND claim_generation = ?")
+        sqlx::query("UPDATE resource_execution_handoffs SET claim_holder = NULL, claim_id = NULL, claim_expires_at = NULL WHERE workspace_id = ? AND org_id = ? AND delivery_id = ? AND status = 'pending' AND claim_id = ? AND claim_generation = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
-            .bind(request.token().claim_id().as_bytes().as_slice()).bind(request.token().generation().get().to_be_bytes().as_slice())
+            .bind(request.token().claim_id().as_bytes().as_slice()).bind(encode_counter(request.token().generation().get())?)
             .execute(&mut *transaction).await.map_err(unavailable)?;
         transaction.commit().await.map_err(commit_unknown)?;
         Ok(())
@@ -1119,8 +1098,8 @@ impl ResourceExecutionHandoffStore for SqliteResourceRuntime {
         request: ResourceHandoffClaimRequest,
     ) -> Result<AcknowledgeResourceHandoffOutcome, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let row = sqlx::query("SELECT status, claim_id, claim_generation, claim_expires_at_ms, terminal_claim_id, terminal_claim_generation FROM port_resource_execution_handoffs WHERE workspace_id = ? AND org_id = ? AND delivery_id = ?")
+        let now = now_micros(&mut transaction).await?;
+        let row = sqlx::query("SELECT status, claim_id, claim_generation, claim_expires_at, terminal_claim_id, terminal_claim_generation FROM resource_execution_handoffs WHERE workspace_id = ? AND org_id = ? AND delivery_id = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice())
             .fetch_optional(&mut *transaction).await.map_err(unavailable)?.ok_or_else(|| fenced("resource execution handoff"))?;
         let status: String = row.try_get("status").map_err(unavailable)?;
@@ -1130,8 +1109,8 @@ impl ResourceExecutionHandoffStore for SqliteResourceRuntime {
                     .map_err(unavailable)?
                     .ok_or_else(corrupt)?,
             )?;
-            let terminal_generation = decode_u64(
-                row.try_get::<Option<Vec<u8>>, _>("terminal_claim_generation")
+            let terminal_generation = decode_counter(
+                row.try_get::<Option<i64>, _>("terminal_claim_generation")
                     .map_err(unavailable)?
                     .ok_or_else(corrupt)?,
             )?;
@@ -1149,15 +1128,15 @@ impl ResourceExecutionHandoffStore for SqliteResourceRuntime {
                 .map_err(unavailable)?
                 .ok_or_else(|| fenced("resource execution handoff"))?,
         )?;
-        let generation = decode_u64(row.try_get("claim_generation").map_err(unavailable)?)?;
-        let deadline: Option<i64> = row.try_get("claim_expires_at_ms").map_err(unavailable)?;
+        let generation = decode_counter(row.try_get("claim_generation").map_err(unavailable)?)?;
+        let deadline: Option<i64> = row.try_get("claim_expires_at").map_err(unavailable)?;
         if claim_id != *request.token().claim_id().as_bytes()
             || generation != request.token().generation().get()
             || deadline.is_none_or(|value| now >= value)
         {
             return Err(fenced("resource execution handoff"));
         }
-        sqlx::query("UPDATE port_resource_execution_handoffs SET status = 'acknowledged', terminal_claim_id = claim_id, terminal_claim_generation = claim_generation, claim_holder = NULL, claim_id = NULL, claim_expires_at_ms = NULL WHERE workspace_id = ? AND org_id = ? AND delivery_id = ?")
+        sqlx::query("UPDATE resource_execution_handoffs SET status = 'acknowledged', terminal_claim_id = claim_id, terminal_claim_generation = claim_generation, claim_holder = NULL, claim_id = NULL, claim_expires_at = NULL WHERE workspace_id = ? AND org_id = ? AND delivery_id = ?")
             .bind(&request.scope().workspace_id).bind(&request.scope().org_id).bind(request.delivery_id().into_bytes().as_slice()).execute(&mut *transaction).await.map_err(unavailable)?;
         transaction.commit().await.map_err(commit_unknown)?;
         tracing::debug!(storage.outcome = "acknowledged");
@@ -1173,11 +1152,9 @@ impl ResourceRuntimeRecovery for SqliteResourceRuntime {
         request: ClaimResourceRuntimeWorkRequest,
     ) -> Result<Vec<ScopedClaimedResourceDelivery>, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let expires_at_ms = now
-            .checked_add(ttl_ms(request.ttl())?)
-            .ok_or_else(corrupt)?;
-        let rows = sqlx::query("SELECT d.workspace_id, d.org_id, d.id, d.event_id, d.subscription_id, d.claim_generation, e.schema_version, e.canonical_payload FROM port_resource_deliveries d JOIN port_resource_events e ON e.workspace_id = d.workspace_id AND e.org_id = d.org_id AND e.id = d.event_id WHERE d.status = 'pending' AND (d.claim_id IS NULL OR d.claim_expires_at_ms <= ?) ORDER BY d.sequence LIMIT ?")
+        let now = now_micros(&mut transaction).await?;
+        let expires_at = expiry_after(now, request.ttl())?;
+        let rows = sqlx::query("SELECT d.workspace_id, d.org_id, d.id, d.event_id, d.subscription_id, d.claim_generation, e.schema_version, e.canonical_payload FROM resource_deliveries d JOIN resource_events e ON e.workspace_id = d.workspace_id AND e.org_id = d.org_id AND e.id = d.event_id WHERE d.status = 'pending' AND (d.claim_id IS NULL OR d.claim_expires_at <= ?) ORDER BY d.sequence LIMIT ?")
             .bind(now).bind(i64::from(request.batch_size().get()))
             .fetch_all(&mut *transaction).await.map_err(unavailable)?;
         let mut claimed = Vec::with_capacity(rows.len());
@@ -1189,14 +1166,12 @@ impl ResourceRuntimeRecovery for SqliteResourceRuntime {
             );
             let delivery_id =
                 ResourceDeliveryId::from_bytes(id16(row.try_get("id").map_err(unavailable)?)?);
-            let generation = decode_u64(row.try_get("claim_generation").map_err(unavailable)?)?
-                .checked_add(1)
-                .ok_or_else(|| {
-                    StorageError::Internal("resource generation exhausted".to_owned())
-                })?;
+            let generation = next_counter(decode_counter(
+                row.try_get("claim_generation").map_err(unavailable)?,
+            )?)?;
             let claim_id = Uuid::new_v4();
-            sqlx::query("UPDATE port_resource_deliveries SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at_ms = ? WHERE workspace_id = ? AND org_id = ? AND id = ?")
-                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(generation.to_be_bytes().as_slice()).bind(expires_at_ms)
+            sqlx::query("UPDATE resource_deliveries SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at = ? WHERE workspace_id = ? AND org_id = ? AND id = ?")
+                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(encode_counter(generation)?).bind(expires_at)
                 .bind(&scope.workspace_id).bind(&scope.org_id).bind(delivery_id.into_bytes().as_slice())
                 .execute(&mut *transaction).await.map_err(unavailable)?;
             claimed.push(ScopedClaimedResourceDelivery::new(
@@ -1209,15 +1184,7 @@ impl ResourceRuntimeRecovery for SqliteResourceRuntime {
                     ResourceSubscriptionId::from_bytes(id16(
                         row.try_get("subscription_id").map_err(unavailable)?,
                     )?),
-                    EventEnvelope::try_from_vec(
-                        u32::try_from(
-                            row.try_get::<i64, _>("schema_version")
-                                .map_err(unavailable)?,
-                        )
-                        .map_err(|_| corrupt())?,
-                        row.try_get("canonical_payload").map_err(unavailable)?,
-                    )
-                    .map_err(|_| corrupt())?,
+                    decode_envelope(&row)?,
                     ResourceDeliveryClaimToken::new(
                         claim_id,
                         ResourceLeaseGeneration::new(generation),
@@ -1236,11 +1203,9 @@ impl ResourceRuntimeRecovery for SqliteResourceRuntime {
         request: ClaimResourceRuntimeWorkRequest,
     ) -> Result<Vec<ScopedClaimedResourceHandoff>, StorageError> {
         let mut transaction = self.begin_write().await?;
-        let now = now_ms(&mut transaction).await?;
-        let expires_at_ms = now
-            .checked_add(ttl_ms(request.ttl())?)
-            .ok_or_else(corrupt)?;
-        let rows = sqlx::query("SELECT h.workspace_id, h.org_id, h.delivery_id, h.event_id, h.subscription_id, h.claim_generation, e.schema_version, e.canonical_payload FROM port_resource_execution_handoffs h JOIN port_resource_events e ON e.workspace_id = h.workspace_id AND e.org_id = h.org_id AND e.resource_id = h.resource_id AND e.id = h.event_id WHERE h.status = 'pending' AND (h.claim_id IS NULL OR h.claim_expires_at_ms <= ?) ORDER BY h.sequence LIMIT ?")
+        let now = now_micros(&mut transaction).await?;
+        let expires_at = expiry_after(now, request.ttl())?;
+        let rows = sqlx::query("SELECT h.workspace_id, h.org_id, h.delivery_id, h.event_id, h.subscription_id, h.claim_generation, e.schema_version, e.canonical_payload FROM resource_execution_handoffs h JOIN resource_events e ON e.workspace_id = h.workspace_id AND e.org_id = h.org_id AND e.resource_id = h.resource_id AND e.id = h.event_id WHERE h.status = 'pending' AND (h.claim_id IS NULL OR h.claim_expires_at <= ?) ORDER BY h.sequence LIMIT ?")
             .bind(now).bind(i64::from(request.batch_size().get()))
             .fetch_all(&mut *transaction).await.map_err(unavailable)?;
         let mut claimed = Vec::with_capacity(rows.len());
@@ -1253,14 +1218,12 @@ impl ResourceRuntimeRecovery for SqliteResourceRuntime {
             let delivery_id = ResourceDeliveryId::from_bytes(id16(
                 row.try_get("delivery_id").map_err(unavailable)?,
             )?);
-            let generation = decode_u64(row.try_get("claim_generation").map_err(unavailable)?)?
-                .checked_add(1)
-                .ok_or_else(|| {
-                    StorageError::Internal("resource generation exhausted".to_owned())
-                })?;
+            let generation = next_counter(decode_counter(
+                row.try_get("claim_generation").map_err(unavailable)?,
+            )?)?;
             let claim_id = Uuid::new_v4();
-            sqlx::query("UPDATE port_resource_execution_handoffs SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at_ms = ? WHERE workspace_id = ? AND org_id = ? AND delivery_id = ?")
-                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(generation.to_be_bytes().as_slice()).bind(expires_at_ms)
+            sqlx::query("UPDATE resource_execution_handoffs SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at = ? WHERE workspace_id = ? AND org_id = ? AND delivery_id = ?")
+                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(encode_counter(generation)?).bind(expires_at)
                 .bind(&scope.workspace_id).bind(&scope.org_id).bind(delivery_id.into_bytes().as_slice())
                 .execute(&mut *transaction).await.map_err(unavailable)?;
             claimed.push(ScopedClaimedResourceHandoff::new(
@@ -1273,15 +1236,7 @@ impl ResourceRuntimeRecovery for SqliteResourceRuntime {
                     ResourceSubscriptionId::from_bytes(id16(
                         row.try_get("subscription_id").map_err(unavailable)?,
                     )?),
-                    EventEnvelope::try_from_vec(
-                        u32::try_from(
-                            row.try_get::<i64, _>("schema_version")
-                                .map_err(unavailable)?,
-                        )
-                        .map_err(|_| corrupt())?,
-                        row.try_get("canonical_payload").map_err(unavailable)?,
-                    )
-                    .map_err(|_| corrupt())?,
+                    decode_envelope(&row)?,
                     ResourceHandoffClaimToken::new(
                         claim_id,
                         ResourceLeaseGeneration::new(generation),
@@ -1299,7 +1254,7 @@ impl ResourceRuntimeRecovery for SqliteResourceRuntime {
 mod tests {
     use std::assert_matches;
 
-    use super::database_failure;
+    use super::{database_failure, next_counter};
     use nebula_storage_port::StorageError;
 
     #[test]
@@ -1324,5 +1279,12 @@ mod tests {
             database_failure(sqlx::error::ErrorKind::Other, Some("1811")),
             StorageError::Internal(_)
         );
+    }
+
+    #[test]
+    fn a_counter_past_the_stored_range_is_exhausted() {
+        assert_eq!(next_counter(1).ok(), Some(2));
+        let last = u64::try_from(i64::MAX).expect("i64::MAX fits u64");
+        assert_matches!(next_counter(last), Err(StorageError::Internal(_)));
     }
 }

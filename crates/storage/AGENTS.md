@@ -127,7 +127,8 @@
 
 | Change | Relevant evidence |
 |--------|-------------------|
-| Shared-resource subscription/fanout/handoff runtime | `resource_fanout_conformance_{inmem,sqlite,postgres}`; SQL fixtures retain their pools for test-only backdating/failpoints, while the InMemory suite uses an injected manual clock. PostgreSQL runs with `NEBULA_REQUIRE_POSTGRES=1`. |
+| Shared-resource subscription/fanout/handoff runtime | `resource_fanout_conformance_{inmem,sqlite,postgres}`; SQL fixtures retain their pools for test-only backdating/failpoints and provision the tenants they write into (migration `0071`: a shared resource belongs to its live workspace), while the InMemory suite uses an injected manual clock. PostgreSQL runs with `NEBULA_REQUIRE_POSTGRES=1`. |
+| Stored resources, resource status, resource references | `resource_status_conformance_*` (SQL fixtures seed the resources they publish for) and the `resource*` `relational_matrix!` cases in [conformance](tests/conformance/resources.rs): live workspace / live resource checks, archived-resource status hidden, cascades on resource and workspace purge. |
 | Port behavior and tenancy | [conformance](tests/conformance.rs) and [identity_conformance](tests/identity_conformance.rs) for the affected backends; report which backend cases actually executed. |
 | Migration admission | [schema_source_authority](tests/schema_source_authority.rs), [credential_migration_catalog](tests/credential_migration_catalog.rs), and the SQLite/PostgreSQL schema-admission suites. Review catalog-floor policy before updating expected heads. |
 | Execution handoff or remote effects | The `turn_handoff_conformance_*` and `operation_ledger_conformance_*` targets in [tests/](tests/); pair backend evidence with engine/worker ownership tests. |

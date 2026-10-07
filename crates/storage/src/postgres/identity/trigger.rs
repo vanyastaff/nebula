@@ -5,15 +5,18 @@
 //! carries `created_at` / `deleted_at` as RFC 3339 text; they are stored as
 //! `TIMESTAMPTZ` and read back at microsecond precision.
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Utc};
 use nebula_storage_port::dto::TriggerRow;
 use nebula_storage_port::store::TriggerStore;
-use nebula_storage_port::{MicrosInstant, Scope, StorageError};
+use nebula_storage_port::{Scope, StorageError};
 use sqlx::postgres::PgRow;
 use sqlx::types::Json;
 use sqlx::{PgPool, Postgres, Transaction};
 
-use super::{cas_disambiguate_scoped, encode_version, json, optional, required, version};
+use super::{
+    cas_disambiguate_scoped, decode_text_instant, encode_text_instant, encode_version, json,
+    optional, required, version,
+};
 use crate::sql_error::{storage_error, storage_error_for};
 
 /// Columns [`decode_trigger`] reads.
@@ -34,16 +37,8 @@ impl PgTriggerStore {
     }
 }
 
-/// A port instant (RFC 3339 text) at storage precision.
 fn encode_instant(value: &str, column: &'static str) -> Result<DateTime<Utc>, StorageError> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|instant| MicrosInstant::floor(instant.with_timezone(&Utc)).to_datetime())
-        .map_err(|_| StorageError::InvalidInput(format!("trigger `{column}` is not RFC 3339")))
-}
-
-/// A stored instant as the port's RFC 3339 text.
-fn decode_instant(instant: DateTime<Utc>) -> String {
-    instant.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+    encode_text_instant("trigger", value, column)
 }
 
 fn decode_trigger(row: &PgRow) -> Result<TriggerRow, StorageError> {
@@ -58,10 +53,10 @@ fn decode_trigger(row: &PgRow) -> Result<TriggerRow, StorageError> {
         state: required(row, "state")?,
         run_as: optional(row, "run_as")?,
         webhook_path: optional(row, "webhook_path")?,
-        created_at: decode_instant(required(row, "created_at")?),
+        created_at: decode_text_instant(required(row, "created_at")?),
         created_by: required(row, "created_by")?,
         version: version(row)?,
-        deleted_at: optional(row, "deleted_at")?.map(decode_instant),
+        deleted_at: optional(row, "deleted_at")?.map(decode_text_instant),
     })
 }
 
