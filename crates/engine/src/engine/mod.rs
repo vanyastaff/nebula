@@ -1429,7 +1429,8 @@ impl WorkflowEngine {
     /// Activation retires a deleted row only when an execution names it
     /// again, which after a deletion usually never happens; without this
     /// sweep the row's runtime, connections and credential bindings would
-    /// live until the process ends. The worker runs it on its status tick.
+    /// live until the process ends. The worker runs this independently of status
+    /// publication, so diagnostic storage cannot block lifecycle maintenance.
     /// A row an activation holds right now is left to that activation.
     pub async fn retire_deleted_resources(&self) {
         let (Some(activator), Some(manager)) = (&self.stored_resources, &self.resource_manager)

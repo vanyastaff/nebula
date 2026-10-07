@@ -21,9 +21,11 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 tokio-util = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 nebula-credential = { path = "../credential" }
+nebula-resource = { path = "../resource" }
 nebula-metrics = { path = "../metrics" }
 nebula-orchestrator = { path = "../orchestrator" }
 nebula-plugin = { path = "../plugin" }

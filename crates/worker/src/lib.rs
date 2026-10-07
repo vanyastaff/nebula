@@ -12,6 +12,7 @@
 //! 4. Recovers accepted turns abandoned by a previous owner and wakes overdue timers.
 //! 5. Drains durable resource-event deliveries and execution handoffs.
 //! 6. Reconciles live resource credentials against durable credential projection.
+//! 7. Retires deleted stored resources independently of diagnostic publication.
 //!
 //! ## Wiring honesty
 //!
@@ -52,6 +53,7 @@
 //! ```
 //!
 mod recovery;
+mod resource_maintenance;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -176,6 +178,7 @@ enum Component {
     AcceptedTurnRecovery,
     ResourceFanout,
     ResourceReconciliation,
+    ResourceMaintenance,
     ResourceStatus,
     EngineShutdownRelay,
 }
@@ -188,6 +191,7 @@ impl Component {
             Self::AcceptedTurnRecovery => "accepted-turn-recovery",
             Self::ResourceFanout => "resource-fanout",
             Self::ResourceReconciliation => "resource-reconciliation",
+            Self::ResourceMaintenance => "resource-maintenance",
             Self::ResourceStatus => "resource-status",
             Self::EngineShutdownRelay => "engine-shutdown-relay",
         }
@@ -239,8 +243,8 @@ impl WorkerRuntime {
     /// ## Shutdown contract
     ///
     /// Cancellation stops control polling, accepted-turn recovery, resource
-    /// fanout, and timer scanning. In-flight engine turns observe the relayed
-    /// engine shutdown.
+    /// fanout, maintenance, and timer scanning. In-flight engine turns observe
+    /// the relayed engine shutdown.
     pub async fn run(self, shutdown: CancellationToken) -> Result<(), WorkerRuntimeError> {
         tracing::info!(
             processor = %hex_id(&self.processor_id),
@@ -374,6 +378,14 @@ impl WorkerRuntime {
                 })
         });
         labels.insert(handle.id(), Component::ResourceFanout);
+
+        let maintenance_engine = Arc::clone(&self.engine);
+        let maintenance_shutdown = shutdown.clone();
+        let handle = components.spawn(async move {
+            resource_maintenance::run(maintenance_engine, maintenance_shutdown).await;
+            Ok(Component::ResourceMaintenance)
+        });
+        labels.insert(handle.id(), Component::ResourceMaintenance);
 
         if let Some(publisher) = self.resource_status {
             let status_engine = Arc::clone(&self.engine);
@@ -561,7 +573,8 @@ impl WorkerRuntimeBuilder {
 
     /// Publish this worker's stored-resource status into `store`, so the API
     /// process can report it. Without it the status endpoint cannot see
-    /// resources activated here.
+    /// resources activated here. Resource maintenance runs independently of
+    /// this diagnostic store and continues when its reads or writes stall.
     ///
     /// Use the same backend the API reads status from.
     pub fn with_resource_status_store(mut self, store: Arc<dyn ResourceStatusStore>) -> Self {

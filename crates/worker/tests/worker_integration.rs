@@ -58,6 +58,8 @@ use tokio_util::sync::CancellationToken;
 
 const TEST_PLUGIN_KEY: &str = "test";
 
+mod resource_maintenance;
+
 #[tokio::test(start_paused = true)]
 async fn worker_resource_reconciliation_missing_inputs_refuses_startup() {
     let stores = TestStores::new();

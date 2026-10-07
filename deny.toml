@@ -203,6 +203,8 @@ deny = [
     "nebula-examples",
     "nebula-plugin",
     "nebula-sdk",
+    # Worker integration tests exercise physical provider retirement.
+    "nebula-worker",
   ], reason = "Resource framework is Business-tier; only the listed business/exec/surface consumers may depend on it; examples demonstrate Resource impls" },
 
   # nebula-plugin owns trusted plugin registration, frozen registries, and
