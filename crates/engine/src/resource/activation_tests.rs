@@ -664,6 +664,107 @@ fn drain(events: &mut nebula_resource::Subscriber<ResourceEvent>) -> (usize, usi
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
+/// Stalls the first row read after arming, until the store recovers.
+#[derive(Debug)]
+struct StalledResourceRead {
+    inner: Arc<InMemoryResourceStore>,
+    armed: std::sync::atomic::AtomicBool,
+    blocked: std::sync::Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl ResourceStore for StalledResourceRead {
+    async fn create(&self, scope: &Scope, row: ResourceRow) -> Result<(), StorageError> {
+        self.inner.create(scope, row).await
+    }
+
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ResourceRow>, StorageError> {
+        let stalled = self.armed.load(Ordering::SeqCst)
+            && self
+                .blocked
+                .lock()
+                .unwrap()
+                .get_or_insert_with(|| id.to_owned())
+                == id;
+        if stalled {
+            std::future::pending::<()>().await;
+        }
+        self.inner.get(scope, id).await
+    }
+
+    async fn list(&self, scope: &Scope) -> Result<Vec<ResourceRow>, StorageError> {
+        self.inner.list(scope).await
+    }
+
+    async fn update(
+        &self,
+        scope: &Scope,
+        row: ResourceRow,
+        expected_version: u64,
+    ) -> Result<(), StorageError> {
+        self.inner.update(scope, row, expected_version).await
+    }
+
+    async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {
+        self.inner.soft_delete(scope, id).await
+    }
+}
+
+#[rstest::rstest]
+#[case::sweep_deadline(false)]
+#[case::caller_cancellation(true)]
+#[tokio::test(start_paused = true)]
+async fn a_stalled_retirement_read_does_not_starve_later_rows(#[case] cancel_sweep: bool) {
+    let mut fixture = Fixture::new();
+    let store = Arc::new(StalledResourceRead {
+        inner: Arc::clone(&fixture.store),
+        armed: std::sync::atomic::AtomicBool::new(false),
+        blocked: std::sync::Mutex::new(None),
+    });
+    let budget = Duration::from_millis(100);
+    fixture.activator = StoredResourceActivator::new(store.clone()).with_activation_timeout(budget);
+    let mut events = fixture.manager.subscribe_events();
+    for label in ["first", "second"] {
+        let (resource_id, key) = fixture.store_row("activation.plain", label, &[]).await;
+        fixture.activate(resource_id, &key).await.unwrap();
+        fixture
+            .store
+            .soft_delete(&fixture.scope, &resource_id.to_string())
+            .await
+            .unwrap();
+    }
+    assert_eq!(drain(&mut events), (2, 0));
+    store.armed.store(true, Ordering::SeqCst);
+
+    let context = fixture.context(false);
+    if cancel_sweep {
+        tokio::time::timeout(budget / 2, fixture.activator.retire_deleted(&context))
+            .await
+            .expect_err("the caller cancels before the sweep's own deadline");
+    } else {
+        tokio::time::timeout(budget * 2, fixture.activator.retire_deleted(&context))
+            .await
+            .expect("one stuck read must not hold the sweep forever");
+    }
+    assert_eq!(drain(&mut events), (0, 0), "unknown is not deleted");
+    assert_eq!(
+        fixture.activator.active_rows().len(),
+        2,
+        "the timed-out read releases its row lock"
+    );
+
+    tokio::time::timeout(budget * 2, fixture.activator.retire_deleted(&context))
+        .await
+        .expect("the next sweep advances past the stalled row");
+    assert_eq!(drain(&mut events), (0, 1), "the other deleted row retires");
+    assert_eq!(fixture.activator.active_rows().len(), 1);
+
+    store.armed.store(false, Ordering::SeqCst);
+    fixture.activator.retire_deleted(&context).await;
+    assert_eq!(drain(&mut events), (0, 1));
+    assert!(fixture.activator.active_rows().is_empty());
+}
+
 #[tokio::test]
 async fn a_row_activates_once_per_version_even_under_concurrency() {
     let fixture = Fixture::new();
