@@ -16,7 +16,7 @@ full derive → register → acquire flow, see the doctest on `Manager::register
 
 ## How the pool works
 
-**Acquire** (`Manager::acquire_pooled`, or `acquire_pooled_for_identity` for
+**Acquire** (`Manager::acquire`, or `acquire_for_identity` for
 credential-bound routes):
 
 1. Non-blocking concurrency gate (`Topology::try_reserve`) — a semaphore

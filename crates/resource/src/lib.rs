@@ -74,7 +74,7 @@
 //!     tokio_util::sync::CancellationToken::new(),
 //! );
 //! let guard = manager
-//!     .acquire_pooled::<HttpClient>(&ctx, &AcquireOptions::default())
+//!     .acquire::<HttpClient>(&ctx, &AcquireOptions::default())
 //!     .await?;
 //! let _instance: &() = &*guard; // guard derefs to `R::Instance`
 //! drop(guard); // release: recycled back into the pool, not destroyed
@@ -82,7 +82,7 @@
 //! # }
 //! ```
 //!
-//! See [`Manager::register`] / [`Manager::acquire_pooled`] for the full
+//! See [`Manager::register`] / [`Manager::acquire`] for the full
 //! error and cancel-safety contract. The guard above is the host-side lease:
 //! action code running inside the engine never reaches [`Manager`] or a
 //! [`ResourceGuard`]. It declares a `#[resource]` field of type

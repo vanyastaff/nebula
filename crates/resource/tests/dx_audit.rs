@@ -204,19 +204,10 @@ async fn use_case_1_http_client_pool() {
 
     let ctx = test_ctx();
 
-    // FRICTION NOTE [acquire_pooled AUTH PARAMETER]: The acquire_pooled
-    // signature is:
-    //   async fn acquire_pooled<R>(&self, auth: &R::Auth, ctx: &dyn Ctx, options: &AcquireOptions)
-    //
-    // When Auth = (), you must pass `&()`. This is not obvious. The
-    // README example uses `manager.acquire(&key, &ctx)` which doesn't exist.
-    // I expected: `manager.acquire::<HttpClientResource>(&ctx, &opts)`.
-    // Having to pass auth at acquire-time when most resources don't use
-    // it adds noise to every call site.
-    // SEVERITY: Minor
+    // Typed acquisition needs the resource type, context, and options.
 
     let handle: ResourceGuard<HttpClientResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -341,7 +332,7 @@ async fn use_case_2_resident_config_store() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ConfigStoreResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("resident acquire should succeed");
 
@@ -351,7 +342,7 @@ async fn use_case_2_resident_config_store() {
 
     // A second acquire gets the same shared instance (clone under the hood)
     let handle2: ResourceGuard<ConfigStoreResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
 
@@ -489,7 +480,7 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
         join_handles.push(tokio::spawn(async move {
             let ctx = test_ctx();
             let handle: ResourceGuard<DbResource> = mgr
-                .acquire_pooled(&ctx, &AcquireOptions::default())
+                .acquire(&ctx, &AcquireOptions::default())
                 .await
                 .expect("task acquire should succeed");
 
@@ -528,9 +519,8 @@ async fn use_case_3_db_pool_with_resilience_and_shutdown() {
     // key and topology_tag, not the full lease (which may not be Debug).
     // SEVERITY: Major
     let ctx = test_ctx();
-    let result: Result<ResourceGuard<DbResource>, Error> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
-        .await;
+    let result: Result<ResourceGuard<DbResource>, Error> =
+        manager.acquire(&ctx, &AcquireOptions::default()).await;
     assert!(result.is_err());
     assert_eq!(*result.err().unwrap().kind(), ErrorKind::Cancelled);
 }
@@ -551,9 +541,8 @@ async fn error_handling_not_found_on_unregistered_resource() {
     // enough (Transient/Permanent/Exhausted/Backpressure/NotFound/Cancelled).
     // SEVERITY: Nit (correct design, just notable)
 
-    let result: Result<ResourceGuard<HttpClientResource>, Error> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
-        .await;
+    let result: Result<ResourceGuard<HttpClientResource>, Error> =
+        manager.acquire(&ctx, &AcquireOptions::default()).await;
 
     // same ResourceGuard<R>: !Debug issue — must use .err().unwrap()
     assert!(result.is_err());

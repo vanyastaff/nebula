@@ -283,7 +283,7 @@ where
 
 /// Registers a pool resource at `Global` through the Manager funnel for the
 /// acquire-path integration tests (the framework owns the acquire loop, so the
-/// tests drive `Manager::acquire_pooled` rather than a removed inherent method).
+/// tests drive `Manager::acquire` rather than a removed inherent method).
 pub(crate) fn register_pool<R>(mgr: &Manager, resource: R, config: R::Config, pool: Pooled<R>)
 where
     R: PoolProvider

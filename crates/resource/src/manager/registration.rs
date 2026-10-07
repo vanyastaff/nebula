@@ -165,9 +165,7 @@ impl Manager {
     ///
     /// The end-to-end author flow: `#[derive(Resource)]` for slot plumbing
     /// (empty here — no `#[credential]` fields), a hand-written `impl
-    /// Provider`, `register`, then [`acquire_pooled`](Self::acquire_pooled).
-    /// See [`acquire_pooled`](Self::acquire_pooled) for the same flow
-    /// continued through acquire / deref / release.
+    /// Provider`, `register`, then [`acquire`](Self::acquire) and release.
     ///
     /// ```
     /// use async_trait::async_trait;
@@ -225,7 +223,7 @@ impl Manager {
     ///     tokio_util::sync::CancellationToken::new(),
     /// );
     /// let guard = manager
-    ///     .acquire_pooled::<HttpClient>(&ctx, &AcquireOptions::default())
+    ///     .acquire::<HttpClient>(&ctx, &AcquireOptions::default())
     ///     .await?;
     /// let _instance: &() = &*guard; // guard derefs to `R::Instance`
     /// drop(guard); // release: recycled back into the pool, not destroyed

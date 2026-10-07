@@ -1,7 +1,7 @@
 //! Minimal pooled HTTP client using `nebula_resource::prelude`.
 //!
 //! Demonstrates the v4 author path: `Provider` + `Pooled` topology +
-//! `RegistrationSpec` funnel + typed `acquire_pooled`.
+//! `RegistrationSpec` funnel + typed `acquire`.
 //!
 //! ```shell
 //! cargo run -p nebula-examples --example resource_pooled_http_prelude
@@ -126,7 +126,7 @@ async fn main() {
 
     let ctx = test_ctx();
     let guard = manager
-        .acquire_pooled::<HttpResource>(&ctx, &AcquireOptions::default())
+        .acquire::<HttpResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire");
 

@@ -424,7 +424,7 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
     // slot generations).
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let guard = mgr
-        .acquire_resident::<TwoSlotResident>(&ctx, &AcquireOptions::default())
+        .acquire::<TwoSlotResident>(&ctx, &AcquireOptions::default())
         .await
         .expect("warm acquire must succeed");
     assert_eq!(guard.bound_b.load(Ordering::SeqCst), 23);

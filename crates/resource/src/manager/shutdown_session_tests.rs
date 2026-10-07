@@ -669,7 +669,7 @@ async fn external_parent_and_child_stay_live_after_both_roots_retire() {
         })
         .unwrap();
     let parent = manager
-        .acquire_resident::<ParentResource>(&context, &Default::default())
+        .acquire::<ParentResource>(&context, &Default::default())
         .await
         .unwrap();
     let mut shutdown = Box::pin(manager.graceful_shutdown(ShutdownConfig::default()));

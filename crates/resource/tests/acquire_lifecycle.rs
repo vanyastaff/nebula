@@ -46,7 +46,7 @@ async fn pool_acquire_use_release_reacquire() {
 
     // First acquire creates a new instance.
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
 
@@ -67,7 +67,7 @@ async fn pool_acquire_use_release_reacquire() {
 
     // Second acquire reuses the idle instance (no new creation).
     let handle2 = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
 
@@ -93,7 +93,7 @@ async fn pool_broken_instance_gets_replaced() {
 
     // Acquire and release to populate idle queue.
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .unwrap();
     drop(handle);
@@ -105,7 +105,7 @@ async fn pool_broken_instance_gets_replaced() {
 
     // Next acquire should destroy the broken instance and create new.
     let handle2 = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("should create a fresh instance");
 
@@ -152,7 +152,7 @@ async fn pool_clean_release_records_recycled() {
     let ctx = test_ctx();
 
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
     drop(handle);
@@ -187,7 +187,7 @@ async fn pool_discarded_release_records_discarded() {
     let ctx = test_ctx();
 
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
     // Force the on-release recycle decision to drop the instance.
@@ -228,7 +228,7 @@ async fn resident_acquire_creates_then_clones() {
 
     // First acquire creates.
     let h1 = mgr
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -236,7 +236,7 @@ async fn resident_acquire_creates_then_clones() {
 
     // Second acquire clones (no new creation).
     let h2 = mgr
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire");
     assert_eq!(
@@ -262,7 +262,7 @@ async fn resident_recreates_when_not_alive() {
     let ctx = test_ctx();
 
     let _h1 = mgr
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -272,7 +272,7 @@ async fn resident_recreates_when_not_alive() {
 
     // Next acquire should recreate.
     let _h2 = mgr
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(
@@ -287,7 +287,7 @@ async fn resident_recreates_when_not_alive() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn manager_register_and_acquire_pooled() {
+async fn manager_register_and_acquire_pool_resource() {
     let manager = Manager::new();
     let resource = PoolTestResource::new();
     let pool_config = nebula_resource::topology::pooled::config::Config {
@@ -312,7 +312,7 @@ async fn manager_register_and_acquire_pooled() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<PoolTestResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -364,7 +364,7 @@ async fn pool_maintenance_reaper_evicts_idle_timed_out_instance() {
     // asynchronously with `returned_at ~= now`.
     let ctx = test_ctx();
     let handle: ResourceGuard<PoolTestResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
     drop(handle);
@@ -440,7 +440,7 @@ async fn pool_maintenance_reaper_not_spawned_without_ttl() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<PoolTestResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
     drop(handle);
@@ -488,7 +488,7 @@ async fn pool_maintenance_reaper_not_spawned_without_ttl() {
 }
 
 #[tokio::test]
-async fn manager_register_and_acquire_resident() {
+async fn manager_registers_and_acquires_resident_resource() {
     let manager = Manager::new();
     let resource = ResidentTestResource::new();
     let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
@@ -507,7 +507,7 @@ async fn manager_register_and_acquire_resident() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -538,7 +538,7 @@ async fn manager_shutdown_rejects_acquire() {
 
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await;
 
     assert!(result.is_err());
@@ -706,7 +706,7 @@ async fn pool_create_path_respects_max_concurrent_creates() {
         let mgr = Arc::clone(&manager);
         handles.push(tokio::spawn(async move {
             let ctx = test_ctx();
-            mgr.acquire_pooled::<SlowCreatePoolResource>(&ctx, &AcquireOptions::default())
+            mgr.acquire::<SlowCreatePoolResource>(&ctx, &AcquireOptions::default())
                 .await
                 .expect("acquire")
         }));
@@ -748,7 +748,7 @@ async fn pool_acquire_with_deadline() {
 
     // Acquire the single slot.
     let _held = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
 
@@ -756,7 +756,7 @@ async fn pool_acquire_with_deadline() {
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
     let start = std::time::Instant::now();
-    let result = mgr.acquire_pooled::<PoolTestResource>(&ctx, &opts).await;
+    let result = mgr.acquire::<PoolTestResource>(&ctx, &opts).await;
 
     let elapsed = start.elapsed();
     let err = match result {
@@ -814,7 +814,7 @@ async fn pool_acquire_over_slow_threshold_still_succeeds() {
     let opts =
         AcquireOptions::default().with_acquire_slow_threshold(std::time::Duration::from_millis(1));
     let guard = manager
-        .acquire_pooled::<SlowCreatePoolResource>(&ctx, &opts)
+        .acquire::<SlowCreatePoolResource>(&ctx, &opts)
         .await
         .expect("a slow acquire must still succeed — the threshold is observational only");
     drop(guard);
@@ -855,7 +855,7 @@ async fn pool_acquire_under_manager_wide_slow_threshold_still_succeeds() {
 
     let ctx = test_ctx();
     let guard = manager
-        .acquire_pooled::<SlowCreatePoolResource>(&ctx, &AcquireOptions::default())
+        .acquire::<SlowCreatePoolResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("manager-wide slow threshold must not block or fail the acquire");
     drop(guard);
@@ -879,7 +879,7 @@ async fn pool_permit_not_leaked_after_release() {
     register_pool(&mgr, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     drop(handle);
@@ -889,7 +889,7 @@ async fn pool_permit_not_leaked_after_release() {
 
     // Second acquire must succeed — permit was returned.
     let handle2 = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire must not block — permit should be available");
     drop(handle2);
@@ -899,14 +899,8 @@ async fn pool_permit_not_leaked_after_release() {
 // Topology mismatch
 // ---------------------------------------------------------------------------
 
-// The former `topology_mismatch_returns_permanent_error` exercised a *runtime*
-// rejection when a pool-registered resource was acquired via the resident path.
-// With the converged `Provider::Topology` associated type a resource pins
-// exactly one topology, so `acquire_resident::<PoolTestResource>` no longer
-// compiles (`PoolTestResource::Topology = Pooled<Self>`, not `Resident<Self>`)
-// — the mismatch is now a compile error, a strictly stronger guarantee. This
-// positive test pins the surviving behavior: a pool resource acquired through
-// the pool path succeeds, and its guard reports `TopologyTag::Pool`.
+// A provider pins one `Topology`, so typed acquisition returns that topology's
+// guard. A pool resource acquires successfully and reports `TopologyTag::Pool`.
 #[tokio::test]
 async fn pool_resource_acquires_through_pool_path() {
     let manager = Manager::new();
@@ -931,7 +925,7 @@ async fn pool_resource_acquires_through_pool_path() {
 
     let ctx = test_ctx();
     let guard = manager
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("pool acquire must succeed through the pool path");
     assert_eq!(

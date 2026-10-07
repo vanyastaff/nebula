@@ -1012,7 +1012,7 @@ mod shared_resource {
             let mgr = Arc::clone(&manager);
             handles.push(tokio::spawn(async move {
                 let ctx = ctx_for_org(org);
-                mgr.acquire_resident::<TelegramBot>(&ctx, &AcquireOptions::default())
+                mgr.acquire::<TelegramBot>(&ctx, &AcquireOptions::default())
                     .await
                     .expect("acquire should succeed")
             }));
@@ -1095,11 +1095,11 @@ mod shared_resource {
         let ctx = ctx_for_org(org);
 
         let lease_a = manager
-            .acquire_resident::<TelegramBot>(&ctx, &AcquireOptions::default())
+            .acquire::<TelegramBot>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire A");
         let lease_b = manager
-            .acquire_resident::<AlternateBot>(&ctx, &AcquireOptions::default())
+            .acquire::<AlternateBot>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire B");
 
@@ -1165,11 +1165,11 @@ mod shared_resource {
             .expect("register org_b should succeed");
 
         let lease_a = manager
-            .acquire_resident::<TelegramBot>(&ctx_for_org(org_a), &AcquireOptions::default())
+            .acquire::<TelegramBot>(&ctx_for_org(org_a), &AcquireOptions::default())
             .await
             .expect("acquire from org_a");
         let lease_b = manager
-            .acquire_resident::<TelegramBot>(&ctx_for_org(org_b), &AcquireOptions::default())
+            .acquire::<TelegramBot>(&ctx_for_org(org_b), &AcquireOptions::default())
             .await
             .expect("acquire from org_b");
 
@@ -1307,7 +1307,7 @@ mod shared_resource {
         // registry falls back to Global per `Registry::find_by_scope`.
         let ctx = ctx_for_execution();
         let _lease = manager
-            .acquire_resident::<TelegramBot>(&ctx, &AcquireOptions::default())
+            .acquire::<TelegramBot>(&ctx, &AcquireOptions::default())
             .await
             .expect("global fallback should succeed");
         assert_eq!(counter.load(Ordering::SeqCst), 1);

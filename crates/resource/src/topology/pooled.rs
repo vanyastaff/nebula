@@ -76,7 +76,7 @@ impl InstanceMetrics {
 ///
 /// # Acquire bounds
 ///
-/// [`Manager::acquire_pooled`](crate::Manager::acquire_pooled) requires:
+/// Using [`Manager::acquire`](crate::Manager::acquire) with `Pooled<R>` requires:
 /// - `R: Clone + Send + Sync + 'static`
 /// - `R::Instance: Send + Sync + 'static` (no instance cloning)
 ///

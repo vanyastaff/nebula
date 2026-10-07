@@ -209,7 +209,7 @@ fn bench_acquire(c: &mut Criterion) {
     // Warm one pooled instance so the loop below is a pure idle-hit cycle.
     rt.block_on(async {
         let guard = manager
-            .acquire_pooled::<KeepPool>(&ctx, &options)
+            .acquire::<KeepPool>(&ctx, &options)
             .await
             .expect("warm the pool");
         let _release_outcome = guard.release().await.expect("warm release");
@@ -218,7 +218,7 @@ fn bench_acquire(c: &mut Criterion) {
     group.bench_function("pooled_hit", |b| {
         b.to_async(&rt).iter(|| async {
             let guard = manager
-                .acquire_pooled::<KeepPool>(&ctx, &options)
+                .acquire::<KeepPool>(&ctx, &options)
                 .await
                 .expect("idle-hit acquire");
             black_box(*guard);
@@ -229,7 +229,7 @@ fn bench_acquire(c: &mut Criterion) {
     group.bench_function("pooled_create_destroy", |b| {
         b.to_async(&rt).iter(|| async {
             let guard = manager
-                .acquire_pooled::<DiscardPool>(&ctx, &options)
+                .acquire::<DiscardPool>(&ctx, &options)
                 .await
                 .expect("create-path acquire");
             black_box(*guard);
@@ -240,7 +240,7 @@ fn bench_acquire(c: &mut Criterion) {
     group.bench_function("resident_hit", |b| {
         b.to_async(&rt).iter(|| async {
             let guard = manager
-                .acquire_resident::<SharedResident>(&ctx, &options)
+                .acquire::<SharedResident>(&ctx, &options)
                 .await
                 .expect("resident acquire");
             black_box(*guard);
@@ -418,7 +418,7 @@ fn bench_strict_credential_admission(c: &mut Criterion) {
         group.bench_function(name, |b| {
             b.to_async(&rt).iter(|| async {
                 let guard = manager
-                    .acquire_resident::<BoundResident>(&ctx, &options)
+                    .acquire::<BoundResident>(&ctx, &options)
                     .await
                     .expect("bound resident acquire");
                 black_box(*guard);

@@ -118,7 +118,7 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
         .expect("replacement resource registers");
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let warm = manager
-        .acquire_resident_for_identity::<ReplacementResource>(
+        .acquire_for_identity::<ReplacementResource>(
             &context,
             &AcquireOptions::default(),
             &identity,
@@ -211,7 +211,7 @@ async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -316,7 +316,7 @@ async fn material_replacement_hook_timeout_is_not_counted_as_success() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -360,7 +360,7 @@ async fn refreshed_events_and_scans_install_once_per_epoch_in_either_order() {
         let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         drop(
             manager
-                .acquire_resident_for_identity::<ReplacementResource>(
+                .acquire_for_identity::<ReplacementResource>(
                     &context,
                     &AcquireOptions::default(),
                     &identity,
@@ -515,7 +515,7 @@ async fn stalled_refresh_scan_does_not_delay_credential_or_lease_revoke() {
             let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
             assert!(
                 manager
-                    .acquire_resident_for_identity::<ReplacementResource>(
+                    .acquire_for_identity::<ReplacementResource>(
                         &context,
                         &AcquireOptions::default(),
                         &identity
@@ -758,7 +758,7 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -797,7 +797,7 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
     );
     assert!(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -835,7 +835,7 @@ async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -870,7 +870,7 @@ async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -892,7 +892,7 @@ async fn authoritative_tombstone_wins_a_concurrent_unqualified_slot_write() {
         let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         drop(
             manager
-                .acquire_resident_for_identity::<ReplacementResource>(
+                .acquire_for_identity::<ReplacementResource>(
                     &context,
                     &AcquireOptions::default(),
                     &identity,
@@ -940,7 +940,7 @@ async fn authoritative_tombstone_wins_a_concurrent_unqualified_slot_write() {
             "authoritative tombstone must clear an intervening slot write"
         );
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -1249,7 +1249,7 @@ async fn delayed_projection_cannot_install_into_rebound_registration() {
         let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         drop(
             manager
-                .acquire_resident_for_identity::<ReplacementResource>(
+                .acquire_for_identity::<ReplacementResource>(
                     &context,
                     &AcquireOptions::default(),
                     &SlotIdentity::from_bindings([("db", "oauth")]),
@@ -1975,11 +1975,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
         CancellationToken::new(),
     );
     let _g = mgr
-        .acquire_resident_for_identity::<Recording>(
-            &ctx,
-            &AcquireOptions::default(),
-            &slot_identity,
-        )
+        .acquire_for_identity::<Recording>(&ctx, &AcquireOptions::default(), &slot_identity)
         .await
         .expect("warm resident runtime");
     drop(_g);
@@ -2107,11 +2103,7 @@ async fn lease_revoked_event_taints_row_and_delivers_revoke_hook() {
     );
     let acquired = w
         .mgr
-        .acquire_resident_for_identity::<Recording>(
-            &ctx,
-            &AcquireOptions::default(),
-            &w.slot_identity,
-        )
+        .acquire_for_identity::<Recording>(&ctx, &AcquireOptions::default(), &w.slot_identity)
         .await;
     let err = match acquired {
         Err(e) => e,
@@ -2169,11 +2161,8 @@ async fn lease_revoked_with_hung_hook_still_taints_row() {
     );
     let acquired = tokio::time::timeout(
         Duration::from_secs(2),
-        w.mgr.acquire_resident_for_identity::<Recording>(
-            &ctx,
-            &AcquireOptions::default(),
-            &w.slot_identity,
-        ),
+        w.mgr
+            .acquire_for_identity::<Recording>(&ctx, &AcquireOptions::default(), &w.slot_identity),
     )
     .await
     .expect("acquire on a tainted row must resolve immediately (rejected), not hang");
@@ -2421,11 +2410,7 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
         CancellationToken::new(),
     );
     let _g = mgr
-        .acquire_resident_for_identity::<Recording>(
-            &ctx,
-            &AcquireOptions::default(),
-            &slot_identity,
-        )
+        .acquire_for_identity::<Recording>(&ctx, &AcquireOptions::default(), &slot_identity)
         .await
         .expect("warm resident runtime");
     drop(_g);
@@ -2741,8 +2726,7 @@ async fn reauth_required_denies_until_reauthentication_then_serves() {
     );
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let options = AcquireOptions::default();
-    let acquire =
-        || manager.acquire_resident_for_identity::<ReplacementResource>(&ctx, &options, &identity);
+    let acquire = || manager.acquire_for_identity::<ReplacementResource>(&ctx, &options, &identity);
     let lease = acquire().await.expect("the row serves material 1");
 
     // The provider rejects the refresh: the credential needs reauthentication.
@@ -2824,7 +2808,7 @@ async fn an_abandoned_revoke_between_scans_readmits_without_closing() {
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let options = AcquireOptions::default();
     let lease = manager
-        .acquire_resident_for_identity::<ReplacementResource>(&ctx, &options, &identity)
+        .acquire_for_identity::<ReplacementResource>(&ctx, &options, &identity)
         .await
         .expect("the row serves");
     // The driver's first scan runs at once.
@@ -2869,7 +2853,7 @@ async fn an_abandoned_revoke_between_scans_readmits_without_closing() {
         "a readmission decrypts nothing"
     );
     let fresh = manager
-        .acquire_resident_for_identity::<ReplacementResource>(&ctx, &options, &identity)
+        .acquire_for_identity::<ReplacementResource>(&ctx, &options, &identity)
         .await
         .expect("the readmitted row serves");
     assert!(!fresh.is_closing());

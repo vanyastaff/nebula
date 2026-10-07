@@ -420,7 +420,7 @@ async fn main() -> anyhow::Result<()> {
     for run in 0..5 {
         let ctx = ctx_for_demo();
         let lease = manager
-            .acquire_pooled::<Postgres>(&ctx, &AcquireOptions::default())
+            .acquire::<Postgres>(&ctx, &AcquireOptions::default())
             .await?;
 
         // Build the per-execution Action with slots filled. The engine does

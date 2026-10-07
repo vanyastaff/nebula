@@ -299,11 +299,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         CancellationToken::new(),
     );
     let g = mgr
-        .acquire_resident_for_identity::<SecretRes>(
-            &ctx,
-            &AcquireOptions::default(),
-            &slot_identity,
-        )
+        .acquire_for_identity::<SecretRes>(&ctx, &AcquireOptions::default(), &slot_identity)
         .await
         .expect("warm secret-bearing runtime");
     drop(g);

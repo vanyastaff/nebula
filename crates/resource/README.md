@@ -944,7 +944,7 @@ The slot-binding break is hard. To migrate an existing `Resource` impl:
 3. **Replace `on_credential_refresh(scheme, ctx)` with `on_credential_refresh(&self, slot_name, instance)`** and add an `on_credential_revoke(&self, slot_name, instance)` override where the resource held revoke logic. The engine swaps the rotated guard into the slot cell before the call; `&self` is an immutable descriptor, so blue-green / re-auth acts on `instance`'s interior mutability. Multi-credential resources can branch on `slot_name` to refresh only the affected sub-system.
 4. **Drop `nebula_credential::NoCredential`.** Resources without credentials simply have no `#[credential]` fields. The `NoCredential` opt-out is no longer needed.
 5. **Use the two-derive pattern**: annotate the struct with `#[derive(Resource)]` (emits slot plumbing only); write a hand-written `impl Provider` with real `create` / `check` / `destroy` bodies. No `#[resource(...)]` container attribute. The per-topology hook trait (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) is still hand-written.
-6. **Update test code** — registration now goes through one funnel: `Manager::register::<R>(RegistrationSpec { resource, config, scope, slot_identity, topology, recovery_gate, rate_limit })`. The per-topology `register_<topo>[_with]` shorthands and the previous `acquire_*_default` shorthand were removed; acquire through the topology-agnostic `acquire::<R>` / `acquire_for_identity::<R>` (works for custom topologies too), the equivalent topology-asserting `acquire_<topo>` / `acquire_<topo>_for_identity` family, or the type-erased `acquire_any`.
+6. **Update test code** — register through `Manager::register::<R>(RegistrationSpec { resource, config, scope, slot_identity, topology, recovery_gate, rate_limit })`. Acquire through `acquire::<R>` / `acquire_for_identity::<R>` for built-in and custom topologies, or `acquire_any` when the concrete provider type is erased.
 7. **For credential slot identity**, pass `SlotIdentity::Unbound` for the historical single-row dedup, or build a `SlotIdentity::Structural` from the resolved `(slot, credential)` pairs for per-binding row separation. The old `u64` `slot_identity` digest was removed.
 
 The trait-shape changes ship complete; the per-slot rotation fan-out
@@ -1195,7 +1195,7 @@ for _ in 0..10 {
     let mgr = Arc::clone(&manager);
     handles.push(tokio::spawn(async move {
         let ctx = build_workflow_resource_ctx(org_id);
-        mgr.acquire_resident::<TelegramBot>(&ctx, &AcquireOptions::default()).await
+        mgr.acquire::<TelegramBot>(&ctx, &AcquireOptions::default()).await
     }));
 }
 
@@ -1213,6 +1213,6 @@ exactly one `create` invocation, all 10 leases share the same `Arc`.
 #### Invalidation triggers
 
 - **Fingerprint change in `ResourceConfig`**. Calling `Manager::reload_config::<R>(new_config, &scope)` validates the new config, swaps it in, bumps the resource's `generation`, and emits `ResourceEvent::ConfigReloaded`. For `Pooled` topologies the pool's fingerprint atomic is updated so idle entries with the stale fingerprint are evicted on next acquire or release. `Resident` topologies rebuild the master with the new config on the next acquire; leases on the old master keep it alive until they are released, and while four masters are still leased the current one keeps serving its old config until leases drain. No-op reloads (same fingerprint) short-circuit to `ReloadOutcome::NoChange` without bumping the generation.
-- **Different `R::key()`**. Two distinct `Resource` impls — even configured identically — register under separate registry rows. `acquire_resident::<TelegramBot>` and `acquire_resident::<AlternateBot>` produce independent runtimes and can be replaced or shut down independently.
+- **Different `R::key()`**. Two distinct `Resource` impls — even configured identically — register under separate registry rows. `acquire::<TelegramBot>` and `acquire::<AlternateBot>` produce independent runtimes and can be replaced or shut down independently.
 - **Different `ScopeLevel`**. The same `Resource` impl registered at `Organization(A)` and `Organization(B)` produces two independent instances; the registry's scope-aware `find_by_scope` does an exact match first and falls back to `Global` only when no exact match exists. Per-scope reloads / shutdowns affect only the matching scope.
 - **Manager shutdown**. `Manager::shutdown()` cancels the manager token; in-flight acquires drain via `graceful_shutdown` per canon §11.4. Cleanup stays open during handle drain. After shutdown, every acquire returns `ErrorKind::Cancelled`.

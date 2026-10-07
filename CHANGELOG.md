@@ -11,6 +11,12 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **One typed resource acquisition interface.** Host-side callers use
+  `Manager::acquire::<R>` or `acquire_for_identity::<R>`; `Provider::Topology`
+  selects the lifecycle policy. The six pooled/resident/bounded acquisition
+  aliases are removed. Action code continues to submit units through
+  `ResourceHandle`; its interface and lifecycle behavior are unchanged.
+
 - **Eight-aggregate database baseline.** The development migration history is
   replaced by paired `0001_identity.sql` through `0008_platform.sql` catalogs.
   This supersedes the transition migration numbers recorded below. Databases

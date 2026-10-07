@@ -233,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
         handles.push(tokio::spawn(async move {
             let ctx = ctx_for_org(org);
             let lease = mgr
-                .acquire_resident::<TelegramBot>(&ctx, &AcquireOptions::default())
+                .acquire::<TelegramBot>(&ctx, &AcquireOptions::default())
                 .await
                 .expect("acquire");
             // Tiny work simulation: every workflow sends one outbound message.
