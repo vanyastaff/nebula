@@ -3916,6 +3916,7 @@ name = "nebula-worker-bin"
 version = "0.32.0"
 dependencies = [
  "chrono",
+ "clap",
  "nebula-core",
  "nebula-credential",
  "nebula-engine",

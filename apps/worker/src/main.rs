@@ -4,6 +4,9 @@
 //! and runs durable control, recovery, resource fanout, and timer processing
 //! via [`nebula_worker`].
 //!
+//! `--help` and `--version` exit before reading deployment configuration.
+//! Unrecognized arguments are rejected before initialization.
+//!
 //! ## Configuration (environment variables)
 //!
 //! | Variable | Default | Description |
@@ -28,14 +31,24 @@
 
 mod compose_main;
 
+use clap::Parser;
 use compose_main::run;
+
+#[derive(Parser)]
+#[command(
+    name = "nebula-worker",
+    version,
+    about = "Nebula core-flavor execution worker",
+    after_help = "Deployment configuration is read from NEBULA_WORKER_* and NEBULA_CRED_* environment variables."
+)]
+struct Cli;
 
 #[tokio::main]
 async fn main() {
+    Cli::parse();
     // `run()` handles all setup, signal handling, and graceful shutdown.
     // Errors are reported to stderr as actionable messages; the process exits
-    // non-zero on any hard failure. Panics inside the worker task propagate
-    // through the JoinHandle and cause a non-zero exit via `expect`.
+    // non-zero on any hard failure, including a supervised worker task panic.
     if let Err(e) = run().await {
         // Display chain (not Debug) gives the user an actionable message.
         eprintln!("error: {e}");

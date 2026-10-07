@@ -43,7 +43,11 @@ impl std::error::Error for ServerRunError {
 }
 
 #[derive(Parser)]
-#[command(name = "nebula-server", about = "Nebula workflow engine server")]
+#[command(
+    name = "nebula-server",
+    version,
+    about = "Nebula workflow engine server"
+)]
 struct Cli {
     /// Ingress transport to run in this process.
     #[arg(long, value_enum, env = "NEBULA_TRANSPORT", default_value = "all")]
@@ -60,10 +64,10 @@ struct Cli {
 ///
 /// Returns a typed startup or serving error.
 pub async fn run_from_env() -> Result<(), ServerRunError> {
+    let cli = Cli::parse();
     let telemetry_guard = nebula_api::init_api_telemetry()
         .map_err(compose::ServerRunError::Telemetry)
         .map_err(ServerRunError)?;
-    let cli = Cli::parse();
     match cli.transport {
         Transport::Api | Transport::All => compose::run_transport(ApiTransport, telemetry_guard)
             .await

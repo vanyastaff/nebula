@@ -107,7 +107,7 @@ runtime-repair-red = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "process"] }
 nebula-action = { path = "../../crates/action" }
 # Activate the `test-util` feature of nebula-api for tests — exposes
 # `ApiConfig::for_test()`. Cargo unions features from [dependencies] and

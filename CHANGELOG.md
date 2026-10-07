@@ -11,6 +11,11 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Worker command admission.** Unknown worker arguments now fail with usage
+  and exit code 2 instead of being ignored. Both deployment binaries support
+  `--help` and `--version` before loading configuration or initializing telemetry
+  and storage.
+
 - **Persisted execution inspection.** Execution GET detail now returns typed
   lifecycle status, RFC3339 timestamps (no synthetic start time), snapshot
   revision, node states, attempts, safe failure records and recorded outputs.

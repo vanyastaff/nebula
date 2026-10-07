@@ -18,6 +18,9 @@ cargo run -p nebula-server -- --transport webhook
 cargo run -p nebula-server -- --transport realtime
 ```
 
+`nebula-server --help` and `--version` work without deployment configuration.
+Argument errors are reported before telemetry or database initialization.
+
 All operator-facing configuration lives in environment variables; the
 canonical registry is `crates/api/src/config/env.rs`. The composition
 root in `apps/server/src/compose.rs` is the only place those values
