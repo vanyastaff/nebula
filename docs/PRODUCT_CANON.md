@@ -173,6 +173,37 @@ The Rust patterns that make this invariant easy to uphold: sealed traits, typest
 
 > **Intended deployment path:** Nebula is not production-ready yet. Once the release and conformance gates pass, **SQLite local/edge** and **Postgres self-hosted** are the only intended supported deployment paths. Additional storage backends or cloud multi-tenant modes are additive and must be explicitly marked **experimental** or **planned** until this canon says otherwise. Alternative plugin execution models are governed by §12.6 and are not additive roadmap items.
 
+### 5.1 Client and deployment model
+
+**[L1] Product target:** one shared user interface for **desktop and web**, with
+switchable connections to local, self-hosted and managed-cloud servers. These
+client applications and the managed-cloud offering are **planned**, not shipped
+deployment capabilities. The release gates above still apply.
+
+| Target | Server ownership | Execution and persistence |
+|--------|------------------|---------------------------|
+| Local | Desktop can start and manage a local Nebula server; web can use its served interface | Server owns API, execution runtime and durable file-backed SQLite |
+| Self-hosted | Operator manages a remote Nebula deployment | Server and workers own runtime state in PostgreSQL |
+| Cloud | Nebula operates the remote deployment | Same product API and durability contracts; hosted operations and isolation require their own release evidence |
+
+The client connects through the versioned product API in every mode. It never
+opens the server's database or acquires aggregate write authority. A local
+deployment must execute accepted workflows through its owning runtime; starting
+an API listener alone is not a working local workflow application.
+
+**[L1] Connection isolation:** saved connection metadata is separate from server
+deployment configuration and authentication secrets. Sessions, tenant selection,
+cached data and in-flight responses belong to one connection. Switching servers
+must not send the previous connection's credentials to the new endpoint, display
+late responses in its workspace, or replay an uncertain mutation there. Workflows already accepted by
+the old server remain under that server's ownership; switching is not cancellation
+or transfer. A connection failure must not silently select another server.
+
+Desktop owns lifecycle controls only for the local server it manages. A browser
+client connects to an already running server; browser connectivity and origin
+policy must be verified for each supported hosting arrangement. Remote servers
+retain control of authentication, tenant authorization and capability admission.
+
 ---
 
 ## 6. Architecture ↔ pillars
