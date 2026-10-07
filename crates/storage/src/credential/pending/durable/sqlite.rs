@@ -19,51 +19,45 @@ impl SqlitePendingStateStore {
         }
     }
 
+    /// SQLite's clock in milliseconds: the precision pending expiry is sealed
+    /// with. Stored instants are microseconds, always whole milliseconds here.
     async fn now_ms(&self) -> Result<i64, PendingStoreError> {
-        sqlx::query_scalar(
-            "SELECT (CAST(strftime('%s', 'now') AS INTEGER) * 1000 + \
-             CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER))",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|_| backend(DurablePendingError::Unavailable))
+        sqlx::query_scalar(concat!("SELECT ", sqlite_now_us!(), " / 1000"))
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| backend(DurablePendingError::Unavailable))
     }
 
     async fn load(
         transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         digest: &[u8; 32],
     ) -> Result<Option<PendingRow>, PendingStoreError> {
-        let row = sqlx::query(
-            "SELECT credential_kind, owner_id, session_id, state_encrypted, expires_at, \
-             expires_at <= (CAST(strftime('%s', 'now') AS INTEGER) * 1000 + \
-             CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS expired \
-             FROM credential_pending_states WHERE token_digest = ?1",
-        )
+        let row = sqlx::query(concat!(
+            "SELECT credential_kind, org_id, workspace_id, session_id, state_encrypted, \
+             expires_at, expires_at <= ",
+            sqlite_now_us!(),
+            " AS expired FROM credential_pending_states WHERE token_digest = ?1"
+        ))
         .bind(digest.as_slice())
         .fetch_optional(&mut **transaction)
         .await
         .map_err(|_| backend(DurablePendingError::Unavailable))?;
+        let corrupt = |_| backend(DurablePendingError::CorruptRecord);
         row.map(|row| {
+            let expires_at_us: i64 = row.try_get(5).map_err(corrupt)?;
+            if expires_at_us % 1000 != 0 {
+                return Err(backend(DurablePendingError::CorruptRecord));
+            }
             Ok(PendingRow {
-                credential_kind: row
-                    .try_get(0)
-                    .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-                owner_id: row
-                    .try_get(1)
-                    .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-                session_id: row
-                    .try_get(2)
-                    .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-                state_encrypted: row
-                    .try_get(3)
-                    .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-                expires_at_ms: row
-                    .try_get(4)
-                    .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-                expired: row
-                    .try_get::<i64, _>(5)
-                    .map_err(|_| backend(DurablePendingError::CorruptRecord))?
-                    != 0,
+                credential_kind: row.try_get(0).map_err(corrupt)?,
+                owner_id: row_owner_id(
+                    row.try_get(1).map_err(corrupt)?,
+                    row.try_get(2).map_err(corrupt)?,
+                ),
+                session_id: row.try_get(3).map_err(corrupt)?,
+                state_encrypted: row.try_get(4).map_err(corrupt)?,
+                expires_at_ms: expires_at_us / 1000,
+                expired: row.try_get::<i64, _>(6).map_err(corrupt)? != 0,
             })
         })
         .transpose()
@@ -150,25 +144,73 @@ impl DynPendingStateStore for SqlitePendingStateStore {
         ttl: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<PendingToken, PendingStoreError>> + Send + 'a>> {
         Box::pin(async move {
+            // Pending state belongs to the workspace its credential will.
+            let scope = owner_scope(owner)?;
             let now = self.now_ms().await?;
             let expires = expiry_from(now, ttl)?;
-            sqlx::query(
-                "DELETE FROM credential_pending_states WHERE expires_at <= \
-                 (CAST(strftime('%s', 'now') AS INTEGER) * 1000 + \
-                 CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER))",
-            )
+            let unavailable = |_| backend(DurablePendingError::Unavailable);
+            let (created_at_us, expires_at_us) = now
+                .checked_mul(1000)
+                .zip(expires.checked_mul(1000))
+                .ok_or_else(|| backend(DurablePendingError::Unavailable))?;
+            sqlx::query(concat!(
+                "DELETE FROM credential_pending_states WHERE expires_at <= ",
+                sqlite_now_us!()
+            ))
             .execute(&self.pool)
             .await
-            .map_err(|_| backend(DurablePendingError::Unavailable))?;
+            .map_err(unavailable)?;
+            let mut connection = self.pool.acquire().await.map_err(unavailable)?;
+            // `BEGIN IMMEDIATE` serializes the live-workspace check with a
+            // concurrent archive; the foreign key proves existence only.
+            let mut transaction = connection
+                .begin_with("BEGIN IMMEDIATE")
+                .await
+                .map_err(unavailable)?;
+            let workspace: Option<(i64,)> = sqlx::query_as(
+                "SELECT 1 FROM workspaces w JOIN orgs o ON o.id = w.org_id \
+                 WHERE w.org_id = ?1 AND w.id = ?2 \
+                   AND w.deleted_at IS NULL AND o.deleted_at IS NULL",
+            )
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(unavailable)?;
+            if workspace.is_none() {
+                return Err(PendingStoreError::NotFound);
+            }
             for _ in 0..INSERT_ATTEMPTS {
                 let token = PendingToken::generate();
                 let digest = token_digest(&token);
                 let aad = pending_aad(&digest, kind, owner, session, expires).map_err(backend)?;
                 let encrypted = self.cipher.encrypt(&data, &aad).map_err(backend)?;
-                let result = sqlx::query("INSERT INTO credential_pending_states (token_digest, credential_kind, owner_id, session_id, state_encrypted, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(token_digest) DO NOTHING")
-                    .bind(digest.as_slice()).bind(kind).bind(owner).bind(session).bind(encrypted).bind(now).bind(expires)
-                    .execute(&self.pool).await.map_err(|_| backend(DurablePendingError::Unavailable))?;
+                let result = sqlx::query(
+                    "INSERT INTO credential_pending_states \
+                     (org_id, workspace_id, token_digest, credential_kind, session_id, \
+                      state_encrypted, created_at, expires_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                     ON CONFLICT(token_digest) DO NOTHING",
+                )
+                .bind(&scope.org_id)
+                .bind(&scope.workspace_id)
+                .bind(digest.as_slice())
+                .bind(kind)
+                .bind(session)
+                .bind(encrypted)
+                .bind(created_at_us)
+                .bind(expires_at_us)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| {
+                    if crate::sql_error::is_foreign_key_violation(&error) {
+                        PendingStoreError::NotFound
+                    } else {
+                        backend(DurablePendingError::Unavailable)
+                    }
+                })?;
                 if result.rows_affected() == 1 {
+                    transaction.commit().await.map_err(unavailable)?;
                     return Ok(token);
                 }
             }
@@ -223,7 +265,12 @@ impl DynPendingStateStore for SqlitePendingStateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_storage_port::Scope;
+
     use crate::credential::{SqliteCredentialPersistence, key_provider::StaticKeyProvider};
+
+    /// The canonical owner key of workspace `ws-a` in `org-a`.
+    const OWNER_A: &str = "5\u{1e}org-a\u{1e}ws-a";
 
     fn provider(byte: u8, version: &'static str) -> Arc<dyn KeyProvider> {
         Arc::new(StaticKeyProvider::with_version(
@@ -232,11 +279,95 @@ mod tests {
         ))
     }
 
+    /// Provision the workspace [`OWNER_A`] names: pending state belongs to it.
+    async fn provision_owner_a(persistence: &SqliteCredentialPersistence) {
+        crate::credential::test_owner::provision(&persistence.tenant_provisioning_store(), &["a"])
+            .await;
+    }
+
     async fn store() -> SqlitePendingStateStore {
         let persistence = SqliteCredentialPersistence::connect_memory()
             .await
             .expect("admit SQLite pending-state schema");
+        provision_owner_a(&persistence).await;
         persistence.pending_state_store(provider(7, "pending-test-v1"), Vec::new())
+    }
+
+    #[tokio::test]
+    async fn pending_state_is_filed_under_its_owners_workspace() {
+        assert_eq!(
+            Scope::new("ws-a", "org-a").credential_owner_id(),
+            OWNER_A,
+            "the fixture owner is the canonical key of its workspace"
+        );
+        let store = store().await;
+        assert!(matches!(
+            store
+                .put_serialized(
+                    "oauth2",
+                    "owner-without-workspace",
+                    "session-a",
+                    Zeroizing::new(b"secret".to_vec()),
+                    Duration::from_mins(1),
+                )
+                .await,
+            Err(PendingStoreError::NotFound)
+        ));
+        let unprovisioned = Scope::new("ws-missing", "org-missing").credential_owner_id();
+        assert!(matches!(
+            store
+                .put_serialized(
+                    "oauth2",
+                    &unprovisioned,
+                    "session-a",
+                    Zeroizing::new(b"secret".to_vec()),
+                    Duration::from_mins(1),
+                )
+                .await,
+            Err(PendingStoreError::NotFound)
+        ));
+        let token = store
+            .put_serialized(
+                "oauth2",
+                OWNER_A,
+                "session-a",
+                Zeroizing::new(b"secret".to_vec()),
+                Duration::from_mins(1),
+            )
+            .await
+            .expect("put pending state");
+        let tenant: (String, String) =
+            sqlx::query_as("SELECT org_id, workspace_id FROM credential_pending_states")
+                .fetch_one(&store.pool)
+                .await
+                .expect("inspect the owning workspace");
+        assert_eq!(tenant, ("org-a".to_owned(), "ws-a".to_owned()));
+
+        sqlx::query("UPDATE workspaces SET deleted_at = 1 WHERE id = 'ws-a'")
+            .execute(&store.pool)
+            .await
+            .expect("archive the workspace");
+        assert!(matches!(
+            store
+                .put_serialized(
+                    "oauth2",
+                    OWNER_A,
+                    "session-a",
+                    Zeroizing::new(b"secret".to_vec()),
+                    Duration::from_mins(1),
+                )
+                .await,
+            Err(PendingStoreError::NotFound)
+        ));
+
+        sqlx::query("DELETE FROM workspaces WHERE id = 'ws-a'")
+            .execute(&store.pool)
+            .await
+            .expect("purge the workspace");
+        assert!(matches!(
+            store.get_serialized(&token).await,
+            Err(PendingStoreError::NotFound)
+        ));
     }
 
     #[tokio::test]
@@ -246,7 +377,7 @@ mod tests {
         let token = store
             .put_serialized(
                 "oauth2",
-                "owner-a",
+                OWNER_A,
                 "session-a",
                 Zeroizing::new(CANARY.to_vec()),
                 Duration::from_mins(1),
@@ -268,7 +399,7 @@ mod tests {
         );
 
         let restored = store
-            .get_bound_serialized("oauth2", &token, "owner-a", "session-a")
+            .get_bound_serialized("oauth2", &token, OWNER_A, "session-a")
             .await
             .expect("read pending state");
         assert_eq!(&*restored, CANARY);
@@ -280,7 +411,7 @@ mod tests {
         let token = store
             .put_serialized(
                 "oauth2",
-                "owner-a",
+                OWNER_A,
                 "session-a",
                 Zeroizing::new(b"secret".to_vec()),
                 Duration::from_mins(1),
@@ -296,7 +427,7 @@ mod tests {
         ));
         assert!(
             store
-                .consume_serialized("oauth2", &token, "owner-a", "session-a")
+                .consume_serialized("oauth2", &token, OWNER_A, "session-a")
                 .await
                 .is_ok()
         );
@@ -308,7 +439,7 @@ mod tests {
         let token = store
             .put_serialized(
                 "oauth2",
-                "owner-a",
+                OWNER_A,
                 "session-a",
                 Zeroizing::new(b"secret".to_vec()),
                 Duration::from_mins(1),
@@ -319,13 +450,13 @@ mod tests {
         let left_token = token.clone();
         let left = tokio::spawn(async move {
             left_store
-                .consume_serialized("oauth2", &left_token, "owner-a", "session-a")
+                .consume_serialized("oauth2", &left_token, OWNER_A, "session-a")
                 .await
         });
         let right_store = Arc::clone(&store);
         let right = tokio::spawn(async move {
             right_store
-                .consume_serialized("oauth2", &token, "owner-a", "session-a")
+                .consume_serialized("oauth2", &token, OWNER_A, "session-a")
                 .await
         });
         let results = [
@@ -348,7 +479,7 @@ mod tests {
         let token = good
             .put_serialized(
                 "oauth2",
-                "owner-a",
+                OWNER_A,
                 "session-a",
                 Zeroizing::new(b"secret".to_vec()),
                 Duration::from_mins(1),
@@ -362,12 +493,12 @@ mod tests {
         );
         assert!(matches!(
             wrong
-                .consume_serialized("oauth2", &token, "owner-a", "session-a")
+                .consume_serialized("oauth2", &token, OWNER_A, "session-a")
                 .await,
             Err(PendingStoreError::Backend(_))
         ));
         assert!(
-            good.get_bound_serialized("oauth2", &token, "owner-a", "session-a")
+            good.get_bound_serialized("oauth2", &token, OWNER_A, "session-a")
                 .await
                 .is_ok()
         );
@@ -388,7 +519,7 @@ mod tests {
         let token = store
             .put_serialized(
                 "oauth2",
-                "owner-a",
+                OWNER_A,
                 "session-a",
                 Zeroizing::new(b"secret".to_vec()),
                 Duration::from_millis(5),
@@ -412,7 +543,7 @@ mod tests {
         let zero = store
             .put_serialized(
                 "oauth2",
-                "owner-a",
+                OWNER_A,
                 "session-a",
                 Zeroizing::new(b"secret".to_vec()),
                 Duration::ZERO,
@@ -427,7 +558,7 @@ mod tests {
         let oversized = store
             .put_serialized(
                 "oauth2",
-                "owner-a",
+                OWNER_A,
                 "session-a",
                 Zeroizing::new(b"secret".to_vec()),
                 Duration::from_mins(10) + Duration::from_nanos(1),
@@ -444,6 +575,7 @@ mod tests {
         let persistence = SqliteCredentialPersistence::connect_memory()
             .await
             .expect("admit SQLite pending-state schema");
+        provision_owner_a(&persistence).await;
         let old_key = Arc::new(EncryptionKey::from_bytes([7; 32]));
         let old = persistence.pending_state_store(
             Arc::new(StaticKeyProvider::with_version(
@@ -455,7 +587,7 @@ mod tests {
         let token = old
             .put_serialized(
                 "oauth2",
-                "owner-a",
+                OWNER_A,
                 "session-a",
                 Zeroizing::new(b"legacy-secret".to_vec()),
                 Duration::from_mins(1),
@@ -474,7 +606,7 @@ mod tests {
             vec![("pending-test-v1".to_owned(), old_key)],
         );
         let restored = current
-            .get_bound_serialized("oauth2", &token, "owner-a", "session-a")
+            .get_bound_serialized("oauth2", &token, OWNER_A, "session-a")
             .await
             .expect("read with explicit legacy key");
         assert_eq!(&*restored, b"legacy-secret");
@@ -494,11 +626,12 @@ mod tests {
         let first = SqliteCredentialPersistence::connect(&url)
             .await
             .expect("open first persistence");
+        provision_owner_a(&first).await;
         let first_store = first.pending_state_store(provider(7, "pending-test-v1"), Vec::new());
         let token = first_store
             .put_serialized(
                 "oauth2",
-                "owner-a",
+                OWNER_A,
                 "session-a",
                 Zeroizing::new(b"restart-secret".to_vec()),
                 Duration::from_mins(1),
@@ -513,7 +646,7 @@ mod tests {
             .expect("reopen persistence");
         let second_store = second.pending_state_store(provider(7, "pending-test-v1"), Vec::new());
         let restored = second_store
-            .consume_serialized("oauth2", &token, "owner-a", "session-a")
+            .consume_serialized("oauth2", &token, OWNER_A, "session-a")
             .await
             .expect("consume after restart");
         assert_eq!(&*restored, b"restart-secret");

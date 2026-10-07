@@ -546,16 +546,16 @@ protocol; it does not restore provider-specific ceremony routes. When no command
 
 | Aspect | First-party credential storage composition (after membership authority is provisioned) |
 |---|---|
-| Restart-survival | **Yes** — `NEBULA_CRED_DB` selects the default file-backed SQLite store or PostgreSQL; completed credentials and encrypted pending interactions share the admitted backend. |
-| Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and set `NEBULA_CRED_DB=postgres://…`; credential rows, pending interactions, and the refresh-claim repository share one admitted credential-owned pool. SQLite remains instance-local. |
+| Restart-survival | **Yes with a durable execution backend** — credentials live in the deployment database (`API_EXECUTION_BACKEND=sqlite` file or `postgres`), beside the workspace each belongs to; completed credentials and encrypted pending interactions share it. The `memory` backend keeps them in a process-local database. |
+| Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and select `API_EXECUTION_BACKEND=postgres` with `DATABASE_URL`; credential rows, pending interactions, and the refresh-claim repository share that database. SQLite remains instance-local. |
 | Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
 | Cross-workspace isolation | **Yes** — authority verifies workspace existence/parentage, revalidates membership/role, reproduces the authenticated scope, and every persistence predicate uses the derived `(owner, credential_id)` selector; cross-workspace IDs collapse to a flat 404. The default server shares one backend-bound tenant directory across RBAC and credential authority. |
 | Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success. Provider rejection requiring an integration reconnect is the typed 409 `API:CREDENTIAL_REAUTH_REQUIRED`, not Plane-A 401. The test response is a tagged `status` union: success has no code; failure requires a frozen v1, payload-free code, and future core codes map to `other`. |
 
-> **Operator warning:** completed credentials survive a normal process restart.
-> The default SQLite database is not shared across replicas; use the explicit
-> PostgreSQL `NEBULA_CRED_DB` profile for multi-replica credential and refresh
-> coordination. Pending acquisition state shares the selected credential backend,
+> **Operator warning:** completed credentials survive a normal process restart
+> on a durable execution backend. A SQLite database is not shared across
+> replicas; use the PostgreSQL execution backend for multi-replica credential and
+> refresh coordination. Pending acquisition state shares the deployment database,
 > remains encrypted at rest, and expires after at most ten minutes.
 >
 > The tenancy path resolver special-cases the literal `resolve`

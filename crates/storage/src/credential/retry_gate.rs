@@ -7,7 +7,9 @@ use nebula_storage_port::{
     RefreshRetryPhase, RefreshRetryProjection, RefreshRetryTransition,
 };
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub(crate) const MODE_NEVER: &str = "never";
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub(crate) const MODE_NOT_BEFORE: &str = "not_before";
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const TRANSITION_PRESERVE: i16 = 0;
@@ -110,6 +112,7 @@ pub(crate) fn kind_code(kind: RefreshRetryKind) -> &'static str {
     }
 }
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub(crate) fn decode_evidence(
     phase: &str,
     kind: &str,
@@ -133,6 +136,7 @@ pub(crate) fn decode_evidence(
     Ok(RefreshRetryEvidence::new(phase, kind, diagnostic_code))
 }
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub(crate) fn decode_gate(
     mode: Option<String>,
     not_before: Option<DateTime<Utc>>,
@@ -157,6 +161,7 @@ pub(crate) fn decode_gate(
     }
 }
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub(crate) fn decode_projection(
     mode: Option<String>,
     not_before: Option<DateTime<Utc>>,
@@ -208,7 +213,7 @@ pub(crate) fn evaluate_gate(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "credential-in-memory"))]
 pub(crate) fn apply_transition(
     current: Option<&RefreshRetryGate>,
     transition: &RefreshRetryTransition,

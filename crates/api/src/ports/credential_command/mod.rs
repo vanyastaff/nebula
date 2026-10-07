@@ -610,6 +610,8 @@ impl From<RefreshClaimAdjudicationError> for CredentialGatewayError {
             RefreshClaimAdjudicationError::InvalidEvidence => Self::ReconciliationEvidenceInvalid,
             RefreshClaimAdjudicationError::NotPoisoned => Self::ReconciliationNotRequired,
             RefreshClaimAdjudicationError::StaleIncident => Self::ReconciliationStaleIncident,
+            // An archived credential is gone to every caller.
+            RefreshClaimAdjudicationError::AggregateUnavailable => Self::NotFound,
             RefreshClaimAdjudicationError::EvidenceConflict {
                 recorded_digest,
                 recorded_decision,
@@ -772,6 +774,10 @@ mod tests {
             (
                 RefreshClaimAdjudicationError::StaleIncident,
                 CredentialGatewayError::ReconciliationStaleIncident,
+            ),
+            (
+                RefreshClaimAdjudicationError::AggregateUnavailable,
+                CredentialGatewayError::NotFound,
             ),
             (
                 RefreshClaimAdjudicationError::EvidenceConflict {

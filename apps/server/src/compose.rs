@@ -228,6 +228,9 @@ pub(crate) enum TransportInitError {
 /// Webhook dispatch uses the composed `WorkflowStartService` and its shared
 /// start-acceptance port on every backend.
 pub(crate) struct ExecutionStoreBundle {
+    /// The deployment database behind the tenant directory. Credentials are
+    /// opened on it: a credential belongs to a live workspace there.
+    pub(super) deployment_database: crate::credential_composition::DeploymentDatabase,
     /// Tenant-directory projections created from one backend authority.
     pub(super) tenant_directory: crate::tenant_directory::TenantDirectoryStores,
     pub(super) revision_catalog: Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
@@ -419,6 +422,7 @@ impl ServerRuntime {
         .await
         .map_err(TransportInitError::from)?;
         let mut credential_runtime = compose_first_party_runtime(
+            &execution_bundle.deployment_database,
             keyring.current(),
             keyring.credential_legacy(),
             Arc::clone(&metrics_registry),

@@ -122,6 +122,20 @@ fn expiry_from(now_ms: i64, expires_in: Duration) -> Result<i64, PendingStoreErr
         .ok_or_else(|| backend(DurablePendingError::Unavailable))
 }
 
+/// The workspace pending state for `owner` is filed under (migration 0070).
+/// An owner key that names no workspace owns no pending state.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn owner_scope(owner: &str) -> Result<nebula_storage_port::Scope, PendingStoreError> {
+    nebula_storage_port::Scope::from_credential_owner_id(owner).ok_or(PendingStoreError::NotFound)
+}
+
+/// The canonical owner key of a row filed under `(org_id, workspace_id)`:
+/// the exact key the state was bound and sealed with.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn row_owner_id(org_id: String, workspace_id: String) -> String {
+    nebula_storage_port::Scope::new(workspace_id, org_id).credential_owner_id()
+}
+
 fn binding_matches(row: &PendingRow, kind: &str, owner: &str, session: &str) -> bool {
     row.credential_kind == kind && row.owner_id == owner && row.session_id == session
 }
@@ -167,24 +181,27 @@ pub use postgres::PgPendingStateStore;
 mod migration_contract_tests {
     #[test]
     fn dialects_define_the_same_pending_state_contract() {
-        let sqlite =
-            include_str!("../../../../migrations/sqlite/0055_credential_pending_states.sql");
+        let sqlite = include_str!("../../../../migrations/sqlite/0070_credentials_standard.sql");
         let postgres =
-            include_str!("../../../../migrations/postgres/0055_credential_pending_states.sql");
-        let sqlite_follow_up = include_str!(
-            "../../../../migrations/sqlite/0056_credential_pending_nonnegative_ttl.sql"
-        );
-        let postgres_follow_up = include_str!(
-            "../../../../migrations/postgres/0056_credential_pending_nonnegative_ttl.sql"
-        );
+            include_str!("../../../../migrations/postgres/0070_credentials_standard.sql");
+        let table = |migration: &'static str| {
+            migration
+                .split_once("CREATE TABLE credential_pending_states (")
+                .and_then(|(_, rest)| rest.split_once(");"))
+                .map(|(body, _)| body)
+                .expect("the pending-state table is defined")
+        };
+        let (sqlite, postgres) = (table(sqlite), table(postgres));
         for column in [
+            "org_id",
+            "workspace_id",
             "token_digest",
             "credential_kind",
-            "owner_id",
             "session_id",
             "state_encrypted",
             "created_at",
             "expires_at",
+            "REFERENCES workspaces (org_id, id) ON DELETE CASCADE",
         ] {
             assert!(sqlite.contains(column), "SQLite migration misses {column}");
             assert!(
@@ -194,10 +211,8 @@ mod migration_contract_tests {
         }
         assert!(sqlite.contains("length(token_digest) = 32"));
         assert!(postgres.contains("octet_length(token_digest) = 32"));
-        assert!(sqlite.contains("CHECK (expires_at > created_at)"));
-        assert!(postgres.contains("CHECK (expires_at > created_at)"));
-        assert!(sqlite_follow_up.contains("CHECK (expires_at >= created_at)"));
-        assert!(postgres_follow_up.contains("CHECK (expires_at >= created_at)"));
+        assert!(sqlite.contains("CHECK (expires_at >= created_at)"));
+        assert!(postgres.contains("CHECK (expires_at >= created_at)"));
     }
 
     #[test]

@@ -39,6 +39,7 @@ pub(crate) struct TenantDirectoryStores {
 }
 
 impl TenantDirectoryStores {
+    #[cfg(test)]
     pub(crate) fn memory(directory: &nebula_storage::inmem::InMemoryIdentityDirectory) -> Self {
         Self {
             memberships: Arc::new(directory.membership_store()),

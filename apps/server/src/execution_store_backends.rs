@@ -17,7 +17,7 @@ pub(crate) async fn build_execution_stores(
     match api_config.execution.backend {
         ExecutionBackendKind::Memory => {
             warn_memory_outside_dev();
-            build_memory_execution_stores(metrics)
+            build_memory_execution_stores(metrics).await
         },
         ExecutionBackendKind::Sqlite => build_sqlite_execution_stores(api_config, metrics).await,
         ExecutionBackendKind::Postgres => {
@@ -26,7 +26,22 @@ pub(crate) async fn build_execution_stores(
     }
 }
 
-fn build_memory_execution_stores(
+/// The memory backend's deployment database: a process-local
+/// `sqlite::memory:` database holding tenancy and credentials (a credential
+/// belongs to a live workspace, which only a database can prove). One
+/// connection that never expires: a second connection, or a recycled one,
+/// would open a different, empty database.
+async fn memory_deployment_database() -> Result<sqlx::SqlitePool, TransportInitError> {
+    nebula_storage::sqlite::open_memory_deployment()
+        .await
+        .map_err(|error| {
+            TransportInitError::ExecutionDatabase(format!(
+                "memory: in-memory deployment database failed: {error}"
+            ))
+        })
+}
+
+async fn build_memory_execution_stores(
     _metrics: &MetricsRegistry,
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     #[cfg(feature = "runtime-repair-red")]
@@ -34,9 +49,9 @@ fn build_memory_execution_stores(
         InMemoryCheckpointStore, InMemoryIdempotencyGuard, InMemoryOperationLedger,
     };
     use nebula_storage::inmem::{
-        InMemoryControlQueue, InMemoryExecutionStore, InMemoryIdentityDirectory,
-        InMemoryJournalReader, InMemoryNodeResultStore, InMemoryResourceStore,
-        InMemoryStartAcceptanceStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryResourceStore, InMemoryStartAcceptanceStore,
+        InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
 
     let execution_store = InMemoryExecutionStore::new();
@@ -49,7 +64,7 @@ fn build_memory_execution_stores(
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store =
         InMemoryWorkflowStore::new_with_versions(&workflow_versions, &execution_store);
-    let tenant_directory = InMemoryIdentityDirectory::new();
+    let deployment_database = memory_deployment_database().await?;
     // One row store: rows the API writes are the rows the worker activates.
     let resource_store = InMemoryResourceStore::new();
     // One status store: what the worker projection publishes, the API reads.
@@ -109,7 +124,12 @@ fn build_memory_execution_stores(
     );
     let revision_catalog = Arc::new(execution_store.plan_flavor_catalog());
     Ok(ExecutionStoreBundle {
-        tenant_directory: crate::tenant_directory::TenantDirectoryStores::memory(&tenant_directory),
+        tenant_directory: crate::tenant_directory::TenantDirectoryStores::sqlite(
+            deployment_database.clone(),
+        ),
+        deployment_database: crate::credential_composition::DeploymentDatabase::Memory(
+            deployment_database,
+        ),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store: Arc::new(workflow_store),
@@ -256,6 +276,9 @@ async fn build_sqlite_execution_stores(
 
     Ok(ExecutionStoreBundle {
         tenant_directory: crate::tenant_directory::TenantDirectoryStores::sqlite(pool.clone()),
+        deployment_database: crate::credential_composition::DeploymentDatabase::Sqlite(
+            pool.clone(),
+        ),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store,
@@ -401,6 +424,9 @@ async fn build_postgres_execution_stores(
 
     Ok(ExecutionStoreBundle {
         tenant_directory: crate::tenant_directory::TenantDirectoryStores::postgres(pool.clone()),
+        deployment_database: crate::credential_composition::DeploymentDatabase::Postgres(
+            pool.clone(),
+        ),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store,

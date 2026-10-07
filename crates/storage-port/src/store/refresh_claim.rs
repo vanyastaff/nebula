@@ -783,6 +783,10 @@ pub enum RefreshClaimAdjudicationError {
     /// The credential's material authority changed after revoke acquisition.
     #[error("credential operation adjudication material epoch conflict")]
     MaterialEpochConflict,
+    /// The owner-qualified credential is archived: like every other operation
+    /// on an archived credential, its incidents are not adjudicated.
+    #[error("credential operation adjudication aggregate is unavailable")]
+    AggregateUnavailable,
 }
 
 /// Privileged reconciliation of a poisoned refresh claim.
@@ -829,6 +833,8 @@ pub trait RefreshClaimAdjudicator: Send + Sync + 'static {
     /// not poisoned and `incident` has no recorded resolution;
     /// [`RefreshClaimAdjudicationError::StaleIncident`] when the credential is
     /// poisoned by an incident other than `incident`;
+    /// [`RefreshClaimAdjudicationError::AggregateUnavailable`] when the
+    /// credential is archived;
     /// [`RefreshClaimAdjudicationError::InvalidEvidence`] when `evidence` is
     /// empty or over [`MAX_ADJUDICATION_EVIDENCE_BYTES`];
     /// [`RefreshClaimAdjudicationError::EvidenceConflict`] when the recommitted
@@ -956,6 +962,10 @@ mod tests {
                 RefreshClaimAdjudicationError::MaterialEpochConflict,
                 "credential operation adjudication material epoch conflict",
             ),
+            (
+                RefreshClaimAdjudicationError::AggregateUnavailable,
+                "credential operation adjudication aggregate is unavailable",
+            ),
         ] {
             match &error {
                 RefreshClaimAdjudicationError::Storage => {},
@@ -966,6 +976,7 @@ mod tests {
                 RefreshClaimAdjudicationError::EvidenceConflict { .. } => {},
                 RefreshClaimAdjudicationError::OperationMismatch { .. } => {},
                 RefreshClaimAdjudicationError::MaterialEpochConflict => {},
+                RefreshClaimAdjudicationError::AggregateUnavailable => {},
             }
             assert_eq!(error.to_string(), expected);
         }

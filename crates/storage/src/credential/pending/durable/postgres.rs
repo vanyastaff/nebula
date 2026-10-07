@@ -55,28 +55,27 @@ impl PgPendingStateStore {
             .begin()
             .await
             .map_err(|_| backend(DurablePendingError::Unavailable))?;
-        let row = sqlx::query("SELECT credential_kind, owner_id, session_id, state_encrypted, (EXTRACT(EPOCH FROM expires_at) * 1000)::BIGINT, expires_at <= clock_timestamp() FROM credential_pending_states WHERE token_digest = $1 FOR UPDATE")
-            .bind(digest.as_slice()).fetch_optional(&mut *transaction).await.map_err(|_| backend(DurablePendingError::Unavailable))?
-            .ok_or(PendingStoreError::NotFound)?;
+        let row = sqlx::query(
+            "SELECT credential_kind, org_id, workspace_id, session_id, state_encrypted, \
+             (EXTRACT(EPOCH FROM expires_at) * 1000)::BIGINT, expires_at <= clock_timestamp() \
+             FROM credential_pending_states WHERE token_digest = $1 FOR UPDATE",
+        )
+        .bind(digest.as_slice())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| backend(DurablePendingError::Unavailable))?
+        .ok_or(PendingStoreError::NotFound)?;
+        let corrupt = |_| backend(DurablePendingError::CorruptRecord);
         let row = PendingRow {
-            credential_kind: row
-                .try_get(0)
-                .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-            owner_id: row
-                .try_get(1)
-                .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-            session_id: row
-                .try_get(2)
-                .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-            state_encrypted: row
-                .try_get(3)
-                .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-            expires_at_ms: row
-                .try_get(4)
-                .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
-            expired: row
-                .try_get(5)
-                .map_err(|_| backend(DurablePendingError::CorruptRecord))?,
+            credential_kind: row.try_get(0).map_err(corrupt)?,
+            owner_id: row_owner_id(
+                row.try_get(1).map_err(corrupt)?,
+                row.try_get(2).map_err(corrupt)?,
+            ),
+            session_id: row.try_get(3).map_err(corrupt)?,
+            state_encrypted: row.try_get(4).map_err(corrupt)?,
+            expires_at_ms: row.try_get(5).map_err(corrupt)?,
+            expired: row.try_get(6).map_err(corrupt)?,
         };
         if row.expired {
             sqlx::query("DELETE FROM credential_pending_states WHERE token_digest = $1")
@@ -130,6 +129,8 @@ impl DynPendingStateStore for PgPendingStateStore {
         ttl: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<PendingToken, PendingStoreError>> + Send + 'a>> {
         Box::pin(async move {
+            // Pending state belongs to the workspace its credential will.
+            let scope = owner_scope(owner)?;
             let now: chrono::DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
                 .fetch_one(&self.pool)
                 .await
@@ -142,14 +143,56 @@ impl DynPendingStateStore for PgPendingStateStore {
             .execute(&self.pool)
             .await
             .map_err(|_| backend(DurablePendingError::Unavailable))?;
+            let unavailable = |_| backend(DurablePendingError::Unavailable);
+            let mut transaction = self.pool.begin().await.map_err(unavailable)?;
+            // The foreign key proves the workspace exists; the share lock
+            // proves it is live and serializes with a concurrent archive.
+            let workspace: Option<(String,)> = sqlx::query_as(
+                "SELECT w.id FROM workspaces w JOIN orgs o ON o.id = w.org_id \
+                 WHERE w.org_id = $1 AND w.id = $2 \
+                   AND w.deleted_at IS NULL AND o.deleted_at IS NULL \
+                 FOR SHARE OF w",
+            )
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(unavailable)?;
+            if workspace.is_none() {
+                return Err(PendingStoreError::NotFound);
+            }
             for _ in 0..INSERT_ATTEMPTS {
                 let token = PendingToken::generate();
                 let digest = token_digest(&token);
                 let aad =
                     pending_aad(&digest, kind, owner, session, expires_ms).map_err(backend)?;
                 let encrypted = self.cipher.encrypt(&data, &aad).map_err(backend)?;
-                let inserted = sqlx::query("INSERT INTO credential_pending_states (token_digest, credential_kind, owner_id, session_id, state_encrypted, created_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (token_digest) DO NOTHING").bind(digest.as_slice()).bind(kind).bind(owner).bind(session).bind(encrypted).bind(created_at).bind(expires).execute(&self.pool).await.map_err(|_| backend(DurablePendingError::Unavailable))?;
+                let inserted = sqlx::query(
+                    "INSERT INTO credential_pending_states \
+                     (org_id, workspace_id, token_digest, credential_kind, session_id, \
+                      state_encrypted, created_at, expires_at) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+                     ON CONFLICT (token_digest) DO NOTHING",
+                )
+                .bind(&scope.org_id)
+                .bind(&scope.workspace_id)
+                .bind(digest.as_slice())
+                .bind(kind)
+                .bind(session)
+                .bind(encrypted)
+                .bind(created_at)
+                .bind(expires)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| {
+                    if crate::sql_error::is_foreign_key_violation(&error) {
+                        PendingStoreError::NotFound
+                    } else {
+                        backend(DurablePendingError::Unavailable)
+                    }
+                })?;
                 if inserted.rows_affected() == 1 {
+                    transaction.commit().await.map_err(unavailable)?;
                     return Ok(token);
                 }
             }

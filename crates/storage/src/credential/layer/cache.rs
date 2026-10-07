@@ -361,10 +361,10 @@ mod tests {
         make_credential, make_preserve_replacement, make_replacement,
     };
 
-    use super::{super::super::sqlite::SqliteCredentialPersistence, *};
+    use super::*;
 
     fn owner() -> CredentialOwner {
-        CredentialOwner::from_canonical("test-owner")
+        crate::credential::test_owner::owner("test-owner")
     }
 
     fn selector(id: CredentialId) -> CredentialSelector {
@@ -372,7 +372,7 @@ mod tests {
     }
 
     fn selector_for(owner: &str, id: CredentialId) -> CredentialSelector {
-        CredentialSelector::new(CredentialOwner::from_canonical(owner), id)
+        CredentialSelector::new(crate::credential::test_owner::owner(owner), id)
     }
 
     fn version(value: i64) -> CredentialVersion {
@@ -510,7 +510,7 @@ mod tests {
     #[tokio::test]
     async fn cache_hit_returns_cached() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             CacheConfig::default(),
         );
         let selector = selector(CredentialId::new());
@@ -530,7 +530,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_retry_snapshot_bypasses_cached_record_state()
     -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let store = CacheLayer::new(inner.clone(), CacheConfig::default());
         let selector = selector(CredentialId::new());
         let created = store.create(&selector, make_credential(b"v1")).await?;
@@ -569,7 +569,7 @@ mod tests {
     #[tokio::test]
     async fn replace_invalidates_cached_value() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             CacheConfig::default(),
         );
         let selector = selector(CredentialId::new());
@@ -592,7 +592,7 @@ mod tests {
     #[tokio::test]
     async fn tombstone_invalidates_cached_live_record() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             CacheConfig::default(),
         );
         let selector = selector(CredentialId::new());
@@ -616,7 +616,7 @@ mod tests {
     #[tokio::test]
     async fn stats_track_hits_and_misses() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             CacheConfig::default(),
         );
         let selector = selector(CredentialId::new());
@@ -636,7 +636,7 @@ mod tests {
     #[tokio::test]
     async fn exists_uses_cache() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             CacheConfig::default(),
         );
         let primary_selector = selector(CredentialId::new());
@@ -658,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn list_passes_through() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             CacheConfig::default(),
         );
         let credential_id = CredentialId::new();
@@ -681,7 +681,7 @@ mod tests {
     async fn cached_row_is_isolated_from_same_id_under_another_owner()
     -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             CacheConfig::default(),
         );
         let credential_id = CredentialId::new();
@@ -722,7 +722,7 @@ mod tests {
     #[tokio::test]
     async fn delayed_cache_fill_cannot_overwrite_a_concurrent_write()
     -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let race_selector = selector(CredentialId::new());
         inner.create(&race_selector, make_credential(b"v1")).await?;
 

@@ -137,6 +137,8 @@ async fn oauth_acquisition_continues_once_after_restart_and_projects_after_reope
 
     // A: use the real acquisition pipeline; never seed protocol pending state.
     let (mut first, first_store) = reopen(database, &provider).await;
+    // Credentials and pending state live under a live workspace.
+    super::provision_file_owner(database, &owner).await;
     let first_controller = controller(&first, &actor, &scope);
     let result = first_controller
         .execute(

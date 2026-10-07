@@ -69,7 +69,7 @@ struct SentinelEventRow {
     generation: u64,
     operation: CredentialOperationKind,
     /// `None` until an adjudication records the provider outcome. This is the
-    /// in-memory analogue of `credential_sentinel_events.adjudicated_at`: an
+    /// in-memory analogue of `credential_refresh_incidents.adjudicated_at`: an
     /// incident without it is unresolved poison.
     adjudication: Option<SentinelAdjudication>,
 }

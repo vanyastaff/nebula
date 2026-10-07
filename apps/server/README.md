@@ -363,33 +363,25 @@ authority through the selected execution storage backend described above.
 
 ## Credential persistence backend
 
-`NEBULA_CRED_DB` independently selects the Plane-B credential database. It
-does not inherit `DATABASE_URL` and never reuses the execution/auth pool:
-credential schema admission, migrations, rows, refresh claims, and sentinel
-evidence have one credential-owned readiness lifecycle.
+Plane-B credentials live in the deployment database the execution backend
+selects (`API_EXECUTION_BACKEND`), beside tenancy: a credential and a pending
+interactive flow belong to a live workspace and are purged with it. There is no
+separate credential database.
 
-| `NEBULA_CRED_DB` | Backend | Deployment |
-|------------------|---------|------------|
-| **unset** | `sqlite://nebula-credentials.db?mode=rwc` | Durable single-process default |
-| `sqlite://…`, `sqlite::memory:`, or a bare relative/absolute/Windows path | SQLite | Single process; the memory form is test/development only |
-| `postgres://…` or `postgresql://…` | PostgreSQL (build with `--features postgres`) | Shared multi-replica production |
+| `API_EXECUTION_BACKEND` | Credential database | Deployment |
+|-------------------------|---------------------|------------|
+| `memory` (default) | the process-local `sqlite::memory:` database that also holds tenancy | Development only; nothing survives a restart |
+| `sqlite` | the `API_EXECUTION_DB_PATH` file | Durable single process |
+| `postgres` | `DATABASE_URL` (build with `--features postgres`) | Shared multi-replica production |
 
-An explicit unsupported URL scheme aborts startup. A malformed PostgreSQL
-locator such as `postgres:…` / `postgresql:…` also aborts instead of being
-interpreted as a SQLite path. Requesting PostgreSQL from a build without the
-`postgres` feature likewise aborts; none of these cases falls back to SQLite or
-memory. Startup diagnostics expose only the backend class and closed error
-taxonomy—database URLs, credentials, and tenant-specific paths are never
-logged.
+The credential store opens on the execution backend's own pool — there is no
+second pool on the deployment database and no credential-specific pool size —
+and runs the same schema admission on it. Startup diagnostics expose only the
+backend class and closed error taxonomy—database URLs, credentials, and
+tenant-specific paths are never logged.
 
-`NEBULA_CRED_DB_MAX_CONNECTIONS` (default `10`) bounds the PostgreSQL credential
-pool. Every credential admission reads the material and its operation status
-through it in one statement, so it caps how many admissions one process runs
-against PostgreSQL at once; past it admissions queue. A value that is not a
-positive integer aborts startup. It has no effect on SQLite.
-
-Plane-B credential persistence and refresh coordination share the same admitted
-private pool for either supported backend. The server creates a unique
+Plane-B credential persistence and refresh coordination share that deployment
+pool for every backend. The server creates a unique
 `nebula-server:<uuid>` replica identity on each process start and retains one
 credential lifecycle runtime until `serve` exits. It immediately reclaims stale
 claims at startup and scans backend-clock expiry pages for refresh work using

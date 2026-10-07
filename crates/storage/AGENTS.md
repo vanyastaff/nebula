@@ -47,8 +47,16 @@
 - `src/credential/refresh_claim/` — ADR-0041 CAS refresh-claim repo (`try_claim`/`heartbeat`/`release`/`reclaim_stuck`); in_memory + sqlite + postgres.
 - `src/credential/layer/` — encryption / audit / cache decorators around credential persistence.
 - `src/credential/{sqlite,postgres}.rs` — ready-store deployment adapters for the owner-bound
-  `CredentialPersistence` port. Paired migration `0039` makes owner and structural record state
-  final invariants; unchecked raw-pool constructors are deliberately unavailable.
+  `CredentialPersistence` port. Migration `0070` files each credential under the workspace its
+  `CredentialOwner` names (`org_id`, `workspace_id`; a partition naming no workspace owns no row)
+  in the deployment database beside tenancy: credentials and pending flows cascade from their
+  workspace (a create requires it live), claims and incidents from their credential, and archived
+  (`deleted_at`) credentials are hidden from every read, write, claim and adjudication.
+  Compositions open the store with `connect_pool` on the deployment pool their execution stores
+  use (admission and migration still run; no second pool, no credential pool size); tests
+  provision tenants through a tenancy store on that same pool. `sqlite::open_memory_deployment`
+  is the in-memory deployment database. `InMemoryCredentialPersistence` (feature
+  `credential-in-memory`) is the reference adapter for tests without a deployment database.
 
 ## Adapter rules (every backend, every new or touched store)
 

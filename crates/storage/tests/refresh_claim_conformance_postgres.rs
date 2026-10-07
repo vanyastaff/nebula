@@ -51,6 +51,13 @@ mod oracle;
 #[path = "support/admission_epoch_claims.rs"]
 mod admission_epoch_claims;
 
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "credentials need only their tenant, not a workflow"
+)]
+mod execution_parents;
+
 use std::{sync::Mutex, time::Duration};
 
 use nebula_storage::credential::refresh_claim::{
@@ -146,10 +153,17 @@ struct PgRefreshClaimFixture {
 impl PgRefreshClaimFixture {
     async fn new(pool: PgPool) -> Self {
         let reclaim_lock = acquire_reclaim_test_lock(&pool).await;
+        let namespace = uuid::Uuid::new_v4().simple().to_string();
+        // Case credentials belong to the namespace's workspace.
+        execution_parents::provision_scope(
+            &nebula_storage::postgres::PgTenantProvisioningStore::new(pool.clone()),
+            &oracle::namespace_scope(&namespace),
+        )
+        .await;
         Self {
             repo: PgRefreshClaimRepo::new(pool.clone()),
             pool,
-            namespace: uuid::Uuid::new_v4().simple().to_string(),
+            namespace,
             injected: Mutex::new(Vec::new()),
             reclaim_lock,
         }
@@ -193,16 +207,22 @@ impl RefreshClaimRepo for PgRefreshClaimFixture {
         ttl: Duration,
         intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
+        // A claim belongs to its credential: file the case credential first.
+        let scope = selector
+            .owner()
+            .scope()
+            .expect("case owners name a workspace");
         sqlx::query(
-            "INSERT INTO credentials (id, owner_id, credential_key, state_kind, state_version, \
-             data, version, material_epoch, admission_epoch, created_at, updated_at, reauth_required, \
-             metadata, record_state) \
-             VALUES ($1, $2, 'test.key', 'test.state', 1, '\\x00', 1, 1, 1, \
+            "INSERT INTO credentials (org_id, workspace_id, id, credential_key, state_kind, \
+             state_version, data, version, material_epoch, admission_epoch, created_at, \
+             updated_at, reauth_required, metadata, record_state) \
+             VALUES ($1, $2, $3, 'test.key', 'test.state', 1, '\\x00', 1, 1, 1, \
                      clock_timestamp(), clock_timestamp(), FALSE, '{}', 'live') \
              ON CONFLICT (id) DO NOTHING",
         )
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
         .execute(&self.pool)
         .await
         .map_err(|_| RepoError::Storage)?;
@@ -268,9 +288,8 @@ impl oracle::RefreshClaimFixture for PgRefreshClaimFixture {
         sqlx::query(
             "UPDATE credential_refresh_claims \
              SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' \
-             WHERE owner_id = $1 AND credential_id = $2",
+             WHERE credential_id = $1",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
         .execute(&self.pool)
         .await
@@ -287,10 +306,8 @@ impl oracle::RefreshClaimFixture for PgRefreshClaimFixture {
 
     async fn incident_count(&self, credential: &CredentialSelector) -> u64 {
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM credential_sentinel_events \
-             WHERE owner_id = $1 AND credential_id = $2",
+            "SELECT COUNT(*) FROM credential_refresh_incidents WHERE credential_id = $1",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
         .fetch_one(&self.pool)
         .await
@@ -308,11 +325,10 @@ impl oracle::RefreshClaimFixture for PgRefreshClaimFixture {
         }
         let micros = i64::try_from(window.as_micros()).map_err(|_| RepoError::InvalidState)?;
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM credential_sentinel_events \
-             WHERE owner_id = $1 AND credential_id = $2 \
-               AND detected_at > clock_timestamp() - ($3 * INTERVAL '1 microsecond')",
+            "SELECT COUNT(*) FROM credential_refresh_incidents \
+             WHERE credential_id = $1 \
+               AND detected_at > clock_timestamp() - ($2 * INTERVAL '1 microsecond')",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
         .bind(micros)
         .fetch_one(&self.pool)
@@ -323,10 +339,9 @@ impl oracle::RefreshClaimFixture for PgRefreshClaimFixture {
 
     async fn resolved_incident_count(&self, credential: &CredentialSelector) -> u64 {
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM credential_sentinel_events \
-             WHERE owner_id = $1 AND credential_id = $2 AND adjudicated_at IS NOT NULL",
+            "SELECT COUNT(*) FROM credential_refresh_incidents \
+             WHERE credential_id = $1 AND adjudicated_at IS NOT NULL",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
         .fetch_one(&self.pool)
         .await
@@ -337,11 +352,10 @@ impl oracle::RefreshClaimFixture for PgRefreshClaimFixture {
     async fn age_incidents(&self, credential: &CredentialSelector, by: Duration) {
         let by_micros = i64::try_from(by.as_micros()).expect("an age fits an i64");
         sqlx::query(
-            "UPDATE credential_sentinel_events \
-             SET detected_at = detected_at - ($3::bigint * INTERVAL '1 microsecond') \
-             WHERE owner_id = $1 AND credential_id = $2",
+            "UPDATE credential_refresh_incidents \
+             SET detected_at = detected_at - ($2::bigint * INTERVAL '1 microsecond') \
+             WHERE credential_id = $1",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
         .bind(by_micros)
         .execute(&self.pool)
@@ -363,7 +377,7 @@ impl oracle::RefreshClaimFixture for PgRefreshClaimFixture {
         );
         let attach = format!(
             "CREATE TRIGGER {trigger} \
-             BEFORE UPDATE ON credential_sentinel_events \
+             BEFORE UPDATE ON credential_refresh_incidents \
              FOR EACH ROW \
              WHEN ( \
                  OLD.adjudicated_at IS NULL \
@@ -394,7 +408,7 @@ impl oracle::RefreshClaimFixture for PgRefreshClaimFixture {
         // The trigger goes first: the function cannot be dropped while a
         // trigger still depends on it.
         sqlx::query(AssertSqlSafe(format!(
-            "DROP TRIGGER IF EXISTS {trigger} ON credential_sentinel_events"
+            "DROP TRIGGER IF EXISTS {trigger} ON credential_refresh_incidents"
         )))
         .execute(&self.pool)
         .await
@@ -413,17 +427,16 @@ impl oracle::RefreshClaimFixture for PgRefreshClaimFixture {
 
     async fn poisoned_claim_exists(&self, credential: &CredentialSelector) -> bool {
         // The predicate the adapter answers `OutcomeUnknown` with: an expired
-        // `sentinel = 1` row, compared against the database clock the adapter
+        // sentinel row, compared against the database clock the adapter
         // compares against.
         let (exists,): (bool,) = sqlx::query_as(
             "SELECT EXISTS ( \
                  SELECT 1 FROM credential_refresh_claims \
-                 WHERE owner_id = $1 AND credential_id = $2 \
+                 WHERE credential_id = $1 \
                    AND expires_at < CURRENT_TIMESTAMP \
-                   AND sentinel = 1 \
+                   AND sentinel \
              )",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
         .fetch_one(&self.pool)
         .await
@@ -487,7 +500,14 @@ async fn admission_fixture() -> Option<PgAdmissionBackend> {
         .await
         .expect("an inspection pool on the private schema");
     Some(PgAdmissionBackend {
-        claims: store.refresh_claim_repo(),
+        claims: {
+            execution_parents::provision_scope(
+                &nebula_storage::postgres::PgTenantProvisioningStore::new(pool.clone()),
+                &admission_epoch_claims::admission_scope(),
+            )
+            .await;
+            store.refresh_claim_repo()
+        },
         store,
         pool,
     })
@@ -510,9 +530,8 @@ impl admission_epoch_claims::AdmissionEpochBackend for PgAdmissionBackend {
         sqlx::query(
             "UPDATE credential_refresh_claims \
              SET expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' \
-             WHERE owner_id = $1 AND credential_id = $2",
+             WHERE credential_id = $1",
         )
-        .bind(selector.owner().as_str())
         .bind(selector.credential_id().to_string())
         .execute(&self.pool)
         .await
@@ -528,9 +547,8 @@ impl admission_epoch_claims::AdmissionEpochBackend for PgAdmissionBackend {
             bool,
         ) = sqlx::query_as(
             "SELECT version, material_epoch, admission_epoch, updated_at::text, reauth_required \
-             FROM credentials WHERE owner_id = $1 AND id = $2",
+             FROM credentials WHERE id = $1",
         )
-        .bind(selector.owner().as_str())
         .bind(selector.credential_id().to_string())
         .fetch_one(&self.pool)
         .await
@@ -546,11 +564,9 @@ impl admission_epoch_claims::AdmissionEpochBackend for PgAdmissionBackend {
 
     async fn force_admission_epoch(&self, selector: &CredentialSelector, epoch: i64) {
         let updated = sqlx::query(
-            "UPDATE credentials SET admission_epoch = $1 \
-             WHERE owner_id = $2 AND id = $3 AND record_state = 'live'",
+            "UPDATE credentials SET admission_epoch = $1 WHERE id = $2 AND record_state = 'live'",
         )
         .bind(epoch)
-        .bind(selector.owner().as_str())
         .bind(selector.credential_id().to_string())
         .execute(&self.pool)
         .await
@@ -623,10 +639,8 @@ async fn threshold_incident_atomically_advances_reauth_authority_once() {
     let row: CredentialAuthorityRow = sqlx::query_as(
         "SELECT reauth_required, version, material_epoch, refresh_retry_mode, \
              refresh_retry_not_before, refresh_retry_phase, refresh_retry_kind, \
-             refresh_retry_diagnostic_code FROM credentials \
-             WHERE owner_id = $1 AND id = $2",
+             refresh_retry_diagnostic_code FROM credentials WHERE id = $1",
     )
-    .bind(selector.owner().as_str())
     .bind(selector.credential_id().to_string())
     .fetch_one(&fixture.pool)
     .await

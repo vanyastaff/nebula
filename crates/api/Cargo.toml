@@ -133,8 +133,8 @@ nebula-api = { path = ".", features = ["test-util"] }
 nebula-plugin = { path = "../plugin", features = ["test-util"] }
 semver = { workspace = true }
 # Dev-only: api tests build a `CredentialService` over a unique in-memory SQLite
-# database via `SqliteCredentialPersistence::connect_memory`; `test-util` exposes that
-# constructor. `sqlite`/`credential-in-memory` already come from the normal dep;
+# deployment database via `TenantProvisionedStore::memory`; `test-util` exposes that
+# fixture. `sqlite`/`credential-in-memory` already come from the normal dep;
 # The first-party release composition does not enable `test-util`; enabling it
 # for a production build is unsupported (ADR-0023).
 nebula-storage = { path = "../storage" }

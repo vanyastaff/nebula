@@ -24,7 +24,7 @@ use nebula_worker_bin::compose::{
     ComposeError, ResourceFanoutInputs, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
 };
 use nebula_worker_bin::credential_projection::{
-    CredentialProjectionCompositionError, compose_first_party_projection,
+    CredentialProjectionCompositionError, DeploymentDatabase, compose_first_party_projection,
 };
 
 /// Top-level error union for the worker binary startup.
@@ -125,6 +125,19 @@ pub(crate) enum WorkerRunError {
     Signal(#[from] std::io::Error),
 }
 
+/// The durable store bundle, plus the deployment pool the credential
+/// projection shares with it.
+type WorkerStores = (
+    ExecutionStores,
+    Arc<dyn ControlQueue>,
+    Arc<dyn ExecutionTurnHandoff>,
+    Arc<dyn TurnRecovery>,
+    Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
+    Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+    ResourceFanoutInputs,
+    DeploymentDatabase,
+);
+
 /// Build the durable store bundle for the configured backend.
 ///
 /// When `config.database_url` is `None`, the SQLite path is used (WAL +
@@ -142,18 +155,7 @@ pub(crate) enum WorkerRunError {
 async fn build_stores(
     config: &WorkerConfig,
     metrics: &nebula_metrics::MetricsRegistry,
-) -> Result<
-    (
-        ExecutionStores,
-        Arc<dyn ControlQueue>,
-        Arc<dyn ExecutionTurnHandoff>,
-        Arc<dyn TurnRecovery>,
-        Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
-        Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
-        ResourceFanoutInputs,
-    ),
-    WorkerRunError,
-> {
+) -> Result<WorkerStores, WorkerRunError> {
     if let Some(dsn) = config.database_url.as_deref() {
         return build_pg_stores(dsn, metrics).await;
     }
@@ -223,6 +225,7 @@ async fn build_stores(
         catalog,
         bundles,
         resource_fanout,
+        DeploymentDatabase::Sqlite(pool),
     ))
 }
 
@@ -240,18 +243,7 @@ async fn build_stores(
 async fn build_pg_stores(
     dsn: &str,
     metrics: &nebula_metrics::MetricsRegistry,
-) -> Result<
-    (
-        ExecutionStores,
-        Arc<dyn ControlQueue>,
-        Arc<dyn ExecutionTurnHandoff>,
-        Arc<dyn TurnRecovery>,
-        Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
-        Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
-        ResourceFanoutInputs,
-    ),
-    WorkerRunError,
-> {
+) -> Result<WorkerStores, WorkerRunError> {
     use nebula_storage::postgres::{
         PgCheckpointStore, PgControlQueue, PgExecutionStore, PgIdempotencyGuard, PgJournalReader,
         PgOperationLedger, PgResourceRuntime, PgResumeTokenStore, PgTurnHandoff, PgWorkflowStore,
@@ -334,6 +326,7 @@ async fn build_pg_stores(
         catalog,
         bundles,
         resource_fanout,
+        DeploymentDatabase::Postgres(pool),
     ))
 }
 
@@ -348,18 +341,7 @@ async fn build_pg_stores(
 async fn build_pg_stores(
     _dsn: &str,
     _metrics: &nebula_metrics::MetricsRegistry,
-) -> Result<
-    (
-        ExecutionStores,
-        Arc<dyn ControlQueue>,
-        Arc<dyn ExecutionTurnHandoff>,
-        Arc<dyn TurnRecovery>,
-        Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
-        Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
-        ResourceFanoutInputs,
-    ),
-    WorkerRunError,
-> {
+) -> Result<WorkerStores, WorkerRunError> {
     Err(WorkerRunError::PostgresFeatureNotEnabled)
 }
 
@@ -380,7 +362,6 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     tracing::info!("nebula-worker (core flavor) starting");
 
     let config = WorkerConfig::from_env()?;
-    let credential_resolver = compose_first_party_projection().await?;
 
     // Log the active backend. Only emit `db_path` on the SQLite path — on the
     // Postgres path it is the ignored default "nebula-worker.db" and emitting
@@ -405,7 +386,11 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
         catalog,
         bundles,
         resource_fanout,
+        deployment_database,
     ) = build_stores(&config, &metrics).await?;
+    // Credentials live in the deployment database beside executions and
+    // share its pool.
+    let credential_resolver = compose_first_party_projection(&deployment_database).await?;
 
     // Assemble the core-flavor builder (boots CorePlugin + wires into engine).
     let (builder, _metrics, plugin_key) = build_core_flavor_runtime(
@@ -559,9 +544,23 @@ mod tests {
             catalog,
             bundles,
             resource_fanout,
+            deployment_database,
         ) = build_stores(&config, &metrics)
             .await
             .expect("SQLite backend bootstrap must succeed");
+        // The SQLite backend hands its own pool to the credential projection.
+        #[cfg_attr(
+            not(feature = "postgres"),
+            expect(
+                clippy::infallible_destructuring_match,
+                reason = "without postgres the deployment database has only the SQLite variant"
+            )
+        )]
+        let pool = match deployment_database {
+            nebula_worker_bin::credential_projection::DeploymentDatabase::Sqlite(pool) => pool,
+            #[cfg(feature = "postgres")]
+            other => panic!("expected the SQLite deployment pool, got {other:?}"),
+        };
         let (builder, _, _) = nebula_worker_bin::compose::build_core_flavor_runtime(
             execution_stores,
             turn_handoff,
@@ -574,9 +573,9 @@ mod tests {
                 bundles,
                 credential_resolver: {
                     let store =
-                        nebula_storage::credential::SqliteCredentialPersistence::connect_memory()
+                        nebula_storage::credential::SqliteCredentialPersistence::connect_pool(pool)
                             .await
-                            .expect("ready in-memory credential store");
+                            .expect("credential store on the deployment pool");
                     let key_provider: std::sync::Arc<dyn nebula_storage::credential::KeyProvider> =
                         std::sync::Arc::new(
                             nebula_storage::credential::EnvKeyProvider::from_base64(

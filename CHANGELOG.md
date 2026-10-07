@@ -11,6 +11,24 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Credentials live in the deployment database (migration 0070).** The
+  credential store, refresh claims, refresh incidents (renamed
+  `credential_refresh_incidents`) and pending interactions move onto the
+  database standard and into the tenancy/execution database, with a
+  `(org_id, workspace_id)` foreign key to `workspaces` (`ON DELETE CASCADE`).
+  Creating a credential or a pending interaction requires a live workspace
+  (otherwise `NotFound`); archived credentials are unusable, and adjudicating
+  one is refused with `RefreshClaimAdjudicationError::AggregateUnavailable`.
+  `NEBULA_CRED_DB`, its `nebula-credentials.db` default and
+  `NEBULA_CRED_DB_MAX_CONNECTIONS` are removed with no fallback: server and
+  worker open credentials on the execution backend's own deployment pool
+  (`API_EXECUTION_BACKEND` / `DATABASE_URL`) — no second pool on the same
+  database. Storage API: `SqliteCredentialPersistence::connect_pool` and
+  `PgCredentialPersistence::connect_pool` take that pool;
+  `PgCredentialPersistence::connect_sized` / `connect_with_sized` and
+  `DEFAULT_CREDENTIAL_POOL_SIZE` are removed; `sqlite::open_memory_deployment`
+  opens the in-memory deployment database. Reset local databases.
+
 - **Journaled agent turns and recorded reads (experimental); development
   packages advance to 0.32.0 in lockstep.** A default-contract
   (`Journaled`) agent action on a durable turn now runs under its node's

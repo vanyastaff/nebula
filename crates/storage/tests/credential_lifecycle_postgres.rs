@@ -6,6 +6,13 @@
 
 #![cfg(feature = "postgres")]
 
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "credentials need only their tenant, not a workflow"
+)]
+mod execution_parents;
+
 use std::{
     error::Error,
     str::FromStr,
@@ -100,8 +107,37 @@ fn unique_schema_name() -> String {
     format!("nebula_credential_lifecycle_{}_{nanos}", std::process::id())
 }
 
+/// Every tenant this suite files credentials under.
+const TENANTS: &[&str] = &[
+    "tenant-a",
+    "tenant-b",
+    "tenant-corrupt",
+    "tenant-concurrency",
+    "tenant-concurrency-a",
+    "tenant-concurrency-b",
+    "tenant-retry",
+];
+
+/// Provision [`TENANTS`] on the deployment `pool`: a credential belongs to a
+/// live workspace (migration 0070).
+async fn provision(pool: &PgPool) {
+    let tenants = nebula_storage::postgres::PgTenantProvisioningStore::new(pool.clone());
+    for label in TENANTS {
+        execution_parents::provision_scope(
+            &tenants,
+            &nebula_storage_port::Scope::new(format!("ws-{label}"), format!("org-{label}")),
+        )
+        .await;
+    }
+}
+
+/// The owner partition of workspace `ws-<value>` in `org-<value>`: credentials
+/// are filed under the workspace their owner names.
 fn owner(value: &str) -> CredentialOwner {
-    CredentialOwner::from_canonical(value)
+    CredentialOwner::from_scope(&nebula_storage_port::Scope::new(
+        format!("ws-{value}"),
+        format!("org-{value}"),
+    ))
 }
 
 fn selector(owner: &CredentialOwner, credential_id: CredentialId) -> CredentialSelector {
@@ -170,6 +206,7 @@ async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() ->
         );
     };
     let store = PgCredentialPersistence::connect_with(database.options.clone()).await?;
+    provision(&database.pool).await;
     let owner_a = owner("tenant-a");
     let owner_b = owner("tenant-b");
 
@@ -232,9 +269,8 @@ async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() ->
     sqlx::query(
         "UPDATE credentials
          SET metadata = '{\"display\":\"not-an-object\"}'
-         WHERE owner_id = $1 AND id = $2",
+         WHERE id = $1",
     )
-    .bind(corrupt_owner.as_str())
     .bind(corrupt_id.to_string())
     .execute(&database.pool)
     .await?;
@@ -248,9 +284,8 @@ async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() ->
     sqlx::query(
         "UPDATE credentials
          SET metadata = '{}'
-         WHERE owner_id = $1 AND id = $2",
+         WHERE id = $1",
     )
-    .bind(corrupt_owner.as_str())
     .bind(corrupt_id.to_string())
     .execute(&database.pool)
     .await?;
@@ -433,10 +468,9 @@ async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() ->
     sqlx::query(
         "UPDATE credentials
          SET data = $1, version = version + 1
-         WHERE owner_id = $2 AND id = $3",
+         WHERE id = $2",
     )
     .bind(b"uncommitted".as_slice())
-    .bind(owner_a.as_str())
     .bind(restart_live_id.to_string())
     .execute(&mut *interrupted)
     .await?;
@@ -459,9 +493,8 @@ async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() ->
     sqlx::query(
         "UPDATE credentials
          SET version = 9223372036854775806
-         WHERE owner_id = $1 AND id = $2",
+         WHERE id = $1",
     )
-    .bind(owner_a.as_str())
     .bind(exhausted_id.to_string())
     .execute(&database.pool)
     .await?;
@@ -532,6 +565,7 @@ async fn postgres_concurrent_mutations_have_one_linear_winner() -> TestResult<()
         );
     };
     let store = PgCredentialPersistence::connect_with(database.options.clone()).await?;
+    provision(&database.pool).await;
     let credential_owner = owner("tenant-concurrency");
 
     let replace_id = CredentialId::new();
@@ -773,6 +807,7 @@ async fn postgres_does_not_retry_an_ambiguous_database_failure() -> TestResult<(
         );
     };
     let store = PgCredentialPersistence::connect_with(database.options.clone()).await?;
+    provision(&database.pool).await;
     let credential_owner = owner("tenant-retry");
     let credential_id = CredentialId::new();
     let credential_selector = selector(&credential_owner, credential_id);

@@ -2,13 +2,13 @@
 //!
 //! Every case runs against a fresh in-memory database whose schema comes from
 //! the ordered migration catalog, so the adapter is exercised against the real
-//! `credential_refresh_claims` and `credential_sentinel_events` constraints —
-//! including the incident-identity index migration 0039 installs and the
-//! resolution columns migration 0053 adds.
+//! `credential_refresh_claims` and `credential_refresh_incidents` constraints
+//! of migration 0070: a claim and its incidents belong to a credential, so the
+//! fixture files each case credential before its first claim.
 //!
 //! SQLite is its own lease-clock authority: expiry is decided in the database,
 //! not by the test process, so this fixture backdates rows rather than moving a
-//! clock. `expires_at` is `INTEGER` milliseconds here, which is also the unit
+//! clock. Instants are `INTEGER` microseconds here, which is also the unit
 //! `age_incidents` shifts incident rows by.
 //!
 //! The failure-injection case is real on this backend: a test-only `BEFORE
@@ -37,6 +37,13 @@ use oracle::RefreshClaimFixture as _;
 #[macro_use]
 #[path = "support/admission_epoch_claims.rs"]
 mod admission_epoch_claims;
+
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "credentials need only their tenant, not a workflow"
+)]
+mod execution_parents;
 
 use std::{str::FromStr, sync::Mutex, time::Duration};
 
@@ -90,10 +97,17 @@ struct SqliteRefreshClaimFixture {
 impl SqliteRefreshClaimFixture {
     async fn new() -> Self {
         let pool = fresh_pool().await;
+        let namespace = uuid::Uuid::new_v4().simple().to_string();
+        // Case credentials belong to the namespace's workspace.
+        execution_parents::provision_scope(
+            &nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone()),
+            &oracle::namespace_scope(&namespace),
+        )
+        .await;
         Self {
             repo: SqliteRefreshClaimRepo::new(pool.clone()),
             pool,
-            namespace: uuid::Uuid::new_v4().simple().to_string(),
+            namespace,
             injected: Mutex::new(Vec::new()),
         }
     }
@@ -133,15 +147,22 @@ impl RefreshClaimRepo for SqliteRefreshClaimFixture {
         ttl: Duration,
         intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
+        // A claim belongs to its credential: file the case credential first.
+        let scope = selector
+            .owner()
+            .scope()
+            .expect("case owners name a workspace");
         sqlx::query(
-            "INSERT OR IGNORE INTO credentials (id, owner_id, credential_key, state_kind, \
-             state_version, data, version, material_epoch, created_at, updated_at, \
-             reauth_required, metadata, record_state) \
-             VALUES (?1, ?2, 'test.key', 'test.state', 1, X'00', 1, 1, ?3, ?3, 0, '{}', 'live')",
+            "INSERT OR IGNORE INTO credentials (org_id, workspace_id, id, credential_key, \
+             state_kind, state_version, data, version, material_epoch, admission_epoch, \
+             created_at, updated_at, reauth_required, metadata, record_state) \
+             VALUES (?1, ?2, ?3, 'test.key', 'test.state', 1, X'00', 1, 1, 1, ?4, ?4, 0, '{}', \
+                     'live')",
         )
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
-        .bind(Utc::now().timestamp_millis())
+        .bind(Utc::now().timestamp_micros())
         .execute(&self.pool)
         .await
         .map_err(|_| RepoError::Storage)?;
@@ -204,14 +225,11 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
     }
 
     async fn expire_claims(&self, credential: &CredentialSelector) {
-        let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_millis();
+        let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_micros();
         sqlx::query(
-            "UPDATE credential_refresh_claims \
-             SET expires_at = ?1 \
-             WHERE owner_id = ?2 AND credential_id = ?3",
+            "UPDATE credential_refresh_claims SET expires_at = ?1 WHERE credential_id = ?2",
         )
         .bind(expired_at)
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
         .execute(&self.pool)
         .await
@@ -228,10 +246,8 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
 
     async fn incident_count(&self, credential: &CredentialSelector) -> u64 {
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM credential_sentinel_events \
-             WHERE owner_id = ?1 AND credential_id = ?2",
+            "SELECT COUNT(*) FROM credential_refresh_incidents WHERE credential_id = ?1",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
         .fetch_one(&self.pool)
         .await
@@ -247,16 +263,15 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
         if window.is_zero() {
             return Ok(0);
         }
-        let window_ms = i64::try_from(window.as_millis()).map_err(|_| RepoError::InvalidState)?;
+        let window_us = i64::try_from(window.as_micros()).map_err(|_| RepoError::InvalidState)?;
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM credential_sentinel_events \
-             WHERE owner_id = ?1 AND credential_id = ?2 \
-               AND detected_at > (unixepoch('now') * 1000 \
-                 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) - ?3)",
+            "SELECT COUNT(*) FROM credential_refresh_incidents \
+             WHERE credential_id = ?1 \
+               AND detected_at > (unixepoch('now') * 1000000 \
+                 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) * 1000 - ?2)",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
-        .bind(window_ms)
+        .bind(window_us)
         .fetch_one(&self.pool)
         .await
         .map_err(|_| RepoError::Storage)?;
@@ -265,10 +280,9 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
 
     async fn resolved_incident_count(&self, credential: &CredentialSelector) -> u64 {
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM credential_sentinel_events \
-             WHERE owner_id = ?1 AND credential_id = ?2 AND adjudicated_at IS NOT NULL",
+            "SELECT COUNT(*) FROM credential_refresh_incidents \
+             WHERE credential_id = ?1 AND adjudicated_at IS NOT NULL",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
         .fetch_one(&self.pool)
         .await
@@ -277,14 +291,13 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
     }
 
     async fn age_incidents(&self, credential: &CredentialSelector, by: Duration) {
-        let by_ms = i64::try_from(by.as_millis()).expect("an age fits an i64");
+        let by_us = i64::try_from(by.as_micros()).expect("an age fits an i64");
         sqlx::query(
-            "UPDATE credential_sentinel_events \
+            "UPDATE credential_refresh_incidents \
              SET detected_at = detected_at - ?1 \
-             WHERE owner_id = ?2 AND credential_id = ?3",
+             WHERE credential_id = ?2",
         )
-        .bind(by_ms)
-        .bind(credential.owner().as_str())
+        .bind(by_us)
         .bind(credential.credential_id().to_string())
         .execute(&self.pool)
         .await
@@ -297,7 +310,7 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
         // credential, and the body's only other literal is that same value.
         let create = format!(
             "CREATE TRIGGER {name} \
-             BEFORE UPDATE ON credential_sentinel_events \
+             BEFORE UPDATE ON credential_refresh_incidents \
              WHEN OLD.adjudicated_at IS NULL \
                AND NEW.adjudicated_at IS NOT NULL \
                AND OLD.credential_id = '{}' \
@@ -337,17 +350,15 @@ impl oracle::RefreshClaimFixture for SqliteRefreshClaimFixture {
     async fn poisoned_claim_exists(&self, credential: &CredentialSelector) -> bool {
         // Character for character the predicate the adapter answers
         // `OutcomeUnknown` with: an expired `sentinel = 1` row, compared
-        // against the same millisecond clock the adapter binds.
+        // against the same microsecond clock the adapter binds.
         let (exists,): (i64,) = sqlx::query_as(
             "SELECT EXISTS ( \
                  SELECT 1 FROM credential_refresh_claims \
-                 WHERE owner_id = ?1 AND credential_id = ?2 \
-                   AND expires_at < ?3 AND sentinel = 1 \
+                 WHERE credential_id = ?1 AND expires_at < ?2 AND sentinel = 1 \
              )",
         )
-        .bind(credential.owner().as_str())
         .bind(credential.credential_id().to_string())
-        .bind(Utc::now().timestamp_millis())
+        .bind(Utc::now().timestamp_micros())
         .fetch_one(&self.pool)
         .await
         .expect("reading the poison predicate must not fail");
@@ -380,7 +391,14 @@ async fn admission_fixture() -> Option<SqliteAdmissionBackend> {
         .await
         .expect("an inspection pool on the same file");
     Some(SqliteAdmissionBackend {
-        claims: store.refresh_claim_repo(),
+        claims: {
+            execution_parents::provision_scope(
+                &nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone()),
+                &admission_epoch_claims::admission_scope(),
+            )
+            .await;
+            store.refresh_claim_repo()
+        },
         store,
         pool,
         _directory: directory,
@@ -401,13 +419,11 @@ impl admission_epoch_claims::AdmissionEpochBackend for SqliteAdmissionBackend {
     }
 
     async fn expire_claim(&self, selector: &CredentialSelector) {
-        let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_millis();
+        let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_micros();
         sqlx::query(
-            "UPDATE credential_refresh_claims SET expires_at = ?1 \
-             WHERE owner_id = ?2 AND credential_id = ?3",
+            "UPDATE credential_refresh_claims SET expires_at = ?1 WHERE credential_id = ?2",
         )
         .bind(expired_at)
-        .bind(selector.owner().as_str())
         .bind(selector.credential_id().to_string())
         .execute(&self.pool)
         .await
@@ -424,9 +440,8 @@ impl admission_epoch_claims::AdmissionEpochBackend for SqliteAdmissionBackend {
         ) = sqlx::query_as(
             "SELECT version, material_epoch, admission_epoch, CAST(updated_at AS TEXT), \
                     reauth_required \
-             FROM credentials WHERE owner_id = ?1 AND id = ?2",
+             FROM credentials WHERE id = ?1",
         )
-        .bind(selector.owner().as_str())
         .bind(selector.credential_id().to_string())
         .fetch_one(&self.pool)
         .await
@@ -442,11 +457,9 @@ impl admission_epoch_claims::AdmissionEpochBackend for SqliteAdmissionBackend {
 
     async fn force_admission_epoch(&self, selector: &CredentialSelector, epoch: i64) {
         let updated = sqlx::query(
-            "UPDATE credentials SET admission_epoch = ?1 \
-             WHERE owner_id = ?2 AND id = ?3 AND record_state = 'live'",
+            "UPDATE credentials SET admission_epoch = ?1 WHERE id = ?2 AND record_state = 'live'",
         )
         .bind(epoch)
-        .bind(selector.owner().as_str())
         .bind(selector.credential_id().to_string())
         .execute(&self.pool)
         .await
@@ -518,10 +531,8 @@ async fn threshold_incident_atomically_advances_reauth_authority_once() {
     let row: CredentialAuthorityRow = sqlx::query_as(
         "SELECT reauth_required, version, material_epoch, refresh_retry_mode, \
              refresh_retry_not_before, refresh_retry_phase, refresh_retry_kind, \
-             refresh_retry_diagnostic_code FROM credentials \
-             WHERE owner_id = ?1 AND id = ?2",
+             refresh_retry_diagnostic_code FROM credentials WHERE id = ?1",
     )
-    .bind(selector.owner().as_str())
     .bind(selector.credential_id().to_string())
     .fetch_one(&fixture.pool)
     .await

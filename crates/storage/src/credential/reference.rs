@@ -1,7 +1,10 @@
 //! In-process reference implementation of the credential lifecycle contract.
 //!
-//! This adapter is a deterministic semantic oracle for tests and conformance.
-//! It is not a deployment backend and is compiled only for this crate's tests.
+//! This adapter is the deterministic semantic oracle for tests and
+//! conformance, and, behind `credential-in-memory`, the credential store of a
+//! deployment without a database (the memory execution backend). It keeps no
+//! claim ledger and checks no workspace: like every in-memory store it trusts
+//! the API's tenant resolution for references between aggregates.
 
 use std::{collections::HashMap, fmt, sync::Arc};
 
@@ -44,14 +47,14 @@ impl OwnedRecord {
 /// Test/reference credential persistence with the same lifecycle semantics as
 /// the SQL adapters.
 #[derive(Clone, Default)]
-pub(crate) struct ReferenceCredentialPersistence {
+pub struct ReferenceCredentialPersistence {
     records: Arc<Mutex<HashMap<CredentialId, OwnedRecord>>>,
 }
 
 impl ReferenceCredentialPersistence {
     /// Construct an empty reference store.
     #[must_use]
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 

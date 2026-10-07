@@ -2,6 +2,16 @@
 
 #![cfg(feature = "sqlite")]
 
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "credentials need only their tenant, not a workflow"
+)]
+mod execution_parents;
+
+#[path = "support/credential_deployment.rs"]
+mod credential_deployment;
+
 use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage::credential::SqliteCredentialPersistence;
@@ -72,6 +82,56 @@ fn version(value: i64) -> CredentialVersion {
     CredentialVersion::try_from(value).expect("fixture version must satisfy the port invariant")
 }
 
+/// Every tenant this suite files credentials under.
+const TENANTS: &[&str] = &[
+    "tenant-lifecycle",
+    "tenant-unnamed",
+    "tenant-display",
+    "tenant-opaque-revoked-at",
+    "tenant-create",
+    "tenant-foreign",
+    "tenant-cas",
+    "tenant-cas-foreign",
+    "tenant-races",
+    "tenant-interrupted",
+    "tenant-headroom",
+    "tenant-corrupt",
+];
+
+/// Provision [`TENANTS`] through `tenants`: a credential belongs to a live
+/// workspace (migration 0070).
+async fn provision(tenants: &dyn nebula_storage_port::store::TenantProvisioningStore) {
+    for label in TENANTS {
+        execution_parents::provision_scope(
+            tenants,
+            &nebula_storage_port::Scope::new(format!("ws-{label}"), format!("org-{label}")),
+        )
+        .await;
+    }
+}
+
+/// Provision [`TENANTS`] in the admitted SQLite database at `url`.
+async fn provision_file(url: &str) {
+    provision(&credential_deployment::file_tenants(url).await).await;
+}
+
+/// A store on a fresh in-memory deployment database with [`TENANTS`]
+/// provisioned.
+async fn memory_store() -> SqliteCredentialPersistence {
+    let (store, tenants) = credential_deployment::memory_deployment().await;
+    provision(&tenants).await;
+    store
+}
+
+/// The owner partition of workspace `ws-<label>` in `org-<label>`: credentials
+/// are filed under the workspace their owner names.
+fn tenant_owner(label: &str) -> CredentialOwner {
+    CredentialOwner::from_scope(&nebula_storage_port::Scope::new(
+        format!("ws-{label}"),
+        format!("org-{label}"),
+    ))
+}
+
 fn selector(owner: &CredentialOwner, credential_id: CredentialId) -> CredentialSelector {
     CredentialSelector::new(owner.clone(), credential_id)
 }
@@ -85,12 +145,13 @@ async fn lifecycle_is_structural_live_only_and_restart_durable() {
     let directory = tempfile::tempdir().expect("temporary directory must be created");
     let path = directory.path().join("credential-lifecycle.sqlite");
     let url = file_url(&path);
-    let owner = CredentialOwner::from_canonical("tenant-lifecycle");
+    let owner = tenant_owner("tenant-lifecycle");
     let credential_id = CredentialId::new();
     let selector = selector(&owner, credential_id);
     let store = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("fresh credential database must become ready");
+    provision_file(&url).await;
 
     let created = store
         .create(&selector, create(Some("Primary"), b"secret-v1"))
@@ -236,10 +297,10 @@ async fn lifecycle_is_structural_live_only_and_restart_durable() {
     ) = sqlx::query_as(
         "SELECT length(data), name, expires_at, reauth_required, metadata, \
          record_state, tombstoned_at \
-         FROM credentials WHERE id = ?1 AND owner_id = ?2",
+         FROM credentials WHERE id = ?1 AND org_id = 'org-tenant-lifecycle' \
+           AND workspace_id = 'ws-tenant-lifecycle'",
     )
     .bind(credential_id.to_string())
-    .bind(owner.as_str())
     .fetch_one(&raw_pool)
     .await
     .expect("terminal durable row must be inspectable");
@@ -252,7 +313,7 @@ async fn lifecycle_is_structural_live_only_and_restart_durable() {
             0,
             "{}".to_owned(),
             "tombstoned".to_owned(),
-            Some(tombstone.tombstoned_at().timestamp_millis()),
+            Some(tombstone.tombstoned_at().timestamp_micros()),
         )
     );
     raw_pool.close().await;
@@ -324,10 +385,8 @@ async fn lifecycle_is_structural_live_only_and_restart_durable() {
 
 #[tokio::test]
 async fn unnamed_zero_length_live_credential_is_valid() {
-    let store = SqliteCredentialPersistence::connect_memory()
-        .await
-        .expect("memory credential database must become ready");
-    let owner = CredentialOwner::from_canonical("tenant-unnamed");
+    let store = memory_store().await;
+    let owner = tenant_owner("tenant-unnamed");
     let credential_id = CredentialId::new();
     let primary_selector = selector(&owner, credential_id);
 
@@ -399,10 +458,8 @@ async fn unnamed_zero_length_live_credential_is_valid() {
 
 #[tokio::test]
 async fn malformed_or_mismatched_display_projection_is_rejected_before_write() {
-    let store = SqliteCredentialPersistence::connect_memory()
-        .await
-        .expect("memory credential database must become ready");
-    let owner = CredentialOwner::from_canonical("tenant-display");
+    let store = memory_store().await;
+    let owner = tenant_owner("tenant-display");
 
     let mismatched_id = CredentialId::new();
     let mismatched_selector = selector(&owner, mismatched_id);
@@ -540,7 +597,7 @@ async fn current_live_revoked_at_metadata_is_opaque_across_restart() {
     let directory = tempfile::tempdir().expect("temporary directory must be created");
     let path = directory.path().join("opaque-revoked-at.sqlite");
     let url = file_url(&path);
-    let owner = CredentialOwner::from_canonical("tenant-opaque-revoked-at");
+    let owner = tenant_owner("tenant-opaque-revoked-at");
     let credential_id = CredentialId::new();
     let selector = selector(&owner, credential_id);
     let mut opaque_metadata = metadata("Opaque");
@@ -552,6 +609,7 @@ async fn current_live_revoked_at_metadata_is_opaque_across_restart() {
     let store = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("fresh credential database must become ready");
+    provision_file(&url).await;
     store
         .create(
             &selector,
@@ -587,11 +645,9 @@ async fn current_live_revoked_at_metadata_is_opaque_across_restart() {
 
 #[tokio::test]
 async fn create_conflicts_follow_the_frozen_information_safe_precedence() {
-    let store = SqliteCredentialPersistence::connect_memory()
-        .await
-        .expect("memory credential database must become ready");
-    let owner = CredentialOwner::from_canonical("tenant-create");
-    let foreign_owner = CredentialOwner::from_canonical("tenant-foreign");
+    let store = memory_store().await;
+    let owner = tenant_owner("tenant-create");
+    let foreign_owner = tenant_owner("tenant-foreign");
     let first_id = CredentialId::new();
     let second_id = CredentialId::new();
     let first = selector(&owner, first_id);
@@ -661,8 +717,9 @@ async fn mutation_precedence_and_concurrent_cas_are_deterministic() {
     let store = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("file credential database must become ready");
-    let owner = CredentialOwner::from_canonical("tenant-cas");
-    let foreign_owner = CredentialOwner::from_canonical("tenant-cas-foreign");
+    provision_file(&url).await;
+    let owner = tenant_owner("tenant-cas");
+    let foreign_owner = tenant_owner("tenant-cas-foreign");
     let credential_id = CredentialId::new();
     let primary_selector = selector(&owner, credential_id);
     let foreign_selector = selector(&foreign_owner, credential_id);
@@ -788,10 +845,11 @@ async fn barrier_synchronized_two_connection_lifecycle_races_have_one_winner() {
     let left = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("first independent store must connect");
+    provision_file(&url).await;
     let right = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("second independent store must connect");
-    let owner = CredentialOwner::from_canonical("tenant-races");
+    let owner = tenant_owner("tenant-races");
     let credential_id = CredentialId::new();
     let selector = selector(&owner, credential_id);
 
@@ -961,7 +1019,8 @@ async fn interrupted_uncommitted_transaction_preserves_the_prior_row() {
     let store = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("credential store must become ready");
-    let owner = CredentialOwner::from_canonical("tenant-interrupted");
+    provision_file(&url).await;
+    let owner = tenant_owner("tenant-interrupted");
     let credential_id = CredentialId::new();
     let selector = selector(&owner, credential_id);
     store
@@ -985,18 +1044,16 @@ async fn interrupted_uncommitted_transaction_preserves_the_prior_row() {
     sqlx::query(
         "UPDATE credentials
          SET data = ?1, version = 2
-         WHERE id = ?2 AND owner_id = ?3 AND record_state = 'live' AND version = 1",
+         WHERE id = ?2 AND record_state = 'live' AND version = 1",
     )
     .bind(b"uncommitted-version-two".as_slice())
     .bind(credential_id.to_string())
-    .bind(owner.as_str())
     .execute(&mut *transaction)
     .await
     .expect("uncommitted fixture update must execute");
     let transactional_version: i64 =
-        sqlx::query_scalar("SELECT version FROM credentials WHERE id = ?1 AND owner_id = ?2")
+        sqlx::query_scalar("SELECT version FROM credentials WHERE id = ?1")
             .bind(credential_id.to_string())
-            .bind(owner.as_str())
             .fetch_one(&mut *transaction)
             .await
             .expect("transaction must observe its own uncommitted write");
@@ -1026,12 +1083,13 @@ async fn live_version_headroom_is_reserved_for_terminal_tombstone() {
     let directory = tempfile::tempdir().expect("temporary directory must be created");
     let path = directory.path().join("credential-version-headroom.sqlite");
     let url = file_url(&path);
-    let owner = CredentialOwner::from_canonical("tenant-headroom");
+    let owner = tenant_owner("tenant-headroom");
     let credential_id = CredentialId::new();
     let selector = selector(&owner, credential_id);
     let store = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("fresh credential database must become ready");
+    provision_file(&url).await;
     store
         .create(&selector, create(Some("Headroom"), b"seed"))
         .await
@@ -1046,15 +1104,12 @@ async fn live_version_headroom_is_reserved_for_terminal_tombstone() {
         .connect_with(options)
         .await
         .expect("raw fixture pool must open");
-    sqlx::query(
-        "UPDATE credentials SET version = ?1 WHERE id = ?2 AND owner_id = ?3 AND record_state = 'live'",
-    )
-    .bind(i64::MAX - 1)
-    .bind(credential_id.to_string())
-    .bind(owner.as_str())
-    .execute(&raw_pool)
-    .await
-    .expect("fixture must move the live row to the last live version");
+    sqlx::query("UPDATE credentials SET version = ?1 WHERE id = ?2 AND record_state = 'live'")
+        .bind(i64::MAX - 1)
+        .bind(credential_id.to_string())
+        .execute(&raw_pool)
+        .await
+        .expect("fixture must move the live row to the last live version");
     raw_pool.close().await;
 
     let last_live = version(i64::MAX - 1);
@@ -1081,12 +1136,13 @@ async fn persisted_malformed_projection_is_rejected_as_corrupt() {
     let directory = tempfile::tempdir().expect("temporary directory must be created");
     let path = directory.path().join("credential-corrupt-row.sqlite");
     let url = file_url(&path);
-    let owner = CredentialOwner::from_canonical("tenant-corrupt");
+    let owner = tenant_owner("tenant-corrupt");
     let credential_id = CredentialId::new();
     let selector = selector(&owner, credential_id);
     let store = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("fresh credential database must become ready");
+    provision_file(&url).await;
     store
         .create(&selector, create(None, b"opaque"))
         .await
@@ -1104,10 +1160,9 @@ async fn persisted_malformed_projection_is_rejected_as_corrupt() {
     sqlx::query(
         "UPDATE credentials
          SET metadata = '{\"display\":\"not-an-object\"}'
-         WHERE id = ?1 AND owner_id = ?2",
+         WHERE id = ?1",
     )
     .bind(credential_id.to_string())
-    .bind(owner.as_str())
     .execute(&raw_pool)
     .await
     .expect("fixture corruption must satisfy the database-level JSON check");

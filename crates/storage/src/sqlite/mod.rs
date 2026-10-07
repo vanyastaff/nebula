@@ -63,3 +63,31 @@ pub async fn init_schema(pool: &sqlx::SqlitePool) -> Result<(), nebula_storage_p
         .await
         .map_err(crate::migration::storage_setup_error)
 }
+
+/// Open a process-local `sqlite::memory:` deployment database with the
+/// schema applied: the one pool every store of an in-memory deployment
+/// (tenancy, credentials) shares.
+///
+/// One connection that never expires: a second connection, or a recycled
+/// one, would open a different, empty database.
+///
+/// # Errors
+/// Returns a closed, redacted connection error if the database cannot open,
+/// and [`init_schema`]'s errors if setup fails.
+pub async fn open_memory_deployment() -> Result<sqlx::SqlitePool, nebula_storage_port::StorageError>
+{
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect("sqlite::memory:")
+        .await
+        .map_err(|_| {
+            nebula_storage_port::StorageError::Connection(
+                "in-memory deployment database unavailable".to_owned(),
+            )
+        })?;
+    init_schema(&pool).await?;
+    Ok(pool)
+}

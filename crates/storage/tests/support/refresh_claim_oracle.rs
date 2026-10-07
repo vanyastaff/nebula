@@ -36,7 +36,7 @@ use nebula_storage::credential::{
     ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim, RefreshClaimReclaimer,
     RefreshClaimRepo, ReplicaId, RepoError, SentinelEscalationPolicy,
 };
-use nebula_storage_port::{CredentialOwner, CredentialSelector};
+use nebula_storage_port::{CredentialOwner, CredentialSelector, Scope};
 
 /// The reconciliation role's error type, under a name that reads in case bodies.
 type AdjudicationError = RefreshClaimAdjudicationError;
@@ -177,6 +177,15 @@ pub(crate) trait RefreshClaimFixture:
     async fn poisoned_claim_exists(&self, credential: &CredentialSelector) -> bool;
 }
 
+/// The workspace a namespace's credentials belong to.
+///
+/// SQL backends file credentials (and so their claims) under a provisioned
+/// workspace; a runner provisions this scope once per namespace.
+#[must_use]
+pub(crate) fn namespace_scope(namespace: &str) -> Scope {
+    Scope::new(format!("ws-{namespace}"), format!("org-{namespace}"))
+}
+
 /// A credential id derived from `namespace` and `case`, with no randomness.
 ///
 /// Deterministic within a namespace, so a failing case names the same
@@ -189,7 +198,7 @@ pub(crate) fn case_credential(namespace: &str, case: &str) -> CredentialSelector
     bytes[..8].copy_from_slice(&fnv1a(namespace, case, 0x11).to_be_bytes());
     bytes[8..].copy_from_slice(&fnv1a(namespace, case, 0x5D).to_be_bytes());
     CredentialSelector::new(
-        CredentialOwner::from_canonical(namespace),
+        CredentialOwner::from_scope(&namespace_scope(namespace)),
         nebula_core::CredentialId::from_bytes(bytes),
     )
 }

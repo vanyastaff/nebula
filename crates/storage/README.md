@@ -204,14 +204,12 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   `nebula_storage::{RefreshClaim, ClaimAttempt, ClaimToken, …}`.
 - `InMemoryRefreshClaimRepo` — internal reference implementation for tests and
   conformance; not a supported single-replica deployment backend.
-- Feature `sqlite` adds `SqliteRefreshClaimRepo` (default local backend; `SQLITE` migrations
-  `0022_credential_refresh_claims` + `0023_credential_sentinel_events`, the incident-key
-  extension in `0039_credentials_owner_and_record_state`, and owner-qualified atomic escalation
-  in `0054_owner_qualified_refresh_incidents`).
-- Feature `postgres` adds `PgRefreshClaimRepo` (production multi-replica backend; `POSTGRES`
-  migrations `0022_credential_refresh_claims` + `0023_credential_sentinel_events`, the
-  incident-key extension in `0039_credentials_owner_and_record_state`, and owner-qualified atomic
-  escalation in `0054_owner_qualified_refresh_incidents`).
+- Feature `sqlite` adds `SqliteRefreshClaimRepo` (default local backend) and feature `postgres`
+  adds `PgRefreshClaimRepo` (production multi-replica backend), both over
+  `credential_refresh_claims` and `credential_refresh_incidents` of
+  `0070_credentials_standard`: a claim and its incidents belong to their credential (keyed by its
+  workspace's `org_id`, `workspace_id`) and cascade with it; an incident is keyed by the claim
+  UUID. An archived credential can be neither claimed nor carried across the provider boundary.
 
 ## Contract
 

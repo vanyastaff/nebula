@@ -274,6 +274,8 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
 
     let (mut first, first_store, first_claims, _first_metrics, _first_reclaim_gate) =
         open_runtime(database, &provider, restart_policy(), false).await;
+    // Credentials and pending state live under a live workspace.
+    super::provision_file_owner(database, &owner).await;
     let first_controller = controller(&first, &actor, &scope);
     let created = complete_interaction(
         &first_controller,

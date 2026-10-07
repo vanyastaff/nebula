@@ -75,6 +75,17 @@ pub(crate) fn foreign_key_not_found(
     }
 }
 
+/// Whether `error` is a write rejected for a missing parent row — for stores
+/// with their own closed error taxonomy (credential persistence) that report
+/// the missing parent in it.
+pub(crate) fn is_foreign_key_violation(error: &sqlx::Error) -> bool {
+    matches!(
+        error,
+        sqlx::Error::Database(database)
+            if matches!(database.kind(), ErrorKind::ForeignKeyViolation)
+    )
+}
+
 /// Decode a non-negative counter (version, fencing generation, sequence)
 /// stored as a signed SQL integer. A negative value is corrupt data, never a
 /// wrapped `u64`.

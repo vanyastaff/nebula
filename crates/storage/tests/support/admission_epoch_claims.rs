@@ -30,7 +30,7 @@ use nebula_storage::credential::{
 use nebula_storage_port::store::{CredentialOperationKind, CredentialOperationStatus};
 use nebula_storage_port::{
     CredentialAdmissionEpoch, CredentialCreate, CredentialMaterialEpoch, CredentialOwner,
-    CredentialPersistence, CredentialSelector, SecretBytes,
+    CredentialPersistence, CredentialSelector, Scope, SecretBytes,
 };
 
 /// The production lease; expiry is always forced through the backend.
@@ -69,11 +69,16 @@ pub(crate) trait AdmissionEpochBackend: Send + Sync {
     async fn force_admission_epoch(&self, selector: &CredentialSelector, epoch: i64);
 }
 
+/// The workspace the cases file their credentials under; a backend provisions
+/// its tenant before the first case runs.
+pub(crate) fn admission_scope() -> Scope {
+    Scope::new("ws-admission-epoch", "org-admission-epoch")
+}
+
 async fn create<B: AdmissionEpochBackend>(backend: &B) -> CredentialSelector {
-    let selector = CredentialSelector::new(
-        CredentialOwner::from_canonical("admission-epoch-owner"),
-        CredentialId::new(),
-    );
+    // Credentials are filed under the workspace their owner names.
+    let owner = CredentialOwner::from_scope(&admission_scope());
+    let selector = CredentialSelector::new(owner, CredentialId::new());
     backend
         .store()
         .create(

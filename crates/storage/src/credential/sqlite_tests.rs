@@ -2,12 +2,13 @@ use std::{str::FromStr, sync::Arc, time::Duration};
 
 use nebula_storage_port::{
     CredentialMaterialEpoch, CredentialMaterialTransition, CredentialOperationKind,
-    CredentialOperationStatus, CredentialOwner, CredentialPersistence, CredentialPersistenceError,
+    CredentialOperationStatus, CredentialPersistence, CredentialPersistenceError,
     CredentialReplacement, CredentialSelector, CredentialVersion, RefreshRetryTransition,
     StoredCredential,
     store::{ClaimAttempt, CredentialOperationIntent, RefreshClaimStore, ReplicaId},
 };
 
+use crate::credential::test_owner::owner;
 use crate::credential::test_support::{make_credential, make_replacement};
 
 use super::{
@@ -22,11 +23,11 @@ fn version(value: i64) -> CredentialVersion {
 
 #[tokio::test]
 async fn revoke_claim_blocks_authority_replacement_and_is_visible_to_operational_reads() {
-    let store = SqliteCredentialPersistence::connect_memory()
+    let store = crate::credential::test_owner::sqlite_store()
         .await
         .expect("ready store");
     let selector = CredentialSelector::new(
-        CredentialOwner::from_canonical("revoke-fence-owner"),
+        owner("revoke-fence-owner"),
         nebula_core::CredentialId::new(),
     );
     store
@@ -75,11 +76,11 @@ async fn revoke_claim_blocks_authority_replacement_and_is_visible_to_operational
 
 #[tokio::test]
 async fn revoke_finalizer_accepts_display_version_churn_and_refuses_wrong_epoch() {
-    let store = SqliteCredentialPersistence::connect_memory()
+    let store = crate::credential::test_owner::sqlite_store()
         .await
         .expect("ready store");
     let selector = CredentialSelector::new(
-        CredentialOwner::from_canonical("revoke-finalizer-owner"),
+        owner("revoke-finalizer-owner"),
         nebula_core::CredentialId::new(),
     );
     store
@@ -241,20 +242,23 @@ fn refresh_retry_snapshot_is_one_backend_clock_statement() {
 
     assert_eq!(body.matches("sqlx::query_as(").count(), 1);
     assert!(body.contains("SELECT version, material_epoch, reauth_required, record_state"));
-    assert!(body.contains("strftime('%f', 'now')"));
+    assert!(body.contains("sqlite_now_us!()"));
     assert!(!body.contains("self.get("));
 }
 
 #[tokio::test]
 async fn curated_refresh_claim_repositories_share_the_admitted_private_pool() {
-    let store = SqliteCredentialPersistence::connect_memory()
+    let store = crate::credential::test_owner::sqlite_store()
         .await
         .expect("ready in-memory credential store");
     let first = store.refresh_claim_repo();
     let second = store.refresh_claim_repo();
     let credential_id = nebula_core::CredentialId::new();
-    let selector =
-        CredentialSelector::new(CredentialOwner::from_canonical("owner-a"), credential_id);
+    let selector = CredentialSelector::new(owner("owner-a"), credential_id);
+    store
+        .create(&selector, make_credential(b"claimed"))
+        .await
+        .expect("the claimed credential exists");
 
     let acquired = first
         .try_claim(
@@ -285,9 +289,11 @@ async fn curated_refresh_claim_repositories_share_the_admitted_private_pool() {
 #[tokio::test]
 async fn post_commit_fault_is_outcome_unknown_without_automatic_retry()
 -> Result<(), CredentialPersistenceError> {
-    let store = SqliteCredentialPersistence::connect_memory().await?;
-    let owner = CredentialOwner::from_canonical("post-commit-fault-owner");
-    let selector = CredentialSelector::new(owner.clone(), nebula_core::CredentialId::new());
+    let store = crate::credential::test_owner::sqlite_store().await?;
+    let selector = CredentialSelector::new(
+        owner("post-commit-fault-owner"),
+        nebula_core::CredentialId::new(),
+    );
     store
         .create(&selector, make_credential(b"version-one"))
         .await?;
@@ -309,10 +315,8 @@ async fn post_commit_fault_is_outcome_unknown_without_automatic_retry()
     assert_eq!(persisted.version(), version(2));
     assert_eq!(persisted.data().as_ref(), b"version-two");
 
-    let foreign = CredentialSelector::new(
-        CredentialOwner::from_canonical("post-commit-fault-foreign"),
-        selector.credential_id(),
-    );
+    let foreign =
+        CredentialSelector::new(owner("post-commit-fault-foreign"), selector.credential_id());
     assert_eq!(
         store.get(&foreign).await,
         Err(CredentialPersistenceError::NotFound),
@@ -324,9 +328,9 @@ async fn post_commit_fault_is_outcome_unknown_without_automatic_retry()
 #[tokio::test]
 async fn confirmed_precommit_rollback_is_unavailable_and_preserves_prior_row()
 -> Result<(), CredentialPersistenceError> {
-    let store = SqliteCredentialPersistence::connect_memory().await?;
+    let store = crate::credential::test_owner::sqlite_store().await?;
     let selector = CredentialSelector::new(
-        CredentialOwner::from_canonical("precommit-rollback-owner"),
+        owner("precommit-rollback-owner"),
         nebula_core::CredentialId::new(),
     );
     store
@@ -475,11 +479,11 @@ async fn rejected_memory_admission_preserves_logical_state() {
 /// (which carries no status).
 #[tokio::test]
 async fn admission_read_matches_the_separate_reads() {
-    let store = SqliteCredentialPersistence::connect_memory()
+    let store = crate::credential::test_owner::sqlite_store()
         .await
         .expect("ready store");
     let selector = CredentialSelector::new(
-        CredentialOwner::from_canonical("admission-read-owner"),
+        owner("admission-read-owner"),
         nebula_core::CredentialId::new(),
     );
     store
@@ -545,7 +549,7 @@ async fn admission_read_matches_the_separate_reads() {
     assert_eq!(status, None);
 
     let missing = CredentialSelector::new(
-        CredentialOwner::from_canonical("admission-read-owner"),
+        owner("admission-read-owner"),
         nebula_core::CredentialId::new(),
     );
     assert!(matches!(

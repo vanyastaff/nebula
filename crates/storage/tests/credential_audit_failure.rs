@@ -6,6 +6,16 @@
 
 #![cfg(feature = "sqlite")]
 
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "credentials need only their tenant, not a workflow"
+)]
+mod execution_parents;
+
+#[path = "support/credential_deployment.rs"]
+mod credential_deployment;
+
 use std::sync::{Arc, Barrier};
 
 use nebula_core::CredentialId;
@@ -18,8 +28,25 @@ use nebula_storage_port::{
     StoredCredential,
 };
 
+fn scope() -> nebula_storage_port::Scope {
+    nebula_storage_port::Scope::new("ws-audit", "org-audit")
+}
+
 fn owner() -> CredentialOwner {
-    CredentialOwner::from_canonical("audit-test-owner")
+    // Credentials are filed under the workspace their owner names.
+    CredentialOwner::from_scope(&scope())
+}
+
+/// Provision the audit tenant: a credential belongs to a live workspace.
+async fn provision(tenants: &dyn nebula_storage_port::store::TenantProvisioningStore) {
+    execution_parents::provision_scope(tenants, &scope()).await;
+}
+
+/// An in-memory deployment database with the audit tenant provisioned.
+async fn memory_store() -> SqliteCredentialPersistence {
+    let (store, tenants) = credential_deployment::memory_deployment().await;
+    provision(&tenants).await;
+    store
 }
 
 fn selector(id: CredentialId) -> CredentialSelector {
@@ -77,9 +104,7 @@ impl AuditSink for FailingAuditSink {
 
 #[tokio::test]
 async fn create_preserves_success_and_committed_mutation_when_sink_rejects() {
-    let inner = SqliteCredentialPersistence::connect_memory()
-        .await
-        .expect("in-memory SQLite store");
+    let inner = memory_store().await;
     let audited = AuditLayer::new(inner.clone(), Arc::new(FailingAuditSink));
     let selector = selector(CredentialId::new());
 
@@ -131,6 +156,7 @@ async fn delayed_sink_rejection_never_compensates_a_concurrent_replacement() {
     let inner = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("audited SQLite store");
+    provision(&credential_deployment::file_tenants(&url).await).await;
     let concurrent = SqliteCredentialPersistence::connect(&url)
         .await
         .expect("concurrent writer must use an independent pool");
@@ -193,9 +219,7 @@ async fn delayed_sink_rejection_never_compensates_a_concurrent_replacement() {
 
 #[tokio::test]
 async fn read_management_and_tombstone_results_ignore_sink_rejection() {
-    let inner = SqliteCredentialPersistence::connect_memory()
-        .await
-        .expect("in-memory SQLite store");
+    let inner = memory_store().await;
     let selector = selector(CredentialId::new());
     inner
         .create(&selector, create(b"x"))
