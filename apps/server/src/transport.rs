@@ -172,12 +172,8 @@ pub(crate) enum WorkerFlavorActivationError {
     MissingArtifactDigest,
     #[error("NEBULA_WORKER_ARTIFACT_SET_DIGEST must contain 64 lowercase hexadecimal characters")]
     InvalidArtifactDigest,
-    #[error("core plugin manifest is invalid")]
-    Manifest(#[from] nebula_plugin::ManifestError),
-    #[error("core plugin registration failed")]
-    Plugin(#[from] nebula_plugin::PluginError),
-    #[error("worker registry could not be frozen")]
-    Freeze(#[from] nebula_plugin::RegistryFreezeError),
+    #[error("linked release admission failed")]
+    Release(#[from] nebula_deployment::CoreReleaseError),
 }
 
 pub(crate) fn worker_registry(
@@ -194,14 +190,7 @@ pub(crate) fn worker_registry(
             return Err(WorkerFlavorActivationError::InvalidArtifactDigest);
         },
     };
-    let plugin = nebula_plugin::ResolvedPlugin::from(nebula_plugin_core::CorePlugin::try_new()?)?;
-    let mut registry = nebula_plugin::PluginRegistry::new();
-    registry.register(Arc::new(plugin))?;
-    let frozen = registry.freeze(
-        artifact_digest,
-        nebula_plugin::RuntimeContractVersion::current(),
-    )?;
-    Ok(Arc::new(frozen))
+    Ok(nebula_deployment::CoreRelease::new(artifact_digest)?.into_registry())
 }
 
 #[cfg(test)]

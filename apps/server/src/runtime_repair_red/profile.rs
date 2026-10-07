@@ -322,12 +322,12 @@ impl RuntimeRepairHarness {
         let execution_event_subscriber = execution_event_bus.subscribe();
         let engine_clock: Arc<dyn Clock> = self.evidence_controls.clock();
         let (worker_builder, _worker_metrics, _) =
-            nebula_worker_bin::compose::build_core_flavor_runtime_for_runtime_repair_red(
+            nebula_deployment::worker::build_core_flavor_runtime_for_runtime_repair_red(
                 worker_projection.execution_stores,
                 worker_projection.turn_handoff,
                 worker_projection.turn_recovery,
                 PROFILE_PROCESSOR_ID,
-                nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+                nebula_deployment::worker::CoreFlavorRevisionInputs {
                     metrics: worker_projection.metrics,
                     artifact_set_digest: nebula_core::ArtifactSetDigest::from_bytes([0x71; 32]),
                     catalog: worker_projection.revision_catalog,
@@ -335,7 +335,7 @@ impl RuntimeRepairHarness {
                     credential_resolver: Arc::new(RuntimeRepairCredentialResolver),
                 },
                 worker_projection.resource_fanout,
-                nebula_worker_bin::compose::RuntimeRepairEvidenceInputs {
+                nebula_deployment::worker::RuntimeRepairEvidenceInputs {
                     clock: engine_clock,
                     event_bus: execution_event_bus,
                 },
@@ -529,7 +529,7 @@ enum ComponentSignal {
 #[derive(Debug)]
 enum ComponentExit {
     Http(Result<(), std::io::Error>),
-    Worker(Result<(), nebula_worker_bin::compose::WorkerRuntimeError>),
+    Worker(Result<(), nebula_deployment::worker::WorkerRuntimeError>),
     Observer(Result<(), EvidenceIntegrityError>),
     /// Shutdown arrived before the supervisor opened the start gate, so this
     /// component ended without ever entering its run phase.
@@ -551,9 +551,8 @@ async fn supervise_profile<WorkerFuture>(
     inputs: ProfileSupervisorInputs<WorkerFuture>,
 ) -> Result<(), RuntimeRepairProfileError>
 where
-    WorkerFuture: Future<Output = Result<(), nebula_worker_bin::compose::WorkerRuntimeError>>
-        + Send
-        + 'static,
+    WorkerFuture:
+        Future<Output = Result<(), nebula_deployment::worker::WorkerRuntimeError>> + Send + 'static,
 {
     let ProfileSupervisorInputs {
         router,
@@ -919,7 +918,7 @@ enum ProfileErrorKind {
     #[error("closed RED profile constants are invalid")]
     InvalidClosedPreset,
     #[error("worker flavor composition failed")]
-    WorkerComposition(#[source] nebula_worker_bin::compose::ComposeError),
+    WorkerComposition(#[source] nebula_deployment::worker::ComposeError),
     #[error("worker runtime build rejected the closed preset")]
     WorkerBuild,
     #[error("profile listener setup failed")]
@@ -935,7 +934,7 @@ enum ProfileErrorKind {
     #[error("profile lifecycle observation component failed")]
     ObservationComponent(#[source] EvidenceIntegrityError),
     #[error("profile worker component failed")]
-    WorkerComponent(#[source] nebula_worker_bin::compose::WorkerRuntimeError),
+    WorkerComponent(#[source] nebula_deployment::worker::WorkerRuntimeError),
     #[error("a profile component panicked")]
     ComponentPanicked(#[source] JoinError),
     #[error("profile supervisor panicked")]

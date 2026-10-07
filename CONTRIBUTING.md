@@ -26,11 +26,11 @@ Machine-enforced agent rules and the canonical workspace map live in
 See the *Workspace Layout* and *Layered Dependency Map* sections of
 [`AGENTS.md`](AGENTS.md). Short version:
 
-- `crates/` — 36 crate workspace members.
-- `apps/` — two first-party deployment workspace members.
+- `crates/` — product crates and their derive companions.
+- `apps/` — first-party executable roots and shared deployment assembly.
 - `examples/` — one runnable-examples workspace member (not per-crate).
 - `tools/xtask/` — CI planning and repository automation (not a product crate).
-- **Total:** 36 crates + 2 apps + 1 examples + 1 xtask = 40 workspace members.
+- `cargo metadata --no-deps --format-version 1` lists the current workspace members.
 - `docs/` — agent doc map (`docs/README.md` is the entry point).
 - `Taskfile.yml` — the canonical task runner. Don't call raw `cargo` for
   fmt / lint.

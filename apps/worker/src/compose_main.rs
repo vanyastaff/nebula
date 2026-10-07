@@ -18,11 +18,10 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt};
 
+use nebula_deployment::worker::{ComposeError, ResourceFanoutInputs, build_core_flavor_runtime};
 use nebula_engine::ExecutionStores;
 use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecovery};
-use nebula_worker_bin::compose::{
-    ComposeError, ResourceFanoutInputs, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
-};
+use nebula_worker_bin::config::{WorkerConfig, WorkerConfigError};
 use nebula_worker_bin::credential_projection::{
     CredentialProjectionCompositionError, CredentialProjectionConfig, DeploymentDatabase,
 };
@@ -399,7 +398,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
         turn_handoff,
         turn_recovery,
         config.processor_id,
-        nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+        nebula_deployment::worker::CoreFlavorRevisionInputs {
             metrics,
             artifact_set_digest: config.artifact_set_digest,
             catalog,
@@ -562,12 +561,12 @@ mod tests {
             #[cfg(feature = "postgres")]
             other => panic!("expected the SQLite deployment pool, got {other:?}"),
         };
-        let (builder, _, _) = nebula_worker_bin::compose::build_core_flavor_runtime(
+        let (builder, _, _) = nebula_deployment::worker::build_core_flavor_runtime(
             execution_stores,
             turn_handoff,
             turn_recovery,
             config.processor_id,
-            nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+            nebula_deployment::worker::CoreFlavorRevisionInputs {
                 metrics,
                 artifact_set_digest: config.artifact_set_digest,
                 catalog,

@@ -2,7 +2,7 @@
 //! stores.
 //!
 //! Proves this explicit test assembly:
-//!   `compose::build_core_flavor_runtime` (wires CorePlugin + in-memory stores)
+//!   `nebula_deployment::worker::build_core_flavor_runtime` (core plugin + test stores)
 //!   → owner materializes the execution and exact contract with a `Start` command
 //!   → `WorkerRuntime::spawn` → control consumer → `WorkflowEngine::resume_execution`
 //!   → execution reaches `Completed`.
@@ -38,9 +38,9 @@ use nebula_workflow::{
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-use nebula_worker_bin::compose::build_core_flavor_runtime;
+use nebula_deployment::worker::build_core_flavor_runtime;
 #[cfg(feature = "runtime-repair-red")]
-use nebula_worker_bin::compose::build_core_flavor_runtime_for_runtime_repair_red;
+use nebula_deployment::worker::build_core_flavor_runtime_for_runtime_repair_red;
 
 #[derive(Debug)]
 struct UnavailableCredentialResolver {
@@ -147,8 +147,8 @@ struct TestStores {
 }
 
 impl TestStores {
-    fn revision_inputs(&self) -> nebula_worker_bin::compose::CoreFlavorRevisionInputs {
-        nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+    fn revision_inputs(&self) -> nebula_deployment::worker::CoreFlavorRevisionInputs {
+        nebula_deployment::worker::CoreFlavorRevisionInputs {
             metrics: nebula_metrics::MetricsRegistry::new(),
             artifact_set_digest: nebula_core::ArtifactSetDigest::from_bytes([0x71; 32]),
             catalog: Arc::new(nebula_storage::InMemoryPlanFlavorCatalog::new(
@@ -202,8 +202,8 @@ impl TestStores {
         }
     }
 
-    fn resource_fanout_inputs(&self) -> nebula_worker_bin::compose::ResourceFanoutInputs {
-        nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+    fn resource_fanout_inputs(&self) -> nebula_deployment::worker::ResourceFanoutInputs {
+        nebula_deployment::worker::ResourceFanoutInputs::from_runtime(
             self.workflow_stores(),
             Arc::clone(&self.resource_runtime),
             Arc::new(nebula_storage::inmem::InMemoryResourceStore::new()),
@@ -479,7 +479,7 @@ async fn core_flavor_refuses_a_resolver_without_availability_observation() {
     assert!(
         matches!(
             result,
-            Err(nebula_worker_bin::compose::ComposeError::MissingCredentialObserver)
+            Err(nebula_deployment::worker::ComposeError::MissingCredentialObserver)
         ),
         "a production worker must not admit resources without availability observation"
     );
@@ -527,7 +527,7 @@ async fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
         [0xEEu8; 16],
         stores.revision_inputs(),
         stores.resource_fanout_inputs(),
-        nebula_worker_bin::compose::RuntimeRepairEvidenceInputs { clock, event_bus },
+        nebula_deployment::worker::RuntimeRepairEvidenceInputs { clock, event_bus },
     )
     .expect("evidence-specific core flavor builds");
     assert!(

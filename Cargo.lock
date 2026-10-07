@@ -3240,6 +3240,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "nebula-deployment"
+version = "0.32.0"
+dependencies = [
+ "nebula-core",
+ "nebula-credential",
+ "nebula-engine",
+ "nebula-eventbus",
+ "nebula-metrics",
+ "nebula-plugin",
+ "nebula-plugin-core",
+ "nebula-storage-port",
+ "nebula-worker",
+ "thiserror",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "nebula-engine"
 version = "0.32.0"
 dependencies = [
@@ -3747,18 +3765,17 @@ dependencies = [
  "nebula-core",
  "nebula-credential",
  "nebula-crypto",
+ "nebula-deployment",
  "nebula-engine",
  "nebula-eventbus",
  "nebula-execution",
  "nebula-metadata",
  "nebula-metrics",
  "nebula-plugin",
- "nebula-plugin-core",
  "nebula-schema",
  "nebula-storage",
  "nebula-storage-port",
  "nebula-tenancy",
- "nebula-worker-bin",
  "rcgen",
  "reqwest",
  "secrecy",
@@ -3919,6 +3936,7 @@ dependencies = [
  "clap",
  "nebula-core",
  "nebula-credential",
+ "nebula-deployment",
  "nebula-engine",
  "nebula-env",
  "nebula-eventbus",

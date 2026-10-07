@@ -295,7 +295,7 @@ pub(crate) struct WorkerStoreProjection {
     /// Worker-only global discovery and acceptance of abandoned turns.
     pub(crate) turn_recovery: Arc<dyn nebula_storage_port::store::TurnRecovery>,
     /// Durable resource roles and workflow stores from the selected backend.
-    pub(crate) resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs,
+    pub(crate) resource_fanout: nebula_deployment::worker::ResourceFanoutInputs,
 }
 
 #[cfg(feature = "runtime-repair-red")]

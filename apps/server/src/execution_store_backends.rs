@@ -107,7 +107,7 @@ async fn build_memory_execution_stores(
             turn_recovery: Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(
                 &execution_store,
             )),
-            resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+            resource_fanout: nebula_deployment::worker::ResourceFanoutInputs::from_runtime(
                 nebula_engine::WorkflowStores {
                     workflow: Arc::new(workflow_store.clone()),
                     versions: Arc::new(workflow_versions.clone()),
@@ -250,7 +250,7 @@ async fn build_sqlite_execution_stores(
             control_queue: Arc::clone(&control_queue),
             turn_handoff: Arc::clone(&turn_handoff),
             turn_recovery: Arc::new(SqliteTurnHandoff::new(pool.clone())),
-            resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+            resource_fanout: nebula_deployment::worker::ResourceFanoutInputs::from_runtime(
                 nebula_engine::WorkflowStores {
                     workflow: Arc::clone(&workflow_store),
                     versions: Arc::clone(&workflow_version_store),
@@ -392,7 +392,7 @@ async fn build_postgres_execution_stores(
             control_queue: Arc::clone(&control_queue),
             turn_handoff: Arc::clone(&turn_handoff),
             turn_recovery: Arc::new(PgTurnHandoff::new(pool.clone())),
-            resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+            resource_fanout: nebula_deployment::worker::ResourceFanoutInputs::from_runtime(
                 nebula_engine::WorkflowStores {
                     workflow: Arc::clone(&workflow_store),
                     versions: Arc::clone(&workflow_version_store),

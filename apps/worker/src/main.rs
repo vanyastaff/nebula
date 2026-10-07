@@ -1,6 +1,6 @@
 //! Core-flavor worker binary.
 //!
-//! Boots the first-party [`CorePlugin`], wires it into a [`WorkflowEngine`],
+//! Boots the first-party core plugin, wires it into a [`WorkflowEngine`],
 //! and runs durable control, recovery, resource fanout, and timer processing
 //! via [`nebula_worker`].
 //!
@@ -22,7 +22,6 @@
 //! | `NEBULA_CRED_DEV_KEY` | unset | Set to `1` only for an insecure fixed development key. |
 //! | `RUST_LOG` | `info` | `tracing` subscriber filter |
 //!
-//! [`CorePlugin`]: nebula_plugin_core::CorePlugin
 //! [`WorkflowEngine`]: nebula_engine::WorkflowEngine
 
 #![expect(

@@ -9,6 +9,11 @@ the same selected memory, SQLite, or PostgreSQL backend as execution storage.
 Startup does not create an organization, workspace, or privileged member;
 durable tenants are provisioned explicitly through the operator bootstrap path.
 
+Linked plugin release selection is shared with the standalone worker through
+`apps/deployment`. The evidence profile uses that package's runtime assembly;
+the server does not depend on the worker executable package. Ordinary launch
+still serves the API without an in-process execution worker.
+
 Run the default profile locally:
 
 ```bash
