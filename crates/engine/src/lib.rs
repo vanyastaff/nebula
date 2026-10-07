@@ -137,8 +137,8 @@ pub use resource::{
 pub use resource_accessor::EngineResourceAccessor;
 pub use resource_fanout::{
     ResourceFanoutCoordinator, ResourceFanoutCoordinatorBuildError, ResourceFanoutCoordinatorError,
-    ResourceFanoutDrainOutcome, WorkflowTriggerConsumerCodec, WorkflowTriggerConsumerCodecError,
-    WorkflowTriggerTarget,
+    ResourceFanoutDrainOutcome, ResourceFanoutFailureKind, WorkflowTriggerConsumerCodec,
+    WorkflowTriggerConsumerCodecError, WorkflowTriggerTarget,
 };
 pub use resource_status::{
     DEFAULT_STATUS_PUBLISH_INTERVAL, EngineResourceStatus, ResourceRuntimeStatus,

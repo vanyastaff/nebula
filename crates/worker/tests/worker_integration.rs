@@ -174,6 +174,26 @@ impl TestStores {
 #[derive(Debug)]
 struct FailingResourceRecovery;
 
+#[derive(Debug)]
+struct CorruptResourceRecovery;
+
+#[async_trait::async_trait]
+impl ResourceRuntimeRecovery for CorruptResourceRecovery {
+    async fn claim_deliveries_globally(
+        &self,
+        _request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceDelivery>, StorageError> {
+        Err(StorageError::Corrupt("private-resource-value".to_owned()))
+    }
+
+    async fn claim_handoffs_globally(
+        &self,
+        _request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceHandoff>, StorageError> {
+        Err(StorageError::Corrupt("private-resource-value".to_owned()))
+    }
+}
+
 #[async_trait::async_trait]
 impl ResourceRuntimeRecovery for FailingResourceRecovery {
     async fn claim_deliveries_globally(
@@ -815,14 +835,50 @@ async fn resource_fanout_failure_stops_worker_with_typed_error() {
     assert!(
         matches!(
             error,
-            nebula_worker::WorkerRuntimeError::ResourceFanout {
-                attempts: 1,
-                error_code: "RESOURCE_FANOUT:CLAIM_DELIVERIES",
-                ..
-            }
+            nebula_worker::WorkerRuntimeError::ResourceFanout(source)
+                if source.attempts() == 1
+                    && source.error_code() == "RESOURCE_FANOUT:CLAIM_DELIVERIES"
+                    && source.failure_kind()
+                        == nebula_engine::ResourceFanoutFailureKind::CommitUnknown
         ),
         "worker must preserve the bounded fanout error classification; got {error:?}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn resource_fanout_corruption_stops_worker_before_retry_exhaustion() {
+    let stores = TestStores::new();
+    let (engine, _) = make_engine(&stores).await;
+    let fanout = stores.resource_fanout_with_recovery(
+        &[TEST_PLUGIN_KEY.parse().unwrap()],
+        Arc::new(CorruptResourceRecovery),
+        Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new()),
+        3,
+    );
+    let runtime =
+        WorkerRuntimeBuilder::from_wired_engine(engine, stores.execution_stores(), proc16(0x08))
+            .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+            .with_turn_handoff(stores.turn_handoff())
+            .with_turn_recovery(stores.turn_handoff())
+            .with_resource_fanout(fanout)
+            .build()
+            .expect("fully wired worker runtime must build");
+
+    let error = runtime
+        .run(CancellationToken::new())
+        .await
+        .expect_err("permanent fanout failure must stop the worker");
+    assert!(matches!(
+        error,
+        nebula_worker::WorkerRuntimeError::ResourceFanout(source)
+            if source.attempts() == 1
+                && source.error_code() == "RESOURCE_FANOUT:CLAIM_DELIVERIES"
+                && source.failure_kind()
+                    == nebula_engine::ResourceFanoutFailureKind::StoredDataInvalid
+    ));
+    assert!(std::error::Error::source(&error).is_some());
+    assert!(!error.to_string().contains("private-resource-value"));
+    assert!(!format!("{error:?}").contains("private-resource-value"));
 }
 
 /// A zero timer-scan interval is rejected rather than deferred to a panic.

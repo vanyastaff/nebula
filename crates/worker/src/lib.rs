@@ -147,17 +147,9 @@ pub enum WorkerRuntimeError {
         source: nebula_storage_port::StorageError,
     },
 
-    /// Durable resource fanout exhausted its bounded infrastructure retry budget.
-    #[error("resource fanout failed after {attempts} attempts; code={error_code}")]
-    ResourceFanout {
-        /// Consecutive failed drain attempts.
-        attempts: u32,
-        /// Stable payload-free coordinator failure code.
-        error_code: &'static str,
-        /// Original payload-free coordinator error.
-        #[source]
-        source: nebula_engine::ResourceFanoutCoordinatorError,
-    },
+    /// Durable resource fanout encountered a permanent failure or exhausted retries.
+    #[error("{0}")]
+    ResourceFanout(#[source] nebula_engine::ResourceFanoutCoordinatorError),
 }
 
 /// What one supervised task reports: which component it was, and — when the
@@ -348,11 +340,7 @@ impl WorkerRuntime {
                 .map_err(|source| {
                     (
                         Component::ResourceFanout,
-                        WorkerRuntimeError::ResourceFanout {
-                            attempts: source.attempts(),
-                            error_code: source.error_code(),
-                            source,
-                        },
+                        WorkerRuntimeError::ResourceFanout(source),
                     )
                 })
         });

@@ -91,6 +91,14 @@ configuration, and process lifecycle.
   It creates one Control Start command; it does not also enqueue a Job Start.
   Unkeyed uncertain acceptance is non-retryable at the action boundary because
   re-entering the emitter would allocate another execution identity.
+- `ResourceFanoutCoordinator` — consumes durable resource deliveries and starts
+  workflows through stable trigger identities. Its supervisor retries transient
+  storage failures within a configured bound; corrupt data, configuration errors
+  and invariant violations stop it immediately. Diagnostics retain a typed failure
+  kind, stage and attempt count without storage values. Fatal failures leave durable
+  work untouched for repair or claim expiry. Losing an exact claim stops that item
+  without acknowledging it or counting it as completed. Unknown commit outcomes
+  recover through the same durable identities rather than allocating another start.
 - `ControlConsumer` — durable control-queue consumer drained via `ControlQueue`
   (canon §12.2, ADR-0008). Its dispatch implementation supports all five
   commands — `Start` / `Resume` / `Restart` / `Cancel` / `Terminate` — via

@@ -4,7 +4,7 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use nebula_core::{NodeKey, WorkflowId};
 use nebula_storage_port::{
-    Scope,
+    Scope, StorageError,
     dto::{
         ClaimResourceRuntimeWorkRequest, ClaimedResourceDelivery, ClaimedResourceHandoff,
         CompleteResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
@@ -197,14 +197,60 @@ pub enum ResourceFanoutCoordinatorBuildError {
     ZeroFailureBound,
 }
 
-/// Payload-free terminal coordinator failure after bounded retries.
+/// Closed, payload-free reason the durable resource coordinator could not proceed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceFanoutFailureKind {
+    /// The storage backend could not be reached; a later attempt may succeed.
+    Unavailable,
+    /// A storage operation exceeded its deadline.
+    Timeout,
+    /// A submitted mutation may have committed without an acknowledgement.
+    CommitUnknown,
+    /// The exact item claim no longer grants authority to this coordinator.
+    OwnershipLost,
+    /// Persisted data cannot be decoded or violates its recorded schema.
+    StoredDataInvalid,
+    /// The configured backend cannot execute the requested work.
+    Misconfigured,
+    /// The coordinator issued a command the storage contract rejects.
+    InvalidCommand,
+    /// Durable ownership, storage or workflow-start invariants were violated.
+    InvariantViolation,
+}
+
+impl ResourceFanoutFailureKind {
+    /// Return a stable value-free label for diagnostics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Timeout => "timeout",
+            Self::CommitUnknown => "commit_unknown",
+            Self::OwnershipLost => "ownership_lost",
+            Self::StoredDataInvalid => "stored_data_invalid",
+            Self::Misconfigured => "misconfigured",
+            Self::InvalidCommand => "invalid_command",
+            Self::InvariantViolation => "invariant_violation",
+        }
+    }
+
+    const fn is_retryable(self) -> bool {
+        matches!(
+            self,
+            Self::Unavailable | Self::Timeout | Self::CommitUnknown
+        )
+    }
+}
+
+/// Payload-free coordinator failure: permanent immediately, transient after bounded retries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "resource fanout infrastructure remained unavailable after {attempts} attempts; code={error_code}"
+    "resource fanout failed after {attempts} attempts; kind={failure_kind:?}; code={error_code}"
 )]
 pub struct ResourceFanoutCoordinatorError {
     attempts: u32,
     error_code: &'static str,
+    failure_kind: ResourceFanoutFailureKind,
 }
 
 impl ResourceFanoutCoordinatorError {
@@ -219,6 +265,18 @@ impl ResourceFanoutCoordinatorError {
     pub const fn error_code(self) -> &'static str {
         self.error_code
     }
+
+    /// Return the closed failure classification without retaining storage messages.
+    #[must_use]
+    pub const fn failure_kind(self) -> ResourceFanoutFailureKind {
+        self.failure_kind
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessOutcome {
+    Completed,
+    OwnershipLost,
 }
 
 /// Work completed by one authoritative storage drain.
@@ -283,27 +341,31 @@ impl ResourceFanoutCoordinator {
     /// Drain one globally claimed delivery batch followed by one handoff batch.
     ///
     /// # Errors
-    /// Returns a payload-free infrastructure error after releasing any exact item claim
-    /// whose processing can be retried safely.
-    #[tracing::instrument(skip_all, fields(error_code = tracing::field::Empty))]
+    /// Permanent failures stop the drain without modifying the damaged item's claim.
+    /// Retryable failures release only the exact item claim. A superseded claim contributes
+    /// no completed work and grants no authority to release or acknowledge the item.
+    #[tracing::instrument(skip_all, fields(error_code = tracing::field::Empty, failure_kind = tracing::field::Empty))]
     pub async fn drain_once(
         &self,
     ) -> Result<ResourceFanoutDrainOutcome, ResourceFanoutCoordinatorError> {
         let mut outcome = ResourceFanoutDrainOutcome::default();
-        let mut first_item_error = None;
+        let mut item_failure = None;
         let deliveries = self
             .recovery
             .claim_deliveries_globally(self.claim.clone())
             .await
-            .map_err(|_| infrastructure_error("RESOURCE_FANOUT:CLAIM_DELIVERIES"))?;
+            .map_err(|error| storage_failure(error, "RESOURCE_FANOUT:CLAIM_DELIVERIES"))?;
         for scoped in deliveries {
             let (scope, delivery) = scoped.into_parts();
             match self.process_delivery(&scope, &delivery).await {
-                Ok(()) => {
+                Ok(ProcessOutcome::Completed) => {
                     outcome.completed_deliveries = outcome.completed_deliveries.saturating_add(1);
                 },
+                Ok(ProcessOutcome::OwnershipLost) => {},
+                Err(error) if !error.failure_kind.is_retryable() => return Err(error),
                 Err(error) => {
-                    first_item_error.get_or_insert(error);
+                    item_failure =
+                        Some(item_failure.map_or(error, |primary| prefer_failure(primary, error)));
                 },
             }
         }
@@ -312,26 +374,32 @@ impl ResourceFanoutCoordinator {
             .recovery
             .claim_handoffs_globally(self.claim.clone())
             .await
-            .map_err(|_| infrastructure_error("RESOURCE_FANOUT:CLAIM_HANDOFFS"))?;
+            .map_err(|error| {
+                let error = storage_failure(error, "RESOURCE_FANOUT:CLAIM_HANDOFFS");
+                item_failure.map_or(error, |primary| prefer_failure(primary, error))
+            })?;
         for scoped in handoffs {
             let (scope, handoff) = scoped.into_parts();
             match self.process_handoff(&scope, &handoff).await {
-                Ok(()) => {
+                Ok(ProcessOutcome::Completed) => {
                     outcome.acknowledged_handoffs = outcome.acknowledged_handoffs.saturating_add(1);
                 },
+                Ok(ProcessOutcome::OwnershipLost) => {},
+                Err(error) if !error.failure_kind.is_retryable() => return Err(error),
                 Err(error) => {
-                    first_item_error.get_or_insert(error);
+                    item_failure =
+                        Some(item_failure.map_or(error, |primary| prefer_failure(primary, error)));
                 },
             }
         }
-        first_item_error.map_or(Ok(outcome), Err)
+        item_failure.map_or(Ok(outcome), Err)
     }
 
-    /// Poll durable work until cancellation or a bounded persistent infrastructure failure.
+    /// Poll durable work until cancellation, a permanent failure, or bounded transient failures.
     ///
     /// # Errors
-    /// Returns the last payload-free infrastructure classification after the configured
-    /// number of consecutive failed drains.
+    /// Permanent failures stop immediately. Retryable failures stop after the configured
+    /// number of consecutive failed drains; empty successful drains reset that count.
     pub async fn run(
         &self,
         shutdown: CancellationToken,
@@ -347,13 +415,17 @@ impl ResourceFanoutCoordinator {
                     consecutive_failures = consecutive_failures.saturating_add(1);
                     tracing::warn!(
                         error_code = error.error_code(),
+                        failure_kind = error.failure_kind().as_str(),
                         attempts = consecutive_failures,
                         "resource fanout drain failed"
                     );
-                    if consecutive_failures >= self.max_consecutive_failures {
+                    if !error.failure_kind.is_retryable()
+                        || consecutive_failures >= self.max_consecutive_failures
+                    {
                         return Err(ResourceFanoutCoordinatorError {
                             attempts: consecutive_failures,
                             error_code: error.error_code,
+                            failure_kind: error.failure_kind,
                         });
                     }
                 },
@@ -369,16 +441,20 @@ impl ResourceFanoutCoordinator {
         &self,
         scope: &Scope,
         delivery: &ClaimedResourceDelivery,
-    ) -> Result<(), ResourceFanoutCoordinatorError> {
+    ) -> Result<ProcessOutcome, ResourceFanoutCoordinatorError> {
         let subscription = match self
             .subscriptions
             .get(scope, delivery.subscription_id())
             .await
         {
             Ok(subscription) => subscription,
-            Err(_) => {
+            Err(error) => {
                 return self
-                    .release_delivery(scope, delivery, "RESOURCE_FANOUT:LOAD_SUBSCRIPTION")
+                    .fail_delivery(
+                        scope,
+                        delivery,
+                        storage_failure(error, "RESOURCE_FANOUT:LOAD_SUBSCRIPTION"),
+                    )
                     .await;
             },
         };
@@ -419,7 +495,7 @@ impl ResourceFanoutCoordinator {
                 },
             },
         };
-        if self
+        if let Err(error) = self
             .fanout
             .complete_delivery(CompleteResourceDeliveryRequest::new(
                 scope.clone(),
@@ -428,37 +504,50 @@ impl ResourceFanoutCoordinator {
                 completion,
             ))
             .await
-            .is_err()
         {
             return self
-                .release_delivery(scope, delivery, "RESOURCE_FANOUT:COMPLETE_DELIVERY")
+                .fail_delivery(
+                    scope,
+                    delivery,
+                    exact_claim_failure(error, "RESOURCE_FANOUT:COMPLETE_DELIVERY"),
+                )
                 .await;
         }
-        Ok(())
+        Ok(ProcessOutcome::Completed)
     }
 
-    async fn release_delivery(
+    async fn fail_delivery(
         &self,
         scope: &Scope,
         delivery: &ClaimedResourceDelivery,
-        error_code: &'static str,
-    ) -> Result<(), ResourceFanoutCoordinatorError> {
-        self.fanout
+        primary: ResourceFanoutCoordinatorError,
+    ) -> Result<ProcessOutcome, ResourceFanoutCoordinatorError> {
+        if primary.failure_kind == ResourceFanoutFailureKind::OwnershipLost {
+            return Ok(ProcessOutcome::OwnershipLost);
+        }
+        if !primary.failure_kind.is_retryable() {
+            return Err(primary);
+        }
+        let cleanup = self
+            .fanout
             .release_delivery(ReleaseResourceDeliveryRequest::new(
                 scope.clone(),
                 delivery.id(),
                 delivery.token().clone(),
             ))
-            .await
-            .map_err(|_| infrastructure_error("RESOURCE_FANOUT:RELEASE_DELIVERY"))?;
-        Err(infrastructure_error(error_code))
+            .await;
+        Err(after_cleanup(
+            primary,
+            cleanup,
+            "RESOURCE_FANOUT:RELEASE_DELIVERY",
+        ))
     }
 
     async fn process_handoff(
         &self,
         scope: &Scope,
         handoff: &ClaimedResourceHandoff,
-    ) -> Result<(), ResourceFanoutCoordinatorError> {
+    ) -> Result<ProcessOutcome, ResourceFanoutCoordinatorError> {
         let claim = ResourceHandoffClaimRequest::new(
             scope.clone(),
             handoff.delivery_id(),
@@ -471,13 +560,16 @@ impl ResourceFanoutCoordinator {
         {
             Ok(Some(subscription)) => subscription,
             Ok(None) => {
-                self.acknowledge_handoff(claim, Some("RESOURCE_FANOUT:MISSING_HANDOFF_TARGET"))
-                    .await?;
-                return Ok(());
-            },
-            Err(_) => {
                 return self
-                    .release_handoff(claim, "RESOURCE_FANOUT:LOAD_HANDOFF_TARGET")
+                    .acknowledge_handoff(claim, Some("RESOURCE_FANOUT:MISSING_HANDOFF_TARGET"))
+                    .await;
+            },
+            Err(error) => {
+                return self
+                    .fail_handoff(
+                        claim,
+                        storage_failure(error, "RESOURCE_FANOUT:LOAD_HANDOFF_TARGET"),
+                    )
                     .await;
             },
         };
@@ -487,8 +579,7 @@ impl ResourceFanoutCoordinator {
         ) {
             Ok(target) => target,
             Err(error) => {
-                self.acknowledge_handoff(claim, Some(error.code())).await?;
-                return Ok(());
+                return self.acknowledge_handoff(claim, Some(error.code())).await;
             },
         };
         let input = match serde_json::from_slice::<Value>(handoff.envelope().canonical_payload()) {
@@ -496,9 +587,9 @@ impl ResourceFanoutCoordinator {
                 input
             },
             _ => {
-                self.acknowledge_handoff(claim, Some("RESOURCE_FANOUT:INVALID_HANDOFF_ENVELOPE"))
-                    .await?;
-                return Ok(());
+                return self
+                    .acknowledge_handoff(claim, Some("RESOURCE_FANOUT:INVALID_HANDOFF_ENVELOPE"))
+                    .await;
             },
         };
         let trigger_key = format!(
@@ -509,17 +600,19 @@ impl ResourceFanoutCoordinator {
         let event_key = uuid::Uuid::from_bytes(handoff.delivery_id().into_bytes())
             .simple()
             .to_string();
-        if self
+        if let Err(error) = self
             .handoffs
             .heartbeat_handoff(HeartbeatResourceHandoffRequest::new(
                 claim.clone(),
                 self.claim.ttl(),
             ))
             .await
-            .is_err()
         {
             return self
-                .release_handoff(claim, "RESOURCE_FANOUT:HEARTBEAT_HANDOFF")
+                .fail_handoff(
+                    claim,
+                    exact_claim_failure(error, "RESOURCE_FANOUT:HEARTBEAT_HANDOFF"),
+                )
                 .await;
         }
         match self
@@ -533,50 +626,50 @@ impl ResourceFanoutCoordinator {
             )
             .await
         {
-            Ok(_) => {
-                self.acknowledge_handoff(claim, None).await?;
-                Ok(())
-            },
+            Ok(_) => self.acknowledge_handoff(claim, None).await,
             Err(error) => {
                 let error_code = error.code();
                 match classify_workflow_start_error(&error) {
                     WorkflowStartFailureClass::Terminal => {
-                        self.acknowledge_handoff(claim, Some(error_code)).await?;
-                        Ok(())
+                        self.acknowledge_handoff(claim, Some(error_code)).await
                     },
                     WorkflowStartFailureClass::Retry => {
-                        self.release_handoff(claim, error_code).await
+                        self.fail_handoff(claim, workflow_start_retry_failure(&error))
+                            .await
                     },
-                    WorkflowStartFailureClass::Invariant => {
-                        tracing::error!(
-                            delivery_id = ?handoff.delivery_id(),
-                            error_code,
-                            "resource handoff workflow start violated an integrity invariant"
-                        );
-                        self.release_handoff(claim, error_code).await
-                    },
+                    WorkflowStartFailureClass::Invariant => Err(coordinator_failure(
+                        error_code,
+                        ResourceFanoutFailureKind::InvariantViolation,
+                    )),
                 }
             },
         }
     }
 
-    async fn release_handoff(
+    async fn fail_handoff(
         &self,
         claim: ResourceHandoffClaimRequest,
-        error_code: &'static str,
-    ) -> Result<(), ResourceFanoutCoordinatorError> {
-        self.handoffs
-            .release_handoff(claim)
-            .await
-            .map_err(|_| infrastructure_error("RESOURCE_FANOUT:RELEASE_HANDOFF"))?;
-        Err(infrastructure_error(error_code))
+        primary: ResourceFanoutCoordinatorError,
+    ) -> Result<ProcessOutcome, ResourceFanoutCoordinatorError> {
+        if primary.failure_kind == ResourceFanoutFailureKind::OwnershipLost {
+            return Ok(ProcessOutcome::OwnershipLost);
+        }
+        if !primary.failure_kind.is_retryable() {
+            return Err(primary);
+        }
+        let cleanup = self.handoffs.release_handoff(claim).await;
+        Err(after_cleanup(
+            primary,
+            cleanup,
+            "RESOURCE_FANOUT:RELEASE_HANDOFF",
+        ))
     }
 
     async fn acknowledge_handoff(
         &self,
         claim: ResourceHandoffClaimRequest,
         terminal_error_code: Option<&'static str>,
-    ) -> Result<(), ResourceFanoutCoordinatorError> {
+    ) -> Result<ProcessOutcome, ResourceFanoutCoordinatorError> {
         if let Some(error_code) = terminal_error_code {
             tracing::warn!(
                 delivery_id = ?claim.delivery_id(),
@@ -584,15 +677,15 @@ impl ResourceFanoutCoordinator {
                 "resource handoff reached a permanent terminal outcome"
             );
         }
-        let retry_claim = claim.clone();
-        if self.handoffs.acknowledge_handoff(claim).await.is_err() {
-            self.handoffs
-                .release_handoff(retry_claim)
-                .await
-                .map_err(|_| infrastructure_error("RESOURCE_FANOUT:RELEASE_HANDOFF"))?;
-            return Err(infrastructure_error("RESOURCE_FANOUT:ACK_HANDOFF"));
+        if let Err(error) = self.handoffs.acknowledge_handoff(claim.clone()).await {
+            return self
+                .fail_handoff(
+                    claim,
+                    exact_claim_failure(error, "RESOURCE_FANOUT:ACK_HANDOFF"),
+                )
+                .await;
         }
-        Ok(())
+        Ok(ProcessOutcome::Completed)
     }
 }
 
@@ -640,18 +733,273 @@ impl fmt::Debug for ResourceFanoutCoordinator {
     }
 }
 
-fn infrastructure_error(error_code: &'static str) -> ResourceFanoutCoordinatorError {
+fn coordinator_failure(
+    error_code: &'static str,
+    failure_kind: ResourceFanoutFailureKind,
+) -> ResourceFanoutCoordinatorError {
     tracing::Span::current().record("error_code", error_code);
+    tracing::Span::current().record("failure_kind", failure_kind.as_str());
+    tracing::warn!(
+        error_code,
+        failure_kind = failure_kind.as_str(),
+        "resource fanout operation failed"
+    );
     ResourceFanoutCoordinatorError {
         attempts: 1,
         error_code,
+        failure_kind,
     }
+}
+
+fn storage_failure(
+    error: StorageError,
+    error_code: &'static str,
+) -> ResourceFanoutCoordinatorError {
+    let kind = match error {
+        StorageError::Connection(_) => ResourceFanoutFailureKind::Unavailable,
+        StorageError::Timeout { .. } => ResourceFanoutFailureKind::Timeout,
+        StorageError::AcknowledgementUnknown { .. } => ResourceFanoutFailureKind::CommitUnknown,
+        StorageError::Corrupt(_)
+        | StorageError::UnknownSchemaVersion { .. }
+        | StorageError::Serialization(_) => ResourceFanoutFailureKind::StoredDataInvalid,
+        StorageError::Configuration(_) => ResourceFanoutFailureKind::Misconfigured,
+        StorageError::InvalidInput(_) => ResourceFanoutFailureKind::InvalidCommand,
+        // A lookup or global claim has no exact item token to supersede. These
+        // failures contradict its contract rather than proving ownership loss.
+        _ => ResourceFanoutFailureKind::InvariantViolation,
+    };
+    coordinator_failure(error_code, kind)
+}
+
+fn exact_claim_failure(
+    error: StorageError,
+    error_code: &'static str,
+) -> ResourceFanoutCoordinatorError {
+    if matches!(
+        error,
+        StorageError::FencedOut { .. } | StorageError::NotFound { .. }
+    ) {
+        coordinator_failure(error_code, ResourceFanoutFailureKind::OwnershipLost)
+    } else {
+        storage_failure(error, error_code)
+    }
+}
+
+/// Cleanup cannot hide an uncertain primary commit or turn a permanent failure
+/// into a retry. Lost cleanup authority leaves the original failure observable.
+fn after_cleanup(
+    primary: ResourceFanoutCoordinatorError,
+    cleanup: Result<(), StorageError>,
+    error_code: &'static str,
+) -> ResourceFanoutCoordinatorError {
+    let Err(error) = cleanup else {
+        return primary;
+    };
+    let cleanup = exact_claim_failure(error, error_code);
+    if cleanup.failure_kind == ResourceFanoutFailureKind::OwnershipLost {
+        return primary;
+    }
+    prefer_failure(primary, cleanup)
+}
+
+/// Keep a permanent failure or uncertain commit ahead of a later connectivity
+/// failure. Among equally actionable failures, retain the first failed stage.
+fn prefer_failure(
+    primary: ResourceFanoutCoordinatorError,
+    later: ResourceFanoutCoordinatorError,
+) -> ResourceFanoutCoordinatorError {
+    if !primary.failure_kind.is_retryable() {
+        primary
+    } else if !later.failure_kind.is_retryable()
+        || (primary.failure_kind != ResourceFanoutFailureKind::CommitUnknown
+            && later.failure_kind == ResourceFanoutFailureKind::CommitUnknown)
+    {
+        later
+    } else {
+        primary
+    }
+}
+
+fn workflow_start_retry_failure(error: &WorkflowStartError) -> ResourceFanoutCoordinatorError {
+    let kind = match error {
+        WorkflowStartError::ReceiptUnavailable { .. }
+        | WorkflowStartError::MaterializationIndeterminate(_) => {
+            ResourceFanoutFailureKind::CommitUnknown
+        },
+        WorkflowStartError::RevisionUnavailable(source)
+            if matches!(
+                source.as_ref(),
+                crate::PlanFlavorRevisionBridgeError::Catalog {
+                    source: nebula_storage_port::dto::RevisionCatalogError::OutcomeUnknown
+                }
+            ) =>
+        {
+            ResourceFanoutFailureKind::CommitUnknown
+        },
+        _ => ResourceFanoutFailureKind::Unavailable,
+    };
+    coordinator_failure(error.code(), kind)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use nebula_storage_port::dto::RevisionCatalogError;
+
+    #[test]
+    fn storage_failure_classes_are_closed_and_value_free() {
+        let cases = [
+            (
+                StorageError::Connection("private-backend".into()),
+                ResourceFanoutFailureKind::Unavailable,
+            ),
+            (
+                StorageError::Timeout {
+                    operation: "private-operation".into(),
+                    duration: Duration::ZERO,
+                },
+                ResourceFanoutFailureKind::Timeout,
+            ),
+            (
+                StorageError::AcknowledgementUnknown {
+                    operation: "private-operation",
+                },
+                ResourceFanoutFailureKind::CommitUnknown,
+            ),
+            (
+                StorageError::Corrupt("private-row".into()),
+                ResourceFanoutFailureKind::StoredDataInvalid,
+            ),
+            (
+                StorageError::UnknownSchemaVersion { found: 9, max: 1 },
+                ResourceFanoutFailureKind::StoredDataInvalid,
+            ),
+            (
+                StorageError::Serialization("private-row".into()),
+                ResourceFanoutFailureKind::StoredDataInvalid,
+            ),
+            (
+                StorageError::Configuration("private-config".into()),
+                ResourceFanoutFailureKind::Misconfigured,
+            ),
+            (
+                StorageError::InvalidInput("private-command".into()),
+                ResourceFanoutFailureKind::InvalidCommand,
+            ),
+            (
+                StorageError::Internal("private-invariant".into()),
+                ResourceFanoutFailureKind::InvariantViolation,
+            ),
+            (
+                StorageError::ScopeViolation {
+                    entity: "private-entity",
+                },
+                ResourceFanoutFailureKind::InvariantViolation,
+            ),
+            (
+                StorageError::Conflict {
+                    entity: "private-entity",
+                    id: "private-id".into(),
+                    expected: 1,
+                    actual: 2,
+                },
+                ResourceFanoutFailureKind::InvariantViolation,
+            ),
+            (
+                StorageError::Duplicate {
+                    entity: "private-entity",
+                    detail: "private-detail".into(),
+                },
+                ResourceFanoutFailureKind::InvariantViolation,
+            ),
+            (
+                StorageError::not_found("private-entity", "private-id"),
+                ResourceFanoutFailureKind::InvariantViolation,
+            ),
+            (
+                StorageError::FencedOut {
+                    entity: "private-entity",
+                    id: "private-id".into(),
+                },
+                ResourceFanoutFailureKind::InvariantViolation,
+            ),
+        ];
+        for (source, kind) in cases {
+            let failure = storage_failure(source, "RESOURCE_FANOUT:TEST");
+            assert_eq!(failure.failure_kind(), kind);
+            assert!(!format!("{failure:?} {failure}").contains("private"));
+        }
+    }
+
+    #[test]
+    fn ownership_loss_is_meaningful_only_at_the_exact_claim_seam() {
+        for source in [
+            StorageError::FencedOut {
+                entity: "delivery",
+                id: "opaque".into(),
+            },
+            StorageError::not_found("delivery", "opaque"),
+        ] {
+            assert_eq!(
+                exact_claim_failure(source, "RESOURCE_FANOUT:TEST").failure_kind(),
+                ResourceFanoutFailureKind::OwnershipLost
+            );
+        }
+        assert!(!ResourceFanoutFailureKind::OwnershipLost.is_retryable());
+    }
+
+    #[test]
+    fn cleanup_keeps_primary_commit_uncertainty_unless_it_finds_a_permanent_failure() {
+        let primary = coordinator_failure(
+            "RESOURCE_FANOUT:COMPLETE_DELIVERY",
+            ResourceFanoutFailureKind::CommitUnknown,
+        );
+        for cleanup in [
+            StorageError::Connection("private-backend".into()),
+            StorageError::Timeout {
+                operation: "private-operation".into(),
+                duration: Duration::ZERO,
+            },
+            StorageError::FencedOut {
+                entity: "delivery",
+                id: "private-id".into(),
+            },
+        ] {
+            assert_eq!(
+                after_cleanup(primary, Err(cleanup), "RESOURCE_FANOUT:RELEASE_DELIVERY"),
+                primary
+            );
+        }
+        assert_eq!(
+            after_cleanup(
+                primary,
+                Err(StorageError::Corrupt("private-row".into())),
+                "RESOURCE_FANOUT:RELEASE_DELIVERY"
+            )
+            .failure_kind(),
+            ResourceFanoutFailureKind::StoredDataInvalid
+        );
+    }
+
+    #[test]
+    fn a_later_global_claim_failure_cannot_hide_a_stronger_item_failure() {
+        let unknown = coordinator_failure(
+            "RESOURCE_FANOUT:COMPLETE_DELIVERY",
+            ResourceFanoutFailureKind::CommitUnknown,
+        );
+        let unavailable = coordinator_failure(
+            "RESOURCE_FANOUT:CLAIM_HANDOFFS",
+            ResourceFanoutFailureKind::Unavailable,
+        );
+        let corrupt = coordinator_failure(
+            "RESOURCE_FANOUT:CLAIM_HANDOFFS",
+            ResourceFanoutFailureKind::StoredDataInvalid,
+        );
+        assert_eq!(prefer_failure(unknown, unavailable), unknown);
+        assert_eq!(prefer_failure(unavailable, unknown), unknown);
+        assert_eq!(prefer_failure(unknown, corrupt), corrupt);
+        assert_eq!(prefer_failure(corrupt, unavailable), corrupt);
+    }
 
     fn target() -> WorkflowTriggerTarget {
         WorkflowTriggerTarget::new(
