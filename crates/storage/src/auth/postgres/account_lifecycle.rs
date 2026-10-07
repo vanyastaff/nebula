@@ -22,6 +22,7 @@ impl PgAccountLifecycle {
     }
 }
 
+#[async_trait::async_trait]
 impl AccountLifecycle for PgAccountLifecycle {
     #[tracing::instrument(skip_all)]
     async fn register_password_user(

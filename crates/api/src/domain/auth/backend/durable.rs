@@ -1,31 +1,16 @@
-//! Postgres-backed [`AuthBackend`] implementation.
+//! Authentication policy over deployment-owned durable account persistence.
 //!
-//! Production identity backend wired by the composition root when
-//! `API_AUTH_BACKEND=postgres` is selected. Mirrors the in-memory
-//! backend's user-visible semantics method-for-method, with the
-//! durability and crash-safety the PG identity tables provide.
-//!
-//! ## Storage layout
-//!
-//! The identity migration's tables:
-//! - `users` — backed by `PgUserRepo`.
-//! - `sessions`, `personal_access_tokens`, `verification_tokens` — backed by
-//!   `PgSessionRepo`, `PgPatRepo`, `PgVerificationTokenRepo`.
-//! - `oauth_states` — backed by `PgOAuthStateRepo`.
+//! The composition root selects the storage adapter once. Password, session,
+//! MFA and OAuth policy use the same repository contracts for every adapter;
+//! database admission and identity-secret convergence precede exposing auth.
 //!
 //! ## Encoding seams (deliberate divergences)
 //!
-//! - `UserRow.id` (BYTEA, 16 bytes) is the raw ULID payload via
+//! - `UserRow.id` (16 bytes) is the raw ULID payload via
 //!   `UserId::as_bytes` / `UserId::from_bytes`.
 //! - Presented session cookies are stored only as domain-separated SHA-256
-//!   digests. `PersonalAccessTokenRow.id` / OAuth `state`
-//!   are stored as the existing helper string outputs cast to
-//!   `as_bytes().to_vec()`. The migration docstrings call these
-//!   columns "`sess_` ULID" / "`pat_` ULID" — today we keep the
-//!   helper-derived URL-safe base64 strings (43 chars) to avoid
-//!   diverging from the in-memory backend or breaking the existing
-//!   `me_e2e.rs` test surface. Refactoring the primitives to mint
-//!   real ULIDs is a separate change.
+//!   digests. PAT identifiers and OAuth state retain the URL-safe opaque
+//!   values minted by their domain helpers.
 //! - `users.mfa_secret_envelope` holds a versioned AES-256-GCM envelope
 //!   authenticated for the exact user and active-TOTP purpose. Pending
 //!   enrollment uses a distinct AAD purpose and is decrypted/re-sealed when
@@ -62,22 +47,15 @@ use nebula_metrics::{
         NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL, auth_outcome,
     },
 };
+use nebula_storage::auth::{
+    AccountTokenOutcome, AuthPersistence, MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome,
+    OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
+    OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft, OAuthLoginUserDraft, OAuthStateAdmission,
+    OAuthStateRow, PasswordRegistration, PersonalAccessTokenRow, SessionDraft, UserRepo, UserRow,
+    VerificationTokenRow, identity_secret::TotpSecretPurpose,
+};
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use sqlx::{Pool, Postgres};
-
-use nebula_storage::auth::{
-    AccountLifecycle, AccountTokenOutcome, MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome,
-    MfaEnrollmentRepo, OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
-    OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft, OAuthLoginUserDraft, OAuthStateAdmission,
-    OAuthStateRepo, OAuthStateRow, PasswordRegistration, PatRepo, PersonalAccessTokenRow,
-    SessionDraft, SessionRepo, UserRepo, UserRow, VerificationTokenRepo, VerificationTokenRow,
-    identity_secret::{IdentitySecretCodec, TotpSecretPurpose},
-    postgres::{
-        PgAccountLifecycle, PgMfaEnrollmentRepo, PgOAuthLoginFinalizer, PgOAuthStateRepo,
-        PgPatRepo, PgSessionRepo, PgUserRepo, PgVerificationTokenRepo,
-    },
-};
 
 use super::{
     dto::{SignupRequest, UserProfile},
@@ -113,18 +91,12 @@ const KIND_MFA_CHALLENGE: &str = "mfa_challenge";
 /// `personal_access_tokens.principal_kind` literal for human users.
 const PRINCIPAL_KIND_USER: &str = "user";
 
-/// Production [`AuthBackend`] backed by the spec-16 PG identity repos.
+/// Production [`AuthBackend`] using one coherent account persistence set.
 ///
 /// Holds account repositories and atomic transition owners on the same
 /// deployment pool, plus the shared [`EmailPort`].
-pub struct PgAuthBackend {
-    user_repo: Arc<PgUserRepo>,
-    session_repo: Arc<PgSessionRepo>,
-    pat_repo: Arc<PgPatRepo>,
-    verification_token_repo: Arc<PgVerificationTokenRepo>,
-    mfa_enrollment_repo: Arc<PgMfaEnrollmentRepo>,
-    oauth_state_repo: Arc<PgOAuthStateRepo>,
-    account_lifecycle: PgAccountLifecycle,
+pub struct DurableAuthBackend {
+    persistence: AuthPersistence,
     /// Shared outbound-email port. The composition root injects the
     /// same `Arc<dyn EmailPort>` into both `AppState::email_port` and
     /// here, so the slot is always consumed by exactly the same
@@ -141,48 +113,23 @@ pub struct PgAuthBackend {
     metrics: Option<Arc<MetricsRegistry>>,
     /// Opaque Plane-A runtime. `None` means OAuth is disabled safely.
     oauth_runtime: Option<Arc<crate::transport::oauth::OAuthIdentityRuntime>>,
-    /// Transaction owner for OAuth user/link/session convergence. Keeping
-    /// this behind one storage-owned boundary prevents partial identities
-    /// and duplicate users under concurrent callbacks.
-    oauth_login_finalizer: Arc<PgOAuthLoginFinalizer>,
-    /// Shared credential/identity key authority, snapshotted by the identity
-    /// codec and injected by the first-party composition root.
-    identity_secrets: Arc<IdentitySecretCodec>,
 }
 
-impl PgAuthBackend {
-    /// Construct a backend from a live `sqlx::Pool<Postgres>`, a
-    /// shared `Arc<dyn EmailPort>`, and an optional `Arc<MetricsRegistry>`
-    /// for the `nebula_api_auth_*` emission seam.
-    ///
-    /// Account repositories and transition owners share the supplied pool
-    /// (each holds its own clone, which is cheap — `Pool` is an `Arc`
-    /// internally). `metrics` follows the `IdempotencyLayer::with_metrics`
-    /// precedent: `None` for tests that do not exercise the emission
-    /// path, `Some(_)` from the production composition root.
+impl DurableAuthBackend {
+    /// Bind authentication policy to deployment-owned persistence, email and
+    /// optional metrics. Storage supplies the same identity codec used by its
+    /// MFA owner. The application must complete storage startup before serving.
     #[must_use]
     pub fn new(
-        pool: Pool<Postgres>,
+        persistence: AuthPersistence,
         email_port: Arc<dyn EmailPort>,
         metrics: Option<Arc<MetricsRegistry>>,
-        identity_secrets: Arc<IdentitySecretCodec>,
     ) -> Self {
         Self {
-            user_repo: Arc::new(PgUserRepo::new(pool.clone())),
-            session_repo: Arc::new(PgSessionRepo::new(pool.clone())),
-            pat_repo: Arc::new(PgPatRepo::new(pool.clone())),
-            verification_token_repo: Arc::new(PgVerificationTokenRepo::new(pool.clone())),
-            mfa_enrollment_repo: Arc::new(PgMfaEnrollmentRepo::new(
-                pool.clone(),
-                Arc::clone(&identity_secrets),
-            )),
-            oauth_state_repo: Arc::new(PgOAuthStateRepo::new(pool.clone())),
-            oauth_login_finalizer: Arc::new(PgOAuthLoginFinalizer::new(pool.clone())),
-            account_lifecycle: PgAccountLifecycle::new(pool),
+            persistence,
             email_port,
             metrics,
             oauth_runtime: None,
-            identity_secrets,
         }
     }
 
@@ -213,7 +160,8 @@ impl PgAuthBackend {
         redirect_uri: &str,
     ) -> Result<OAuthStateRow, AuthError> {
         let row = self
-            .oauth_state_repo
+            .persistence
+            .oauth_states()
             .consume_by_state_and_provider(state, provider.as_str())
             .await
             .map_err(oauth_state_repo_error)?
@@ -232,14 +180,16 @@ impl PgAuthBackend {
             .as_deref()
             .ok_or(AuthError::InvalidMfaCode)?;
         let opened = self
-            .identity_secrets
+            .persistence
+            .identity_secrets()
             .open_totp_seed(TotpSecretPurpose::Active, &user.id, envelope)
             .map_err(identity_secret_auth_error)?;
         let secret = std::str::from_utf8(&opened.plaintext)
             .map_err(|_| AuthError::Internal("MFA secret encoding is invalid".to_owned()))?;
         let valid = mfa::verify_code(secret, code)?;
         if let Some(replacement) = opened.replacement_envelope.as_deref() {
-            self.user_repo
+            self.persistence
+                .users()
                 .rotate_mfa_secret_envelope(&user.id, envelope, replacement)
                 .await?;
         }
@@ -444,20 +394,21 @@ fn row_to_pat_record(row: PersonalAccessTokenRow) -> Result<PatRecord, AuthError
 
 /// Fetch a user by parsed-string id; returns `Err(UserNotFound)` for
 /// missing or soft-deleted rows so callers can `?`-propagate cleanly.
-async fn fetch_user_by_id(repo: &PgUserRepo, id: &str) -> Result<UserRow, AuthError> {
+async fn fetch_user_by_id(repo: &dyn UserRepo, id: &str) -> Result<UserRow, AuthError> {
     let bytes = user_id_bytes(id)?;
     repo.get(&bytes).await?.ok_or(AuthError::UserNotFound)
 }
 
 #[async_trait]
-impl AuthBackend for PgAuthBackend {
+impl AuthBackend for DurableAuthBackend {
     #[tracing::instrument(level = "info", skip(self, session_id))]
     async fn get_principal_by_session(
         &self,
         session_id: &str,
     ) -> Result<Option<AuthenticatedSession>, crate::ApiError> {
         let row = self
-            .session_repo
+            .persistence
+            .sessions()
             .get(session_id.as_bytes())
             .await
             .map_err(session_repo_error)
@@ -508,7 +459,8 @@ impl AuthBackend for PgAuthBackend {
                 let now = Utc::now();
                 let expires_at = now + chrono_duration(VERIFICATION_TTL)?;
 
-                self.account_lifecycle
+                self.persistence
+                    .accounts()
                     .register_password_user(&PasswordRegistration {
                         user_id: user_bytes.as_slice(),
                         email: &email,
@@ -585,7 +537,8 @@ impl AuthBackend for PgAuthBackend {
             None,
             async move {
                 let user = self
-                    .user_repo
+                    .persistence
+                    .users()
                     .get_by_email(email)
                     .await?
                     .ok_or(AuthError::InvalidCredentials)?;
@@ -601,14 +554,20 @@ impl AuthBackend for PgAuthBackend {
                     .as_deref()
                     .ok_or(AuthError::InvalidCredentials)?;
                 if !password::verify_password(stored_hash, password_input)? {
-                    self.user_repo.record_login_failure(&user.id).await?;
+                    self.persistence
+                        .users()
+                        .record_login_failure(&user.id)
+                        .await?;
                     return Err(AuthError::InvalidCredentials);
                 }
 
                 // record_login_success ONLY; no `update` call — a profile
                 // update would CAS-conflict with concurrent patches and
                 // spuriously bump `version` on every login.
-                self.user_repo.record_login_success(&user.id).await?;
+                self.persistence
+                    .users()
+                    .record_login_success(&user.id)
+                    .await?;
 
                 if user.mfa_enabled {
                     if let Some(code) = totp {
@@ -621,7 +580,8 @@ impl AuthBackend for PgAuthBackend {
                         let challenge_hash = sha256_token(&challenge_plaintext);
                         let now = Utc::now();
                         let expires_at = now + chrono_duration(MFA_CHALLENGE_TTL)?;
-                        self.verification_token_repo
+                        self.persistence
+                            .verification_tokens()
                             .create(&VerificationTokenRow {
                                 token_hash: challenge_hash.to_vec(),
                                 user_id: user.id.clone(),
@@ -669,12 +629,14 @@ impl AuthBackend for PgAuthBackend {
                 // endpoint does NOT match and is NOT consumed; the row stays
                 // available for the valid follow-up at its real route.
                 let token_row = self
-                    .verification_token_repo
+                    .persistence
+                    .verification_tokens()
                     .consume_by_hash_and_kind(&challenge_hash, KIND_MFA_CHALLENGE)
                     .await?
                     .ok_or(AuthError::InvalidToken)?;
                 let user = self
-                    .user_repo
+                    .persistence
+                    .users()
                     .get(&token_row.user_id)
                     .await?
                     .ok_or(AuthError::UserNotFound)?;
@@ -698,14 +660,15 @@ impl AuthBackend for PgAuthBackend {
         let user_bytes = user_id_bytes(user_id)?;
         // Ensure the user exists (else the FK on sessions.user_id will
         // reject the INSERT with an opaque error).
-        if self.user_repo.get(&user_bytes).await?.is_none() {
+        if self.persistence.users().get(&user_bytes).await?.is_none() {
             return Err(AuthError::UserNotFound);
         }
         let session_id = session::random_token(32)?;
         let csrf = session::random_token(24)?;
         let now = Utc::now();
         let exp = now + chrono_duration(SESSION_TTL)?;
-        self.session_repo
+        self.persistence
+            .sessions()
             .create(
                 session_id.as_bytes(),
                 &SessionDraft {
@@ -729,14 +692,17 @@ impl AuthBackend for PgAuthBackend {
 
     #[tracing::instrument(level = "info", skip(self, session_id))]
     async fn revoke_session(&self, session_id: &str) -> Result<(), AuthError> {
-        self.session_repo.revoke(session_id.as_bytes()).await?;
+        self.persistence
+            .sessions()
+            .revoke(session_id.as_bytes())
+            .await?;
         Ok(())
     }
 
     #[tracing::instrument(level = "info", skip(self, presented))]
     async fn lookup_pat(&self, presented: &str) -> Result<Option<PatRecord>, AuthError> {
         let hash = pat::hash_for_lookup(presented)?;
-        let row = self.pat_repo.get_by_hash(&hash).await?;
+        let row = self.persistence.pats().get_by_hash(&hash).await?;
         match row {
             Some(row) => Ok(Some(row_to_pat_record(row)?)),
             None => Ok(None),
@@ -745,7 +711,7 @@ impl AuthBackend for PgAuthBackend {
 
     #[tracing::instrument(level = "info", skip(self), fields(user_id))]
     async fn get_user_profile(&self, user_id: &str) -> Result<UserProfile, AuthError> {
-        let row = fetch_user_by_id(&self.user_repo, user_id).await?;
+        let row = fetch_user_by_id(self.persistence.users(), user_id).await?;
         row_to_profile(&row)
     }
 
@@ -755,7 +721,7 @@ impl AuthBackend for PgAuthBackend {
         user_id: &str,
         patch: ProfilePatch,
     ) -> Result<UserProfile, AuthError> {
-        let mut row = fetch_user_by_id(&self.user_repo, user_id).await?;
+        let mut row = fetch_user_by_id(self.persistence.users(), user_id).await?;
         if let Some(name) = patch.display_name.as_deref() {
             let trimmed = name.trim();
             if trimmed.is_empty() || trimmed.len() > 128 {
@@ -774,11 +740,14 @@ impl AuthBackend for PgAuthBackend {
             };
         }
         let expected_version = row.version;
-        self.user_repo.update(&row, expected_version).await?;
+        self.persistence
+            .users()
+            .update(&row, expected_version)
+            .await?;
         // Re-fetch so the post-update version + side fields propagate
         // (e.g. for a future caller that reads `version` from the
         // returned profile).
-        let refreshed = fetch_user_by_id(&self.user_repo, user_id).await?;
+        let refreshed = fetch_user_by_id(self.persistence.users(), user_id).await?;
         tracing::info!(user_id = %user_id, "user profile updated");
         row_to_profile(&refreshed)
     }
@@ -786,11 +755,12 @@ impl AuthBackend for PgAuthBackend {
     #[tracing::instrument(level = "info", skip(self), fields(user_id))]
     async fn list_pats(&self, user_id: &str) -> Result<Vec<PatRecord>, AuthError> {
         let bytes = user_id_bytes(user_id)?;
-        if self.user_repo.get(&bytes).await?.is_none() {
+        if self.persistence.users().get(&bytes).await?.is_none() {
             return Err(AuthError::UserNotFound);
         }
         let rows = self
-            .pat_repo
+            .persistence
+            .pats()
             .list_for_principal(PRINCIPAL_KIND_USER, &bytes)
             .await?;
         let mut out: Vec<PatRecord> = rows
@@ -809,7 +779,7 @@ impl AuthBackend for PgAuthBackend {
         params: CreatePatParams,
     ) -> Result<MintedPat, AuthError> {
         let bytes = user_id_bytes(user_id)?;
-        if self.user_repo.get(&bytes).await?.is_none() {
+        if self.persistence.users().get(&bytes).await?.is_none() {
             return Err(AuthError::UserNotFound);
         }
         let name = params.name.trim();
@@ -828,7 +798,8 @@ impl AuthBackend for PgAuthBackend {
         )?;
         let scopes_json = serde_json::to_value(&params.scopes)
             .map_err(|e| AuthError::Internal(format!("pat scopes serialize: {e}")))?;
-        self.pat_repo
+        self.persistence
+            .pats()
             .create(&PersonalAccessTokenRow {
                 id: minted.record.id.as_bytes().to_vec(),
                 principal_kind: PRINCIPAL_KIND_USER.to_owned(),
@@ -853,7 +824,8 @@ impl AuthBackend for PgAuthBackend {
         // Ownership and revocation are one storage decision. Repeats succeed
         // for the owner; a foreign token is indistinguishable from a missing one.
         let owned = self
-            .pat_repo
+            .persistence
+            .pats()
             .revoke_for_principal(pat_id.as_bytes(), PRINCIPAL_KIND_USER, &bytes)
             .await?;
         if !owned {
@@ -866,7 +838,7 @@ impl AuthBackend for PgAuthBackend {
     #[tracing::instrument(level = "info", skip(self, email))]
     async fn request_password_reset(&self, email: &str) -> Result<(), AuthError> {
         // Enumeration-safe: every internal failure is logged + swallowed.
-        let user = match self.user_repo.get_by_email(email).await {
+        let user = match self.persistence.users().get_by_email(email).await {
             Ok(Some(u)) => u,
             Ok(None) => return Ok(()),
             Err(err) => {
@@ -905,7 +877,7 @@ impl AuthBackend for PgAuthBackend {
             expires_at,
             consumed_at: None,
         };
-        if let Err(err) = self.verification_token_repo.create(&row).await {
+        if let Err(err) = self.persistence.verification_tokens().create(&row).await {
             tracing::error!(error = %err, user_id = %user_id_typed, "failed to persist password reset token");
             return Ok(());
         }
@@ -948,7 +920,8 @@ impl AuthBackend for PgAuthBackend {
                 let token_hash = sha256_token(token);
 
                 account_token_result(
-                    self.account_lifecycle
+                    self.persistence
+                        .accounts()
                         .reset_password(&token_hash, &new_hash)
                         .await?,
                 )
@@ -977,7 +950,12 @@ impl AuthBackend for PgAuthBackend {
             async move {
                 let token_hash = sha256_token(token);
 
-                account_token_result(self.account_lifecycle.verify_email(&token_hash).await?)
+                account_token_result(
+                    self.persistence
+                        .accounts()
+                        .verify_email(&token_hash)
+                        .await?,
+                )
             },
             |result| match result {
                 Ok(()) => auth_outcome::SUCCESS,
@@ -995,10 +973,11 @@ impl AuthBackend for PgAuthBackend {
             NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
             None,
             async move {
-                let row = fetch_user_by_id(&self.user_repo, user_id).await?;
+                let row = fetch_user_by_id(self.persistence.users(), user_id).await?;
                 let (secret, uri) = mfa::mint_secret(&row.email)?;
                 let secret_envelope = self
-                    .identity_secrets
+                    .persistence
+                    .identity_secrets()
                     .seal_totp_seed(
                         TotpSecretPurpose::EnrollmentCandidate,
                         &row.id,
@@ -1016,7 +995,8 @@ impl AuthBackend for PgAuthBackend {
                     now + chrono_duration(MFA_ENROLLMENT_TTL)?,
                 )
                 .map_err(mfa_enrollment_repo_error)?;
-                self.mfa_enrollment_repo
+                self.persistence
+                    .mfa_enrollments()
                     .replace_candidate(&candidate)
                     .await
                     .map_err(mfa_enrollment_repo_error)?;
@@ -1042,13 +1022,15 @@ impl AuthBackend for PgAuthBackend {
             async move {
                 let user_bytes = user_id_bytes(user_id)?;
                 let candidate = self
-                    .mfa_enrollment_repo
+                    .persistence
+                    .mfa_enrollments()
                     .get_live_candidate(&user_bytes)
                     .await
                     .map_err(mfa_enrollment_repo_error)?
                     .ok_or(AuthError::InvalidMfaCode)?;
                 let opened = self
-                    .identity_secrets
+                    .persistence
+                    .identity_secrets()
                     .open_totp_seed(
                         TotpSecretPurpose::EnrollmentCandidate,
                         &user_bytes,
@@ -1063,7 +1045,8 @@ impl AuthBackend for PgAuthBackend {
                 }
                 let enrollment_id = *candidate.enrollment_id();
                 match self
-                    .mfa_enrollment_repo
+                    .persistence
+                    .mfa_enrollments()
                     .install_candidate(&user_bytes, &enrollment_id)
                     .await
                     .map_err(mfa_enrollment_repo_error)?
@@ -1118,7 +1101,8 @@ impl AuthBackend for PgAuthBackend {
                 let now = Utc::now();
                 let expires_at = now + chrono_duration(OAUTH_STATE_TTL)?;
                 let admission = self
-                    .oauth_state_repo
+                    .persistence
+                    .oauth_states()
                     .admit(&OAuthStateRow {
                         state: pkce.state.clone(),
                         provider: provider.as_str().to_owned(),
@@ -1220,7 +1204,8 @@ impl AuthBackend for PgAuthBackend {
                     challenge_token,
                 } = build_oauth_finalize_command(provider, &sub, None)?;
                 match self
-                    .oauth_login_finalizer
+                    .persistence
+                    .oauth_login()
                     .finalize(command)
                     .await
                     .map_err(oauth_login_finalize_error)?
@@ -1271,7 +1256,8 @@ impl AuthBackend for PgAuthBackend {
                     challenge_token,
                 } = build_oauth_finalize_command(provider, &sub, Some(resolved_email))?;
                 match self
-                    .oauth_login_finalizer
+                    .persistence
+                    .oauth_login()
                     .finalize(command)
                     .await
                     .map_err(oauth_login_finalize_error)?

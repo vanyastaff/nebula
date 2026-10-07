@@ -16,7 +16,7 @@
 //! - The [`pg_backend`] tests are `#[cfg(feature = "postgres")]` and
 //!   silently no-op when `DATABASE_URL` is absent (mirrors the
 //!   `auth_pg_e2e.rs` gating pattern). When the env var is set they
-//!   exercise the same closed-set against [`PgAuthBackend`] using a
+//!   exercise the same closed-set against [`DurableAuthBackend`] using a
 //!   live Postgres.
 
 #![cfg(test)]
@@ -288,7 +288,7 @@ mod memory_backend {
 
 #[cfg(feature = "postgres")]
 mod pg_backend {
-    //! `PgAuthBackend` emission coverage.
+    //! PostgreSQL `DurableAuthBackend` emission coverage.
     //!
     //! `DATABASE_URL`-gated. Mirrors `auth_pg_e2e.rs::pool` exactly:
     //! when the env var is absent the test no-ops; when set it runs
@@ -300,7 +300,7 @@ mod pg_backend {
     //! the PG path (e.g. wrong counter constant, label-key typo) is
     //! caught by CI when the gated suite runs.
 
-    use nebula_api::domain::auth::backend::PgAuthBackend;
+    use nebula_api::domain::auth::backend::DurableAuthBackend;
     use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 
     use super::*;
@@ -345,7 +345,7 @@ mod pg_backend {
 
     fn build_pg_backend_with_metrics(
         pool: Pool<Postgres>,
-    ) -> (Arc<PgAuthBackend>, Arc<MetricsRegistry>) {
+    ) -> (Arc<DurableAuthBackend>, Arc<MetricsRegistry>) {
         let registry = Arc::new(MetricsRegistry::new());
         let sink = Arc::new(EchoSink::default());
         let port: Arc<dyn EmailPort> = Arc::clone(&sink) as _;
@@ -360,16 +360,15 @@ mod pg_backend {
             IdentitySecretCodec::new(Arc::new(provider) as Arc<dyn KeyProvider>)
                 .expect("valid identity codec"),
         );
-        let backend = Arc::new(PgAuthBackend::new(
-            pool,
+        let backend = Arc::new(DurableAuthBackend::new(
+            nebula_storage::auth::AuthPersistence::postgres(pool, codec),
             port,
             Some(Arc::clone(&registry)),
-            codec,
         ));
         (backend, registry)
     }
 
-    /// `PgAuthBackend::register_user` + `authenticate_password` happy
+    /// `DurableAuthBackend::register_user` + `authenticate_password` happy
     /// path must each bump `attempts_total{outcome=success}` and
     /// observe the duration histogram. Mirrors the
     /// `memory_backend::success_path_increments_success_outcome` test
@@ -392,12 +391,12 @@ mod pg_backend {
                 auth_outcome::SUCCESS
             ),
             1,
-            "PgAuthBackend::register_user must increment outcome=success"
+            "DurableAuthBackend::register_user must increment outcome=success"
         );
         assert_eq!(
             histogram_count(&registry, auth_outcome::SUCCESS),
             1,
-            "PgAuthBackend::register_user must observe duration histogram"
+            "DurableAuthBackend::register_user must observe duration histogram"
         );
 
         match backend
@@ -416,11 +415,11 @@ mod pg_backend {
                 auth_outcome::SUCCESS
             ),
             2,
-            "PgAuthBackend::authenticate_password (ok) must increment outcome=success"
+            "DurableAuthBackend::authenticate_password (ok) must increment outcome=success"
         );
     }
 
-    /// Wrong-password against `PgAuthBackend` bumps
+    /// Wrong-password against `DurableAuthBackend` bumps
     /// `attempts_total{outcome=invalid_creds}` (NOT `success`).
     #[tokio::test]
     async fn pg_invalid_password_increments_invalid_creds_outcome() {
@@ -457,7 +456,7 @@ mod pg_backend {
                 auth_outcome::INVALID_CREDS,
             ),
             invalid_before + 1,
-            "PgAuthBackend wrong-password authenticate must increment outcome=invalid_creds"
+            "DurableAuthBackend wrong-password authenticate must increment outcome=invalid_creds"
         );
         assert_eq!(
             counter_value(
@@ -466,7 +465,7 @@ mod pg_backend {
                 auth_outcome::SUCCESS
             ),
             success_after_register,
-            "PgAuthBackend wrong-password authenticate must NOT bump outcome=success"
+            "DurableAuthBackend wrong-password authenticate must NOT bump outcome=success"
         );
     }
 }

@@ -4,6 +4,23 @@ use chrono::{DateTime, Utc};
 
 use crate::auth::UserRow;
 
+/// Storage owner of atomic user/link/session or MFA-challenge finalization.
+/// Provider I/O must finish before calling this operation. Existing subject
+/// links are authoritative; email collisions never authorize automatic linking.
+/// Commit acknowledgement failure can leave the atomic operation committed.
+#[async_trait::async_trait]
+pub trait OAuthLoginFinalizer: Send + Sync {
+    /// Resolve the canonical account and commit exactly one authority artifact.
+    ///
+    /// # Errors
+    /// Returns a value-free storage failure. Semantic refusals use the closed
+    /// [`OAuthLoginFinalizeOutcome`] values without creating identity artifacts.
+    async fn finalize(
+        &self,
+        command: OAuthLoginFinalizeCommand,
+    ) -> Result<OAuthLoginFinalizeOutcome, crate::StorageError>;
+}
+
 /// All storage inputs needed to converge one OAuth login into a local
 /// user, a stable external-identity link, and exactly one authority
 /// artifact: a browser session or a local MFA challenge.

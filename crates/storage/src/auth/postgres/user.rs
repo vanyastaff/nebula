@@ -1,6 +1,6 @@
 //! Postgres implementation of [`UserRepo`].
 //!
-//! Schema: migration `0001_users.sql` (the `users` table).
+//! Schema: migration `0001_identity.sql` (the `users` table).
 //!
 //! # Lockout policy
 //!
@@ -52,14 +52,17 @@ impl PgUserRepo {
     pub fn new(pool: Pool<Postgres>) -> Self {
         Self { pool }
     }
+}
 
+#[async_trait::async_trait]
+impl UserRepo for PgUserRepo {
     /// Compare-and-swap an active TOTP envelope after decrypting it with an
     /// explicitly configured legacy key.
     ///
     /// A lost race is benign: another request or the startup migrator already
     /// replaced the exact ciphertext. Callers may continue using plaintext
     /// that was authenticated under the configured legacy key.
-    pub async fn rotate_mfa_secret_envelope(
+    async fn rotate_mfa_secret_envelope(
         &self,
         user_id: &[u8],
         expected_envelope: &[u8],
@@ -78,50 +81,7 @@ impl PgUserRepo {
         .rows_affected();
         Ok(rows == 1)
     }
-}
 
-// Column order must match every `SELECT ... FROM users` in this file.
-pub(super) type UserTuple = (
-    Vec<u8>,                               // id
-    String,                                // email
-    Option<chrono::DateTime<chrono::Utc>>, // email_verified_at
-    String,                                // display_name
-    Option<String>,                        // avatar_url
-    Option<String>,                        // password_hash
-    chrono::DateTime<chrono::Utc>,         // created_at
-    Option<chrono::DateTime<chrono::Utc>>, // last_login_at
-    Option<chrono::DateTime<chrono::Utc>>, // locked_until
-    i32,                                   // failed_login_count
-    bool,                                  // mfa_enabled
-    Option<Vec<u8>>,                       // mfa_secret_envelope
-    i64,                                   // version
-    Option<chrono::DateTime<chrono::Utc>>, // deleted_at
-);
-
-pub(super) fn tuple_to_row(t: UserTuple) -> UserRow {
-    UserRow {
-        id: t.0,
-        email: t.1,
-        email_verified_at: t.2,
-        display_name: t.3,
-        avatar_url: t.4,
-        password_hash: t.5,
-        created_at: t.6,
-        last_login_at: t.7,
-        locked_until: t.8,
-        failed_login_count: t.9,
-        mfa_enabled: t.10,
-        mfa_secret_envelope: t.11,
-        version: t.12,
-        deleted_at: t.13,
-    }
-}
-
-pub(super) const SELECT_COLS: &str = "id, email, email_verified_at, display_name, avatar_url, \
-     password_hash, created_at, last_login_at, locked_until, failed_login_count, \
-     mfa_enabled, mfa_secret_envelope, version, deleted_at";
-
-impl UserRepo for PgUserRepo {
     #[tracing::instrument(level = "debug", skip(self, user), fields(user_id = %hex::encode(&user.id)))]
     async fn create(&self, user: &UserRow) -> Result<(), StorageError> {
         debug_assert!(!user.id.is_empty(), "user.id must not be empty");
@@ -301,6 +261,47 @@ impl UserRepo for PgUserRepo {
         Ok(())
     }
 }
+
+// Column order must match every `SELECT ... FROM users` in this file.
+pub(super) type UserTuple = (
+    Vec<u8>,                               // id
+    String,                                // email
+    Option<chrono::DateTime<chrono::Utc>>, // email_verified_at
+    String,                                // display_name
+    Option<String>,                        // avatar_url
+    Option<String>,                        // password_hash
+    chrono::DateTime<chrono::Utc>,         // created_at
+    Option<chrono::DateTime<chrono::Utc>>, // last_login_at
+    Option<chrono::DateTime<chrono::Utc>>, // locked_until
+    i32,                                   // failed_login_count
+    bool,                                  // mfa_enabled
+    Option<Vec<u8>>,                       // mfa_secret_envelope
+    i64,                                   // version
+    Option<chrono::DateTime<chrono::Utc>>, // deleted_at
+);
+
+pub(super) fn tuple_to_row(t: UserTuple) -> UserRow {
+    UserRow {
+        id: t.0,
+        email: t.1,
+        email_verified_at: t.2,
+        display_name: t.3,
+        avatar_url: t.4,
+        password_hash: t.5,
+        created_at: t.6,
+        last_login_at: t.7,
+        locked_until: t.8,
+        failed_login_count: t.9,
+        mfa_enabled: t.10,
+        mfa_secret_envelope: t.11,
+        version: t.12,
+        deleted_at: t.13,
+    }
+}
+
+pub(super) const SELECT_COLS: &str = "id, email, email_verified_at, display_name, avatar_url, \
+     password_hash, created_at, last_login_at, locked_until, failed_login_count, \
+     mfa_enabled, mfa_secret_envelope, version, deleted_at";
 
 #[cfg(all(test, feature = "postgres"))]
 mod tests {

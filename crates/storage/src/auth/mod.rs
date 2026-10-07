@@ -4,6 +4,8 @@
 //!
 //! Repository traits and row types live here; the PostgreSQL implementations
 //! live in [`postgres`] (feature `postgres`).
+//! [`AuthPersistence`] binds the repository roles to one deployment pool and
+//! identity codec. Its factories run no schema or key admission themselves.
 //!
 //! ## Conventions
 //!
@@ -16,6 +18,7 @@ mod account_lifecycle;
 pub mod identity_secret;
 mod mfa_enrollment;
 mod oauth_login;
+mod persistence;
 /// PostgreSQL implementations of the account repositories.
 #[cfg(feature = "postgres")]
 pub mod postgres;
@@ -31,9 +34,10 @@ pub mod session_token;
 pub use account_lifecycle::{AccountLifecycle, AccountTokenOutcome, PasswordRegistration};
 pub use mfa_enrollment::{MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo};
 pub use oauth_login::{
-    OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
+    OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized, OAuthLoginFinalizer,
     OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft, OAuthLoginUserDraft,
 };
+pub use persistence::AuthPersistence;
 pub use repos::{
     ExternalIdentityRepo, OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo, PatRepo,
     SessionRepo, UserRepo, VerificationTokenRepo,

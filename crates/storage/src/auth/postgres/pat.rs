@@ -72,6 +72,7 @@ fn tuple_to_row(t: PatTuple) -> PersonalAccessTokenRow {
 const SELECT_COLS: &str = "id, principal_kind, principal_id, name, prefix, hash, scopes, \
      created_at, last_used_at, expires_at, revoked_at";
 
+#[async_trait::async_trait]
 impl PatRepo for PgPatRepo {
     #[tracing::instrument(
         level = "debug",

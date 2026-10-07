@@ -6,7 +6,7 @@
 //! exercise sign-up / password-reset flows without an SMTP transport. A
 //! production composition root wires a real transport (SMTP, SES, …) as
 //! `Arc<dyn EmailPort>` into [`crate::AppState::email_port`] and into the
-//! storage-backed `AuthBackend` so a `PgAuthBackend` never silently drops
+//! storage-backed `AuthBackend` so a `DurableAuthBackend` never silently drops
 //! verification / reset emails.
 //!
 //! The port carries only api-safe types ([`EmailMessage`]) and a typed

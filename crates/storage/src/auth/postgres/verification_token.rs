@@ -66,6 +66,7 @@ fn tuple_to_row(t: TokenTuple) -> VerificationTokenRow {
 
 const SELECT_COLS: &str = "token_hash, user_id, kind, payload, created_at, expires_at, consumed_at";
 
+#[async_trait::async_trait]
 impl VerificationTokenRepo for PgVerificationTokenRepo {
     #[tracing::instrument(
         level = "debug",

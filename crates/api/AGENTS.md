@@ -18,7 +18,7 @@
 ## Commands
 
 - OpenAPI/spec guards: `cargo nextest run -p nebula-api --test openapi_spec --test openapi_canon_compliance --test openapi_secret_redaction` (inspect the generated router/spec contract; no static spec regeneration step).
-- Feature flags: `postgres` (PG idempotency + `PgAuthBackend`), `test-util` (`ApiConfig::for_test`, bypasses JWT configuration validation — never in prod), `first-party-composition` (technical composition hooks).
+- Feature flags: `postgres` (PG persistence adapters), `test-util` (`ApiConfig::for_test`, bypasses JWT configuration validation — never in prod), `first-party-composition` (technical composition hooks).
 - PostgreSQL auth tests require `DATABASE_URL`; an absent variable makes suites such as `auth_pg_e2e` return early. A feature-enabled build or green skipped test is not backend runtime evidence.
 
 ## Key files
@@ -38,6 +38,7 @@
 
 - Pure library — ships NO binary/composition root; wiring lives in `apps/server`. Do not add a `main`.
 - No SQL driver / storage-schema knowledge here — inject spec-16 storage ports via `AppState::new` (`nebula-storage` owns adapters).
+- Durable auth uses storage's `AuthPersistence` and one `DurableAuthBackend` policy implementation. Deployment composition admits the database and converges identity secrets before exposing auth; the persistence set binds every repository and MFA codec to that deployment.
 - Versioned wire DTOs live in `nebula-api-contract::v1`; API DTO modules retain compatibility imports, server mappings and tests. Enable its `openapi` feature for the served schemas.
 - DTOs MUST NOT embed `nebula-core`/`-storage`/`-engine`/`-credential` types (ADR-0047 §3); wrap cross-layer types (`OrgRoleDto`/`WorkspaceRoleDto`). DTOs carry only `serde_json::Value`/wrappers.
 - All errors are RFC 9457 `application/problem+json` via a typed `ApiError` variant — never a new ad-hoc 500 for business failures.

@@ -1,7 +1,5 @@
 //! Atomic account transitions that span users and one-time verification tokens.
 
-use std::future::Future;
-
 use chrono::{DateTime, Utc};
 
 use crate::StorageError;
@@ -62,6 +60,7 @@ pub enum AccountTokenOutcome {
 /// Cancellation before commit abandons the transaction. Cancellation while
 /// commit is in flight may leave the whole operation committed; it never proves
 /// rollback. These operations guarantee atomic writes, not receipt of commit.
+#[async_trait::async_trait]
 pub trait AccountLifecycle: Send + Sync {
     /// Create an unverified account and its email verification token atomically.
     ///
@@ -69,19 +68,19 @@ pub trait AccountLifecycle: Send + Sync {
     /// An active email collision returns `Duplicate { entity: "user", .. }`.
     /// Constraint and pre-commit database failures abort both inserts. Commit
     /// failures have the unknown-outcome semantics described on this trait.
-    fn register_password_user(
+    async fn register_password_user(
         &self,
         registration: &PasswordRegistration<'_>,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    ) -> Result<(), StorageError>;
 
     /// Consume a live email-verification token and mark its live account verified.
     ///
     /// # Errors
     /// Returns a storage failure if the atomic transition cannot complete.
-    fn verify_email(
+    async fn verify_email(
         &self,
         token_hash: &[u8; 32],
-    ) -> impl Future<Output = Result<AccountTokenOutcome, StorageError>> + Send;
+    ) -> Result<AccountTokenOutcome, StorageError>;
 
     /// Consume a live password-reset token, install the prepared hash, clear
     /// login lockout and consume every unconsumed sibling reset token.
@@ -89,9 +88,9 @@ pub trait AccountLifecycle: Send + Sync {
     ///
     /// # Errors
     /// Returns a storage failure if the atomic transition cannot complete.
-    fn reset_password(
+    async fn reset_password(
         &self,
         token_hash: &[u8; 32],
         password_hash: &str,
-    ) -> impl Future<Output = Result<AccountTokenOutcome, StorageError>> + Send;
+    ) -> Result<AccountTokenOutcome, StorageError>;
 }

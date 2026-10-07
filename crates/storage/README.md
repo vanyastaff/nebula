@@ -69,6 +69,10 @@ provides the adapters:
   password reset on the deployment database. API policy prepares hashes and
   tokens, then delivers email after commit. `PatRepo::revoke_for_principal`
   binds token ownership and idempotent revocation in one storage operation.
+- `auth::AuthPersistence` assembles the account repositories and identity codec
+  from one deployment pool. API policy consumes these object-safe roles; it
+  neither chooses SQL drivers nor constructs individual repositories. Startup
+  admission and identity-secret convergence remain explicit application stages.
 - `http_idempotency::*` — the API's idempotent-replay response cache
   (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); distinct from the
   port's per-attempt `IdempotencyGuard`.

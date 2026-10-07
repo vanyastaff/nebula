@@ -166,7 +166,7 @@ pub struct InMemoryAuthBackend {
     /// must keep their own `EchoSink` reference.
     default_echo: Option<Arc<EchoSink>>,
     /// Optional `nebula_api_auth_*` emission seam (mirror of the
-    /// `PgAuthBackend` slot so the trait-level contract stays uniform).
+    /// `DurableAuthBackend` slot so the trait-level contract stays uniform).
     /// `None` skips emission. Production composition root threads in
     /// the shared `Arc<MetricsRegistry>`; the existing in-memory test
     /// surface keeps `None` to preserve the previous no-emission
@@ -228,7 +228,7 @@ impl InMemoryAuthBackend {
     /// Wire an optional [`MetricsRegistry`] so the backend records
     /// `nebula_api_auth_*` counters / histogram on every outcome
     /// branch. Mirrors the `IdempotencyLayer::with_metrics` precedent
-    /// and the constructor injection on `super::pg::PgAuthBackend`
+    /// and the constructor injection on `super::durable::DurableAuthBackend`
     /// (feature-gated under `postgres`); tests that don't care opt
     /// out by passing `None` (the default).
     #[must_use]

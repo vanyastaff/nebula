@@ -135,7 +135,7 @@ pub struct ApiConfig {
     /// Plane-A authentication subsystem configuration.
     ///
     /// Drives the composition root's selection between the dev-only
-    /// in-memory `AuthBackend` and the PG-backed `PgAuthBackend`. The
+    /// in-memory `AuthBackend` and storage-backed `DurableAuthBackend`. The
     /// backend selector is bound to `API_AUTH_BACKEND`
     /// (case-insensitive `memory` / `postgres`).
     #[serde(default)]

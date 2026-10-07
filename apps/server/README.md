@@ -223,7 +223,7 @@ selection or unavailable storage aborts startup without a memory fallback.
 | `API_AUTH_BACKEND` | Identity backend | Durability |
 |--------------------|------------------|------------|
 | **unset** / `memory` | `InMemoryAuthBackend` | Process-local; lost on restart and not shared across replicas |
-| `postgres` | `PgAuthBackend` (build with `--features postgres`) | Users, sessions, PATs, verification/OAuth state, and external identity links survive restart and are shared through `DATABASE_URL` |
+| `postgres` | `DurableAuthBackend` with PostgreSQL persistence (build with `--features postgres`) | Users, sessions, PATs, verification/OAuth state, and external identity links survive restart and share the admitted deployment pool |
 
 ### PostgreSQL identity-authority upgrade runbook
 
@@ -240,7 +240,7 @@ cutover; mixed old/new auth nodes are unsupported.
    credential-owner deep admission. It closes the general pool before that
    fallback, and every failure is closed and redacted. All schema changes come
    from immutable numbered migrations.
-3. Start the new server. Before `PgAuthBackend` is exposed, the startup
+3. Start the new server. Before `DurableAuthBackend` is exposed, the startup
    migrator serializes replicas with an advisory lock, converts canonical
    historical TOTP seeds in bounded CAS batches, authenticates active and
    pending envelopes with user/purpose-bound AAD, and fails closed on a safe

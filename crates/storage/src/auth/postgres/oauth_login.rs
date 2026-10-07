@@ -15,7 +15,7 @@ use crate::{
     auth::session_token::session_token_digest,
     auth::{
         OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
-        OAuthLoginSessionDraft, UserRow,
+        OAuthLoginFinalizer, OAuthLoginSessionDraft, UserRow,
     },
 };
 
@@ -96,7 +96,10 @@ impl PgOAuthLoginFinalizer {
     pub fn new(pool: Pool<Postgres>) -> Self {
         Self { pool }
     }
+}
 
+#[async_trait::async_trait]
+impl OAuthLoginFinalizer for PgOAuthLoginFinalizer {
     /// Atomically converge one verified provider identity into a local
     /// user, stable external link, and exactly one session/MFA artifact.
     ///
@@ -105,7 +108,7 @@ impl PgOAuthLoginFinalizer {
     /// are resolved inside the transaction: callers never need to retry
     /// a duplicate user or link error to discover the canonical user.
     #[tracing::instrument(level = "info", skip_all, fields(operation = "oauth_login_finalize"))]
-    pub async fn finalize(
+    async fn finalize(
         &self,
         command: OAuthLoginFinalizeCommand,
     ) -> Result<OAuthLoginFinalizeOutcome, StorageError> {

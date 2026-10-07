@@ -43,6 +43,7 @@ fn tuple_to_candidate(row: CandidateTuple) -> Result<MfaEnrollmentCandidate, Sto
     MfaEnrollmentCandidate::new(enrollment_id, row.0, row.2, row.3, row.4)
 }
 
+#[async_trait::async_trait]
 impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
     #[tracing::instrument(level = "debug", skip(self, candidate))]
     async fn replace_candidate(

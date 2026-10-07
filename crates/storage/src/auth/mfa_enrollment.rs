@@ -6,8 +6,6 @@
 //! so the identity cipher can replace today's encoding without changing the
 //! repository contract.
 
-use std::future::Future;
-
 use chrono::{DateTime, Utc};
 
 use crate::StorageError;
@@ -119,27 +117,28 @@ pub enum MfaEnrollmentInstallOutcome {
 }
 
 /// Persistence boundary for pending MFA enrollment.
+#[async_trait::async_trait]
 pub trait MfaEnrollmentRepo: Send + Sync {
     /// Replace only the user's pending candidate; active MFA state is never
     /// modified by this operation.
-    fn replace_candidate(
+    async fn replace_candidate(
         &self,
         candidate: &MfaEnrollmentCandidate,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    ) -> Result<(), StorageError>;
 
     /// Load the user's current live candidate without consuming it.
-    fn get_live_candidate(
+    async fn get_live_candidate(
         &self,
         user_id: &[u8],
-    ) -> impl Future<Output = Result<Option<MfaEnrollmentCandidate>, StorageError>> + Send;
+    ) -> Result<Option<MfaEnrollmentCandidate>, StorageError>;
 
     /// Atomically consume the exact live candidate and install its secret
     /// envelope as the user's active factor.
-    fn install_candidate(
+    async fn install_candidate(
         &self,
         user_id: &[u8],
         enrollment_id: &[u8; 32],
-    ) -> impl Future<Output = Result<MfaEnrollmentInstallOutcome, StorageError>> + Send;
+    ) -> Result<MfaEnrollmentInstallOutcome, StorageError>;
 }
 
 #[cfg(test)]

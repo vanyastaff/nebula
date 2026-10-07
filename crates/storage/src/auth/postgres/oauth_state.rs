@@ -117,6 +117,7 @@ fn tuple_to_row(t: StateTuple) -> OAuthStateRow {
 const SELECT_COLS: &str =
     "state, provider, code_verifier, redirect_uri, created_at, expires_at, consumed_at";
 
+#[async_trait::async_trait]
 impl OAuthStateRepo for PgOAuthStateRepo {
     #[tracing::instrument(
         level = "debug",

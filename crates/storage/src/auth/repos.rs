@@ -1,114 +1,100 @@
 //! Account repository traits.
 
-use std::future::Future;
-
 use super::rows::{
     OAuthStateRow, PersonalAccessTokenRow, SessionDraft, SessionRow, UserRow, VerificationTokenRow,
 };
 use crate::StorageError;
 
 /// User account storage.
+#[async_trait::async_trait]
 pub trait UserRepo: Send + Sync {
     /// Insert a new user. Fails if email already exists among active users.
-    fn create(&self, user: &UserRow) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn create(&self, user: &UserRow) -> Result<(), StorageError>;
 
     /// Fetch a user by ID. Returns `None` if not found or soft-deleted.
-    fn get(&self, id: &[u8]) -> impl Future<Output = Result<Option<UserRow>, StorageError>> + Send;
+    async fn get(&self, id: &[u8]) -> Result<Option<UserRow>, StorageError>;
 
     /// Fetch a user by email (case-insensitive).
-    fn get_by_email(
-        &self,
-        email: &str,
-    ) -> impl Future<Output = Result<Option<UserRow>, StorageError>> + Send;
+    async fn get_by_email(&self, email: &str) -> Result<Option<UserRow>, StorageError>;
 
     /// Update a user with CAS on `version`.
-    fn update(
-        &self,
-        user: &UserRow,
-        expected_version: i64,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn update(&self, user: &UserRow, expected_version: i64) -> Result<(), StorageError>;
 
     /// Soft-delete a user (sets `deleted_at`).
-    fn soft_delete(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn soft_delete(&self, id: &[u8]) -> Result<(), StorageError>;
 
     /// Record a successful login (updates `last_login_at`, resets failed count).
-    fn record_login_success(
-        &self,
-        id: &[u8],
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn record_login_success(&self, id: &[u8]) -> Result<(), StorageError>;
 
     /// Record a failed login attempt. May set `locked_until` after threshold.
-    fn record_login_failure(
+    async fn record_login_failure(&self, id: &[u8]) -> Result<(), StorageError>;
+
+    /// Replace an exact active TOTP envelope after authenticating it with an
+    /// explicitly configured legacy key. Returns `false` on a benign CAS loss
+    /// or an unavailable account. A replacement increments the user version.
+    async fn rotate_mfa_secret_envelope(
         &self,
-        id: &[u8],
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+        user_id: &[u8],
+        expected_envelope: &[u8],
+        replacement_envelope: &[u8],
+    ) -> Result<bool, StorageError>;
 }
 
 /// Session storage for browser logins.
+#[async_trait::async_trait]
 pub trait SessionRepo: Send + Sync {
     /// Hash the one-time presented bearer and insert only its digest plus
     /// session metadata.
-    fn create(
+    async fn create(
         &self,
         presented_token: &[u8],
         session: &SessionDraft,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    ) -> Result<(), StorageError>;
 
     /// Fetch a session by ID. Returns `None` if not found, revoked, or expired.
-    fn get(
-        &self,
-        presented_token: &[u8],
-    ) -> impl Future<Output = Result<Option<SessionRow>, StorageError>> + Send;
+    async fn get(&self, presented_token: &[u8]) -> Result<Option<SessionRow>, StorageError>;
 
     /// Touch `last_active_at` to now.
-    fn touch(
-        &self,
-        presented_token: &[u8],
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn touch(&self, presented_token: &[u8]) -> Result<(), StorageError>;
 
     /// Mark the session as revoked.
-    fn revoke(
-        &self,
-        presented_token: &[u8],
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn revoke(&self, presented_token: &[u8]) -> Result<(), StorageError>;
 
     /// Delete all expired sessions. Returns the count deleted.
-    fn cleanup_expired(&self) -> impl Future<Output = Result<u64, StorageError>> + Send;
+    async fn cleanup_expired(&self) -> Result<u64, StorageError>;
 }
 
 /// Personal access token storage.
+#[async_trait::async_trait]
 pub trait PatRepo: Send + Sync {
     /// Insert a new PAT.
-    fn create(
-        &self,
-        pat: &PersonalAccessTokenRow,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn create(&self, pat: &PersonalAccessTokenRow) -> Result<(), StorageError>;
 
     /// Look up a PAT by its SHA-256 hash. Returns `None` if not found or revoked.
-    fn get_by_hash(
+    async fn get_by_hash(
         &self,
         hash: &[u8],
-    ) -> impl Future<Output = Result<Option<PersonalAccessTokenRow>, StorageError>> + Send;
+    ) -> Result<Option<PersonalAccessTokenRow>, StorageError>;
 
     /// Touch `last_used_at` after a successful auth.
-    fn touch(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn touch(&self, id: &[u8]) -> Result<(), StorageError>;
 
     /// Revoke only a PAT owned by this principal, including expired tokens.
     /// Returns `true` for an owned row, even if already revoked; foreign-owner
     /// and missing rows both return `false`. Preserve the original revocation time.
-    fn revoke_for_principal(
+    async fn revoke_for_principal(
         &self,
         id: &[u8],
         principal_kind: &str,
         principal_id: &[u8],
-    ) -> impl Future<Output = Result<bool, StorageError>> + Send;
+    ) -> Result<bool, StorageError>;
 
     /// List active PATs for a principal.
-    fn list_for_principal(
+    async fn list_for_principal(
         &self,
         principal_kind: &str,
         principal_id: &[u8],
-    ) -> impl Future<Output = Result<Vec<PersonalAccessTokenRow>, StorageError>> + Send;
+    ) -> Result<Vec<PersonalAccessTokenRow>, StorageError>;
 }
 
 /// One-time verification tokens (email verification, password reset,
@@ -117,12 +103,10 @@ pub trait PatRepo: Send + Sync {
 /// Tokens are stored by SHA-256 hash of the plaintext value; the
 /// plaintext is only available to the caller at mint time and is sent
 /// to the user out-of-band (email link, etc.).
+#[async_trait::async_trait]
 pub trait VerificationTokenRepo: Send + Sync {
     /// Insert a new verification token.
-    fn create(
-        &self,
-        token: &VerificationTokenRow,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    async fn create(&self, token: &VerificationTokenRow) -> Result<(), StorageError>;
 
     /// Atomically mark a token as consumed and return its row. Returns
     /// `None` if the token does not exist, is already consumed, or has
@@ -133,10 +117,10 @@ pub trait VerificationTokenRepo: Send + Sync {
     /// challenge) — that variant filters on `kind` inside the same SQL
     /// statement, so a token of the wrong kind sent to the wrong
     /// endpoint is rejected as `None` without being burned.
-    fn consume_by_hash(
+    async fn consume_by_hash(
         &self,
         token_hash: &[u8],
-    ) -> impl Future<Output = Result<Option<VerificationTokenRow>, StorageError>> + Send;
+    ) -> Result<Option<VerificationTokenRow>, StorageError>;
 
     /// Atomically mark a token as consumed **only when both `token_hash`
     /// AND `kind` match** an unconsumed, unexpired row, and return that
@@ -144,33 +128,29 @@ pub trait VerificationTokenRepo: Send + Sync {
     /// presented to the wrong route (where `kind` differs) — so a
     /// password-reset token sent to the MFA-verify endpoint cannot be
     /// destroyed by a blind consume.
-    fn consume_by_hash_and_kind(
+    async fn consume_by_hash_and_kind(
         &self,
         token_hash: &[u8],
         kind: &str,
-    ) -> impl Future<Output = Result<Option<VerificationTokenRow>, StorageError>> + Send;
+    ) -> Result<Option<VerificationTokenRow>, StorageError>;
 
     /// Fetch a token by hash without consuming it. Returns `None` if not
     /// found. Caller is responsible for checking `expires_at` /
     /// `consumed_at`. Primarily a test helper.
-    fn get_by_hash(
+    async fn get_by_hash(
         &self,
         token_hash: &[u8],
-    ) -> impl Future<Output = Result<Option<VerificationTokenRow>, StorageError>> + Send;
+    ) -> Result<Option<VerificationTokenRow>, StorageError>;
 
     /// Delete all expired (`expires_at < now`) tokens. Returns the
     /// count deleted.
-    fn cleanup_expired(&self) -> impl Future<Output = Result<u64, StorageError>> + Send;
+    async fn cleanup_expired(&self) -> Result<u64, StorageError>;
 
     /// Mark all unconsumed tokens for a user of the given `kind` as
     /// consumed. Used to invalidate in-flight reset / verification
     /// links after a successful action (e.g. password change). Returns
     /// the count revoked.
-    fn revoke_all_for_user(
-        &self,
-        user_id: &[u8],
-        kind: &str,
-    ) -> impl Future<Output = Result<u64, StorageError>> + Send;
+    async fn revoke_all_for_user(&self, user_id: &[u8], kind: &str) -> Result<u64, StorageError>;
 }
 
 /// Hard ceiling for live, unconsumed Plane-A OAuth states in one deployment.
@@ -201,17 +181,15 @@ pub enum OAuthStateAdmission {
 /// string; the matching `complete_oauth` atomically consumes the row
 /// to recover the PKCE `code_verifier` and validate the callback.
 /// Distinct from the Plane-B credential OAuth surface, which has its
-/// own state-pending table — see `0008_credentials.sql` family.
+/// own state-pending table in `0006_credentials.sql`.
+#[async_trait::async_trait]
 pub trait OAuthStateRepo: Send + Sync {
     /// Atomically clean expired rows, enforce [`OAUTH_STATE_CAPACITY`],
     /// and insert a new unconsumed PKCE state row.
     ///
     /// Implementations must fail closed under admission contention rather
     /// than waiting while holding a database connection.
-    fn admit(
-        &self,
-        state: &OAuthStateRow,
-    ) -> impl Future<Output = Result<OAuthStateAdmission, StorageError>> + Send;
+    async fn admit(&self, state: &OAuthStateRow) -> Result<OAuthStateAdmission, StorageError>;
 
     /// Atomically mark a PKCE state as consumed and return its row.
     /// Returns `None` if the state does not exist, is already consumed,
@@ -224,34 +202,28 @@ pub trait OAuthStateRepo: Send + Sync {
     /// that variant filters on `provider` inside the same SQL statement,
     /// so a state value crossed between providers is rejected as `None`
     /// without being burned.
-    fn consume_by_state(
-        &self,
-        state: &str,
-    ) -> impl Future<Output = Result<Option<OAuthStateRow>, StorageError>> + Send;
+    async fn consume_by_state(&self, state: &str) -> Result<Option<OAuthStateRow>, StorageError>;
 
     /// Atomically mark a PKCE state as consumed **only when both `state`
     /// AND `provider` match** an unconsumed, unexpired row, and return
     /// that row. Returns `None` on any mismatch (including a state value
     /// crossed between providers), so a callback presenting the wrong
     /// provider cannot destroy a valid row.
-    fn consume_by_state_and_provider(
+    async fn consume_by_state_and_provider(
         &self,
         state: &str,
         provider: &str,
-    ) -> impl Future<Output = Result<Option<OAuthStateRow>, StorageError>> + Send;
+    ) -> Result<Option<OAuthStateRow>, StorageError>;
 
     /// Delete all expired (`expires_at < now`) rows. Returns the count
     /// deleted.
-    fn cleanup_expired(&self) -> impl Future<Output = Result<u64, StorageError>> + Send;
+    async fn cleanup_expired(&self) -> Result<u64, StorageError>;
 
     /// Fetch a state row without consuming it. Returns `None` if not
     /// found. Primarily a test helper — production paths must use
     /// [`consume_by_state`](Self::consume_by_state) so the row cannot
     /// be replayed.
-    fn get_by_state(
-        &self,
-        state: &str,
-    ) -> impl Future<Output = Result<Option<OAuthStateRow>, StorageError>> + Send;
+    async fn get_by_state(&self, state: &str) -> Result<Option<OAuthStateRow>, StorageError>;
 }
 
 /// Repository for the `external_identities` table (Plane-A OAuth
@@ -260,19 +232,19 @@ pub trait OAuthStateRepo: Send + Sync {
 ///
 /// Read path serves the REQ-oauth-006 short-circuit on repeat logins
 /// (find_user_by_external returning `Some(user_id)` means the user
-/// has logged in via this IdP before; mint session directly without
-/// consulting the email truth-table). Write path runs on first login
-/// AND on each verified-email cross-link (REQ-oauth-004 / -005).
+/// has logged in via this IdP before. Login finalization owns the atomic
+/// account/link/session decision; an email match alone never authorizes a link.
+#[async_trait::async_trait]
 pub trait ExternalIdentityRepo: Send + Sync {
     /// Resolve `(provider, subject)` to a Nebula `user_id`. Returns
     /// `None` when there is no existing link — the caller then falls
-    /// through to the email truth-table (first login or existing-user
-    /// link by verified email).
-    fn find_user_by_external(
+    /// through to login finalization, which distinguishes a new account from
+    /// an email collision requiring explicit account linking.
+    async fn find_user_by_external(
         &self,
         provider: &str,
         subject: &str,
-    ) -> impl Future<Output = Result<Option<Vec<u8>>, StorageError>> + Send;
+    ) -> Result<Option<Vec<u8>>, StorageError>;
 
     /// Establish a new `(provider, subject) -> user_id` link. The PK
     /// constraint rejects duplicate inserts; callers race only on the
@@ -283,13 +255,13 @@ pub trait ExternalIdentityRepo: Send + Sync {
     ///
     /// `email` is the IdP-side email AT LINK TIME (audit only). NOT
     /// updated on subsequent logins per Scenario 6.2.
-    fn link_external(
+    async fn link_external(
         &self,
         user_id: &[u8],
         provider: &str,
         subject: &str,
         email: Option<&str>,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    ) -> Result<(), StorageError>;
 }
 
 #[cfg(test)]

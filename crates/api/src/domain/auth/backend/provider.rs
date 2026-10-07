@@ -7,7 +7,7 @@
 //! ## Metrics emission helpers (`metrics_emit`)
 //!
 //! Both [`super::InMemoryAuthBackend`] and (under `feature = "postgres"`)
-//! `super::pg::PgAuthBackend` share the closed-set emission discipline for
+//! `super::durable::DurableAuthBackend` share the closed-set emission discipline for
 //! the `nebula_api_auth_*` family. The shared helpers live in a private
 //! `metrics_emit` submodule below so the two backends cannot drift on
 //! label key/value strings (the module is `pub(super)` so it is hidden
@@ -29,7 +29,7 @@ use super::{
 };
 
 /// Shared `nebula_api_auth_*` emission helpers consumed by
-/// [`super::InMemoryAuthBackend`] and `super::pg::PgAuthBackend`
+/// [`super::InMemoryAuthBackend`] and [`super::DurableAuthBackend`]
 /// (the latter is feature-gated under `postgres` so an intra-doc
 /// link cannot resolve unconditionally — kept as plain code for that
 /// reason).

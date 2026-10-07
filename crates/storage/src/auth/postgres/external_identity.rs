@@ -37,6 +37,7 @@ impl PgExternalIdentityRepo {
     }
 }
 
+#[async_trait::async_trait]
 impl ExternalIdentityRepo for PgExternalIdentityRepo {
     #[tracing::instrument(level = "debug", skip(self, subject), fields(provider))]
     async fn find_user_by_external(

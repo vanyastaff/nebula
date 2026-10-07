@@ -9,7 +9,7 @@
 //!
 //! One session-level advisory lock serializes the pass across new replicas.
 //! The first-party composition root must await [`PgIdentitySecretMigrator::run`]
-//! before constructing or exposing `PgAuthBackend`.
+//! before exposing durable authentication.
 
 use std::sync::Arc;
 

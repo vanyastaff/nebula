@@ -71,6 +71,7 @@ fn tuple_to_row(t: SessionTuple) -> Result<SessionRow, StorageError> {
 const SELECT_COLS: &str = "token_digest, user_id, created_at, last_active_at, expires_at, \
      host(ip_address) AS ip_address, user_agent, revoked_at";
 
+#[async_trait::async_trait]
 impl SessionRepo for PgSessionRepo {
     #[tracing::instrument(level = "debug", skip(self, presented_token, session))]
     async fn create(

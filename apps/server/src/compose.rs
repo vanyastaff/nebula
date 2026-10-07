@@ -997,9 +997,9 @@ async fn build_pg_auth_backend(
     key_provider: Arc<dyn KeyProvider>,
     legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
-    use nebula_api::domain::auth::backend::PgAuthBackend;
+    use nebula_api::domain::auth::backend::DurableAuthBackend;
     use nebula_storage::auth::{
-        identity_secret::IdentitySecretCodec, postgres::PgIdentitySecretMigrator,
+        AuthPersistence, identity_secret::IdentitySecretCodec, postgres::PgIdentitySecretMigrator,
     };
     let DeploymentDatabase::Postgres(pool) = database else {
         return Err(TransportInitError::AuthBackendUnavailable {
@@ -1027,7 +1027,8 @@ async fn build_pg_auth_backend(
                     "auth: identity secret migration failed: {error}"
                 ))
             })?;
-    let backend = PgAuthBackend::new(pool.clone(), email_port, metrics_registry, identity_secrets);
+    let persistence = AuthPersistence::postgres(pool.clone(), identity_secrets);
+    let backend = DurableAuthBackend::new(persistence, email_port, metrics_registry);
     let backend = match oauth_runtime {
         Some(runtime) => backend.with_oauth_runtime(runtime),
         None => backend,
@@ -1047,7 +1048,7 @@ async fn build_pg_auth_backend(
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     Err(TransportInitError::AuthBackendUnavailable {
         requested: "postgres",
-        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + PgAuthBackend",
+        requirement: "the nebula-server/postgres cargo feature",
     })
 }
 

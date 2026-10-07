@@ -144,7 +144,7 @@ impl Default for IdempotencyApiConfig {
 /// [`InMemoryAuthBackend`] (the production-quality default with Argon2id
 /// passwords, RFC 6238 TOTP, and SHA-256 PAT lookup but per-process
 /// `DashMap` state that is lost on restart) and the durable PG-backed
-/// `PgAuthBackend`.
+/// `DurableAuthBackend` with PostgreSQL persistence.
 ///
 /// The composition root MUST fail closed when [`AuthBackendKind::Postgres`]
 /// is selected without a configured `DATABASE_URL`, mirroring the
