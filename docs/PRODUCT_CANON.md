@@ -182,14 +182,22 @@ deployment capabilities. The release gates above still apply.
 
 | Target | Server ownership | Execution and persistence |
 |--------|------------------|---------------------------|
-| Local | Desktop can start and manage a local Nebula server; web can use its served interface | Server owns API, execution runtime and durable file-backed SQLite |
-| Self-hosted | Operator manages a remote Nebula deployment | Server and workers own runtime state in PostgreSQL |
+| Local | Desktop can manage a native server process or a local Docker deployment, or connect to an operator-managed instance | Server owns API and execution runtime; the simple local profile uses durable file-backed SQLite |
+| Self-hosted | Operator manages a Nebula deployment, on the same machine or remotely | Server and workers own runtime state in PostgreSQL |
 | Cloud | Nebula operates the remote deployment | Same product API and durability contracts; hosted operations and isolation require their own release evidence |
 
 The client connects through the versioned product API in every mode. It never
 opens the server's database or acquires aggregate write authority. A local
 deployment must execute accepted workflows through its owning runtime; starting
 an API listener alone is not a working local workflow application.
+
+Server location, launch mechanism and lifecycle ownership are separate choices.
+Docker is an optional launch mechanism, not a storage backend or a requirement
+for local use. An operator may run the PostgreSQL self-hosted topology locally.
+Stopping an owned process or container must preserve its durable data; deleting
+a local profile or its volume is a separate explicit operation. Container support
+for the application is part of this planned target, not a claim about the current
+development infrastructure Compose files.
 
 **[L1] Connection isolation:** saved connection metadata is separate from server
 deployment configuration and authentication secrets. Sessions, tenant selection,
