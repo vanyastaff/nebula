@@ -65,6 +65,10 @@ provides the adapters:
   persistence outside the port contract (users, sessions, PATs, OAuth state,
   external identities, MFA enrollment): traits and rows in `auth`, PostgreSQL
   implementations in `auth::postgres`.
+- `auth::AccountLifecycle` owns atomic password signup, email verification and
+  password reset on the deployment database. API policy prepares hashes and
+  tokens, then delivers email after commit. `PatRepo::revoke_for_principal`
+  binds token ownership and idempotent revocation in one storage operation.
 - `http_idempotency::*` — the API's idempotent-replay response cache
   (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); distinct from the
   port's per-attempt `IdempotencyGuard`.

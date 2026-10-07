@@ -93,8 +93,15 @@ pub trait PatRepo: Send + Sync {
     /// Touch `last_used_at` after a successful auth.
     fn touch(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
 
-    /// Revoke a PAT (sets `revoked_at`).
-    fn revoke(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
+    /// Revoke only a PAT owned by this principal, including expired tokens.
+    /// Returns `true` for an owned row, even if already revoked; foreign-owner
+    /// and missing rows both return `false`. Preserve the original revocation time.
+    fn revoke_for_principal(
+        &self,
+        id: &[u8],
+        principal_kind: &str,
+        principal_id: &[u8],
+    ) -> impl Future<Output = Result<bool, StorageError>> + Send;
 
     /// List active PATs for a principal.
     fn list_for_principal(

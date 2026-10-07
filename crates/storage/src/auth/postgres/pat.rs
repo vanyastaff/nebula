@@ -1,6 +1,6 @@
 //! Postgres implementation of [`PatRepo`].
 //!
-//! Schema: migration `0002_user_auth.sql` (`personal_access_tokens`
+//! Schema: migration `0001_identity.sql` (`personal_access_tokens`
 //! table) \u2014 the SHA-256 lookup leans on `ix_personal_access_tokens__hash__unrevoked`, which is a
 //! partial index over the `hash` column where `revoked_at IS NULL`.
 //!
@@ -10,8 +10,8 @@
 //!   or expired rows; callers do not need to re-check.
 //! - [`touch`](PatRepo::touch) is best-effort and stays a no-op for
 //!   revoked or expired rows.
-//! - [`revoke`](PatRepo::revoke) is idempotent: the `revoked_at IS NULL`
-//!   guard preserves the original timestamp on re-revoke.
+//! - [`revoke_for_principal`](PatRepo::revoke_for_principal) is owner-qualified
+//!   and idempotent: `COALESCE` preserves the original timestamp on re-revoke.
 //! - [`list_for_principal`](PatRepo::list_for_principal) only returns
 //!   active tokens (not revoked, not expired) sorted by `created_at`.
 
@@ -146,20 +146,25 @@ impl PatRepo for PgPatRepo {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self), fields(pat_id = %hex::encode(id)))]
-    async fn revoke(&self, id: &[u8]) -> Result<(), StorageError> {
-        debug_assert!(!id.is_empty(), "id must not be empty");
-        // Idempotent: the `revoked_at IS NULL` guard preserves the
-        // original revocation timestamp on re-revoke.
-        sqlx::query(
-            "UPDATE personal_access_tokens SET revoked_at = NOW() \
-             WHERE id = $1 AND revoked_at IS NULL",
+    #[tracing::instrument(skip_all)]
+    async fn revoke_for_principal(
+        &self,
+        id: &[u8],
+        principal_kind: &str,
+        principal_id: &[u8],
+    ) -> Result<bool, StorageError> {
+        let affected = sqlx::query(
+            "UPDATE personal_access_tokens SET revoked_at = COALESCE(revoked_at, NOW())
+             WHERE id = $1 AND principal_kind = $2 AND principal_id = $3",
         )
         .bind(id)
+        .bind(principal_kind)
+        .bind(principal_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| storage_error_for("pat", e))?;
-        Ok(())
+        .map_err(|error| storage_error_for("pat", error))?
+        .rows_affected();
+        Ok(affected == 1)
     }
 
     #[tracing::instrument(
@@ -310,11 +315,19 @@ mod tests {
         let hash = pat.hash.clone();
         repo.create(&pat).await.expect("create");
 
-        repo.revoke(&pat.id).await.expect("revoke");
+        assert!(
+            repo.revoke_for_principal(&pat.id, "user", &user_id)
+                .await
+                .expect("revoke")
+        );
         let after = repo.get_by_hash(&hash).await.expect("get_by_hash");
         assert!(after.is_none(), "revoked PAT must not surface");
         // Idempotent: re-revoking is a no-op.
-        repo.revoke(&pat.id).await.expect("idempotent revoke");
+        assert!(
+            repo.revoke_for_principal(&pat.id, "user", &user_id)
+                .await
+                .expect("idempotent revoke")
+        );
     }
 
     #[tokio::test]

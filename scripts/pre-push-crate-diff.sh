@@ -123,9 +123,10 @@ if package_selected nebula-storage; then
       --features sqlite,postgres \
       --test conformance \
       --test pg_idempotency \
+      --test account_lifecycle_postgres \
       --test refresh_claim_conformance_postgres \
       --profile agent
   else
-    echo "lefthook: WARN — DATABASE_URL unset; skipping PG-gated storage tests (conformance, pg_idempotency, refresh_claim_conformance_postgres)"
+    echo "lefthook: WARN — DATABASE_URL unset; skipping PG-gated storage tests (conformance, pg_idempotency, account_lifecycle_postgres, refresh_claim_conformance_postgres)"
   fi
 fi

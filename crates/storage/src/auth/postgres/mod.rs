@@ -2,12 +2,13 @@
 //! identity-secret rotation migrator.
 //!
 //! Each module implements one repository trait of [`crate::auth`]. Errors go
-//! through [`crate::sql_error::storage_error_for`], so a unique violation is a
+//! through the shared SQL error classifier, so a unique violation is a
 //! [`crate::StorageError::Duplicate`] naming the entity and constraint.
 //!
 //! Tests are gated behind `cfg(all(test, feature = "postgres"))` and are
 //! skipped when `DATABASE_URL` is not set.
 
+mod account_lifecycle;
 mod external_identity;
 mod identity_secret;
 mod mfa_enrollment;
@@ -18,6 +19,7 @@ mod session;
 pub(crate) mod user;
 mod verification_token;
 
+pub use account_lifecycle::PgAccountLifecycle;
 pub use external_identity::PgExternalIdentityRepo;
 pub use identity_secret::{
     IdentitySecretMigrationError, IdentitySecretMigrationReport, IdentitySecretRejectionReason,

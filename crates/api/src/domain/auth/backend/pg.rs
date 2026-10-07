@@ -35,13 +35,10 @@
 //!
 //! ## Transactional flows
 //!
-//! [`register_user`], [`verify_email`], and
-//! [`complete_password_reset`] are the multi-step writes; each wraps
-//! its statements in a single `sqlx::Transaction` and bypasses the
-//! repo abstraction inside the tx because the repos are pool-bound
-//! and not `Executor`-generic. Convert to `Executor`-generic repos
-//! when a fourth multi-step flow appears. See the inline comments at
-//! each method site.
+//! [`register_user`], [`verify_email`], and [`complete_password_reset`]
+//! submit atomic account transitions to [`nebula_storage::auth::AccountLifecycle`].
+//! Password hashing, token minting and email delivery remain outside those
+//! transactions. This backend does not issue SQL or own transaction boundaries.
 //!
 //! ## Background sweepers
 //!
@@ -70,15 +67,15 @@ use sha2::{Digest, Sha256};
 use sqlx::{Pool, Postgres};
 
 use nebula_storage::auth::{
-    MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo,
-    OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
+    AccountLifecycle, AccountTokenOutcome, MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome,
+    MfaEnrollmentRepo, OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
     OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft, OAuthLoginUserDraft, OAuthStateAdmission,
-    OAuthStateRepo, OAuthStateRow, PatRepo, PersonalAccessTokenRow, SessionDraft, SessionRepo,
-    UserRepo, UserRow, VerificationTokenRepo, VerificationTokenRow,
+    OAuthStateRepo, OAuthStateRow, PasswordRegistration, PatRepo, PersonalAccessTokenRow,
+    SessionDraft, SessionRepo, UserRepo, UserRow, VerificationTokenRepo, VerificationTokenRow,
     identity_secret::{IdentitySecretCodec, TotpSecretPurpose},
     postgres::{
-        PgMfaEnrollmentRepo, PgOAuthLoginFinalizer, PgOAuthStateRepo, PgPatRepo, PgSessionRepo,
-        PgUserRepo, PgVerificationTokenRepo,
+        PgAccountLifecycle, PgMfaEnrollmentRepo, PgOAuthLoginFinalizer, PgOAuthStateRepo,
+        PgPatRepo, PgSessionRepo, PgUserRepo, PgVerificationTokenRepo,
     },
 };
 
@@ -97,12 +94,7 @@ use super::{
 };
 use crate::ports::email::{EmailKind, EmailMessage, EmailPort};
 
-/// MFA-challenge lifetime — mirrors the in-memory backend constant exactly
-/// so swapping backings does not change user-visible behaviour. NOTE: the
-/// `verification_tokens.kind` column docstring in `0002_user_auth.sql`
-/// does not include `'mfa_challenge'`; the column is plain `TEXT` with no
-/// `CHECK` so storing it works today. The docstring catch-up is tracked
-/// separately.
+/// MFA-challenge lifetime, matching the in-memory backend.
 const MFA_CHALLENGE_TTL: Duration = Duration::from_mins(5);
 
 /// Email-verification + password-reset token lifetime.
@@ -112,15 +104,10 @@ const VERIFICATION_TTL: Duration = Duration::from_hours(1);
 /// [`complete_password_reset`].
 const MIN_PASSWORD_LEN: usize = 8;
 
-/// `verification_tokens.kind` literal for email-verification tokens.
-const KIND_EMAIL_VERIFICATION: &str = "email_verification";
-
 /// `verification_tokens.kind` literal for password-reset tokens.
 const KIND_PASSWORD_RESET: &str = "password_reset";
 
-/// `verification_tokens.kind` literal for MFA-challenge tokens. NOTE: not
-/// listed in the `0002_user_auth.sql` docstring; column is plain `TEXT`
-/// with no `CHECK` so this stores correctly today.
+/// Verification-token kind for a local MFA challenge.
 const KIND_MFA_CHALLENGE: &str = "mfa_challenge";
 
 /// `personal_access_tokens.principal_kind` literal for human users.
@@ -128,9 +115,8 @@ const PRINCIPAL_KIND_USER: &str = "user";
 
 /// Production [`AuthBackend`] backed by the spec-16 PG identity repos.
 ///
-/// Holds an `Arc` of each repo plus the underlying `Pool<Postgres>`
-/// (used by the transactional flows that bypass the repo abstraction)
-/// and the shared [`EmailPort`].
+/// Holds account repositories and atomic transition owners on the same
+/// deployment pool, plus the shared [`EmailPort`].
 pub struct PgAuthBackend {
     user_repo: Arc<PgUserRepo>,
     session_repo: Arc<PgSessionRepo>,
@@ -138,16 +124,7 @@ pub struct PgAuthBackend {
     verification_token_repo: Arc<PgVerificationTokenRepo>,
     mfa_enrollment_repo: Arc<PgMfaEnrollmentRepo>,
     oauth_state_repo: Arc<PgOAuthStateRepo>,
-    /// Held alongside the repos because the multi-step flows
-    /// ([`register_user`], [`verify_email`],
-    /// [`complete_password_reset`]) call `pool.begin()` directly: the
-    /// repos themselves are pool-bound and not yet `Executor`-generic.
-    /// Convert when a fourth multi-step flow appears.
-    ///
-    /// [`register_user`]: AuthBackend::register_user
-    /// [`verify_email`]: AuthBackend::verify_email
-    /// [`complete_password_reset`]: AuthBackend::complete_password_reset
-    pool: Pool<Postgres>,
+    account_lifecycle: PgAccountLifecycle,
     /// Shared outbound-email port. The composition root injects the
     /// same `Arc<dyn EmailPort>` into both `AppState::email_port` and
     /// here, so the slot is always consumed by exactly the same
@@ -178,7 +155,7 @@ impl PgAuthBackend {
     /// shared `Arc<dyn EmailPort>`, and an optional `Arc<MetricsRegistry>`
     /// for the `nebula_api_auth_*` emission seam.
     ///
-    /// The five PG identity repos are built internally from the pool
+    /// Account repositories and transition owners share the supplied pool
     /// (each holds its own clone, which is cheap — `Pool` is an `Arc`
     /// internally). `metrics` follows the `IdempotencyLayer::with_metrics`
     /// precedent: `None` for tests that do not exercise the emission
@@ -201,7 +178,7 @@ impl PgAuthBackend {
             )),
             oauth_state_repo: Arc::new(PgOAuthStateRepo::new(pool.clone())),
             oauth_login_finalizer: Arc::new(PgOAuthLoginFinalizer::new(pool.clone())),
-            pool,
+            account_lifecycle: PgAccountLifecycle::new(pool),
             email_port,
             metrics,
             oauth_runtime: None,
@@ -531,51 +508,17 @@ impl AuthBackend for PgAuthBackend {
                 let now = Utc::now();
                 let expires_at = now + chrono_duration(VERIFICATION_TTL)?;
 
-                // Two-step tx bypasses the repo abstraction: orphan-row
-                // prevention requires user + verification-token INSERT
-                // atomicity. The repos are pool-bound; convert to
-                // `Executor`-generic when a fourth multi-step flow appears.
-                let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
-
-                let user_insert = sqlx::query(
-                    "INSERT INTO users \
-             (id, email, email_verified_at, display_name, avatar_url, password_hash, \
-              created_at, last_login_at, locked_until, failed_login_count, mfa_enabled, \
-              mfa_secret_envelope, version, deleted_at) \
-             VALUES ($1, $2, NULL, $3, NULL, $4, $5, NULL, NULL, 0, FALSE, NULL, 0, NULL)",
-                )
-                .bind(user_bytes.as_slice())
-                .bind(&email)
-                .bind(display_name)
-                .bind(&password_hash)
-                .bind(now)
-                .execute(&mut *tx)
-                .await;
-
-                if let Err(err) = user_insert {
-                    // Roll back implicitly by dropping the tx without commit;
-                    // surface a typed conflict for the unique-email index.
-                    if is_unique_violation(&err) {
-                        return Err(AuthError::EmailAlreadyRegistered);
-                    }
-                    return Err(map_sqlx_err(err));
-                }
-
-                sqlx::query(
-                    "INSERT INTO verification_tokens \
-             (token_hash, user_id, kind, payload, created_at, expires_at, consumed_at) \
-             VALUES ($1, $2, $3, NULL, $4, $5, NULL)",
-                )
-                .bind(verification_hash.as_slice())
-                .bind(user_bytes.as_slice())
-                .bind(KIND_EMAIL_VERIFICATION)
-                .bind(now)
-                .bind(expires_at)
-                .execute(&mut *tx)
-                .await
-                .map_err(map_sqlx_err)?;
-
-                tx.commit().await.map_err(map_sqlx_err)?;
+                self.account_lifecycle
+                    .register_password_user(&PasswordRegistration {
+                        user_id: user_bytes.as_slice(),
+                        email: &email,
+                        display_name,
+                        password_hash: &password_hash,
+                        verification_hash: &verification_hash,
+                        created_at: now,
+                        verification_expires_at: expires_at,
+                    })
+                    .await?;
 
                 // Email send happens AFTER the tx commits. A delivery failure
                 // here returns `AuthError::Internal` — the user still exists in
@@ -907,46 +850,17 @@ impl AuthBackend for PgAuthBackend {
     #[tracing::instrument(level = "info", skip(self), fields(user_id, pat_id))]
     async fn revoke_pat(&self, user_id: &str, pat_id: &str) -> Result<(), AuthError> {
         let bytes = user_id_bytes(user_id)?;
-        // Cross-user existence is hidden — a PAT owned by a different
-        // principal is reported as not-found, same as a missing token.
-        // `list_for_principal` only returns ACTIVE tokens, so an
-        // already-revoked PAT belonging to this user would fall through
-        // to a `UserNotFound` 404 — wrong for a documented-idempotent
-        // DELETE. Distinguish "unknown PAT" from "already revoked" with
-        // a single ownership probe that ignores the revoked filter.
+        // Ownership and revocation are one storage decision. Repeats succeed
+        // for the owner; a foreign token is indistinguishable from a missing one.
         let owned = self
             .pat_repo
-            .list_for_principal(PRINCIPAL_KIND_USER, &bytes)
-            .await?
-            .into_iter()
-            .find(|row| row.id == pat_id.as_bytes());
-        if let Some(row) = owned {
-            self.pat_repo.revoke(&row.id).await?;
-            tracing::info!(user_id = %user_id, pat_id = %pat_id, "personal access token revoked");
-            return Ok(());
+            .revoke_for_principal(pat_id.as_bytes(), PRINCIPAL_KIND_USER, &bytes)
+            .await?;
+        if !owned {
+            return Err(AuthError::UserNotFound);
         }
-        // No live PAT matched. Check whether the row exists at all and
-        // belongs to this principal — if so the second revoke is a no-op
-        // (idempotent). If not, surface `UserNotFound` exactly as before.
-        let existing: Option<(Vec<u8>,)> = sqlx::query_as(
-            "SELECT id FROM personal_access_tokens \
-             WHERE id = $1 AND principal_kind = $2 AND principal_id = $3",
-        )
-        .bind(pat_id.as_bytes())
-        .bind(PRINCIPAL_KIND_USER)
-        .bind(bytes.as_slice())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(map_sqlx_err)?;
-        if existing.is_some() {
-            tracing::info!(
-                user_id = %user_id,
-                pat_id = %pat_id,
-                "personal access token revoke is a no-op (already revoked)",
-            );
-            return Ok(());
-        }
-        Err(AuthError::UserNotFound)
+        tracing::info!(user_id = %user_id, pat_id = %pat_id, "personal access token revoked");
+        Ok(())
     }
 
     #[tracing::instrument(level = "info", skip(self, email))]
@@ -1033,65 +947,11 @@ impl AuthBackend for PgAuthBackend {
                 let new_hash = password::hash_password(new_password)?;
                 let token_hash = sha256_token(token);
 
-                // Three-step tx bypasses the repo abstraction: the
-                // consume-token / update-password / revoke-siblings sequence
-                // must be atomic so a partial application cannot strand a
-                // burned token against an unchanged password. The repos are
-                // pool-bound; convert to `Executor`-generic when a fourth
-                // multi-step flow appears.
-                let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
-
-                let consumed: Option<(Vec<u8>,)> = sqlx::query_as(
-                    "UPDATE verification_tokens SET consumed_at = NOW() \
-             WHERE token_hash = $1 AND kind = $2 \
-               AND consumed_at IS NULL AND expires_at > NOW() \
-             RETURNING user_id",
+                account_token_result(
+                    self.account_lifecycle
+                        .reset_password(&token_hash, &new_hash)
+                        .await?,
                 )
-                .bind(token_hash.as_slice())
-                .bind(KIND_PASSWORD_RESET)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(map_sqlx_err)?;
-
-                let Some((user_id_bytes,)) = consumed else {
-                    return Err(AuthError::InvalidToken);
-                };
-
-                // No CAS guard inside the tx — the consumed-by-hash row IS
-                // the serialization point: only one caller can successfully
-                // burn the token, so concurrent password-set races are
-                // impossible for the same reset link. `version` is still
-                // bumped so any concurrent reader sees the world advance.
-                let updated = sqlx::query(
-                    "UPDATE users SET \
-                 password_hash = $2, failed_login_count = 0, locked_until = NULL, \
-                 version = version + 1 \
-             WHERE id = $1 AND deleted_at IS NULL",
-                )
-                .bind(user_id_bytes.as_slice())
-                .bind(&new_hash)
-                .execute(&mut *tx)
-                .await
-                .map_err(map_sqlx_err)?
-                .rows_affected();
-                if updated == 0 {
-                    return Err(AuthError::UserNotFound);
-                }
-
-                // Revoke any in-flight sibling reset tokens so a stolen second
-                // link cannot be replayed after a successful reset.
-                sqlx::query(
-                    "UPDATE verification_tokens SET consumed_at = NOW() \
-                     WHERE user_id = $1 AND kind = $2 AND consumed_at IS NULL",
-                )
-                .bind(user_id_bytes.as_slice())
-                .bind(KIND_PASSWORD_RESET)
-                .execute(&mut *tx)
-                .await
-                .map_err(map_sqlx_err)?;
-
-                tx.commit().await.map_err(map_sqlx_err)?;
-                Ok(())
             },
             |result| match result {
                 Ok(()) => auth_outcome::SUCCESS,
@@ -1117,50 +977,7 @@ impl AuthBackend for PgAuthBackend {
             async move {
                 let token_hash = sha256_token(token);
 
-                // Two-step tx bypasses the repo abstraction: the token-consume
-                // + email-verified flip must be atomic so a CAS-loss or vanished
-                // user row cannot strand a burned verification token against an
-                // unchanged `email_verified_at`. The repos are pool-bound;
-                // convert to `Executor`-generic when a fourth multi-step flow
-                // appears.
-                let mut tx = self.pool.begin().await.map_err(map_sqlx_err)?;
-
-                let consumed: Option<(Vec<u8>,)> = sqlx::query_as(
-                    "UPDATE verification_tokens SET consumed_at = NOW() \
-             WHERE token_hash = $1 AND kind = $2 \
-               AND consumed_at IS NULL AND expires_at > NOW() \
-             RETURNING user_id",
-                )
-                .bind(token_hash.as_slice())
-                .bind(KIND_EMAIL_VERIFICATION)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(map_sqlx_err)?;
-
-                let Some((user_id_bytes,)) = consumed else {
-                    return Err(AuthError::InvalidToken);
-                };
-
-                // No CAS guard inside the tx — the consumed-by-hash row IS
-                // the serialization point for this user's email-verify flow.
-                // Bump `version` so concurrent readers see the world advance.
-                let updated = sqlx::query(
-                    "UPDATE users SET \
-                         email_verified_at = NOW(), \
-                         version = version + 1 \
-                     WHERE id = $1 AND deleted_at IS NULL",
-                )
-                .bind(user_id_bytes.as_slice())
-                .execute(&mut *tx)
-                .await
-                .map_err(map_sqlx_err)?
-                .rows_affected();
-                if updated == 0 {
-                    return Err(AuthError::UserNotFound);
-                }
-
-                tx.commit().await.map_err(map_sqlx_err)?;
-                Ok(())
+                account_token_result(self.account_lifecycle.verify_email(&token_hash).await?)
             },
             |result| match result {
                 Ok(()) => auth_outcome::SUCCESS,
@@ -1494,21 +1311,12 @@ fn chrono_duration(d: Duration) -> Result<chrono::Duration, AuthError> {
         .map_err(|e| AuthError::Internal(format!("duration out of range: {e}")))
 }
 
-/// Map a raw `sqlx::Error` into [`AuthError::Internal`] for the
-/// transactional flows that bypass the repo abstraction.
-fn map_sqlx_err(err: sqlx::Error) -> AuthError {
-    AuthError::Internal(format!("storage: {err}"))
-}
-
-/// Detect the SQLSTATE `23505` (unique violation) inside a raw
-/// `sqlx::Error` — used by [`register_user`] to translate the
-/// `users` email-unique-index conflict into
-/// [`AuthError::EmailAlreadyRegistered`].
-fn is_unique_violation(err: &sqlx::Error) -> bool {
-    if let sqlx::Error::Database(db_err) = err {
-        return db_err.code().as_deref() == Some("23505");
+fn account_token_result(outcome: AccountTokenOutcome) -> Result<(), AuthError> {
+    match outcome {
+        AccountTokenOutcome::Applied => Ok(()),
+        AccountTokenOutcome::InvalidToken => Err(AuthError::InvalidToken),
+        AccountTokenOutcome::UserUnavailable => Err(AuthError::UserNotFound),
     }
-    false
 }
 
 #[cfg(test)]

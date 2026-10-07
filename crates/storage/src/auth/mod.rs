@@ -12,6 +12,7 @@
 //! - Return types are the row structs of this module.
 //! - All errors are [`crate::StorageError`].
 
+mod account_lifecycle;
 pub mod identity_secret;
 mod mfa_enrollment;
 mod oauth_login;
@@ -27,6 +28,7 @@ mod repos;
 mod rows;
 pub mod session_token;
 
+pub use account_lifecycle::{AccountLifecycle, AccountTokenOutcome, PasswordRegistration};
 pub use mfa_enrollment::{MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo};
 pub use oauth_login::{
     OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,

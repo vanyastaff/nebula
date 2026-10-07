@@ -4,30 +4,9 @@ use chrono::Utc;
 
 use crate::auth::UserRow;
 
-/// Generate a pseudo-unique 16-byte ID for tests.
-///
-/// Uses nanosecond timestamp mixed with an atomic counter,
-/// producing IDs that are unique across calls within a process.
+/// Generate a 16-byte ID for fixtures shared by independent test processes.
 pub fn random_id() -> Vec<u8> {
-    use std::{
-        sync::atomic::{AtomicU64, Ordering},
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    };
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    // A pre-epoch wall clock (broken environment) would make
-    // `duration_since(UNIX_EPOCH)` fail; degrade to zero instead of panicking.
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_nanos();
-    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    let mut bytes = [0u8; 16];
-    bytes[..8].copy_from_slice(&nanos.to_le_bytes()[..8]);
-    bytes[8..16].copy_from_slice(&seq.to_le_bytes());
-    bytes.to_vec()
+    uuid::Uuid::new_v4().as_bytes().to_vec()
 }
 
 /// Create a test [`UserRow`] with the given email and generated defaults.
