@@ -631,6 +631,7 @@ impl Drop for RunningRegistration {
 }
 
 mod checkpoint;
+pub use checkpoint::inspect_execution_outputs;
 mod frontier;
 mod input_ports;
 mod listing;
@@ -4864,19 +4865,21 @@ fn map_termination_reason(
 
 /// Extract the primary output value from an ActionResult for downstream input resolution.
 fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<serde_json::Value> {
+    primary_output(result).and_then(|output| output.as_value().cloned())
+}
+
+fn primary_output(
+    result: &ActionResult<serde_json::Value>,
+) -> Option<&nebula_action::ActionOutput<serde_json::Value>> {
     match result {
-        ActionResult::Success { output } => output.as_value().cloned(),
-        ActionResult::Skip { output, .. } => output.as_ref().and_then(|o| o.as_value().cloned()),
-        ActionResult::Continue { output, .. } => output.as_value().cloned(),
-        ActionResult::Break { output, .. } => output.as_value().cloned(),
-        ActionResult::Branch { output, .. } => output.as_value().cloned(),
-        ActionResult::Route { data, .. } => data.as_value().cloned(),
-        ActionResult::MultiOutput { main_output, .. } => {
-            main_output.as_ref().and_then(|o| o.as_value().cloned())
-        },
-        ActionResult::Wait { partial_output, .. } => {
-            partial_output.as_ref().and_then(|o| o.as_value().cloned())
-        },
+        ActionResult::Success { output }
+        | ActionResult::Continue { output, .. }
+        | ActionResult::Break { output, .. }
+        | ActionResult::Branch { output, .. } => Some(output),
+        ActionResult::Skip { output, .. } => output.as_ref(),
+        ActionResult::Route { data, .. } => Some(data),
+        ActionResult::MultiOutput { main_output, .. } => main_output.as_ref(),
+        ActionResult::Wait { partial_output, .. } => partial_output.as_ref(),
         _ => None,
     }
 }

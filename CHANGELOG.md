@@ -11,6 +11,21 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Persisted execution inspection.** Execution GET detail now returns typed
+  lifecycle status, RFC3339 timestamps (no synthetic start time), snapshot
+  revision, node states, attempts, safe failure records and recorded outputs.
+  Corrupt snapshots fail rather than returning invented defaults. Command
+  acknowledgements retain their existing response shape. The unused cache-based
+  outputs handler and its transport DTO are removed; node data comes from the
+  committed snapshot. External output metadata never exposes backend blob keys.
+  Attempts are one-based; `recorded_at` denotes record creation, not dispatch
+  timing. Current output preserves reference/binary/collection kinds and refers
+  to the primary output; named output ports are not included yet.
+
+- **Checkpointable inline binary data.** `BinaryStorage::Inline { bytes }`
+  replaces the tuple variant, which could not serialize under its tagged enum.
+  Stored binary references retain their existing representation.
+
 - **One typed resource acquisition interface.** Host-side callers use
   `Manager::acquire::<R>` or `acquire_for_identity::<R>`; `Provider::Topology`
   selects the lifecycle policy. The six pooled/resident/bounded acquisition

@@ -778,6 +778,56 @@ pub(crate) async fn create_state_with_port_handles() -> (AppState, PortHandles) 
     build_port_state().await
 }
 
+/// Persist a canonical snapshot and its matching listing projection under a lease.
+pub(crate) async fn persist_execution_snapshot(
+    store: &dyn nebula_storage_port::store::ExecutionStore,
+    snapshot: &nebula_execution::ExecutionState,
+) {
+    use nebula_storage_port::{ExecutionListing, TransitionBatch, TransitionOutcome};
+    let scope = port_scope();
+    let id = snapshot.execution_id.to_string();
+    let initial =
+        nebula_execution::ExecutionState::new(snapshot.execution_id, snapshot.workflow_id, &[]);
+    store
+        .create(
+            &scope,
+            &id,
+            &snapshot.workflow_id.to_string(),
+            serde_json::to_value(initial).unwrap(),
+        )
+        .await
+        .unwrap();
+    let record = store.get(&scope, &id).await.unwrap().unwrap();
+    let token = store
+        .acquire_lease(
+            &scope,
+            &id,
+            "inspection-test",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let listing = ExecutionListing::new(
+        snapshot.status.to_string().parse().unwrap(),
+        snapshot.started_at,
+        snapshot.completed_at,
+    );
+    let outcome = store
+        .commit(TransitionBatch::new(
+            scope.clone(),
+            &id,
+            record.version,
+            token,
+            serde_json::to_value(snapshot).unwrap(),
+            listing,
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(outcome, TransitionOutcome::Applied { .. }));
+    assert!(store.release_lease(&scope, &id, token).await.unwrap());
+}
+
 /// Create an `AppState` wired through the scoped storage port, returning
 /// the state and the raw `InMemoryControlQueue` handle. This is the
 /// canonical integration seam-knife wiring; the asserted invariants are unchanged

@@ -259,7 +259,7 @@ fn instant(parameter: &'static str, raw: &str) -> Result<DateTime<Utc>, ApiError
 }
 
 /// Exhaustive by design: a new listing status must get a wire spelling.
-const fn wire_status(status: ExecutionListingStatus) -> ExecutionStatus {
+pub(super) const fn wire_status(status: ExecutionListingStatus) -> ExecutionStatus {
     match status {
         ExecutionListingStatus::Created => ExecutionStatus::Created,
         ExecutionListingStatus::Running => ExecutionStatus::Running,

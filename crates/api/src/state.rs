@@ -19,8 +19,7 @@ use nebula_storage_port::store::{
 };
 use nebula_tenancy::{
     ScopedExecutionJournalReader, ScopedExecutionStore, ScopedExecutionTurnHandoff,
-    ScopedNodeResultStore, ScopedStartAcceptanceStore, ScopedWorkflowStore,
-    ScopedWorkflowVersionStore,
+    ScopedStartAcceptanceStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 use tokio::sync::RwLock;
 
@@ -973,28 +972,17 @@ impl AppState {
         }
     }
 
-    /// Load all persisted per-node *outputs* for an execution within the
-    /// caller's tenant — read through a freshly bound
-    /// `ScopedNodeResultStore`, so a cross-tenant id yields nothing.
-    pub(crate) async fn execution_node_outputs_scoped(
+    /// Read one authoritative snapshot through the caller's tenant decorator.
+    pub(crate) async fn execution_record_scoped(
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
-    ) -> Result<Vec<(nebula_core::NodeKey, serde_json::Value)>, ApiError> {
-        let store = ScopedNodeResultStore::new(Arc::clone(&self.node_result_store), scope.clone());
-        let rows = store
-            .load_all_node_outputs(scope, &execution_id.to_string())
+    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, ApiError> {
+        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
+        store
+            .get(scope, &execution_id.to_string())
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?;
-        rows.into_iter()
-            .map(|(node_id, rec)| {
-                nebula_core::NodeKey::new(&node_id)
-                    .map(|k| (k, rec.json))
-                    .map_err(|e| {
-                        ApiError::Internal(format!("stored node id {node_id:?} invalid: {e}"))
-                    })
-            })
-            .collect()
+            .map_err(|_| ApiError::Internal("Failed to read execution snapshot".into()))
     }
 
     /// Load an execution's journal entries for the caller's tenant —

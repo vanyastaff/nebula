@@ -295,6 +295,7 @@ impl RuntimeRepairHarness {
             compose::build_execution_stores(&api_config, explicit_postgres_dsn, &metrics_registry)
                 .await
                 .map_err(ProfileErrorKind::Composition)?;
+        provision_closed_tenant(execution_bundle.tenant_directory.provisioner().as_ref()).await?;
         let worker_projection = execution_bundle.worker_projection();
         let backend_lifecycle = execution_bundle.backend_lifecycle();
         let registry = crate::transport::worker_registry(Ok("71".repeat(32)))
@@ -377,6 +378,50 @@ impl RuntimeRepairHarness {
             shutdown,
             supervisor: Some(supervisor),
         })
+    }
+}
+
+/// Seed only this evidence preset through the same aggregate port as operator
+/// bootstrap. The fixed fixture owner makes reopening the preset an exact replay;
+/// HTTP identity and its isolated membership authority are configured below.
+#[tracing::instrument(name = "runtime_repair.provision_tenant", skip_all)]
+async fn provision_closed_tenant(
+    provisioner: &dyn nebula_storage_port::store::TenantProvisioningStore,
+) -> Result<(), RuntimeRepairProfileError> {
+    use nebula_storage_port::dto::{
+        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningOutcome,
+        TenantProvisioningRequest,
+    };
+    let owner = "runtime-repair-fixture-owner";
+    let org = TenantOrgCreate::new(
+        PROFILE_ORG_ID.into(),
+        "runtime-repair".into(),
+        "Runtime Repair".into(),
+        owner.into(),
+        "free".into(),
+        None,
+        serde_json::json!({}),
+    )
+    .map_err(|_| ProfileErrorKind::InvalidClosedPreset)?;
+    let workspace = TenantDefaultWorkspaceCreate::new(
+        PROFILE_WORKSPACE_ID.into(),
+        "default".into(),
+        "Default".into(),
+        None,
+        owner.into(),
+        serde_json::json!({}),
+    )
+    .map_err(|_| ProfileErrorKind::InvalidClosedPreset)?;
+    let request =
+        TenantProvisioningRequest::new(org, workspace, PrincipalKind::User, owner.into(), None)
+            .map_err(|_| ProfileErrorKind::InvalidClosedPreset)?;
+    match provisioner
+        .provision_tenant(request)
+        .await
+        .map_err(|_| ProfileErrorKind::TenantProvisioning)?
+    {
+        TenantProvisioningOutcome::Created | TenantProvisioningOutcome::Replayed => Ok(()),
+        TenantProvisioningOutcome::Conflict(_) => Err(ProfileErrorKind::TenantProvisioning.into()),
     }
 }
 
@@ -863,6 +908,8 @@ impl From<ProfileErrorKind> for RuntimeRepairProfileError {
 
 #[derive(Debug, Error)]
 enum ProfileErrorKind {
+    #[error("closed RED profile tenant provisioning failed")]
+    TenantProvisioning,
     #[error("closed RED profile state composition failed")]
     Composition(#[source] TransportInitError),
     #[error("closed RED profile authentication seed failed")]

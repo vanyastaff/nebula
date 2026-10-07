@@ -1,6 +1,7 @@
 //! Checked projections of execution-owned per-node replay evidence.
 
 use super::*;
+use nebula_action::ActionOutput;
 use nebula_execution::NodeCheckpoint;
 use std::io::{self, Write};
 
@@ -146,6 +147,46 @@ pub(super) fn checkpoint_output(
         },
         CheckpointRouting::None | CheckpointRouting::Bypass => None,
     })
+}
+
+/// Project the committed node outputs for operator inspection.
+///
+/// Action result decoding stays with its runtime owner. This read-only view does
+/// not grant resume authority: recovery additionally validates the pinned graph
+/// and routing state. Missing evidence means no recorded output, including an
+/// outputless replacement of an earlier wait result.
+///
+/// # Errors
+///
+/// Returns [`EngineError::InvalidRecordedCheckpoint`] for unsupported versions,
+/// malformed results or checkpoint nodes absent from the snapshot. Exceeding the
+/// persisted output budget returns [`EngineError::CheckpointPayloadLimit`].
+/// Absent checkpoint evidence produces an empty projection.
+#[tracing::instrument(name = "execution.checkpoint.inspect", skip_all)]
+pub fn inspect_execution_outputs(
+    state: &ExecutionState,
+) -> Result<std::collections::BTreeMap<NodeKey, ActionOutput<serde_json::Value>>, EngineError> {
+    validate_checkpoint_size(state)?;
+    let Some(checkpoint) = &state.checkpoint else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    if checkpoint.format_version() != 1 {
+        return Err(EngineError::InvalidRecordedCheckpoint);
+    }
+    let mut outputs = std::collections::BTreeMap::new();
+    for (node, evidence) in checkpoint.nodes() {
+        if !state.node_states.contains_key(node) {
+            return Err(EngineError::InvalidRecordedCheckpoint);
+        }
+        let output = match checkpoint_routing(evidence)? {
+            CheckpointRouting::Action(result) => primary_output(&result).cloned(),
+            _ => checkpoint_output(evidence)?.map(ActionOutput::Value),
+        };
+        if let Some(output) = output.filter(|output| !output.is_empty()) {
+            outputs.insert(node.clone(), output);
+        }
+    }
+    Ok(outputs)
 }
 
 pub(super) fn checkpoint_bytes(

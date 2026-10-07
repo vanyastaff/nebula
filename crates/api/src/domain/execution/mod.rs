@@ -10,3 +10,4 @@
 pub mod dto;
 pub mod handler;
 mod history;
+mod inspection;

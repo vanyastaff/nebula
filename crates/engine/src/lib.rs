@@ -118,6 +118,7 @@ pub use daemon::{
 };
 #[cfg(feature = "rotation")]
 pub use engine::ResourceReconciliationStartupError;
+pub use engine::inspect_execution_outputs;
 pub use engine::{
     ClaimedControlTurnOutcome, ClaimedControlTurnRequest, ClaimedStartOutcome, ClaimedStartRequest,
     DEFAULT_EVENT_CHANNEL_CAPACITY, DEFAULT_TIMER_SCAN_INTERVAL, RecoveryTurnOutcome,

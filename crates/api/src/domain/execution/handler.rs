@@ -11,10 +11,10 @@ use crate::{
     domain::{
         execution::{
             dto::{
-                ExecutionHistoryParams, ExecutionLogsResponse, ExecutionOutputsResponse,
+                ExecutionDetailResponse, ExecutionHistoryParams, ExecutionLogsResponse,
                 ExecutionResponse, ListExecutionsResponse, StartExecutionRequest,
             },
-            history,
+            history, inspection,
         },
         workflow::handler::extract_timestamp,
     },
@@ -106,50 +106,10 @@ pub async fn list_executions_for_workflow(
     Ok(Json(history::history_response(page)?))
 }
 
-/// Get all node outputs for an execution.
+/// Inspect one committed execution snapshot, including node attempts and outputs.
 ///
-/// Returns a map of `node_key → output_value` for every node that has
-/// completed at least one attempt.
-///
-/// # Errors
-///
-/// - [`ApiError::Validation`] if `id` is not a valid execution ID.
-/// - [`ApiError::NotFound`] if no execution with that ID exists.
-/// - [`ApiError::Internal`] if the execution repository is unavailable.
-pub async fn get_execution_outputs(
-    State(state): State<AppState>,
-    Extension(tenant): Extension<TenantContext>,
-    Path((_org, _ws, id)): Path<(String, String, String)>,
-) -> ApiResult<Json<ExecutionOutputsResponse>> {
-    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let execution_id = ExecutionId::parse(&id)
-        .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
-
-    // Verify the execution exists in the caller's tenant before loading
-    // outputs.
-    state
-        .execution_state_scoped(&scope, execution_id, "check")
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
-
-    let outputs = state
-        .execution_node_outputs_scoped(&scope, execution_id)
-        .await?;
-
-    // Convert NodeKey keys to strings for JSON serialisation.
-    let string_outputs: std::collections::HashMap<String, serde_json::Value> = outputs
-        .into_iter()
-        .map(|(node_key, val)| (node_key.to_string(), val))
-        .collect();
-
-    Ok(Json(ExecutionOutputsResponse {
-        execution_id: id,
-        outputs: string_outputs,
-    }))
-}
-
-/// Get execution by ID
-/// GET /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}
+/// Reads authoritative persisted state, not process-local node caches. Creation
+/// does not imply execution: `started_at` is absent until the runtime starts it.
 #[utoipa::path(
     get,
     path = "/orgs/{org}/workspaces/{ws}/executions/{exec}",
@@ -161,77 +121,27 @@ pub async fn get_execution_outputs(
         ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
     ),
     responses(
-        (status = 200, description = "Execution detail.", body = ExecutionResponse),
+        (status = 200, description = "Committed execution detail and node evidence. Times are RFC 3339; external outputs include metadata only.", body = ExecutionDetailResponse),
         (status = 400, description = "Invalid execution identifier.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
+        (status = 500, description = "Stored execution snapshot is invalid or could not be read.", body = ProblemDetails),
     ),
 )]
 pub async fn get_execution(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
-) -> ApiResult<Json<ExecutionResponse>> {
-    use nebula_core::ExecutionId;
-
+) -> ApiResult<Json<ExecutionDetailResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    // Parse execution ID
     let execution_id = ExecutionId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid execution ID: {e}")))?;
-
-    // Fetch execution state scoped to the caller's tenant
-    let state_result = state
-        .execution_state_scoped(&scope, execution_id, "get")
-        .await?;
-
-    // Check if execution exists (returns Option<(version, state)>)
-    let (_version, execution_state) =
-        state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
-
-    // Extract fields from execution state JSON
-    let workflow_id = execution_state
-        .get("workflow_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let status = execution_state
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    // Canonical `ExecutionState` exposes `started_at` (engine run start,
-    // `None` until transitioned to `Running`) and `created_at` (always set
-    // at construction). Fall back to `created_at` so the API response
-    // retains a meaningful timestamp for executions that have not yet been
-    // dispatched (#327).
-    let started_at = extract_timestamp(&execution_state, "started_at")
-        .or_else(|| extract_timestamp(&execution_state, "created_at"))
-        .unwrap_or(0);
-    // Canonical engine state uses `completed_at` (see `ExecutionState` in
-    // `crates/execution/src/state.rs`); legacy rows used `finished_at`.
-    let finished_at = extract_timestamp(&execution_state, "completed_at")
-        .or_else(|| extract_timestamp(&execution_state, "finished_at"));
-
-    // Canonical field is `workflow_input`; legacy rows used `input`.
-    let input = execution_state
-        .get("workflow_input")
-        .or_else(|| execution_state.get("input"))
-        .cloned();
-
-    let output = execution_state.get("output").cloned();
-
-    Ok(Json(ExecutionResponse {
-        id,
-        workflow_id,
-        status,
-        started_at,
-        finished_at,
-        input,
-        output,
-    }))
+    let record = state
+        .execution_record_scoped(&scope, execution_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
+    Ok(Json(inspection::detail(record)?))
 }
 
 /// Start workflow execution (enqueue and return 202 Accepted)

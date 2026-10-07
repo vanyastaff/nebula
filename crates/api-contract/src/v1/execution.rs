@@ -1,6 +1,6 @@
 //! Execution DTOs
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "openapi")]
@@ -144,15 +144,157 @@ pub struct ListExecutionsResponse {
     pub has_more: bool,
 }
 
-/// All node outputs for an execution.
+/// Operator view of one committed execution snapshot.
+///
+/// Unlike a command acknowledgement, this includes persisted node evidence.
+/// Times use the same RFC 3339 representation as execution history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(ToSchema))]
-pub struct ExecutionOutputsResponse {
-    /// Execution ID
-    pub execution_id: String,
+pub struct ExecutionDetailResponse {
+    /// Identity, lifecycle status and timestamps.
+    #[serde(flatten)]
+    pub execution: ExecutionSummary,
+    /// Storage revision of this snapshot; all included nodes belong to it.
+    pub snapshot_version: u64,
+    /// Original workflow input, if supplied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+    /// Node evidence ordered by node key, independent of process-local caches.
+    pub nodes: BTreeMap<String, ExecutionNode>,
+    /// Total retries scheduled by the execution owner.
+    pub total_retries: u32,
+    /// Output bytes accounted for by the execution owner.
+    pub total_output_bytes: u64,
+}
 
-    /// Map of node_key (string) → latest output value
-    pub outputs: HashMap<String, serde_json::Value>,
+/// Persisted lifecycle of one workflow node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionNodeStatus {
+    /// Waiting for predecessors.
+    Pending,
+    /// Eligible for dispatch.
+    Ready,
+    /// Executing.
+    Running,
+    /// Finished successfully.
+    Completed,
+    /// Failed without a pending retry.
+    Failed,
+    /// Skipped by routing.
+    Skipped,
+    /// Cancelled.
+    Cancelled,
+    /// Retry scheduled.
+    WaitingRetry,
+    /// Parked for a timer or external signal.
+    Waiting,
+}
+
+/// Node state and its recorded attempts, without internal replay identities.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct ExecutionNode {
+    /// Current lifecycle status.
+    pub status: ExecutionNodeStatus,
+    /// When the node was scheduled (RFC 3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_at: Option<String>,
+    /// First dispatch time (RFC 3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+    /// Terminal transition time (RFC 3339), when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    /// Scheduled retry or parked-wait wake time (RFC 3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_attempt_at: Option<String>,
+    /// Attempts in the order recorded by the execution owner.
+    pub attempts: Vec<ExecutionAttempt>,
+    /// Current primary output, when recorded. Named output ports are not included.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<ExecutionNodeOutput>,
+    /// Current safe failure record, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ExecutionFailure>,
+}
+
+/// One recorded node attempt. Absence of a finish time means it is unfinished.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct ExecutionAttempt {
+    /// One-based attempt number assigned by the execution owner.
+    pub attempt_number: u32,
+    /// When the owner created this attempt record (RFC 3339). The current engine
+    /// records attempts after dispatch resolves; this is not dispatch timing.
+    pub recorded_at: String,
+    /// Attempt completion time (RFC 3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
+    /// Successful attempt data, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<ExecutionNodeOutput>,
+    /// Safe failure record, when recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<ExecutionFailure>,
+    /// Output bytes accounted for by the execution owner.
+    pub output_bytes: u64,
+}
+
+/// Materialized output. External data is described without exposing storage keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExecutionNodeOutput {
+    /// Complete inline data, including primitive and null values.
+    Inline {
+        /// The recorded value.
+        value: serde_json::Value,
+    },
+    /// Stored externally; this inspection response does not retrieve its content.
+    External {
+        /// Stored content size in bytes, when known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<u64>,
+        /// Recorded MIME type, when known.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mime: Option<String>,
+    },
+    /// Binary content described without embedding bytes or storage locations.
+    Binary {
+        /// Content size in bytes.
+        size: u64,
+        /// Recorded MIME type.
+        mime: String,
+    },
+    /// An ordered collection retaining each item's data kind.
+    Collection {
+        /// Recorded items.
+        #[cfg_attr(feature = "openapi", schema(no_recursion))]
+        items: Vec<ExecutionNodeOutput>,
+    },
+    /// A deferred result; resolution handles and callback credentials stay private.
+    Deferred,
+    /// Explicitly empty collection item. An empty primary output is omitted.
+    Empty,
+}
+
+/// Validated framework failure identity; never arbitrary provider error prose.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct ExecutionFailure {
+    /// Machine-readable failure code.
+    pub code: String,
+    /// Framework failure category.
+    pub category: String,
+    /// Whether the recorded failure was retryable; not permission to replay effects.
+    pub retryable: bool,
+    /// Bounded framework-authored diagnostic, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Typed source identities, without source error text.
+    pub source_codes: Vec<String>,
 }
 
 /// Execution log entry

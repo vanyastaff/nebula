@@ -22,6 +22,17 @@ delivery and per-endpoint lifecycle management.
 
 Versioned HTTP request/response types and RFC 9457 bodies live in `nebula-api-contract::v1`. This crate consumes its `openapi` feature for the served schemas and retains server-owned conversions and compatibility imports. The contract contains no server framework, persistence adapter or runtime authority.
 
+Execution GET detail projects one canonical persisted snapshot through
+`domain/execution/inspection.rs`: typed status, RFC3339 times, storage revision,
+node states, attempts, framework failure records and outputs. It does not read
+the process-local node-result cache. Creation has no start time; corrupt state
+returns a payload-free problem. External output records expose size/MIME only,
+not backend keys or downloaded content. Replay checkpoints and command identities
+are not transport fields. Start/cancel acknowledgements remain separate receipts.
+Current output means primary output; named output ports are not included.
+Attempts are one-based and expose `recorded_at`, since their records are created
+after dispatch resolves. Use tracing for per-attempt dispatch duration.
+
 All routes are tenant-scoped under `/api/v1/orgs/{org}/workspaces/{ws}/…`
 (per spec 05-api-routing). Slugs and ULIDs are accepted interchangeably
 via `nebula-core::Slug`.

@@ -75,7 +75,7 @@ pub(super) fn decode(name: &str, value: Value) -> Option<bool> {
         "ExecutionStatus" => decode::<v1::execution::ExecutionStatus>(value),
         "ExecutionSummary" => decode::<v1::execution::ExecutionSummary>(value),
         "ListExecutionsResponse" => decode::<v1::execution::ListExecutionsResponse>(value),
-        "ExecutionOutputsResponse" => decode::<v1::execution::ExecutionOutputsResponse>(value),
+        "ExecutionDetailResponse" => decode::<v1::execution::ExecutionDetailResponse>(value),
         "ExecutionLogEntry" => decode::<v1::execution::ExecutionLogEntry>(value),
         "ExecutionLogsResponse" => decode::<v1::execution::ExecutionLogsResponse>(value),
         "HealthResponse" => decode::<v1::health::HealthResponse>(value),

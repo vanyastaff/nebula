@@ -133,9 +133,10 @@ node, generation and revision identities are span fields only. The deciding span
 `record_claimed_flavor_refusal`) carry `execution_id`, `org_id`, `workspace_id`,
 `backend`, `outcome` and `observation_acknowledgement`.
 
-The execution logs handler (`get_execution_logs`) returns journal payloads as raw
-JSON through the existing DTO; it is not routed yet, and the typed projection waits
-for the versioned API contract crate (issue 1003).
+The execution logs handler (`get_execution_logs`) is not routed yet. The versioned
+API contract exists; lifecycle journal production and its bounded typed read
+projection remain separate work. Node inspection instead reads the committed
+execution snapshot through the mounted detail route.
 
 ## 5. Core analysis loop
 
@@ -145,12 +146,22 @@ Operator procedure for any failed or stuck run:
    lists the workspace's execution history newest first (add `workflow_id`,
    `created_after`, `created_before`; page with `cursor`). The status filter reads the
    listing projection the execution owner writes with every state snapshot
-   (`TransitionBatch::new`, migration 0064), so it is never staler than the
+   (`TransitionBatch::new`, execution baseline), so it is never staler than the
    last commit.
-1. **What failed?** Query `execution_journal` by `execution_id` for the last event before the failure. The `event` tag + `payload.error` pins the failing step.
-2. **When?** Compare the `execution_started` timestamp to the failure event timestamp; cross-reference with `trace_id` in the observability stack.
+1. **What failed?** `GET /api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}`
+   returns `nodes`, with statuses, attempts, framework failure codes and recorded
+   outputs from one committed snapshot. `snapshot_version` identifies that read.
+   Internal replay/claim identities and external blob storage keys are excluded.
+2. **When?** Compare RFC3339 `started_at` / `finished_at` on the execution and node.
+   An absent start time means it has not run; creation is reported separately.
+   Attempts expose `recorded_at` and `finished_at`: the owner currently records
+   them after dispatch resolves, so these are not per-attempt duration evidence.
+   Cross-reference spans for in-flight activity newer than the snapshot.
 3. **What changed?** Check recent deploys, config changes, dependency upgrades — `MATURITY.md` `frontier` crates are likely culprits if the run touched them.
-4. **What to try?** For transient classifications (per `nebula-error::Classify`): wait and retry. For permanent: open an issue with the journal excerpt. For "unknown": ask in #observability with the trace_id; do not retry blindly.
+4. **What to try?** Use the failure identity and recorded attempt history to diagnose
+   the run. `retryable` describes the failure, not permission to repeat a remote
+   effect. Preserve unknown outcomes for reconciliation; terminal execution retry
+   is not yet supplied by the HTTP restart stub.
 
 This loop is the operational half of PRODUCT_CANON §2 success sentence: *you can explain what happened in a run without reading Rust source.*
 

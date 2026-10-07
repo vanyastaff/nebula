@@ -8001,11 +8001,22 @@ async fn status_publisher_writes_changes_only_and_withdraws_retired_rows() {
     );
     assert!(!published.contains_key(&stale));
 
-    // Deleting the definition retires the row on the next tick, with no
-    // execution naming it again: its runtime goes and its status with it.
+    // Publication observes only. The lifecycle owner retires the deleted row,
+    // after which the next status tick withdraws its projection.
     nebula_storage_port::store::ResourceStore::soft_delete(&*store, &scope, &row.to_string())
         .await
         .expect("soft delete");
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(recorder.take(), vec!["heartbeat".to_owned()]);
+    assert!(
+        !engine
+            .stored_resources
+            .as_ref()
+            .expect("activator configured")
+            .active_rows()
+            .is_empty()
+    );
+    engine.retire_deleted_resources().await;
     publisher.tick(&engine, &mut published).await;
     assert_eq!(
         recorder.take(),

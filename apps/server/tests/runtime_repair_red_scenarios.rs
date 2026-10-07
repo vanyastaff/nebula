@@ -21,7 +21,7 @@ use reqwest::{
     Client, Response, StatusCode,
     header::{COOKIE, HeaderMap, HeaderValue, SET_COOKIE},
 };
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 
 const API_PREFIX: &str = "/api/v1/orgs/runtime-repair/workspaces/runtime-repair";
@@ -48,32 +48,29 @@ const OBSERVATION_BOUND: Duration = Duration::from_millis(750);
 /// one misses.
 const RUNTIME_COMMAND_BOUND: Duration = Duration::from_secs(10);
 
-#[derive(Clone, Copy)]
 enum Backend {
     InMemory,
     FileSqlite,
-    LivePostgres,
+    LivePostgres(SecretString),
 }
 
 impl Backend {
-    fn harness(self) -> RuntimeRepairHarness {
+    fn harness(&self) -> RuntimeRepairHarness {
         match self {
             Self::InMemory => RuntimeRepairProfileConfig::in_memory().into_harness(),
             Self::FileSqlite => RuntimeRepairProfileConfig::file_sqlite().into_harness(),
-            Self::LivePostgres => {
-                let database_dsn = std::env::var("DATABASE_URL")
-                    .expect("SETUP: live PostgreSQL requires DATABASE_URL");
-                RuntimeRepairProfileConfig::live_postgres(SecretString::from(database_dsn))
-                    .into_harness()
-            },
+            Self::LivePostgres(database_dsn) => RuntimeRepairProfileConfig::live_postgres(
+                SecretString::from(database_dsn.expose_secret().to_owned()),
+            )
+            .into_harness(),
         }
     }
 
-    const fn label(self) -> &'static str {
+    const fn label(&self) -> &'static str {
         match self {
             Self::InMemory => "in-memory",
             Self::FileSqlite => "file-sqlite",
-            Self::LivePostgres => "live-postgresql",
+            Self::LivePostgres(_) => "live-postgresql",
         }
     }
 }
@@ -493,6 +490,21 @@ async fn durable_wait_reconnect_scenario(backend: Backend) {
             .expected_red("durable-wait-wrong-terminal-state")
             .await;
     }
+    assert_eq!(execution["nodes"][DELAY_NODE]["status"], "completed");
+    assert_eq!(
+        execution["nodes"][DELAY_NODE]["output"],
+        json!({"type":"inline","value":{"scenario":format!("durable-wait-reconnect-{}", backend.label())}})
+    );
+    // A timer wait is completed from its checkpoint, without a fresh action
+    // dispatch. The current owner records no NodeAttempt for that path; the
+    // inspector must preserve that absence instead of inventing an attempt.
+    assert_eq!(execution["nodes"][DELAY_NODE]["attempts"], json!([]));
+    assert!(execution["started_at"].as_str().is_some());
+    assert!(execution["finished_at"].as_str().is_some());
+    assert_eq!(
+        execution["input"],
+        json!({"scenario":"durable-wait-reconnect","revision":1})
+    );
     running.shutdown().await;
 }
 
@@ -571,7 +583,7 @@ async fn startkey_file_sqlite() {
 
 #[tokio::test]
 async fn startkey_live_postgresql() {
-    startkey_scenario(Backend::LivePostgres).await;
+    postgres_scenario(startkey_scenario).await;
 }
 
 #[tokio::test]
@@ -581,7 +593,7 @@ async fn durable_wait_file_sqlite_park_restart_resume() {
 
 #[tokio::test]
 async fn durable_wait_live_postgresql_park_restart_resume() {
-    durable_wait_reconnect_scenario(Backend::LivePostgres).await;
+    postgres_scenario(durable_wait_reconnect_scenario).await;
 }
 
 #[tokio::test]
@@ -591,5 +603,57 @@ async fn c1_file_sqlite_cancel_before_handler_completion() {
 
 #[tokio::test]
 async fn c1_live_postgresql_cancel_before_handler_completion() {
-    cancellation_scenario(Backend::LivePostgres).await;
+    postgres_scenario(cancellation_scenario).await;
+}
+
+/// A restart retains its schema, while another scenario gets a fresh queue and
+/// clock domain. Cleanup runs even when a behavioral assertion panics.
+async fn postgres_scenario(run: impl AsyncFnOnce(Backend)) {
+    #[cfg(not(feature = "postgres"))]
+    {
+        let _ = run;
+        panic!("SETUP: live PostgreSQL requires the postgres feature");
+    }
+    #[cfg(feature = "postgres")]
+    {
+        use futures::FutureExt;
+        use sqlx::postgres::PgPoolOptions;
+        let dsn =
+            std::env::var("DATABASE_URL").expect("SETUP: live PostgreSQL requires DATABASE_URL");
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&dsn)
+            .await
+            .expect("SETUP: PostgreSQL connects");
+        let schema = format!("runtime_scenario_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
+            .execute(&admin)
+            .await
+            .expect("SETUP: private scenario schema");
+        let mut url = url::Url::parse(&dsn).expect("SETUP: PostgreSQL DSN is a URL");
+        let parameters: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+        let options = parameters
+            .iter()
+            .filter(|(key, _)| key == "options")
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        url.query_pairs_mut()
+            .clear()
+            .extend_pairs(parameters.iter().filter(|(key, _)| key != "options"))
+            .append_pair("options", &format!("{options} -csearch_path={schema}"));
+        let result = std::panic::AssertUnwindSafe(run(Backend::LivePostgres(SecretString::from(
+            url.to_string(),
+        ))))
+        .catch_unwind()
+        .await;
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+            .execute(&admin)
+            .await;
+        admin.close().await;
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+        cleanup.expect("CLEANUP: private scenario schema removed");
+    }
 }

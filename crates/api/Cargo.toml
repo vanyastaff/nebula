@@ -30,6 +30,7 @@ nebula-metrics = { path = "../metrics" }
 nebula-workflow = { path = "../workflow" }
 nebula-action = { path = "../action" }
 nebula-engine = { path = "../engine" }
+nebula-execution = { path = "../execution" }
 nebula-plugin = { path = "../plugin" }
 nebula-resilience = { path = "../resilience" }
 # Plane-A and credential refresh share the credential-owned OAuth endpoint/IP
@@ -128,7 +129,6 @@ utoipa-axum = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 
 [dev-dependencies]
-nebula-execution = { path = "../execution" }
 nebula-api = { path = ".", features = ["test-util"] }
 nebula-plugin = { path = "../plugin", features = ["test-util"] }
 semver = { workspace = true }
