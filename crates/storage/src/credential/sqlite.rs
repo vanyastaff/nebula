@@ -1,7 +1,7 @@
 //! SQLite-backed `CredentialPersistence` impl.
 //!
 //! Persists [`StoredCredential`] rows in the `credentials` table of migration
-//! `0070_credentials_standard.sql`.
+//! `0006_credentials.sql`.
 //!
 //! - `data` is an opaque `BLOB` — the [`EncryptionLayer`] above us serialises
 //!   the AES-256-GCM envelope; we never inspect or decrypt it.
@@ -287,7 +287,7 @@ impl SqliteCredentialPersistence {
     /// Admit and migrate the deployment database behind `pool`, then return a
     /// ready store over that same pool.
     ///
-    /// Credentials live in the deployment database (migration 0070), so a
+    /// Credentials live in the deployment database, so a
     /// composition hands the store the pool its execution stores already use;
     /// no second pool opens on the same database. The pool's schema setup runs
     /// the same catalog admission as [`Self::connect`].

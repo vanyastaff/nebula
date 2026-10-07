@@ -1,11 +1,15 @@
 //! Identity checks shared by workflow-owner publication transactions.
 
-use nebula_core::{
-    ExecutablePlanRevisionId, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId,
-};
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+use nebula_core::{ExecutablePlanRevisionId, WorkerFlavorRevisionId};
+use nebula_core::{WorkflowId, WorkflowVersionId};
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+use nebula_storage_port::PlanFlavorRevisionIds;
+use nebula_storage_port::Scope;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::{WorkflowActivation, WorkflowRecord, WorkflowVersionRecord};
 use nebula_storage_port::store::WorkflowPublicationError;
-use nebula_storage_port::{PlanFlavorRevisionIds, Scope, StorageError};
 use serde::Deserialize;
 
 pub(crate) fn validate_publication(
@@ -32,12 +36,14 @@ pub(crate) fn validate_publication(
 }
 
 /// An activation identity as its three `workflow_versions` columns.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) struct ActivationColumns {
     pub(crate) workflow_version: Option<String>,
     pub(crate) executable_plan: Option<Vec<u8>>,
     pub(crate) worker_flavor: Option<Vec<u8>>,
 }
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 impl ActivationColumns {
     pub(crate) fn encode(activation: Option<WorkflowActivation>) -> Self {
         let Some(activation) = activation else {
@@ -82,6 +88,7 @@ impl ActivationColumns {
     }
 }
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn corrupt_activation() -> StorageError {
     StorageError::Corrupt("workflow version activation columns do not decode".into())
 }

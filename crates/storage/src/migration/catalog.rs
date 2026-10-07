@@ -1,14 +1,6 @@
 //! Backend-neutral migration-catalog admission and physical ledger probes.
 
-use std::collections::{BTreeSet, HashSet};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BackendKind {
-    #[cfg(any(test, feature = "sqlite"))]
-    Sqlite,
-    #[cfg(any(test, feature = "postgres"))]
-    Postgres,
-}
+use std::collections::HashSet;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct MigrationSpec {
@@ -21,7 +13,6 @@ pub(crate) struct MigrationSpec {
 pub(crate) struct CatalogPolicy {
     pub(crate) current_version: i64,
     pub(crate) canonical: Vec<MigrationSpec>,
-    pub(crate) reserved_other_backend_versions: BTreeSet<i64>,
 }
 
 #[derive(Clone)]
@@ -60,13 +51,6 @@ pub enum CatalogRejection {
     /// User tables exist without a migration ledger.
     UnledgeredDatabase,
     /// The ledger relation does not have the SQLx ledger shape.
-    #[cfg_attr(
-        not(any(feature = "sqlite", feature = "postgres")),
-        expect(
-            dead_code,
-            reason = "physical ledger probes are compiled only with a database backend"
-        )
-    )]
     InvalidMigrationLedger,
     /// A recorded migration did not complete.
     FailedMigration {
@@ -84,11 +68,6 @@ pub enum CatalogRejection {
         expected: i64,
         /// The recorded migration at this position.
         actual: i64,
-    },
-    /// A SQLite ledger records a PostgreSQL-only migration.
-    ReservedForOtherBackend {
-        /// The migration number.
-        migration: i64,
     },
     /// The ledger records a migration this build does not know.
     UnknownMigration {
@@ -123,9 +102,6 @@ impl std::fmt::Display for CatalogRejection {
                 f,
                 "migration {actual:04} is recorded where {expected:04} belongs"
             ),
-            Self::ReservedForOtherBackend { migration } => {
-                write!(f, "migration {migration:04} belongs to the other backend")
-            },
             Self::UnknownMigration { migration } => {
                 write!(f, "migration {migration:04} is unknown to this build")
             },
@@ -199,14 +175,6 @@ fn validate_ledger(
                 migration: row.version,
             });
         }
-        if policy
-            .reserved_other_backend_versions
-            .contains(&row.version)
-        {
-            return rejected(CatalogRejection::ReservedForOtherBackend {
-                migration: row.version,
-            });
-        }
         if row.version > policy.current_version {
             return rejected(CatalogRejection::UnknownMigration {
                 migration: row.version,
@@ -263,7 +231,7 @@ pub(crate) fn catalog_head(migrator: &sqlx::migrate::Migrator) -> i64 {
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-fn policy_from_migrator(backend: BackendKind, migrator: &sqlx::migrate::Migrator) -> CatalogPolicy {
+fn policy_from_migrator(migrator: &sqlx::migrate::Migrator) -> CatalogPolicy {
     let canonical = migrator
         .iter()
         .map(|migration| MigrationSpec {
@@ -272,31 +240,20 @@ fn policy_from_migrator(backend: BackendKind, migrator: &sqlx::migrate::Migrator
             checksum: migration.checksum.to_vec(),
         })
         .collect();
-    let reserved_other_backend_versions = match backend {
-        #[cfg(any(test, feature = "sqlite"))]
-        BackendKind::Sqlite => crate::migration_catalog::POSTGRES_ONLY_VERSIONS
-            .iter()
-            .copied()
-            .collect(),
-        #[cfg(any(test, feature = "postgres"))]
-        BackendKind::Postgres => BTreeSet::new(),
-    };
-
     CatalogPolicy {
         current_version: catalog_head(migrator),
         canonical,
-        reserved_other_backend_versions,
     }
 }
 
 #[cfg(feature = "sqlite")]
 pub(crate) fn sqlite_policy() -> CatalogPolicy {
-    policy_from_migrator(BackendKind::Sqlite, &super::SQLITE_MIGRATOR)
+    policy_from_migrator(&super::SQLITE_MIGRATOR)
 }
 
 #[cfg(feature = "postgres")]
 pub(crate) fn postgres_policy() -> CatalogPolicy {
-    policy_from_migrator(BackendKind::Postgres, &super::POSTGRES_MIGRATOR)
+    policy_from_migrator(&super::POSTGRES_MIGRATOR)
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]

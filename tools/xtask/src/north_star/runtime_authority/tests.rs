@@ -168,10 +168,7 @@ fn compiled_policy_preserves_issue_scope_and_exact_backend_case_denominator() {
                 backend: Some(backend)
             }]
                 .cases,
-            BTreeSet::from([
-                Some("clean".into()),
-                Some("previous-supported-version".into())
-            ])
+            BTreeSet::from([Some("clean".into()), Some("populated-head".into())])
         );
     }
 }

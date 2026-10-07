@@ -151,7 +151,7 @@ async fn the_schema_refuses_a_record_format_the_catalog_cannot_read() {
     .await;
     assert!(
         rejected.is_err(),
-        "migration 0041 must refuse a recorded form outside the closed vocabulary"
+        "the execution baseline must refuse a recorded form outside the closed vocabulary"
     );
     assert_eq!(
         catalog.load_exact(record.ids()).await,

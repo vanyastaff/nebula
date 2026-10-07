@@ -11,6 +11,14 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Eight-aggregate database baseline.** The development migration history is
+  replaced by paired `0001_identity.sql` through `0008_platform.sql` catalogs.
+  This supersedes the transition migration numbers recorded below. Databases
+  created with the old catalog are rejected; recreate disposable development
+  databases with `task db:reset`. Future schema changes append immutable paired
+  migrations. Credential reconciliation, retry gates and live revision records
+  now reject incomplete NULL shapes at the database boundary.
+
 - **Resources on the database standard (migration 0071).** `port_resources`,
   the resource runtime status tables and the shared-resource runtime tables are
   replaced by `resources`, `resource_status_snapshots`,

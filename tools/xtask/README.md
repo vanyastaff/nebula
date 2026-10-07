@@ -284,7 +284,7 @@ the same `identity`, `input`, `ci`, and `environment`, and `observations`. Each 
 `case` and a nonempty `events` array. Presence and semantic qualification establish
 admission; the assembler does not invent a producer disposition. Required case labels
 come directly from the compiled registry: the eleven named persistence
-behaviors and `clean` plus `previous-supported-version` for ordered migrations;
+behaviors and `clean` plus `populated-head` for ordered migrations;
 other gates have one null-case envelope. Submitted pass flags and test counts
 cannot qualify a gate. Every event payload is checked by its executable semantic
 predicate after structural admission.

@@ -5,8 +5,8 @@
 //! through this module, so the three backends cannot answer the same question
 //! differently. Row plumbing stays in each adapter; the decisions do not.
 //!
-//! Durable lifecycle and recorded-form text is the same vocabulary ordered
-//! migration 0041 constrains with `CHECK` clauses. The constants below are the
+//! Durable lifecycle and recorded-form text is the same vocabulary the
+//! execution baseline constrains with `CHECK` clauses. The constants below are the
 //! single Rust-side definition of that vocabulary; nothing re-spells it.
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -44,7 +44,7 @@ pub(crate) enum ArtifactLifecycle {
 /// reference model holds the typed lifecycle directly.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 impl ArtifactLifecycle {
-    /// Return the durable lifecycle text migration 0041 constrains.
+    /// Return the durable lifecycle text the execution baseline constrains.
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",

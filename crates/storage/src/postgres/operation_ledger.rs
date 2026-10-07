@@ -1,4 +1,4 @@
-//! PostgreSQL operation ledger over ordered migration 0045.
+//! PostgreSQL operation ledger in the execution baseline.
 //!
 //! Prepare relies on the natural-key unique index rather than on a lock: the
 //! slot a caller wants may not exist yet, and `SELECT … FOR UPDATE` cannot lock

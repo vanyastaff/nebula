@@ -1,8 +1,8 @@
 //! A credential store and the tenant provisioning store on one deployment
 //! database.
 //!
-//! Credentials belong to a live workspace in the deployment database
-//! (migration 0070). A composition hands the credential store the pool its
+//! The credential baseline requires a live workspace in the deployment database.
+//! A composition hands the credential store the pool its
 //! other stores use, so a test provisions tenants on a pool onto that same
 //! database rather than through the credential store.
 

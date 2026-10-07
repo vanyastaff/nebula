@@ -1,4 +1,4 @@
-//! SQLite operation ledger over ordered migration 0045.
+//! SQLite operation ledger in the execution baseline.
 //!
 //! Every operation runs under `BEGIN IMMEDIATE`, so the read that decides and
 //! the write that follows are one linearized operation against the single

@@ -28,7 +28,7 @@ use super::{CredentialPersistenceConformance, ReferenceCredentialPersistence};
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 /// Owners the oracle files credentials under; SQL backends provision their
-/// tenants first (migration 0070).
+/// tenants first, as required by the credential baseline's workspace ownership.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 const ORACLE_OWNERS: &[&str] = &["oracle-owner-a", "oracle-owner-b", "oracle-schedule-owner"];
 

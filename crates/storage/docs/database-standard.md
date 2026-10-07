@@ -7,9 +7,11 @@ table or column either follows it or changes it here first.
 ## Layout
 
 One migration per aggregate in dependency order — `identity`, `tenancy`, `workflows`,
-`executions`, `dispatch`, `credentials`, `resources`, `runtime_control`, `platform` — on
-both backends; later migrations append. Table names are snake_case plural nouns without
-technical prefixes.
+`executions`, `dispatch`, `credentials`, `resources`, `platform` — eight paired baseline
+files; later migrations append. Runtime control owns the execution and dispatch tables
+already declared in those files, so it needs no separate empty migration. The revision
+catalog precedes its execution references in `executions`. Table names are snake_case
+plural nouns without technical prefixes.
 
 ## Names
 
@@ -62,6 +64,14 @@ keys inside a JSON document. Binary entity ids wait for typed ids in the port; e
 `BYTEA` ids stay until then.
 
 ### Instants
+
+GCRA rate-limit coordinates are an explicit exception: `tat_ns`, `allow_at_ns`,
+`end_tat_ns` and `penalized_until_ns` retain integer nanoseconds, as does the
+`emission_ns` interval. These values belong to the scheduling algorithm; converting
+them to microsecond timestamps loses sub-microsecond permit spacing. Its `seq` is a
+wrapping mutation identity stored bit-for-bit in a signed `BIGINT`, not a nonnegative
+optimistic version. These PostgreSQL-only tables support limits shared across workers;
+SQLite deployments use process-local limits.
 
 Instants are microsecond-precise on every backend; the in-memory backend truncates to
 microseconds when it authors or stores one, so a row reads back identically everywhere.

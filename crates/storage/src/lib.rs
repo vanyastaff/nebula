@@ -84,7 +84,7 @@ mod workflow_activation;
 /// Column codec of the execution listing projection.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod execution_listing;
-#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod migration;
 pub mod migration_catalog;
 /// Why schema setup refused a database's migration ledger.

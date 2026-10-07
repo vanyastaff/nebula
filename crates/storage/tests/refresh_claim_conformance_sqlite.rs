@@ -3,7 +3,7 @@
 //! Every case runs against a fresh in-memory database whose schema comes from
 //! the ordered migration catalog, so the adapter is exercised against the real
 //! `credential_refresh_claims` and `credential_refresh_incidents` constraints
-//! of migration 0070: a claim and its incidents belong to a credential, so the
+//! of the credential baseline: a claim and its incidents belong to a credential, so the
 //! fixture files each case credential before its first claim.
 //!
 //! SQLite is its own lease-clock authority: expiry is decided in the database,

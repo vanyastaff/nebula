@@ -1,5 +1,5 @@
 //! Column codec for the execution listing projection shared by the SQL
-//! backends (migration 0064).
+//! backends (`0004_executions.sql`).
 //!
 //! Decoding fails closed: a status outside the closed set, a key outside the
 //! representable range, or a timestamp that is not RFC 3339 is

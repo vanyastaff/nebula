@@ -11,7 +11,7 @@
 |------|-------|
 | Add a new port method | Define in `nebula-storage-port`, update all applicable backends and policy decorators, then shared conformance tests. Credential adapters/decorators live under `src/credential/`; general adapters live under `src/inmem/`, `src/sqlite/`, `src/postgres/`. Add paired migrations when needed. |
 | Add a port store | 1. Port: trait in `nebula-storage-port/src/store/<aggregate>.rs`, records in `dto/<aggregate>.rs` (see that crate's AGENTS.md). 2. Paired migrations. 3. One file named `<aggregate>.rs` in **each** of `src/inmem/`, `src/sqlite/`, `src/postgres/`, re-exported from the backend's `mod.rs` as `InMemory*` / `Sqlite*` / `Pg*`. 4. In each SQL file one `fn decode_<dto>(row) -> Result<Dto, StorageError>`; every query maps errors through `sql_error`. 5. Tenancy decorator for a Scope-taking store, and its classification in `nebula-tenancy`. 6. Cases in the shared conformance suite run against all three backends. |
-| Add a SQL migration | Create paired `migrations/{postgres,sqlite}/NNNN_description.sql` files when the logical schema is shared. Numbered SQLx migrations are the sole setup source; never add a `src/**/schema.sql` snapshot. Classify the migration as aggregate-neutral or aggregate-transforming before changing the executable catalog-boundary test. Run the curated `task db:migrate` operator; never run raw SQLx migration against a non-empty database. |
+| Add a SQL migration | Read [database-standard](docs/database-standard.md) for naming, types, ownership and backend exceptions. Append paired `migrations/{postgres,sqlite}/NNNN_description.sql` files, review admission and affected aggregate invariants, then acknowledge the head in `migration_catalog::REVIEWED_HEAD`. Numbered SQLx migrations are the sole setup source. Run the admitted `task db:migrate` operator. |
 
 ## Commands
 
@@ -23,20 +23,20 @@
   `task db:migrate` uses the admitted server-owned operator. `task db:reset` is the only raw-run
   path and is safe only because its prompt-protected sequence first drops and recreates the
   database.
-- `CatalogOnly` may automatically cross a pending migration only after review proves that the
-  migration is aggregate-neutral. An aggregate-transforming or destructive migration needs its
-  owner's preflight and postflight under the same setup guard/session, or the general catalog
-  floor must move to a head at which that transformation is already known safe. The executable
-  head/floor pin intentionally fails when a new migration is added; never advance it as a
-  mechanical catalog update.
+- Admission accepts a fresh database or an exact successful checksummed catalog prefix,
+  applies pending migrations under the setup guard, and verifies the head. Unknown,
+  reordered, failed or modified ledger rows and non-empty unledgered databases are rejected.
+  The eight-file baseline replaces development history; those old databases require
+  recreation, not adoption. The explicit reviewed-head pin makes each future migration
+  require admission review rather than a mechanical catalog update.
 
 ## Key files
 
 - `src/lib.rs` — module/feature map and adapter re-exports (`InMemory*`, `StorageError`).
 - `src/inmem/` — internal test/reference/conformance adapters and loom probes; not a supported deployment backend.
-- `src/sqlite/` · `src/postgres/` — feature-gated port adapters over the port-scoped schema (Postgres uses real tx + `FOR UPDATE SKIP LOCKED`).
+- `src/sqlite/` · `src/postgres/` — feature-gated port adapters over the aggregate schema (Postgres uses real tx + `FOR UPDATE SKIP LOCKED`).
 - `src/auth/` — Plane-A account persistence (users, sessions, PATs, OAuth state, external identities, MFA, identity secrets, session-token digests): traits and rows in `auth`, PostgreSQL implementations in `auth/postgres/`. Outside the port contract by design.
-- `src/http_idempotency/` — the API's idempotent-replay response cache (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); not the port's per-attempt `IdempotencyStore`.
+- `src/http_idempotency/` — the API's idempotent-replay response cache (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); separate from the execution adapter's per-attempt `IdempotencyGuard`.
 - `src/webhook_activation.rs` — the webhook activation spec persisted in `triggers.config`.
 - `src/sql_error.rs` — the one `sqlx::Error` → `StorageError` classification (value-free; dialect chosen by error type) plus `decode_u64` / `decode_i32` / `encode_u64`. Every SQL adapter maps errors through it except `*/resource_runtime.rs`, which still has its own classifier (known debt: its `corrupt()` mixes corrupt data, counter exhaustion and caller TTL).
 - `src/auth/postgres/oauth_login.rs` + `src/auth/oauth_login.rs` — storage-owned Plane-A
@@ -47,7 +47,7 @@
 - `src/credential/refresh_claim/` — ADR-0041 CAS refresh-claim repo (`try_claim`/`heartbeat`/`release`/`reclaim_stuck`); in_memory + sqlite + postgres.
 - `src/credential/layer/` — encryption / audit / cache decorators around credential persistence.
 - `src/credential/{sqlite,postgres}.rs` — ready-store deployment adapters for the owner-bound
-  `CredentialPersistence` port. Migration `0070` files each credential under the workspace its
+  `CredentialPersistence` port. Migration `0006_credentials.sql` files each credential under the workspace its
   `CredentialOwner` names (`org_id`, `workspace_id`; a partition naming no workspace owns no row)
   in the deployment database beside tenancy: credentials and pending flows cascade from their
   workspace (a create requires it live), claims and incidents from their credential, and archived
@@ -121,16 +121,16 @@
 - This crate is NOT the state machine (`nebula-execution`), orchestrator (`nebula-engine`), or tenant-scope policy owner. `nebula-tenancy` wraps the general Scope-taking adapters; credential persistence is the deliberate owner-bound exception. Do NOT re-add the deleted legacy `ExecutionRepo`/`WorkflowRepo` surface (ADR-0072).
 - Every credential predicate is owner-bound (`CredentialSelector` or `CredentialOwner`); wrong-owner and missing are indistinguishable. Owner metadata is compatibility/audit data only and never grants authority.
 - The credential refresh-retry gate and material epoch are structural row state, separate from metadata and refresh-claim TTL. Backends author epochs: create/migration starts at `CredentialMaterialEpoch::MIN`; `CredentialMaterialTransition::Preserve { refresh_retry }` retains the epoch and applies its explicit gate transition; `Advance` increments the epoch and unconditionally clears the old gate; overflow fails closed. SQLite/PostgreSQL compute `SetAfter` and admission from their own wall clock (PostgreSQL uses `clock_timestamp()` after lock waits); unknown codecs fail closed, and tombstones carry no gate.
-- Replacement writes the material columns (`data`, `state_kind`, `state_version`, `expires_at`) only for `Advance { Replace }`; `EncryptionLayer` seals only that material, so key rotation happens on material writes alone. The admission epoch (migration 0061) advances in the same transaction as each closing write: replace (`CredentialReplacement::advances_admission_epoch`), a won revoke CAS, `mark_sentinel`, and threshold escalation — claim row before credential row, never touching `version`/`updated_at`. Every status projection selects it; creates write 1. The in-memory claim repo cannot bump it and is not a deployment backend.
+- Replacement writes the material columns (`data`, `state_kind`, `state_version`, `expires_at`) only for `Advance { Replace }`; `EncryptionLayer` seals only that material, so key rotation happens on material writes alone. The admission epoch advances in the same transaction as each closing write: replace (`CredentialReplacement::advances_admission_epoch`), a won revoke CAS, `mark_sentinel`, and threshold escalation — claim row before credential row, never touching `version`/`updated_at`. Every status projection selects it; creates write 1. The in-memory claim repo cannot bump it and is not a deployment backend.
 
 ## Change checks
 
 | Change | Relevant evidence |
 |--------|-------------------|
-| Shared-resource subscription/fanout/handoff runtime | `resource_fanout_conformance_{inmem,sqlite,postgres}`; SQL fixtures retain their pools for test-only backdating/failpoints and provision the tenants they write into (migration `0071`: a shared resource belongs to its live workspace), while the InMemory suite uses an injected manual clock. PostgreSQL runs with `NEBULA_REQUIRE_POSTGRES=1`. |
+| Shared-resource subscription/fanout/handoff runtime | `resource_fanout_conformance_{inmem,sqlite,postgres}`; SQL fixtures retain their pools for test-only backdating/failpoints and provision the tenants they write into (`0007_resources.sql`: a shared resource belongs to its live workspace), while the InMemory suite uses an injected manual clock. PostgreSQL runs with `NEBULA_REQUIRE_POSTGRES=1`. |
 | Stored resources, resource status, resource references | `resource_status_conformance_*` (SQL fixtures seed the resources they publish for) and the `resource*` `relational_matrix!` cases in [conformance](tests/conformance/resources.rs): live workspace / live resource checks, archived-resource status hidden, cascades on resource and workspace purge. |
 | Port behavior and tenancy | [conformance](tests/conformance.rs) and [identity_conformance](tests/identity_conformance.rs) for the affected backends; report which backend cases actually executed. |
-| Migration admission | [schema_source_authority](tests/schema_source_authority.rs), [credential_migration_catalog](tests/credential_migration_catalog.rs), and the SQLite/PostgreSQL schema-admission suites. Review catalog-floor policy before updating expected heads. |
+| Migration admission | [schema_source_authority](tests/schema_source_authority.rs), [credential_migration_catalog](tests/credential_migration_catalog.rs), and the SQLite/PostgreSQL schema-setup suites. Review admission before updating the expected head; verify both catalog inventory and canonical-prefix rejection. |
 | Execution handoff or remote effects | The `turn_handoff_conformance_*` and `operation_ledger_conformance_*` targets in [tests/](tests/); pair backend evidence with engine/worker ownership tests. |
 
 ## See also

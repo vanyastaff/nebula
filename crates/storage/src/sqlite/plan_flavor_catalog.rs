@@ -1,4 +1,4 @@
-//! SQLite exact plan/flavor catalog over ordered migration 0041.
+//! SQLite exact plan/flavor catalog in the execution baseline.
 //!
 //! Every operation runs inside one `BEGIN IMMEDIATE` transaction, so the
 //! plan row, the flavor row, and the authoritative reference rows are read and

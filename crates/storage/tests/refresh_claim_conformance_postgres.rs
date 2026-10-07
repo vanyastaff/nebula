@@ -208,6 +208,8 @@ impl RefreshClaimRepo for PgRefreshClaimFixture {
         intent: CredentialOperationIntent,
     ) -> Result<ClaimAttempt, RepoError> {
         // A claim belongs to its credential: file the case credential first.
+        // Concurrent seeds share both the id PK and the scoped FK-target unique
+        // key; either collision is the same already-provisioned fixture.
         let scope = selector
             .owner()
             .scope()
@@ -218,14 +220,21 @@ impl RefreshClaimRepo for PgRefreshClaimFixture {
              updated_at, reauth_required, metadata, record_state) \
              VALUES ($1, $2, $3, 'test.key', 'test.state', 1, '\\x00', 1, 1, 1, \
                      clock_timestamp(), clock_timestamp(), FALSE, '{}', 'live') \
-             ON CONFLICT (id) DO NOTHING",
+             ON CONFLICT DO NOTHING",
         )
         .bind(&scope.org_id)
         .bind(&scope.workspace_id)
         .bind(selector.credential_id().to_string())
         .execute(&self.pool)
         .await
-        .map_err(|_| RepoError::Storage)?;
+        .unwrap_or_else(|error| {
+            let database = error.as_database_error();
+            panic!(
+                "credential fixture insert failed: SQLSTATE={:?}, constraint={:?}",
+                database.and_then(sqlx::error::DatabaseError::code),
+                database.and_then(sqlx::error::DatabaseError::constraint),
+            );
+        });
         self.repo.try_claim(selector, holder, ttl, intent).await
     }
 

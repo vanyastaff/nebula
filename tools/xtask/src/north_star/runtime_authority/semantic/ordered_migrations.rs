@@ -34,7 +34,7 @@ pub(crate) enum OrderedMigrationError {
         "ordered migration migration snapshots do not survive close, reopen, and reinitialization"
     )]
     Reconnect,
-    #[error("ordered migration previous-supported data was not preserved exactly")]
+    #[error("ordered migration populated-head data was not preserved exactly")]
     Sentinel,
 }
 
@@ -47,15 +47,13 @@ pub(crate) fn verify(workspace: &Path, value: &Value) -> Result<(), OrderedMigra
             "scenario_inventory_version",
             "backend",
             "database_version",
-            "previous_supported_version",
             "current_head",
             "scenarios",
         ],
     )?;
-    if root["producer_version"].as_u64() != Some(2)
-        || root["scenario_inventory_version"].as_u64() != Some(1)
+    if root["producer_version"].as_u64() != Some(3)
+        || root["scenario_inventory_version"].as_u64() != Some(2)
         || root["contract"].as_str() != Some("ordered-migrations")
-        || root["previous_supported_version"].as_i64() != Some(45)
     {
         return Err(OrderedMigrationError::Version);
     }
@@ -88,7 +86,7 @@ pub(crate) fn verify(workspace: &Path, value: &Value) -> Result<(), OrderedMigra
         let name = fields["scenario"]
             .as_str()
             .ok_or(OrderedMigrationError::Inventory)?;
-        if !matches!(name, "clean" | "previous-supported-version") || !seen.insert(name) {
+        if !matches!(name, "clean" | "populated-head") || !seen.insert(name) {
             return Err(OrderedMigrationError::Inventory);
         }
         let events = fields["events"]
@@ -234,7 +232,7 @@ fn verify_sentinel(value: &Value, scenario: &str) -> Result<(), OrderedMigration
             Err(OrderedMigrationError::Sentinel)
         };
     }
-    let expected = serde_json::json!({"execution":{"fencing_generation":11,"id":"migration-sentinel","org_id":"org","state":{"sentinel":true},"status":"Running","version":7,"workflow_id":"workflow","workspace_id":"workspace"},"journal":[{"payload":{"event":"preserved"},"seq":3}]});
+    let expected = serde_json::json!({"execution":{"fencing_generation":1,"id":"migration-sentinel","org_id":"org","state":{"sentinel":true},"status":"running","version":1,"workflow_id":"workflow","workspace_id":"workspace"},"journal":[{"payload":{"event":"preserved"},"seq":1}]});
     if value == &expected {
         Ok(())
     } else {
@@ -263,10 +261,10 @@ pub(super) fn fixture(workspace: &Path, backend: &str) -> Value {
     let catalog = migration_catalog(workspace, catalog_directory)
         .expect("the checked-in migration catalog is readable");
     let clean_sentinel = serde_json::json!({"execution":null,"journal":[]});
-    let retained_sentinel = serde_json::json!({"execution":{"fencing_generation":11,"id":"migration-sentinel",
-        "org_id":"org","state":{"sentinel":true},"status":"Running","version":7,
+    let retained_sentinel = serde_json::json!({"execution":{"fencing_generation":1,"id":"migration-sentinel",
+        "org_id":"org","state":{"sentinel":true},"status":"running","version":1,
         "workflow_id":"workflow","workspace_id":"workspace"},
-        "journal":[{"payload":{"event":"preserved"},"seq":3}]});
+        "journal":[{"payload":{"event":"preserved"},"seq":1}]});
     let scenario = |name: &str, sentinel: &Value| {
         serde_json::json!({"scenario":name,"events":[
             {"sequence":0,"kind":"migration_snapshot","stage":"migrated","migrations":catalog.rows,"sentinel":sentinel},
@@ -275,11 +273,11 @@ pub(super) fn fixture(workspace: &Path, backend: &str) -> Value {
             {"sequence":3,"kind":"migration_snapshot","stage":"reinitialized","migrations":catalog.rows,"sentinel":sentinel}
         ]})
     };
-    serde_json::json!({"producer_version":2,"contract":"ordered-migrations","scenario_inventory_version":1,
+    serde_json::json!({"producer_version":3,"contract":"ordered-migrations","scenario_inventory_version":2,
         "backend":backend,"database_version":format!("synthetic-{backend}-version"),
-        "previous_supported_version":45,"current_head":catalog.head,
+        "current_head":catalog.head,
         "scenarios":[scenario("clean",&clean_sentinel),
-            scenario("previous-supported-version",&retained_sentinel)]})
+            scenario("populated-head",&retained_sentinel)]})
 }
 
 #[cfg(test)]
@@ -297,6 +295,14 @@ mod tests {
     }
 
     #[test]
+    fn fresh_baseline_and_populated_head_qualify_without_historic_upgrade() {
+        let workspace = workspace();
+        let value = super::fixture(&workspace, "sqlite");
+        assert!(value.get("previous_supported_version").is_none());
+        assert_eq!(super::verify(&workspace, &value), Ok(()));
+    }
+
+    #[test]
     fn checked_in_catalog_qualifies_and_a_changed_checksum_is_rejected() {
         let workspace = workspace();
         let value = super::fixture(&workspace, "sqlite");
@@ -307,5 +313,58 @@ mod tests {
             super::verify(&workspace, &invalid),
             Err(super::OrderedMigrationError::CatalogDigest)
         );
+    }
+
+    #[test]
+    fn tampered_inventory_ledger_and_reconnect_cannot_qualify() {
+        use super::OrderedMigrationError::{
+            CatalogCount, CatalogRow, Inventory, Reconnect, Sentinel, Shape, Version,
+        };
+        let workspace = workspace();
+        let valid = super::fixture(&workspace, "sqlite");
+        let cases = [
+            ("/producer_version", serde_json::json!(2), Version),
+            ("/scenario_inventory_version", serde_json::json!(1), Version),
+            ("/current_head", serde_json::json!(0), Version),
+            ("/backend", serde_json::json!("unsupported"), Inventory),
+            ("/database_version", serde_json::json!(""), Shape),
+            (
+                "/scenarios/1/scenario",
+                serde_json::json!("clean"),
+                Inventory,
+            ),
+            (
+                "/scenarios/0/events/1/sequence",
+                serde_json::json!(2),
+                Reconnect,
+            ),
+            (
+                "/scenarios/0/events/0/migrations",
+                serde_json::json!([]),
+                CatalogCount,
+            ),
+            (
+                "/scenarios/0/events/0/migrations/0/success",
+                serde_json::json!(false),
+                CatalogRow,
+            ),
+            (
+                "/scenarios/1/events/2/sentinel/journal/0/payload/event",
+                serde_json::json!("lost"),
+                Sentinel,
+            ),
+        ];
+        for (pointer, replacement, expected) in cases {
+            let mut tampered = valid.clone();
+            *tampered.pointer_mut(pointer).unwrap() = replacement;
+            assert_eq!(
+                super::verify(&workspace, &tampered),
+                Err(expected),
+                "{pointer}"
+            );
+        }
+        let mut obsolete = valid;
+        obsolete["previous_supported_version"] = 45.into();
+        assert_eq!(super::verify(&workspace, &obsolete), Err(Shape));
     }
 }

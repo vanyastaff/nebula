@@ -4,12 +4,11 @@
 //! Per spec §5: `commit` uses a real transaction so the §12.2 triple
 //! (CAS + fencing check + state + outbox + journal) is atomic and
 //! serializable across processes; the control-queue claim uses
-//! `FOR UPDATE SKIP LOCKED` (multi-consumer queue claim) — wired by the
-//! control-queue store in a later task.
+//! `FOR UPDATE SKIP LOCKED` (multi-consumer queue claim).
 //!
 //! The adapter schema is installed exclusively by the ordered PostgreSQL
-//! migration catalog. The `port_*` execution core remains independent of
-//! identity seeding.
+//! migration catalog. Execution rows belong to a live workflow within their
+//! tenant; schema constraints enforce ownership and purge cascades.
 
 mod control_queue;
 mod control_turn;

@@ -176,11 +176,13 @@ async fn abort_while_migration_blocked_releases_setup_lock_and_retry_succeeds() 
              without this feature"
         );
     };
-    MIGRATOR.run_to(40, &database.pool).await?;
+    // Dispatch adds foreign keys to executions, so holding the execution
+    // relation forces setup to wait while retaining the admission lock.
+    MIGRATOR.run_to(4, &database.pool).await?;
 
     let mut blocker = database.pool.acquire().await?;
     sqlx::query("BEGIN").execute(&mut *blocker).await?;
-    sqlx::query("LOCK TABLE port_executions IN ACCESS EXCLUSIVE MODE")
+    sqlx::query("LOCK TABLE executions IN ACCESS EXCLUSIVE MODE")
         .execute(&mut *blocker)
         .await?;
 

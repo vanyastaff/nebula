@@ -9,7 +9,7 @@
 //! PostgreSQL is the lease-clock authority: acquisition, heartbeat,
 //! sentinel admission, and reclaim all compare against the database clock.
 //!
-//! Claims and incidents belong to their credential (migration 0070) and are
+//! Claims and incidents belong to their credential and are
 //! filed under its workspace's `(org_id, workspace_id)`. A claim requires a
 //! credential that exists and is not archived (share-locked after the claim
 //! row, the order every claim/credential transaction uses), and an archived
@@ -171,8 +171,8 @@ pub struct PgRefreshClaimRepo {
 }
 
 impl PgRefreshClaimRepo {
-    /// Wrap an existing pool. Caller is responsible for running migrations
-    /// through 0070.
+    /// Wrap an existing pool. Caller is responsible for admitting the current
+    /// deployment catalog before use.
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
         Self { pool }

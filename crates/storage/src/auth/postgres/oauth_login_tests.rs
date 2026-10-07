@@ -28,7 +28,7 @@ async fn pool() -> Option<Pool<Postgres>> {
         Err(err) => panic!("DATABASE_URL is set but invalid: {err}"),
     };
     // A private schema, not `public`. Two of these tests must seed a row
-    // that migration 0038's CHECK constraint forbids, which means dropping
+    // that the identity baseline's CHECK constraint forbids, which means dropping
     // that constraint for the length of the seed — safe only when the
     // schema is this module's own.
     let schema = format!("nebula_oauth_login_{}", std::process::id());

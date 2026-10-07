@@ -567,7 +567,7 @@ impl Fixture {
         let raw = SqliteCredentialPersistence::connect(&db)
             .await
             .expect("sqlite credential store");
-        // Credentials belong to a live workspace (migration 0070).
+        // The credential baseline requires a live owning workspace.
         execution_parents::provision_scope(
             &credential_deployment::file_tenants(&db).await,
             &Scope::new("workspace", "organization"),

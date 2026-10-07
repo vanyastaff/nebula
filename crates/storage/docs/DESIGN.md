@@ -39,14 +39,14 @@
 
 Контракт — это порт в `nebula-storage-port` (`ExecutionStore` + атомарный
 `TransitionBatch`, `ExecutionJournalReader`, `NodeResultStore`, `CheckpointStore`,
-`IdempotencyGuard`/`IdempotencyStore`, `WorkflowStore`/`WorkflowVersionStore`,
+`IdempotencyGuard`, `WorkflowStore`/`WorkflowVersionStore`,
 `ControlQueue`, `WebhookActivationStore`, `RefreshClaimStore`, identity-стора,
 owner-bound `CredentialPersistence`; `Scope`).
 Этот крейт даёт адаптеры:
 
 | Item | Where |
 |------|-------|
-| `StorageError` (крейт-локальный enum) | `src/error.rs:13`, реэкспорт `src/lib.rs:102` |
+| `StorageError` (портовый enum) | `nebula-storage-port/src/error.rs`, реэкспорт `src/lib.rs` |
 | `InMemoryExecutionStore` / `InMemoryIdempotencyGuard` | `src/inmem/execution.rs:69,362` |
 | `InMemoryControlQueue` | `src/inmem/control_queue.rs:26` |
 | workflow/journal/checkpoint/node-result/identity in-mem | реэкспорт `src/inmem/mod.rs:19-29`, `src/lib.rs:104-109` |
@@ -81,17 +81,17 @@ owner-bound `CredentialPersistence`; `Scope`).
 
 - `inmem/` — in-memory порт-адаптеры (один `parking_lot::Mutex` на стор; tests /
   single-process / loom).
-- `sqlite/` (feature) — порт-адаптеры над `port_*`-схемой, single-writer;
+- `sqlite/` (feature) — порт-адаптеры над aggregate-схемой, single-writer;
   `init_schema` выполняет catalog-only admission и запускает единый
   упорядоченный SQLx migration catalog для файловых, `:memory:` и тестовых
-  пулов; credential-семантику проверяет только credential Ready constructor
-  под тем же guard/session; отдельного schema snapshot нет.
+  пулов; credential constructors используют тот же admission, а записи проверяют
+  fail-closed декодеры; отдельного schema snapshot нет.
 - `postgres/` (feature) — production порт-адаптеры (real tx + `FOR UPDATE SKIP LOCKED`).
 - `auth/` — Plane-A аккаунты вне порта: трейты (`repos.rs`), строки (`rows.rs`),
   OAuth-finalizer, MFA enrollment, `identity_secret`, `session_token`; PostgreSQL-реализации
   в `auth/postgres/` (feature postgres).
 - `http_idempotency/` — кэш идемпотентного replay API (`IdempotencyStoreRepo`,
-  in-memory и `PgHttpIdempotencyStore`); не путать с портовым `IdempotencyStore`.
+  in-memory и `PgHttpIdempotencyStore`); отдельно от портового `IdempotencyGuard`.
 - `webhook_activation.rs` — `WebhookActivationSpec` в `triggers.config`.
 - `credential/` — credential-стора, `KeyProvider`, decorator-слои (`layer/`: encryption,
   audit, cache), `provider_cache`, `pending`, `backup`, `refresh_claim/`.
@@ -129,7 +129,7 @@ SQLite/Postgres, под Mutex в InMemory).
   outcome uncertainty разрешает только ledger reads и exact frozen-evidence recommit.
 - **[L2-§11.5] Durable journal, fenced iteration checkpoint.** `TransitionBatch::journal`
   пишется в том же commit, что и переход (append-only, replayable). `CheckpointStore` —
-  fenced iteration checkpoints journaled stateful actions (migration 0062): запись под
+  fenced iteration checkpoints journaled stateful actions (`0004_executions.sql`): запись под
   execution fence, монотонная, привязанная к action key + version. Недоступный store
   только пропускает сохранение (не абортит исполнение); потеря строки = replay с
   iteration 0. Authority над effects остаётся у operation ledger.
@@ -146,34 +146,18 @@ SQLite/Postgres, под Mutex в InMemory).
   Expired `Normal` безопасно удаляется; expired `RefreshInFlight` никогда не reclaim-ится в
   provider replay. `reclaim_stuck` атомарно записывает ровно одно evidence-событие на claim UUID,
   сохраняет poison-row и возвращает только newly-accounted incidents для threshold observation.
-- **Multi-tenant by construction.** `auth::*Row` несут обязательные `workspace_id`/`org_id`;
-  identity-стора tenant-scoped на уровне row-DTO.
+- **Tenant isolation.** Tenant-стора используют `Scope` и scoped row identities;
+  credential-стора требуют `CredentialOwner`/`CredentialSelector`. Plane-A аккаунты
+  (`auth::*Row`) deployment-wide, отдельно от tenant grants.
 
 ## 6. Известные напряжения / долг
 
-1. **Два `StorageError` — закрыт (2026-10-06).** Крейт-локальный enum удалён; все
-   адаптеры возвращают порт-`StorageError`, ошибки `sqlx` классифицирует `sql_error`.
-2. **Коллизия имён idempotency — закрыта (2026-10-06).** Кэш API живёт в
-   `http_idempotency` (`PgHttpIdempotencyStore`), портовый per-attempt стор — в
-   `postgres::PgIdempotencyStore`. Legacy `ControlQueueRepo` удалён: портовый
-   `ControlQueue` — единственный outbox.
-3. **`pg/` vs `postgres/` — закрыт (2026-10-06).** `pg/`+`repos/`+`rows/` заменены на
-   `auth/` (+ `auth/postgres/`), `http_idempotency/`, `webhook_activation`.
-5. **Legacy-алиасы refresh_claim.** `RefreshClaimStore as RefreshClaimRepo`,
+1. **Алиасы refresh_claim.** `RefreshClaimStore as RefreshClaimRepo`,
    `RefreshClaimError as RepoError` (`src/credential/refresh_claim/mod.rs:37-41`) —
    rename-on-import ради исторических путей потребителей.
-6. **Стейл README §ADR-0009 — закрыт.** Ссылки на
-   `ExecutionRepo::set_workflow_input` / `ExecutionRepoError::UnknownSchemaVersion`
-   заменены на `NodeResultStore::set_workflow_input` /
-   `StorageError::UnknownSchemaVersion`; долговое замечание оставлено как
-   история.
-7. **AGENTS.md:37** «Cross-crate calls go through nebula-eventbus» — у крейта нет dep на
-   eventbus; правило-копипаста из корневого AGENTS.md.
-8. **Postgres runtime un-verified.** Pg-адаптер + identity-стора compile-verified и
-   структурно идентичны runtime-verified SQLite-дереву, но runtime-покрытие
-   `DATABASE_URL`-gated и skip-clean (ADR-0072 «Verification status»).
-
-(`TODO`/`FIXME`/`deprecated` в `src/` отсутствуют — grep чисто.)
+2. **PostgreSQL evidence.** SQL runtime evidence требует доступной тестовой БД.
+   Для strict suites используйте `NEBULA_REQUIRE_POSTGRES=1`; не объявляйте
+   PostgreSQL проверенным по skipped cases или compile-only прогону.
 
 ## 7. Роль в пост-0092 credential/resource модели
 
@@ -216,18 +200,17 @@ builtin types), а `nebula-crypto` владеет `Cipher`/`Kdf`-портами.
 
 ## 8. Forward design / открытые вопросы
 
-- **K2 owner schema migration закрыта новой `0039`.** Историческая
-  `0030_credentials_store.sql` остаётся SQLx-checksummed и byte-immutable, включая legacy-комментарий.
-  Paired SQLite/PostgreSQL `0039_credentials_owner_and_record_state.sql` проверяет legacy rows,
-  делает owner/state структурными DB-инвариантами и добавляет nullable `claim_id` только ради
-  совместимости со старым evidence; все новые sentinel incidents несут UUID и защищены глобальным
-  partial unique index.
+- **Credential schema.** Paired `0006_credentials.sql` задаёт структурные owner/state
+  инварианты, workspace ownership и обязательную claim identity инцидентов.
+  Все восемь baseline-миграций следуют [database-standard](database-standard.md);
+  runtime control входит в execution/dispatch. Startup проверяет canonical-prefix
+  ledger и checksums, затем head; проверка записей принадлежит fail-closed декодерам.
+  Старые development-каталоги требуют пересоздания БД, без adoption и migration floor.
 - **Свернуть refresh-CAS×2.** Дубль refresh-claim между storage и credential-rewrite-планом
   — закрыть _до_ старта rewrite credential (иначе мигрируем дубль). Решить, чья сторона
   владеет CAS-предикатом.
-- **Дедуп idempotency.** Портовый `*IdempotencyStore` vs `http_idempotency::IdempotencyStoreRepo`
-  (кэш API): имена разведены; перевод middleware на порт остаётся открытым вопросом.
-- **Postgres runtime-verify.** Снять `DATABASE_URL`-gate в CI (M7 ROADMAP) — единственный
-  residual после spec-16 merge; до этого «pg-verified» нельзя заявлять.
+- **Idempotency boundaries.** `IdempotencyGuard` помечает попытки execution;
+  `http_idempotency::IdempotencyStoreRepo` хранит ответы API для replay. Разные
+  владельцы и атомарность требуют отдельных контрактов.
 - **Durable bind-state (M12.4).** Когда resource bind-population дойдёт до production
   producer, спроектировать шов в resource-runtime адаптерах ДО, чтобы не вклеивать ad-hoc.

@@ -1,4 +1,4 @@
-//! Resource references (migration 0071): what the relational schema proves
+//! Resource baseline references: what the relational schema proves
 //! about stored resources, their runtime status and shared resources.
 //!
 //! A stored resource and a shared resource belong to their workspace; a

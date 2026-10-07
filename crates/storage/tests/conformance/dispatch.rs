@@ -1,4 +1,4 @@
-//! Dispatch references (migration 0069): what the relational schema proves
+//! Dispatch baseline references: what the relational schema proves
 //! about queue rows, triggers and webhook activations.
 //!
 //! A queue row belongs to its execution, a trigger to its workflow and an

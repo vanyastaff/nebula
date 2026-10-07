@@ -1,4 +1,4 @@
-//! SQLite iteration-checkpoint store over ordered migration 0062.
+//! SQLite iteration-checkpoint store in the execution baseline.
 //!
 //! A save runs under `BEGIN IMMEDIATE`: the execution fence, the read that
 //! decides and the write that follows are one linearized operation against

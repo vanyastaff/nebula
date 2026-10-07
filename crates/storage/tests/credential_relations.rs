@@ -1,4 +1,4 @@
-//! Credential references (migration 0070): what the relational schema proves
+//! Credential baseline references: what the relational schema proves
 //! about credentials, their provider-operation claims and their incidents.
 //!
 //! A credential and a pending interactive flow belong to the live workspace

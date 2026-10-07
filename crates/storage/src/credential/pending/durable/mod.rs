@@ -122,7 +122,7 @@ fn expiry_from(now_ms: i64, expires_in: Duration) -> Result<i64, PendingStoreErr
         .ok_or_else(|| backend(DurablePendingError::Unavailable))
 }
 
-/// The workspace pending state for `owner` is filed under (migration 0070).
+/// The workspace under which pending state for `owner` is filed.
 /// An owner key that names no workspace owns no pending state.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn owner_scope(owner: &str) -> Result<nebula_storage_port::Scope, PendingStoreError> {
@@ -181,9 +181,8 @@ pub use postgres::PgPendingStateStore;
 mod migration_contract_tests {
     #[test]
     fn dialects_define_the_same_pending_state_contract() {
-        let sqlite = include_str!("../../../../migrations/sqlite/0070_credentials_standard.sql");
-        let postgres =
-            include_str!("../../../../migrations/postgres/0070_credentials_standard.sql");
+        let sqlite = include_str!("../../../../migrations/sqlite/0006_credentials.sql");
+        let postgres = include_str!("../../../../migrations/postgres/0006_credentials.sql");
         let table = |migration: &'static str| {
             migration
                 .split_once("CREATE TABLE credential_pending_states (")

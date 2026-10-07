@@ -1,8 +1,7 @@
-//! Execution listing projection and history (migration 0064).
+//! Execution listing projection and history in the execution baseline.
 //!
-//! Before 0064 the status column was written once and never followed a
-//! commit, so nothing could filter on it; these assertions pin the contract
-//! that replaced it, identically on every backend.
+//! Every commit updates the listing projection alongside state. These
+//! assertions pin status filtering and keyset history on every backend.
 
 use nebula_storage_port::store::ExecutionStore;
 use nebula_storage_port::{

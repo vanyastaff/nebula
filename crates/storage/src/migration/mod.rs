@@ -6,6 +6,7 @@ use std::future::Future;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use tracing::{Instrument as _, Span};
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) mod catalog;
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -1184,28 +1185,6 @@ mod sqlite_lock_tests;
 mod tests {
     use super::catalog;
 
-    /// The tripwire that makes a new catalog head a decision rather than a
-    /// side effect: the head is compared with the literal
-    /// [`crate::migration_catalog::REVIEWED_HEAD`], never derived from the
-    /// migrator, so a new migration fails here until it is reviewed below and
-    /// acknowledged there.
-    ///
-    /// Head 0045 (`port_operation_ledger`) reviewed against the floor: it
-    /// creates one new table and touches no existing relation, so it needs no
-    /// aggregate-owner validation and the floor stays at 0040. Its `CHECK`
-    /// constraints bind only rows the migration itself introduces, so no
-    /// database admitted at 0040 or later can hold a row they would reject.
-    /// The same review covered 0044 (`control_queue_claim_generation`), which
-    /// adds one defaulted column to `port_control_queue` and performs
-    /// no destructive transform, so it needs no aggregate-owner validation and
-    /// the floor stays at 0040. The same review covered 0043
-    /// (`port_start_key_reservations`), which creates one new table:
-    /// it creates one new table and touches no existing relation, so it needs
-    /// no aggregate-owner validation and the floor stays at 0040. The same
-    /// review covered 0042 (`job_dispatch_claim_generation`), which adds one
-    /// defaulted column and performs no destructive transform. A database
-    /// admitted at 0040 or later still reaches this head by ordinary forward
-    /// migration.
     /// The lock classifier decides whether setup waits or fails.
     ///
     /// Both directions are load-bearing: treating a real failure as transient
@@ -1237,129 +1216,18 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
-    /// Heads 0065 onward are transition migrations of the database standard
-    /// (`docs/database-standard.md`): each replaces one aggregate's tables with standard ones and
-    /// preserves no rows. No deployed database exists to carry forward; the
-    /// series is squashed into the baseline when the last aggregate lands.
-    /// 0065: identity. 0066: tenancy. 0067: workflows. 0068: executions (with
-    /// the revision catalog they reference). 0069: dispatch (execution
-    /// control and job queues, triggers, trigger start reservations, webhook
-    /// activations). 0070: credentials (credentials owned by their workspace,
-    /// their provider-operation claims and incidents, pending interactive
-    /// state). 0071: resources (stored resources owned by their workspace
-    /// with the runtime status workers publish for them, shared resources
-    /// owned by their workspace with their subscriptions, source leases,
-    /// events, deliveries and execution handoffs).
+    /// The reviewed baseline has eight paired groups in dependency order:
+    /// identity, tenancy, workflows, executions, dispatch, credentials,
+    /// resources and platform. Runtime control belongs to execution/dispatch;
+    /// it does not require a separate empty migration.
     ///
-    /// Head 0064, on both backends, adds the execution listing projection
-    /// (`started_at`, `finished_at`, `created_at_us`), backfills it and
-    /// `status` from each execution row's own persisted state, and replaces
-    /// the scope/workflow indexes with keyset history indexes plus a partial
-    /// index of active rows. The backfill reads only values the execution
-    /// owner already wrote into the same row; it infers nothing from another
-    /// aggregate, grants no authority, and changes no state, version, lease,
-    /// or journal. A state without a known status keeps `created`. It is a
-    /// same-row projection, not an aggregate transform, and the floor remains
-    /// at 0040. Writers that predate it never update the projection, so they
-    /// must be stopped before it applies; PostgreSQL drops the backfill
-    /// default of `created_at_us` so such a writer's insert fails closed.
-    ///
-    /// Head 0063, on both backends, creates only the empty
-    /// `port_execution_control_observation_receipts` relation, its
-    /// constraints, and a cascading foreign key to the execution row. No
-    /// historical control outcome or source authority is inferred or
-    /// backfilled: receipts are written only by the execution owner together
-    /// with their journal row, and an absent receipt means no refusal was
-    /// observed yet. It is aggregate-neutral and the floor remains at 0040.
-    ///
-    /// Head 0062, on both backends, creates only the empty
-    /// `port_iteration_checkpoints` relation (fenced iteration checkpoints of
-    /// journaled stateful actions), its constraints, and a cascading foreign
-    /// key to the execution row. Nothing is inspected, inferred, or
-    /// backfilled: a missing row means "replay from iteration 0", which is how
-    /// every stateful node ran before. It is aggregate-neutral and the floor
-    /// remains at 0040.
-    ///
-    /// Head 0061, on both backends, adds the credential admission epoch (the
-    /// use revision) with the constant 1 on every existing row and a named
-    /// range check. Nothing is inspected or inferred: the constant claims no
-    /// history, and because no binding carried an admission epoch before the
-    /// cutover, none can match a later observation — bindings are invalidated
-    /// conservatively rather than guessed. Material, version, and every other
-    /// aggregate column are untouched. It is aggregate-neutral and the floor
-    /// remains at 0040. Old credential writers do not advance the epoch, so
-    /// they must be stopped before it applies; PostgreSQL drops the backfill
-    /// default so an old writer's insert fails closed. SQLite keeps its
-    /// PostgreSQL-only gap at 0060.
-    ///
-    /// PostgreSQL 0060 creates only the empty rate-limit and
-    /// rate-limit-reservation relations, their constraints, and two time
-    /// indexes. They reference no aggregate and nothing is inspected,
-    /// inferred, or backfilled; a missing row behaves exactly like an idle
-    /// limit, which is how every key starts. It is aggregate-neutral and the
-    /// floor remains at 0040. SQLite reserves 0060 (one process keeps its
-    /// limits in memory).
-    ///
-    /// Head 0059 creates only the empty worker-heartbeat and resource-status
-    /// relations, their constraints, and a worker index. They reference no
-    /// aggregate and nothing is inspected, inferred, or backfilled; published
-    /// status is liveness-bounded runtime state that workers rewrite on their
-    /// own. It is aggregate-neutral and the floor remains at 0040.
-    ///
-    /// Head 0058 adds nullable operator topology and resilience-override
-    /// documents to resource definitions. NULL is the kind-default / unlimited
-    /// behaviour every existing row already had, so nothing is inferred or
-    /// rewritten; it is aggregate-neutral and the floor remains at 0040.
-    ///
-    /// Head 0057 types credential provider-operation claims and incidents.
-    ///
-    /// Head 0056 widens the pending-state expiry constraint to admit equality.
-    /// PostgreSQL replaces only the constraint. SQLite rebuilds the relation
-    /// because it cannot alter a CHECK in place, copying every column without
-    /// changing row values; every 0055 row already satisfies the wider check.
-    /// The transform preserves aggregate state, so the general floor remains
-    /// at 0040.
-    ///
-    /// Head 0055 adds an empty encrypted pending-state relation for interactive
-    /// credentials. It neither infers prior pending flows nor rewrites an
-    /// aggregate, so the general floor remains at 0040.
-    /// Head 0054 owner-qualifies refresh claims and sentinel incidents by
-    /// backfilling the canonical owner from the credential aggregate. It is an
-    /// aggregate transform: an orphan makes the migration fail closed, and
-    /// credential readiness remains the owner preflight before catalog setup.
-    /// The general floor remains at 0040 because every database admitted there
-    /// has owner-qualified credentials and the migration derives no authority
-    /// from caller-controlled metadata.
-    ///
-    /// Head 0053 adds the operator reconciliation record to credential sentinel
-    /// incidents. Every column is nullable and NULL for incidents recorded
-    /// earlier, which stays the fail-closed "no provider outcome is known"
-    /// state, so the migration neither resolves a legacy incident nor changes
-    /// the sentinel-event count; the floor remains at 0040.
-    ///
-    /// Head 0052 adds a default-empty credential-binding document to resource
-    /// definitions. Existing rows could not persist bindings before this
-    /// migration, so the empty backfill does not infer or fabricate credential
-    /// authority; it is aggregate-neutral and the floor remains at 0040.
-    /// Head 0051 creates only empty resource-runtime relations, indexes, and
-    /// constraints. It does not inspect, infer, backfill, or rewrite any
-    /// aggregate state, so catalog-only admission remains valid and the general
-    /// floor stays at 0040. Head 0050 creates accepted-turn markers with the complete set of command
-    /// sources used by the runtime owner. It neither infers historical acceptance
-    /// nor rewrites aggregate state. Recovery guarantees start with marker-writing
-    /// acceptors; deployments must quiesce older acceptors or reconcile their work
-    /// through its runtime owner. Head 0049 adds an empty protocol child table and a redundant unique owner
-    /// index; it neither upgrades legacy ledger rows nor grants effect authority.
-    /// Head 0048 adds an empty immutable bundle table and tenant parent index,
-    /// without fabricating contracts for existing executions. Head 0047 adds
-    /// nullable activation metadata without rewriting legacy workflow identities.
-    /// The preceding 0046 is aggregate-neutral only when
-    /// the dispatch queue is empty.
-    /// Its SQL preflight rejects every legacy row before any schema change;
-    /// successful setup introduces no aggregate mutation or invented identity.
-    /// Nonempty deployments must remain at their prior schema until runtime
-    /// owners have drained and retired the legacy rows through their own ports.
-    /// The rejection is terminal and atomic; it is never classified as a lock.
+    /// `docs/database-standard.md` defines schema invariants. Admission accepts
+    /// fresh databases and exact successful checksummed catalog prefixes,
+    /// applies pending migrations under the setup guard, then verifies head.
+    /// Discarded development catalogs fail closed and require recreation.
+    /// Before acknowledging a future head, review both backend SQL, affected
+    /// aggregate invariants and admission from each supported prefix. Add the
+    /// migration to `migration_catalog::REVIEWED_HEAD` only after that review.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         use crate::migration_catalog::REVIEWED_HEAD;

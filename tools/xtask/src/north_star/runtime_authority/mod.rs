@@ -319,7 +319,7 @@ fn validate_runtime_threshold(
             },
         ) => {
             metric == "ordered_migration_fixture_pass"
-                && values_match(required_cases, &["clean", "previous-supported-version"])
+                && values_match(required_cases, &["clean", "populated-head"])
         },
         (
             Gate::ActivationDiagnostics,

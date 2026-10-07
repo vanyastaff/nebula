@@ -99,7 +99,7 @@ const TENANTS: &[&str] = &[
 ];
 
 /// Provision [`TENANTS`] through `tenants`: a credential belongs to a live
-/// workspace (migration 0070).
+/// workspace, as required by the credential baseline.
 async fn provision(tenants: &dyn nebula_storage_port::store::TenantProvisioningStore) {
     for label in TENANTS {
         execution_parents::provision_scope(

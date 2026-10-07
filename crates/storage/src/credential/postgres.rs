@@ -1,7 +1,7 @@
 //! Postgres-backed `CredentialPersistence` impl.
 //!
 //! Persists structural [`StoredCredential`] rows in the `credentials` table of
-//! migration `0070_credentials_standard.sql`. The store is deliberately linear:
+//! migration `0006_credentials.sql`. The store is deliberately linear:
 //!
 //! - `data` is opaque `BYTEA`; the encryption layer above this adapter owns its
 //!   representation.
@@ -20,9 +20,9 @@
 //!   [`CredentialPersistenceError::OutcomeUnknown`], and the adapter never
 //!   retries.
 //!
-//! [`Self::connect`](PgCredentialPersistence::connect) and
-//! [`Self::connect_with`](PgCredentialPersistence::connect_with) are the only
-//! constructors; no unchecked raw-pool constructor can bypass readiness.
+//! Every constructor runs schema admission. Deployment compositions use
+//! [`Self::connect_pool`](PgCredentialPersistence::connect_pool) to share their
+//! existing pool; no unchecked raw-pool constructor can bypass readiness.
 
 // budget-justified: one cohesive PostgreSQL adapter owns readiness, physical-row
 // decoding, mutation classification, and the commit-acknowledgement boundary.
@@ -169,7 +169,7 @@ impl PgCredentialPersistence {
     /// Admit and migrate the deployment database behind `pool`, then return a
     /// ready store over that same pool.
     ///
-    /// Credentials live in the deployment database (migration 0070), so a
+    /// Credentials live in the deployment database, so a
     /// composition hands the store the pool its execution stores already use;
     /// no second pool opens on the same database. The admission and migration
     /// gate is the one [`Self::connect`] runs.

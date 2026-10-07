@@ -84,8 +84,8 @@ pub use postgres::{PgCredentialPersistence, PgCredentialRefreshSchedule};
 pub use provider_cache::{ProviderCacheConfig, ProviderCacheLayer, ProviderCacheStats};
 #[cfg(test)]
 pub(crate) use reference::ReferenceCredentialPersistence;
-/// In-process credential persistence for tests and compositions without a
-/// deployment database: the reference adapter, with the lifecycle semantics
+/// In-process credential persistence for test hosts: the reference adapter,
+/// with the lifecycle semantics
 /// the SQL adapters are held to (no tenancy, so no live-workspace check).
 #[cfg(feature = "credential-in-memory")]
 pub use reference::ReferenceCredentialPersistence as InMemoryCredentialPersistence;
@@ -106,12 +106,13 @@ pub use startup::CredentialStoreStartupError;
 /// The owners credential unit tests file their credentials under.
 ///
 /// SQL backends file a credential under the workspace its owner partition
-/// names and require that workspace to be live (migration 0070), so a test
+/// names and require that workspace to be live, so a test
 /// owner is the canonical key of a scope whose tenant the test provisions.
 #[cfg(test)]
 pub(crate) mod test_owner {
+    use nebula_storage_port::{CredentialOwner, Scope};
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
     use nebula_storage_port::{
-        CredentialOwner, Scope,
         dto::{
             PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate,
             TenantProvisioningOutcome, TenantProvisioningRequest,
@@ -162,6 +163,7 @@ pub(crate) mod test_owner {
     }
 
     /// Provision `scope`'s org with `scope`'s workspace as its default one.
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
     pub(crate) async fn provision_scope(tenants: &dyn TenantProvisioningStore, scope: &Scope) {
         let org = TenantOrgCreate::new(
             scope.org_id.clone(),

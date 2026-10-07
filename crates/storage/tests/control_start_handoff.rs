@@ -8,6 +8,13 @@
 mod recovery_oracle;
 
 #[path = "support/control_turn_oracle.rs"]
+#[cfg_attr(
+    not(feature = "sqlite"),
+    expect(
+        dead_code,
+        reason = "this shared oracle also contains SQLite-only observation fault cases"
+    )
+)]
 mod control_turn_oracle;
 
 include!("support/control_start_handoff_oracle.rs");

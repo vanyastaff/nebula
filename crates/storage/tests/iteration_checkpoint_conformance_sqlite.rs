@@ -2,7 +2,7 @@
 //!
 //! Every case runs against a fresh in-memory database whose schema comes from
 //! the ordered migration catalog, so the adapter is exercised against exactly
-//! the `CHECK` constraints migration 0062 installs.
+//! the `CHECK` constraints the execution baseline installs.
 
 #![cfg(feature = "sqlite")]
 

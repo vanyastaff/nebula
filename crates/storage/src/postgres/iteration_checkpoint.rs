@@ -1,4 +1,4 @@
-//! PostgreSQL iteration-checkpoint store over ordered migration 0062.
+//! PostgreSQL iteration-checkpoint store in the execution baseline.
 //!
 //! A save locks the execution row (`SELECT … FOR UPDATE`, the fence the
 //! operation ledger shares) before it reads the stored checkpoint, so every

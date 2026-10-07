@@ -119,7 +119,7 @@ const TENANTS: &[&str] = &[
 ];
 
 /// Provision [`TENANTS`] on the deployment `pool`: a credential belongs to a
-/// live workspace (migration 0070).
+/// live workspace, as required by the credential baseline.
 async fn provision(pool: &PgPool) {
     let tenants = nebula_storage::postgres::PgTenantProvisioningStore::new(pool.clone());
     for label in TENANTS {

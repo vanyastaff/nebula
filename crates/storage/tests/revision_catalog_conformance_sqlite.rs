@@ -3,7 +3,7 @@
 //! Every case runs against a fresh in-memory database whose schema comes from
 //! the ordered migration catalog — there is no parallel bootstrap path — so the
 //! adapter is exercised against exactly the `CHECK` constraints and foreign
-//! keys migration 0041 installs.
+//! keys the execution baseline installs.
 //!
 //! The durable-corruption cases below sit outside the shared oracle on purpose:
 //! reaching them means writing bytes the port refuses to write, which only a
@@ -144,7 +144,7 @@ async fn the_schema_refuses_a_record_format_the_catalog_cannot_read() {
     .await;
     assert!(
         rejected.is_err(),
-        "migration 0041 must refuse a recorded form outside the closed vocabulary"
+        "the execution baseline must refuse a recorded form outside the closed vocabulary"
     );
     assert_eq!(
         catalog.load_exact(record.ids()).await,

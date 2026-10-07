@@ -13,7 +13,7 @@
 //!
 //! # Ownership
 //!
-//! Claims and incidents belong to their credential (migration 0070) and are
+//! Claims and incidents belong to their credential and are
 //! filed under its workspace's `(org_id, workspace_id)`. A claim requires a
 //! credential that exists and is not archived, and an archived credential's
 //! claim cannot cross the provider boundary.
@@ -113,8 +113,8 @@ pub struct SqliteRefreshClaimRepo {
 }
 
 impl SqliteRefreshClaimRepo {
-    /// Wrap an existing pool. Caller is responsible for running migrations
-    /// through 0061.
+    /// Wrap an existing pool. Caller is responsible for admitting the current
+    /// deployment catalog before use.
     #[must_use]
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }

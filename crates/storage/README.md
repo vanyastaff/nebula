@@ -33,8 +33,8 @@ single persistence layer the knife scenario (canon §13) exercises end-to-end.
 
 The contract is the spec-16 storage **port** in `nebula-storage-port`
 (`ExecutionStore` + the atomic `TransitionBatch`, `ExecutionJournalReader`,
-`NodeResultStore`, `CheckpointStore`, `IdempotencyGuard` /
-`IdempotencyStore`, `WorkflowStore` / `WorkflowVersionStore`,
+`NodeResultStore`, `CheckpointStore`, `IdempotencyGuard`,
+`WorkflowStore` / `WorkflowVersionStore`,
 `ControlQueue`, `WebhookActivationStore`, `RefreshClaimStore`, and the
 identity-zoo stores; owner-bound `CredentialPersistence`; `StorageError`;
 the plain-data `Scope`). This crate
@@ -48,7 +48,8 @@ provides the adapters:
   parent-qualified workspace writes. PostgreSQL serializes organization
   lockout checks with an organization-row lock; SQLite uses `BEGIN IMMEDIATE`;
   the in-memory reference uses the directory's shared mutex. All three reject
-  unknown persisted roles and ambiguous cross-organization workspace ids.
+  unknown persisted roles. Workspace ids are globally unique; grants remain
+  qualified by their owning organization.
 - `InMemoryPlanFlavorCatalog` — component/reference adapter over the execution
   store's shared lock. Exact immutable load, drain, guarded delete, reference
   mutation, and row-derived blockers mirror the SQLite and PostgreSQL
@@ -66,7 +67,7 @@ provides the adapters:
   implementations in `auth::postgres`.
 - `http_idempotency::*` — the API's idempotent-replay response cache
   (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); distinct from the
-  port's per-attempt `IdempotencyStore`.
+  port's per-attempt `IdempotencyGuard`.
 - `auth::postgres::PgOAuthLoginFinalizer` (feature `postgres`) plus the
   `auth::OAuthLoginFinalize*` command/outcome types — the technical,
   storage-owned Plane-A completion seam. Each call receives already-verified
@@ -91,9 +92,8 @@ provides the adapters:
   envelope at this contract.
 - Browser-session repositories accept the one-time presented cookie separately
   from `SessionDraft` and persist only
-  `SHA-256("nebula:plane-a:session-cookie:v1\\0" || token)`. Migration `0038`
-  intentionally truncates pre-digest sessions; raw cookies cannot be migrated
-  without preserving the bearer authority.
+  `SHA-256("nebula:plane-a:session-cookie:v1\\0" || token)`. The identity baseline
+  stores digests rather than bearer cookies.
 - `auth::identity_secret::IdentitySecretCodec` stores active and pending TOTP seeds
   as `EncryptedData` v1 AES-256-GCM envelopes. AAD binds the exact 16-byte user
   id plus a distinct active/pending purpose, so promotion must decrypt the
@@ -102,7 +102,7 @@ provides the adapters:
   `KeyProvider::current()` snapshot (`key_id` + key) so a live KMS rotation
   cannot pair metadata from one generation with bytes from another.
 - `auth::postgres::PgIdentitySecretMigrator` is a startup data migrator, not a schema
-  migrator: all DDL stays in numbered migration `0038`. It uses a cancellation-
+  migrator: identity DDL stays in `0001_identity.sql`. It uses a cancellation-
   safe retired advisory-lock connection, bounded reads, equality-guarded CAS,
   user-version fencing, explicit old-key rotation, and repeated verification;
   the Postgres auth backend is not exposed until convergence succeeds.
@@ -110,26 +110,16 @@ provides the adapters:
   classified once, value-free, in `sql_error` (the resource-runtime adapters still
   carry their own classifier).
 
-Applied migrations `0001..0041` are immutable SQLx-checksummed history.
-Credential lifecycle migration
-`0039_credentials_owner_and_record_state.sql` is paired across SQLite and
-PostgreSQL. It makes owner identity and structural live/tombstoned state
-database invariants, preserves valid live material exactly, and converts
-legacy rows carrying a top-level `revoked_at` key into secret-free terminal
-records without version inflation. The same migration adds nullable
-`claim_id` incident identity to historical sentinel evidence and a global
-partial unique index; newly accounted incidents always carry the UUID while
-pre-0039 rows remain `NULL`.
-
-Paired migration `0040_credential_refresh_retry_gate.sql` adds the closed
-structural refresh-retry gate and backend-authored material epoch. Creates and
-migrated rows start at `CredentialMaterialEpoch::MIN` with a clear gate. Every
+The paired credential baseline `0006_credentials.sql` makes owner identity,
+structural live/tombstoned state, incident identity, the closed refresh-retry
+gate and backend-authored epochs database invariants. Creates start at
+`CredentialMaterialEpoch::MIN` with a clear gate. Every
 replacement carries an outer `CredentialMaterialTransition`:
 `Preserve { refresh_retry }` retains the epoch while applying an explicit
 preserve/clear/permanent/timed gate transition; `Advance` increments the epoch
 and unconditionally clears the old gate. Epoch overflow fails closed.
 Tombstones clear the gate. Timed deadlines and admission use the authoritative
-backend clock (`clock_timestamp()` after PostgreSQL lock waits; millisecond UTC
+backend clock (`clock_timestamp()` after PostgreSQL lock waits; microsecond UTC
 samples in SQLite), and remaining delays are rounded up to bounded whole
 seconds. Unknown mode, phase, kind, or diagnostic encodings fail closed as
 corrupt records. A permanent (`Never`) gate is scoped to the current
@@ -147,29 +137,28 @@ Since the material reshape, `Advance` carries a `MaterialUpdate`: only
 `Preserve` leave them byte-identical, and `EncryptionLayer` seals only new
 material, so lazy key rotation happens on material writes alone.
 
-Paired migration `0061_credential_admission_epoch.sql` adds the credential
-admission epoch (the use revision), backfilled to 1 without guessing history.
-Creates write 1. It advances in the same transaction as every write that
+The credential admission epoch (the use revision) starts at 1. It advances
+in the same transaction as every write that
 closes use — replacement under `Advance` or with a `reauth_required` change,
 a won revoke claim, `mark_sentinel`, and threshold escalation — and never
 moves `version` or `updated_at`. Every status projection reports it in
-`CredentialOperationStatus::Open`; overflow fails closed. PostgreSQL drops the
-backfill default so an old writer's insert fails; SQLite keeps it.
+`CredentialOperationStatus::Open`; overflow fails closed. Inserts supply the
+epoch explicitly on both backends.
 
-Paired migration `0041_port_plan_flavor_revision_catalog.sql` adds dormant
+The execution baseline `0004_executions.sql` defines
 SQLite/PostgreSQL tables for immutable worker-flavor and executable-plan
 records plus exact per-execution revision references. The database enforces
 closed lifecycle/format/reference-state shapes, exact byte lengths, canonical
 execution IDs, restrictive foreign keys, and row-derived blocker indexes.
-This is storage-layout evidence only: no SQL adapter or production activation
-path writes these tables yet, the database does not verify that IDs hash their
-payload bytes, and the migration does not claim exactly-once behavior.
+Adapters verify the immutable payload identity; SQL constraints alone do not
+prove that an ID hashes its payload or provide exactly-once remote effects.
 
 Credential adapters are constructible only through their ready-store
 constructors. Those constructors hold a backend-appropriate serialized setup
 guard across read-only schema admission, canonical migration, and postflight;
-unsupported, forged, ownerless, or corrupt schemas fail unchanged. Raw pools
-cannot bypass admission. Runtime authority comes only from the mandatory typed
+unsupported or forged migration ledgers fail unchanged. Pool-taking
+constructors also perform admission. Stored records are checked by fail-closed
+decoders; startup does not scan all credential rows. Runtime authority comes only from the mandatory typed
 selector and owner column; metadata never grants access.
 `SqliteCredentialPersistence::refresh_claim_repo()` and
 `PgCredentialPersistence::refresh_claim_repo()` are the curated composition
@@ -207,7 +196,7 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 - Feature `sqlite` adds `SqliteRefreshClaimRepo` (default local backend) and feature `postgres`
   adds `PgRefreshClaimRepo` (production multi-replica backend), both over
   `credential_refresh_claims` and `credential_refresh_incidents` of
-  `0070_credentials_standard`: a claim and its incidents belong to their credential (keyed by its
+  `0006_credentials.sql`: a claim and its incidents belong to their credential (keyed by its
   workspace's `org_id`, `workspace_id`) and cascade with it; an incident is keyed by the claim
   UUID. An archived credential can be neither claimed nor carried across the provider boundary.
 
@@ -218,9 +207,9 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   If persistence is unavailable, the operation fails — it does not silently mutate in-memory
   state. Seam: `crates/storage-port/src/store/execution.rs`.
 
-- **[L2-§11.3]** Idempotency enforcement lives here via the port `IdempotencyGuard` /
-  `IdempotencyStore`. Key shape `{execution_id}:{node_id}:{attempt}` is defined in
-  `nebula-execution`; the adapter folds scope into storage so callers cannot share keys across
+- **[L2-§11.3]** Idempotency enforcement lives here via the port `IdempotencyGuard`.
+  Marks are keyed structurally by organization, workspace, execution, node and attempt;
+  the adapter includes scope so callers cannot share marks across
   tenants. This is a local replay/dedup oracle only: it is not atomic with a remote provider,
   cannot tell whether an external effect committed, and does not establish single-effect or
   exactly-once semantics. The effect ledger is a separate runtime-control contract:
@@ -255,7 +244,7 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 - **[L2-§11.5]** `TransitionBatch::journal` backs the durable `execution_journal`
   (append-only, replayable) and is committed with the state transition. No production caller
   fills the batch's journal rows yet (#1013). `CheckpointStore` holds the **fenced iteration checkpoints** of journaled
-  stateful actions (migration 0062, `iteration_checkpoints`): one row per tenant,
+  stateful actions (`0004_executions.sql`, `iteration_checkpoints`): one row per tenant,
   execution, node, action key and action version, saved in one transaction under the
   execution fence the operation ledger shares (`execution_fence`), monotone (a lower
   iteration never replaces a higher one; an equal one must carry the same state digest),
@@ -328,10 +317,9 @@ See `docs/MATURITY.md` row for `nebula-storage`.
 - The `auth::*` and `http_idempotency::*` surfaces (Plane-A accounts and
   the API replay cache) keep live consumers (the API auth backend and
   idempotency middleware) and is outside the port contract by design.
-- Postgres adapter + identity stores are compile-verified and structurally
-  identical to the runtime-verified SQLite tree, but Postgres runtime
-  coverage is `DATABASE_URL`-gated and skip-clean — not claimed as
-  pg-verified (ADR-0072 "Verification status").
+- PostgreSQL runtime evidence requires a live disposable database. Use
+  `NEBULA_REQUIRE_POSTGRES=1` for strict backend suites and report which cases
+  actually ran; a skipped PostgreSQL case is not runtime verification.
 - The PostgreSQL OAuth finalizer additionally has a real-Postgres concurrency
   and rollback suite covering same-subject convergence, shared-email
   `AccountLinkRequired`, different-email creation, existing/soft-deleted/
@@ -349,36 +337,31 @@ There is no flat top-level migration tree.
 Every setup path, including `init_schema`, credential readiness, test pools,
 and `:memory:` SQLite, embeds and runs the exact ordered migration tree for its
 backend. There is no independently maintained schema snapshot. General
-`init_schema` admits only catalog facts: a genuinely empty database or an exact
-SQLx-checksummed prefix at or above the catalog-only floor (`0040`), then
-applies pending migrations and verifies the resulting head. Earlier prefixes
-must upgrade through credential Ready construction, whose deep preflight owns
-the semantics required by destructive credential migrations. General setup
-never reads credential rows or makes
-unrelated runtime-control recovery depend on credential semantic health.
-Credential Ready constructors add their aggregate-specific relation and row
-preflight/postflight under the same setup guard and session. A non-empty alpha
-database created by the former snapshot path but lacking `_sqlx_migrations`
-fails closed before mutation; it requires a separately reviewed, backed-up
-operator conversion rather than fabricated ledger rows.
+`init_schema` admits only catalog facts: a genuinely empty database or an exact,
+successful SQLx-checksummed prefix of the embedded catalog. It then applies pending
+migrations and verifies the resulting head. Failed, reordered, unknown or modified
+ledger rows and non-empty unledgered databases fail closed before migration.
+Credential constructors use the same admission; startup does not scan credential
+rows or offer ledger adoption.
 
-`CatalogOnly` may automatically apply a pending migration only when review has
-proved that migration is aggregate-neutral. An aggregate-transforming or
-destructive migration requires owner-specific preflight and postflight under
-the same guard/session, or a higher general floor that rejects every prefix
-from which the transformation is not already known safe. The executable
-catalog-boundary test deliberately pins the current `head = 0051` and general
-`floor = 0040`; adding `0052` therefore fails a test until admission policy is
-reviewed. Advancing that pin is an architectural decision, not migration
-bookkeeping.
+The baseline contains eight paired files in dependency order: `0001_identity.sql`,
+`0002_tenancy.sql`, `0003_workflows.sql`, `0004_executions.sql`, `0005_dispatch.sql`,
+`0006_credentials.sql`, `0007_resources.sql`, and `0008_platform.sql`. Runtime control
+belongs to execution and dispatch rather than a separate migration. Prior development
+catalogs are incompatible: recreate disposable development databases. There is no
+automatic conversion or data-preserving upgrade from that discarded history.
 
-Migration `0051` is aggregate-neutral: it creates only empty resource-runtime
-relations, constraints, and indexes. Resource event acceptance snapshots Active
+The executable head test compares the catalog with `migration_catalog::REVIEWED_HEAD`.
+Review admission and aggregate invariants before advancing that value. Future released
+migrations append to the catalog; their SQL remains checksum-immutable. Schema naming,
+types, ownership and backend exceptions are defined in [database-standard](docs/database-standard.md).
+
+Resource event acceptance snapshots Active
 subscriptions into deliveries in one transaction. A Delivered completion creates
 the delivery-keyed execution-start handoff in that same transaction; future engine
 consumers recover it through the bounded handoff claim port.
 
-Migration `0071_resources_standard` moves the resource aggregate onto the database
+Migration `0007_resources.sql` defines the resource aggregate on the database
 standard: `resources` (stored definitions) and `shared_resources` belong to their
 workspace (`ON DELETE CASCADE`; creating either requires a live workspace);
 `resource_status_snapshots` belong to their stored resource (publishing requires it live,
@@ -402,10 +385,8 @@ whole-upgrade deadline that could repeatedly roll back a legitimate large
 migration.
 
 `task db:migrate` runs the server-owned `nebula-db-migrate` operator. It first
-uses general catalog admission; only a typed configuration rejection closes
-that pool and routes through credential-owner deep admission for supported
-pre-`0040` prefixes. Connectivity, unknown history, corrupt aggregate state,
-and every other failure remain closed and redacted. The non-destructive task
+uses catalog admission and returns schema rejection or backend failure without an
+alternate upgrade path. Unknown history remains rejected and diagnostics are redacted. The non-destructive task
 never invokes raw `sqlx migrate run`.
 
 `task db:reset` **drops and recreates the database** then uses raw SQLx to run
@@ -413,20 +394,15 @@ every migration against that proven-fresh database. It is prompt-protected and
 destroys all local dev data. Migration history is immutable and forward-only;
 there is no advertised revert task.
 
-### Plane-A identity migration retention
+### Plane-A identity key retention
 
-Migration `0038` encrypts the live TOTP column in place, but an `UPDATE` does
-not erase historical plaintext from PostgreSQL WAL, dead tuples, replicas,
-snapshots, or pre-migration backups. Likewise, backups containing old-key
-envelopes remain coupled to that key. Operators must quarantine and expire
-pre-migration backups/WAL according to their retention policy, retain every
-decrypt-only legacy key until all backups that require it have expired, and
-test restore before retiring a key. Restoring an old snapshot requires running
+Identity envelopes and their backups remain coupled to the encryption key.
+Key rotation does not erase prior ciphertext from WAL, replicas, snapshots or
+backups. Retain decrypt-only keys until all backups that require them have expired,
+and test restore before retiring a key. Restoring a snapshot requires running
 the same startup convergence before serving authentication traffic.
 
-Strict environments that cannot accept that historical-retention window must
-invalidate affected MFA factors and require re-enrollment; live-row
-convergence must not be described as forensic erasure. The built-in server
+Live-row convergence must not be described as forensic erasure. The built-in server
 accepts up to eight comma-separated decrypt-only keys through
 `NEBULA_CRED_LEGACY_MASTER_KEYS` while `NEBULA_CRED_MASTER_KEY` remains the
 only write key. Historical credential envelopes with an empty key ID require
@@ -483,7 +459,7 @@ only control-command outbox.
 | recorded-read answers (observation slots of the operation ledger) | **Durable + fenced** | A model's or retrieval's answer an agent or action observed (`Effect::RecordedRead`), kept as plaintext JSON evidence (at most 1 MiB) in the slot's protocol record; the prompt is digested, never stored. **May contain user data** (whatever the model was asked about and answered): it is retained and removed with its execution like effect outputs, never logged or put in spans or metric labels, and not encrypted at rest beyond the backend's own storage encryption. The `observation` flag is an optional protocol field (no migration): a build from before 0.32.0 refuses to decode an observation's record |
 | agent turn checkpoints (`iteration_checkpoints`, turn number as the iteration) | **Durable + fenced** | The iteration checkpoint row, unchanged, for an agent's turn state (at most 1 MiB of JSON; larger is not saved and the agent replays from turn 0) after every passed `Continue`. An optimisation, as for iterations: recorded answers and effects replay from the ledger without a provider call |
 | lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0072) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
-| local idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. This is not a remote-effect ledger or atomicity guarantee. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
+| local execution idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard`; scoped marks cascade with their execution. This is not a remote-effect ledger or atomicity guarantee. Covered by execution conformance; the API response cache has separate `pg_idempotency` coverage |
 | credential admission epoch (use revision) | **Durable + transactional** on SQLite/PostgreSQL; **replacement-only** in the in-memory pairing | Advanced with every closing write in one transaction (replace, won revoke claim, sentinel, escalation). The in-memory claim repository is a separate object and cannot advance it on claim transitions, so invariant I-A holds only on the SQL backends. Verified by the credential semantic oracle and the claim-side cases in `refresh_claim_conformance_{sqlite,postgres}` |
 | In-process `mpsc` / channels | **Ephemeral** | Never authoritative |
 
@@ -497,9 +473,6 @@ only control-command outbox.
 Job-dispatch claims require both exact worker-flavor revision equality and a
 superset of required plugin keys. The exact identity is mandatory on the port
 DTO and persisted by ordinary enqueue.
-Paired migration `0046_exact_dispatch_flavor.sql` adds a required 32-byte identity
-without a default. It rejects every preexisting dispatch row (including terminal
-rows) atomically, preserving the prior schema and aggregate state. This is an
-empty-queue upgrade: owners must retire legacy rows through their lifecycle
-before setup can cross this migration; setup never invents identities or marks
-legacy work failed to bypass the preflight.
+The dispatch baseline `0005_dispatch.sql` requires a 32-byte worker-flavor identity
+without a default. Queue admission never invents a flavor or substitutes a
+plugin-superset match for exact revision equality.

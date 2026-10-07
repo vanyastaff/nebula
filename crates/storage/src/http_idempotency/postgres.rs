@@ -1,6 +1,6 @@
 //! Postgres implementation of [`IdempotencyStoreRepo`].
 //!
-//! Schema: migration `0024_add_idempotency_dedup.sql`.
+//! Schema: the platform aggregate's `api_idempotency_dedup` table.
 //!
 //! Concurrency contract:
 //!
@@ -16,7 +16,7 @@
 //! Headers encoding: length-prefixed list
 //! `<u16 count> [<u16 name_len><name_bytes><u32 value_len><value_bytes>]*`.
 //! Length fields are big-endian. Decode failures surface as
-//! [`StorageError::Serialization`] — never silently dropped.
+//! [`StorageError::Corrupt`] — never silently dropped.
 
 use std::time::Duration;
 
@@ -89,20 +89,22 @@ impl IdempotencyStoreRepo for PgHttpIdempotencyStore {
         let headers_blob = encode_headers(&record.headers).map_err(|_| {
             StorageError::Serialization("cached response headers do not encode".into())
         })?;
-        let expires_at = chrono::Utc::now()
-            + chrono::Duration::from_std(ttl).map_err(|err| {
-                StorageError::InvalidInput(format!("ttl out of chrono::Duration range: {err}"))
-            })?;
+        // Expiry is authored by the same database clock used by reads and eviction.
+        let ttl_micros = i64::try_from(ttl.as_micros()).map_err(|_| {
+            StorageError::InvalidInput("cached response TTL exceeds the stored range".into())
+        })?;
+        if !(100..=999).contains(&record.status) {
+            return Err(StorageError::InvalidInput(
+                "cached response status is not an HTTP status".into(),
+            ));
+        }
         let status_i16 = i16::try_from(record.status).map_err(|_| {
-            StorageError::InvalidInput(format!(
-                "cached response status {} is outside the stored range",
-                record.status
-            ))
+            StorageError::InvalidInput("cached response status is outside the stored range".into())
         })?;
         sqlx::query(
             "INSERT INTO api_idempotency_dedup \
              (cache_key, status, headers, body, fingerprint, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+             VALUES ($1, $2, $3, $4, $5, clock_timestamp() + $6::bigint * INTERVAL '1 microsecond') \
              ON CONFLICT (cache_key) DO NOTHING",
         )
         .bind(&cache_key)
@@ -110,7 +112,7 @@ impl IdempotencyStoreRepo for PgHttpIdempotencyStore {
         .bind(&headers_blob)
         .bind(&record.body)
         .bind(record.fingerprint.as_slice())
-        .bind(expires_at)
+        .bind(ttl_micros)
         .execute(&self.pool)
         .await
         .map_err(|err| storage_error_for("idempotency_dedup", err))?;

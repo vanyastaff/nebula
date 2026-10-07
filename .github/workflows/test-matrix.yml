@@ -328,6 +328,10 @@ jobs:
             revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \
             schema_setup_postgres \
+            schema_parity_postgres \
+            platform_constraints \
+            credential_incident_constraints \
+            revision_record_constraints \
             turn_handoff_conformance_postgres \
             workflow_activation_postgres
           do

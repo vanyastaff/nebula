@@ -353,7 +353,7 @@ mod material_free_writes {
     #[tokio::test]
     async fn preserve_and_advance_unchanged_never_rewrite_the_ciphertext() {
         let (inner, tenants) = super::credential_deployment::memory_deployment().await;
-        // A credential belongs to a live workspace (migration 0070).
+        // The credential baseline requires a live owning workspace.
         let scope =
             nebula_storage_port::Scope::new("ws-encryption-invariant", "org-encryption-invariant");
         super::execution_parents::provision_scope(&tenants, &scope).await;

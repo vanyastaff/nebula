@@ -87,7 +87,7 @@ pub(super) fn verify(
         (RuntimeAuthorityGate::RequiredPostgresql, None) => {
             required_postgresql::verify(fragment).map_err(|_| ())
         },
-        (RuntimeAuthorityGate::OrderedMigrations, Some("clean" | "previous-supported-version")) => {
+        (RuntimeAuthorityGate::OrderedMigrations, Some("clean" | "populated-head")) => {
             ordered_migrations::verify(workspace, fragment).map_err(|_| ())
         },
         (RuntimeAuthorityGate::ActivationDiagnostics, None) => {

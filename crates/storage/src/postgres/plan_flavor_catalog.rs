@@ -1,4 +1,4 @@
-//! PostgreSQL exact plan/flavor catalog over ordered migration 0041.
+//! PostgreSQL exact plan/flavor catalog in the execution baseline.
 //!
 //! Every operation runs inside one transaction that locks the rows it decides
 //! on with `FOR UPDATE`, so the plan row, the flavor row, and the
