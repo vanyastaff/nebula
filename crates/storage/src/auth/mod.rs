@@ -2,8 +2,8 @@
 //! OAuth state and external identities, MFA enrollment, email verification
 //! — kept outside the `nebula-storage-port` contract by design.
 //!
-//! Repository traits and row types live here; the PostgreSQL implementations
-//! live in [`postgres`] (feature `postgres`).
+//! Repository traits and row types live here; backend implementations live in
+//! `postgres` and `sqlite`, enabled by their corresponding Cargo features.
 //! [`AuthPersistence`] binds the repository roles to one deployment pool and
 //! identity codec. Its factories run no schema or key admission themselves.
 //!
@@ -23,6 +23,9 @@ mod persistence;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 mod repos;
+/// SQLite implementations of the account repositories.
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 // Row structs are plain data containers whose fields mirror SQL columns.
 #[expect(
     missing_docs,

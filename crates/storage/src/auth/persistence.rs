@@ -28,6 +28,37 @@ pub struct AuthPersistence {
 }
 
 impl AuthPersistence {
+    /// Assemble SQLite account persistence on the supplied deployment pool.
+    /// The application must first admit its schema and identity secrets through
+    /// [`super::sqlite::admit_identity_secrets`]. Construction performs no I/O.
+    #[cfg(feature = "sqlite")]
+    #[must_use]
+    pub fn sqlite(
+        deployment: &crate::sqlite::DeploymentPool,
+        identity_secrets: Arc<IdentitySecretCodec>,
+    ) -> Self {
+        use super::sqlite::{
+            SqliteAccountLifecycle, SqliteMfaEnrollmentRepo, SqliteOAuthLoginFinalizer,
+            SqliteOAuthStateRepo, SqlitePatRepo, SqliteSessionRepo, SqliteUserRepo,
+            SqliteVerificationTokenRepo,
+        };
+        let pool = deployment.pool();
+        Self {
+            users: Box::new(SqliteUserRepo::new(pool.clone())),
+            sessions: Box::new(SqliteSessionRepo::new(pool.clone())),
+            pats: Box::new(SqlitePatRepo::new(pool.clone())),
+            verification_tokens: Box::new(SqliteVerificationTokenRepo::new(pool.clone())),
+            mfa_enrollments: Box::new(SqliteMfaEnrollmentRepo::new(
+                pool.clone(),
+                Arc::clone(&identity_secrets),
+            )),
+            oauth_states: Box::new(SqliteOAuthStateRepo::new(deployment)),
+            accounts: Box::new(SqliteAccountLifecycle::new(pool.clone())),
+            oauth_login: Box::new(SqliteOAuthLoginFinalizer::new(pool.clone())),
+            identity_secrets,
+        }
+    }
+
     /// Assemble PostgreSQL account persistence on the supplied deployment pool.
     /// No connection, schema admission, key migration or environment lookup is
     /// performed here; these remain explicit deployment startup stages.

@@ -70,6 +70,18 @@ async fn postgres_auth_requires_postgres_deployment_before_opening_sqlite() {
 }
 
 #[tokio::test]
+async fn sqlite_auth_rejects_a_different_deployment_before_opening_storage() {
+    rejected_startup(
+        &[
+            ("API_AUTH_BACKEND", "sqlite"),
+            ("API_EXECUTION_BACKEND", "memory"),
+        ],
+        "API_AUTH_BACKEND=sqlite requires API_EXECUTION_BACKEND=sqlite",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn postgres_replay_requires_postgres_deployment_before_opening_sqlite() {
     rejected_startup(
         &[("API_IDEMPOTENCY_BACKEND", "postgres")],

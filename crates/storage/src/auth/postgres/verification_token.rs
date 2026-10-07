@@ -77,10 +77,11 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
         debug_assert!(!token.token_hash.is_empty(), "token_hash must not be empty");
         debug_assert!(!token.user_id.is_empty(), "user_id must not be empty");
         debug_assert!(!token.kind.is_empty(), "kind must not be empty");
-        sqlx::query(
-            "INSERT INTO verification_tokens \
+        let inserted = sqlx::query(
+            "WITH live_user AS (SELECT id FROM users WHERE id = $2 AND deleted_at IS NULL FOR SHARE) \
+             INSERT INTO verification_tokens \
              (token_hash, user_id, kind, payload, created_at, expires_at, consumed_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             SELECT $1, id, $3, $4, $5, $6, $7 FROM live_user",
         )
         .bind(&token.token_hash)
         .bind(&token.user_id)
@@ -91,7 +92,11 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
         .bind(token.consumed_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| storage_error_for("verification_token", e))?;
+        .map_err(|e| storage_error_for("verification_token", e))?
+        .rows_affected();
+        if inserted == 0 {
+            return Err(StorageError::not_found("user", "verification token owner"));
+        }
         Ok(())
     }
 
@@ -107,6 +112,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
         let sql = format!(
             "UPDATE verification_tokens SET consumed_at = NOW() \
              WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > NOW() \
+               AND EXISTS (SELECT 1 FROM users WHERE id = verification_tokens.user_id AND deleted_at IS NULL) \
              RETURNING {SELECT_COLS}"
         );
         let row = sqlx::query_as::<_, TokenTuple>(sqlx::AssertSqlSafe(sql))
@@ -133,6 +139,7 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
             "UPDATE verification_tokens SET consumed_at = NOW() \
              WHERE token_hash = $1 AND kind = $2 \
                AND consumed_at IS NULL AND expires_at > NOW() \
+               AND EXISTS (SELECT 1 FROM users WHERE id = verification_tokens.user_id AND deleted_at IS NULL) \
              RETURNING {SELECT_COLS}"
         );
         let row = sqlx::query_as::<_, TokenTuple>(sqlx::AssertSqlSafe(sql))
@@ -150,7 +157,8 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
         token_hash: &[u8],
     ) -> Result<Option<VerificationTokenRow>, StorageError> {
         debug_assert!(!token_hash.is_empty(), "token_hash must not be empty");
-        let sql = format!("SELECT {SELECT_COLS} FROM verification_tokens WHERE token_hash = $1");
+        let sql = format!("SELECT {SELECT_COLS} FROM verification_tokens WHERE token_hash = $1
+            AND EXISTS (SELECT 1 FROM users WHERE id = verification_tokens.user_id AND deleted_at IS NULL)");
         let row = sqlx::query_as::<_, TokenTuple>(sqlx::AssertSqlSafe(sql))
             .bind(token_hash)
             .fetch_optional(&self.pool)
@@ -161,7 +169,8 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn cleanup_expired(&self) -> Result<u64, StorageError> {
-        let result = sqlx::query("DELETE FROM verification_tokens WHERE expires_at <= NOW()")
+        let result = sqlx::query("DELETE FROM verification_tokens WHERE expires_at <= NOW()
+            AND EXISTS (SELECT 1 FROM users WHERE id = verification_tokens.user_id AND deleted_at IS NULL)")
             .execute(&self.pool)
             .await
             .map_err(|e| storage_error_for("verification_token", e))?;
@@ -178,7 +187,8 @@ impl VerificationTokenRepo for PgVerificationTokenRepo {
         debug_assert!(!kind.is_empty(), "kind must not be empty");
         let result = sqlx::query(
             "UPDATE verification_tokens SET consumed_at = NOW() \
-             WHERE user_id = $1 AND kind = $2 AND consumed_at IS NULL",
+             WHERE user_id = $1 AND kind = $2 AND consumed_at IS NULL \
+               AND EXISTS (SELECT 1 FROM users WHERE id = verification_tokens.user_id AND deleted_at IS NULL)",
         )
         .bind(user_id)
         .bind(kind)

@@ -364,6 +364,7 @@ impl ApiConfig {
         let backend = match std::env::var("API_AUTH_BACKEND") {
             Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
                 "memory" => AuthBackendKind::Memory,
+                "sqlite" => AuthBackendKind::Sqlite,
                 "postgres" => AuthBackendKind::Postgres,
                 _ => {
                     return Err(ApiConfigError::ParseEnum {

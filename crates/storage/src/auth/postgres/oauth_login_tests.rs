@@ -186,7 +186,7 @@ fn command_validation_rejects_noncanonical_or_oversized_identity_inputs() {
     let invalid_emails = [
         "Alice@example.test".to_owned(),
         " alice@example.test".to_owned(),
-        format!("{}@example.test", "a".repeat(MAX_EMAIL_BYTES)),
+        format!("{}@example.test", "a".repeat(254)),
     ];
     for email in invalid_emails {
         let invalid = command("google", "subject-1", Some(&email));
@@ -195,7 +195,7 @@ fn command_validation_rejects_noncanonical_or_oversized_identity_inputs() {
 
     let invalid_provider = command("Google", "subject-1", Some("alice@example.test"));
     assert!(validate_common_command(&invalid_provider).is_err());
-    let oversized_subject = "s".repeat(MAX_SUBJECT_BYTES + 1);
+    let oversized_subject = "s".repeat(256);
     let invalid_subject = command("google", &oversized_subject, Some("alice@example.test"));
     assert!(validate_common_command(&invalid_subject).is_err());
     let mut invalid_user_id = command("google", "subject-1", Some("alice@example.test"));

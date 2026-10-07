@@ -98,13 +98,6 @@ pub(crate) enum TransportInitError {
     },
     /// Failed to construct a transport app context.
     #[error("{0}")]
-    #[cfg_attr(
-        not(feature = "postgres"),
-        expect(
-            dead_code,
-            reason = "constructed only in the postgres-gated identity composition"
-        )
-    )]
     ContextFactory(String),
     /// `API_IDEMPOTENCY_BACKEND` selects a backend that the current build
     /// cannot satisfy.
@@ -902,6 +895,17 @@ pub(crate) async fn build_auth_backend(
             )
             .await
         },
+        AuthBackendKind::Sqlite => {
+            build_sqlite_auth_backend(
+                database,
+                email_port,
+                metrics_registry,
+                oauth_runtime,
+                key_provider,
+                legacy_keys,
+            )
+            .await
+        },
     }
 }
 
@@ -986,6 +990,47 @@ fn build_pg_idempotency_store(
         requested: "postgres",
         requirement: "the nebula-server/postgres cargo feature",
     })
+}
+
+async fn build_sqlite_auth_backend(
+    database: &DeploymentDatabase,
+    email_port: Arc<dyn EmailPort>,
+    metrics_registry: Option<Arc<MetricsRegistry>>,
+    oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
+) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
+    use nebula_api::domain::auth::backend::DurableAuthBackend;
+    use nebula_storage::auth::{
+        AuthPersistence, identity_secret::IdentitySecretCodec, sqlite::admit_identity_secrets,
+    };
+    let DeploymentDatabase::Sqlite(deployment) = database else {
+        return Err(TransportInitError::AuthBackendUnavailable {
+            requested: "sqlite",
+            requirement: "an admitted SQLite deployment database",
+        });
+    };
+    let identity_secrets = Arc::new(
+        IdentitySecretCodec::with_legacy_keys(key_provider, legacy_keys).map_err(|error| {
+            TransportInitError::ContextFactory(format!(
+                "auth: identity codec initialization failed: {error}"
+            ))
+        })?,
+    );
+    admit_identity_secrets(deployment.pool(), &identity_secrets)
+        .await
+        .map_err(|error| {
+            TransportInitError::ContextFactory(format!(
+                "auth: identity secret admission failed: {error}"
+            ))
+        })?;
+    let persistence = AuthPersistence::sqlite(deployment, identity_secrets);
+    let backend = DurableAuthBackend::new(persistence, email_port, metrics_registry);
+    let backend = match oauth_runtime {
+        Some(runtime) => backend.with_oauth_runtime(runtime),
+        None => backend,
+    };
+    Ok(Arc::new(backend))
 }
 
 #[cfg(feature = "postgres")]

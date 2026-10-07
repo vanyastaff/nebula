@@ -1,6 +1,6 @@
 //! Backend-specific construction for the server execution authority.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use nebula_api::{ApiConfig, config::ExecutionBackendKind};
 use nebula_metrics::MetricsRegistry;
@@ -178,26 +178,22 @@ async fn build_sqlite_execution_stores(
     };
     #[cfg(feature = "runtime-repair-red")]
     use nebula_storage::sqlite::{SqliteIdempotencyGuard, SqliteOperationLedger};
-    use sqlx::sqlite::{
-        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-    };
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
 
     let database_path = &api_config.execution.db_path;
     let connection_options = SqliteConnectOptions::new()
         .filename(database_path)
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(Duration::from_secs(5));
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connection_options)
+        .synchronous(SqliteSynchronous::Normal);
+    let deployment = nebula_storage::sqlite::DeploymentPool::connect(connection_options)
         .await
         .map_err(|error| {
             TransportInitError::ExecutionDatabase(format!(
                 "SQLite: failed to open '{database_path}': {error}"
             ))
         })?;
+    let pool = deployment.pool().clone();
     init_schema(&pool).await.map_err(|error| {
         TransportInitError::ExecutionDatabase(format!(
             "SQLite: schema init failed for '{database_path}': {error}"
@@ -275,7 +271,7 @@ async fn build_sqlite_execution_stores(
 
     Ok(ExecutionStoreBundle {
         tenant_directory: crate::tenant_directory::TenantDirectoryStores::sqlite(pool.clone()),
-        deployment_database: DeploymentDatabase::Sqlite(pool.clone()),
+        deployment_database: DeploymentDatabase::Sqlite(deployment),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store,

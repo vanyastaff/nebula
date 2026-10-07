@@ -150,7 +150,7 @@ pub(crate) enum TenantBootstrapError {
     InvalidValue(&'static str),
     #[error("tenant bootstrap request is invalid")]
     InvalidRequest,
-    #[error("tenant bootstrap requires API_AUTH_BACKEND=postgres")]
+    #[error("tenant bootstrap requires API_AUTH_BACKEND=sqlite or postgres")]
     DurableAuthRequired,
     #[error("tenant bootstrap owner does not exist in the selected authentication backend")]
     OwnerNotFound,
@@ -337,6 +337,7 @@ mod tests {
             Err(TenantBootstrapError::DurableAuthRequired)
         ));
         assert!(validate_auth_backend(Some(&config), &AuthBackendKind::Postgres).is_ok());
+        assert!(validate_auth_backend(Some(&config), &AuthBackendKind::Sqlite).is_ok());
         assert!(validate_auth_backend(None, &AuthBackendKind::Memory).is_ok());
     }
 

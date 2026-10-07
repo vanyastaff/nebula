@@ -704,7 +704,22 @@ impl AuthBackend for DurableAuthBackend {
         let hash = pat::hash_for_lookup(presented)?;
         let row = self.persistence.pats().get_by_hash(&hash).await?;
         match row {
-            Some(row) => Ok(Some(row_to_pat_record(row)?)),
+            Some(row) => {
+                // A bearer row is not proof of a live account. This policy is
+                // shared by both SQL adapters, including archived users and
+                // polymorphic tokens that cannot represent a user session.
+                if row.principal_kind != PRINCIPAL_KIND_USER
+                    || self
+                        .persistence
+                        .users()
+                        .get(&row.principal_id)
+                        .await?
+                        .is_none()
+                {
+                    return Ok(None);
+                }
+                Ok(Some(row_to_pat_record(row)?))
+            },
             None => Ok(None),
         }
     }

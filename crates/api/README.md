@@ -338,7 +338,7 @@ site. Independent flows use independent cookie names and may complete in any
 order.
 
 Separately, OAuth-state admission has a hard global bound of 10,000 live rows
-per process (Memory) or shared PostgreSQL deployment. Capacity check and insert
+per process (Memory) or shared SQLite/PostgreSQL deployment. Capacity check and insert
 are one fail-closed admission operation: a full or contended gate returns 429
 without issuing state, PKCE material, or a transaction cookie.
 
@@ -377,7 +377,7 @@ without issuing state, PKCE material, or a transaction cookie.
   backend outcome. A request carrying eight recognized cookie names cannot
   create another flow; concurrent responses may temporarily exceed that
   request-local browser bound. The separate global state-admission gate is hard:
-  at most 10,000 live rows per Memory process or shared PostgreSQL deployment,
+  at most 10,000 live rows per Memory process or shared SQLite/PostgreSQL deployment,
   with full/contended admission returning 429 before state creation.
 - **Bounded secret lifetime**: every discovery, token, userinfo, and verified-
   email response is read into a preallocated, zeroizing buffer capped at 256
@@ -501,7 +501,8 @@ silently-shipped endpoint cannot pass review.
 ### `me/*` and Plane-A auth durability (canon §11.6 / §11.5)
 
 The profile, PAT, password, MFA, session, and Plane-A OAuth paths are implemented
-for both selectable identity backends. `API_AUTH_BACKEND` defaults to `memory`;
+for the selectable identity backends. `API_AUTH_BACKEND` defaults to `memory`;
+`sqlite` shares the SQLite execution deployment pool and persists identity across restart;
 `postgres` is available when `nebula-server` is built with the `postgres` feature
 and `DATABASE_URL` is reachable. An explicitly requested Postgres backend fails
 closed instead of silently falling back to memory.
@@ -509,6 +510,7 @@ closed instead of silently falling back to memory.
 | Backend | Restart-survival | Multi-replica share | Intended use |
 |---|---|---|---|
 | `memory` | **No** | **No** | Local development and tests |
+| `sqlite` | **Yes** | SQLite serializes writers on the same database file | Durable single-host identity |
 | `postgres` | **Yes** | **Yes**, for replicas using the same database | Durable production identity |
 
 The Postgres implementation persists users, sessions, PATs, verification tokens,

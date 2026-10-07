@@ -19,7 +19,7 @@ pub struct SessionTokenDigest([u8; 32]);
 
 impl SessionTokenDigest {
     /// Reconstruct a digest read from the fixed-width persistence column.
-    #[cfg(feature = "postgres")]
+    #[cfg(any(feature = "postgres", feature = "sqlite"))]
     pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }

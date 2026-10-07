@@ -140,11 +140,10 @@ impl Default for IdempotencyApiConfig {
 
 /// Authentication backend selection.
 ///
-/// Drives composition-root selection between the dev-only
-/// [`InMemoryAuthBackend`] (the production-quality default with Argon2id
-/// passwords, RFC 6238 TOTP, and SHA-256 PAT lookup but per-process
-/// `DashMap` state that is lost on restart) and the durable PG-backed
-/// `DurableAuthBackend` with PostgreSQL persistence.
+/// Drives composition-root selection between the development-only
+/// [`InMemoryAuthBackend`] (per-process state lost on restart) and
+/// `DurableAuthBackend` with
+/// SQLite or PostgreSQL persistence on the deployment database.
 ///
 /// The composition root MUST fail closed when [`AuthBackendKind::Postgres`]
 /// is selected without a configured `DATABASE_URL`, mirroring the
@@ -160,6 +159,8 @@ pub enum AuthBackendKind {
     /// shared across replicas.
     #[default]
     Memory,
+    /// Durable SQLite identity on the execution deployment's shared pool.
+    Sqlite,
     /// Durable PostgreSQL-backed identity backend. Survives restart
     /// and is shared across replicas that point at the same database.
     Postgres,
@@ -513,6 +514,21 @@ mod tests {
 
         let cfg = ApiConfig::from_env().expect("config must load");
         assert_eq!(cfg.auth.backend, AuthBackendKind::Postgres);
+    }
+
+    #[test]
+    fn from_env_auth_backend_accepts_sqlite() {
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_AUTH_BACKEND", "SQLite");
+        assert_eq!(
+            ApiConfig::from_env()
+                .expect("SQLite auth config")
+                .auth
+                .backend,
+            AuthBackendKind::Sqlite
+        );
     }
 
     #[test]

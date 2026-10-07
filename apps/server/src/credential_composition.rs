@@ -172,18 +172,18 @@ async fn compose_first_party_runtime_for_database(
     legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
     metrics_registry: Arc<MetricsRegistry>,
 ) -> Result<CredentialRuntime, CredentialCompositionError> {
-    let store = match database {
-        DeploymentDatabase::Memory(pool) | DeploymentDatabase::Sqlite(pool) => {
-            SqliteCredentialPersistence::connect_pool(pool.clone())
-                .await
-                .map_err(CredentialCompositionError::Store)?
-        },
+    let pool = match database {
+        DeploymentDatabase::Memory(pool) => pool,
+        DeploymentDatabase::Sqlite(deployment) => deployment.pool(),
         #[cfg(feature = "postgres")]
         DeploymentDatabase::Postgres(pool) => {
             return compose_postgres_runtime(pool, key_provider, legacy_keys, metrics_registry)
                 .await;
         },
     };
+    let store = SqliteCredentialPersistence::connect_pool(pool.clone())
+        .await
+        .map_err(CredentialCompositionError::Store)?;
     let refresh_ports = refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
     let pending = sqlite_pending_store(&store, Arc::clone(&key_provider), legacy_keys.clone());
     // Database locators can carry credentials or tenant-specific filesystem

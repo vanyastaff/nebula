@@ -4,6 +4,88 @@ use chrono::{DateTime, Utc};
 
 use crate::auth::UserRow;
 
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+pub(super) fn validate_common_command(
+    command: &OAuthLoginFinalizeCommand,
+) -> Result<(), crate::StorageError> {
+    let valid = valid_provider(&command.provider)
+        && valid_subject(&command.subject)
+        && command
+            .verified_email
+            .as_deref()
+            .is_none_or(valid_canonical_verified_email)
+        && command.candidate_user.id.len() == 16
+        && !command.candidate_user.display_name.trim().is_empty()
+        && !command.session.token.is_empty()
+        && command.session.created_at <= command.session.last_active_at
+        && command.session.last_active_at < command.session.expires_at
+        && command
+            .mfa_challenge
+            .token_hash
+            .iter()
+            .any(|byte| *byte != 0)
+        && command.mfa_challenge.created_at < command.mfa_challenge.expires_at;
+    if valid {
+        Ok(())
+    } else {
+        Err(crate::StorageError::Internal(
+            "invalid OAuth login finalization command".into(),
+        ))
+    }
+}
+
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+fn valid_provider(provider: &str) -> bool {
+    !provider.is_empty()
+        && provider.len() <= 64
+        && provider.trim() == provider
+        && provider.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+fn valid_subject(subject: &str) -> bool {
+    !subject.is_empty()
+        && subject.len() <= 255
+        && subject.trim() == subject
+        && !subject.chars().any(char::is_control)
+}
+
+#[cfg(any(feature = "postgres", feature = "sqlite"))]
+fn valid_canonical_verified_email(email: &str) -> bool {
+    if email.is_empty()
+        || email.len() > 254
+        || email.trim() != email
+        || email.to_lowercase() != email
+        || email.chars().any(char::is_whitespace)
+        || email.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let mut parts = email.split('@');
+    let (Some(local), Some(domain)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let local_valid = !local.is_empty()
+        && local.len() <= 64
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..");
+    let domain_valid = !domain.is_empty()
+        && parts.next().is_none()
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        });
+    local_valid && domain_valid
+}
+
 /// Storage owner of atomic user/link/session or MFA-challenge finalization.
 /// Provider I/O must finish before calling this operation. Existing subject
 /// links are authoritative; email collisions never authorize automatic linking.

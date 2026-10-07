@@ -61,11 +61,11 @@
   egress, Google discovery state, concurrency, and deadline policy. The router config retains an
   empty map; backends never receive raw clients, duplicate secrets, or independent config.
 - OAuth-state admission is globally capped at 10,000 live entries per Memory process or shared
-  PostgreSQL deployment. Capacity check plus insert is atomic/fail-closed; full or contended
+  SQLite or PostgreSQL deployment. Capacity check plus insert is atomic/fail-closed; full or contended
   admission returns 429 before issuing state, PKCE material, or a browser cookie.
 - OAuth completion has separate boundaries: consume live state atomically; run provider egress
   without database locks under one original callback-network deadline; finalize local state in a
-  short Memory critical section or PostgreSQL transaction. Never describe the whole callback as
+  short Memory critical section or SQL transaction. Never describe the whole callback as
   one transaction or run provider I/O inside the finalizer.
 - Existing `(provider, subject)` links are authoritative. Email collision without such a link is
   `AccountLinkRequired` (409), performs no writes, and never auto-links. For an MFA-enabled linked

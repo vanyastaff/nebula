@@ -10,6 +10,7 @@
 use sqlx::{Pool, Postgres, Transaction};
 
 use super::user::{SELECT_COLS, UserTuple, tuple_to_row};
+use crate::auth::oauth_login::validate_common_command;
 use crate::{
     StorageError,
     auth::session_token::session_token_digest,
@@ -20,9 +21,6 @@ use crate::{
 };
 
 const USER_ID_BYTES: usize = 16;
-const MAX_PROVIDER_BYTES: usize = 64;
-const MAX_SUBJECT_BYTES: usize = 255;
-const MAX_EMAIL_BYTES: usize = 254;
 
 const INSERT_CANDIDATE_USER_SQL: &str = "INSERT INTO users \
      (id, email, email_verified_at, display_name, avatar_url, password_hash, \
@@ -243,80 +241,6 @@ async fn finalize_for_canonical_user(
     Ok(TransactionDecision::Commit(Box::new(user)))
 }
 
-fn validate_common_command(command: &OAuthLoginFinalizeCommand) -> Result<(), StorageError> {
-    let valid = valid_provider(&command.provider)
-        && valid_subject(&command.subject)
-        && command
-            .verified_email
-            .as_deref()
-            .is_none_or(valid_canonical_verified_email)
-        && command.candidate_user.id.len() == USER_ID_BYTES
-        && !command.candidate_user.display_name.trim().is_empty()
-        && !command.session.token.is_empty()
-        && command.session.created_at <= command.session.last_active_at
-        && command.session.last_active_at < command.session.expires_at
-        && command
-            .mfa_challenge
-            .token_hash
-            .iter()
-            .any(|byte| *byte != 0)
-        && command.mfa_challenge.created_at < command.mfa_challenge.expires_at;
-    if valid {
-        Ok(())
-    } else {
-        Err(invalid_command_error())
-    }
-}
-
-fn valid_provider(provider: &str) -> bool {
-    !provider.is_empty()
-        && provider.len() <= MAX_PROVIDER_BYTES
-        && provider.trim() == provider
-        && provider.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
-        })
-}
-
-fn valid_subject(subject: &str) -> bool {
-    !subject.is_empty()
-        && subject.len() <= MAX_SUBJECT_BYTES
-        && subject.trim() == subject
-        && !subject.chars().any(char::is_control)
-}
-
-fn valid_canonical_verified_email(email: &str) -> bool {
-    if email.is_empty()
-        || email.len() > MAX_EMAIL_BYTES
-        || email.trim() != email
-        || email.to_lowercase() != email
-        || email.chars().any(char::is_whitespace)
-        || email.chars().any(char::is_control)
-    {
-        return false;
-    }
-    let mut parts = email.split('@');
-    let (Some(local), Some(domain)) = (parts.next(), parts.next()) else {
-        return false;
-    };
-    let local_valid = !local.is_empty()
-        && local.len() <= 64
-        && !local.starts_with('.')
-        && !local.ends_with('.')
-        && !local.contains("..");
-    let domain_valid = !domain.is_empty()
-        && parts.next().is_none()
-        && domain.split('.').all(|label| {
-            !label.is_empty()
-                && label.len() <= 63
-                && !label.starts_with('-')
-                && !label.ends_with('-')
-                && label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        });
-    local_valid && domain_valid
-}
-
 fn validate_active_user(user: &UserRow) -> Result<(), StorageError> {
     if user.id.len() == USER_ID_BYTES {
         Ok(())
@@ -451,10 +375,6 @@ async fn commit(transaction: Transaction<'_, Postgres>) -> Result<(), StorageErr
 
 fn begin_error(_: sqlx::Error) -> StorageError {
     StorageError::Connection("OAuth login finalization unavailable".to_owned())
-}
-
-fn invalid_command_error() -> StorageError {
-    StorageError::Internal("invalid OAuth login finalization command".to_owned())
 }
 
 fn operation_error() -> StorageError {

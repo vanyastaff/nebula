@@ -41,17 +41,19 @@ pub trait UserRepo: Send + Sync {
 }
 
 /// Session storage for browser logins.
+/// Archived owners hide their sessions from reads and ordinary mutations,
+/// including expiry cleanup. Purging the owner removes the retained artifacts.
 #[async_trait::async_trait]
 pub trait SessionRepo: Send + Sync {
     /// Hash the one-time presented bearer and insert only its digest plus
-    /// session metadata.
+    /// session metadata. Missing or archived owners return `NotFound`.
     async fn create(
         &self,
         presented_token: &[u8],
         session: &SessionDraft,
     ) -> Result<(), StorageError>;
 
-    /// Fetch a session by ID. Returns `None` if not found, revoked, or expired.
+    /// Fetch by bearer. Returns `None` if missing, revoked, expired, or owner archived.
     async fn get(&self, presented_token: &[u8]) -> Result<Option<SessionRow>, StorageError>;
 
     /// Touch `last_active_at` to now.
@@ -60,7 +62,7 @@ pub trait SessionRepo: Send + Sync {
     /// Mark the session as revoked.
     async fn revoke(&self, presented_token: &[u8]) -> Result<(), StorageError>;
 
-    /// Delete all expired sessions. Returns the count deleted.
+    /// Delete expired sessions of live owners. Returns the count deleted.
     async fn cleanup_expired(&self) -> Result<u64, StorageError>;
 }
 
@@ -105,12 +107,12 @@ pub trait PatRepo: Send + Sync {
 /// to the user out-of-band (email link, etc.).
 #[async_trait::async_trait]
 pub trait VerificationTokenRepo: Send + Sync {
-    /// Insert a new verification token.
+    /// Insert a new verification token. Missing or archived owners return `NotFound`.
     async fn create(&self, token: &VerificationTokenRow) -> Result<(), StorageError>;
 
     /// Atomically mark a token as consumed and return its row. Returns
     /// `None` if the token does not exist, is already consumed, or has
-    /// expired.
+    /// expired, or its owner is archived.
     ///
     /// Prefer [`consume_by_hash_and_kind`](Self::consume_by_hash_and_kind)
     /// for routes that only accept a specific `kind` (e.g. MFA
@@ -135,21 +137,21 @@ pub trait VerificationTokenRepo: Send + Sync {
     ) -> Result<Option<VerificationTokenRow>, StorageError>;
 
     /// Fetch a token by hash without consuming it. Returns `None` if not
-    /// found. Caller is responsible for checking `expires_at` /
+    /// found or its owner is archived. Caller checks `expires_at` /
     /// `consumed_at`. Primarily a test helper.
     async fn get_by_hash(
         &self,
         token_hash: &[u8],
     ) -> Result<Option<VerificationTokenRow>, StorageError>;
 
-    /// Delete all expired (`expires_at < now`) tokens. Returns the
+    /// Delete expired (`expires_at <= now`) tokens of live owners. Returns the
     /// count deleted.
     async fn cleanup_expired(&self) -> Result<u64, StorageError>;
 
     /// Mark all unconsumed tokens for a user of the given `kind` as
     /// consumed. Used to invalidate in-flight reset / verification
     /// links after a successful action (e.g. password change). Returns
-    /// the count revoked.
+    /// the count revoked. Archived owners are not modified.
     async fn revoke_all_for_user(&self, user_id: &[u8], kind: &str) -> Result<u64, StorageError>;
 }
 

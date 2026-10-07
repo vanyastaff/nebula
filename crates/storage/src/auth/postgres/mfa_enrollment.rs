@@ -65,10 +65,11 @@ impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
             .replacement_envelope
             .as_deref()
             .unwrap_or_else(|| candidate.secret_envelope());
-        sqlx::query(
-            "INSERT INTO mfa_enrollment_candidates \
+        let inserted = sqlx::query(
+            "WITH live_user AS (SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR SHARE) \
+             INSERT INTO mfa_enrollment_candidates \
              (user_id, enrollment_id, secret_envelope, created_at, expires_at) \
-             VALUES ($1, $2, $3, $4, $5) \
+             SELECT id, $2, $3, $4, $5 FROM live_user \
              ON CONFLICT (user_id) DO UPDATE SET \
                enrollment_id = EXCLUDED.enrollment_id, \
                secret_envelope = EXCLUDED.secret_envelope, \
@@ -82,7 +83,11 @@ impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
         .bind(candidate.expires_at())
         .execute(&self.pool)
         .await
-        .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?;
+        .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?
+        .rows_affected();
+        if inserted == 0 {
+            return Err(StorageError::not_found("user", "MFA enrollment owner"));
+        }
         Ok(())
     }
 
@@ -94,7 +99,8 @@ impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
         let row = sqlx::query_as::<_, CandidateTuple>(
             "SELECT user_id, enrollment_id, secret_envelope, created_at, expires_at \
              FROM mfa_enrollment_candidates \
-             WHERE user_id = $1 AND expires_at > NOW()",
+             WHERE user_id = $1 AND expires_at > NOW() \
+               AND EXISTS (SELECT 1 FROM users WHERE id = mfa_enrollment_candidates.user_id AND deleted_at IS NULL)",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
@@ -114,6 +120,18 @@ impl MfaEnrollmentRepo for PgMfaEnrollmentRepo {
             .begin()
             .await
             .map_err(|error| storage_error_for("mfa_enrollment_candidate", error))?;
+        // Every enrollment writer locks the owner before the candidate. Use an
+        // exclusive lock here because installation subsequently updates the user.
+        let owner = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+        )
+        .bind(user_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| storage_error_for("user", error))?;
+        if owner.is_none() {
+            return Err(StorageError::not_found("user", "MFA enrollment owner"));
+        }
         let secret_envelope = sqlx::query_scalar::<_, Vec<u8>>(
             "DELETE FROM mfa_enrollment_candidates \
              WHERE user_id = $1 AND enrollment_id = $2 AND expires_at > NOW() \

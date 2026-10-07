@@ -61,10 +61,10 @@ provides the adapters:
 - `postgres::*` (feature `postgres`) — production multi-process adapters
   (real tx + `FOR UPDATE SKIP LOCKED`) over the same canonical catalog;
   `init_schema` is the catalog-only deployment/bootstrap seam.
-- `auth::*` + `auth::postgres::*` (feature `postgres`) — Plane-A account
+- `auth::*` + `auth::{postgres,sqlite}::*` (matching backend feature) — Plane-A account
   persistence outside the port contract (users, sessions, PATs, OAuth state,
-  external identities, MFA enrollment): traits and rows in `auth`, PostgreSQL
-  implementations in `auth::postgres`.
+  external identities, MFA enrollment): traits and rows in `auth`, deployment
+  implementations in `auth::postgres` and `auth::sqlite`.
 - `auth::AccountLifecycle` owns atomic password signup, email verification and
   password reset on the deployment database. API policy prepares hashes and
   tokens, then delivers email after commit. `PatRepo::revoke_for_principal`
@@ -73,10 +73,16 @@ provides the adapters:
   from one deployment pool. API policy consumes these object-safe roles; it
   neither chooses SQL drivers nor constructs individual repositories. Startup
   admission and identity-secret convergence remain explicit application stages.
+- SQLite auth requires `sqlite::DeploymentPool`: the same pool supplies all
+  stores, and its release callback restores the ordinary busy timeout even
+  after a cancelled OAuth admission. Schema admission is still explicit.
+  `auth::sqlite::admit_identity_secrets` authenticates active and pending factors
+  and atomically rotates explicitly configured old-key envelopes before auth is
+  exposed. It does not adopt plaintext or silently skip unreadable factors.
 - `http_idempotency::*` — the API's idempotent-replay response cache
   (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); distinct from the
   port's per-attempt `IdempotencyGuard`.
-- `auth::postgres::PgOAuthLoginFinalizer` (feature `postgres`) plus the
+- `auth::postgres::PgOAuthLoginFinalizer` and `auth::sqlite::SqliteOAuthLoginFinalizer` plus the
   `auth::OAuthLoginFinalize*` command/outcome types — the technical,
   storage-owned Plane-A completion seam. Each call receives already-verified
   identity inputs and performs no provider network I/O. An existing
@@ -88,11 +94,11 @@ provides the adapters:
   challenge plus MFA-required outcome with no session. Provider codes and
   tokens never enter this contract.
 - Plane-A OAuth-state admission has a hard bound of 10,000 live rows per shared
-  PostgreSQL deployment. Capacity check plus insert is one fail-closed admission
+  SQLite or PostgreSQL deployment. Capacity check plus insert is one fail-closed admission
   operation; a full or contended gate returns the capacity outcome used by the
   API's 429 response and writes no state. The Memory backend enforces the same
   numerical bound process-locally in `nebula-api`.
-- `auth::MfaEnrollmentRepo` and `auth::postgres::PgMfaEnrollmentRepo` own the Plane-A MFA
+- `auth::MfaEnrollmentRepo` and its SQLite/PostgreSQL adapters own the Plane-A MFA
   replacement boundary. One expiring candidate exists per user, separate from
   the active factor. Start replaces only that candidate; confirmation consumes
   the exact live candidate and installs it atomically, so replay/concurrent

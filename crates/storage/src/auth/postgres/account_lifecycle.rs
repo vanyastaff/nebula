@@ -68,9 +68,16 @@ impl AccountLifecycle for PgAccountLifecycle {
     ) -> Result<AccountTokenOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let consumed: Option<(Vec<u8>,)> = sqlx::query_as(
-            "UPDATE verification_tokens SET consumed_at = NOW()
+            "WITH owner AS MATERIALIZED (
+                SELECT u.id FROM users u JOIN verification_tokens t ON t.user_id = u.id
+                WHERE t.token_hash = $1 AND t.kind = 'email_verification'
+                  AND t.consumed_at IS NULL AND t.expires_at > NOW()
+                FOR UPDATE OF u
+             )
+             UPDATE verification_tokens SET consumed_at = NOW()
              WHERE token_hash = $1 AND kind = 'email_verification'
                AND consumed_at IS NULL AND expires_at > NOW()
+               AND user_id IN (SELECT id FROM owner)
              RETURNING user_id",
         )
         .bind(token_hash.as_slice())
@@ -107,9 +114,16 @@ impl AccountLifecycle for PgAccountLifecycle {
     ) -> Result<AccountTokenOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let consumed: Option<(Vec<u8>,)> = sqlx::query_as(
-            "UPDATE verification_tokens SET consumed_at = NOW()
+            "WITH owner AS MATERIALIZED (
+                SELECT u.id FROM users u JOIN verification_tokens t ON t.user_id = u.id
+                WHERE t.token_hash = $1 AND t.kind = 'password_reset'
+                  AND t.consumed_at IS NULL AND t.expires_at > NOW()
+                FOR UPDATE OF u
+             )
+             UPDATE verification_tokens SET consumed_at = NOW()
              WHERE token_hash = $1 AND kind = 'password_reset'
                AND consumed_at IS NULL AND expires_at > NOW()
+               AND user_id IN (SELECT id FROM owner)
              RETURNING user_id",
         )
         .bind(token_hash.as_slice())

@@ -35,7 +35,7 @@
 - `src/lib.rs` — module/feature map and adapter re-exports (`InMemory*`, `StorageError`).
 - `src/inmem/` — internal test/reference/conformance adapters and loom probes; not a supported deployment backend.
 - `src/sqlite/` · `src/postgres/` — feature-gated port adapters over the aggregate schema (Postgres uses real tx + `FOR UPDATE SKIP LOCKED`).
-- `src/auth/` — Plane-A account persistence (users, sessions, PATs, OAuth state, external identities, MFA, identity secrets, session-token digests): traits and rows in `auth`, PostgreSQL implementations in `auth/postgres/`. Outside the port contract by design.
+- `src/auth/` — Plane-A account persistence (users, sessions, PATs, OAuth state, external identities, MFA, identity secrets, session-token digests): traits and rows in `auth`, deployment implementations in `auth/postgres/` and `auth/sqlite/`. Outside the port contract by design. `AuthPersistence` binds the role set to one pool and identity codec; startup admits schema and identity secrets before exposing it.
 - `src/http_idempotency/` — the API's idempotent-replay response cache (`IdempotencyStoreRepo`, `PgHttpIdempotencyStore`); separate from the execution adapter's per-attempt `IdempotencyGuard`.
 - `src/webhook_activation.rs` — the webhook activation spec persisted in `triggers.config`.
 - `src/sql_error.rs` — the one `sqlx::Error` → `StorageError` classification (value-free; dialect chosen by error type) plus `decode_u64` / `decode_i32` / `encode_u64`. The resource-runtime policy delegates driver errors here while preserving domain conflicts, missing parents and uncertain commit outcomes.
@@ -110,9 +110,13 @@
   commit atomically with no session. Never perform provider network I/O while a
   finalizer transaction holds locks.
 - Plane-A OAuth-state admission is hard-capped at 10,000 live rows per shared
-  PostgreSQL deployment. Capacity check and insert must share one serialization
+  SQLite or PostgreSQL deployment. Capacity check and insert must share one serialization
   point; full or contended admission fails closed, writes no state, and maps to
   HTTP 429. Do not replace it with an approximate count-then-insert sequence.
+- SQLite OAuth uses `sqlite::DeploymentPool` so a cancelled borrower cannot
+  return a zero-busy-timeout connection to another adapter. Its release callback
+  owns restoration; a request-owned cleanup future is not cancellation safe.
+  Do not substitute another pool or a timeout around a blocking SQLite BEGIN.
 - Pending MFA enrollment is separate from the active user factor. Starting an
   enrollment may replace only the expiring candidate; installing a verified
   candidate must consume the exact live candidate and update the active secret

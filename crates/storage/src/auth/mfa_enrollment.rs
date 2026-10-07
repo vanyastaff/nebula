@@ -120,20 +120,22 @@ pub enum MfaEnrollmentInstallOutcome {
 #[async_trait::async_trait]
 pub trait MfaEnrollmentRepo: Send + Sync {
     /// Replace only the user's pending candidate; active MFA state is never
-    /// modified by this operation.
+    /// modified by this operation. Missing or archived owners return `NotFound`.
     async fn replace_candidate(
         &self,
         candidate: &MfaEnrollmentCandidate,
     ) -> Result<(), StorageError>;
 
-    /// Load the user's current live candidate without consuming it.
+    /// Load the user's current live candidate without consuming it. Archived
+    /// owners return `None` while their candidate remains stored until purge.
     async fn get_live_candidate(
         &self,
         user_id: &[u8],
     ) -> Result<Option<MfaEnrollmentCandidate>, StorageError>;
 
     /// Atomically consume the exact live candidate and install its secret
-    /// envelope as the user's active factor.
+    /// envelope as the user's active factor. Missing or archived owners return
+    /// `NotFound` without consuming the candidate.
     async fn install_candidate(
         &self,
         user_id: &[u8],

@@ -14,6 +14,7 @@
 
 mod control_queue;
 mod control_turn;
+mod deployment_pool;
 mod execution;
 mod execution_fence;
 mod identity;
@@ -32,6 +33,7 @@ mod webhook_activation;
 mod workflow;
 
 pub use control_queue::{SqliteControlQueue, SqliteJournalReader};
+pub use deployment_pool::DeploymentPool;
 pub use execution::{SqliteExecutionStore, SqliteIdempotencyGuard};
 pub use identity::{
     SqliteMembershipStore, SqliteOrgStore, SqliteResourceStore, SqliteTenantProvisioningStore,

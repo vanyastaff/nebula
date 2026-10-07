@@ -152,7 +152,7 @@ async fn email_redemption_checks_kind_replay_and_rolls_back_for_archived_account
     with_database(|pool| async move {
         let lifecycle = PgAccountLifecycle::new(pool.clone());
         let users = PgUserRepo::new(pool.clone());
-        let tokens = PgVerificationTokenRepo::new(pool);
+        let tokens = PgVerificationTokenRepo::new(pool.clone());
         register(&lifecycle, 1, 1).await;
         reset_token(&tokens, 1, 2).await;
         let mut expired = tokens.get_by_hash(&[1; 32]).await.unwrap().unwrap();
@@ -212,14 +212,16 @@ async fn email_redemption_checks_kind_replay_and_rolls_back_for_archived_account
             lifecycle.verify_email(&[3; 32]).await.expect("archived"),
             AccountTokenOutcome::UserUnavailable
         );
-        assert!(
-            tokens
-                .get_by_hash(&[3; 32])
+        assert!(tokens.get_by_hash(&[3; 32]).await.unwrap().is_none());
+        let consumed: Option<chrono::DateTime<Utc>> =
+            sqlx::query_scalar("SELECT consumed_at FROM verification_tokens WHERE token_hash = $1")
+                .bind([3_u8; 32].as_slice())
+                .fetch_one(&pool)
                 .await
-                .unwrap()
-                .unwrap()
-                .consumed_at
-                .is_none()
+                .unwrap();
+        assert!(
+            consumed.is_none(),
+            "archived account redemption rolled back token consumption"
         );
     })
     .await;
@@ -230,7 +232,7 @@ async fn reset_is_single_use_revokes_siblings_and_preserves_unrelated_authority(
     with_database(|pool| async move {
         let lifecycle = PgAccountLifecycle::new(pool.clone());
         let users = PgUserRepo::new(pool.clone());
-        let tokens = PgVerificationTokenRepo::new(pool);
+        let tokens = PgVerificationTokenRepo::new(pool.clone());
         register(&lifecycle, 1, 1).await;
         reset_token(&tokens, 1, 2).await;
         reset_token(&tokens, 1, 3).await;
@@ -311,14 +313,16 @@ async fn reset_is_single_use_revokes_siblings_and_preserves_unrelated_authority(
                 .unwrap(),
             AccountTokenOutcome::UserUnavailable
         );
-        assert!(
-            tokens
-                .get_by_hash(&[5; 32])
+        assert!(tokens.get_by_hash(&[5; 32]).await.unwrap().is_none());
+        let consumed: Option<chrono::DateTime<Utc>> =
+            sqlx::query_scalar("SELECT consumed_at FROM verification_tokens WHERE token_hash = $1")
+                .bind([5_u8; 32].as_slice())
+                .fetch_one(&pool)
                 .await
-                .unwrap()
-                .unwrap()
-                .consumed_at
-                .is_none()
+                .unwrap();
+        assert!(
+            consumed.is_none(),
+            "archived reset rolled back token consumption"
         );
     })
     .await;

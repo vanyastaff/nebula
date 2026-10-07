@@ -129,7 +129,8 @@ variables or none of them:
 | `NEBULA_BOOTSTRAP_WORKSPACE_NAME` | Default workspace display name. |
 | `NEBULA_BOOTSTRAP_OWNER_USER_ID` | Existing `usr_<ULID>` identity with verified email. |
 
-Bootstrap requires `API_AUTH_BACKEND=postgres`. The process-local memory
+Bootstrap requires durable auth (`API_AUTH_BACKEND=sqlite` or `postgres`)
+on the matching deployment database. The process-local memory
 backend starts empty and cannot contain a pre-existing verified owner before
 the listener starts, so enabling bootstrap with it fails during startup.
 
@@ -219,10 +220,16 @@ cargo build --release -p nebula-server --features postgres
 the PostgreSQL execution deployment and shares its admitted pool with HTTP
 replay, tenancy and credentials. Missing feature support, incompatible backend
 selection or unavailable storage aborts startup without a memory fallback.
+SQLite requires `API_EXECUTION_BACKEND=sqlite`, uses its existing pool and
+persists users, sessions, PATs, MFA and OAuth state in the deployment file.
+Startup authenticates stored identity envelopes before exposing the backend;
+explicitly configured old keys permit rotation, never plaintext adoption.
+This does not yet provide offline first-owner enrollment or an in-process worker.
 
 | `API_AUTH_BACKEND` | Identity backend | Durability |
 |--------------------|------------------|------------|
 | **unset** / `memory` | `InMemoryAuthBackend` | Process-local; lost on restart and not shared across replicas |
+| `sqlite` | `DurableAuthBackend` with SQLite persistence | Identity survives restart in the execution deployment file; shares its pool and shutdown |
 | `postgres` | `DurableAuthBackend` with PostgreSQL persistence (build with `--features postgres`) | Users, sessions, PATs, verification/OAuth state, and external identity links survive restart and share the admitted deployment pool |
 
 ### PostgreSQL identity-authority upgrade runbook
@@ -354,7 +361,7 @@ retain and replay the matching `Set-Cookie`. A start request carrying eight
 Nebula transaction-cookie names is rejected with 429 before state creation;
 this is a request-local Cookie-header bound, not a globally atomic browser
 quota. The independent hard admission gate permits at most 10,000 live OAuth
-states per Memory process or shared PostgreSQL deployment; full or contended
+states per Memory process or shared SQLite/PostgreSQL deployment; full or contended
 admission returns 429 without state, PKCE, or cookie creation.
 
 Callback persistence and network work are deliberately separated: matching

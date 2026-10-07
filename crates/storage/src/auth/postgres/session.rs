@@ -87,11 +87,12 @@ impl SessionRepo for PgSessionRepo {
             !session.user_id.is_empty(),
             "session.user_id must not be empty"
         );
-        sqlx::query(
-            "INSERT INTO sessions \
+        let inserted = sqlx::query(
+            "WITH live_user AS (SELECT id FROM users WHERE id = $2 AND deleted_at IS NULL FOR SHARE) \
+             INSERT INTO sessions \
              (token_digest, user_id, created_at, last_active_at, expires_at, \
               ip_address, user_agent, revoked_at) \
-             VALUES ($1, $2, $3, $4, $5, $6::inet, $7, $8)",
+             SELECT $1, id, $3, $4, $5, $6::inet, $7, $8 FROM live_user",
         )
         .bind(session_token_digest(presented_token).as_bytes().as_slice())
         .bind(&session.user_id)
@@ -103,7 +104,11 @@ impl SessionRepo for PgSessionRepo {
         .bind(session.revoked_at)
         .execute(&self.pool)
         .await
-        .map_err(|e| storage_error_for("session", e))?;
+        .map_err(|e| storage_error_for("session", e))?
+        .rows_affected();
+        if inserted == 0 {
+            return Err(StorageError::not_found("user", "session owner"));
+        }
         Ok(())
     }
 
@@ -112,7 +117,8 @@ impl SessionRepo for PgSessionRepo {
         let digest = session_token_digest(presented_token);
         let sql = format!(
             "SELECT {SELECT_COLS} FROM sessions \
-             WHERE token_digest = $1 AND revoked_at IS NULL AND expires_at > NOW()"
+             WHERE token_digest = $1 AND revoked_at IS NULL AND expires_at > NOW() \
+               AND EXISTS (SELECT 1 FROM users WHERE id = sessions.user_id AND deleted_at IS NULL)"
         );
         let row = sqlx::query_as::<_, SessionTuple>(sqlx::AssertSqlSafe(sql))
             .bind(digest.as_bytes().as_slice())
@@ -127,7 +133,8 @@ impl SessionRepo for PgSessionRepo {
         let digest = session_token_digest(presented_token);
         sqlx::query(
             "UPDATE sessions SET last_active_at = NOW() \
-             WHERE token_digest = $1 AND revoked_at IS NULL AND expires_at > NOW()",
+             WHERE token_digest = $1 AND revoked_at IS NULL AND expires_at > NOW() \
+               AND EXISTS (SELECT 1 FROM users WHERE id = sessions.user_id AND deleted_at IS NULL)",
         )
         .bind(digest.as_bytes().as_slice())
         .execute(&self.pool)
@@ -143,7 +150,8 @@ impl SessionRepo for PgSessionRepo {
         // original revocation timestamp is preserved.
         sqlx::query(
             "UPDATE sessions SET revoked_at = NOW() \
-             WHERE token_digest = $1 AND revoked_at IS NULL",
+             WHERE token_digest = $1 AND revoked_at IS NULL \
+               AND EXISTS (SELECT 1 FROM users WHERE id = sessions.user_id AND deleted_at IS NULL)",
         )
         .bind(digest.as_bytes().as_slice())
         .execute(&self.pool)
@@ -154,10 +162,13 @@ impl SessionRepo for PgSessionRepo {
 
     #[tracing::instrument(level = "debug", skip(self))]
     async fn cleanup_expired(&self) -> Result<u64, StorageError> {
-        let result = sqlx::query("DELETE FROM sessions WHERE expires_at <= NOW()")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| storage_error_for("session", e))?;
+        let result = sqlx::query(
+            "DELETE FROM sessions WHERE expires_at <= NOW()
+            AND EXISTS (SELECT 1 FROM users WHERE id = sessions.user_id AND deleted_at IS NULL)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| storage_error_for("session", e))?;
         Ok(result.rows_affected())
     }
 }
