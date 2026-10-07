@@ -27,20 +27,9 @@ use clap::Parser;
 use transport::{ApiTransport, RealtimeTransport, Transport, WebhookIngressTransport};
 
 /// Failure from the ordinary server composition or serving path.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
 pub struct ServerRunError(compose::ServerRunError);
-
-impl std::fmt::Display for ServerRunError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl std::error::Error for ServerRunError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
-}
 
 #[derive(Parser)]
 #[command(

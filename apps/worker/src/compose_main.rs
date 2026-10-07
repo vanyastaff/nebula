@@ -24,7 +24,7 @@ use nebula_worker_bin::compose::{
     ComposeError, ResourceFanoutInputs, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
 };
 use nebula_worker_bin::credential_projection::{
-    CredentialProjectionCompositionError, DeploymentDatabase, compose_first_party_projection,
+    CredentialProjectionCompositionError, CredentialProjectionConfig, DeploymentDatabase,
 };
 
 /// Top-level error union for the worker binary startup.
@@ -362,6 +362,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     tracing::info!("nebula-worker (core flavor) starting");
 
     let config = WorkerConfig::from_env()?;
+    let credential_config = CredentialProjectionConfig::from_env()?;
 
     // Log the active backend. Only emit `db_path` on the SQLite path — on the
     // Postgres path it is the ignored default "nebula-worker.db" and emitting
@@ -390,7 +391,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     ) = build_stores(&config, &metrics).await?;
     // Credentials live in the deployment database beside executions and
     // share its pool.
-    let credential_resolver = compose_first_party_projection(&deployment_database).await?;
+    let credential_resolver = credential_config.compose(&deployment_database).await?;
 
     // Assemble the core-flavor builder (boots CorePlugin + wires into engine).
     let (builder, _metrics, plugin_key) = build_core_flavor_runtime(

@@ -375,28 +375,15 @@ impl ServerRuntime {
         mut telemetry_guard: TelemetryGuard,
     ) -> Result<(), ServerRunError> {
         let mut api_config = ApiConfig::from_env()?;
-        let metrics_registry = Arc::new(MetricsRegistry::new());
-        // Attach the OTLP metrics pipeline against the same registry the API will publish
-        // through. The guard owns the pipeline so it shuts down with the trace exporter when
-        // `axum::serve` returns. A `None` endpoint silently no-ops, matching the trace path.
-        telemetry_guard
-            .attach_metrics_exporter(Arc::clone(&metrics_registry))
-            .map_err(ServerRunError::MetricsExporter)?;
-        // Build the execution-store bundle inside the async context so the SQLite and
-        // Postgres paths can `await` pool construction.
-        let execution_bundle = build_execution_stores(&api_config, None, &metrics_registry).await?;
+        // Reject startup inputs before opening or migrating deployment storage.
+        let bind_address =
+            resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
         let registry =
             crate::transport::worker_registry(std::env::var("NEBULA_WORKER_ARTIFACT_SET_DIGEST"))
                 .map_err(TransportInitError::from)?;
-        // Compose credential persistence before workflow start so binding
-        // resolution and management routes share one service instance.
         let keyring = resolve_first_party_keyring()
             .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
-        // Identity must exist before tenant authority can be granted. Build
-        // the selected Plane-A backend before consuming the execution bundle,
-        // then let the opt-in bootstrap verify its stable owner against it.
         let email_port = build_email_port(&api_config)?;
-        let oauth_config = std::mem::take(&mut api_config.auth.oauth);
         let tenant_bootstrap = crate::tenant_bootstrap::TenantBootstrapConfig::from_env()
             .map_err(TransportInitError::from)?;
         crate::tenant_bootstrap::validate_auth_backend(
@@ -404,6 +391,15 @@ impl ServerRuntime {
             &api_config.auth.backend,
         )
         .map_err(TransportInitError::from)?;
+
+        let metrics_registry = Arc::new(MetricsRegistry::new());
+        telemetry_guard
+            .attach_metrics_exporter(Arc::clone(&metrics_registry))
+            .map_err(ServerRunError::MetricsExporter)?;
+        let execution_bundle = build_execution_stores(&api_config, None, &metrics_registry).await?;
+        // Identity must exist before tenant authority can be granted. The
+        // opt-in bootstrap verifies its stable owner against this backend.
+        let oauth_config = std::mem::take(&mut api_config.auth.oauth);
         let auth_backend = build_auth_backend(
             api_config.auth.backend.clone(),
             oauth_config,
@@ -443,8 +439,6 @@ impl ServerRuntime {
             registry,
             Some(binding_resolver),
         )?;
-        let bind_address =
-            resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
         state = transport.prepare_state(state, bind_address)?;
         // Attach the idempotency store inside the async context so the
         // PG-backed path can await sqlx pool construction. Memory-backed

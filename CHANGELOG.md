@@ -15,6 +15,10 @@ changes are expected between minor releases — call them out here.
   and exit code 2 instead of being ignored. Both deployment binaries support
   `--help` and `--version` before loading configuration or initializing telemetry
   and storage.
+  Invalid credential keys also fail before either process opens its database;
+  server artifact identity, bind override and tenant bootstrap configuration
+  are admitted before storage setup. Server startup errors use readable cause
+  messages instead of Rust debug output.
 
 - **Persisted execution inspection.** Execution GET detail now returns typed
   lifecycle status, RFC3339 timestamps (no synthetic start time), snapshot

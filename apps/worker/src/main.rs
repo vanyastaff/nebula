@@ -6,6 +6,7 @@
 //!
 //! `--help` and `--version` exit before reading deployment configuration.
 //! Unrecognized arguments are rejected before initialization.
+//! Credential key configuration is validated before opening deployment storage.
 //!
 //! ## Configuration (environment variables)
 //!

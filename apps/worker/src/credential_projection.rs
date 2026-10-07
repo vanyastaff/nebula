@@ -78,30 +78,65 @@ pub enum CredentialProjectionCompositionError {
     Projection(#[from] CredentialProjectionRuntimeBuildError),
 }
 
-/// Compose the worker's first-party credential projection over its
-/// deployment database.
+/// Validated key configuration for the worker's first-party projection.
 ///
-/// Credentials live in the deployment database beside tenancy and
-/// executions; there is no separate credential database. Key loading uses
+/// Prepare this before opening the deployment database. Key loading uses
 /// `NEBULA_CRED_MASTER_KEY`, except when `NEBULA_CRED_DEV_KEY=1` explicitly
 /// opts into the shared fixed development key. The same bounded decrypt-only
 /// legacy keyring as the server is installed for projection.
-///
-/// # Errors
-///
-/// Returns a typed error when key loading, store startup, first-party
-/// registration, or projection construction fails.
-pub async fn compose_first_party_projection(
-    database: &DeploymentDatabase,
-) -> Result<Arc<dyn CredentialSlotResolver>, CredentialProjectionCompositionError> {
-    let keyring = resolve_first_party_keyring()?;
-    compose_first_party_projection_for_database(database, keyring).await
+pub struct CredentialProjectionConfig {
+    keyring: CredentialKeyring,
+}
+
+impl CredentialProjectionConfig {
+    /// Validate and retain the process key configuration without database I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when current or decrypt-only keys are invalid.
+    pub fn from_env() -> Result<Self, CredentialProjectionCompositionError> {
+        Ok(Self {
+            keyring: resolve_first_party_keyring()?,
+        })
+    }
+
+    /// Compose the projection on the admitted deployment pool, consuming the
+    /// validated key configuration without rereading the environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed store, registration or projection-construction failure.
+    pub async fn compose(
+        self,
+        database: &DeploymentDatabase,
+    ) -> Result<Arc<dyn CredentialSlotResolver>, CredentialProjectionCompositionError> {
+        let projection = match database {
+            DeploymentDatabase::Sqlite(pool) => {
+                let store = SqliteCredentialPersistence::connect_pool(pool.clone())
+                    .await
+                    .map_err(CredentialProjectionCompositionError::Store)?;
+                build_first_party_projection_with_keyring(store, self.keyring)?
+            },
+            #[cfg(feature = "postgres")]
+            DeploymentDatabase::Postgres(pool) => {
+                let store = PgCredentialPersistence::connect_pool(pool.clone())
+                    .await
+                    .map_err(CredentialProjectionCompositionError::Store)?;
+                build_first_party_projection_with_keyring(store, self.keyring)?
+            },
+        };
+        tracing::info!(
+            backend = database.backend(),
+            "credential projection store opened on the deployment database"
+        );
+        Ok(projection)
+    }
 }
 
 /// Build the first-party projection runtime around one raw credential store.
 ///
 /// This testable composition seam installs the same encryption, trace-audit,
-/// registry, and operation layers used by [`compose_first_party_projection`].
+/// registry, and operation layers used by [`CredentialProjectionConfig::compose`].
 /// It returns only the object-safe read/project capability.
 ///
 /// # Errors
@@ -176,32 +211,6 @@ fn resolve_first_party_keyring() -> Result<CredentialKeyring, CredentialProjecti
     })
 }
 
-async fn compose_first_party_projection_for_database(
-    database: &DeploymentDatabase,
-    keyring: CredentialKeyring,
-) -> Result<Arc<dyn CredentialSlotResolver>, CredentialProjectionCompositionError> {
-    let projection = match database {
-        DeploymentDatabase::Sqlite(pool) => {
-            let store = SqliteCredentialPersistence::connect_pool(pool.clone())
-                .await
-                .map_err(CredentialProjectionCompositionError::Store)?;
-            build_first_party_projection_with_keyring(store, keyring)?
-        },
-        #[cfg(feature = "postgres")]
-        DeploymentDatabase::Postgres(pool) => {
-            let store = PgCredentialPersistence::connect_pool(pool.clone())
-                .await
-                .map_err(CredentialProjectionCompositionError::Store)?;
-            build_first_party_projection_with_keyring(store, keyring)?
-        },
-    };
-    tracing::info!(
-        backend = database.backend(),
-        "credential projection store opened on the deployment database"
-    );
-    Ok(projection)
-}
-
 fn first_party_registry() -> Result<CredentialRegistry, nebula_credential::RegisterError> {
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "nebula-credential")?;
@@ -257,8 +266,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use super::{
-        DeploymentDatabase, build_first_party_projection,
-        build_first_party_projection_with_keyring, compose_first_party_projection,
+        CredentialProjectionConfig, DeploymentDatabase, build_first_party_projection,
+        build_first_party_projection_with_keyring,
     };
     use nebula_storage::credential::CredentialKeyring;
 
@@ -549,7 +558,12 @@ mod tests {
         env.remove("NEBULA_CRED_LEGACY_EMPTY_ID_MASTER_KEY");
         env.remove("NEBULA_CRED_DEV_KEY");
 
-        let projection = compose_first_party_projection(&DeploymentDatabase::Sqlite(pool))
+        let config = CredentialProjectionConfig::from_env()
+            .expect("production configuration accepts the legacy key");
+        env.remove("NEBULA_CRED_MASTER_KEY");
+        env.remove("NEBULA_CRED_LEGACY_MASTER_KEYS");
+        let projection = config
+            .compose(&DeploymentDatabase::Sqlite(pool))
             .await
             .expect("production composition accepts the configured legacy key");
         let guard = projection

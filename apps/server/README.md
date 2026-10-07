@@ -20,6 +20,8 @@ cargo run -p nebula-server -- --transport realtime
 
 `nebula-server --help` and `--version` work without deployment configuration.
 Argument errors are reported before telemetry or database initialization.
+Credential keys, worker artifact identity, tenant bootstrap settings and the
+selected bind-address override are checked before opening deployment storage.
 
 All operator-facing configuration lives in environment variables; the
 canonical registry is `crates/api/src/config/env.rs`. The composition
