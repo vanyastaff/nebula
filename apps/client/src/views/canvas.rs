@@ -20,6 +20,8 @@ const PADDING: f32 = 40.0;
 const PORT_RADIUS: f32 = 5.0;
 const PORT_HIT: f32 = 22.0;
 const GRID: f32 = 24.0;
+/// What assistive technology calls the graph area. Clicking it clears the selection.
+pub(crate) const CANVAS_NAME: &str = "Workflow canvas";
 /// Farthest a stored position may place a card, in canvas units; a larger one is brought back.
 const MAX_COORDINATE: f32 = 20_000.0;
 /// A card dropped closer than this to where it started, in screen points, was clicked rather than moved.
@@ -278,6 +280,9 @@ pub(crate) fn show(
         .show(ui, |ui| {
             let (canvas, background) =
                 ui.allocate_exact_size((graph * zoom).max(visible), Sense::click());
+            background.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Other, true, CANVAS_NAME)
+            });
             if background.clicked() {
                 gestures.push(Gesture::Deselect);
             }

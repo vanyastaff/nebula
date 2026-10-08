@@ -8,7 +8,7 @@ use crate::{
     widgets::{self, Tone},
     workbench::{Page, Workbench},
 };
-use eframe::egui::{self, Align, Layout, RichText};
+use eframe::egui::{self, RichText};
 use nebula_api_contract::v1::workflow::WorkflowDocumentResponse;
 use serde_json::{Value, json};
 
@@ -113,16 +113,16 @@ fn workflow(
         .unwrap_or_default();
     let id = &document.workflow.id;
     theme::card_block(ui, |ui| {
-        ui.horizontal(|ui| {
-            if ui
-                .link(RichText::new(&document.workflow.name).strong())
-                .on_hover_text("Open this workflow in the editor")
-                .clicked()
-                && workbench.select_workflow(id)
-            {
-                intents.push(Intent::LoadWorkflow(id.clone()));
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let mut open = false;
+        widgets::row_with_actions(
+            ui,
+            |ui| {
+                open = ui
+                    .link(RichText::new(&document.workflow.name).strong())
+                    .on_hover_text("Open this workflow in the editor")
+                    .clicked();
+            },
+            |ui| {
                 if ui
                     .add_enabled(!busy, egui::Button::new("Add webhook trigger"))
                     .on_hover_text("Bind a webhook that starts this workflow")
@@ -137,8 +137,11 @@ fn workflow(
                     }));
                     intents.push(Intent::SaveTriggers(id.clone(), Value::Array(next)));
                 }
-            });
-        });
+            },
+        );
+        if open && workbench.select_workflow(id) {
+            intents.push(Intent::LoadWorkflow(id.clone()));
+        }
         if bindings.is_empty() {
             widgets::caption(
                 ui,
@@ -168,18 +171,21 @@ fn binding_row(
         binding["action_key"].as_str().unwrap_or_default()
     );
     let webhook = binding["action_key"] == "webhook";
-    ui.horizontal(|ui| {
-        widgets::badge(
-            ui,
-            if webhook { "Webhook" } else { "Trigger" },
-            Tone::Accent,
-        );
-        ui.label(RichText::new(trigger).monospace());
-        widgets::caption(ui, &action);
-        if let Some(provider) = binding["config"]["provider"].as_str() {
-            widgets::caption(ui, format!("provider {provider}"));
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+    widgets::row_with_actions(
+        ui,
+        |ui| {
+            widgets::badge(
+                ui,
+                if webhook { "Webhook" } else { "Trigger" },
+                Tone::Accent,
+            );
+            ui.label(RichText::new(trigger).monospace());
+            widgets::caption(ui, &action);
+            if let Some(provider) = binding["config"]["provider"].as_str() {
+                widgets::caption(ui, format!("provider {provider}"));
+            }
+        },
+        |ui| {
             if ui
                 .add_enabled(!busy, egui::Button::new("Remove"))
                 .on_hover_text("Remove this trigger from the workflow")
@@ -206,8 +212,8 @@ fn binding_row(
                     trigger.to_owned(),
                 ));
             }
-        });
-    });
+        },
+    );
 }
 
 /// A trigger id not taken yet: `webhook`, then `webhook_2`, and so on.

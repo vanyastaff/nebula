@@ -2,6 +2,8 @@
 //! navigation and the page, turns the intents that views emitted into requests, and keeps the
 //! execution watch on whatever run the visible page shows.
 
+#[cfg(test)]
+mod layout_tests;
 mod pages;
 
 use crate::{

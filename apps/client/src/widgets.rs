@@ -80,6 +80,34 @@ pub(crate) fn segmented<T: Copy + PartialEq>(
     });
 }
 
+/// Rows at least this wide keep their actions at the right edge.
+const ACTIONS_BESIDE_MIN: f32 = 560.0;
+
+/// A row of information with its actions: the actions at the right edge where there is room, or on
+/// a line of their own under the information on a narrow window, so a row never widens the page.
+/// `actions` adds its buttons rightmost first.
+pub(crate) fn row_with_actions<R>(
+    ui: &mut egui::Ui,
+    info: impl FnOnce(&mut egui::Ui),
+    actions: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    if ui.available_width() >= ACTIONS_BESIDE_MIN {
+        ui.horizontal(|ui| {
+            info(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), actions)
+                .inner
+        })
+        .inner
+    } else {
+        ui.horizontal_wrapped(info);
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center).with_main_wrap(true),
+            actions,
+        )
+        .inner
+    }
+}
+
 /// The letter a mark shows for a name: its first letter or digit, upper-cased.
 pub(crate) fn initial(name: &str) -> String {
     name.chars()

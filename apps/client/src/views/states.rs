@@ -77,19 +77,23 @@ pub(crate) fn empty(ui: &mut egui::Ui, headline: &str, body: &str, action: Optio
     pressed
 }
 
-/// The heading row of a page: its title and summary on the left, its actions on the right.
+/// The heading row of a page: its title and summary, with its actions on the right, or under them
+/// on a narrow window.
 pub(crate) fn page_header(
     ui: &mut egui::Ui,
     title: &str,
     summary: &str,
     actions: impl FnOnce(&mut egui::Ui),
 ) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            widgets::title(ui, title);
-            widgets::caption(ui, summary);
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), actions);
-    });
+    widgets::row_with_actions(
+        ui,
+        |ui| {
+            ui.vertical(|ui| {
+                widgets::title(ui, title);
+                widgets::caption(ui, summary);
+            });
+        },
+        actions,
+    );
     ui.add_space(theme::SPACE_LG);
 }

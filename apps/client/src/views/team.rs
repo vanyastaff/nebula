@@ -10,7 +10,7 @@ use crate::{
         pages::{ORG_ROLES, WORKSPACE_ROLES},
     },
 };
-use eframe::egui::{self, Align, Layout, RichText};
+use eframe::egui::{self, RichText};
 
 pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
     let busy = workbench.session.busy();
@@ -49,9 +49,9 @@ fn you(workbench: &Workbench, principal: &str) -> bool {
         .is_some_and(|profile| profile.user_id == principal)
 }
 
-fn identity(ui: &mut egui::Ui, workbench: &Workbench, principal: &str) {
+fn identity(ui: &mut egui::Ui, you: bool, principal: &str) {
     ui.label(RichText::new(principal).monospace());
-    if you(workbench, principal) {
+    if you {
         widgets::badge(ui, "You", Tone::Accent);
     }
 }
@@ -76,9 +76,11 @@ fn workspace(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents
         widgets::caption(ui, "Nobody has explicit access to this workspace.");
     }
     for member in &members {
-        ui.horizontal(|ui| {
-            identity(ui, workbench, &member.principal_id);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let you = you(workbench, &member.principal_id);
+        widgets::row_with_actions(
+            ui,
+            |ui| identity(ui, you, &member.principal_id),
+            |ui| {
                 remove_button(ui, workbench, intents, &member.principal_id, busy, true);
                 let mut role = member.role.0.clone();
                 egui::ComboBox::from_id_salt(("workspace-role", &member.principal_id))
@@ -94,8 +96,8 @@ fn workspace(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents
                         role,
                     ));
                 }
-            });
-        });
+            },
+        );
         ui.separator();
     }
 }
@@ -112,9 +114,11 @@ fn organization(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Inte
         states::Shown::Waiting => return,
     };
     for member in &members {
-        ui.horizontal(|ui| {
-            identity(ui, workbench, &member.principal_id);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        let you = you(workbench, &member.principal_id);
+        widgets::row_with_actions(
+            ui,
+            |ui| identity(ui, you, &member.principal_id),
+            |ui| {
                 remove_button(ui, workbench, intents, &member.principal_id, busy, false);
                 let tone = if member.role.0 == "owner" {
                     Tone::Accent
@@ -122,8 +126,8 @@ fn organization(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Inte
                     Tone::Neutral
                 };
                 widgets::badge(ui, &member.role.0, tone);
-            });
-        });
+            },
+        );
         ui.separator();
     }
 }
@@ -201,7 +205,7 @@ fn add_member(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intent
     if team.new_workspace_role.is_empty() {
         "viewer".clone_into(&mut team.new_workspace_role);
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         widgets::caption(ui, "Workspace role");
         egui::ComboBox::from_id_salt("new-member-workspace-role")
             .selected_text(&team.new_workspace_role)

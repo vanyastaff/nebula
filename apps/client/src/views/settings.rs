@@ -8,7 +8,7 @@ use crate::{
     widgets::{self, Tone},
     workbench::{Workbench, pages::TOKEN_SCOPES},
 };
-use eframe::egui::{self, Align, Layout, RichText};
+use eframe::egui::{self, RichText};
 
 /// Token lifetimes on offer, in days.
 const LIFETIMES: [u32; 4] = [7, 30, 90, 365];
@@ -160,28 +160,31 @@ fn tokens(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, b
             }
             let now = clock::now_millis();
             for token in &tokens {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(RichText::new(&token.name).strong());
-                        let created = clock::parse_rfc3339(&token.created_at).unwrap_or(now);
-                        let used = token
-                            .last_used_at
-                            .as_deref()
-                            .and_then(clock::parse_rfc3339)
-                            .map_or_else(
-                                || "never used".to_owned(),
-                                |at| format!("used {}", clock::ago(now, at)),
+                widgets::row_with_actions(
+                    ui,
+                    |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&token.name).strong());
+                            let created = clock::parse_rfc3339(&token.created_at).unwrap_or(now);
+                            let used = token
+                                .last_used_at
+                                .as_deref()
+                                .and_then(clock::parse_rfc3339)
+                                .map_or_else(
+                                    || "never used".to_owned(),
+                                    |at| format!("used {}", clock::ago(now, at)),
+                                );
+                            widgets::caption(
+                                ui,
+                                format!(
+                                    "{} · created {} · {used}",
+                                    token.scopes.join(", "),
+                                    clock::ago(now, created)
+                                ),
                             );
-                        widgets::caption(
-                            ui,
-                            format!(
-                                "{} · created {} · {used}",
-                                token.scopes.join(", "),
-                                clock::ago(now, created)
-                            ),
-                        );
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        });
+                    },
+                    |ui| {
                         let confirming =
                             workbench.settings.confirm_revoke.as_deref() == Some(token.id.as_str());
                         if confirming {
@@ -201,8 +204,8 @@ fn tokens(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, b
                         {
                             workbench.settings.confirm_revoke = Some(token.id.clone());
                         }
-                    });
-                });
+                    },
+                );
                 ui.separator();
             }
         },

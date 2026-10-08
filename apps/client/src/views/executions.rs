@@ -13,7 +13,7 @@ use crate::{
         pages::{STATUS_FILTERS, StatusFilter},
     },
 };
-use eframe::egui::{self, Align, Layout, RichText};
+use eframe::egui::{self, RichText};
 use nebula_api_contract::v1::execution::{
     ExecutionDetailResponse, ExecutionNode, ExecutionNodeOutput, ExecutionSummary,
 };
@@ -80,26 +80,29 @@ fn filters(ui: &mut egui::Ui, workbench: &mut Workbench) {
                 changed = true;
             }
         }
-        ui.separator();
-        let chosen = workbench.executions.workflow.clone();
-        let label = chosen.as_deref().map_or_else(
-            || "All workflows".to_owned(),
-            |id| workflow_name(workbench, id),
-        );
-        egui::ComboBox::from_id_salt("executions-workflow")
-            .selected_text(label)
-            .show_ui(ui, |ui| {
-                let mut choice = chosen.clone();
-                ui.selectable_value(&mut choice, None, "All workflows");
-                for workflow in &workbench.navigator.workflows {
-                    ui.selectable_value(&mut choice, Some(workflow.id.clone()), &workflow.name);
-                }
-                if choice != chosen {
-                    workbench.executions.workflow = choice;
-                    changed = true;
-                }
-            });
     });
+    ui.add_space(theme::SPACE_XS);
+    // On its own line, no wider than the window, so the chips above can wrap freely.
+    let chosen = workbench.executions.workflow.clone();
+    let label = chosen.as_deref().map_or_else(
+        || "All workflows".to_owned(),
+        |id| workflow_name(workbench, id),
+    );
+    egui::ComboBox::from_id_salt("executions-workflow")
+        .selected_text(label)
+        .width(ui.available_width().min(260.0))
+        .truncate()
+        .show_ui(ui, |ui| {
+            let mut choice = chosen.clone();
+            ui.selectable_value(&mut choice, None, "All workflows");
+            for workflow in &workbench.navigator.workflows {
+                ui.selectable_value(&mut choice, Some(workflow.id.clone()), &workflow.name);
+            }
+            if choice != chosen {
+                workbench.executions.workflow = choice;
+                changed = true;
+            }
+        });
     if changed {
         workbench.executions.list.invalidate();
         workbench.executions.next_cursor = None;
@@ -175,17 +178,12 @@ fn list(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, bus
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     widgets::badge(ui, status::label(row.status), status::tone(row.status));
+                    // One wrapping column after the badge, so a narrow window never widens the row.
                     ui.vertical(|ui| {
                         ui.label(RichText::new(&name).strong());
-                        widgets::caption(
-                            ui,
-                            format!("{} · {}", short(&row.id), clock::ago(now, created)),
-                        );
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if let Some(took) = took(row, now) {
-                            widgets::caption(ui, took);
-                        }
+                        let mut facts = vec![short(&row.id), clock::ago(now, created)];
+                        facts.extend(took(row, now));
+                        widgets::caption(ui, facts.join(" · "));
                     });
                 });
             })

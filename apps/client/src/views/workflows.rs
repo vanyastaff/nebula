@@ -7,7 +7,7 @@ use crate::{
     widgets::{self, Tone},
     workbench::{Remote, Workbench},
 };
-use eframe::egui::{self, Align, Layout, RichText};
+use eframe::egui::{self, RichText};
 
 pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
     let busy = workbench.session.busy();
@@ -145,20 +145,22 @@ fn rows(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, bus
                         theme::node_accent(&name),
                         32.0,
                     );
+                    // Everything after the mark wraps in one column, so no part of the card asks
+                    // for width the window does not have.
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(&name).strong().size(theme::SIZE_LABEL));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(&name).strong().size(theme::SIZE_LABEL));
+                            if unsaved {
+                                widgets::badge(ui, "Unsaved", Tone::Warning);
+                            }
+                        });
                         if let Some(description) = &description {
                             widgets::caption(ui, description.as_str());
                         }
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         widgets::caption(
                             ui,
                             format!("Updated {}", clock::ago(now, updated * 1000)),
                         );
-                        if unsaved {
-                            widgets::badge(ui, "Unsaved", Tone::Warning);
-                        }
                     });
                 });
             })
