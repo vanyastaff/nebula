@@ -159,19 +159,21 @@ pub(super) enum Change {
 }
 
 impl Change {
-    /// Whether a replay error only means the remote already holds this change's outcome. Creating
-    /// an existing connection or removing an absent node satisfies the edit; anything else is a
-    /// conflict the user has to review.
-    pub(super) fn already_in_effect(&self, error: &EditError) -> bool {
-        matches!(
-            (self, error),
+    /// Whether a replay error only means the remote `definition` already holds this change's
+    /// outcome. Creating an existing connection, removing an absent node, or inserting a node the
+    /// remote holds as the same action, name and parameters (a save whose answer was lost) satisfies
+    /// the edit; anything else is a conflict the user has to review.
+    pub(super) fn already_in_effect(&self, error: &EditError, definition: &Value) -> bool {
+        match (self, error) {
             (Self::ConnectionAdded { .. }, EditError::ConnectionExists)
-                | (
-                    Self::ConnectionRemoved { .. },
-                    EditError::ConnectionNotFound
-                )
-                | (Self::NodeRemoved { .. }, EditError::NodeNotFound)
-        )
+            | (Self::ConnectionRemoved { .. }, EditError::ConnectionNotFound)
+            | (Self::NodeRemoved { .. }, EditError::NodeNotFound) => true,
+            (Self::NodeInserted { node, .. }, EditError::NodeExists) => {
+                find_node(definition, node["id"].as_str().unwrap_or_default())
+                    .is_ok_and(|stored| same_node(node, stored))
+            },
+            _ => false,
+        }
     }
 
     /// The request that reproduces this change on any revision, used when replaying after a conflict.
@@ -223,6 +225,14 @@ pub(crate) fn parameters_match(local: &Value, stored: &Value) -> bool {
                 .find(|candidate| candidate["id"] == node["id"])
                 .is_some_and(|candidate| candidate["parameters"] == node["parameters"])
         })
+}
+
+/// The stored node is the one the draft inserted: same action, name and parameters. Fields the
+/// server fills in on its own, such as `enabled`, do not count.
+fn same_node(intended: &Value, stored: &Value) -> bool {
+    ["plugin_key", "action_key", "name", "parameters"]
+        .iter()
+        .all(|key| intended.get(key) == stored.get(key))
 }
 
 /// Applies the requested edit to the in-memory definition without touching the server.

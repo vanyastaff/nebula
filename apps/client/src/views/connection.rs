@@ -212,12 +212,13 @@ fn password_fields(ui: &mut egui::Ui, workbench: &mut Workbench) -> bool {
 
 /// Workspaces this app opened before, one click each. The server has no endpoint that lists them.
 fn recent_workspaces(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
-    if workbench.recent.is_empty() {
+    let recent = workbench.recent_here();
+    if recent.is_empty() {
         return;
     }
     widgets::caption(ui, "Recent");
     let mut chosen = None;
-    for recent in &workbench.recent {
+    for recent in &recent {
         let row = egui::Button::new(
             RichText::new(format!("{} / {}", recent.organization, recent.workspace)).strong(),
         )
@@ -228,9 +229,9 @@ fn recent_workspaces(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut
             chosen = Some(recent.clone());
         }
     }
-    if let Some(recent) = chosen {
-        workbench.form.organization = recent.organization;
-        workbench.form.workspace = recent.workspace;
+    if let Some(chosen) = chosen {
+        workbench.form.organization = chosen.organization;
+        workbench.form.workspace = chosen.workspace;
         intents.push(Intent::OpenWorkspace);
     }
     ui.add_space(theme::SPACE_SM);
@@ -255,7 +256,7 @@ fn workspace_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut In
             ui,
             &organization,
             "workspace-organization",
-            workbench.recent.is_empty() && workbench.form.organization.is_empty(),
+            workbench.recent_here().is_empty() && workbench.form.organization.is_empty(),
         );
         let workspace =
             widgets::labeled_field(ui, "Workspace", &mut workbench.form.workspace, false);

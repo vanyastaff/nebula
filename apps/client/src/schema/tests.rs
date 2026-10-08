@@ -231,6 +231,15 @@ fn conditions_treat_missing_and_run_time_values_as_the_server_does() {
     let pending = values(json!({"kind": {"type": "expression", "expr": "{{ $input.kind }}"}}));
     assert_eq!(holds(&json!({"eq": ["/kind", "a"]}), &pending), None);
     assert_eq!(holds(&json!({"empty": "/kind"}), &pending), None);
+
+    // One decisive child settles `all` and `any` even beside one that cannot be judged yet.
+    let unknown = json!({"eq": ["/kind", "a"]});
+    let yes = json!({"eq": ["/plan", "pro"]});
+    let no = json!({"eq": ["/plan", "basic"]});
+    assert_eq!(holds(&json!({"all": [unknown, no]}), &pending), Some(false));
+    assert_eq!(holds(&json!({"all": [unknown, yes]}), &pending), None);
+    assert_eq!(holds(&json!({"any": [unknown, yes]}), &pending), Some(true));
+    assert_eq!(holds(&json!({"any": [unknown, no]}), &pending), None);
 }
 
 #[test]

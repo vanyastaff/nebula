@@ -20,6 +20,8 @@ const PADDING: f32 = 40.0;
 const PORT_RADIUS: f32 = 5.0;
 const PORT_HIT: f32 = 22.0;
 const GRID: f32 = 24.0;
+/// Farthest a stored position may place a card, in canvas units; a larger one is brought back.
+const MAX_COORDINATE: f32 = 20_000.0;
 /// A card dropped closer than this to where it started, in screen points, was clicked rather than moved.
 const CLICK_SLOP: f32 = 4.0;
 pub(crate) const MIN_ZOOM: f32 = 0.5;
@@ -149,17 +151,48 @@ fn lerp(from: Pos2, to: Pos2, t: f32) -> Pos2 {
     )
 }
 
-/// Faint dot grid behind the graph, so an empty canvas still reads as a workspace.
+/// A stored canvas position as the canvas can hold it. A position that is not a finite number in
+/// `f32` has no place, so the layout places the node; a far one is brought within reach.
+fn placement(x: f64, y: f64) -> Option<Pos2> {
+    let (x, y) = (x as f32, y as f32);
+    (x.is_finite() && y.is_finite())
+        .then(|| Pos2::new(x.clamp(0.0, MAX_COORDINATE), y.clamp(0.0, MAX_COORDINATE)))
+}
+
+/// Faint dot grid behind the graph, so an empty canvas still reads as a workspace. Only the dots in
+/// the visible part are painted, however large the graph.
 fn paint_grid(painter: &egui::Painter, canvas: Rect, zoom: f32) {
-    let spacing = GRID * zoom;
-    let columns = (canvas.width() / spacing) as usize;
-    let rows = (canvas.height() / spacing) as usize;
-    for column in 1..=columns {
-        for row in 1..=rows {
-            let at = canvas.min + Vec2::new(column as f32 * spacing, row as f32 * spacing);
-            painter.circle_filled(at, 1.0, theme::BORDER);
-        }
+    for at in grid_dots(canvas, painter.clip_rect(), zoom) {
+        painter.circle_filled(at, 1.0, theme::BORDER);
     }
+}
+
+/// The grid's dots inside `clip`, counted from the canvas origin so they keep their place while
+/// scrolling.
+fn grid_dots(canvas: Rect, clip: Rect, zoom: f32) -> Vec<Pos2> {
+    let spacing = GRID * zoom;
+    let visible = canvas.intersect(clip);
+    if !visible.is_positive() {
+        return Vec::new();
+    }
+    let first = |from: f32, origin: f32| ((from - origin) / spacing).ceil().max(1.0);
+    let (first_column, first_row) = (
+        first(visible.left(), canvas.left()),
+        first(visible.top(), canvas.top()),
+    );
+    let columns = (visible.width() / spacing).ceil() as usize + 1;
+    let rows = (visible.height() / spacing).ceil() as usize + 1;
+    (0..columns)
+        .flat_map(|column| (0..rows).map(move |row| (column, row)))
+        .map(|(column, row)| {
+            canvas.min
+                + Vec2::new(
+                    (first_column + column as f32) * spacing,
+                    (first_row + row as f32) * spacing,
+                )
+        })
+        .filter(|at| visible.contains(*at))
+        .collect()
 }
 
 /// Where the canvas landed on screen, so the editor can float its controls over it.
@@ -216,7 +249,7 @@ pub(crate) fn show(
         .iter()
         .filter_map(|id| {
             let (x, y) = draft.placed_position(id)?;
-            Some((id.clone(), Pos2::new(x as f32, y as f32)))
+            Some((id.clone(), placement(x, y)?))
         })
         .collect();
     let laid_out: Vec<(String, Pos2)> = layout(&ids, &edges)
@@ -589,6 +622,37 @@ mod tests {
                 .collect();
         assert!(positions["a"].x.is_finite() && positions["b"].x.is_finite());
         assert!(positions["a"].x <= 2.0f32.mul_add(CARD + COLUMN_GAP, PADDING));
+    }
+
+    #[test]
+    fn an_unreachable_stored_position_is_left_to_the_layout_or_brought_within_reach() {
+        // 1e308 is a valid JSON number but no `f32`; the layout places that node instead.
+        assert_eq!(placement(1e308, 10.0), None);
+        assert_eq!(placement(f64::NAN, 10.0), None);
+        assert_eq!(placement(1e9, -50.0), Some(Pos2::new(MAX_COORDINATE, 0.0)));
+        assert_eq!(placement(120.0, 80.0), Some(Pos2::new(120.0, 80.0)));
+    }
+
+    #[test]
+    fn the_grid_paints_only_what_is_visible() {
+        let clip = Rect::from_min_size(Pos2::ZERO, Vec2::new(240.0, 120.0));
+        // A canvas as large as the far bound allows still gets one viewport of dots.
+        let canvas = Rect::from_min_size(Pos2::new(-5000.0, -5000.0), Vec2::splat(MAX_COORDINATE));
+        let dots = grid_dots(canvas, clip, MIN_ZOOM);
+        let spacing = GRID * MIN_ZOOM;
+        let most = ((240.0 / spacing + 2.0) * (120.0 / spacing + 2.0)) as usize;
+        assert!(
+            !dots.is_empty() && dots.len() <= most,
+            "{} dots",
+            dots.len()
+        );
+        assert!(dots.iter().all(|at| clip.contains(*at)));
+        // Dots sit on the canvas's grid, not the viewport's.
+        assert!(dots.iter().all(|at| {
+            let step = (at.x - canvas.left()) / spacing;
+            (step - step.round()).abs() < 1e-3
+        }));
+        assert!(grid_dots(canvas, Rect::NOTHING, MIN_ZOOM).is_empty());
     }
 
     #[test]

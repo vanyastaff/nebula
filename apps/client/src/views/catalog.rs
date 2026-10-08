@@ -188,6 +188,11 @@ fn detail(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
                 states::loading(ui, "Reading the action's inputs…");
             },
             Some(SchemaState::Unavailable(reason)) => widgets::banner(ui, Tone::Neutral, &reason),
+            Some(SchemaState::Failed(reason)) => {
+                if states::failed(ui, "The action's inputs could not be read.", &reason) {
+                    workbench.retry_schema(&key);
+                }
+            },
             Some(SchemaState::Ready(schema)) if schema.any_value => widgets::caption(
                 ui,
                 "This action takes free-form input that no form describes; its node edits it as JSON.",

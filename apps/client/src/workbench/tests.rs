@@ -424,10 +424,156 @@ fn remembered_settings_round_trip_without_secrets() {
 
     let mut restored = Workbench::new("http://default.test".into());
     restored.restore(remembered);
-    assert_eq!(restored.form.endpoint, SERVER);
+    // Kept as the client uses it, with its path closed by `/`.
+    assert_eq!(restored.form.endpoint, format!("{SERVER}/"));
     assert_eq!(restored.form.email, "fixture@example.test");
     assert_eq!(restored.form.mode, SignInMode::Token);
     assert_eq!(restored.recent.len(), 1);
+}
+
+#[test]
+fn an_address_the_client_rejects_is_never_remembered() {
+    for typed in [
+        "https://user:hunter2@nebula.example",
+        "https://nebula.example/?token=nbl_pat_secret",
+        "http://nebula.example",
+    ] {
+        let mut workbench = Workbench::new(typed.into());
+        let stored = serde_json::to_string(&workbench.remembered()).unwrap();
+        assert!(!stored.contains("hunter2") && !stored.contains("nbl_pat_secret"));
+        assert!(workbench.remembered().endpoint.is_empty(), "{typed}");
+        // An old file with such an address does not bring it back either.
+        let mut restored = Workbench::new("https://default.example/".into());
+        restored.restore(Remembered {
+            endpoint: typed.into(),
+            ..Remembered::default()
+        });
+        assert_eq!(restored.form.endpoint, "https://default.example/");
+        workbench.form.clear_secrets();
+    }
+}
+
+#[test]
+fn recent_workspaces_belong_to_their_server_and_account() {
+    let mut workbench = Workbench::new(SERVER.into());
+    workbench.begin_sign_in(server());
+    workbench.profile = Some(fixture_profile());
+    let here = |workbench: &Workbench| {
+        workbench
+            .recent_here()
+            .into_iter()
+            .map(|recent| recent.workspace)
+            .collect::<Vec<_>>()
+    };
+    let backend_endpoint = server().endpoint().to_owned();
+    workbench.recent = vec![
+        WorkspaceRef {
+            endpoint: backend_endpoint.clone(),
+            principal: "user_fixture".into(),
+            organization: "org".into(),
+            workspace: "mine".into(),
+        },
+        WorkspaceRef {
+            endpoint: backend_endpoint,
+            principal: "someone_else".into(),
+            organization: "org".into(),
+            workspace: "theirs".into(),
+        },
+        WorkspaceRef {
+            endpoint: "https://other.example/".into(),
+            principal: "user_fixture".into(),
+            organization: "org".into(),
+            workspace: "elsewhere".into(),
+        },
+    ];
+
+    assert_eq!(here(&workbench), ["mine"]);
+}
+
+#[test]
+fn a_created_workflow_opens_in_the_editor() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    workbench.navigator.start_creating();
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(
+        stamp,
+        RequestKind::Create,
+        Ok(Reply::Created(snapshot(1, 7))),
+    );
+
+    assert_eq!(workbench.page, Page::Editor);
+    assert!(!workbench.navigator.creating);
+}
+
+#[test]
+fn another_workspace_starts_with_a_clean_list() {
+    let mut workbench = Workbench::new(SERVER.into());
+    workbench.begin_sign_in(server());
+    workbench.profile = Some(fixture_profile());
+    workbench.form.organization = "org".into();
+    workbench.form.workspace = "one".into();
+    assert!(workbench.open_workspace());
+    workbench.navigator.start_creating();
+    workbench.navigator.new_name = "Half typed".into();
+    workbench.navigator.filter = "inv".into();
+
+    workbench.form.workspace = "two".into();
+    assert!(workbench.open_workspace());
+
+    assert!(!workbench.navigator.creating);
+    assert!(workbench.navigator.new_name.is_empty());
+    assert!(workbench.navigator.filter.is_empty());
+}
+
+#[test]
+fn returning_to_an_unsaved_draft_of_the_same_revision_keeps_it_without_review() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    assert!(workbench.select_workflow("wf_test"));
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(stamp, RequestKind::Read, Ok(Reply::Loaded(snapshot(1, 7))));
+    workbench
+        .session
+        .draft_mut()
+        .unwrap()
+        .edit("echo", "message", "9")
+        .unwrap();
+
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(stamp, RequestKind::Read, Ok(Reply::Loaded(snapshot(1, 7))));
+
+    let draft = workbench.session.draft().unwrap();
+    assert!(draft.remote.is_none());
+    assert!(draft.dirty());
+
+    // A newer revision is a server change the person reviews.
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(stamp, RequestKind::Read, Ok(Reply::Loaded(snapshot(2, 8))));
+    assert!(workbench.session.draft().unwrap().remote.is_some());
+}
+
+#[test]
+fn a_schema_read_that_may_pass_can_be_tried_again() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    assert!(workbench.begin_schema("core.delay"));
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(stamp, RequestKind::Schema, Err(Failure::ReadFailed));
+    assert!(matches!(
+        workbench.schemas.get("core.delay"),
+        Some(SchemaState::Failed(_))
+    ));
+
+    workbench.retry_schema("core.delay");
+    assert!(workbench.begin_schema("core.delay"));
+
+    // The server's definite answer stays for the sign-in.
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(stamp, RequestKind::Schema, Err(Failure::Rejected(404)));
+    workbench.retry_schema("core.delay");
+    assert!(!workbench.begin_schema("core.delay"));
 }
 
 fn schema_reply(workbench: &mut Workbench, action: &str, parameters: Value) {

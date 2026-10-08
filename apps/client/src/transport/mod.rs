@@ -112,24 +112,7 @@ struct WireResponse {
 
 impl Connection {
     pub(crate) fn new(endpoint: &str) -> Result<Self, Failure> {
-        let mut endpoint = Url::parse(endpoint.trim()).map_err(|_| Failure::Configuration)?;
-        let loopback = match endpoint.host() {
-            Some(url::Host::Ipv4(address)) => address.is_loopback(),
-            Some(url::Host::Ipv6(address)) => address.is_loopback(),
-            Some(url::Host::Domain(host)) => host == "localhost",
-            None => false,
-        };
-        if (endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && loopback))
-            || endpoint.host().is_none()
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-        {
-            return Err(Failure::Configuration);
-        }
-        let path = format!("{}/", endpoint.path().trim_end_matches('/'));
-        endpoint.set_path(&path);
+        let endpoint = endpoint_url(endpoint)?;
         #[cfg(not(target_arch = "wasm32"))]
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -548,6 +531,30 @@ impl Connection {
             })
         }
     }
+}
+
+/// A server address as the client accepts it: HTTPS, or HTTP on loopback, with no user info, query or
+/// fragment, and its path ending in `/`.
+pub(crate) fn endpoint_url(endpoint: &str) -> Result<Url, Failure> {
+    let mut endpoint = Url::parse(endpoint.trim()).map_err(|_| Failure::Configuration)?;
+    let loopback = match endpoint.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(host)) => host == "localhost",
+        None => false,
+    };
+    if (endpoint.scheme() != "https" && !(endpoint.scheme() == "http" && loopback))
+        || endpoint.host().is_none()
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(Failure::Configuration);
+    }
+    let path = format!("{}/", endpoint.path().trim_end_matches('/'));
+    endpoint.set_path(&path);
+    Ok(endpoint)
 }
 
 fn decode<T: DeserializeOwned>(

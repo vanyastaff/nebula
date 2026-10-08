@@ -31,6 +31,14 @@ pub(crate) fn split_catalog_key(key: &str) -> (&str, &str) {
 pub(crate) fn catalog_key(node: &Value) -> String {
     let action = node["action_key"].as_str().unwrap_or_default();
     let plugin = node["plugin_key"].as_str().unwrap_or(DEFAULT_PLUGIN_KEY);
+    // As the workflow compiler qualifies it: an action already written with its plugin's prefix
+    // keeps it.
+    if action
+        .strip_prefix(plugin)
+        .is_some_and(|rest| rest.starts_with('.'))
+    {
+        return action.to_owned();
+    }
     format!("{plugin}.{action}")
 }
 
@@ -205,6 +213,21 @@ impl Draft {
         self.set_literal(node, parameter, value)
     }
 
+    /// Replaces a whole stored entry from its JSON, for kinds the form does not edit (an
+    /// expression, a template, a reference). The entry must still say which kind it is.
+    pub(crate) fn edit_entry(
+        &mut self,
+        node: &str,
+        parameter: &str,
+        text: &str,
+    ) -> Result<(), EditError> {
+        let entry: Value = serde_json::from_str(text).map_err(|_| EditError::InvalidValue)?;
+        if !entry.get("type").is_some_and(Value::is_string) {
+            return Err(EditError::InvalidValue);
+        }
+        self.set_entry(node, parameter, Some(entry))
+    }
+
     pub(crate) fn set_literal(
         &mut self,
         node: &str,
@@ -313,10 +336,15 @@ impl Draft {
             "nodes": self.definition["nodes"],
             "connections": connections_of(&self.definition),
         });
-        if let (Some(placement), Some(object)) =
-            (self.definition.get("ui_metadata"), patch.as_object_mut())
-        {
-            object.insert("ui_metadata".into(), placement.clone());
+        // A placement removed from the draft is sent as empty metadata: left out, the server's merge
+        // would keep the old positions.
+        let placement = match self.definition.get("ui_metadata") {
+            Some(placement) => Some(placement.clone()),
+            None if self.base.definition.get("ui_metadata").is_some() => Some(json!({})),
+            None => None,
+        };
+        if let (Some(placement), Some(object)) = (placement, patch.as_object_mut()) {
+            object.insert("ui_metadata".into(), placement);
         }
         UpdateWorkflowDocumentRequest {
             expected_revision: Some(self.base.revision),
@@ -350,7 +378,7 @@ impl Draft {
         for change in &self.undo {
             match next.apply(change.intent()) {
                 Ok(()) => {},
-                Err(error) if change.already_in_effect(&error) => {},
+                Err(error) if change.already_in_effect(&error, &next.definition) => {},
                 Err(error) => return Err(error),
             }
         }

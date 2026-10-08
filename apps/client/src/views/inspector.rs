@@ -82,9 +82,30 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         workbench.selected_node = None;
         return;
     };
+    // Everything the panel keeps between frames belongs to this node of this workflow in this
+    // workspace, so a revealed secret never shows through on another node or workflow.
+    let Some(key) = workbench.session.selected.clone() else {
+        return;
+    };
+    let scope = egui::Id::new((
+        "node-form",
+        &key.context.endpoint,
+        &key.context.principal,
+        &key.context.organization,
+        &key.context.workspace_selector,
+        &key.workflow,
+        &node.id,
+    ));
+    let shown_id = egui::Id::new("inspector-shown");
+    if ui.data(|data| data.get_temp::<egui::Id>(shown_id)) != Some(scope) {
+        form::hide_secrets(ui.ctx());
+        ui.data_mut(|data| data.insert_temp(shown_id, scope));
+    }
     if header(ui, &node) {
         workbench.selected_node = None;
         workbench.parameter.close();
+        form::hide_secrets(ui.ctx());
+        ui.data_mut(|data| data.remove::<egui::Id>(shown_id));
         return;
     }
     ui.add_space(theme::SPACE_SM);
@@ -110,8 +131,8 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
                     ..egui::Margin::ZERO
                 })
                 .show(ui, |ui| match tab {
-                    InspectorTab::Parameters => parameters(ui, workbench, &node, intents),
-                    InspectorTab::Settings => settings(ui, workbench, &node),
+                    InspectorTab::Parameters => parameters(ui, workbench, &node, scope, intents),
+                    InspectorTab::Settings => settings(ui, workbench, &node, scope),
                     InspectorTab::Output => output(ui, workbench, &node),
                 });
         });
@@ -153,6 +174,7 @@ fn parameters(
     ui: &mut egui::Ui,
     workbench: &mut Workbench,
     node: &NodeView,
+    scope: egui::Id,
     intents: &mut Intents,
 ) {
     let state = workbench.schemas.get(&node.catalog).cloned();
@@ -168,18 +190,13 @@ fn parameters(
                 ui,
                 "This action takes free-form input that no form describes. Edit it as JSON.",
             );
-            raw_parameters(ui, workbench, node);
+            raw_parameters(ui, workbench, node, scope);
         },
         Some(SchemaState::Ready(schema)) => {
             if schema.fields.is_empty() {
                 widgets::caption(ui, "This action takes no parameters.");
             }
-            let edits = form::show(
-                ui,
-                &schema,
-                &node.parameters,
-                egui::Id::new(("node-form", &node.id)),
-            );
+            let edits = form::show(ui, &schema, &node.parameters, scope);
             let typing = form::take_typing_session(ui.ctx());
             apply(workbench, &node.id, edits, typing);
             let unknown: Vec<&str> = node
@@ -202,7 +219,21 @@ fn parameters(
             widgets::banner(ui, Tone::Neutral, &reason);
             ui.add_space(theme::SPACE_SM);
             widgets::caption(ui, "Edit the parameters as JSON instead.");
-            raw_parameters(ui, workbench, node);
+            raw_parameters(ui, workbench, node, scope);
+        },
+        Some(SchemaState::Failed(reason)) => {
+            widgets::banner(
+                ui,
+                Tone::Warning,
+                &format!("The action's inputs could not be read. {reason}"),
+            );
+            ui.add_space(theme::SPACE_SM);
+            if ui.button("Try again").clicked() {
+                workbench.retry_schema(&node.catalog);
+            }
+            ui.add_space(theme::SPACE_SM);
+            widgets::caption(ui, "Meanwhile, edit the parameters as JSON.");
+            raw_parameters(ui, workbench, node, scope);
         },
     }
 }
@@ -238,7 +269,7 @@ fn apply(workbench: &mut Workbench, node: &str, edits: Vec<form::FormEdit>, typi
     }
 }
 
-fn settings(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView) {
+fn settings(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView, scope: egui::Id) {
     widgets::labeled_field(ui, "Name", &mut workbench.rename, false);
     let renamed = workbench.rename.trim().to_owned();
     let changed = !renamed.is_empty() && renamed != node.name;
@@ -269,7 +300,7 @@ fn settings(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView) {
 
     ui.add_space(theme::SPACE_MD);
     widgets::section(ui, "Parameters as JSON");
-    raw_parameters(ui, workbench, node);
+    raw_parameters(ui, workbench, node, scope);
 
     ui.add_space(theme::SPACE_LG);
     if ui
@@ -283,7 +314,15 @@ fn settings(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView) {
 
 /// What the node produced in the chosen run, from the runs panel.
 fn output(ui: &mut egui::Ui, workbench: &Workbench, node: &NodeView) {
-    let Some(status) = &workbench.status else {
+    let chosen = workbench
+        .session
+        .draft()
+        .and_then(|draft| draft.execution_id.as_deref());
+    let shown = workbench
+        .status
+        .as_ref()
+        .filter(|status| Some(status.execution.id.as_str()) == chosen);
+    let Some(status) = shown else {
         widgets::caption(
             ui,
             "Choose a run in the runs panel to see what this node produced.",
@@ -367,27 +406,46 @@ fn disconnect(workbench: &mut Workbench, row: &LinkRow) {
 }
 
 /// Every parameter entry as JSON, for nodes without a schema and for entries the schema does not
-/// declare. A literal opens in the JSON editor; other kinds are shown as they are stored.
-fn raw_parameters(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView) {
+/// declare. A literal opens its value in the JSON editor; any other kind opens the whole stored
+/// entry. A parameter the schema declares secret stays masked until it is shown on purpose.
+fn raw_parameters(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView, scope: egui::Id) {
     if node.parameters.is_empty() {
         widgets::caption(ui, "No parameters are set.");
     }
+    let secrets: Vec<String> = match workbench.schemas.get(&node.catalog) {
+        Some(SchemaState::Ready(schema)) => schema
+            .fields
+            .iter()
+            .filter(|field| field.holds_secret())
+            .map(|field| field.key.clone())
+            .collect(),
+        _ => Vec::new(),
+    };
     for (name, entry) in &node.parameters {
         ui.horizontal_wrapped(|ui| {
             let selected =
                 workbench.parameter.node == node.id && workbench.parameter.parameter == *name;
             let literal = entry["type"] == "literal";
+            let secret = secrets.contains(name);
+            let shown = !secret || form::reveal_toggle(ui, scope.with(("raw", name)));
             let row = ui.add_enabled(
-                literal,
+                shown,
                 egui::Button::new(name.as_str())
                     .selected(selected)
                     .min_size(egui::vec2(120.0, 28.0)),
             );
             if row.clicked() {
-                let text = serde_json::to_string_pretty(&entry["value"]).unwrap_or_default();
-                workbench.parameter.open(&node.id, name, text);
+                if literal {
+                    let text = serde_json::to_string_pretty(&entry["value"]).unwrap_or_default();
+                    workbench.parameter.open(&node.id, name, text);
+                } else {
+                    let text = serde_json::to_string_pretty(entry).unwrap_or_default();
+                    workbench.parameter.open_entry(&node.id, name, text);
+                }
             }
-            let preview: String = if literal {
+            let preview: String = if !shown {
+                "•••••• secret".to_owned()
+            } else if literal {
                 display(&entry["value"])
             } else {
                 format!(
@@ -414,7 +472,15 @@ fn parameter_editor(ui: &mut egui::Ui, workbench: &mut Workbench) {
         return;
     }
     ui.add_space(theme::SPACE_SM);
-    widgets::caption(ui, format!("{} as JSON", workbench.parameter.parameter));
+    let what = if workbench.parameter.entry {
+        "stored entry"
+    } else {
+        "value"
+    };
+    widgets::caption(
+        ui,
+        format!("{} {what} as JSON", workbench.parameter.parameter),
+    );
     ui.add(
         egui::TextEdit::multiline(&mut workbench.parameter.text)
             .code_editor()
@@ -435,11 +501,12 @@ fn apply_parameter(workbench: &mut Workbench) {
     let Some(draft) = workbench.session.draft_mut() else {
         return;
     };
-    let result = draft.edit(
-        &workbench.parameter.node,
-        &workbench.parameter.parameter,
-        &workbench.parameter.text,
-    );
+    let selection = &workbench.parameter;
+    let result = if selection.entry {
+        draft.edit_entry(&selection.node, &selection.parameter, &selection.text)
+    } else {
+        draft.edit(&selection.node, &selection.parameter, &selection.text)
+    };
     workbench
         .feedback
         .report(result, "Parameter edited in your draft.");

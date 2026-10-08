@@ -325,15 +325,28 @@ impl Field {
         self.label.clone().unwrap_or_else(|| humanize(&self.key))
     }
 
+    /// The field is a secret or holds one somewhere inside, so its value is masked wherever it is
+    /// shown.
+    pub(crate) fn holds_secret(&self) -> bool {
+        match &self.kind {
+            Kind::Secret { .. } => true,
+            Kind::Object { fields, .. } => fields.iter().any(Self::holds_secret),
+            Kind::List { item, .. } => item.as_deref().is_some_and(Self::holds_secret),
+            Kind::Mode { variants, .. } => {
+                variants.iter().any(|variant| variant.field.holds_secret())
+            },
+            _ => false,
+        }
+    }
+
     /// The value the field starts from when the node does not set it. Without a declared default a
-    /// number, a single choice or a mode starts empty, since the action decides what an absent value
-    /// means.
+    /// number, a boolean, a single choice or a mode starts empty, since the action decides what an
+    /// absent value means; an unset boolean is not the same as `false`.
     pub(crate) fn initial(&self) -> Value {
         if let Some(default) = &self.default {
             return default.clone();
         }
         match &self.kind {
-            Kind::Boolean { .. } => Value::Bool(false),
             Kind::Select { multiple: true, .. } | Kind::List { .. } => Value::Array(Vec::new()),
             // Fields are picked one by one, so none is there to begin with.
             Kind::Object {
@@ -820,19 +833,35 @@ pub(crate) fn holds(rule: &Value, values: &Values) -> Option<bool> {
             let allowed = allowed.as_array()?;
             Some(at(path)?.is_some_and(|value| allowed.contains(value)))
         },
+        // Three-valued, as the server judges them: one decisive child settles the rule even when
+        // another cannot be judged yet.
         "all" => {
-            let mut all = true;
-            for child in argument.as_array()? {
-                all &= holds(child, values)?;
+            let children: Vec<Option<bool>> = argument
+                .as_array()?
+                .iter()
+                .map(|child| holds(child, values))
+                .collect();
+            if children.contains(&Some(false)) {
+                Some(false)
+            } else if children.contains(&None) {
+                None
+            } else {
+                Some(true)
             }
-            Some(all)
         },
         "any" => {
-            let mut any = false;
-            for child in argument.as_array()? {
-                any |= holds(child, values)?;
+            let children: Vec<Option<bool>> = argument
+                .as_array()?
+                .iter()
+                .map(|child| holds(child, values))
+                .collect();
+            if children.contains(&Some(true)) {
+                Some(true)
+            } else if children.contains(&None) {
+                None
+            } else {
+                Some(false)
             }
-            Some(any)
         },
         "not" => holds(argument, values).map(|inner| !inner),
         "described" => holds(argument.as_array()?.first()?, values),

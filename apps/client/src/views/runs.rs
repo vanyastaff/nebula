@@ -110,12 +110,28 @@ fn history(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, 
         if let Some(draft) = workbench.session.draft_mut() {
             draft.execution_id = Some(id.clone());
         }
+        // The previous run's nodes must not stand in for this one while it is read.
+        if workbench
+            .status
+            .as_ref()
+            .is_some_and(|status| status.execution.id != id)
+        {
+            workbench.status = None;
+        }
         intents.push(Intent::LoadExecution(id));
     }
 }
 
 fn status(ui: &mut egui::Ui, workbench: &Workbench) {
-    let Some(status) = &workbench.status else {
+    let chosen = workbench
+        .session
+        .draft()
+        .and_then(|draft| draft.execution_id.as_deref());
+    let shown = workbench
+        .status
+        .as_ref()
+        .filter(|status| Some(status.execution.id.as_str()) == chosen);
+    let Some(status) = shown else {
         widgets::caption(ui, "Choose a run to see what each node produced.");
         return;
     };

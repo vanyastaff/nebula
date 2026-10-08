@@ -16,8 +16,13 @@ use crate::{
     effects::{Reply, RequestKind, Target},
     schema::Form,
     session::{DraftKey, RequestStamp, Session, SessionContext},
-    transport::{Failure, PAGE_SIZE},
+    transport::{Failure, PAGE_SIZE, endpoint_url},
 };
+
+/// The address as the client would use it, or `None` when the client rejects it.
+fn sanitized(endpoint: &str) -> Option<String> {
+    endpoint_url(endpoint).ok().map(String::from)
+}
 use nebula_api_contract::v1::{
     catalog::{ActionParametersResponse, ActionSummary},
     execution::{ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse},
@@ -31,9 +36,14 @@ use zeroize::Zeroize;
 /// How many workspaces the workspace page offers again.
 const RECENT_WORKSPACES: usize = 5;
 
-/// A workspace the user opened before.
+/// A workspace the user opened before, on the server and as the account it was opened with.
+/// Entries saved without them match no session and are never offered.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct WorkspaceRef {
+    #[serde(default)]
+    pub(crate) endpoint: String,
+    #[serde(default)]
+    pub(crate) principal: String,
     pub(crate) organization: String,
     pub(crate) workspace: String,
 }
@@ -194,6 +204,9 @@ pub(crate) struct ParameterSelection {
     pub(crate) node: String,
     pub(crate) parameter: String,
     pub(crate) text: String,
+    /// The text is the whole stored entry (an expression, a template, a reference), not a literal's
+    /// value.
+    pub(crate) entry: bool,
 }
 
 impl ParameterSelection {
@@ -201,16 +214,25 @@ impl ParameterSelection {
         !self.parameter.is_empty()
     }
 
+    /// Opens a literal's value.
     pub(crate) fn open(&mut self, node: &str, parameter: &str, text: String) {
         self.node = node.into();
         self.parameter = parameter.into();
         self.text = text;
+        self.entry = false;
+    }
+
+    /// Opens a whole stored entry, for kinds the form does not edit.
+    pub(crate) fn open_entry(&mut self, node: &str, parameter: &str, text: String) {
+        self.open(node, parameter, text);
+        self.entry = true;
     }
 
     pub(crate) fn close(&mut self) {
         self.node.clear();
         self.parameter.clear();
         self.text.zeroize();
+        self.entry = false;
     }
 }
 
@@ -343,6 +365,8 @@ pub(crate) enum SchemaState {
     Ready(Form),
     /// The server has no schema for this action; the reason says why, for the inspector.
     Unavailable(String),
+    /// The read failed in a way that may pass (network, timeout, server error); it can be retried.
+    Failed(String),
 }
 
 /// The add-node palette: whether it is open, its catalog filter, and the hand-typed action for servers
@@ -473,23 +497,32 @@ impl Workbench {
         let Some(action) = self.schema_request.take() else {
             return;
         };
-        let reason = match error {
-            Failure::Rejected(503) => {
+        // Only the server's definite answers settle the entry for the sign-in; anything else may pass.
+        let state = match error {
+            Failure::Rejected(503) => SchemaState::Unavailable(
                 "This server publishes no action catalog, so the form for this node is not available."
-                    .to_owned()
+                    .to_owned(),
+            ),
+            Failure::Rejected(404) => {
+                SchemaState::Unavailable(format!("The server does not know the action {action}."))
             },
-            Failure::Rejected(404) => format!("The server does not know the action {action}."),
-            other => other.to_string(),
+            other => SchemaState::Failed(other.to_string()),
         };
-        self.schemas
-            .insert(action, SchemaState::Unavailable(reason));
+        self.schemas.insert(action, state);
+    }
+
+    /// Forgets a failed schema read, so the form asks for it again.
+    pub(crate) fn retry_schema(&mut self, action: &str) {
+        if matches!(self.schemas.get(action), Some(SchemaState::Failed(_))) {
+            self.schemas.remove(action);
+        }
     }
 
     /// Fills the sign-in form and the recent workspaces from the previous launch. An empty remembered
     /// address keeps the default one.
     pub(crate) fn restore(&mut self, remembered: Remembered) {
-        if !remembered.endpoint.trim().is_empty() {
-            self.form.endpoint = remembered.endpoint;
+        if let Some(endpoint) = sanitized(&remembered.endpoint) {
+            self.form.endpoint = endpoint;
         }
         self.form.email = remembered.email;
         self.form.mode = remembered.mode;
@@ -497,13 +530,30 @@ impl Workbench {
         self.recent.truncate(RECENT_WORKSPACES);
     }
 
+    /// Only an address the client accepts is kept: a rejected one may carry credentials or a token
+    /// in its user info or query.
     pub(crate) fn remembered(&self) -> Remembered {
         Remembered {
-            endpoint: self.form.endpoint.clone(),
+            endpoint: sanitized(&self.form.endpoint).unwrap_or_default(),
             email: self.form.email.clone(),
             mode: self.form.mode,
             recent: self.recent.clone(),
         }
+    }
+
+    /// The recent workspaces of the signed-in account on this server; another server or account
+    /// never sees them.
+    pub(crate) fn recent_here(&self) -> Vec<WorkspaceRef> {
+        let (Some(backend), Some(profile)) = (&self.backend, &self.profile) else {
+            return Vec::new();
+        };
+        self.recent
+            .iter()
+            .filter(|known| {
+                known.endpoint == backend.endpoint() && known.principal == profile.user_id
+            })
+            .cloned()
+            .collect()
     }
 
     /// Moves the open workspace to the front of the recent list once the server has answered for it.
@@ -516,6 +566,8 @@ impl Workbench {
             return;
         }
         let opened = WorkspaceRef {
+            endpoint: context.endpoint.clone(),
+            principal: context.principal.clone(),
             organization: context.organization.clone(),
             workspace: context.workspace_selector.clone(),
         };
@@ -560,9 +612,9 @@ impl Workbench {
             organization: self.form.organization.trim().into(),
             workspace_selector: self.form.workspace.trim().into(),
         }));
-        self.navigator.workflows.clear();
-        self.navigator.total = 0;
-        self.navigator.page = 1;
+        // Nothing of the previous workspace's list carries over: a half-typed workflow would be
+        // created in the wrong workspace, and a filter would hide the new list.
+        self.navigator = Navigator::default();
         self.clear_selection();
         self.reset_pages();
         self.workspace_form_open = false;
@@ -790,6 +842,7 @@ impl Workbench {
                 self.clear_selection();
                 self.navigator.new_name.clear();
                 self.navigator.creating = false;
+                self.go(Page::Editor);
                 self.feedback.info("Workflow created with an empty graph.");
             },
             Err(error) => self.feedback.error(error.to_string()),
@@ -805,7 +858,12 @@ impl Workbench {
             return;
         }
         if let Some(draft) = self.session.drafts.get_mut(&key) {
-            if draft.dirty() || draft.uncertain_save {
+            // The revision the draft was edited from is still the server's, so there is nothing to
+            // reconcile; returning to an unsaved draft keeps it as it is.
+            let unchanged = document.revision == draft.base.revision && !draft.uncertain_save;
+            if unchanged && draft.dirty() {
+                draft.remote = None;
+            } else if draft.dirty() || draft.uncertain_save {
                 draft.remote = Some(document);
                 self.feedback.info(
                     "Server version read. Review it before replacing or reapplying your draft.",

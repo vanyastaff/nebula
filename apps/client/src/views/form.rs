@@ -78,7 +78,9 @@ fn readiness(ui: &mut egui::Ui, fields: &[&Field], entries: &Map<String, Value>,
         .iter()
         .filter(|field| match entries.get(&field.key) {
             None => true,
-            Some(entry) if entry["type"] == "literal" => schema::is_empty(&entry["value"]),
+            Some(entry) if entry["type"] == "literal" => {
+                schema::is_empty(&entry["value"]) || !complete(field, &entry["value"], values)
+            },
             Some(entry) if entry["type"] == "expression" => entry["expr"]
                 .as_str()
                 .is_none_or(|text| text.trim().is_empty()),
@@ -103,6 +105,53 @@ fn readiness(ui: &mut egui::Ui, fields: &[&Field], entries: &Map<String, Value>,
     };
     widgets::banner(ui, tone, &text);
     ui.add_space(theme::SPACE_MD);
+}
+
+/// Every required field inside `value` holds something: the visible required fields of an object,
+/// each item of a list, and the payload of a chosen mode, however deep. A value whose shape does
+/// not match is left to the field's own checks.
+fn complete(field: &Field, value: &Value, values: &Values) -> bool {
+    match &field.kind {
+        Kind::Object { fields, .. } => {
+            let Some(object) = value.as_object() else {
+                return true;
+            };
+            fields
+                .iter()
+                .filter(|inner| {
+                    !matches!(inner.kind, Kind::Notice { .. }) && inner.is_visible(values)
+                })
+                .all(|inner| match object.get(&inner.key) {
+                    Some(inner_value) if !schema::is_empty(inner_value) => {
+                        complete(inner, inner_value, values)
+                    },
+                    _ => !inner.is_required(values),
+                })
+        },
+        Kind::List {
+            item: Some(item), ..
+        } => value
+            .as_array()
+            .is_none_or(|items| items.iter().all(|entry| complete(item, entry, values))),
+        Kind::Mode { variants, .. } => {
+            let Some(variant) = variants
+                .iter()
+                .find(|variant| value["mode"].as_str() == Some(variant.key.as_str()))
+            else {
+                return true;
+            };
+            let payload = &value["value"];
+            if variant.field.visible == schema::Condition::Never {
+                return true;
+            }
+            if schema::is_empty(payload) {
+                !variant.field.is_required(values)
+            } else {
+                complete(&variant.field, payload, values)
+            }
+        },
+        _ => true,
+    }
 }
 
 /// The heading of a group of fields: small capitals over a hairline, with air above it.
@@ -483,11 +532,32 @@ fn buffered_input(
     Some(text)
 }
 
+/// A whole number exactly as JSON holds it, signed or unsigned.
+fn exact_integer(value: &Value) -> Option<i128> {
+    value
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
+}
+
+/// A whole number as JSON, or `null` when it fits neither `i64` nor `u64`.
+fn integer_value(number: i128) -> Value {
+    i64::try_from(number)
+        .map(Value::from)
+        .or_else(|_| u64::try_from(number).map(Value::from))
+        .unwrap_or(Value::Null)
+}
+
 /// A typed tag as the list's item type: a number list takes numbers, so text that is not one is not
 /// added. Other items are text.
 fn tag_value(item: &Field, text: &str) -> Option<Value> {
     match item.kind {
-        Kind::Number { integer: true, .. } => text.parse::<i64>().ok().map(Value::from),
+        Kind::Number { integer: true, .. } => text
+            .trim()
+            .parse::<i128>()
+            .ok()
+            .map(integer_value)
+            .filter(|value| !value.is_null()),
         Kind::Number { .. } => text
             .replace(',', ".")
             .parse::<f64>()
@@ -576,16 +646,10 @@ fn secret_control(
     value: &mut Value,
     id: egui::Id,
 ) -> bool {
-    let reveal_id = id.with("reveal");
-    let mut revealed = ui
-        .data(|data| data.get_temp::<bool>(reveal_id))
-        .unwrap_or(false);
     let current = value.as_str().unwrap_or_default().to_owned();
     let mut changed = false;
     ui.horizontal(|ui| {
-        if ui.toggle_value(&mut revealed, "Show").changed() {
-            ui.data_mut(|data| data.insert_temp(reveal_id, revealed));
-        }
+        let revealed = reveal_toggle(ui, id);
         let placeholder = field.placeholder.clone().unwrap_or_default();
         if let Some(text) = buffered_input(ui, id, &current, multiline, |edit| {
             edit.password(!revealed).hint_text(placeholder)
@@ -599,6 +663,32 @@ fn secret_control(
         "Stored in the workflow definition. Prefer a credential for long-lived secrets.",
     );
     changed
+}
+
+/// Whether one secret is shown in clear text. A type of its own, so every reveal is forgotten at
+/// once when the form it belongs to closes.
+#[derive(Clone, Copy, Default)]
+struct Revealed(bool);
+
+/// A Show toggle for the secret at `id`; returns whether it is shown now.
+pub(crate) fn reveal_toggle(ui: &mut egui::Ui, id: egui::Id) -> bool {
+    let reveal_id = id.with("reveal");
+    let Revealed(mut revealed) = ui
+        .data(|data| data.get_temp::<Revealed>(reveal_id))
+        .unwrap_or_default();
+    if ui
+        .toggle_value(&mut revealed, "Show")
+        .on_hover_text("Show the secret in clear text")
+        .changed()
+    {
+        ui.data_mut(|data| data.insert_temp(reveal_id, Revealed(revealed)));
+    }
+    revealed
+}
+
+/// Masks every secret again, as when the form that showed them closes.
+pub(crate) fn hide_secrets(context: &egui::Context) {
+    context.data_mut(egui::util::IdTypeMap::remove_by_type::<Revealed>);
 }
 
 fn number_control(
@@ -650,6 +740,44 @@ fn number_control(
                 }
             }
         },
+        NumberWidget::Stepper if integer => {
+            ui.horizontal(|ui| {
+                // Whole numbers step exactly, however large; `f64` would round past 2^53.
+                let number = exact_integer(value).unwrap_or(0);
+                let step = (step.round() as i128).max(1);
+                let within = |candidate: i128| {
+                    let candidate = candidate as f64;
+                    field.bounds.min.is_none_or(|min| candidate >= min)
+                        && field.bounds.max.is_none_or(|max| candidate <= max)
+                };
+                if ui
+                    .add_enabled(within(number - step), egui::Button::new("−"))
+                    .clicked()
+                {
+                    *value = integer_value(number - step);
+                    changed = true;
+                }
+                ui.add_sized([72.0, 28.0], |ui: &mut egui::Ui| {
+                    let response =
+                        ui.allocate_response(egui::vec2(72.0, 28.0), egui::Sense::hover());
+                    ui.painter().text(
+                        response.rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        number.to_string(),
+                        egui::FontId::proportional(theme::SIZE_LABEL),
+                        theme::TEXT,
+                    );
+                    response
+                });
+                if ui
+                    .add_enabled(within(number + step), egui::Button::new("+"))
+                    .clicked()
+                {
+                    *value = integer_value(number + step);
+                    changed = true;
+                }
+            });
+        },
         NumberWidget::Stepper => {
             ui.horizontal(|ui| {
                 let number = current.unwrap_or(0.0);
@@ -696,7 +824,13 @@ fn number_control(
                 NumberWidget::Bytes => "bytes",
                 _ => "",
             };
-            let shown = current.map(schema::format_number).unwrap_or_default();
+            let shown = if integer {
+                exact_integer(value).map(|number| number.to_string())
+            } else {
+                None
+            }
+            .or_else(|| current.map(schema::format_number))
+            .unwrap_or_default();
             ui.horizontal(|ui| {
                 let error_id = id.with("unparsed");
                 // Leave room for the unit after the field.
@@ -707,20 +841,35 @@ fn number_control(
                     if let Some(text) = buffered(ui, id, &shown, |edit| {
                         edit.hint_text(field.placeholder.clone().unwrap_or_default())
                     }) {
-                        match text.trim().replace(',', ".").parse::<f64>() {
-                            Ok(number) => {
-                                store(value, number);
+                        let typed = if integer {
+                            // Exactly as typed: a whole number never passes through `f64`.
+                            text.trim()
+                                .parse::<i128>()
+                                .ok()
+                                .map(integer_value)
+                                .filter(|parsed| !parsed.is_null())
+                        } else {
+                            text.trim()
+                                .replace(',', ".")
+                                .parse::<f64>()
+                                .ok()
+                                .and_then(serde_json::Number::from_f64)
+                                .map(Value::Number)
+                        };
+                        match typed {
+                            Some(number) => {
+                                *value = number;
                                 changed = true;
                                 ui.data_mut(|data| data.remove::<bool>(error_id));
                             },
-                            Err(_) if text.trim().is_empty() => {
+                            None if text.trim().is_empty() => {
                                 *value = Value::Null;
                                 changed = true;
                                 ui.data_mut(|data| data.remove::<bool>(error_id));
                             },
                             // Half-typed text such as `1e` is not an error until the input is left.
-                            Err(_) if ui.memory(|memory| memory.has_focus(id)) => {},
-                            Err(_) => {
+                            None if ui.memory(|memory| memory.has_focus(id)) => {},
+                            None => {
                                 ui.data_mut(|data| data.insert_temp(error_id, true));
                             },
                         }
@@ -733,7 +882,14 @@ fn number_control(
                     .data(|data| data.get_temp::<bool>(error_id))
                     .unwrap_or(false)
                 {
-                    problem(ui, "Enter a number.");
+                    problem(
+                        ui,
+                        if integer {
+                            "Enter a whole number."
+                        } else {
+                            "Enter a number."
+                        },
+                    );
                 }
             });
             if widget == NumberWidget::Bytes
@@ -767,28 +923,52 @@ fn boolean_control(
     value: &mut Value,
     id: egui::Id,
 ) -> bool {
-    let mut on = value.as_bool().unwrap_or(false);
-    let before = on;
+    // `None` is unset: the action decides what that means, and it is not `false`.
+    let before = value.as_bool();
+    let mut chosen = before;
     match widget {
-        BooleanWidget::Toggle => {
-            toggle(ui, &mut on, id);
-        },
-        BooleanWidget::Checkbox => {
-            let caption = if on { "On" } else { "Off" };
-            ui.checkbox(&mut on, caption);
+        BooleanWidget::Toggle | BooleanWidget::Checkbox => {
+            ui.horizontal(|ui| {
+                let mut on = before.unwrap_or(false);
+                if widget == BooleanWidget::Toggle {
+                    toggle(ui, &mut on, id);
+                } else {
+                    let caption = if on { "On" } else { "Off" };
+                    ui.checkbox(&mut on, caption);
+                }
+                if Some(on) != before && (before.is_some() || on) {
+                    chosen = Some(on);
+                }
+                // A switch cannot show "unset", so choosing off is a step of its own.
+                if before.is_none()
+                    && chosen.is_none()
+                    && ui
+                        .small_button("Keep off")
+                        .on_hover_text("Set this to off rather than leaving it unset")
+                        .clicked()
+                {
+                    chosen = Some(false);
+                }
+            });
         },
         BooleanWidget::Radio => {
             ui.horizontal(|ui| {
-                ui.radio_value(&mut on, true, "Yes");
-                ui.radio_value(&mut on, false, "No");
+                if ui.radio(before == Some(true), "Yes").clicked() {
+                    chosen = Some(true);
+                }
+                if ui.radio(before == Some(false), "No").clicked() {
+                    chosen = Some(false);
+                }
             });
         },
     }
-    if on != before {
-        *value = Value::Bool(on);
-        return true;
+    match chosen {
+        Some(on) if chosen != before => {
+            *value = Value::Bool(on);
+            true
+        },
+        _ => false,
     }
-    false
 }
 
 /// A switch with a sliding knob, the shape people expect for on/off settings.
@@ -982,11 +1162,54 @@ fn multi_select(ui: &mut egui::Ui, spec: &SelectSpec<'_>, value: &mut Value, id:
             }
         },
     }
+    if spec.allow_custom {
+        custom_values(ui, spec, &mut chosen, id);
+    }
     if chosen != before {
         *value = Value::Array(chosen);
         return true;
     }
     false
+}
+
+/// Values beyond the options, which the schema allows: each as a removable chip (tags already show
+/// them), and a field that adds one on Add or Enter.
+fn custom_values(ui: &mut egui::Ui, spec: &SelectSpec<'_>, chosen: &mut Vec<Value>, id: egui::Id) {
+    if spec.widget != SelectWidget::Tags {
+        let custom: Vec<Value> = chosen
+            .iter()
+            .filter(|item| !spec.options.iter().any(|choice| &choice.value == *item))
+            .cloned()
+            .collect();
+        if !custom.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                for item in custom {
+                    if chip(ui, &schema::display(&item)) {
+                        chosen.retain(|kept| kept != &item);
+                    }
+                }
+            });
+        }
+    }
+    let text_id = id.with("custom");
+    let mut text = ui
+        .data(|data| data.get_temp::<String>(text_id))
+        .unwrap_or_default();
+    ui.horizontal(|ui| {
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .hint_text("Another value")
+                .desired_width((ui.available_width() - 64.0).max(80.0)),
+        );
+        let typed = Value::from(text.trim());
+        let ready = !text.trim().is_empty() && !chosen.contains(&typed);
+        let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        if (ui.add_enabled(ready, egui::Button::new("Add")).clicked() || entered) && ready {
+            chosen.push(typed);
+            text.clear();
+        }
+    });
+    ui.data_mut(|data| data.insert_temp(text_id, text));
 }
 
 /// A removable chip. Returns true when its × was clicked.
@@ -1586,5 +1809,35 @@ mod tests {
         assert_eq!(tag_value(item, "many"), None);
         let words = Form::parse(&json!({"fields": [{"type": "string", "key": "item"}]}));
         assert_eq!(tag_value(&words.fields[0], "42"), Some(json!("42")));
+    }
+
+    #[test]
+    fn a_required_field_deep_inside_a_value_counts_toward_readiness() {
+        let form = Form::parse(&json!({"fields": [{
+            "type": "list", "key": "rules", "required": {"kind": "always"},
+            "item": {"type": "object", "key": "rule", "fields": [
+                {"type": "string", "key": "selector", "required": {"kind": "always"}},
+                {"type": "string", "key": "note"}
+            ]}
+        }]}));
+        let field = &form.fields[0];
+        let values = Values::of(&form, &Map::new());
+        assert!(!complete(field, &json!([{}]), &values));
+        assert!(!complete(field, &json!([{"selector": ""}]), &values));
+        assert!(complete(field, &json!([{"selector": "$.id"}]), &values));
+        assert!(complete(field, &json!([]), &values));
+    }
+
+    #[test]
+    fn whole_numbers_keep_every_digit() {
+        // Past 2^53 an `f64` would round both of these.
+        let big = json!(9_007_199_254_740_993_u64);
+        let largest = json!(u64::MAX);
+        assert_eq!(integer_value(exact_integer(&big).unwrap()), big);
+        assert_eq!(integer_value(exact_integer(&largest).unwrap()), largest);
+        assert_eq!(integer_value(-5), json!(-5));
+        // Beyond what JSON integers hold is no value, not a clamped one.
+        assert_eq!(integer_value(i128::from(u64::MAX) + 1), Value::Null);
+        assert_eq!(exact_integer(&json!(1.5)), None);
     }
 }

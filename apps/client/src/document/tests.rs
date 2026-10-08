@@ -42,6 +42,15 @@ fn a_catalog_key_is_stored_as_plugin_and_action_and_read_back() {
 }
 
 #[test]
+fn an_action_key_already_qualified_by_its_plugin_is_kept() {
+    let node = json!({"plugin_key": "core", "action_key": "core.delay"});
+    assert_eq!(catalog_key(&node), "core.delay");
+    // Only the plugin's own prefix counts as one.
+    let other = json!({"plugin_key": "core", "action_key": "coreutils.run"});
+    assert_eq!(catalog_key(&other), "core.coreutils.run");
+}
+
+#[test]
 fn a_bare_action_key_belongs_to_the_default_plugin() {
     assert_eq!(
         split_catalog_key("json_transform"),
@@ -269,6 +278,42 @@ fn replay_counts_a_connection_the_remote_already_has_as_applied() {
 }
 
 #[test]
+fn replay_counts_a_node_an_uncertain_save_already_stored_as_applied() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    let id = draft.add_node("core.http_request", "HTTP").unwrap();
+    // The save reached the server, which filled in its own defaults; its answer was lost.
+    let mut remote = snapshot(2, 7);
+    let mut stored = draft.definition["nodes"][1].clone();
+    stored["enabled"] = json!(true);
+    remote.definition["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(stored);
+    draft.remote = Some(remote);
+
+    draft.reapply().unwrap();
+
+    assert_eq!(draft.base.revision, 2);
+    assert_eq!(draft.definition["nodes"][1]["id"], id.as_str());
+    assert_eq!(draft.definition["nodes"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn replay_stops_at_another_node_with_the_inserted_id() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    let id = draft.add_node("core.http_request", "HTTP").unwrap();
+    let mut remote = snapshot(2, 7);
+    remote.definition["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": id, "plugin_key": "core", "action_key": "delay", "name": "Wait"}));
+    draft.remote = Some(remote);
+
+    assert_eq!(draft.reapply(), Err(EditError::NodeExists));
+    assert_eq!(draft.base.revision, 1);
+}
+
+#[test]
 fn replay_counts_a_removal_the_remote_already_made_as_applied() {
     let mut draft = Draft::new(two_node_snapshot(1, json!([]))).unwrap();
     draft.remove_node("http_request").unwrap();
@@ -355,6 +400,26 @@ fn placements_are_sent_with_the_save_patch() {
     let patch = request.update.definition.unwrap();
     assert_eq!(patch["ui_metadata"]["node_positions"]["echo"]["x"], 10.0);
     assert_eq!(patch["ui_metadata"]["node_positions"]["echo"]["y"], 20.0);
+}
+
+#[test]
+fn removing_the_last_saved_placement_sends_empty_metadata() {
+    let mut placed = snapshot(1, 7);
+    placed.definition["ui_metadata"] = json!({"node_positions": {"echo": {"x": 10.0, "y": 20.0}}});
+    let mut draft = Draft::new(placed).unwrap();
+    draft.remove_node("echo").unwrap();
+    assert!(draft.definition.get("ui_metadata").is_none());
+
+    let patch = draft.save_request().update.definition.unwrap();
+
+    assert_eq!(patch["ui_metadata"], json!({}));
+}
+
+#[test]
+fn a_draft_that_never_had_placements_sends_none() {
+    let draft = Draft::new(snapshot(1, 7)).unwrap();
+    let patch = draft.save_request().update.definition.unwrap();
+    assert!(patch.get("ui_metadata").is_none());
 }
 
 #[test]
