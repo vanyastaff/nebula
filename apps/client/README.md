@@ -6,18 +6,37 @@ The workbench uses a light palette, Inter body text, resizable navigation and ru
 panes, and a parameter editor in the main document area. Narrow windows stack these
 sections vertically. The screenshot shows an isolated acceptance fixture.
 
-First-party egui/eframe workbench for an **existing** Nebula HTTP server. Run native
-from the workspace root with `cargo run -p nebula-client`. For the browser, install
-Trunk with `cargo binstall trunk`, install `wasm32-unknown-unknown`, and run
-`trunk serve` from `apps/client` (Trunk requires the package directory). Deployment can serve the static build under
-the same origin as `/api/v1`; it does not start a server or worker.
+First-party egui/eframe workbench for an **existing** Nebula HTTP server. Native:
+`task client:run`. Browser: `task client:web`, which needs `cargo binstall trunk` and the
+`wasm32-unknown-unknown` target. It serves on port 8090 and proxies `/api` and `/version`
+to the server on port 8080, so browser password sign-in stays same-origin. Deployment can
+serve the static build (`task client:web:build`) under the same origin as `/api/v1`; the
+client does not start a server or worker.
 
 Sign in with email/password (optional TOTP) or a PAT. Enter organization and workspace
-slugs/IDs, select a workflow, expand a node, select a literal parameter, edit its JSON
-value and apply. Undo/redo operates on local commands. Save changes, publish, run the
-server's current publication, then read persisted execution status. Recent runs make
-accepted work discoverable after reconnect. Creation, graph editing, expression/template
-editing, managed local launch, packaging and updates are subsequent slices.
+slugs/IDs, create a blank workflow or select one, expand a node, select a literal parameter,
+edit its JSON value and apply. Undo/redo operates on local commands. Save changes, publish,
+run the server's current publication, then read persisted execution status. Recent runs make
+accepted work discoverable after reconnect. A new workflow starts with an empty graph.
+Adding and removing nodes and edges, expression/template editing, managed local launch,
+packaging and updates are subsequent slices.
+
+## Structure
+
+- `workbench`: pure state and reducers for sign-in, workspace, drafts and replies. No egui
+  or network types, so every transition is unit-tested with fabricated replies.
+- `effects`: runs requests off the render thread. Each request carries its session stamp,
+  and late replies from an earlier session are dropped.
+- `views`: rendering only. Views change local UI state directly and return `Intent`s for
+  anything that needs the network; `app` runs them after the frame.
+- `theme` and `widgets`: design tokens (colors, spacing, radii, type scale) and the shared
+  controls every view uses. Views take their colors and spacing from here only.
+- `document` and `session`: editing commands, draft recovery and generation fences,
+  independent of presentation.
+- `transport`: HTTP adapter with bounded requests and explicit reconciliation.
+
+The library denies `unwrap`, `expect`, `panic`, `todo` and `unimplemented` through
+`#![deny]` in `lib.rs`. Tests keep them through `clippy.toml`.
 
 The editor requires the workflow detail `definition` and storage `revision`, added
 alongside this app. Old metadata-only servers are explicitly unsupported for editing.
@@ -48,6 +67,7 @@ in memory; password/token inputs are cleared after submission.
 Checks from the workspace root:
 
 ```text
+task client:check
 cargo nextest run -p nebula-client --lib
 cargo clippy -p nebula-client --all-targets -- -D warnings
 cargo build -p nebula-client --bin nebula-client
