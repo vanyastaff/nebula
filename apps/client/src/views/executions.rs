@@ -28,6 +28,9 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
     if workbench.executions.list.wants_read() {
         intents.push(Intent::LoadExecutions { more: false });
     }
+    if workbench.executions.workflows.wants_read() {
+        intents.push(Intent::LoadWorkflowChoices);
+    }
     states::page_header(
         ui,
         "Executions",
@@ -95,8 +98,16 @@ fn filters(ui: &mut egui::Ui, workbench: &mut Workbench) {
         .show_ui(ui, |ui| {
             let mut choice = chosen.clone();
             ui.selectable_value(&mut choice, None, "All workflows");
-            for workflow in &workbench.navigator.workflows {
-                ui.selectable_value(&mut choice, Some(workflow.id.clone()), &workflow.name);
+            // Every workflow of the workspace, not the one page the Workflows list holds.
+            match workbench.executions.workflows.value() {
+                Some(workflows) => {
+                    for workflow in workflows {
+                        ui.selectable_value(&mut choice, Some(workflow.id.clone()), &workflow.name);
+                    }
+                },
+                None => {
+                    ui.add_enabled(false, egui::Label::new("Reading workflows…"));
+                },
             }
             if choice != chosen {
                 workbench.executions.workflow = choice;
@@ -112,9 +123,12 @@ fn filters(ui: &mut egui::Ui, workbench: &mut Workbench) {
 
 fn workflow_name(workbench: &Workbench, id: &str) -> String {
     workbench
-        .navigator
+        .executions
         .workflows
-        .iter()
+        .value()
+        .into_iter()
+        .flatten()
+        .chain(&workbench.navigator.workflows)
         .find(|workflow| workflow.id == id)
         .map_or_else(|| short(id), |workflow| workflow.name.clone())
 }
@@ -200,16 +214,24 @@ fn list(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, bus
     }
     if workbench.executions.next_cursor.is_some() {
         ui.add_space(theme::SPACE_SM);
+        // A failed page leaves the rows above; the same button reads that page again.
+        if let Some(reason) = &workbench.executions.more_error {
+            widgets::banner(
+                ui,
+                Tone::Danger,
+                &format!("Older runs could not be read. {reason}"),
+            );
+        }
         let more = workbench.executions.appending;
+        let label = if more {
+            "Reading…"
+        } else if workbench.executions.more_error.is_some() {
+            "Try again"
+        } else {
+            "Show older runs"
+        };
         if ui
-            .add_enabled(
-                !busy && !more,
-                egui::Button::new(if more {
-                    "Reading…"
-                } else {
-                    "Show older runs"
-                }),
-            )
+            .add_enabled(!busy && !more, egui::Button::new(label))
             .clicked()
         {
             intents.push(Intent::LoadExecutions { more: true });

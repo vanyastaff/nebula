@@ -32,9 +32,23 @@ impl Workbench {
                     shown.append(&mut items);
                     items = std::mem::take(shown);
                 }
-                executions.list = Remote::Ready(items);
-                executions.next_cursor = page.next_cursor;
+                // Filters changed while this was read: show it, but read the new filters next.
+                let current = (executions.statuses.clone(), executions.workflow.clone());
+                let outdated = executions
+                    .read_for
+                    .take()
+                    .is_some_and(|asked| asked != current);
+                executions.list = if outdated {
+                    Remote::Stale(items)
+                } else {
+                    Remote::Ready(items)
+                };
+                executions.next_cursor = if outdated { None } else { page.next_cursor };
                 executions.appending = false;
+                executions.more_error = None;
+            },
+            Reply::WorkflowChoices(workflows) => {
+                self.executions.workflows = Remote::Ready(workflows);
             },
             Reply::Execution(detail) => self.receive_execution(detail),
             Reply::Cancelled(execution) => {
@@ -217,15 +231,26 @@ impl Workbench {
                 }
             },
             Target::Executions => {
-                self.executions.list = Remote::Failed(reason);
-                self.executions.appending = false;
+                let executions = &mut self.executions;
+                executions.read_for = None;
+                if executions.appending {
+                    // Only the next page failed: the rows read so far and their cursor stay.
+                    executions.more_error = Some(reason);
+                } else {
+                    executions.list = Remote::Failed(reason);
+                }
+                executions.appending = false;
             },
+            Target::WorkflowChoices => self.executions.workflows = Remote::Failed(reason),
             Target::Execution => self.executions.detail = Remote::Failed(reason),
             Target::CredentialTypes => self.credentials.types = Remote::Failed(reason),
-            Target::Credentials => self.credentials.list = Remote::Failed(reason),
+            // Creations are changes, never reads; they share their list's place.
+            Target::Credentials | Target::NewCredential => {
+                self.credentials.list = Remote::Failed(reason);
+            },
             Target::Triggers => self.triggers.documents = Remote::Failed(reason),
             Target::Profile => self.settings.profile = Remote::Failed(reason),
-            Target::Tokens => self.settings.tokens = Remote::Failed(reason),
+            Target::Tokens | Target::NewToken => self.settings.tokens = Remote::Failed(reason),
             Target::OrgMembers => self.team.organization = Remote::Failed(reason),
             Target::WorkspaceMembers => self.team.workspace = Remote::Failed(reason),
         }
@@ -242,14 +267,17 @@ impl Workbench {
                 self.executions.detail.invalidate();
                 self.executions.list.invalidate();
             },
-            Target::Credentials => {
+            // Only a creation closes its form; a test or a deletion leaves a draft being typed.
+            Target::NewCredential => {
                 self.credentials.draft = None;
                 self.credentials.list.invalidate();
             },
-            Target::Tokens => {
+            Target::Credentials => self.credentials.list.invalidate(),
+            Target::NewToken => {
                 self.settings.new_token = super::pages::NewToken::default();
                 self.settings.tokens.invalidate();
             },
+            Target::Tokens => self.settings.tokens.invalidate(),
             Target::Triggers => self.triggers.documents.invalidate(),
             Target::Profile => self.settings.profile.invalidate(),
             Target::OrgMembers => {
@@ -257,7 +285,10 @@ impl Workbench {
                 self.team.workspace.invalidate();
             },
             Target::WorkspaceMembers => self.team.workspace.invalidate(),
-            Target::Workflows | Target::ActionDetail | Target::CredentialTypes => {},
+            Target::Workflows
+            | Target::WorkflowChoices
+            | Target::ActionDetail
+            | Target::CredentialTypes => {},
         }
         self.feedback.error(
             "The change may have been made. The list is being read again; check it before trying again.",

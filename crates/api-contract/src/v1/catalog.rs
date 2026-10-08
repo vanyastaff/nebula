@@ -14,6 +14,22 @@ pub struct ActionSummary {
     pub name: String,
     /// Interface version as `"major.minor"` (e.g. `"1.0"`)
     pub version: String,
+    /// Execution kind in snake case: `stateless`, `stateful`, `stream`, `agent`, `interactive`,
+    /// `control`, `trigger` or `resource`. Only `stateless`, `stateful`, `control` and `agent`
+    /// actions can be workflow nodes. Absent from servers that predate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+impl ActionSummary {
+    /// Whether the action can be a node of a workflow graph, as the workflow compiler admits it.
+    /// An unknown kind is not refused here; publication judges it.
+    #[must_use]
+    pub fn is_graph_node(&self) -> bool {
+        self.kind
+            .as_deref()
+            .is_none_or(|kind| matches!(kind, "stateless" | "stateful" | "control" | "agent"))
+    }
 }
 
 /// Response for `GET /actions`.

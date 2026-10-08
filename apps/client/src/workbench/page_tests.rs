@@ -7,7 +7,9 @@ use crate::{
     session::SessionContext,
     transport::{ExecutionQuery, Failure},
 };
-use nebula_api_contract::v1::execution::{ExecutionDetailResponse, ExecutionStatus};
+use nebula_api_contract::v1::execution::{
+    ExecutionDetailResponse, ExecutionStatus, ListExecutionsResponse,
+};
 
 fn workspace() -> Workbench {
     let mut workbench = Workbench::new(String::new());
@@ -195,7 +197,7 @@ fn a_creation_whose_answer_was_lost_closes_its_form_and_waits_for_the_list() {
 
     workbench.receive(
         stamp,
-        RequestKind::Change(Target::Credentials),
+        RequestKind::Change(Target::NewCredential),
         Err(Failure::OutcomeUnknown),
     );
 
@@ -205,6 +207,83 @@ fn a_creation_whose_answer_was_lost_closes_its_form_and_waits_for_the_list() {
     assert!(!workbench.credentials.list.settled());
     assert!(workbench.credentials.list.wants_read());
     assert!(workbench.feedback.failure);
+}
+
+#[test]
+fn an_uncertain_test_or_deletion_keeps_the_draft_being_typed() {
+    let mut workbench = workspace();
+    let demo = Demo::new().unwrap();
+    workbench.credentials.list = Remote::Ready(demo.credentials(1).unwrap().credentials);
+    workbench.start_credential(Some("api_key".into()));
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(
+        stamp,
+        RequestKind::Change(Target::Credentials),
+        Err(Failure::OutcomeUnknown),
+    );
+
+    assert!(workbench.credentials.draft.is_some());
+    assert!(workbench.credentials.list.wants_read());
+}
+
+fn history_page(demo: &Demo, limit: u32, cursor: Option<String>) -> ListExecutionsResponse {
+    demo.executions(&ExecutionQuery {
+        workflow: None,
+        statuses: String::new(),
+        cursor,
+        limit,
+    })
+    .unwrap()
+}
+
+#[test]
+fn an_answer_for_filters_changed_since_is_shown_but_read_again() {
+    let mut workbench = workspace();
+    let demo = Demo::new().unwrap();
+    workbench.executions.read_for = Some((
+        workbench.executions.statuses.clone(),
+        workbench.executions.workflow.clone(),
+    ));
+    // The person picks a status while the unfiltered read is on its way.
+    workbench.executions.statuses.insert(pages::StatusFilter(1));
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(
+        stamp,
+        RequestKind::Load(Target::Executions),
+        Ok(Reply::Executions(history_page(&demo, 3, None), false)),
+    );
+
+    assert!(workbench.executions.list.value().is_some());
+    assert!(workbench.executions.list.wants_read());
+    assert!(workbench.executions.next_cursor.is_none());
+}
+
+#[test]
+fn a_failed_older_page_keeps_the_rows_and_their_cursor() {
+    let mut workbench = workspace();
+    let demo = Demo::new().unwrap();
+    let first = history_page(&demo, 3, None);
+    let cursor = first.next_cursor.clone();
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(
+        stamp,
+        RequestKind::Load(Target::Executions),
+        Ok(Reply::Executions(first, false)),
+    );
+    workbench.executions.appending = true;
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(
+        stamp,
+        RequestKind::Load(Target::Executions),
+        Err(Failure::ReadFailed),
+    );
+
+    assert_eq!(workbench.executions.list.value().unwrap().len(), 3);
+    assert_eq!(workbench.executions.next_cursor, cursor);
+    assert!(workbench.executions.more_error.is_some());
 }
 
 #[test]

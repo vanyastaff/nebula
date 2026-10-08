@@ -45,6 +45,8 @@ pub(crate) enum Intent {
     LoadExecutions {
         more: bool,
     },
+    /// Every workflow, for the executions page's workflow filter.
+    LoadWorkflowChoices,
     /// Shows a run on the executions page and reads it.
     OpenExecution(String),
     CancelExecution(String),

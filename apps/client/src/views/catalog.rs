@@ -237,6 +237,22 @@ fn detail(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
 
 /// Adds the action to the workflow open in the editor and goes there; without one, says how.
 fn add_to_workflow(ui: &mut egui::Ui, workbench: &mut Workbench, key: &str) {
+    let summary = match &workbench.catalog {
+        Catalog::Ready(actions) => actions.iter().find(|action| action.key == key),
+        _ => None,
+    };
+    if let Some(summary) = summary.filter(|summary| !summary.is_graph_node()) {
+        // The workflow compiler admits only stateless, stateful, control and agent actions as
+        // nodes; a trigger is bound on the Triggers page instead.
+        widgets::caption(
+            ui,
+            format!(
+                "A {} action is not a node of a workflow graph, so it cannot be added to one.",
+                summary.kind.as_deref().unwrap_or_default()
+            ),
+        );
+        return;
+    }
     let open = workbench
         .session
         .draft()

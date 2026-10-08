@@ -8,7 +8,7 @@ use nebula_api_contract::v1::{
     execution::{ExecutionDetailResponse, ExecutionStatus, ExecutionSummary},
     me::{MeResponse, TokenSummary},
     org::MemberSummary,
-    workflow::WorkflowDocumentResponse,
+    workflow::{WorkflowDocumentResponse, WorkflowResponse},
     workspace_membership::WorkspaceMemberSummary,
 };
 use serde_json::{Map, Value};
@@ -140,8 +140,15 @@ pub(crate) struct ExecutionsPage {
     pub(crate) next_cursor: Option<String>,
     /// The list is being extended with the next page rather than replaced.
     pub(crate) appending: bool,
+    /// Why reading the next page failed; the rows read so far stay.
+    pub(crate) more_error: Option<String>,
     pub(crate) statuses: BTreeSet<StatusFilter>,
     pub(crate) workflow: Option<String>,
+    /// The filters of the read on its way, so an answer for filters changed since is read again.
+    pub(crate) read_for: Option<(BTreeSet<StatusFilter>, Option<String>)>,
+    /// Every workflow of the workspace, for the workflow filter; the Workflows page holds only one
+    /// page of them.
+    pub(crate) workflows: Remote<Vec<WorkflowResponse>>,
     pub(crate) selected: Option<String>,
     pub(crate) detail: Remote<Box<ExecutionDetailResponse>>,
     /// Node whose attempts and output the detail shows.

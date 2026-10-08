@@ -22,7 +22,7 @@ use nebula_api_contract::v1::{
     webhook::{RegisterWebhookRequest, RegisterWebhookResponse},
     workflow::{
         CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowDocumentRequest,
-        WorkflowDocumentResponse,
+        WorkflowDocumentResponse, WorkflowResponse,
     },
     workspace_membership::{
         UpsertWorkspaceMemberRequest, WorkspaceMemberSummary, WorkspaceMembersResponse,
@@ -119,12 +119,12 @@ impl Backend {
         scoped!(self, scope, load(id))
     }
 
-    /// Every workflow of the workspace with its document, as the triggers page lists them. Pages
-    /// are read until the server's total is covered or a page comes back empty.
-    pub(crate) async fn workflow_documents(
+    /// Every workflow of the workspace, all pages: read until the server's total is covered or a
+    /// page comes back empty.
+    pub(crate) async fn all_workflows(
         &self,
         scope: &SessionContext,
-    ) -> Result<Vec<WorkflowDocumentResponse>, Failure> {
+    ) -> Result<Vec<WorkflowResponse>, Failure> {
         let mut summaries = Vec::new();
         let mut page = 1;
         loop {
@@ -132,10 +132,18 @@ impl Backend {
             let empty = listed.workflows.is_empty();
             summaries.extend(listed.workflows);
             if empty || summaries.len() >= listed.total {
-                break;
+                return Ok(summaries);
             }
             page += 1;
         }
+    }
+
+    /// Every workflow of the workspace with its document, as the triggers page lists them.
+    pub(crate) async fn workflow_documents(
+        &self,
+        scope: &SessionContext,
+    ) -> Result<Vec<WorkflowDocumentResponse>, Failure> {
+        let summaries = self.all_workflows(scope).await?;
         let mut documents = Vec::with_capacity(summaries.len());
         for workflow in &summaries {
             documents.push(self.workflow(scope, &workflow.id).await?);

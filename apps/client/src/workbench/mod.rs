@@ -407,7 +407,8 @@ pub(crate) fn draft_gate(draft: &Draft) -> DraftGate {
     DraftGate {
         can_save: settled && draft.dirty(),
         can_publish: settled && !draft.dirty(),
-        can_run: settled && !draft.dirty(),
+        // A workflow created here and never published has no publication for a run to use.
+        can_run: settled && !draft.dirty() && !draft.never_published,
     }
 }
 
@@ -836,7 +837,9 @@ impl Workbench {
             workflow: document.workflow.id.clone(),
         };
         match Draft::new(document) {
-            Ok(draft) => {
+            Ok(mut draft) => {
+                // Creation stores a draft revision; nothing is published until Publish succeeds.
+                draft.never_published = true;
                 self.session.drafts.insert(key.clone(), draft);
                 self.session.selected = Some(key);
                 self.clear_selection();
@@ -889,6 +892,8 @@ impl Workbench {
         let Some(draft) = self.session.draft_mut() else {
             return;
         };
+        // Either way the server now holds a publication to run.
+        draft.never_published = false;
         // Activation writes exactly the next revision of the one it was given. A later revision means
         // another write landed before the read, so the loaded version is not the published one.
         if draft.base.revision.checked_add(1) == Some(document.revision) {

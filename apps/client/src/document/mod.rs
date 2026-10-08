@@ -82,6 +82,9 @@ pub(crate) struct Draft {
     /// Revision this app saw the server publish. The API does not report publication, so it is unknown
     /// until a publish succeeds here, and stale once a later save moves the revision on.
     pub(crate) published_revision: Option<u64>,
+    /// The workflow was created in this app and has not been published since, so it has nothing
+    /// to run. A workflow read from the server may or may not be published; this stays false.
+    pub(crate) never_published: bool,
     /// Typing session that made the newest undo entry. Further keystrokes of that session extend the
     /// entry, so one undo takes back the whole text.
     typing: Option<u64>,
@@ -125,6 +128,7 @@ impl Draft {
             start_key: None,
             execution_id: None,
             published_revision: None,
+            never_published: false,
             typing: None,
         })
     }
@@ -422,6 +426,7 @@ impl Draft {
         next.start_key.clone_from(&self.start_key);
         next.execution_id.clone_from(&self.execution_id);
         next.published_revision = self.published_revision;
+        next.never_published = self.never_published;
         *self = next;
         Ok(())
     }

@@ -504,6 +504,17 @@ fn a_created_workflow_opens_in_the_editor() {
     );
 
     assert_eq!(workbench.page, Page::Editor);
+    // Nothing is published yet, so there is nothing to run until Publish succeeds.
+    let draft = workbench.session.draft().unwrap();
+    assert!(!draft_gate(draft).can_run);
+    assert!(draft_gate(draft).can_publish);
+    let stamp = workbench.session.begin_write().unwrap();
+    workbench.receive(
+        stamp,
+        RequestKind::Publish,
+        Ok(Reply::Published(snapshot(2, 7))),
+    );
+    assert!(draft_gate(workbench.session.draft().unwrap()).can_run);
     assert!(!workbench.navigator.creating);
 }
 

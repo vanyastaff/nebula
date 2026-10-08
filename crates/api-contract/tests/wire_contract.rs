@@ -1,5 +1,6 @@
 use nebula_api_contract::v1::{
     auth::{LoginRequest, LoginResponse, OAuthCallbackParams, OAuthProvider},
+    catalog::ActionSummary,
     credential::{
         CredentialLifecycleState, CredentialReconcileDecisionV1, CredentialReconcileOperationV1,
         CredentialResponse, ReconcileCredentialRequest, ReconcileCredentialResponse,
@@ -165,4 +166,30 @@ fn workflow_update_keeps_absence_distinct_from_explicit_null() {
         serde_json::from_value(json!({"definition":null})).unwrap();
     assert!(absent.definition.is_none());
     assert_eq!(explicit_null.definition, Some(Value::Null));
+}
+
+#[test]
+fn an_action_summary_carries_its_kind_and_reads_one_without_it() {
+    round_trip::<ActionSummary>(json!({
+        "key": "core.if", "name": "If", "version": "2.0.0", "kind": "control"
+    }));
+    // A server that predates the field still decodes, and its actions are not refused.
+    let older: ActionSummary =
+        serde_json::from_value(json!({"key": "core.map", "name": "Map", "version": "2.0.0"}))
+            .expect("summary without kind decodes");
+    assert!(older.kind.is_none());
+    assert!(older.is_graph_node());
+
+    let kind = |kind: &str| ActionSummary {
+        key: "plugin.action".into(),
+        name: "Action".into(),
+        version: "1.0.0".into(),
+        kind: Some(kind.into()),
+    };
+    for graph in ["stateless", "stateful", "control", "agent"] {
+        assert!(kind(graph).is_graph_node(), "{graph}");
+    }
+    for other in ["trigger", "stream", "resource", "interactive"] {
+        assert!(!kind(other).is_graph_node(), "{other}");
+    }
 }

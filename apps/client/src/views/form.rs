@@ -739,12 +739,25 @@ fn number_control(
     value: &mut Value,
     id: egui::Id,
 ) -> bool {
+    // A slider moves an `f64`: a whole number, or a range, it cannot hold exactly is typed instead.
+    const EXACT_IN_F64: f64 = 9_007_199_254_740_992.0;
+    let beyond = |bound: Option<f64>| bound.is_some_and(|bound| bound.abs() > EXACT_IN_F64);
+    let widget = if integer
+        && widget == NumberWidget::Slider
+        && (exact_integer(value).is_some_and(|number| number.unsigned_abs() > 1 << 53)
+            || beyond(field.bounds.min)
+            || beyond(field.bounds.max))
+    {
+        NumberWidget::Plain
+    } else {
+        widget
+    };
     let current = value.as_f64();
     let declared_step = step;
     let step = step.unwrap_or(1.0);
     let store = |value: &mut Value, number: f64| {
         *value = if integer {
-            Value::from(number.round() as i64)
+            integer_value(number.round() as i128)
         } else {
             serde_json::Number::from_f64(number).map_or(Value::Null, Value::Number)
         };
@@ -1271,7 +1284,13 @@ fn fields_block(
                 id.with(("field", &field.key)),
                 values,
             ) {
-                map.insert(field.key.clone(), value.clone());
+                // An emptied field leaves the object, as an unset top-level parameter does: a typed
+                // schema rejects `null`, and there is no Reset this deep.
+                if value.is_null() {
+                    map.remove(&field.key);
+                } else {
+                    map.insert(field.key.clone(), value.clone());
+                }
                 changed = true;
             }
             // An empty required value is a reminder; anything typed that breaks a rule is an error.

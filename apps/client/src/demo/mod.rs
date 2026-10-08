@@ -378,6 +378,16 @@ impl Demo {
                         key: entry.detail.key.clone(),
                         name: entry.detail.name.clone(),
                         version: entry.detail.version.clone(),
+                        // As `nebula-plugin-core` registers them: the branching actions through its
+                        // control factory, every other one stateless.
+                        kind: Some(
+                            if matches!(entry.detail.key.as_str(), "core.if" | "core.switch") {
+                                "control"
+                            } else {
+                                "stateless"
+                            }
+                            .to_owned(),
+                        ),
                     })
                     .collect(),
             })

@@ -24,7 +24,7 @@ use nebula_api_contract::v1::{
     webhook::{RegisterWebhookRequest, RegisterWebhookResponse},
     workflow::{
         CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowDocumentRequest,
-        WorkflowDocumentResponse,
+        WorkflowDocumentResponse, WorkflowResponse,
     },
     workspace_membership::{
         UpsertWorkspaceMemberRequest, WorkspaceMemberSummary, WorkspaceMembersResponse,
@@ -56,6 +56,8 @@ pub(crate) enum Operation {
     ActionDetail(String),
     /// The workspace's execution history, as the executions page filters it.
     Executions(ExecutionQuery),
+    /// Every workflow of the workspace, all pages, for the executions page's workflow filter.
+    WorkflowChoices,
     /// One execution for the executions page's detail.
     Execution(String),
     Cancel(String),
@@ -88,14 +90,21 @@ pub(crate) enum Operation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
     Workflows,
+    /// Every workflow, for the executions page's workflow filter.
+    WorkflowChoices,
     ActionDetail,
     Executions,
     Execution,
     CredentialTypes,
     Credentials,
+    /// A new credential. Creation is not keyed, so a lost answer locks the form until the list
+    /// is read again; a test or a deletion only rereads the list.
+    NewCredential,
     Triggers,
     Profile,
     Tokens,
+    /// A new token, kept apart from revocations for the same reason as [`Target::NewCredential`].
+    NewToken,
     OrgMembers,
     WorkspaceMembers,
 }
@@ -139,9 +148,11 @@ impl Operation {
             Self::Rerun(..) => RequestKind::Change(Target::Executions),
             Self::CredentialTypes => RequestKind::Load(Target::CredentialTypes),
             Self::Credentials => RequestKind::Load(Target::Credentials),
-            Self::CreateCredential(_) | Self::DeleteCredential(_) | Self::TestCredential(_) => {
+            Self::CreateCredential(_) => RequestKind::Change(Target::NewCredential),
+            Self::DeleteCredential(_) | Self::TestCredential(_) => {
                 RequestKind::Change(Target::Credentials)
             },
+            Self::WorkflowChoices => RequestKind::Load(Target::WorkflowChoices),
             Self::Documents => RequestKind::Load(Target::Triggers),
             Self::SaveTriggers(..) | Self::RegisterWebhook(_) => {
                 RequestKind::Change(Target::Triggers)
@@ -149,7 +160,8 @@ impl Operation {
             Self::Profile => RequestKind::Load(Target::Profile),
             Self::UpdateProfile(_) => RequestKind::Change(Target::Profile),
             Self::Tokens => RequestKind::Load(Target::Tokens),
-            Self::CreateToken(_) | Self::RevokeToken(_) => RequestKind::Change(Target::Tokens),
+            Self::CreateToken(_) => RequestKind::Change(Target::NewToken),
+            Self::RevokeToken(_) => RequestKind::Change(Target::Tokens),
             Self::OrgMembers => RequestKind::Load(Target::OrgMembers),
             Self::AddOrgMember(_) | Self::RemoveOrgMember(_) => {
                 RequestKind::Change(Target::OrgMembers)
@@ -190,6 +202,7 @@ pub(crate) enum Reply {
     CredentialDeleted(String),
     CredentialTested(String, TestCredentialResponse),
     Documents(Vec<WorkflowDocumentResponse>),
+    WorkflowChoices(Vec<WorkflowResponse>),
     TriggersSaved(Box<WorkflowDocumentResponse>),
     WebhookRegistered {
         workflow: String,
@@ -296,6 +309,10 @@ async fn perform(
             .workflow_documents(&scope)
             .await
             .map(Reply::Documents),
+        Operation::WorkflowChoices => backend
+            .all_workflows(&scope)
+            .await
+            .map(Reply::WorkflowChoices),
         Operation::SaveTriggers(id, request) => backend
             .save_workflow(&scope, &id, &request)
             .await

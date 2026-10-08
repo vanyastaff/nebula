@@ -37,6 +37,8 @@ struct DraftView {
     pending_run: bool,
     /// This app saw the server publish exactly the revision being edited.
     published: bool,
+    /// Created here and never published, so there is nothing to run yet.
+    never_published: bool,
     remote: Option<RemoteView>,
 }
 
@@ -59,6 +61,7 @@ impl DraftView {
             can_redo: draft.can_redo(),
             pending_run: draft.start_key.is_some(),
             published: draft.published_revision == Some(draft.base.revision),
+            never_published: draft.never_published,
             remote: draft.remote.as_ref().map(|remote| RemoteView {
                 revision: remote.revision,
                 nodes: remote.definition["nodes"].clone(),
@@ -398,6 +401,8 @@ fn run_button(ui: &mut egui::Ui, view: &DraftView, intents: &mut Intents) {
     };
     let blocker = if view.dirty {
         "Save and publish your changes first. Runs use the published version."
+    } else if view.never_published {
+        "Publish this workflow first. Runs use the published version."
     } else {
         "Review the server's version first."
     };
@@ -508,8 +513,10 @@ fn catalog(
                 ui.add(widgets::field(&mut workbench.add_node.filter).hint_text("Search actions"));
             widgets::named(ui, &search, "Search actions to add");
             let filter = workbench.add_node.filter.trim().to_lowercase();
+            // Triggers, streams and resources are not graph nodes, so the palette leaves them out.
             let matches: Vec<_> = actions
                 .iter()
+                .filter(|action| action.is_graph_node())
                 .filter(|action| {
                     filter.is_empty()
                         || action.name.to_lowercase().contains(&filter)

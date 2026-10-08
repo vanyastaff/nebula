@@ -38,6 +38,11 @@ impl ClientApp {
                 }
             },
             Intent::LoadExecutions { more } => self.load_executions(context, more),
+            Intent::LoadWorkflowChoices => {
+                if self.dispatch(context, Operation::WorkflowChoices) {
+                    self.workbench.executions.workflows.begin();
+                }
+            },
             Intent::OpenExecution(id) => {
                 if self.dispatch(context, Operation::Execution(id.clone())) {
                     let executions = &mut self.workbench.executions;
@@ -205,6 +210,8 @@ impl ClientApp {
         if self.dispatch(context, Operation::Executions(query)) {
             let executions = &mut self.workbench.executions;
             executions.appending = more;
+            executions.more_error = None;
+            executions.read_for = Some((executions.statuses.clone(), executions.workflow.clone()));
             if !more {
                 executions.list.begin();
             }
