@@ -83,6 +83,7 @@ pub(crate) fn show(
     };
     let busy = workbench.session.busy();
     let view = DraftView::of(draft);
+    shortcuts(ui, workbench, &view, intents);
     action_bar(ui, workbench, &view, intents, stacked);
     ui.add_enabled_ui(!busy, |ui| {
         if let Some(remote) = &view.remote {
@@ -96,6 +97,44 @@ pub(crate) fn show(
         };
         graph(ui, workbench, &view, intents, height);
     });
+}
+
+/// Keyboard shortcuts of the editor. Saving and running work anywhere; graph edits wait while a text
+/// field has the keyboard, so the field keeps its own undo and delete.
+fn shortcuts(ui: &egui::Ui, workbench: &mut Workbench, view: &DraftView, intents: &mut Intents) {
+    use egui::{Key, KeyboardShortcut, Modifiers};
+    let pressed = |modifiers: Modifiers, key: Key| {
+        ui.ctx()
+            .input_mut(|input| input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)))
+    };
+    let idle = !workbench.session.busy();
+    if pressed(Modifiers::COMMAND, Key::S) && idle && view.gate.can_save {
+        intents.push(Intent::SaveDraft);
+    }
+    if pressed(Modifiers::COMMAND, Key::Enter) && idle && (view.gate.can_run || view.pending_run) {
+        intents.push(Intent::RunDraft);
+    }
+    if ui.ctx().text_edit_focused() || !idle {
+        return;
+    }
+    // Shortcut matching ignores an extra Shift, so redo is checked before undo.
+    let shift = Modifiers::COMMAND | Modifiers::SHIFT;
+    if pressed(shift, Key::Z) || pressed(Modifiers::COMMAND, Key::Y) {
+        redo(workbench);
+    } else if pressed(Modifiers::COMMAND, Key::Z) {
+        undo(workbench);
+    }
+    if pressed(Modifiers::NONE, Key::Delete) {
+        inspector::remove_selected(workbench);
+    }
+    if pressed(Modifiers::NONE, Key::Escape) {
+        if workbench.add_node.open {
+            workbench.add_node.close();
+        } else {
+            workbench.selected_node = None;
+            workbench.parameter.close();
+        }
+    }
 }
 
 /// The page before a workflow is open: what to do next, with the shortest way to start.
@@ -365,7 +404,7 @@ fn run_button(ui: &mut egui::Ui, view: &DraftView, intents: &mut Intents) {
     let button = widgets::primary_button(label).min_size(egui::vec2(180.0, 38.0));
     if ui
         .add_enabled(enabled, button)
-        .on_hover_text("Run the published version of this workflow")
+        .on_hover_text("Run the published version of this workflow (Ctrl+Enter)")
         .on_disabled_hover_text(blocker)
         .clicked()
     {

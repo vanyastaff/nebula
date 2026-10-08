@@ -109,6 +109,16 @@ fn rename(workbench: &mut Workbench, node: &str, name: &str) {
         .report(result, "Node renamed in your draft.");
 }
 
+/// Removes the selected node, as the Delete key does. Undo brings it back.
+pub(crate) fn remove_selected(workbench: &mut Workbench) {
+    let (Some(node), Some(draft)) = (workbench.selected_node.clone(), workbench.session.draft())
+    else {
+        return;
+    };
+    let name = draft.node_name(&node);
+    remove(workbench, &node, &name);
+}
+
 fn remove(workbench: &mut Workbench, node: &str, name: &str) {
     let Some(draft) = workbench.session.draft_mut() else {
         return;
