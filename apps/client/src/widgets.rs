@@ -89,6 +89,8 @@ pub(crate) fn banner(ui: &mut egui::Ui, tone: Tone, text: &str) {
         .corner_radius(theme::RADIUS_MD)
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
+            // Long messages wrap inside the available width instead of widening the page.
+            ui.set_max_width(ui.available_width());
             ui.colored_label(foreground, text);
         });
 }

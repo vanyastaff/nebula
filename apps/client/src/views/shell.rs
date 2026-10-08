@@ -12,7 +12,8 @@ pub(crate) fn header(ui: &mut egui::Ui, workbench: &mut Workbench) {
         .context
         .as_ref()
         .map(|context| format!("{} / {}", context.organization, context.workspace_selector));
-    ui.horizontal(|ui| {
+    // Wrapping rows keep the header usable at phone width without horizontal scrolling.
+    ui.horizontal_wrapped(|ui| {
         ui.label(
             RichText::new("Nebula")
                 .size(22.0)
@@ -20,19 +21,19 @@ pub(crate) fn header(ui: &mut egui::Ui, workbench: &mut Workbench) {
                 .color(theme::ACCENT),
         );
         widgets::caption(ui, "Workflow workbench");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if workbench.is_signed_in() {
-                if ui.button("Sign out").clicked() {
-                    workbench.disconnect();
-                }
-                if ui.button("Switch workspace").clicked() {
-                    workbench.workspace_form_open = !workbench.workspace_form_open;
-                }
+    });
+    ui.horizontal_wrapped(|ui| {
+        if let Some(workspace) = workspace {
+            widgets::badge(ui, workspace, Tone::Neutral);
+        }
+        if workbench.is_signed_in() {
+            if ui.button("Switch workspace").clicked() {
+                workbench.workspace_form_open = !workbench.workspace_form_open;
             }
-            if let Some(workspace) = workspace {
-                widgets::badge(ui, workspace, Tone::Neutral);
+            if ui.button("Sign out").clicked() {
+                workbench.disconnect();
             }
-        });
+        }
     });
 }
 
@@ -43,7 +44,7 @@ pub(crate) fn feedback(ui: &mut egui::Ui, workbench: &Workbench) {
     } else {
         Tone::Neutral
     };
-    ui.horizontal(|ui| {
+    ui.vertical(|ui| {
         if workbench.session.busy() {
             ui.spinner();
         }
