@@ -2,7 +2,7 @@
 //! reducer is testable with fabricated replies.
 
 use crate::{
-    document::{Draft, parameters_match},
+    document::Draft,
     effects::{Reply, RequestKind},
     schema::Form,
     session::{DraftKey, RequestStamp, Session, SessionContext},
@@ -257,6 +257,8 @@ pub(crate) struct Workbench {
     /// Recent runs were asked for since the workflow opened or last started a run, so the runs panel
     /// does not ask again every frame, even when the answer was a failure.
     pub(crate) history_requested: bool,
+    /// Why the last read of recent runs failed, shown in place of the list until a read succeeds.
+    pub(crate) history_error: Option<String>,
     pub(crate) feedback: Feedback,
     /// Lets the user return to the workspace form while a workspace is open.
     pub(crate) workspace_form_open: bool,
@@ -375,6 +377,7 @@ impl Workbench {
             status: None,
             history: None,
             history_requested: false,
+            history_error: None,
             feedback: Feedback::default(),
             workspace_form_open: false,
             sidebar_open: true,
@@ -545,6 +548,7 @@ impl Workbench {
         self.status = None;
         self.history = None;
         self.history_requested = false;
+        self.history_error = None;
     }
 
     pub(crate) fn disconnect(&mut self) {
@@ -557,6 +561,7 @@ impl Workbench {
         self.form.clear_secrets();
         self.clear_selection();
         // The next sign-in may reach another server, whose actions differ.
+        self.catalog = Catalog::NotRequested;
         self.schemas.clear();
         self.schema_request = None;
         self.feedback
@@ -597,6 +602,22 @@ impl Workbench {
         }
         if kind == RequestKind::Schema && error != Failure::Unauthorized {
             self.receive_schema_failure(&error);
+            return;
+        }
+        if kind == RequestKind::History && error != Failure::Unauthorized {
+            // The runs panel says it where the list would be, so no toast repeats it.
+            self.history_error = Some(error.to_string());
+            return;
+        }
+        if kind == RequestKind::Create && error == Failure::OutcomeUnknown {
+            // The server may already hold the workflow. Creation is not keyed, so a retry could make a
+            // second one: the form closes and the list is read, so the person decides with it in view.
+            self.navigator.refresh_pending = true;
+            self.navigator.creating = false;
+            self.navigator.new_name.clear();
+            self.feedback.error(
+                "The workflow may have been created. Check the list before creating it again.",
+            );
             return;
         }
         if kind == RequestKind::Catalog {
@@ -652,7 +673,19 @@ impl Workbench {
             Reply::Published(document) => self.receive_published(document),
             Reply::Started(receipt) => self.receive_started(receipt),
             // Both land in the runs panel, which is their confirmation; a toast would only repeat it.
-            Reply::History(history) => self.history = Some(history),
+            Reply::History(history, status) => {
+                self.history = Some(history);
+                self.history_error = None;
+                match status {
+                    Some(Ok(status)) => self.status = Some(status),
+                    Some(Err(Failure::Unauthorized)) => {
+                        self.disconnect();
+                        self.feedback.error(Failure::Unauthorized.to_string());
+                    },
+                    Some(Err(error)) => self.feedback.error(error.to_string()),
+                    None => {},
+                }
+            },
             Reply::Status(status) => self.status = Some(status),
             Reply::Action(action, detail) => self.receive_schema(action, &detail),
             Reply::Actions(list) => {
@@ -722,7 +755,9 @@ impl Workbench {
         let Some(draft) = self.session.draft_mut() else {
             return;
         };
-        if parameters_match(&draft.definition["nodes"], &document.definition["nodes"]) {
+        // Activation writes exactly the next revision of the one it was given. A later revision means
+        // another write landed before the read, so the loaded version is not the published one.
+        if draft.base.revision.checked_add(1) == Some(document.revision) {
             draft.published_revision = Some(document.revision);
             draft.saved(document);
             self.feedback

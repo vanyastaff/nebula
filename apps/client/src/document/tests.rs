@@ -73,14 +73,14 @@ fn a_parameter_the_node_lacks_can_be_set_and_undone_to_absence() {
 fn a_parameter_switches_to_an_expression_and_back_and_clears() {
     let mut draft = Draft::new(snapshot(1, 7)).unwrap();
     draft
-        .set_expression("echo", "message", "{{ $input.text }}")
+        .set_entry("echo", "message", Some(expression("{{ $input.text }}")))
         .unwrap();
     assert_eq!(
         draft.definition["nodes"][0]["parameters"]["message"],
         json!({"type": "expression", "expr": "{{ $input.text }}"})
     );
 
-    draft.clear_parameter("echo", "message").unwrap();
+    draft.set_entry("echo", "message", None).unwrap();
     assert!(
         draft.definition["nodes"][0]["parameters"]
             .get("message")
@@ -99,8 +99,51 @@ fn a_parameter_switches_to_an_expression_and_back_and_clears() {
 #[test]
 fn clearing_a_parameter_that_is_not_set_is_not_an_undo_step() {
     let mut draft = Draft::new(snapshot(1, 7)).unwrap();
-    draft.clear_parameter("echo", "absent").unwrap();
+    draft.set_entry("echo", "absent", None).unwrap();
     assert!(!draft.can_undo());
+}
+
+#[test]
+fn keystrokes_of_one_typing_session_are_one_undo_step() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    for text in ["h", "he", "hel"] {
+        draft
+            .type_parameter("echo", "message", Some(literal(json!(text))), 1)
+            .unwrap();
+    }
+    assert_eq!(
+        draft.definition["nodes"][0]["parameters"]["message"]["value"],
+        "hel"
+    );
+    // A new session in the same field, or another edit in between, starts a new step.
+    draft
+        .type_parameter("echo", "message", Some(literal(json!("help"))), 2)
+        .unwrap();
+
+    draft.undo().unwrap();
+    assert_eq!(
+        draft.definition["nodes"][0]["parameters"]["message"]["value"],
+        "hel"
+    );
+    draft.undo().unwrap();
+    assert_eq!(
+        draft.definition["nodes"][0]["parameters"]["message"]["value"],
+        7
+    );
+    assert!(!draft.can_undo());
+}
+
+#[test]
+fn a_typing_session_that_ends_where_it_began_leaves_no_undo_step() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    draft
+        .type_parameter("echo", "message", Some(literal(json!(78))), 1)
+        .unwrap();
+    draft
+        .type_parameter("echo", "message", Some(literal(json!(7))), 1)
+        .unwrap();
+    assert!(!draft.can_undo());
+    assert!(!draft.dirty());
 }
 
 #[test]
@@ -232,6 +275,33 @@ fn replay_counts_a_removal_the_remote_already_made_as_applied() {
     draft.remote = Some(snapshot(2, 8));
     draft.reapply().unwrap();
     assert_eq!(draft.definition["nodes"].as_array().unwrap().len(), 1);
+    assert!(!draft.dirty());
+}
+
+#[test]
+fn links_on_different_ports_are_separate_edges() {
+    let mut draft = Draft::new(two_node_snapshot(
+        1,
+        json!([
+            {"from_node": "echo", "to_node": "http_request"},
+            {"from_node": "echo", "to_node": "http_request", "from_port": "error"}
+        ]),
+    ))
+    .unwrap();
+    let links = draft.links("echo");
+    assert_eq!(links.len(), 2);
+    assert_eq!(links[1].source_port(), "error");
+
+    // The main route already exists, written without a port or with the default one.
+    assert_eq!(
+        draft.connect("echo", "http_request"),
+        Err(EditError::ConnectionExists)
+    );
+    draft.disconnect(&links[1]).unwrap();
+    assert_eq!(draft.links("echo"), vec![links[0].clone()]);
+
+    draft.undo().unwrap();
+    assert_eq!(draft.links("echo"), links);
     assert!(!draft.dirty());
 }
 

@@ -37,10 +37,7 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
                 .on_hover_text("Read recent runs and the chosen run again")
                 .clicked()
             {
-                intents.push(Intent::LoadRecentRuns);
-                if let Some(id) = execution {
-                    intents.push(Intent::LoadExecution(id));
-                }
+                intents.push(Intent::RefreshRuns);
             }
         });
     });
@@ -142,8 +139,21 @@ fn readable_time(rfc3339: &str) -> String {
 }
 
 fn history(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, busy: bool) {
+    if let Some(reason) = &workbench.history_error {
+        let shown = if workbench.history.is_some() {
+            "The list below is from an earlier read"
+        } else {
+            "Use Refresh to try again"
+        };
+        widgets::caption(
+            ui,
+            format!("Recent runs could not be read: {reason} {shown}."),
+        );
+    }
     let Some(runs) = &workbench.history else {
-        widgets::caption(ui, "Reading recent runs…");
+        if workbench.history_error.is_none() {
+            widgets::caption(ui, "Reading recent runs…");
+        }
         return;
     };
     if runs.items.is_empty() {

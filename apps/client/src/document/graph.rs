@@ -21,6 +21,65 @@ pub(crate) enum EditError {
     ConnectionNotFound,
 }
 
+/// One connection of the graph. Links between the same nodes on different ports are distinct edges,
+/// such as the main and the error route out of one node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Link {
+    pub(crate) from: String,
+    pub(crate) to: String,
+    /// Source output port; absent means `out`, as the engine routes it.
+    pub(crate) from_port: Option<String>,
+    /// Target input port; absent means the node's default input.
+    pub(crate) to_port: Option<String>,
+}
+
+impl Link {
+    /// A link between the default ports, as the canvas draws it.
+    pub(crate) fn between(from: &str, to: &str) -> Self {
+        Self {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            from_port: None,
+            to_port: None,
+        }
+    }
+
+    fn of(connection: &Value) -> Self {
+        let text = |key: &str| connection[key].as_str().map(str::to_owned);
+        Self {
+            from: text("from_node").unwrap_or_default(),
+            to: text("to_node").unwrap_or_default(),
+            from_port: text("from_port"),
+            to_port: text("to_port"),
+        }
+    }
+
+    /// The output port the engine routes this link from.
+    pub(crate) fn source_port(&self) -> &str {
+        self.from_port.as_deref().unwrap_or("out")
+    }
+
+    fn same_edge(&self, other: &Self) -> bool {
+        self.from == other.from
+            && self.to == other.to
+            && self.source_port() == other.source_port()
+            && self.to_port == other.to_port
+    }
+
+    fn to_value(&self) -> Value {
+        let mut connection = json!({"from_node": self.from, "to_node": self.to});
+        if let Some(object) = connection.as_object_mut() {
+            if let Some(port) = &self.from_port {
+                object.insert("from_port".into(), json!(port));
+            }
+            if let Some(port) = &self.to_port {
+                object.insert("to_port".into(), json!(port));
+            }
+        }
+        connection
+    }
+}
+
 /// A graph edit as the user requested it. Applying it records what undo needs.
 #[derive(Clone)]
 pub(crate) enum Edit {
@@ -42,12 +101,10 @@ pub(crate) enum Edit {
         node: String,
     },
     Connect {
-        from: String,
-        to: String,
+        link: Link,
     },
     Disconnect {
-        from: String,
-        to: String,
+        link: Link,
     },
     /// Places a node on the editor canvas. Positions live in `ui_metadata`, not in the graph itself.
     MoveNode {
@@ -135,13 +192,11 @@ impl Change {
             Self::NodeRemoved { node, .. } => Edit::RemoveNode {
                 node: node["id"].as_str().unwrap_or_default().to_owned(),
             },
-            Self::ConnectionAdded { connection, .. } => {
-                let (from, to) = endpoints(connection);
-                Edit::Connect { from, to }
+            Self::ConnectionAdded { connection, .. } => Edit::Connect {
+                link: Link::of(connection),
             },
-            Self::ConnectionRemoved { connection, .. } => {
-                let (from, to) = endpoints(connection);
-                Edit::Disconnect { from, to }
+            Self::ConnectionRemoved { connection, .. } => Edit::Disconnect {
+                link: Link::of(connection),
             },
             Self::Position { node, after, .. } => Edit::MoveNode {
                 node: node.clone(),
@@ -226,20 +281,19 @@ pub(super) fn capture(definition: &Value, edit: Edit) -> Result<Change, EditErro
                 connections,
             }
         },
-        Edit::Connect { from, to } => {
-            require_node(definition, &from)?;
-            require_node(definition, &to)?;
-            if connection_between(definition, &from, &to).is_some() {
+        Edit::Connect { link } => {
+            require_node(definition, &link.from)?;
+            require_node(definition, &link.to)?;
+            if link_position(definition, &link).is_some() {
                 return Err(EditError::ConnectionExists);
             }
             Change::ConnectionAdded {
-                connection: json!({"from_node": from, "to_node": to}),
+                connection: link.to_value(),
                 index: connections_of(definition).len(),
             }
         },
-        Edit::Disconnect { from, to } => {
-            let index =
-                connection_between(definition, &from, &to).ok_or(EditError::ConnectionNotFound)?;
+        Edit::Disconnect { link } => {
+            let index = link_position(definition, &link).ok_or(EditError::ConnectionNotFound)?;
             let connection = connections_of(definition)
                 .get(index)
                 .cloned()
@@ -499,12 +553,12 @@ pub(super) fn node_name(definition: &Value, id: &str) -> String {
         .to_owned()
 }
 
-/// Connections touching a node, as (from, to) pairs in graph order.
-pub(super) fn links_of(definition: &Value, id: &str) -> Vec<(String, String)> {
+/// Connections touching a node, in graph order.
+pub(super) fn links_of(definition: &Value, id: &str) -> Vec<Link> {
     connections_of(definition)
         .iter()
         .filter(|connection| touches(connection, id))
-        .map(endpoints)
+        .map(Link::of)
         .collect()
 }
 
@@ -522,27 +576,14 @@ fn touches(connection: &Value, id: &str) -> bool {
     connection["from_node"].as_str() == Some(id) || connection["to_node"].as_str() == Some(id)
 }
 
-fn connection_between(definition: &Value, from: &str, to: &str) -> Option<usize> {
-    connections_of(definition).iter().position(|connection| {
-        connection["from_node"].as_str() == Some(from) && connection["to_node"].as_str() == Some(to)
-    })
+fn link_position(definition: &Value, link: &Link) -> Option<usize> {
+    connections_of(definition)
+        .iter()
+        .position(|connection| Link::of(connection).same_edge(link))
 }
 
 fn position_of(connections: &[Value], connection: &Value) -> Option<usize> {
     connections.iter().position(|stored| stored == connection)
-}
-
-fn endpoints(connection: &Value) -> (String, String) {
-    (
-        connection["from_node"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned(),
-        connection["to_node"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned(),
-    )
 }
 
 fn set_field(node: &mut Value, key: &str, value: Value) -> Result<(), EditError> {

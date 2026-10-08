@@ -97,7 +97,17 @@ impl ClientApp {
             },
             Intent::LoadRecentRuns => {
                 if let Some(id) = self.workbench.begin_recent_runs() {
-                    self.dispatch(context, Operation::History(id));
+                    self.dispatch(context, Operation::History(id, None));
+                }
+            },
+            Intent::RefreshRuns => {
+                let execution = self
+                    .workbench
+                    .session
+                    .draft()
+                    .and_then(|draft| draft.execution_id.clone());
+                if let Some(id) = self.workbench.begin_recent_runs() {
+                    self.dispatch(context, Operation::History(id, execution));
                 }
             },
             Intent::LoadExecution(id) => self.dispatch(context, Operation::Status(id)),

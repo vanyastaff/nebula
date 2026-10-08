@@ -2,8 +2,9 @@
 //! declares. Rendering never edits the draft; it returns the edits a person made, and the inspector
 //! applies them as undoable draft commands.
 //!
-//! Typed text is held in a per-field buffer while the input has focus and committed when it loses
-//! focus or Enter is pressed, so a word is one undo step rather than one per keystroke. Discrete
+//! Typed text reaches the draft as it is typed, so closing the panel or selecting another node never
+//! loses it. While an input has focus it shows its own text, which may not parse yet; the keystrokes
+//! of one focus are one typing session, which the draft keeps as a single undo step. Discrete
 //! controls (toggles, options, steppers) commit on the click.
 use crate::{
     schema::{
@@ -405,8 +406,18 @@ fn control(ui: &mut egui::Ui, field: &Field, value: &mut Value, id: egui::Id) ->
     }
 }
 
-/// A text input that keeps what is typed while it has focus and returns it once, when focus leaves
-/// or Enter is pressed. Without focus it shows `current`, so undo and server reads stay visible.
+/// Where the form leaves the typing session of the edit it returns this frame, for the inspector.
+const TYPING: &str = "form-typing-session";
+
+/// The typing session of the edit the form returned this frame, if it came from typing. Taking it
+/// clears it, so a later click is not mistaken for a keystroke.
+pub(crate) fn take_typing_session(ctx: &egui::Context) -> Option<u64> {
+    ctx.data_mut(|data| data.remove_temp::<u64>(egui::Id::new(TYPING)))
+}
+
+/// A text input that returns its text whenever it changes. While it has focus it shows its own
+/// buffer, so text that does not parse yet stays on screen; without focus it shows `current`, so undo
+/// and server reads stay visible.
 fn buffered(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -438,13 +449,48 @@ fn buffered_input(
     };
     let response = ui
         .add(style(edit.id(id).desired_width(f32::INFINITY)).margin(egui::Margin::symmetric(8, 6)));
+    let session_id = id.with("typing-session");
+    if response.gained_focus() {
+        // Distinct per focus, so typing into the field again later is a new undo step.
+        let session = id.with(ui.input(|input| input.time).to_bits()).value();
+        ui.data_mut(|data| data.insert_temp(session_id, session));
+    }
     if response.has_focus() {
         ui.data_mut(|data| data.insert_temp(buffer_id, text.clone()));
-        None
     } else {
         ui.data_mut(|data| data.remove::<String>(buffer_id));
-        (response.lost_focus() && text != current).then_some(text)
     }
+    if text == current || !(response.changed() || response.lost_focus()) {
+        return None;
+    }
+    if response.has_focus()
+        && let Some(session) = ui.data(|data| data.get_temp::<u64>(session_id))
+    {
+        ui.data_mut(|data| data.insert_temp(egui::Id::new(TYPING), session));
+    }
+    Some(text)
+}
+
+/// A box for a new list entry, added when Enter is pressed or focus leaves. Unlike `buffered`, its
+/// text is not a value until then.
+fn entry_box(ui: &mut egui::Ui, id: egui::Id, hint: &str) -> Option<String> {
+    let buffer_id = id.with("buffer");
+    let mut text = ui
+        .data(|data| data.get_temp::<String>(buffer_id))
+        .unwrap_or_default();
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .id(id)
+            .hint_text(hint)
+            .desired_width(f32::INFINITY)
+            .margin(egui::Margin::symmetric(8, 6)),
+    );
+    if response.has_focus() {
+        ui.data_mut(|data| data.insert_temp(buffer_id, text));
+        return None;
+    }
+    ui.data_mut(|data| data.remove::<String>(buffer_id));
+    (response.lost_focus() && !text.trim().is_empty()).then(|| text.trim().to_owned())
 }
 
 fn text_control(
@@ -641,7 +687,10 @@ fn number_control(
                             Err(_) if text.trim().is_empty() => {
                                 *value = Value::Null;
                                 changed = true;
+                                ui.data_mut(|data| data.remove::<bool>(error_id));
                             },
+                            // Half-typed text such as `1e` is not an error until the input is left.
+                            Err(_) if ui.memory(|memory| memory.has_focus(id)) => {},
                             Err(_) => {
                                 ui.data_mut(|data| data.insert_temp(error_id, true));
                             },
@@ -1134,13 +1183,8 @@ fn list_control(
                     items.remove(index);
                 }
             });
-            if can_add
-                && let Some(text) = buffered(ui, id.with("new"), "", |edit| {
-                    edit.hint_text("Type and press Enter")
-                })
-                && !text.trim().is_empty()
-            {
-                items.push(Value::from(text.trim()));
+            if can_add && let Some(text) = entry_box(ui, id.with("new"), "Type and press Enter") {
+                items.push(Value::from(text));
             }
         },
         ListWidget::KeyValue => {
@@ -1442,6 +1486,7 @@ fn json_control(ui: &mut egui::Ui, value: &mut Value, id: egui::Id) -> bool {
         if text.trim().is_empty() {
             *value = Value::Null;
             changed = true;
+            ui.data_mut(|data| data.remove::<bool>(error_id));
         } else {
             match serde_json::from_str(&text) {
                 Ok(parsed) => {
@@ -1449,6 +1494,8 @@ fn json_control(ui: &mut egui::Ui, value: &mut Value, id: egui::Id) -> bool {
                     changed = true;
                     ui.data_mut(|data| data.remove::<bool>(error_id));
                 },
+                // JSON is rarely valid halfway through typing, so it is judged once the input is left.
+                Err(_) if ui.memory(|memory| memory.has_focus(id)) => {},
                 Err(_) => {
                     ui.data_mut(|data| data.insert_temp(error_id, true));
                 },

@@ -161,17 +161,7 @@ fn conflict_marks_the_draft_for_review_without_discarding_it() {
 #[test]
 fn a_publish_remembers_the_revision_it_made_live() {
     let mut workbench = Workbench::new(String::new());
-    open_workspace_session(&mut workbench);
-    let context = workbench.session.context.clone().unwrap();
-    let key = DraftKey {
-        context,
-        workflow: "wf_test".into(),
-    };
-    workbench
-        .session
-        .drafts
-        .insert(key.clone(), Draft::new(snapshot(1, 7)).unwrap());
-    workbench.session.selected = Some(key.clone());
+    let key = open_draft(&mut workbench);
     let stamp = workbench.session.begin().unwrap();
 
     workbench.receive(
@@ -183,6 +173,25 @@ fn a_publish_remembers_the_revision_it_made_live() {
     let draft = &workbench.session.drafts[&key];
     assert_eq!(draft.published_revision, Some(2));
     assert_eq!(draft.base.revision, 2);
+}
+
+#[test]
+fn a_write_after_the_publish_is_not_taken_for_the_published_revision() {
+    let mut workbench = Workbench::new(String::new());
+    let key = open_draft(&mut workbench);
+    let stamp = workbench.session.begin().unwrap();
+
+    // Activation wrote revision 2, and another client wrote revision 3 before the read.
+    workbench.receive(
+        stamp,
+        RequestKind::Publish,
+        Ok(Reply::Published(snapshot(3, 7))),
+    );
+
+    let draft = &workbench.session.drafts[&key];
+    assert_eq!(draft.published_revision, None);
+    assert_eq!(draft.base.revision, 1);
+    assert_eq!(draft.remote.as_ref().map(|remote| remote.revision), Some(3));
 }
 
 #[test]
@@ -427,14 +436,16 @@ fn a_server_without_a_catalog_explains_itself_without_a_toast() {
 }
 
 #[test]
-fn signing_out_forgets_the_schemas_of_that_server() {
+fn signing_out_forgets_the_catalog_and_schemas_of_that_server() {
     let mut workbench = Workbench::new(String::new());
     open_workspace_session(&mut workbench);
     schema_reply(&mut workbench, "noop", json!({"fields": []}));
+    workbench.catalog = Catalog::Ready(Vec::new());
 
     workbench.disconnect();
 
     assert!(workbench.schemas.is_empty());
+    assert!(matches!(workbench.catalog, Catalog::NotRequested));
 }
 
 /// Opens a workspace with one workflow draft selected, as after loading it.
@@ -495,6 +506,73 @@ fn the_runs_panel_asks_again_when_its_request_was_dropped() {
     // Once the read starts, the panel waits for its answer.
     workbench.begin_recent_runs();
     assert!(!asked(&show_runs(&mut workbench)));
+}
+
+#[test]
+fn a_create_with_an_unknown_outcome_closes_the_form_and_reads_the_list() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    workbench.navigator.start_creating();
+    workbench.navigator.new_name = "Echo".into();
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(stamp, RequestKind::Create, Err(Failure::OutcomeUnknown));
+
+    assert!(!workbench.navigator.creating);
+    assert!(workbench.navigator.new_name.is_empty());
+    assert!(workbench.navigator.take_refresh());
+    assert!(workbench.feedback.message.contains("may have been created"));
+}
+
+fn runs_page() -> ListExecutionsResponse {
+    ListExecutionsResponse {
+        items: Vec::new(),
+        next_cursor: None,
+        has_more: false,
+    }
+}
+
+#[test]
+fn a_failed_read_of_recent_runs_is_shown_instead_of_waiting() {
+    let mut workbench = Workbench::new(String::new());
+    open_draft(&mut workbench);
+    workbench.begin_recent_runs();
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(stamp, RequestKind::History, Err(Failure::Rejected(500)));
+
+    assert!(workbench.history.is_none());
+    assert!(workbench.history_error.is_some());
+    assert!(workbench.feedback.message.is_empty());
+
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(
+        stamp,
+        RequestKind::History,
+        Ok(Reply::History(runs_page(), None)),
+    );
+    assert!(workbench.history.is_some());
+    assert!(workbench.history_error.is_none());
+}
+
+#[test]
+fn a_run_that_cannot_be_read_keeps_the_list_read_with_it() {
+    let mut workbench = Workbench::new(String::new());
+    open_draft(&mut workbench);
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(
+        stamp,
+        RequestKind::History,
+        Ok(Reply::History(
+            runs_page(),
+            Some(Err(Failure::Rejected(500))),
+        )),
+    );
+
+    assert!(workbench.history.is_some());
+    assert!(workbench.status.is_none());
+    assert!(!workbench.feedback.message.is_empty());
 }
 
 #[test]

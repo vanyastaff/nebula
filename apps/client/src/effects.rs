@@ -24,7 +24,9 @@ pub(crate) enum Operation {
     Save(String, UpdateWorkflowDocumentRequest),
     Publish(String, u64),
     Run(String, String),
-    History(String),
+    /// Recent runs of a workflow, and with an execution id that run's status too, read together
+    /// because only one request is in flight at a time.
+    History(String, Option<String>),
     Status(String),
     Actions,
     /// One action's parameter schema.
@@ -42,6 +44,8 @@ pub(crate) enum RequestKind {
     Connect,
     Catalog,
     Schema,
+    /// Recent runs, whose failure the runs panel shows in place of the list.
+    History,
 }
 
 impl Operation {
@@ -54,7 +58,8 @@ impl Operation {
             Self::Run(..) => RequestKind::Run,
             Self::Actions => RequestKind::Catalog,
             Self::Action(_) => RequestKind::Schema,
-            Self::List(_) | Self::Load(_) | Self::History(_) | Self::Status(_) => RequestKind::Read,
+            Self::History(..) => RequestKind::History,
+            Self::List(_) | Self::Load(_) | Self::Status(_) => RequestKind::Read,
         }
     }
 }
@@ -67,7 +72,11 @@ pub(crate) enum Reply {
     Saved(WorkflowDocumentResponse),
     Published(WorkflowDocumentResponse),
     Started(ExecutionResponse),
-    History(ListExecutionsResponse),
+    /// The status read is separate from the list's: a run that cannot be read keeps the list.
+    History(
+        ListExecutionsResponse,
+        Option<Result<Box<ExecutionDetailResponse>, Failure>>,
+    ),
     Status(Box<ExecutionDetailResponse>),
     Actions(ListActionsResponse),
     Action(String, Box<ActionParametersResponse>),
@@ -112,10 +121,19 @@ async fn perform(
             .run(org, workspace, &id, &key)
             .await
             .map(Reply::Started),
-        Operation::History(id) => connection
-            .history(org, workspace, &id)
-            .await
-            .map(Reply::History),
+        Operation::History(id, execution) => {
+            let history = connection.history(org, workspace, &id).await?;
+            let status = match execution {
+                Some(execution) => Some(
+                    connection
+                        .status(org, workspace, &execution)
+                        .await
+                        .map(Box::new),
+                ),
+                None => None,
+            };
+            Ok(Reply::History(history, status))
+        },
         Operation::Status(id) => connection
             .status(org, workspace, &id)
             .await

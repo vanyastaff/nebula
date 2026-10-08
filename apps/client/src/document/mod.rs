@@ -5,7 +5,7 @@ mod graph;
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub(crate) use graph::{Edit, EditError, parameters_match};
+pub(crate) use graph::{Edit, EditError, Link, parameters_match};
 
 use graph::{
     Change, capture, connections_of, links_of, next_node_id, node_name, replay, with_connections,
@@ -49,6 +49,19 @@ pub(crate) struct Draft {
     /// Revision this app saw the server publish. The API does not report publication, so it is unknown
     /// until a publish succeeds here, and stale once a later save moves the revision on.
     pub(crate) published_revision: Option<u64>,
+    /// Typing session that made the newest undo entry. Further keystrokes of that session extend the
+    /// entry, so one undo takes back the whole text.
+    typing: Option<u64>,
+}
+
+/// A literal parameter entry, the value itself.
+pub(crate) fn literal(value: Value) -> Value {
+    json!({"type": "literal", "value": value})
+}
+
+/// An expression parameter entry, evaluated when the node runs, such as `{{ $input.name }}`.
+pub(crate) fn expression(text: &str) -> Value {
+    json!({"type": "expression", "expr": text})
 }
 
 /// A new workflow starts with an empty graph. The server assigns identity, version and timestamps.
@@ -79,6 +92,7 @@ impl Draft {
             start_key: None,
             execution_id: None,
             published_revision: None,
+            typing: None,
         })
     }
 
@@ -103,8 +117,8 @@ impl Draft {
         node_name(&self.definition, id)
     }
 
-    /// Connections touching a node, as (from, to) pairs.
-    pub(crate) fn links(&self, id: &str) -> Vec<(String, String)> {
+    /// Connections touching a node, with their ports.
+    pub(crate) fn links(&self, id: &str) -> Vec<Link> {
         links_of(&self.definition, id)
     }
 
@@ -112,7 +126,56 @@ impl Draft {
     #[tracing::instrument(name = "client.document.apply", skip_all)]
     pub(crate) fn apply(&mut self, edit: Edit) -> Result<(), EditError> {
         let change = capture(&self.definition, edit)?;
-        // Re-placing a node where it already is is not a change, so it leaves no undo entry.
+        self.record(change)?;
+        self.typing = None;
+        Ok(())
+    }
+
+    /// Sets or removes a parameter entry as it is typed. Keystrokes of one typing `session` in the
+    /// same parameter form a single undo step; a session that ends where it began leaves none.
+    pub(crate) fn type_parameter(
+        &mut self,
+        node: &str,
+        parameter: &str,
+        entry: Option<Value>,
+        session: u64,
+    ) -> Result<(), EditError> {
+        let change = capture(
+            &self.definition,
+            Edit::SetParameter {
+                node: node.into(),
+                parameter: parameter.into(),
+                entry,
+            },
+        )?;
+        if self.typing == Some(session)
+            && let Some(Change::Parameter {
+                node: last_node,
+                parameter: last_parameter,
+                before,
+                after,
+            }) = self.undo.last_mut()
+            && last_node == node
+            && last_parameter == parameter
+            && let Change::Parameter { after: typed, .. } = &change
+        {
+            replay(&mut self.definition, &change, true)?;
+            after.clone_from(typed);
+            if before == after {
+                self.undo.pop();
+                self.typing = None;
+            }
+            return Ok(());
+        }
+        if self.record(change)? {
+            self.typing = Some(session);
+        }
+        Ok(())
+    }
+
+    /// Applies a captured change and makes it the newest undo step. Returns false for a change that
+    /// changes nothing, such as re-placing a node where it already is, which leaves no undo entry.
+    fn record(&mut self, change: Change) -> Result<bool, EditError> {
         let unchanged = match &change {
             Change::Parameter { before, after, .. } => before == after,
             Change::Position {
@@ -123,12 +186,12 @@ impl Draft {
             _ => false,
         };
         if unchanged {
-            return Ok(());
+            return Ok(false);
         }
         replay(&mut self.definition, &change, true)?;
         self.undo.push(change);
         self.redo.clear();
-        Ok(())
+        Ok(true)
     }
 
     /// Sets a literal from JSON text, as the raw parameter editor does.
@@ -148,33 +211,11 @@ impl Draft {
         parameter: &str,
         value: Value,
     ) -> Result<(), EditError> {
-        self.set_entry(
-            node,
-            parameter,
-            Some(json!({"type": "literal", "value": value})),
-        )
+        self.set_entry(node, parameter, Some(literal(value)))
     }
 
-    /// An expression the engine evaluates at run time, such as `{{ $input.name }}`.
-    pub(crate) fn set_expression(
-        &mut self,
-        node: &str,
-        parameter: &str,
-        expression: &str,
-    ) -> Result<(), EditError> {
-        self.set_entry(
-            node,
-            parameter,
-            Some(json!({"type": "expression", "expr": expression})),
-        )
-    }
-
-    /// Removes the parameter, so the action's default applies.
-    pub(crate) fn clear_parameter(&mut self, node: &str, parameter: &str) -> Result<(), EditError> {
-        self.set_entry(node, parameter, None)
-    }
-
-    fn set_entry(
+    /// Sets the whole parameter entry, or removes it with `None` so the action's default applies.
+    pub(crate) fn set_entry(
         &mut self,
         node: &str,
         parameter: &str,
@@ -216,18 +257,16 @@ impl Draft {
         self.apply(Edit::RemoveNode { node: node.into() })
     }
 
+    /// Connects the default output of `from` to the default input of `to`.
     pub(crate) fn connect(&mut self, from: &str, to: &str) -> Result<(), EditError> {
         self.apply(Edit::Connect {
-            from: from.into(),
-            to: to.into(),
+            link: Link::between(from, to),
         })
     }
 
-    pub(crate) fn disconnect(&mut self, from: &str, to: &str) -> Result<(), EditError> {
-        self.apply(Edit::Disconnect {
-            from: from.into(),
-            to: to.into(),
-        })
+    /// Removes exactly this link; other links between the same nodes on other ports stay.
+    pub(crate) fn disconnect(&mut self, link: &Link) -> Result<(), EditError> {
+        self.apply(Edit::Disconnect { link: link.clone() })
     }
 
     /// Places a node on the canvas at the given top-left corner, in canvas coordinates.
@@ -252,6 +291,7 @@ impl Draft {
         replay(&mut self.definition, &change, false)?;
         self.undo.pop();
         self.redo.push(change);
+        self.typing = None;
         Ok(())
     }
 
@@ -262,6 +302,7 @@ impl Draft {
         replay(&mut self.definition, &change, true)?;
         self.redo.pop();
         self.undo.push(change);
+        self.typing = None;
         Ok(())
     }
 
@@ -292,6 +333,7 @@ impl Draft {
         self.base = document;
         self.undo.clear();
         self.redo.clear();
+        self.typing = None;
         self.remote = None;
         self.uncertain_save = false;
         self.save_conflict = false;

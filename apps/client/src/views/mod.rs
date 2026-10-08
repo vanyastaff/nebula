@@ -21,6 +21,8 @@ pub(crate) enum Intent {
     PublishDraft,
     RunDraft,
     LoadRecentRuns,
+    /// Recent runs and the chosen run, read in one request.
+    RefreshRuns,
     LoadExecution(String),
     LoadCatalog,
     /// The parameter schema of an action, for the node form.

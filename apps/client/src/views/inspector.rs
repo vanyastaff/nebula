@@ -3,7 +3,7 @@
 //! Output shows what the node produced in the chosen run. Every change here is a local draft command.
 use super::{Intent, Intents, form};
 use crate::{
-    document::{Draft, catalog_key},
+    document::{Draft, Link, catalog_key, expression, literal},
     schema::display,
     theme,
     widgets::{self, Tone},
@@ -13,11 +13,28 @@ use eframe::egui::{self, RichText};
 use nebula_api_contract::v1::execution::ExecutionNodeOutput;
 use serde_json::{Map, Value};
 
-/// A connection shown in the inspector, with its endpoints and the label it is drawn under.
-struct Link {
-    from: String,
-    to: String,
+/// A connection shown in the inspector, with the label it is drawn under.
+struct LinkRow {
+    link: Link,
     label: String,
+}
+
+impl LinkRow {
+    /// Names the nodes, and the ports when they are not the defaults, so parallel routes differ.
+    fn of(draft: &Draft, link: Link) -> Self {
+        let source = match link.source_port() {
+            "out" => draft.node_name(&link.from),
+            port => format!("{} ({port})", draft.node_name(&link.from)),
+        };
+        let target = match &link.to_port {
+            Some(port) => format!("{} ({port})", draft.node_name(&link.to)),
+            None => draft.node_name(&link.to),
+        };
+        Self {
+            label: format!("{source} → {target}"),
+            link,
+        }
+    }
 }
 
 /// What the sidebar needs from the node, copied out so the frame can change the workbench.
@@ -28,7 +45,7 @@ struct NodeView {
     /// `plugin.action`, the key the catalog knows the action by.
     catalog: String,
     parameters: Map<String, Value>,
-    links: Vec<Link>,
+    links: Vec<LinkRow>,
 }
 
 impl NodeView {
@@ -46,11 +63,7 @@ impl NodeView {
             links: draft
                 .links(id)
                 .into_iter()
-                .map(|(from, to)| Link {
-                    label: format!("{} → {}", draft.node_name(&from), draft.node_name(&to)),
-                    from,
-                    to,
-                })
+                .map(|link| LinkRow::of(draft, link))
                 .collect(),
         })
     }
@@ -152,7 +165,8 @@ fn parameters(
                 &node.parameters,
                 egui::Id::new(("node-form", &node.id)),
             );
-            apply(workbench, &node.id, edits);
+            let typing = form::take_typing_session(ui.ctx());
+            apply(workbench, &node.id, edits, typing);
             let unknown: Vec<&str> = node
                 .parameters
                 .keys()
@@ -185,18 +199,21 @@ fn loading(ui: &mut egui::Ui) {
     });
 }
 
-/// Applies form edits as draft commands; each is one undo step.
-fn apply(workbench: &mut Workbench, node: &str, edits: Vec<form::FormEdit>) {
+/// Applies form edits as draft commands. A click is one undo step; text typed in one focus is one
+/// step however many keystrokes it took.
+fn apply(workbench: &mut Workbench, node: &str, edits: Vec<form::FormEdit>, typing: Option<u64>) {
     let Some(draft) = workbench.session.draft_mut() else {
         return;
     };
     for edit in edits {
-        let result = match edit {
-            form::FormEdit::Literal(key, value) => draft.set_literal(node, &key, value),
-            form::FormEdit::Expression(key, expression) => {
-                draft.set_expression(node, &key, &expression)
-            },
-            form::FormEdit::Clear(key) => draft.clear_parameter(node, &key),
+        let (key, entry) = match edit {
+            form::FormEdit::Literal(key, value) => (key, Some(literal(value))),
+            form::FormEdit::Expression(key, text) => (key, Some(expression(&text))),
+            form::FormEdit::Clear(key) => (key, None),
+        };
+        let result = match typing {
+            Some(session) => draft.type_parameter(node, &key, entry, session),
+            None => draft.set_entry(node, &key, entry),
         };
         // A successful edit shows in the form itself; only a refusal needs words.
         if let Err(error) = result {
@@ -226,11 +243,11 @@ fn settings(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView) {
             "Not connected. Drag from an output port to another node's input port.",
         );
     }
-    for link in &node.links {
+    for row in &node.links {
         ui.horizontal_wrapped(|ui| {
-            widgets::caption(ui, link.label.as_str());
+            widgets::caption(ui, row.label.as_str());
             if ui.small_button("Disconnect").clicked() {
-                disconnect(workbench, &link.from, &link.to);
+                disconnect(workbench, row);
             }
         });
     }
@@ -320,14 +337,14 @@ fn remove(workbench: &mut Workbench, node: &str, name: &str) {
         .report(result, &format!("Removed {name} and its connections."));
 }
 
-fn disconnect(workbench: &mut Workbench, from: &str, to: &str) {
+fn disconnect(workbench: &mut Workbench, row: &LinkRow) {
     let Some(draft) = workbench.session.draft_mut() else {
         return;
     };
-    let result = draft.disconnect(from, to);
+    let result = draft.disconnect(&row.link);
     workbench
         .feedback
-        .report(result, &format!("Disconnected {from} from {to}."));
+        .report(result, &format!("Removed the connection {}.", row.label));
 }
 
 /// Every parameter entry as JSON, for nodes without a schema and for entries the schema does not
