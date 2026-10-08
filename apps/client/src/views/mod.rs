@@ -4,6 +4,7 @@
 pub(crate) mod canvas;
 pub(crate) mod connection;
 pub(crate) mod editor;
+pub(crate) mod inspector;
 pub(crate) mod navigator;
 pub(crate) mod runs;
 pub(crate) mod shell;

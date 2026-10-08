@@ -397,6 +397,24 @@ fn find_node<'a>(definition: &'a Value, id: &str) -> Result<&'a Value, EditError
         .ok_or(EditError::NodeNotFound)
 }
 
+/// The display name of a node, falling back to its id when the node or its name is missing.
+pub(super) fn node_name(definition: &Value, id: &str) -> String {
+    find_node(definition, id)
+        .ok()
+        .and_then(|node| node["name"].as_str())
+        .unwrap_or(id)
+        .to_owned()
+}
+
+/// Connections touching a node, as (from, to) pairs in graph order.
+pub(super) fn links_of(definition: &Value, id: &str) -> Vec<(String, String)> {
+    connections_of(definition)
+        .iter()
+        .filter(|connection| touches(connection, id))
+        .map(endpoints)
+        .collect()
+}
+
 fn find_node_mut<'a>(definition: &'a mut Value, id: &str) -> Result<&'a mut Value, EditError> {
     let nodes = nodes_mut(definition)?;
     let position = node_position(nodes, id).ok_or(EditError::NodeNotFound)?;

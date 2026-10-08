@@ -125,6 +125,14 @@ impl Feedback {
         self.message = message.into();
         self.failure = true;
     }
+
+    /// Shows the outcome of a local command: the success text, or the error that stopped it.
+    pub(crate) fn report<E: std::fmt::Display>(&mut self, result: Result<(), E>, success: &str) {
+        match result {
+            Ok(()) => self.info(success),
+            Err(error) => self.error(error.to_string()),
+        }
+    }
 }
 
 pub(crate) struct Workbench {

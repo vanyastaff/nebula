@@ -7,7 +7,9 @@ pub(crate) mod tests;
 
 pub(crate) use graph::{Edit, EditError, parameters_match};
 
-use graph::{Change, capture, connections_of, next_node_id, replay, with_connections};
+use graph::{
+    Change, capture, connections_of, links_of, next_node_id, node_name, replay, with_connections,
+};
 use nebula_api_contract::v1::workflow::{
     CreateWorkflowRequest, UpdateWorkflowDocumentRequest, UpdateWorkflowRequest,
     WorkflowDocumentResponse,
@@ -75,6 +77,16 @@ impl Draft {
 
     pub(crate) fn connections(&self) -> &[Value] {
         connections_of(&self.definition)
+    }
+
+    /// The display name of a node, falling back to its id.
+    pub(crate) fn node_name(&self, id: &str) -> String {
+        node_name(&self.definition, id)
+    }
+
+    /// Connections touching a node, as (from, to) pairs.
+    pub(crate) fn links(&self, id: &str) -> Vec<(String, String)> {
+        links_of(&self.definition, id)
     }
 
     /// Records one graph edit. A rejected edit leaves the document and history untouched.

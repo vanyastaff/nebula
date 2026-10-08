@@ -278,29 +278,16 @@ fn connect(workbench: &mut Workbench, from: &str, to: &str) {
         workbench.feedback.error("A node cannot connect to itself.");
         return;
     }
-    let source = node_name(workbench, from);
-    let target = node_name(workbench, to);
     let Some(draft) = workbench.session.draft_mut() else {
         return;
     };
-    match draft.connect(from, to) {
-        Ok(()) => workbench
-            .feedback
-            .info(format!("Connected {source} to {target}.")),
-        Err(error) => workbench.feedback.error(error.to_string()),
-    }
-}
-
-/// The display name of a node for feedback, falling back to its id.
-fn node_name(workbench: &Workbench, id: &str) -> String {
-    workbench
-        .session
-        .draft()
-        .and_then(|draft| draft.definition["nodes"].as_array())
-        .and_then(|nodes| nodes.iter().find(|node| node["id"].as_str() == Some(id)))
-        .and_then(|node| node["name"].as_str())
-        .unwrap_or(id)
-        .to_owned()
+    let message = format!(
+        "Connected {} to {}.",
+        draft.node_name(from),
+        draft.node_name(to)
+    );
+    let result = draft.connect(from, to);
+    workbench.feedback.report(result, &message);
 }
 
 #[cfg(test)]
