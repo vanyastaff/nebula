@@ -41,7 +41,7 @@ pub struct DependenciesStatus {
     pub cache: Option<bool>,
 }
 
-/// `GET /api/v1/version` response — application name + version.
+/// `GET /version` response — application name + version (outside the API prefix).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct VersionInfo {

@@ -119,6 +119,7 @@ pub(super) fn decode(name: &str, value: Value) -> Option<bool> {
         "CreateWorkflowRequest" => decode::<v1::workflow::CreateWorkflowRequest>(value),
         "UpdateWorkflowRequest" => decode::<v1::workflow::UpdateWorkflowRequest>(value),
         "WorkflowResponse" => decode::<v1::workflow::WorkflowResponse>(value),
+        "WorkflowDocumentResponse" => decode::<v1::workflow::WorkflowDocumentResponse>(value),
         "ListWorkflowsResponse" => decode::<v1::workflow::ListWorkflowsResponse>(value),
         "WorkflowValidateResponse" => decode::<v1::workflow::WorkflowValidateResponse>(value),
         "WorkspaceMemberSummary" => {

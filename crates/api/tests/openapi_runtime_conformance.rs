@@ -675,6 +675,7 @@ async fn shared_contract_workflow_crud_activation_and_start_round_trip() {
     )
     .await;
     let update = v1::workflow::UpdateWorkflowRequest {
+        expected_revision: None,
         name: Some("Changed through the contract".to_owned()),
         description: None,
         definition: None,

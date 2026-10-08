@@ -23,7 +23,8 @@ use crate::{
         },
         shared::PaginationParams,
         workflow::dto::{
-            CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowRequest, WorkflowResponse,
+            ActivateWorkflowParams, CreateWorkflowRequest, ListWorkflowsResponse,
+            UpdateWorkflowRequest, WorkflowDocumentResponse, WorkflowResponse,
             WorkflowValidateResponse,
         },
     },
@@ -159,7 +160,7 @@ pub async fn list_workflows(
         ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
     ),
     responses(
-        (status = 200, description = "Workflow detail.", body = WorkflowResponse),
+        (status = 200, description = "Editable workflow snapshot and revision.", body = WorkflowDocumentResponse),
         (status = 400, description = "Invalid workflow identifier.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
@@ -171,15 +172,15 @@ pub async fn get_workflow(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
-) -> ApiResult<Json<WorkflowResponse>> {
+) -> ApiResult<Json<WorkflowDocumentResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
     // Fetch the workflow scoped to the caller's tenant.
-    let definition = state
-        .workflow_definition_scoped(&scope, workflow_id)
+    let (revision, definition) = state
+        .workflow_with_version_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
@@ -198,12 +199,16 @@ pub async fn get_workflow(
     let created_at = extract_timestamp(&definition, "created_at").unwrap_or(0);
     let updated_at = extract_timestamp(&definition, "updated_at").unwrap_or(0);
 
-    Ok(Json(WorkflowResponse {
-        id,
-        name,
-        description,
-        created_at,
-        updated_at,
+    Ok(Json(WorkflowDocumentResponse {
+        definition,
+        revision,
+        workflow: WorkflowResponse {
+            id,
+            name,
+            description,
+            created_at,
+            updated_at,
+        },
     }))
 }
 
@@ -330,7 +335,7 @@ pub async fn create_workflow(
     ),
     request_body = UpdateWorkflowRequest,
     responses(
-        (status = 200, description = "Workflow updated.", body = WorkflowResponse),
+        (status = 200, description = "Workflow saved with its new revision.", body = WorkflowDocumentResponse),
         (status = 400, description = "Validation error or attempt to mutate immutable identity field.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
@@ -344,7 +349,7 @@ pub async fn update_workflow(
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
     ApiJson(payload): ApiJson<UpdateWorkflowRequest>,
-) -> ApiResult<Json<WorkflowResponse>> {
+) -> ApiResult<Json<WorkflowDocumentResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
     let workflow_id = WorkflowId::parse(&id)
@@ -355,6 +360,15 @@ pub async fn update_workflow(
         .workflow_with_version_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
+
+    if payload
+        .expected_revision
+        .is_some_and(|expected| expected != version)
+    {
+        return Err(ApiError::Conflict(
+            "Workflow was modified by another request".into(),
+        ));
+    }
 
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
     // shifts and does not panic on clocks set before 1970, unlike
@@ -436,12 +450,16 @@ pub async fn update_workflow(
     let created_at = extract_timestamp(&definition, "created_at").unwrap_or(0);
     let updated_at = extract_timestamp(&definition, "updated_at").unwrap_or(0);
 
-    Ok(Json(WorkflowResponse {
-        id,
-        name,
-        description,
-        created_at,
-        updated_at,
+    Ok(Json(WorkflowDocumentResponse {
+        revision: version + 1,
+        definition,
+        workflow: WorkflowResponse {
+            id,
+            name,
+            description,
+            created_at,
+            updated_at,
+        },
     }))
 }
 
@@ -498,6 +516,7 @@ pub async fn delete_workflow(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
         ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+        ActivateWorkflowParams,
     ),
     responses(
         (status = 200, description = "Workflow activated.", body = WorkflowResponse),
@@ -515,6 +534,7 @@ pub async fn activate_workflow(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
+    ApiQuery(params): ApiQuery<ActivateWorkflowParams>,
 ) -> ApiResult<Json<WorkflowResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
@@ -527,6 +547,14 @@ pub async fn activate_workflow(
         .workflow_with_version_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
+    if params
+        .expected_revision
+        .is_some_and(|expected| expected != version)
+    {
+        return Err(ApiError::Conflict(
+            "Workflow was modified by another request".into(),
+        ));
+    }
 
     // NOTE: `serde_json::from_value` cannot zero-copy borrow `&str` from a
     // `Value::String`, which causes failures for types like `domain_key::Key<T>`

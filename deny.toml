@@ -40,7 +40,8 @@ allow = [
   "Zlib",
 ]
 confidence-threshold = 0.8
-exceptions = []
+# Egui's bundled fonts only; retain their notices in apps/client/licenses.
+exceptions = [{ crate = "epaint_default_fonts@=0.36.2", allow = ["OFL-1.1", "Ubuntu-font-1.0"] }]
 
 [licenses.private]
 ignore = false
@@ -138,11 +139,13 @@ deny = [
     "nebula-worker-bin",
   ], reason = "Storage is exec-layer; business and core crates must not depend on it directly" },
 
-  # Shared wire data is consumed through the technical API and curated SDK.
+  # Shared wire data is consumed through the technical API, curated SDK and
+  # first-party HTTP client. The client cannot depend on runtime/storage crates.
   { crate = "nebula-api-contract", wrappers = [
     "nebula-api",
     "nebula-sdk",
-  ], reason = "Transport contract is Core shared infrastructure; supported consumers are API and SDK" },
+    "nebula-client",
+  ], reason = "Transport contract is Core shared infrastructure; consumers are API, SDK and first-party HTTP client" },
 
   # nebula-storage-port is the Core-tier storage contract: object-safe
   # repository traits, port-local DTO rows, the plain-data `Scope` value
