@@ -100,6 +100,7 @@ impl ClientApp {
                     return;
                 };
                 let id = draft.base.workflow.id.clone();
+                self.workbench.history_requested = true;
                 self.dispatch(context, Operation::History(id));
             },
             Intent::LoadExecution(id) => self.dispatch(context, Operation::Status(id)),

@@ -22,9 +22,9 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
     };
     let execution = draft.execution_id.clone();
     let busy = workbench.session.busy();
-    // The list loads once per opened workflow and again after a start, without a click.
+    // The list loads once per opened workflow and again after a start, without a click. The app marks
+    // it requested only when the request starts, so losing a frame to another request asks again.
     if !workbench.history_requested && !busy {
-        workbench.history_requested = true;
         intents.push(Intent::LoadRecentRuns);
     }
     follow(ui, workbench, execution.as_deref(), intents, busy);
