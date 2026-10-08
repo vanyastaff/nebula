@@ -27,6 +27,12 @@ client does not start a server or worker.
   over the canvas. A side panel shows the add-node palette (the action catalog when the
   server publishes one, or a typed action key) or the inspector of the selected node: rename,
   literal parameters as JSON, connections, removal.
+- **Node sidebar.** Selecting a node slides in a panel with Parameters, Settings and Output.
+  Parameters is a form built from the action's schema (`GET /actions/{key}` → `parameters`, the
+  `nebula-schema` wire format): every field kind and widget, groups, conditional visibility and
+  requirement, Fixed/Expression per field, Reset to the default, a readiness line and inline
+  checks. A field type newer than the client stays editable as JSON; without a schema the tab says
+  why and offers the parameters as JSON.
 - **Runs.** Recent runs load when a workflow opens and after every start. The chosen run is
   followed until it ends, with each node's status, output preview and failure reason.
 - **Keyboard.** Ctrl+S saves, Ctrl+Enter runs, Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y undo and redo,
@@ -38,9 +44,11 @@ A rejected save or publication names the server's first validation paths. The AP
 report which revision is published, so the editor says "Published" only for a revision it saw
 the server publish in this session.
 
-Not in this release: editing expression or template parameters, an action catalog on this
-server (its composition attaches no action registry, so the catalog answers 503 and the
-palette asks for a typed key), managed local launch, packaging and updates.
+Not in this release: template and reference parameters (shown, edited as JSON), select options
+and inputs that a server loader resolves, file uploads, and an action catalog on the bundled
+server: its composition attaches no action registry, so `/actions` answers 503, the palette asks
+for a typed key and the node form falls back to JSON. Also managed local launch, packaging and
+updates.
 
 ## Structure
 
