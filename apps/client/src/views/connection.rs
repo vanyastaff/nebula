@@ -69,13 +69,12 @@ fn workspace_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut In
         widgets::labeled_field(ui, "Organization", &mut workbench.form.organization, false);
         widgets::labeled_field(ui, "Workspace", &mut workbench.form.workspace, false);
         ui.add_space(theme::SPACE_SM);
-        if ui
-            .add_sized(
-                [ui.available_width(), 40.0],
-                widgets::primary_button("Open workspace"),
-            )
-            .clicked()
-        {
+        // An empty slug would make every workspace request fail before it reaches the server.
+        let ready = !workbench.form.organization.trim().is_empty()
+            && !workbench.form.workspace.trim().is_empty();
+        let open = widgets::primary_button("Open workspace")
+            .min_size(egui::vec2(ui.available_width(), 40.0));
+        if ui.add_enabled(ready, open).clicked() {
             intents.push(Intent::OpenWorkspace);
         }
         if workbench.workspace_open()

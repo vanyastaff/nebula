@@ -217,11 +217,15 @@ impl Workbench {
         self.connection = Some(connection);
     }
 
-    /// Scopes the session to the form's workspace. Returns false until a sign-in has completed.
+    /// Scopes the session to the form's workspace. Returns false until a sign-in has completed and both
+    /// slugs are filled in.
     pub(crate) fn open_workspace(&mut self) -> bool {
         let (Some(connection), Some(profile)) = (&self.connection, &self.profile) else {
             return false;
         };
+        if self.form.organization.trim().is_empty() || self.form.workspace.trim().is_empty() {
+            return false;
+        }
         self.session.switch(Some(SessionContext {
             endpoint: connection.endpoint().into(),
             principal: profile.user_id.clone(),

@@ -140,6 +140,28 @@ fn conflict_marks_the_draft_for_review_without_discarding_it() {
 }
 
 #[test]
+fn a_blank_slug_never_opens_a_workspace() {
+    let mut workbench = Workbench::new(String::new());
+    workbench.begin_sign_in(Connection::new("http://127.0.0.1:8080").unwrap());
+    workbench.profile = Some(
+        serde_json::from_value(json!({
+            "user_id": "user_fixture",
+            "email": "fixture@example.test",
+            "display_name": "Fixture",
+            "email_verified": true,
+            "mfa_enabled": false,
+            "tokens_count": 1
+        }))
+        .unwrap(),
+    );
+    workbench.form.organization = "personal".into();
+    workbench.form.workspace = "   ".into();
+
+    assert!(!workbench.open_workspace());
+    assert!(!workbench.workspace_open());
+}
+
+#[test]
 fn unsaved_edits_allow_saving_but_not_running_the_published_version() {
     let mut draft = Draft::new(snapshot(1, 7)).unwrap();
     assert_eq!(
