@@ -747,6 +747,14 @@ pub(crate) fn default_state(
         registry.all_resources().map(|(_plugin, factory)| factory),
     )?);
 
+    // The action catalog lists exactly what this release can run: the frozen plugin factories,
+    // with their admitted metadata and parameter schemas, so editors can build node forms. It is
+    // read-only here; execution keeps resolving actions through the frozen registry.
+    let action_catalog = Arc::new(nebula_engine::ActionRegistry::new());
+    for (_plugin, factory) in registry.all_actions() {
+        action_catalog.register_factory(Arc::clone(factory));
+    }
+
     // Identity is assembled by `build_auth_backend` on the admitted deployment
     // database before serving; secret admission failure aborts startup.
 
@@ -840,6 +848,7 @@ pub(crate) fn default_state(
     )
     .with_workflow_activation(activation)
     .with_workflow_start(start)
+    .with_action_registry(action_catalog)
     .with_resource_store(Arc::clone(&resource_store))
     // Resources run in worker processes; their status is read back from
     // what those workers publish on the same backend.
@@ -1392,6 +1401,47 @@ mod tests {
         assert_eq!(registrars.len(), expected.len());
         for kind in &expected {
             assert!(registrars.contains(kind), "`{kind}` must be registrable");
+        }
+    }
+
+    /// The catalog API lists the actions this release runs, with their admitted
+    /// schemas; without the registry `/actions` answered 503 and editors could
+    /// only edit node parameters as raw JSON.
+    #[tokio::test]
+    async fn default_state_lists_the_release_actions_in_the_catalog() {
+        let mut api_config = nebula_api::ApiConfig::for_test();
+        api_config.execution = nebula_api::config::ExecutionStoreConfig {
+            backend: nebula_api::config::ExecutionBackendKind::Memory,
+            db_path: String::new(),
+        };
+        let metrics = std::sync::Arc::new(nebula_metrics::MetricsRegistry::new());
+        let stores = super::build_execution_stores(&api_config, None, &metrics)
+            .await
+            .expect("in-memory execution stores");
+        let registry =
+            crate::transport::worker_registry(Ok("71".repeat(32))).expect("linked plugin registry");
+        let expected: Vec<String> = registry
+            .all_actions()
+            .map(|(_plugin, factory)| factory.metadata().base().key().as_str().to_owned())
+            .collect();
+        assert!(!expected.is_empty(), "the linked release ships actions");
+
+        let state = super::default_state(&api_config, metrics, stores, registry, None)
+            .expect("default state composes");
+
+        let catalog = state
+            .action_registry
+            .as_ref()
+            .expect("the action catalog is wired");
+        for key in &expected {
+            let action = nebula_core::ActionKey::new(key).expect("admitted action key");
+            let (metadata, _) = catalog
+                .get_factory(&action)
+                .unwrap_or_else(|| panic!("`{key}` must be listed"));
+            assert!(
+                serde_json::to_value(metadata.base().schema()).is_ok(),
+                "`{key}` exposes its parameter schema"
+            );
         }
     }
 
