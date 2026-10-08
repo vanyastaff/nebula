@@ -106,24 +106,24 @@ fn clearing_a_parameter_that_is_not_set_is_not_an_undo_step() {
 #[test]
 fn keystrokes_of_one_typing_session_are_one_undo_step() {
     let mut draft = Draft::new(snapshot(1, 7)).unwrap();
-    for text in ["h", "he", "hel"] {
+    for text in ["4", "42", "420"] {
         draft
             .type_parameter("echo", "message", Some(literal(json!(text))), 1)
             .unwrap();
     }
     assert_eq!(
         draft.definition["nodes"][0]["parameters"]["message"]["value"],
-        "hel"
+        "420"
     );
     // A new session in the same field, or another edit in between, starts a new step.
     draft
-        .type_parameter("echo", "message", Some(literal(json!("help"))), 2)
+        .type_parameter("echo", "message", Some(literal(json!("4200"))), 2)
         .unwrap();
 
     draft.undo().unwrap();
     assert_eq!(
         draft.definition["nodes"][0]["parameters"]["message"]["value"],
-        "hel"
+        "420"
     );
     draft.undo().unwrap();
     assert_eq!(
