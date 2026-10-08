@@ -78,8 +78,8 @@ const MFA_CHALLENGE_TTL: Duration = Duration::from_mins(5);
 /// Email-verification + password-reset token lifetime.
 const VERIFICATION_TTL: Duration = Duration::from_hours(1);
 
-/// Minimum password length accepted by [`register_user`] and
-/// [`complete_password_reset`].
+/// Minimum password length accepted by [`AuthBackend::register_user`] and
+/// [`AuthBackend::complete_password_reset`].
 const MIN_PASSWORD_LEN: usize = 8;
 
 /// `verification_tokens.kind` literal for password-reset tokens.
