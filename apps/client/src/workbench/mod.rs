@@ -13,10 +13,31 @@ use nebula_api_contract::v1::{
     me::MeResponse,
     workflow::{WorkflowDocumentResponse, WorkflowResponse},
 };
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+/// How many workspaces the workspace page offers again.
+const RECENT_WORKSPACES: usize = 5;
+
+/// A workspace the user opened before.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WorkspaceRef {
+    pub(crate) organization: String,
+    pub(crate) workspace: String,
+}
+
+/// What the app keeps between launches. It never holds a secret: no password, code or token.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Remembered {
+    pub(crate) endpoint: String,
+    pub(crate) email: String,
+    pub(crate) mode: SignInMode,
+    /// Most recent first.
+    pub(crate) recent: Vec<WorkspaceRef>,
+}
+
 /// How the sign-in form authenticates.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum SignInMode {
     #[default]
     Password,
@@ -243,6 +264,8 @@ pub(crate) struct Workbench {
     pub(crate) zoom: f32,
     pub(crate) add_node: AddNodeForm,
     pub(crate) catalog: Catalog,
+    /// Workspaces that listed successfully, most recent first.
+    pub(crate) recent: Vec<WorkspaceRef>,
 }
 
 /// A card being dragged. The offset is in screen pixels, so the card follows the pointer.
@@ -329,7 +352,43 @@ impl Workbench {
             zoom: 1.0,
             add_node: AddNodeForm::default(),
             catalog: Catalog::NotRequested,
+            recent: Vec::new(),
         }
+    }
+
+    /// Fills the sign-in form and the recent workspaces from the previous launch. An empty remembered
+    /// address keeps the default one.
+    pub(crate) fn restore(&mut self, remembered: Remembered) {
+        if !remembered.endpoint.trim().is_empty() {
+            self.form.endpoint = remembered.endpoint;
+        }
+        self.form.email = remembered.email;
+        self.form.mode = remembered.mode;
+        self.recent = remembered.recent;
+        self.recent.truncate(RECENT_WORKSPACES);
+    }
+
+    pub(crate) fn remembered(&self) -> Remembered {
+        Remembered {
+            endpoint: self.form.endpoint.clone(),
+            email: self.form.email.clone(),
+            mode: self.form.mode,
+            recent: self.recent.clone(),
+        }
+    }
+
+    /// Moves the open workspace to the front of the recent list once the server has answered for it.
+    fn remember_workspace(&mut self) {
+        let Some(context) = &self.session.context else {
+            return;
+        };
+        let opened = WorkspaceRef {
+            organization: context.organization.clone(),
+            workspace: context.workspace_selector.clone(),
+        };
+        self.recent.retain(|known| *known != opened);
+        self.recent.insert(0, opened);
+        self.recent.truncate(RECENT_WORKSPACES);
     }
 
     pub(crate) fn is_signed_in(&self) -> bool {
@@ -491,6 +550,8 @@ impl Workbench {
                 self.navigator.workflows = page.workflows;
                 self.navigator.total = page.total;
                 self.navigator.page = page.page;
+                // Only a workspace the server answered for is worth offering again.
+                self.remember_workspace();
             },
             Reply::Created(document) => self.receive_created(document),
             Reply::Loaded(document) => self.receive_loaded(document),

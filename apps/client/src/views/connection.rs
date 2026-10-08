@@ -145,17 +145,45 @@ fn password_fields(ui: &mut egui::Ui, workbench: &mut Workbench) {
     }
 }
 
+/// Workspaces this app opened before, one click each. The server has no endpoint that lists them.
+fn recent_workspaces(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
+    if workbench.recent.is_empty() {
+        return;
+    }
+    widgets::caption(ui, "Recent");
+    let mut chosen = None;
+    for recent in &workbench.recent {
+        let row = egui::Button::new(
+            RichText::new(format!("{} / {}", recent.organization, recent.workspace)).strong(),
+        )
+        .right_text(RichText::new("Open").color(theme::ACCENT))
+        .truncate()
+        .min_size(egui::vec2(ui.available_width(), 36.0));
+        if ui.add(row).clicked() {
+            chosen = Some(recent.clone());
+        }
+    }
+    if let Some(recent) = chosen {
+        workbench.form.organization = recent.organization;
+        workbench.form.workspace = recent.workspace;
+        intents.push(Intent::OpenWorkspace);
+    }
+    ui.add_space(theme::SPACE_SM);
+    ui.separator();
+}
+
 fn workspace_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
     widgets::title(ui, "Choose a workspace");
     if let Some(profile) = &workbench.profile {
         widgets::caption(ui, format!("Signed in as {}.", profile.email));
     }
-    widgets::caption(
-        ui,
-        "Enter the organization and workspace slug or ID provided by your server.",
-    );
     ui.add_space(theme::SPACE_MD);
     ui.add_enabled_ui(!workbench.session.busy(), |ui| {
+        recent_workspaces(ui, workbench, intents);
+        widgets::caption(
+            ui,
+            "Enter the organization and workspace slug or ID provided by your server.",
+        );
         widgets::labeled_field(ui, "Organization", &mut workbench.form.organization, false);
         widgets::labeled_field(ui, "Workspace", &mut workbench.form.workspace, false);
         ui.add_space(theme::SPACE_SM);

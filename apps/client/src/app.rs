@@ -7,7 +7,7 @@ use crate::{
     transport::{Connection, SignIn},
     views::{Intent, Intents, connection, editor, navigator, runs, shell},
     widgets,
-    workbench::{SignInMode, Workbench},
+    workbench::{Remembered, SignInMode, Workbench},
 };
 use eframe::egui;
 use nebula_api_contract::v1::auth::{LoginRequest, SecretString};
@@ -23,8 +23,15 @@ impl ClientApp {
     /// Create a workbench; native runtime construction is fallible.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Result<Self, std::io::Error> {
         theme::install(&cc.egui_ctx);
+        let mut workbench = Workbench::new(default_endpoint());
+        if let Some(remembered) = cc
+            .storage
+            .and_then(|storage| eframe::get_value::<Remembered>(storage, REMEMBERED_KEY))
+        {
+            workbench.restore(usable(remembered));
+        }
         Ok(Self {
-            workbench: Workbench::new(default_endpoint()),
+            workbench,
             effects: Effects::new()?,
         })
     }
@@ -132,6 +139,11 @@ impl ClientApp {
 }
 
 impl eframe::App for ClientApp {
+    /// Keeps the server address, email, sign-in mode and recent workspaces; never a secret.
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, REMEMBERED_KEY, &self.workbench.remembered());
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.receive();
         if self.workbench.navigator.take_refresh() {
@@ -226,6 +238,20 @@ impl eframe::App for ClientApp {
             self.run_intent(ui.ctx(), intent);
         }
     }
+}
+
+const REMEMBERED_KEY: &str = "nebula-client-remembered";
+
+/// The browser build signs in against the page's own origin, so a remembered address is not reused.
+#[cfg(target_arch = "wasm32")]
+fn usable(mut remembered: Remembered) -> Remembered {
+    remembered.endpoint.clear();
+    remembered
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const fn usable(remembered: Remembered) -> Remembered {
+    remembered
 }
 
 #[cfg(target_arch = "wasm32")]

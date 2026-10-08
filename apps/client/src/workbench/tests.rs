@@ -312,6 +312,68 @@ fn a_completed_sign_in_clears_every_secret() {
     assert!(!workbench.form.mfa_required);
 }
 
+fn list_once(workbench: &mut Workbench, organization: &str, workspace: &str) {
+    workbench.session.switch(Some(SessionContext {
+        endpoint: "https://one.test/".into(),
+        principal: "usr_one".into(),
+        organization: organization.into(),
+        workspace_selector: workspace.into(),
+    }));
+    let listed: ListWorkflowsResponse =
+        serde_json::from_value(json!({"workflows": [], "total": 0, "page": 1, "page_size": 25}))
+            .unwrap();
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(stamp, RequestKind::Read, Ok(Reply::Listed(listed)));
+}
+
+#[test]
+fn a_listed_workspace_moves_to_the_front_of_recent_without_duplicates() {
+    let mut workbench = Workbench::new(String::new());
+    for index in 0..7 {
+        list_once(&mut workbench, "org", &format!("ws{index}"));
+    }
+    list_once(&mut workbench, "org", "ws3");
+
+    let names: Vec<&str> = workbench
+        .recent
+        .iter()
+        .map(|recent| recent.workspace.as_str())
+        .collect();
+    assert_eq!(names, ["ws3", "ws6", "ws5", "ws4", "ws2"]);
+}
+
+#[test]
+fn a_workspace_the_server_refused_is_not_remembered() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(stamp, RequestKind::Read, Err(Failure::Forbidden));
+
+    assert!(workbench.recent.is_empty());
+}
+
+#[test]
+fn remembered_settings_round_trip_without_secrets() {
+    let mut workbench = Workbench::new(SERVER.into());
+    workbench.form.email = "fixture@example.test".into();
+    workbench.form.password = "fixture-secret".into();
+    workbench.form.set_mode(SignInMode::Token);
+    workbench.form.token = "nbt_fixture".into();
+    list_once(&mut workbench, "personal", "default");
+
+    let remembered = workbench.remembered();
+    let stored = serde_json::to_string(&remembered).unwrap();
+    assert!(!stored.contains("fixture-secret") && !stored.contains("nbt_fixture"));
+
+    let mut restored = Workbench::new("http://default.test".into());
+    restored.restore(remembered);
+    assert_eq!(restored.form.endpoint, SERVER);
+    assert_eq!(restored.form.email, "fixture@example.test");
+    assert_eq!(restored.form.mode, SignInMode::Token);
+    assert_eq!(restored.recent.len(), 1);
+}
+
 #[test]
 fn a_started_run_asks_for_the_recent_runs_again() {
     let mut workbench = Workbench::new(String::new());
