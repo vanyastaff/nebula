@@ -61,24 +61,84 @@ async fn rejected_startup(overrides: &[(&str, &str)], diagnostic: &str) {
 }
 
 #[tokio::test]
-async fn postgres_auth_requires_postgres_deployment_before_opening_sqlite() {
+async fn removed_postgres_auth_selector_fails_before_opening_sqlite() {
     rejected_startup(
         &[("API_AUTH_BACKEND", "postgres")],
-        "API_AUTH_BACKEND=postgres requires API_EXECUTION_BACKEND=postgres",
+        "API_AUTH_BACKEND has been removed",
     )
     .await;
 }
 
 #[tokio::test]
-async fn sqlite_auth_rejects_a_different_deployment_before_opening_storage() {
+async fn removed_sqlite_auth_selector_fails_before_opening_storage() {
     rejected_startup(
         &[
             ("API_AUTH_BACKEND", "sqlite"),
             ("API_EXECUTION_BACKEND", "memory"),
         ],
-        "API_AUTH_BACKEND=sqlite requires API_EXECUTION_BACKEND=sqlite",
+        "API_AUTH_BACKEND has been removed",
     )
     .await;
+}
+
+#[tokio::test]
+async fn removed_auth_selector_cannot_silently_override_the_deployment() {
+    for value in ["", "memory", "sqlite", "submitted-secret-canary"] {
+        rejected_startup(
+            &[("API_AUTH_BACKEND", value)],
+            "API_AUTH_BACKEND has been removed",
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn setup_rejects_removed_auth_configuration_before_creating_storage() {
+    let output = invoke_with_environment(
+        &["setup", "status"],
+        &[
+            ("API_EXECUTION_BACKEND", "sqlite"),
+            ("API_EXECUTION_DB_PATH", "deployment.db"),
+            ("API_AUTH_BACKEND", "submitted-secret-canary"),
+        ],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("API_AUTH_BACKEND has been removed"));
+    assert!(!diagnostic.contains("submitted-secret-canary"));
+}
+
+#[cfg(any(unix, windows))]
+#[tokio::test]
+async fn non_unicode_auth_selector_cannot_be_treated_as_absent() {
+    #[cfg(windows)]
+    let value = {
+        use std::os::windows::ffi::OsStringExt;
+        std::ffi::OsString::from_wide(&[0xd800])
+    };
+    #[cfg(unix)]
+    let value = {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(vec![0xff])
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nebula-server"));
+    command
+        .args(["setup", "status"])
+        .env_clear()
+        .env("API_EXECUTION_BACKEND", "sqlite")
+        .env("API_EXECUTION_DB_PATH", "deployment.db")
+        .env("API_AUTH_BACKEND", value)
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("API_AUTH_BACKEND has been removed"));
+    assert_eq!(directory.path().read_dir().unwrap().count(), 0);
 }
 
 #[tokio::test]

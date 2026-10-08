@@ -500,12 +500,14 @@ silently-shipped endpoint cannot pass review.
 
 ### `me/*` and Plane-A auth durability (canon §11.6 / §11.5)
 
-The profile, PAT, password, MFA, session, and Plane-A OAuth paths are implemented
-for the selectable identity backends. `API_AUTH_BACKEND` defaults to `memory`;
-`sqlite` shares the SQLite execution deployment pool and persists identity across restart;
-`postgres` is available when `nebula-server` is built with the `postgres` feature
-and `DATABASE_URL` is reachable. An explicitly requested Postgres backend fails
-closed instead of silently falling back to memory.
+The profile, PAT, password, MFA, session, and Plane-A OAuth paths use the identity
+adapter selected by the first-party deployment database. `API_EXECUTION_BACKEND`
+is the shared selection: `sqlite` persists identity in the execution deployment
+file and pool; `postgres` is available when `nebula-server` is built with the
+`postgres` feature and `DATABASE_URL` is reachable. An unavailable durable backend
+fails closed instead of falling back to memory. `API_AUTH_BACKEND` has been removed;
+setting it rejects configuration with value-free removal guidance. There is no
+independent identity backend to coordinate with execution storage.
 
 | Backend | Restart-survival | Multi-replica share | Intended use |
 |---|---|---|---|
@@ -517,9 +519,14 @@ The Postgres implementation persists users, sessions, PATs, verification tokens,
 OAuth state, and external identity links. OAuth state is consumed atomically
 with provider and expiry predicates; an expired-state cleanup is also attempted
 when a new flow starts. This identity
-backend is separate from tenant-directory policy. The server composes both against the selected
-execution backend and validates a configured bootstrap owner through this identity backend before
-atomically provisioning the organization, default workspace, and owner membership.
+backend is separate from tenant-directory policy. The server composes both against
+the admitted deployment database. Offline `nebula-server setup begin/resume/status`
+enrolls the first unverified account without mail and uses a persisted command to
+provision its organization, default workspace and owner grant. Ordinary password
+login uses that same database. The older environment-driven tenant bootstrap is
+separate: it validates an existing verified owner before atomically provisioning
+the tenant. Neither path starts an execution worker; ordinary API/worker lifecycle
+composition remains unfinished.
 
 ### Credential CRUD durability (canon §11.6 / §12.5)
 
@@ -603,7 +610,7 @@ propagation window). `nebula-storage-port` provides consistent membership snapsh
 and parent-qualified mutations, implemented by its storage backends and wired by
 `apps/server`. The in-memory
 implementation is the §4.5-honest reference backing, with the same
-restart/replica limits as `API_AUTH_BACKEND=memory`.
+restart/replica limits as `API_EXECUTION_BACKEND=memory`.
 
 The technical API `MembershipStore` exposes guarded organization mutations and
 parent-qualified workspace grant list/upsert/remove operations.
@@ -614,16 +621,17 @@ an organization-bound `get_tenant_membership` snapshot. Tests may populate the c
 not part of the production policy trait.
 
 The default server wires one backend-bound tenant directory shared by RBAC, member handlers,
-and credential authority. It does not create a privileged identity implicitly: optional operator
-bootstrap requires explicit stable tenant IDs and an owner already accepted by the configured
-`AuthBackend`.
+and credential authority. It does not create a privileged identity implicitly.
+Offline first-owner setup explicitly creates the account and tenant; optional
+environment-driven bootstrap instead requires stable tenant IDs and an existing
+verified owner in the same deployment database.
 
 | Aspect | First-party tenant membership composition |
 |---|---|
 | Default binary | Wired to the selected memory, SQLite, or PostgreSQL execution backend |
 | Restart-survival | SQLite/PostgreSQL: **yes**; memory: **no** |
 | Multi-replica share | PostgreSQL: **yes**; SQLite/memory: **no** |
-| Provisioning | Explicit operator bootstrap validates the owner identity, then atomically creates the org, default workspace, and owner grant; exact replay is idempotent and mismatches fail closed |
+| Provisioning | Offline first-owner setup persists an unverified account and a resumable tenant command; environment-driven bootstrap accepts an existing verified owner. Tenant acceptance atomically creates the org, default workspace, owner grant and receipt; exact replay acknowledges history without restoring removed authority |
 
 > RBAC applies role enforcement on every
 > `/orgs/{org}/...` and `/orgs/{org}/workspaces/{ws}/...` route — a

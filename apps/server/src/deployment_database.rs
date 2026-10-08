@@ -2,7 +2,7 @@
 
 use nebula_api::{
     ApiConfig,
-    config::{AuthBackendKind, ExecutionBackendKind, ExecutionStoreConfig, IdempotencyBackend},
+    config::{ExecutionBackendKind, ExecutionStoreConfig, IdempotencyBackend},
 };
 
 use crate::compose::TransportInitError;
@@ -135,30 +135,16 @@ impl std::fmt::Debug for DeploymentDatabase {
     }
 }
 
-/// Reject split persistence authorities before creating deployment storage.
+/// Reject incompatible HTTP replay storage before creating the deployment database.
 #[tracing::instrument(skip_all)]
-pub(crate) fn validate_backend_selection(config: &ApiConfig) -> Result<(), TransportInitError> {
-    if config.auth.backend == AuthBackendKind::Sqlite
-        && config.execution.backend != ExecutionBackendKind::Sqlite
+pub(crate) fn validate_idempotency_backend(config: &ApiConfig) -> Result<(), TransportInitError> {
+    if config.execution.backend != ExecutionBackendKind::Postgres
+        && config.idempotency.backend == IdempotencyBackend::Postgres
     {
-        return Err(TransportInitError::AuthBackendUnavailable {
-            requested: "sqlite",
-            requirement: "API_EXECUTION_BACKEND=sqlite so identity shares the deployment database",
+        return Err(TransportInitError::IdempotencyBackendUnavailable {
+            requested: "postgres",
+            requirement: "API_EXECUTION_BACKEND=postgres so HTTP replay shares the deployment database",
         });
-    }
-    if config.execution.backend != ExecutionBackendKind::Postgres {
-        if config.auth.backend == AuthBackendKind::Postgres {
-            return Err(TransportInitError::AuthBackendUnavailable {
-                requested: "postgres",
-                requirement: "API_EXECUTION_BACKEND=postgres so identity shares the deployment database",
-            });
-        }
-        if config.idempotency.backend == IdempotencyBackend::Postgres {
-            return Err(TransportInitError::IdempotencyBackendUnavailable {
-                requested: "postgres",
-                requirement: "API_EXECUTION_BACKEND=postgres so HTTP replay shares the deployment database",
-            });
-        }
     }
     Ok(())
 }
@@ -246,7 +232,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_auth_lifecycle_reopens_and_observes_deployment_pool_shutdown() {
         use nebula_api::{
-            config::{AuthBackendKind, OAuthProvidersConfig},
+            config::OAuthProvidersConfig,
             domain::auth::backend::{
                 AuthError, CreatePatParams, PasswordOutcome, SecretString, SignupRequest, mfa,
             },
@@ -272,7 +258,6 @@ mod tests {
         );
         let auth = crate::compose::build_auth_backend(
             &DeploymentDatabase::Sqlite(deployment),
-            AuthBackendKind::Sqlite,
             OAuthProvidersConfig::default(),
             sink.clone(),
             None,
@@ -333,7 +318,6 @@ mod tests {
         nebula_storage::sqlite::init_schema(&pool).await.unwrap();
         let auth = crate::compose::build_auth_backend(
             &DeploymentDatabase::Sqlite(deployment),
-            AuthBackendKind::Sqlite,
             OAuthProvidersConfig::default(),
             sink.clone(),
             None,
@@ -424,10 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_auth_is_not_exposed_with_rejected_identity_material() {
-        use nebula_api::{
-            config::{AuthBackendKind, OAuthProvidersConfig},
-            ports::email::EchoSink,
-        };
+        use nebula_api::{config::OAuthProvidersConfig, ports::email::EchoSink};
         use nebula_storage::credential::EnvKeyProvider;
         use std::sync::Arc;
         let deployment = nebula_storage::sqlite::DeploymentPool::connect(
@@ -442,7 +423,6 @@ mod tests {
             .bind([1_u8; 16].as_slice()).bind(b"INVALID_FACTOR_CANARY-6a77".as_slice()).execute(&pool).await.unwrap();
         let result = crate::compose::build_auth_backend(
             &DeploymentDatabase::Sqlite(deployment),
-            AuthBackendKind::Sqlite,
             OAuthProvidersConfig::default(),
             Arc::new(EchoSink::default()),
             None,
@@ -502,7 +482,7 @@ mod tests {
         use futures::FutureExt;
         use nebula_api::{
             ApiConfig,
-            config::{AuthBackendKind, IdempotencyBackend},
+            config::IdempotencyBackend,
             domain::auth::backend::{AuthError, SecretString, SignupRequest},
             middleware::idempotency::{CachedResponse, IdempotencyStoreError},
             ports::email::EchoSink,
@@ -537,7 +517,6 @@ mod tests {
                 .expect("SETUP: admitted deployment schema");
             let database = DeploymentDatabase::Postgres(pool.clone());
             let mut config = ApiConfig::for_test();
-            config.auth.backend = AuthBackendKind::Postgres;
             config.idempotency.backend = IdempotencyBackend::Postgres;
             let key_provider = Arc::new(
                 EnvKeyProvider::from_base64("QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=")
@@ -545,7 +524,6 @@ mod tests {
             );
             let auth = crate::compose::build_auth_backend(
                 &database,
-                config.auth.backend.clone(),
                 std::mem::take(&mut config.auth.oauth),
                 Arc::new(EchoSink::default()),
                 None,

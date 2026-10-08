@@ -11,6 +11,16 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Identity follows the deployment database.** `API_AUTH_BACKEND`,
+  `AuthBackendKind` and `AuthApiConfig.backend` are removed. The server derives
+  identity persistence from the admitted `API_EXECUTION_BACKEND` database and
+  reuses its pool, so offline owner setup and ordinary login share the same
+  SQLite or PostgreSQL identity state. Remove `API_AUTH_BACKEND` from existing
+  configuration; its presence is rejected with a value-free diagnostic rather
+  than ignored or treated as an alias. OAuth configuration remains independent
+  of storage selection. This does not change the current execution-backend
+  default or add an ordinary in-process worker.
+
 - **Worker command admission.** Unknown worker arguments now fail with usage
   and exit code 2 instead of being ignored. Both deployment binaries support
   `--help` and `--version` before loading configuration or initializing telemetry

@@ -6,7 +6,7 @@
 use std::io::{IsTerminal, Read, Write};
 
 use nebula_api::{
-    config::{ExecutionBackendKind, ExecutionStoreConfig},
+    config::{ApiConfigError, ExecutionBackendKind, ExecutionStoreConfig},
     domain::auth::backend::password,
 };
 use nebula_core::{OrgId, UserId, WorkspaceId};
@@ -41,6 +41,10 @@ pub(crate) enum SetupError {
     DurableDatabaseRequired,
     #[error("deployment storage configuration is invalid")]
     Configuration,
+    #[error(
+        "API_AUTH_BACKEND has been removed; remove it and select the deployment database with API_EXECUTION_BACKEND"
+    )]
+    IndependentAuthBackendRemoved,
     #[error(
         "setup account input is invalid: use an email, a password of at least 8 bytes, and names of 1..=128 bytes"
     )]
@@ -166,7 +170,10 @@ fn read_password(reader: impl Read) -> Result<Zeroizing<String>, SetupError> {
 }
 
 pub(crate) async fn run(command: SetupCommand) -> Result<(), SetupError> {
-    let config = ExecutionStoreConfig::from_env().map_err(|_| SetupError::Configuration)?;
+    let config = ExecutionStoreConfig::from_env().map_err(|error| match error {
+        ApiConfigError::IndependentAuthBackendRemoved => SetupError::IndependentAuthBackendRemoved,
+        _ => SetupError::Configuration,
+    })?;
     if config.backend == ExecutionBackendKind::Memory {
         return Err(SetupError::DurableDatabaseRequired);
     }

@@ -90,6 +90,9 @@ async fn postgres_operator_cli_uses_the_selected_deployment_database() {
             assert!(output.status.success(), "{output:?}");
             assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "accepted");
         }
+        assert_serving_identity_survives_restart(
+            directory.path(), "postgres", Some(url.as_str()), "Postgres-password-canary-2026",
+        ).await;
     }).catch_unwind().await;
     let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
@@ -111,6 +114,187 @@ const BEGIN: &[&str] = &[
     "--organization-name",
     "My workflows",
 ];
+
+struct ServingProcess {
+    child: tokio::process::Child,
+    output: std::sync::Arc<std::sync::Mutex<ProcessOutput>>,
+    readers: Vec<tokio::task::JoinHandle<()>>,
+    base_url: String,
+}
+
+#[derive(Default)]
+struct ProcessOutput {
+    tail: std::collections::VecDeque<String>,
+    password_disclosed: bool,
+}
+
+impl ServingProcess {
+    async fn start(directory: &Path, backend: &str, dsn: Option<&str>) -> Self {
+        use tokio::io::AsyncBufReadExt;
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nebula-server"));
+        command
+            .env_clear()
+            .env("NEBULA_ENV", "local")
+            .env("API_EXECUTION_BACKEND", backend)
+            .env("API_EXECUTION_DB_PATH", "deployment.db")
+            .env("NEBULA_CRED_DEV_KEY", "1")
+            .env("NEBULA_WORKER_ARTIFACT_SET_DIGEST", "71".repeat(32))
+            .env("SERVER_BIND_ADDRESS", "127.0.0.1:0")
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", "disabled")
+            .env("NO_COLOR", "1")
+            .current_dir(directory)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        if let Some(system_root) = std::env::var_os("SYSTEMROOT") {
+            command.env("SYSTEMROOT", system_root);
+        }
+        if let Some(dsn) = dsn {
+            command.env("DATABASE_URL", dsn);
+        }
+        let mut child = command.spawn().unwrap();
+        let (sender, mut readiness) = tokio::sync::mpsc::channel(1);
+        let output = std::sync::Arc::new(std::sync::Mutex::new(ProcessOutput::default()));
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let streams: Vec<Box<dyn tokio::io::AsyncRead + Unpin + Send>> =
+            vec![Box::new(stdout), Box::new(stderr)];
+        let readers = streams
+            .into_iter()
+            .map(|stream| {
+                let sender = sender.clone();
+                let output = output.clone();
+                tokio::spawn(async move {
+                    let mut lines = tokio::io::BufReader::new(stream).lines();
+                    while let Some(line) = lines.next_line().await.unwrap() {
+                        if line.contains("starting transport") {
+                            // Discover the actual OS-assigned port; never reserve then release one.
+                            let port = line
+                                .split_once("127.0.0.1:")
+                                .unwrap()
+                                .1
+                                .chars()
+                                .take_while(char::is_ascii_digit)
+                                .collect::<String>();
+                            let _ = sender.try_send(format!("http://127.0.0.1:{port}"));
+                        }
+                        // Drain both pipes continuously, retaining only a bounded diagnostic tail.
+                        let mut output = output.lock().unwrap();
+                        output.password_disclosed |= line.contains("password-canary");
+                        if output.tail.len() == 32 {
+                            output.tail.pop_front();
+                        }
+                        output.tail.push_back(line.chars().take(1024).collect());
+                    }
+                })
+            })
+            .collect();
+        drop(sender);
+        let mut server = Self {
+            child,
+            output,
+            readers,
+            base_url: String::new(),
+        };
+        if let Ok(Some(address)) =
+            tokio::time::timeout(Duration::from_secs(30), readiness.recv()).await
+        {
+            server.base_url = address;
+        } else {
+            let diagnostics = server.output.lock().unwrap().tail.clone();
+            server.stop().await;
+            panic!("ordinary server failed to listen: {diagnostics:?}");
+        }
+        server
+    }
+
+    async fn stop(mut self) {
+        self.child.kill().await.unwrap();
+        self.child.wait().await.unwrap();
+        for reader in self.readers {
+            reader.await.unwrap();
+        }
+        assert!(
+            !self.output.lock().unwrap().password_disclosed,
+            "password reached server diagnostics"
+        );
+    }
+}
+
+async fn assert_serving_identity_survives_restart(
+    directory: &Path,
+    backend: &str,
+    dsn: Option<&str>,
+    password: &str,
+) {
+    use futures::FutureExt;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let mut identity = None;
+    let mut session = None;
+    let mut memberships = None;
+    for _ in 0..2 {
+        let server = ServingProcess::start(directory, backend, dsn).await;
+        let result = std::panic::AssertUnwindSafe(async {
+            if let Some(cookie) = &session {
+                let response = client.get(format!("{}/api/v1/me/orgs", server.base_url))
+                    .header(reqwest::header::COOKIE, cookie).send().await.unwrap();
+                assert_eq!(response.status(), 200, "session must survive a process restart");
+                assert_eq!(Some(response.json::<serde_json::Value>().await.unwrap()), memberships);
+            }
+            let response = client.post(format!("{}/api/v1/auth/login", server.base_url))
+                .json(&serde_json::json!({"email":"owner@local.example", "password":password}))
+                .send().await.unwrap();
+            assert_eq!(response.status(), 200, "ordinary serving must find the enrolled owner without an auth selector");
+            let cookie = response.headers().get_all(reqwest::header::SET_COOKIE).iter()
+                .map(|header| header.to_str().unwrap().split(';').next().unwrap())
+                .find(|cookie| cookie.starts_with("__Host-nebula-session="))
+                .expect("HTTP login returns the session cookie").to_owned();
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["user"]["email"], "owner@local.example");
+            assert_eq!(body["user"]["email_verified"], false);
+            if let Some(previous) = &identity {
+                assert_eq!(&body["user"]["user_id"], previous);
+            }
+            identity = Some(body["user"]["user_id"].clone());
+            let response = client.get(format!("{}/api/v1/me/orgs", server.base_url))
+                .header(reqwest::header::COOKIE, &cookie).send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["orgs"].as_array().unwrap().len(), 1);
+            assert_eq!(body["orgs"][0]["role"], "owner");
+            memberships = Some(body);
+            session = Some(cookie);
+            let rejected = client.post(format!("{}/api/v1/auth/login", server.base_url))
+                .json(&serde_json::json!({"email":"owner@local.example", "password":"incorrect-password-canary"}))
+                .send().await.unwrap();
+            assert_eq!(rejected.status(), 401);
+        }).catch_unwind().await;
+        server.stop().await;
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
+#[tokio::test]
+async fn ordinary_sqlite_serving_uses_the_enrolled_owner_without_an_auth_selector() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = invoke(directory.path(), BEGIN, b"Owner-password-canary-2026").await;
+    assert!(output.status.success(), "{output:?}");
+    assert_serving_identity_survives_restart(
+        directory.path(),
+        "sqlite",
+        None,
+        "Owner-password-canary-2026",
+    )
+    .await;
+}
 
 #[tokio::test]
 async fn offline_owner_setup_is_durable_and_does_not_verify_email_or_issue_session() {

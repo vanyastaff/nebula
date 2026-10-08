@@ -27,9 +27,9 @@ pub use errors::ApiConfigError;
 pub use jwt::JwtSecret;
 pub use oauth::{OAuthProviderConfig, OAuthProvidersConfig};
 pub use sub::{
-    AuthApiConfig, AuthBackendKind, CorsConfig, ExecutionBackendKind, ExecutionStoreConfig,
-    IdempotencyApiConfig, IdempotencyBackend, PaginationConfig, SmtpEmailConfig, SmtpTlsMode,
-    TlsConfig, VersioningConfig, WebhookApiConfig,
+    AuthApiConfig, CorsConfig, ExecutionBackendKind, ExecutionStoreConfig, IdempotencyApiConfig,
+    IdempotencyBackend, PaginationConfig, SmtpEmailConfig, SmtpTlsMode, TlsConfig,
+    VersioningConfig, WebhookApiConfig,
 };
 
 use std::{net::SocketAddr, sync::OnceLock, time::Duration};
@@ -134,10 +134,8 @@ pub struct ApiConfig {
 
     /// Plane-A authentication subsystem configuration.
     ///
-    /// Drives the composition root's selection between the dev-only
-    /// in-memory `AuthBackend` and storage-backed `DurableAuthBackend`. The
-    /// backend selector is bound to `API_AUTH_BACKEND`
-    /// (case-insensitive `memory` / `postgres`).
+    /// Identity persistence follows the deployment database selected by
+    /// [`ExecutionStoreConfig`]; only authentication policy is configured here.
     #[serde(default)]
     pub auth: AuthApiConfig,
 
@@ -318,7 +316,6 @@ impl ApiConfig {
             "idempotency: config loaded"
         );
         let auth = Self::auth_from_env()?;
-        tracing::info!(backend = ?auth.backend, "auth: config loaded");
         let execution = ExecutionStoreConfig::from_env()?;
         tracing::info!(backend = ?execution.backend, db_path = %execution.db_path, "execution-stores: config loaded");
         let smtp = Self::smtp_from_env()?;
@@ -361,27 +358,13 @@ impl ApiConfig {
     }
 
     fn auth_from_env() -> Result<AuthApiConfig, ApiConfigError> {
-        let backend = match std::env::var("API_AUTH_BACKEND") {
-            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "memory" => AuthBackendKind::Memory,
-                "sqlite" => AuthBackendKind::Sqlite,
-                "postgres" => AuthBackendKind::Postgres,
-                _ => {
-                    return Err(ApiConfigError::ParseEnum {
-                        var: "AUTH_BACKEND",
-                        raw,
-                    });
-                },
-            },
-            Err(_) => AuthBackendKind::Memory,
-        };
         // OAuth providers config: scan env vars per OAuthProvider
         // variant for `API_AUTH_OAUTH_<PROVIDER>_*` (T2.2). Returns
         // empty when no provider is declared, so existing operators
         // who never set the env vars keep the legacy behavior
         // (start_oauth returns ProviderNotConfigured per ADR-0085 D-6).
         let oauth = OAuthProvidersConfig::from_env()?;
-        Ok(AuthApiConfig { backend, oauth })
+        Ok(AuthApiConfig { oauth })
     }
 
     fn idempotency_from_env() -> Result<IdempotencyApiConfig, ApiConfigError> {

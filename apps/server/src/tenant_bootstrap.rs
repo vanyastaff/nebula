@@ -6,7 +6,7 @@
 
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc};
 
-use nebula_api::config::AuthBackendKind;
+use nebula_api::config::ExecutionBackendKind;
 use nebula_api::domain::auth::backend::{AuthBackend, AuthError, UserProfile};
 use nebula_core::{OrgId, Slug, SlugKind, UserId, WorkspaceId};
 use nebula_storage_port::{
@@ -150,8 +150,8 @@ pub(crate) enum TenantBootstrapError {
     InvalidValue(&'static str),
     #[error("tenant bootstrap request is invalid")]
     InvalidRequest,
-    #[error("tenant bootstrap requires API_AUTH_BACKEND=sqlite or postgres")]
-    DurableAuthRequired,
+    #[error("tenant bootstrap requires API_EXECUTION_BACKEND=sqlite or postgres")]
+    DurableDeploymentRequired,
     #[error("tenant bootstrap owner does not exist in the selected authentication backend")]
     OwnerNotFound,
     #[error("tenant bootstrap owner must have a verified email")]
@@ -168,12 +168,12 @@ pub(crate) enum TenantBootstrapError {
     PreexistingTenant,
 }
 
-pub(crate) fn validate_auth_backend(
+pub(crate) fn validate_deployment_backend(
     config: Option<&TenantBootstrapConfig>,
-    backend: &AuthBackendKind,
+    backend: &ExecutionBackendKind,
 ) -> Result<(), TenantBootstrapError> {
-    if config.is_some() && matches!(backend, AuthBackendKind::Memory) {
-        return Err(TenantBootstrapError::DurableAuthRequired);
+    if config.is_some() && matches!(backend, ExecutionBackendKind::Memory) {
+        return Err(TenantBootstrapError::DurableDeploymentRequired);
     }
     Ok(())
 }
@@ -333,19 +333,21 @@ mod tests {
     }
 
     #[test]
-    fn enabled_bootstrap_requires_durable_authentication() {
+    fn enabled_bootstrap_requires_a_durable_deployment() {
         let values = complete_values();
         let config = TenantBootstrapConfig::from_lookup(|name| values.get(name).cloned())
             .unwrap()
             .unwrap();
 
         assert!(matches!(
-            validate_auth_backend(Some(&config), &AuthBackendKind::Memory),
-            Err(TenantBootstrapError::DurableAuthRequired)
+            validate_deployment_backend(Some(&config), &ExecutionBackendKind::Memory),
+            Err(TenantBootstrapError::DurableDeploymentRequired)
         ));
-        assert!(validate_auth_backend(Some(&config), &AuthBackendKind::Postgres).is_ok());
-        assert!(validate_auth_backend(Some(&config), &AuthBackendKind::Sqlite).is_ok());
-        assert!(validate_auth_backend(None, &AuthBackendKind::Memory).is_ok());
+        assert!(
+            validate_deployment_backend(Some(&config), &ExecutionBackendKind::Postgres).is_ok()
+        );
+        assert!(validate_deployment_backend(Some(&config), &ExecutionBackendKind::Sqlite).is_ok());
+        assert!(validate_deployment_backend(None, &ExecutionBackendKind::Memory).is_ok());
     }
 
     #[test]

@@ -27,9 +27,10 @@ cargo run -p nebula-server -- --transport realtime
 Argument errors are reported before telemetry or database initialization.
 Credential keys, worker artifact identity, tenant bootstrap settings and the
 selected bind-address override are checked before opening deployment storage.
-PostgreSQL auth and HTTP replay require `API_EXECUTION_BACKEND=postgres` and
-reuse its admitted pool. Incompatible backend selections fail before storage
-creation; these adapters never open independent connections from `DATABASE_URL`.
+Identity follows `API_EXECUTION_BACKEND` and reuses the admitted deployment pool.
+PostgreSQL HTTP replay also requires that deployment backend. Incompatible replay
+selection and the removed `API_AUTH_BACKEND` variable fail before storage creation;
+these adapters never open independent connections from `DATABASE_URL`.
 
 Deployment configuration lives in environment variables; the
 canonical registry is `crates/api/src/config/env.rs`. The composition
@@ -156,8 +157,9 @@ profile uses one shared `InMemoryIdentityDirectory`. Tenant changes are visible
 to RBAC and the credential authority through the same durable source.
 
 Composition never creates an implicit owner or tenant. A fresh database has an
-empty directory until the operator bootstrap path provisions stable organization,
-workspace, and owner IDs for an already-authenticatable user. Missing membership
+empty directory until explicit operator provisioning: `setup begin` creates the
+first account and tenant as described above, while the older environment-driven
+bootstrap provisions a tenant for an existing verified account. Missing membership
 denies access, while storage and malformed-data failures remain redacted as 503.
 
 Bootstrap is opt-in and runs before the HTTP listener starts. Set all eight
@@ -174,13 +176,15 @@ variables or none of them:
 | `NEBULA_BOOTSTRAP_WORKSPACE_NAME` | Default workspace display name. |
 | `NEBULA_BOOTSTRAP_OWNER_USER_ID` | Existing `usr_<ULID>` identity with verified email. |
 
-Bootstrap requires durable auth (`API_AUTH_BACKEND=sqlite` or `postgres`)
-on the matching deployment database. The process-local memory
+Bootstrap requires a durable deployment (`API_EXECUTION_BACKEND=sqlite` or
+`postgres`), whose database also holds identity. The process-local memory
 backend starts empty and cannot contain a pre-existing verified owner before
 the listener starts, so enabling bootstrap with it fails during startup.
 
-Create and verify the owner in the selected `API_AUTH_BACKEND` first. Startup
-then writes the organization, default workspace, `OrgOwner` membership and a
+For this bootstrap path, create and verify the owner in the deployment database
+first. Offline first-owner setup does not require verification and does not use
+these environment variables. Environment-driven bootstrap at startup writes
+the organization, default workspace, `OrgOwner` membership and a
 permanent request receipt in one storage transaction. Restarting with exactly
 the same values acknowledges historical acceptance; it does not assert present
 membership or recreate an archived/purged tenant. Partial configuration, changed
@@ -268,17 +272,23 @@ cargo build --release -p nebula-server --features postgres
 
 ## Identity backend and Plane-A OAuth
 
-`API_AUTH_BACKEND` selects the Plane-A identity adapter. PostgreSQL requires
-the PostgreSQL execution deployment and shares its admitted pool with HTTP
-replay, tenancy and credentials. Missing feature support, incompatible backend
-selection or unavailable storage aborts startup without a memory fallback.
-SQLite requires `API_EXECUTION_BACKEND=sqlite`, uses its existing pool and
-persists users, sessions, PATs, MFA and OAuth state in the deployment file.
+`API_EXECUTION_BACKEND` selects the deployment database for execution, tenancy,
+credentials and Plane-A identity. Identity is derived from the admitted database;
+there is no independent identity-store selector. Remove `API_AUTH_BACKEND` from
+existing configuration: setting it is an error, even when its value matches the
+deployment backend. The diagnostic never repeats the submitted value.
+
+PostgreSQL identity shares the admitted deployment pool. Missing feature support
+or unavailable storage aborts startup without a memory fallback. SQLite uses its
+existing pool and persists users, sessions, PATs, MFA and OAuth state in the
+deployment file. `setup begin` and subsequent ordinary server startup therefore
+use the same identity database when given the same deployment configuration.
 Startup authenticates stored identity envelopes before exposing the backend;
 explicitly configured old keys permit rotation, never plaintext adoption.
-This does not yet provide offline first-owner enrollment or an in-process worker.
+Offline first-owner enrollment is available through `setup`; ordinary server
+startup still does not launch an in-process execution worker.
 
-| `API_AUTH_BACKEND` | Identity backend | Durability |
+| `API_EXECUTION_BACKEND` | Identity backend | Durability |
 |--------------------|------------------|------------|
 | **unset** / `memory` | `InMemoryAuthBackend` | Process-local; lost on restart and not shared across replicas |
 | `sqlite` | `DurableAuthBackend` with SQLite persistence | Identity survives restart in the execution deployment file; shares its pool and shutdown |
@@ -369,9 +379,10 @@ lifecycle:
 2. `OAuthIdentityRuntime::from_config` returns `None` for an empty provider set;
    no OAuth HTTP client or egress capability exists in that process.
 3. A non-empty set is moved out of `ApiConfig` into exactly one opaque runtime
-   before the Memory/Postgres branch. The router config retains an empty OAuth
-   map; the selected backend receives the same `Arc`, and neither backend
-   constructs a client or retains raw/duplicate provider secrets.
+   before selecting the admitted deployment's identity adapter. The router
+   config retains an empty OAuth map; the selected backend receives the same
+   `Arc`, and no backend constructs a client or retains raw/duplicate provider
+   secrets.
 
 The runtime fixes the production egress policy: rustls HTTPS only; redirects,
 retries, and proxies disabled; every literal/DNS address must be globally
