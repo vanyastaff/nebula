@@ -37,6 +37,7 @@ enum Gesture {
     Select { id: String, name: String },
     Connect { from: String, to: String },
     Place { id: String, at: Pos2 },
+    AddAfter { id: String, name: String },
 }
 
 /// Top-left corners of the cards, in canvas units. Columns follow the longest path from any source. The
@@ -282,6 +283,38 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench) {
                         at,
                     });
                 }
+                // The "+" after the output port adds a node that connects to this one.
+                let plus_center = out_port(card) + Vec2::new(22.0 * zoom, 0.0);
+                let plus = Rect::from_center_size(plus_center, Vec2::splat(20.0 * zoom));
+                painter.line_segment(
+                    [out_port(card), plus_center - Vec2::new(10.0 * zoom, 0.0)],
+                    Stroke::new(1.6 * zoom, theme::EDGE),
+                );
+                painter.rect(
+                    plus,
+                    theme::RADIUS_SM,
+                    theme::SURFACE,
+                    Stroke::new(1.0, theme::BORDER),
+                    StrokeKind::Inside,
+                );
+                painter.text(
+                    plus_center,
+                    Align2::CENTER_CENTER,
+                    "+",
+                    FontId::proportional(14.0 * zoom),
+                    theme::TEXT,
+                );
+                let add = ui.interact(
+                    plus,
+                    egui::Id::new(("workflow-add-after", node.id.as_str())),
+                    Sense::click(),
+                );
+                if add.clicked() {
+                    gestures.push(Gesture::AddAfter {
+                        id: node.id.clone(),
+                        name: node.name.clone(),
+                    });
+                }
                 let out = ui.interact(
                     Rect::from_center_size(out_port(card), Vec2::splat(PORT_HIT * zoom)),
                     egui::Id::new(("workflow-out", node.id.as_str())),
@@ -324,6 +357,13 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench) {
             },
             Gesture::Connect { from, to } => connect(workbench, &from, &to),
             Gesture::Place { id, at } => place(workbench, &id, at),
+            Gesture::AddAfter { id, name } => {
+                workbench.add_node.connect_from = Some(id);
+                workbench.add_node.open_requested = true;
+                workbench
+                    .feedback
+                    .info(format!("The next node you add will connect after {name}."));
+            },
         }
     }
 }

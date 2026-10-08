@@ -3,7 +3,7 @@ use super::{Intent, Intents};
 use crate::{
     theme,
     widgets::{self, Tone},
-    workbench::{Workbench, draft_gate},
+    workbench::Workbench,
 };
 use eframe::egui;
 use nebula_api_contract::v1::execution::{ExecutionNodeOutput, ExecutionStatus};
@@ -15,25 +15,9 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         return;
     };
     let execution = draft.execution_id.clone();
-    let can_run = draft_gate(draft).can_run;
-    let pending = draft.start_key.is_some();
-    widgets::caption(
-        ui,
-        "Runs the server's published version. Save and publish your changes first.",
-    );
+    // Starting a run lives under the canvas; this panel reads what the server recorded.
     ui.add_enabled_ui(!workbench.session.busy(), |ui| {
         ui.horizontal_wrapped(|ui| {
-            let label = if pending {
-                "Reconcile pending run"
-            } else {
-                "Run workflow"
-            };
-            if ui
-                .add_enabled(can_run || pending, widgets::primary_button(label))
-                .clicked()
-            {
-                intents.push(Intent::RunDraft);
-            }
             if ui.button("Recent runs").clicked() {
                 intents.push(Intent::LoadRecentRuns);
             }

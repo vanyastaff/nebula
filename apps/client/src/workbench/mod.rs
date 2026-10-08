@@ -172,6 +172,10 @@ pub(crate) struct NodeDrag {
 pub(crate) struct AddNodeForm {
     pub(crate) action_key: String,
     pub(crate) name: String,
+    /// Node the new one connects after, set by the "+" on an output port.
+    pub(crate) connect_from: Option<String>,
+    /// Asks the form to open for one frame, so the "+" on the canvas reveals it.
+    pub(crate) open_requested: bool,
 }
 
 /// Which draft commands are safe to offer. Views disable the rest.

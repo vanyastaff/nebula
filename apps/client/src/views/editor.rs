@@ -21,6 +21,8 @@ struct DraftView {
     gate: DraftGate,
     can_undo: bool,
     can_redo: bool,
+    /// A run was accepted but its receipt is unknown, so the same start must be reconciled.
+    pending_run: bool,
     remote: Option<RemoteView>,
 }
 
@@ -41,6 +43,7 @@ impl DraftView {
             gate: draft_gate(draft),
             can_undo: draft.can_undo(),
             can_redo: draft.can_redo(),
+            pending_run: draft.start_key.is_some(),
             remote: draft.remote.as_ref().map(|remote| RemoteView {
                 revision: remote.revision,
                 nodes: remote.definition["nodes"].clone(),
@@ -87,6 +90,7 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         ui.add_space(theme::SPACE_LG);
         widgets::section(ui, "Graph");
         canvas::show(ui, workbench);
+        run_button(ui, &view, intents);
         add_node_form(ui, workbench);
         ui.add_space(theme::SPACE_LG);
         inspector::show(ui, workbench);
@@ -175,32 +179,71 @@ fn reconciliation(ui: &mut egui::Ui, workbench: &mut Workbench, remote: &RemoteV
     });
 }
 
-fn add_node_form(ui: &mut egui::Ui, workbench: &mut Workbench) {
-    egui::CollapsingHeader::new("Add node").show(ui, |ui| {
-        widgets::labeled_field(
-            ui,
-            "Action key (for example json_transform)",
-            &mut workbench.add_node.action_key,
-            false,
-        );
-        widgets::labeled_field(
-            ui,
-            "Display name (optional)",
-            &mut workbench.add_node.name,
-            false,
-        );
-        widgets::caption(
-            ui,
-            "The new node starts without parameters. The server checks required inputs when you publish.",
-        );
-        let key = workbench.add_node.action_key.trim().to_owned();
+/// The primary run action under the canvas, as in node editors. It runs the server's current publication,
+/// so it stays disabled while the draft has unsaved or unreviewed changes.
+fn run_button(ui: &mut egui::Ui, view: &DraftView, intents: &mut Intents) {
+    ui.add_space(theme::SPACE_SM);
+    ui.vertical_centered(|ui| {
+        let (label, enabled) = if view.pending_run {
+            ("Reconcile pending run", true)
+        } else {
+            ("Execute workflow", view.gate.can_run)
+        };
         if ui
-            .add_enabled(!key.is_empty(), widgets::primary_button("Add node"))
+            .add_enabled(enabled, widgets::primary_button(label))
             .clicked()
         {
-            add_node(workbench, &key);
+            intents.push(Intent::RunDraft);
         }
     });
+}
+
+fn add_node_form(ui: &mut egui::Ui, workbench: &mut Workbench) {
+    // A "+" on the canvas asks for the form to open once, so the user sees where the new node goes.
+    let open = std::mem::take(&mut workbench.add_node.open_requested);
+    egui::CollapsingHeader::new("Add node")
+        .open(open.then_some(true))
+        .show(ui, |ui| {
+            if let Some(from) = workbench.add_node.connect_from.clone() {
+                let source = workbench
+                    .session
+                    .draft()
+                    .map_or_else(|| from.clone(), |draft| draft.node_name(&from));
+                ui.horizontal_wrapped(|ui| {
+                    widgets::caption(ui, format!("The new node connects after {source}."));
+                    if ui.button("Clear").clicked() {
+                        workbench.add_node.connect_from = None;
+                    }
+                });
+            }
+            add_node_fields(ui, workbench);
+        });
+}
+
+fn add_node_fields(ui: &mut egui::Ui, workbench: &mut Workbench) {
+    widgets::labeled_field(
+        ui,
+        "Action key (for example json_transform)",
+        &mut workbench.add_node.action_key,
+        false,
+    );
+    widgets::labeled_field(
+        ui,
+        "Display name (optional)",
+        &mut workbench.add_node.name,
+        false,
+    );
+    widgets::caption(
+        ui,
+        "The new node starts without parameters. The server checks required inputs when you publish.",
+    );
+    let key = workbench.add_node.action_key.trim().to_owned();
+    if ui
+        .add_enabled(!key.is_empty(), widgets::primary_button("Add node"))
+        .clicked()
+    {
+        add_node(workbench, &key);
+    }
 }
 
 fn add_node(workbench: &mut Workbench, action_key: &str) {
@@ -215,11 +258,19 @@ fn add_node(workbench: &mut Workbench, action_key: &str) {
     };
     match draft.add_node(action_key, &name) {
         Ok(id) => {
+            let linked = workbench
+                .add_node
+                .connect_from
+                .take()
+                .map(|from| draft.connect(&from, &id));
             workbench.selected_node = Some(id);
             workbench.rename.clone_from(&name);
             workbench.parameter.close();
             workbench.add_node = AddNodeForm::default();
-            workbench.feedback.info(format!("Added {name}."));
+            match linked {
+                Some(Err(error)) => workbench.feedback.error(error.to_string()),
+                _ => workbench.feedback.info(format!("Added {name}.")),
+            }
         },
         Err(error) => workbench.feedback.error(error.to_string()),
     }
