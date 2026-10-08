@@ -219,6 +219,11 @@ fn status(ui: &mut egui::Ui, workbench: &Workbench) {
             };
             ui.label(RichText::new(shown).monospace().color(theme::TEXT_MUTED));
         }
+        // Why a node failed is the first thing a person looks for, so it is shown where the node is.
+        if let Some(error) = &node.error {
+            let reason = error.message.as_deref().unwrap_or(&error.category);
+            ui.label(RichText::new(format!("{}: {reason}", error.code)).color(theme::DANGER));
+        }
     }
     ui.collapsing("Execution details", |ui| {
         widgets::caption(ui, &status.execution.id);

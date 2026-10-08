@@ -171,8 +171,9 @@ impl eframe::App for ClientApp {
                 });
             if has_draft {
                 egui::Panel::bottom("runs")
-                    .default_size(240.0)
-                    .size_range(170.0..=480.0)
+                    // Tall enough for a run's status, a node and its error without scrolling.
+                    .default_size(260.0)
+                    .size_range(230.0..=520.0)
                     .resizable(true)
                     .frame(theme::panel(theme::SIDEBAR))
                     .show(ui, |ui| {
