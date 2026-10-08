@@ -2,9 +2,10 @@
 
 use nebula_api_contract::v1::{
     auth::{LoginRequest, LoginResponse},
-    catalog::{ActionParametersResponse, ListActionsResponse},
+    catalog::{ActionDetailResponse, ActionParametersResponse, ListActionsResponse},
     execution::{
-        ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse, StartExecutionRequest,
+        ExecutionDetailResponse, ExecutionResponse, ExecutionStatus, ListExecutionsResponse,
+        StartExecutionRequest,
     },
     health::VersionInfo,
     me::MeResponse,
@@ -27,6 +28,20 @@ const MAX_BODY: usize = 1024 * 1024;
 
 /// Workflows per list page, shared by the request and the navigator's paging.
 pub(crate) const PAGE_SIZE: usize = 25;
+
+/// An execution status as the API spells it in history filters and receipts, such as `timed_out`.
+pub(crate) const fn status_key(status: ExecutionStatus) -> &'static str {
+    match status {
+        ExecutionStatus::Created => "created",
+        ExecutionStatus::Running => "running",
+        ExecutionStatus::Paused => "paused",
+        ExecutionStatus::Cancelling => "cancelling",
+        ExecutionStatus::Completed => "completed",
+        ExecutionStatus::Failed => "failed",
+        ExecutionStatus::Cancelled => "cancelled",
+        ExecutionStatus::TimedOut => "timed_out",
+    }
+}
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub(crate) enum Failure {
@@ -224,6 +239,11 @@ impl Connection {
     /// The action catalog. A server without an action registry answers 503, which the caller reports.
     pub(crate) async fn actions(&self) -> Result<ListActionsResponse, Failure> {
         self.read(self.url(&["actions"])?).await
+    }
+
+    /// One action's description, version and isolation level.
+    pub(crate) async fn action(&self, key: &str) -> Result<ActionDetailResponse, Failure> {
+        self.read(self.url(&["actions", key])?).await
     }
 
     /// One action's parameter schema, from which the node form is built.

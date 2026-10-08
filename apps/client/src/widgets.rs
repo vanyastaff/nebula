@@ -80,6 +80,29 @@ pub(crate) fn segmented<T: Copy + PartialEq>(
     });
 }
 
+/// The letter a mark shows for a name: its first letter or digit, upper-cased.
+pub(crate) fn initial(name: &str) -> String {
+    name.chars()
+        .find(|character| character.is_alphanumeric())
+        .map_or_else(|| "?".to_owned(), |first| first.to_uppercase().collect())
+}
+
+/// Makes a drawn card one click target: anywhere on it activates it, the pointer shows it can be
+/// clicked, it takes keyboard focus, and assistive technology reads it as a button named `label`.
+pub(crate) fn card_clicked(card: &egui::Response, label: &str, enabled: bool) -> bool {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let mut response = card.interact(sense);
+    if enabled {
+        response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, label));
+    response.clicked()
+}
+
 /// A rounded square with a letter, the shape of a node badge on the canvas. The brand uses it too.
 pub(crate) fn mark(ui: &mut egui::Ui, letter: &str, color: Color32, side: f32) {
     let (square, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
@@ -164,6 +187,28 @@ pub(crate) fn link(ui: &mut egui::Ui, text: &str, active: bool) -> egui::Respons
     ui.add(egui::Button::new(RichText::new(text).size(theme::SIZE_SMALL).color(color)).frame(false))
 }
 
+/// A labelled value in a read-only field, selectable, with a Copy button: an address, a secret
+/// shown once, an identity.
+pub(crate) fn copyable(ui: &mut egui::Ui, label: &str, value: &str) {
+    caption(ui, label);
+    ui.horizontal(|ui| {
+        // A `&str` buffer is read-only: the value can be selected but not edited.
+        let mut text = value;
+        ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .font(egui::TextStyle::Monospace)
+                .desired_width((ui.available_width() - 70.0).max(80.0)),
+        );
+        if ui
+            .button("Copy")
+            .on_hover_text(format!("Copy the {}", label.to_lowercase()))
+            .clicked()
+        {
+            ui.ctx().copy_text(value.to_owned());
+        }
+    });
+}
+
 /// A hairline across the width with a short word in its middle, such as "or" between two ways in.
 pub(crate) fn divider_label(ui: &mut egui::Ui, text: &str) {
     let galley = ui.painter().layout_no_wrap(
@@ -182,8 +227,11 @@ pub(crate) fn divider_label(ui: &mut egui::Ui, text: &str) {
         .hline(rect.left()..=rect.center().x - half, y, stroke);
     ui.painter()
         .hline(rect.center().x + half..=rect.right(), y, stroke);
-    ui.painter()
-        .galley(rect.center() - galley.size() / 2.0, galley, theme::TEXT_MUTED);
+    ui.painter().galley(
+        rect.center() - galley.size() / 2.0,
+        galley,
+        theme::TEXT_MUTED,
+    );
 }
 
 pub(crate) fn caption(ui: &mut egui::Ui, text: impl Into<String>) {
@@ -195,19 +243,22 @@ pub(crate) fn caption(ui: &mut egui::Ui, text: impl Into<String>) {
 }
 
 pub(crate) fn badge(ui: &mut egui::Ui, text: impl Into<String>, tone: Tone) {
+    const PADDING: egui::Vec2 = egui::vec2(8.0, 3.0);
     let (foreground, background) = tone.colors();
-    egui::Frame::new()
-        .fill(background)
-        .corner_radius(theme::RADIUS_SM)
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.label(
-                RichText::new(text.into())
-                    .color(foreground)
-                    .size(theme::SIZE_BODY)
-                    .strong(),
-            );
-        });
+    let galley = egui::WidgetText::from(RichText::new(text.into()).size(theme::SIZE_BODY).strong())
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        );
+    // Sized to its text, so a tall row around it does not stretch it.
+    let (rect, response) =
+        ui.allocate_exact_size(galley.size() + 2.0 * PADDING, egui::Sense::hover());
+    let label = galley.text().to_owned();
+    ui.painter().rect_filled(rect, theme::RADIUS_SM, background);
+    ui.painter().galley(rect.min + PADDING, galley, foreground);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &label));
 }
 
 /// Full-width message for feedback or a warning that needs attention.

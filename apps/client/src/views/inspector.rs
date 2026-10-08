@@ -1,7 +1,7 @@
 //! The node sidebar, which slides in from the right when a node is selected. Parameters are a form built
 //! from the action's schema; Settings hold the name, connections, removal and the raw parameter JSON;
 //! Output shows what the node produced in the chosen run. Every change here is a local draft command.
-use super::{Intent, Intents, form, runs};
+use super::{Intent, Intents, form, status};
 use crate::{
     document::{Draft, Link, catalog_key, expression, literal},
     schema::display,
@@ -120,8 +120,12 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
 /// The node's badge, name and action, with Close. Returns true when Close was clicked.
 fn header(ui: &mut egui::Ui, node: &NodeView) -> bool {
     ui.horizontal(|ui| {
-        let letter: String = node.name.chars().take(1).collect::<String>().to_uppercase();
-        widgets::mark(ui, &letter, theme::node_accent(&node.action), 32.0);
+        widgets::mark(
+            ui,
+            &widgets::initial(&node.name),
+            theme::node_accent(&node.action),
+            32.0,
+        );
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.label(
@@ -159,7 +163,7 @@ fn parameters(
             loading(ui);
         },
         Some(SchemaState::Loading) => loading(ui),
-        Some(SchemaState::Ready(schema)) if schema.free_form => {
+        Some(SchemaState::Ready(schema)) if schema.any_value => {
             widgets::caption(
                 ui,
                 "This action takes free-form input that no form describes. Edit it as JSON.",
@@ -290,7 +294,11 @@ fn output(ui: &mut egui::Ui, workbench: &Workbench, node: &NodeView) {
         widgets::caption(ui, "The chosen run did not reach this node.");
         return;
     };
-    widgets::badge(ui, runs::node_status_label(result.status), Tone::Neutral);
+    widgets::badge(
+        ui,
+        status::node_label(result.status),
+        status::node_tone(result.status),
+    );
     ui.add_space(theme::SPACE_SM);
     match &result.output {
         Some(ExecutionNodeOutput::Inline { value }) => {

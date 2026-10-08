@@ -299,10 +299,11 @@ fn problem(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-/// A required field still waiting for its value: a reminder, not yet an error.
+/// A required field still waiting for its value: a reminder, not yet an error. The same form serves
+/// nodes, credentials and the catalog's preview, so it does not say what the value is needed for.
 fn needed(ui: &mut egui::Ui) {
     ui.label(
-        RichText::new("Needs a value before the workflow is published.")
+        RichText::new("Required; not set yet.")
             .color(theme::WARNING)
             .size(theme::SIZE_SMALL),
     );
@@ -1078,6 +1079,11 @@ fn object_control(
     id: egui::Id,
     values: &Values,
 ) -> bool {
+    // An object whose schema declares no fields (a condition tree, free-form options) takes any
+    // shape, so it is written as JSON rather than drawn as an empty card.
+    if fields.is_empty() {
+        return json_control(ui, value, id);
+    }
     let mut map = value.as_object().cloned().unwrap_or_default();
     let all: Vec<&Field> = fields.iter().collect();
     let changed = match widget {

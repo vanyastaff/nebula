@@ -7,15 +7,27 @@ use crate::{
     api::{Backend, SignedIn},
     clock,
     session::{RequestStamp, SessionContext},
-    transport::{Failure, SignIn},
+    transport::{ExecutionQuery, Failure, SignIn},
 };
 use eframe::egui;
 use nebula_api_contract::v1::{
-    catalog::{ActionParametersResponse, ListActionsResponse},
-    execution::{ExecutionDetailResponse, ExecutionResponse, ExecutionStatus, ListExecutionsResponse},
+    catalog::{ActionDetailResponse, ActionParametersResponse, ListActionsResponse},
+    credential::{
+        CreateCredentialRequest, CredentialResponse, ListCredentialTypesResponse,
+        ListCredentialsResponse, TestCredentialResponse,
+    },
+    execution::{
+        ExecutionDetailResponse, ExecutionResponse, ExecutionStatus, ListExecutionsResponse,
+    },
+    me::{CreateTokenRequest, CreateTokenResponse, MeResponse, MyTokensResponse, UpdateMeRequest},
+    org::{AddMemberRequest, MemberSummary, MembersResponse},
+    webhook::{RegisterWebhookRequest, RegisterWebhookResponse},
     workflow::{
         CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowDocumentRequest,
         WorkflowDocumentResponse,
+    },
+    workspace_membership::{
+        UpsertWorkspaceMemberRequest, WorkspaceMemberSummary, WorkspaceMembersResponse,
     },
 };
 use std::sync::{
@@ -40,6 +52,52 @@ pub(crate) enum Operation {
     Actions,
     /// One action's parameter schema.
     Action(String),
+    /// One action's description, for the catalog page.
+    ActionDetail(String),
+    /// The workspace's execution history, as the executions page filters it.
+    Executions(ExecutionQuery),
+    /// One execution for the executions page's detail.
+    Execution(String),
+    Cancel(String),
+    /// Starts a published workflow again from the executions page.
+    Rerun(String, String),
+    CredentialTypes,
+    Credentials,
+    CreateCredential(CreateCredentialRequest),
+    DeleteCredential(String),
+    TestCredential(String),
+    /// Every workflow's document, for the triggers bound in their definitions.
+    Documents,
+    /// Replaces a workflow's trigger bindings, fenced by its revision.
+    SaveTriggers(String, UpdateWorkflowDocumentRequest),
+    RegisterWebhook(RegisterWebhookRequest),
+    Profile,
+    UpdateProfile(UpdateMeRequest),
+    Tokens,
+    CreateToken(CreateTokenRequest),
+    RevokeToken(String),
+    OrgMembers,
+    AddOrgMember(AddMemberRequest),
+    RemoveOrgMember(String),
+    WorkspaceMembers,
+    SetWorkspaceMember(String, UpsertWorkspaceMemberRequest),
+    RemoveWorkspaceMember(String),
+}
+
+/// The page data a request reads or changes, so its failure lands in the right place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Target {
+    Workflows,
+    ActionDetail,
+    Executions,
+    Execution,
+    CredentialTypes,
+    Credentials,
+    Triggers,
+    Profile,
+    Tokens,
+    OrgMembers,
+    WorkspaceMembers,
 }
 
 /// What a completed request was for. Reducers use it to decide what a failure means for a draft.
@@ -55,6 +113,10 @@ pub(crate) enum RequestKind {
     Schema,
     /// Recent runs, whose failure the runs panel shows in place of the list.
     History,
+    /// A page reads its data; a failure is shown where the data would be.
+    Load(Target),
+    /// A page changes something; a failure is reported and the page keeps what it showed.
+    Change(Target),
 }
 
 impl Operation {
@@ -68,7 +130,34 @@ impl Operation {
             Self::Actions => RequestKind::Catalog,
             Self::Action(_) => RequestKind::Schema,
             Self::History(..) => RequestKind::History,
-            Self::List(_) | Self::Load(_) | Self::Status(_) => RequestKind::Read,
+            Self::List(_) => RequestKind::Load(Target::Workflows),
+            Self::Load(_) | Self::Status(_) => RequestKind::Read,
+            Self::ActionDetail(_) => RequestKind::Load(Target::ActionDetail),
+            Self::Executions(_) => RequestKind::Load(Target::Executions),
+            Self::Execution(_) => RequestKind::Load(Target::Execution),
+            Self::Cancel(_) => RequestKind::Change(Target::Execution),
+            Self::Rerun(..) => RequestKind::Change(Target::Executions),
+            Self::CredentialTypes => RequestKind::Load(Target::CredentialTypes),
+            Self::Credentials => RequestKind::Load(Target::Credentials),
+            Self::CreateCredential(_) | Self::DeleteCredential(_) | Self::TestCredential(_) => {
+                RequestKind::Change(Target::Credentials)
+            },
+            Self::Documents => RequestKind::Load(Target::Triggers),
+            Self::SaveTriggers(..) | Self::RegisterWebhook(_) => {
+                RequestKind::Change(Target::Triggers)
+            },
+            Self::Profile => RequestKind::Load(Target::Profile),
+            Self::UpdateProfile(_) => RequestKind::Change(Target::Profile),
+            Self::Tokens => RequestKind::Load(Target::Tokens),
+            Self::CreateToken(_) | Self::RevokeToken(_) => RequestKind::Change(Target::Tokens),
+            Self::OrgMembers => RequestKind::Load(Target::OrgMembers),
+            Self::AddOrgMember(_) | Self::RemoveOrgMember(_) => {
+                RequestKind::Change(Target::OrgMembers)
+            },
+            Self::WorkspaceMembers => RequestKind::Load(Target::WorkspaceMembers),
+            Self::SetWorkspaceMember(..) | Self::RemoveWorkspaceMember(_) => {
+                RequestKind::Change(Target::WorkspaceMembers)
+            },
         }
     }
 }
@@ -89,6 +178,34 @@ pub(crate) enum Reply {
     Status(Box<ExecutionDetailResponse>),
     Actions(ListActionsResponse),
     Action(String, Box<ActionParametersResponse>),
+    ActionDetail(Box<ActionDetailResponse>),
+    /// A history page, and whether it extends the shown list rather than replacing it.
+    Executions(ListExecutionsResponse, bool),
+    Execution(Box<ExecutionDetailResponse>),
+    Cancelled(ExecutionResponse),
+    Rerun(ExecutionResponse),
+    CredentialTypes(ListCredentialTypesResponse),
+    Credentials(ListCredentialsResponse),
+    CredentialCreated(Box<CredentialResponse>),
+    CredentialDeleted(String),
+    CredentialTested(String, TestCredentialResponse),
+    Documents(Vec<WorkflowDocumentResponse>),
+    TriggersSaved(Box<WorkflowDocumentResponse>),
+    WebhookRegistered {
+        workflow: String,
+        trigger: String,
+        response: RegisterWebhookResponse,
+    },
+    Profile(MeResponse),
+    Tokens(MyTokensResponse),
+    TokenCreated(CreateTokenResponse),
+    TokenRevoked(String),
+    OrgMembers(MembersResponse),
+    OrgMemberAdded(MemberSummary),
+    OrgMemberRemoved(String),
+    WorkspaceMembers(WorkspaceMembersResponse),
+    WorkspaceMemberSet(WorkspaceMemberSummary),
+    WorkspaceMemberRemoved(String),
 }
 
 pub(crate) type Completion = (RequestStamp, RequestKind, Result<Reply, Failure>);
@@ -141,6 +258,88 @@ async fn perform(
             .action_parameters(&key)
             .await
             .map(|schema| Reply::Action(key, Box::new(schema))),
+        Operation::ActionDetail(key) => backend
+            .action(&key)
+            .await
+            .map(|detail| Reply::ActionDetail(Box::new(detail))),
+        Operation::Executions(query) => {
+            let appending = query.cursor.is_some();
+            backend
+                .executions(&scope, &query)
+                .await
+                .map(|page| Reply::Executions(page, appending))
+        },
+        Operation::Execution(id) => backend
+            .execution(&scope, &id)
+            .await
+            .map(|detail| Reply::Execution(Box::new(detail))),
+        Operation::Cancel(id) => backend.cancel(&scope, &id).await.map(Reply::Cancelled),
+        Operation::Rerun(workflow, key) => backend
+            .start(&scope, &workflow, &key)
+            .await
+            .map(Reply::Rerun),
+        Operation::CredentialTypes => backend.credential_types().await.map(Reply::CredentialTypes),
+        Operation::Credentials => backend.credentials(&scope).await.map(Reply::Credentials),
+        Operation::CreateCredential(request) => backend
+            .create_credential(&scope, &request)
+            .await
+            .map(|created| Reply::CredentialCreated(Box::new(created))),
+        Operation::DeleteCredential(id) => backend
+            .delete_credential(&scope, &id)
+            .await
+            .map(|_| Reply::CredentialDeleted(id)),
+        Operation::TestCredential(id) => backend
+            .test_credential(&scope, &id)
+            .await
+            .map(|result| Reply::CredentialTested(id, result)),
+        Operation::Documents => backend
+            .workflow_documents(&scope)
+            .await
+            .map(Reply::Documents),
+        Operation::SaveTriggers(id, request) => backend
+            .save_workflow(&scope, &id, &request)
+            .await
+            .map(|document| Reply::TriggersSaved(Box::new(document))),
+        Operation::RegisterWebhook(request) => backend
+            .register_webhook(&scope, &request)
+            .await
+            .map(|response| Reply::WebhookRegistered {
+                workflow: request.workflow_id.clone(),
+                trigger: request.trigger_id.clone(),
+                response,
+            }),
+        Operation::Profile => backend.me().await.map(Reply::Profile),
+        Operation::UpdateProfile(request) => backend.update_me(&request).await.map(Reply::Profile),
+        Operation::Tokens => backend.tokens().await.map(Reply::Tokens),
+        Operation::CreateToken(request) => backend
+            .create_token(&request)
+            .await
+            .map(Reply::TokenCreated),
+        Operation::RevokeToken(id) => backend
+            .revoke_token(&id)
+            .await
+            .map(|_| Reply::TokenRevoked(id)),
+        Operation::OrgMembers => backend.org_members(&scope).await.map(Reply::OrgMembers),
+        Operation::AddOrgMember(request) => backend
+            .add_org_member(&scope, &request)
+            .await
+            .map(Reply::OrgMemberAdded),
+        Operation::RemoveOrgMember(principal) => backend
+            .remove_org_member(&scope, &principal)
+            .await
+            .map(|_| Reply::OrgMemberRemoved(principal)),
+        Operation::WorkspaceMembers => backend
+            .workspace_members(&scope)
+            .await
+            .map(Reply::WorkspaceMembers),
+        Operation::SetWorkspaceMember(principal, request) => backend
+            .set_workspace_member(&scope, &principal, &request)
+            .await
+            .map(Reply::WorkspaceMemberSet),
+        Operation::RemoveWorkspaceMember(principal) => backend
+            .remove_workspace_member(&scope, &principal)
+            .await
+            .map(|_| Reply::WorkspaceMemberRemoved(principal)),
     }
 }
 
@@ -181,13 +380,13 @@ impl Effects {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn spawn(&self, work: impl std::future::Future<Output = ()> + Send + 'static) {
+    fn spawn(&self, work: impl Future<Output = ()> + Send + 'static) {
         self.runtime.spawn(work);
     }
 
     /// The browser runs futures on its one thread, so they need not be `Send`.
     #[cfg(target_arch = "wasm32")]
-    fn spawn(&self, work: impl std::future::Future<Output = ()> + 'static) {
+    fn spawn(&self, work: impl Future<Output = ()> + 'static) {
         wasm_bindgen_futures::spawn_local(work);
     }
 

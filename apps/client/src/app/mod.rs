@@ -1,19 +1,29 @@
-//! Application shell. Owns the workbench state and the effect runner, lays out the panels and
-//! turns the intents that views emitted into network requests.
+//! Application shell. Owns the workbench state and the effect runner, lays out the top bar, the
+//! navigation and the page, turns the intents that views emitted into requests, and keeps the
+//! execution watch on whatever run the visible page shows.
+
+mod pages;
+
 use crate::{
-    document::new_workflow_request,
     api::Backend,
     demo::Demo,
+    document::new_workflow_request,
     effects::{Effects, Operation},
     theme,
     transport::{Connection, SignIn},
-    views::{Intent, Intents, connection, editor, navigator, runs, shell},
+    views::{
+        Intent, Intents, catalog, connection, credentials, editor, executions, nav, runs, settings,
+        shell, team, triggers, workflows,
+    },
     widgets,
-    workbench::{Remembered, SignInMode, Workbench},
+    workbench::{Page, Remembered, SignInMode, Workbench},
 };
 use eframe::egui;
 use nebula_api_contract::v1::auth::{LoginRequest, SecretString};
 use zeroize::Zeroizing;
+
+/// Width of the navigation rail on wide windows.
+const RAIL_WIDTH: f32 = 196.0;
 
 /// Native and web workbench. The renderer never waits for network I/O.
 pub struct ClientApp {
@@ -54,9 +64,6 @@ impl ClientApp {
         let Some(stamp) = stamp else {
             return false;
         };
-        if matches!(operation, Operation::History(..) | Operation::Status(_)) {
-            self.workbench.runs_read_at = Some(context.input(|input| input.time));
-        }
         let session = self.workbench.session.context.clone();
         self.effects
             .start(context, stamp, backend, session, operation);
@@ -77,12 +84,10 @@ impl ClientApp {
             Intent::OpenDemo => self.open_demo(context),
             Intent::OpenWorkspace => {
                 if self.workbench.open_workspace() {
-                    self.dispatch(context, Operation::List(1));
+                    self.list_workflows(context, 1);
                 }
             },
-            Intent::ListWorkflows(page) => {
-                self.dispatch(context, Operation::List(page));
-            },
+            Intent::ListWorkflows(page) => self.list_workflows(context, page),
             Intent::CreateWorkflow => {
                 let request = new_workflow_request(&self.workbench.navigator.new_name);
                 self.dispatch(context, Operation::Create(request));
@@ -130,8 +135,7 @@ impl ClientApp {
                     draft.start_key = Some(key);
                 }
             },
-            Intent::LoadRecentRuns => self.read_runs(context, false),
-            Intent::RefreshRuns => self.read_runs(context, true),
+            Intent::RefreshRuns => self.read_runs(context),
             Intent::LoadExecution(id) => {
                 self.dispatch(context, Operation::Status(id));
             },
@@ -145,17 +149,26 @@ impl ClientApp {
                     self.workbench.begin_schema(&action);
                 }
             },
+            page => self.run_page_intent(context, page),
         }
     }
 
-    /// Reads the open workflow's recent runs, and with `with_status` the chosen run as well.
-    fn read_runs(&mut self, context: &egui::Context, with_status: bool) {
+    fn list_workflows(&mut self, context: &egui::Context, page: usize) {
+        if self.dispatch(context, Operation::List(page)) {
+            self.workbench.navigator.read.begin();
+        }
+    }
+
+    /// Reads the open workflow's recent runs and the chosen run.
+    fn read_runs(&mut self, context: &egui::Context) {
         let Some(workflow) = self.open_workflow() else {
             return;
         };
-        let execution = with_status
-            .then(|| self.workbench.session.draft()?.execution_id.clone())
-            .flatten();
+        let execution = self
+            .workbench
+            .session
+            .draft()
+            .and_then(|draft| draft.execution_id.clone());
         if self.dispatch(context, Operation::History(workflow, execution)) {
             self.workbench.recent_runs_requested();
         }
@@ -200,6 +213,87 @@ impl ClientApp {
         for (stamp, kind, result) in self.effects.completions() {
             self.workbench.receive(stamp, kind, result);
         }
+        for (generation, result) in self.effects.watch_events() {
+            self.workbench.receive_watch(generation, result);
+        }
+    }
+
+    /// Streams the run the visible page shows while it can still change, and stops otherwise.
+    fn reconcile_watch(&mut self, context: &egui::Context) {
+        let wanted = self.workbench.wanted_watch();
+        if wanted.as_deref() == self.effects.watched() {
+            return;
+        }
+        match (
+            wanted,
+            self.workbench.backend.clone(),
+            self.workbench.session.context.clone(),
+        ) {
+            (Some(execution), Some(backend), Some(session)) => self.effects.watch(
+                context,
+                self.workbench.session.generation(),
+                backend,
+                session,
+                execution,
+            ),
+            _ => self.effects.stop_watch(),
+        }
+    }
+
+    /// The editor: the node panel and the runs panel around the canvas.
+    fn editor_page(&mut self, ui: &mut egui::Ui, intents: &mut Intents, wide: bool) {
+        let workbench = &mut self.workbench;
+        let has_draft = workbench.session.draft().is_some();
+        if wide && has_draft {
+            // The node sidebar slides in from the right over the full height, before the runs
+            // panel claims the bottom. Dragging its edge shut closes it like the Close button.
+            let mut open = editor::has_side_panel(workbench);
+            let was_open = open;
+            egui::Panel::right("side")
+                .default_size(400.0)
+                .size_range(320.0..=640.0)
+                .resizable(true)
+                .drag_to_open(false)
+                .frame(theme::panel(theme::SIDEBAR))
+                // The panel scrolls its own body, so its header and tabs stay in view.
+                .show_collapsible(ui, &mut open, |ui| editor::side(ui, workbench, intents));
+            if was_open && !open {
+                editor::close_side_panel(workbench);
+            }
+            egui::Panel::bottom("runs")
+                // Tall enough for a run's status, a node and its error without scrolling.
+                .default_size(260.0)
+                .size_range(230.0..=520.0)
+                .resizable(true)
+                .frame(theme::panel(theme::SIDEBAR))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("runs")
+                        .show(ui, |ui| runs::show(ui, workbench, intents));
+                });
+        }
+        egui::CentralPanel::default()
+            .frame(theme::canvas())
+            .show(ui, |ui| {
+                if wide {
+                    // The editor takes the whole page, so the canvas uses the height under its bar.
+                    editor::show(ui, workbench, intents, false);
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("editor-page")
+                    .show(ui, |ui| {
+                        editor::show(ui, workbench, intents, true);
+                        if editor::has_side_panel(workbench) {
+                            ui.add_space(theme::SPACE_MD);
+                            theme::card_block(ui, |ui| editor::side(ui, workbench, intents));
+                        }
+                        if has_draft {
+                            ui.add_space(theme::SPACE_MD);
+                            theme::card_block(ui, |ui| runs::show(ui, workbench, intents));
+                        }
+                    });
+            });
     }
 }
 
@@ -212,102 +306,77 @@ impl eframe::App for ClientApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.receive();
         if self.workbench.navigator.take_refresh() {
-            self.dispatch(ui.ctx(), Operation::List(1));
+            self.list_workflows(ui.ctx(), 1);
         }
         let wide = ui.available_width() >= theme::WIDE_LAYOUT_MIN;
         let workspace = self.workbench.workspace_open() && !self.workbench.workspace_form_open;
-        let has_draft = self.workbench.session.draft().is_some();
         let mut intents = Intents::new();
-        let workbench = &mut self.workbench;
 
+        if workspace {
+            nav::shortcuts(ui.ctx(), &mut self.workbench);
+        }
         egui::Panel::top("header")
             .frame(theme::bar())
-            .show(ui, |ui| shell::header(ui, workbench, wide));
-        if workspace && wide {
-            egui::Panel::left("sidebar")
-                .default_size(260.0)
-                .size_range(220.0..=340.0)
-                .resizable(true)
-                .frame(theme::panel(theme::SIDEBAR))
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("sidebar")
-                        .show(ui, |ui| navigator::show(ui, workbench, &mut intents));
-                });
-            if has_draft {
-                // The node sidebar slides in from the right over the full height, before the runs
-                // panel claims the bottom. Dragging its edge shut closes it like the Close button.
-                let mut open = editor::has_side_panel(workbench);
-                let was_open = open;
-                egui::Panel::right("side")
-                    .default_size(400.0)
-                    .size_range(320.0..=640.0)
-                    .resizable(true)
-                    .drag_to_open(false)
+            .show(ui, |ui| shell::header(ui, &mut self.workbench, wide));
+        if workspace {
+            if wide {
+                egui::Panel::left("navigation")
+                    .exact_size(RAIL_WIDTH)
+                    .resizable(false)
                     .frame(theme::panel(theme::SIDEBAR))
-                    // The panel scrolls its own body, so its header and tabs stay in view.
-                    .show_collapsible(ui, &mut open, |ui| {
-                        editor::side(ui, workbench, &mut intents);
-                    });
-                if was_open && !open {
-                    editor::close_side_panel(workbench);
-                }
-                egui::Panel::bottom("runs")
-                    // Tall enough for a run's status, a node and its error without scrolling.
-                    .default_size(260.0)
-                    .size_range(230.0..=520.0)
-                    .resizable(true)
-                    .frame(theme::panel(theme::SIDEBAR))
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("runs")
-                            .show(ui, |ui| runs::show(ui, workbench, &mut intents));
-                    });
+                    .show(ui, |ui| nav::rail(ui, &mut self.workbench));
+            } else {
+                egui::Panel::top("pages")
+                    .frame(theme::bar())
+                    .show(ui, |ui| nav::tabs(ui, &mut self.workbench));
             }
         }
-        egui::CentralPanel::default()
-            .frame(theme::canvas())
-            .show(ui, |ui| {
-                if workspace && wide {
-                    // The editor takes the whole page, so the canvas can use the height left under its bar.
-                    editor::show(ui, workbench, &mut intents, false);
-                    return;
-                }
-                egui::ScrollArea::vertical()
-                    .id_salt("document")
-                    .show(ui, |ui| {
-                        if !workspace {
-                            connection::show(ui, workbench, &mut intents);
-                        } else if workbench.sidebar_open {
-                            // Narrow layouts swap the page for the workflow list until one is opened.
+        if workspace && self.workbench.page == Page::Editor {
+            self.editor_page(ui, &mut intents, wide);
+        } else {
+            let workbench = &mut self.workbench;
+            egui::CentralPanel::default()
+                .frame(theme::canvas())
+                .show(ui, |ui| {
+                    // The page scrolls at the window's edge, clear of the centred column.
+                    egui::ScrollArea::vertical()
+                        .id_salt(("page", workbench.page as u8, workspace))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if !workspace {
+                                connection::show(ui, workbench, &mut intents);
+                                return;
+                            }
                             widgets::page_column(ui, theme::PAGE_MAX_WIDTH, |ui| {
-                                theme::card_block(ui, |ui| {
-                                    navigator::show(ui, workbench, &mut intents);
-                                });
+                                ui.add_space(theme::SPACE_LG);
+                                match workbench.page {
+                                    Page::Workflows | Page::Editor => {
+                                        workflows::show(ui, workbench, &mut intents);
+                                    },
+                                    Page::Executions => {
+                                        executions::show(ui, workbench, &mut intents);
+                                    },
+                                    Page::Catalog => catalog::show(ui, workbench, &mut intents),
+                                    Page::Triggers => triggers::show(ui, workbench, &mut intents),
+                                    Page::Credentials => {
+                                        credentials::show(ui, workbench, &mut intents);
+                                    },
+                                    Page::Team => team::show(ui, workbench, &mut intents),
+                                    Page::Settings => settings::show(ui, workbench, &mut intents),
+                                }
+                                ui.add_space(theme::SPACE_XL);
                             });
-                        } else {
-                            editor::show(ui, workbench, &mut intents, true);
-                            if editor::has_side_panel(workbench) {
-                                ui.add_space(theme::SPACE_MD);
-                                theme::card_block(ui, |ui| {
-                                    editor::side(ui, workbench, &mut intents);
-                                });
-                            }
-                            if has_draft {
-                                ui.add_space(theme::SPACE_MD);
-                                theme::card_block(ui, |ui| {
-                                    runs::show(ui, workbench, &mut intents);
-                                });
-                            }
-                        }
-                    });
-            });
+                        });
+                });
+        }
 
-        shell::toast(ui.ctx(), workbench);
+        nav::sheet(ui.ctx(), &mut self.workbench);
+        shell::toast(ui.ctx(), &mut self.workbench);
 
         for intent in intents {
             self.run_intent(ui.ctx(), intent);
         }
+        self.reconcile_watch(ui.ctx());
     }
 }
 

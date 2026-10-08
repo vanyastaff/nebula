@@ -8,7 +8,7 @@
 
 mod json_schema;
 
-pub(crate) use json_schema::{UNION_FIELD, credential_data};
+pub(crate) use json_schema::credential_data;
 use serde_json::{Map, Value};
 
 /// The parameters of one action.
@@ -16,9 +16,9 @@ use serde_json::{Map, Value};
 pub(crate) struct Form {
     pub(crate) fields: Vec<Field>,
     /// The action takes one free-form value (`kind: any`, or a scalar root) that no field describes.
-    pub(crate) free_form: bool,
+    pub(crate) any_value: bool,
     /// The root is a union tagged by a single key (`{"authorization_code": {...}}`), drawn as one
-    /// mode field named [`UNION_FIELD`].
+    /// mode field named [`json_schema::UNION_FIELD`].
     pub(crate) tagged_union: bool,
 }
 
@@ -269,7 +269,7 @@ impl Form {
     pub(crate) fn parse(schema: &Value) -> Self {
         Self {
             fields: fields_of(&schema["fields"]),
-            free_form: matches!(word(schema, "kind"), "any" | "scalar"),
+            any_value: matches!(word(schema, "kind"), "any" | "scalar"),
             tagged_union: false,
         }
     }
@@ -326,7 +326,8 @@ impl Field {
     }
 
     /// The value the field starts from when the node does not set it. Without a declared default a
-    /// number or a single choice starts empty, since the action decides what an absent value means.
+    /// number, a single choice or a mode starts empty, since the action decides what an absent value
+    /// means.
     pub(crate) fn initial(&self) -> Value {
         if let Some(default) = &self.default {
             return default.clone();
@@ -354,15 +355,12 @@ impl Field {
             Kind::Mode {
                 variants,
                 default_variant,
-            } => {
-                let chosen = default_variant
-                    .as_deref()
-                    .and_then(|key| variants.iter().find(|variant| variant.key == key))
-                    .or_else(|| variants.first());
-                chosen.map_or(Value::Null, |variant| {
+            } => default_variant
+                .as_deref()
+                .and_then(|key| variants.iter().find(|variant| variant.key == key))
+                .map_or(Value::Null, |variant| {
                     serde_json::json!({"mode": variant.key, "value": variant.field.initial()})
-                })
-            },
+                }),
             Kind::Text { .. } | Kind::Secret { .. } | Kind::Code { .. } => Value::from(""),
             _ => Value::Null,
         }
@@ -884,5 +882,7 @@ fn lookup<'a>(values: &'a Values, path: &str) -> Lookup<'a> {
     Lookup::Found(current)
 }
 
+#[cfg(test)]
+mod json_schema_tests;
 #[cfg(test)]
 mod tests;

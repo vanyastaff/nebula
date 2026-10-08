@@ -11,21 +11,17 @@ mod seed;
 use crate::{
     clock,
     schema::{self, Form, Values},
-    transport::{ExecutionQuery, Failure, PAGE_SIZE},
+    transport::{ExecutionQuery, Failure, PAGE_SIZE, status_key},
 };
 use executor::Run;
 use nebula_api_contract::v1::{
-    catalog::{
-        ActionDetailResponse, ActionParametersResponse, ActionSummary, ListActionsResponse,
-    },
+    catalog::{ActionDetailResponse, ActionParametersResponse, ActionSummary, ListActionsResponse},
     credential::{
-        CreateCredentialRequest, CredentialLifecycleState, CredentialResponse,
-        CredentialSummary, CredentialTestFailureCodeV1, CredentialTypeInfo,
-        ListCredentialTypesResponse, ListCredentialsResponse, TestCredentialResponse,
+        CreateCredentialRequest, CredentialLifecycleState, CredentialResponse, CredentialSummary,
+        CredentialTestFailureCodeV1, CredentialTypeInfo, ListCredentialTypesResponse,
+        ListCredentialsResponse, TestCredentialResponse,
     },
-    execution::{
-        ExecutionDetailResponse, ExecutionResponse, ExecutionStatus, ListExecutionsResponse,
-    },
+    execution::{ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse},
     me::{
         CreateTokenRequest, CreateTokenResponse, MeResponse, MyTokensResponse, TokenSummary,
         UpdateMeRequest,
@@ -100,8 +96,8 @@ struct World {
 impl Demo {
     /// A fresh demo workspace with its seeded workflows, history, credentials and team.
     pub(crate) fn new() -> Result<Self, Failure> {
-        let catalog: Catalog = serde_json::from_str(include_str!("catalog.json"))
-            .map_err(|_| Failure::Unsupported)?;
+        let catalog: Catalog =
+            serde_json::from_str(include_str!("catalog.json")).map_err(|_| Failure::Unsupported)?;
         let types: ListCredentialTypesResponse =
             serde_json::from_str(include_str!("credential_types.json"))
                 .map_err(|_| Failure::Unsupported)?;
@@ -157,7 +153,7 @@ impl Demo {
                 .iter()
                 .map(|stored| stored.document.workflow.clone())
                 .collect();
-            workflows.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+            workflows.sort_by_key(|workflow| std::cmp::Reverse(workflow.updated_at));
             let total = workflows.len();
             let page = page.max(1);
             Ok(ListWorkflowsResponse {
@@ -225,7 +221,11 @@ impl Demo {
                 document.workflow.description = Some(description.clone());
             }
             if let (Some(patch), Some(definition)) = (
-                request.update.definition.as_ref().and_then(Value::as_object),
+                request
+                    .update
+                    .definition
+                    .as_ref()
+                    .and_then(Value::as_object),
                 document.definition.as_object_mut(),
             ) {
                 for (key, value) in patch {
@@ -277,7 +277,13 @@ impl Demo {
             })?;
             let input = stored.sample_input.clone();
             let id = world.next_id("exe", now);
-            let run = Run::plan(id.clone(), workflow.to_owned(), &definition, Some(input), now);
+            let run = Run::plan(
+                id.clone(),
+                workflow.to_owned(),
+                &definition,
+                Some(input),
+                now,
+            );
             let answer = receipt(&run, now);
             world.runs.push(run);
             world.starts.insert(key.to_owned(), id);
@@ -315,11 +321,9 @@ impl Demo {
                         .as_ref()
                         .is_none_or(|workflow| &run.workflow_id == workflow)
                 })
-                .filter(|run| {
-                    wanted.is_empty() || wanted.contains(&status_name(run.status(now)))
-                })
+                .filter(|run| wanted.is_empty() || wanted.contains(&status_key(run.status(now))))
                 .collect();
-            matching.sort_by(|left, right| right.created.cmp(&left.created));
+            matching.sort_by_key(|run| std::cmp::Reverse(run.created));
             let offset = match &query.cursor {
                 Some(cursor) => cursor
                     .strip_prefix("c")
@@ -380,6 +384,16 @@ impl Demo {
         })
     }
 
+    pub(crate) fn action(&self, key: &str) -> Result<ActionDetailResponse, Failure> {
+        self.with(|world| {
+            Ok(world
+                .action(key)
+                .ok_or(Failure::Rejected(404))?
+                .detail
+                .clone())
+        })
+    }
+
     pub(crate) fn action_parameters(&self, key: &str) -> Result<ActionParametersResponse, Failure> {
         self.with(|world| {
             let entry = world.action(key).ok_or(Failure::Rejected(404))?;
@@ -433,7 +447,9 @@ impl Demo {
                 .credential_types
                 .iter()
                 .find(|kind| kind.key == request.credential_key)
-                .ok_or_else(|| Failure::Invalid("credential_key: Choose a credential type.".into()))?
+                .ok_or_else(|| {
+                    Failure::Invalid("credential_key: Choose a credential type.".into())
+                })?
                 .clone();
             if request.name.trim().is_empty() {
                 return Err(Failure::Invalid("name: Enter a name.".to_owned()));
@@ -473,7 +489,7 @@ impl Demo {
                 name: request.name.trim().to_owned(),
                 description: request.description.clone(),
                 auth_pattern: kind.auth_pattern.clone(),
-                capabilities: kind.capabilities.clone(),
+                capabilities: kind.capabilities,
                 created_at: now.clone(),
                 updated_at: now,
                 expires_at: None,
@@ -544,14 +560,14 @@ impl Demo {
                     request.provider
                 )));
             }
-            let now = clock::now_millis();
-            let activation = world.next_id("wha", now);
+            // The server names an activation by the trigger's UUID.
+            let activation = uuid::Uuid::new_v4().to_string();
             let secret = world.next_secret("whsec");
             world
                 .webhooks
                 .push((request.workflow_id.clone(), request.trigger_id.clone()));
             Ok(RegisterWebhookResponse {
-                webhook_url: format!("https://hooks.demo.nebula.dev/v1/{activation}"),
+                webhook_url: format!("https://nebula.example/hooks/{activation}"),
                 signing_secret: secret,
                 activation_id: activation,
             })
@@ -643,7 +659,11 @@ impl Demo {
     }
 
     /// The last owner stays, so the organization never loses its owner.
-    pub(crate) fn remove_org_member(&self, org: &str, principal: &str) -> Result<AckResponse, Failure> {
+    pub(crate) fn remove_org_member(
+        &self,
+        org: &str,
+        principal: &str,
+    ) -> Result<AckResponse, Failure> {
         self.with(|world| {
             check_org(org)?;
             let owners = world
@@ -748,7 +768,8 @@ impl World {
     /// suffix, so identities sort by creation like the server's.
     fn next_id(&mut self, prefix: &str, at: i64) -> String {
         self.sequence += 1;
-        let mut value = (u128::from(at.max(0).unsigned_abs()) << 80) | u128::from(mix(self.sequence));
+        let mut value =
+            (u128::from(at.max(0).unsigned_abs()) << 80) | u128::from(mix(self.sequence));
         let mut text = [0_u8; 26];
         for slot in text.iter_mut().rev() {
             *slot = CROCKFORD[(value & 31) as usize];
@@ -772,7 +793,10 @@ impl World {
         if nodes.is_empty() {
             issues.push("nodes: Add at least one node.".to_owned());
         }
-        let ids: Vec<&str> = nodes.iter().filter_map(|node| node["id"].as_str()).collect();
+        let ids: Vec<&str> = nodes
+            .iter()
+            .filter_map(|node| node["id"].as_str())
+            .collect();
         for (index, node) in nodes.iter().enumerate() {
             let key = crate::document::catalog_key(node);
             let Some(entry) = self.action(&key) else {
@@ -785,13 +809,16 @@ impl World {
             let entries = node["parameters"].as_object().cloned().unwrap_or_default();
             let values = Values::of(&form, &entries);
             for field in &form.fields {
-                let set = entries.get(&field.key).is_some_and(|entry| match entry["type"].as_str() {
-                    Some("literal") => !schema::is_empty(&entry["value"]),
-                    Some("expression") => entry["expr"]
-                        .as_str()
-                        .is_some_and(|text| !text.trim().is_empty()),
-                    _ => true,
-                });
+                let set =
+                    entries
+                        .get(&field.key)
+                        .is_some_and(|entry| match entry["type"].as_str() {
+                            Some("literal") => !schema::is_empty(&entry["value"]),
+                            Some("expression") => entry["expr"]
+                                .as_str()
+                                .is_some_and(|text| !text.trim().is_empty()),
+                            _ => true,
+                        });
                 if field.is_required(&values) && !set && field.default.is_none() {
                     issues.push(format!(
                         "nodes[{index}].parameters.{}: Provide a value.",
@@ -800,7 +827,10 @@ impl World {
                 }
             }
         }
-        let connections = definition["connections"].as_array().cloned().unwrap_or_default();
+        let connections = definition["connections"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         for (index, connection) in connections.iter().enumerate() {
             for end in ["from_node", "to_node"] {
                 if !connection[end]
@@ -847,7 +877,10 @@ fn has_cycle(ids: &[&str], connections: &[Value]) -> bool {
     while let Some(index) = (0..ids.len()).find(|index| !done[*index] && incoming[*index] == 0) {
         done[index] = true;
         placed += 1;
-        for connection in connections.iter().filter(|connection| connection["from_node"] == ids[index]) {
+        for connection in connections
+            .iter()
+            .filter(|connection| connection["from_node"] == ids[index])
+        {
             if let Some(target) = ids.iter().position(|id| connection["to_node"] == *id) {
                 incoming[target] = incoming[target].saturating_sub(1);
             }
@@ -867,13 +900,17 @@ fn check_org(org: &str) -> Result<(), Failure> {
 /// Principals are user identities, `usr_` followed by a ULID.
 fn check_principal(principal: &str) -> Result<(), Failure> {
     let valid = principal.strip_prefix("usr_").is_some_and(|rest| {
-        rest.len() == 26 && rest.bytes().all(|byte| CROCKFORD.contains(&byte.to_ascii_uppercase()))
+        rest.len() == 26
+            && rest
+                .bytes()
+                .all(|byte| CROCKFORD.contains(&byte.to_ascii_uppercase()))
     });
     if valid {
         Ok(())
     } else {
         Err(Failure::Invalid(
-            "principal_id: Enter a user identity such as usr_01M4D48S6NAPHAHN345EHADBPK.".to_owned(),
+            "principal_id: Enter a user identity such as usr_01M4D48S6NAPHAHN345EHADBPK."
+                .to_owned(),
         ))
     }
 }
@@ -883,24 +920,11 @@ fn receipt(run: &Run, at: i64) -> ExecutionResponse {
     ExecutionResponse {
         id: run.id.clone(),
         workflow_id: run.workflow_id.clone(),
-        status: status_name(run.status(at)).to_owned(),
+        status: status_key(run.status(at)).to_owned(),
         started_at: run.created / 1000,
         finished_at: None,
         input: None,
         output: None,
-    }
-}
-
-const fn status_name(status: ExecutionStatus) -> &'static str {
-    match status {
-        ExecutionStatus::Created => "created",
-        ExecutionStatus::Running => "running",
-        ExecutionStatus::Paused => "paused",
-        ExecutionStatus::Cancelling => "cancelling",
-        ExecutionStatus::Completed => "completed",
-        ExecutionStatus::Failed => "failed",
-        ExecutionStatus::Cancelled => "cancelled",
-        ExecutionStatus::TimedOut => "timed_out",
     }
 }
 

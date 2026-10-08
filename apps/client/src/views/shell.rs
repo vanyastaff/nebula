@@ -1,5 +1,6 @@
 //! Top bar and toasts shared by every layout.
 use crate::{
+    api::Backend,
     theme,
     widgets::{self, Tone},
     workbench::Workbench,
@@ -11,7 +12,7 @@ use eframe::egui::{self, Align, Layout, RichText};
 pub(crate) fn header(ui: &mut egui::Ui, workbench: &mut Workbench, wide: bool) {
     if wide {
         ui.horizontal(|ui| {
-            location(ui, workbench, wide);
+            location(ui, workbench);
             // A right-to-left layout puts the first item at the right edge, so it gets the items reversed.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 for item in ACCOUNT.iter().rev() {
@@ -21,7 +22,7 @@ pub(crate) fn header(ui: &mut egui::Ui, workbench: &mut Workbench, wide: bool) {
         });
     } else {
         ui.horizontal_wrapped(|ui| {
-            location(ui, workbench, wide);
+            location(ui, workbench);
             for item in ACCOUNT {
                 account_item(ui, workbench, item);
             }
@@ -34,14 +35,17 @@ enum AccountItem {
     /// A spinner while a request is in flight, so work in progress never needs a message.
     Activity,
     Email,
+    /// Opens the keyboard shortcuts sheet.
+    Shortcuts,
     SwitchWorkspace,
     SignOut,
 }
 
 /// Account entries in reading order.
-const ACCOUNT: [AccountItem; 4] = [
+const ACCOUNT: [AccountItem; 5] = [
     AccountItem::Activity,
     AccountItem::Email,
+    AccountItem::Shortcuts,
     AccountItem::SwitchWorkspace,
     AccountItem::SignOut,
 ];
@@ -55,7 +59,7 @@ fn brand(ui: &mut egui::Ui) {
     ui.label(RichText::new("Nebula").size(theme::SIZE_BRAND).strong());
 }
 
-fn location(ui: &mut egui::Ui, workbench: &mut Workbench, wide: bool) {
+fn location(ui: &mut egui::Ui, workbench: &Workbench) {
     brand(ui);
     if let Some(context) = &workbench.session.context {
         ui.separator();
@@ -63,13 +67,14 @@ fn location(ui: &mut egui::Ui, workbench: &mut Workbench, wide: bool) {
         widgets::caption(ui, "/");
         ui.label(RichText::new(&context.workspace_selector).strong());
     }
-    // Phones have no room for the sidebar beside the page, so its list opens from here instead.
-    if !wide && workbench.workspace_open() && !workbench.workspace_form_open {
-        let open = egui::Button::new("Workflows").selected(workbench.sidebar_open);
-        if ui.add(open).clicked() {
-            workbench.sidebar_open = !workbench.sidebar_open;
-        }
+    if is_demo(workbench) {
+        widgets::badge(ui, "Demo", Tone::Warning);
     }
+}
+
+/// The demo has a single workspace and simulated data; nothing in it reaches a server.
+fn is_demo(workbench: &Workbench) -> bool {
+    workbench.backend.as_ref().is_some_and(Backend::is_demo)
 }
 
 fn account_item(ui: &mut egui::Ui, workbench: &mut Workbench, item: AccountItem) {
@@ -84,8 +89,21 @@ fn account_item(ui: &mut egui::Ui, workbench: &mut Workbench, item: AccountItem)
                 widgets::caption(ui, profile.email.as_str());
             }
         },
+        AccountItem::Shortcuts => {
+            if workbench.workspace_open()
+                && ui
+                    .add(egui::Button::new("?").selected(workbench.shortcuts_open))
+                    .on_hover_text("Keyboard shortcuts (?)")
+                    .clicked()
+            {
+                workbench.shortcuts_open = !workbench.shortcuts_open;
+            }
+        },
         AccountItem::SwitchWorkspace => {
-            if workbench.workspace_open() && ui.button("Switch workspace").clicked() {
+            if workbench.workspace_open()
+                && !is_demo(workbench)
+                && ui.button("Switch workspace").clicked()
+            {
                 workbench.workspace_form_open = !workbench.workspace_form_open;
             }
         },

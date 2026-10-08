@@ -1,28 +1,20 @@
 //! Runs of the open workflow, read from what the server persisted: recent runs, and the nodes of the
-//! chosen one with their outputs. Starting a run lives on the canvas.
-use super::{Intent, Intents};
-use crate::{
-    theme,
-    widgets::{self, Tone},
-    workbench::Workbench,
-};
+//! chosen one with their outputs. The chosen run's states stream in while it runs, through the
+//! app's execution watch. Starting a run lives on the canvas.
+use super::{Intent, Intents, status as words};
+use crate::{theme, widgets, workbench::Workbench};
 use eframe::egui::{self, Align, Layout, RichText};
-use nebula_api_contract::v1::execution::{
-    ExecutionNodeOutput, ExecutionNodeStatus, ExecutionStatus,
-};
+use nebula_api_contract::v1::execution::ExecutionNodeOutput;
 
 /// Panels at least this wide show the chosen run beside the list instead of under it.
 const SIDE_BY_SIDE_MIN: f32 = 720.0;
-/// Longest node output shown inline; the rest is behind the run details.
+/// Longest node output shown inline; the rest is on the executions page.
 const OUTPUT_PREVIEW: usize = 160;
-/// Seconds between reads of a run that has not ended.
-const FOLLOW_SECONDS: f64 = 2.0;
 
 pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
-    let Some(draft) = workbench.session.draft() else {
+    if workbench.session.draft().is_none() {
         return;
-    };
-    let execution = draft.execution_id.clone();
+    }
     let busy = workbench.session.busy();
     // The list, with the chosen run, loads once per opened workflow and again after a start, without
     // a click. The app marks it requested when the read starts (`Workbench::recent_runs_requested`),
@@ -30,7 +22,6 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
     if !workbench.history_requested && !busy {
         intents.push(Intent::RefreshRuns);
     }
-    follow(ui, workbench, execution.as_deref(), intents, busy);
     ui.horizontal(|ui| {
         widgets::section(ui, "Runs");
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -52,100 +43,6 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         history(ui, workbench, intents, busy);
         ui.add_space(theme::SPACE_SM);
         status(ui, workbench);
-    }
-}
-
-/// Keeps the chosen run current: it is read once chosen, then every few seconds until it ends, and the
-/// list is read again while its row still shows an older status. Reads are spaced from when the last
-/// one started (`Workbench::runs_read_at`), even when it failed, so a server in trouble is not asked
-/// every frame.
-fn follow(
-    ui: &egui::Ui,
-    workbench: &Workbench,
-    execution: Option<&str>,
-    intents: &mut Intents,
-    busy: bool,
-) {
-    let Some(id) = execution else {
-        return;
-    };
-    let shown = workbench
-        .status
-        .as_ref()
-        .filter(|status| status.execution.id == id);
-    let ended = shown.is_some_and(|status| ended(status.execution.status));
-    let row_behind = shown
-        .zip(workbench.history.as_ref())
-        .is_some_and(|(status, runs)| {
-            runs.items
-                .iter()
-                .any(|run| run.id == id && run.status != status.execution.status)
-        });
-    if ended && !row_behind {
-        return;
-    }
-    let context = ui.ctx();
-    let now = context.input(|input| input.time);
-    let due = workbench
-        .runs_read_at
-        .is_none_or(|last| now - last >= FOLLOW_SECONDS);
-    if due && !busy {
-        intents.push(if ended {
-            Intent::LoadRecentRuns
-        } else {
-            Intent::LoadExecution(id.to_owned())
-        });
-    }
-    context.request_repaint_after(std::time::Duration::from_secs_f64(FOLLOW_SECONDS));
-}
-
-/// A run in one of these states will not change again.
-const fn ended(status: ExecutionStatus) -> bool {
-    matches!(
-        status,
-        ExecutionStatus::Completed
-            | ExecutionStatus::Failed
-            | ExecutionStatus::Cancelled
-            | ExecutionStatus::TimedOut
-    )
-}
-
-fn status_tone(status: ExecutionStatus) -> Tone {
-    match status {
-        ExecutionStatus::Completed => Tone::Success,
-        ExecutionStatus::Failed | ExecutionStatus::TimedOut => Tone::Danger,
-        ExecutionStatus::Cancelled | ExecutionStatus::Cancelling => Tone::Warning,
-        ExecutionStatus::Created | ExecutionStatus::Running | ExecutionStatus::Paused => {
-            Tone::Accent
-        },
-    }
-}
-
-fn status_label(status: ExecutionStatus) -> &'static str {
-    match status {
-        ExecutionStatus::Created => "Queued",
-        ExecutionStatus::Running => "Running",
-        ExecutionStatus::Paused => "Paused",
-        ExecutionStatus::Cancelling => "Cancelling",
-        ExecutionStatus::Completed => "Completed",
-        ExecutionStatus::Failed => "Failed",
-        ExecutionStatus::Cancelled => "Cancelled",
-        ExecutionStatus::TimedOut => "Timed out",
-    }
-}
-
-/// A node's state in a run, in words.
-pub(crate) const fn node_status_label(status: ExecutionNodeStatus) -> &'static str {
-    match status {
-        ExecutionNodeStatus::Pending => "Pending",
-        ExecutionNodeStatus::Ready => "Ready",
-        ExecutionNodeStatus::Running => "Running",
-        ExecutionNodeStatus::Completed => "Completed",
-        ExecutionNodeStatus::Failed => "Failed",
-        ExecutionNodeStatus::Skipped => "Skipped",
-        ExecutionNodeStatus::Cancelled => "Cancelled",
-        ExecutionNodeStatus::WaitingRetry => "Retry scheduled",
-        ExecutionNodeStatus::Waiting => "Waiting",
     }
 }
 
@@ -190,11 +87,11 @@ fn history(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, 
         .show(ui, |ui| {
             for execution in &runs.items {
                 let selected = current.as_deref() == Some(execution.id.as_str());
-                let (color, _) = status_tone(execution.status).colors();
+                let (color, _) = words::tone(execution.status).colors();
                 // Status and time are what a person scans for; the id is in the run's details.
                 let row = egui::Button::selectable(
                     selected,
-                    RichText::new(status_label(execution.status)).color(color),
+                    RichText::new(words::label(execution.status)).color(color),
                 )
                 .right_text(
                     RichText::new(readable_time(&execution.created_at)).color(theme::TEXT_MUTED),
@@ -225,8 +122,8 @@ fn status(ui: &mut egui::Ui, workbench: &Workbench) {
     ui.horizontal_wrapped(|ui| {
         widgets::badge(
             ui,
-            status_label(status.execution.status),
-            status_tone(status.execution.status),
+            words::label(status.execution.status),
+            words::tone(status.execution.status),
         );
         widgets::caption(ui, readable_time(&status.execution.created_at));
     });
@@ -234,7 +131,11 @@ fn status(ui: &mut egui::Ui, workbench: &Workbench) {
     for (name, node) in &status.nodes {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(name).strong());
-            widgets::caption(ui, node_status_label(node.status));
+            widgets::badge(
+                ui,
+                words::node_label(node.status),
+                words::node_tone(node.status),
+            );
         });
         if let Some(ExecutionNodeOutput::Inline { value }) = &node.output {
             let text = value.to_string();

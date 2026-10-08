@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    api::SignedIn,
-    demo::Demo,
+    api::{self, SignedIn},
+    demo::{self, Demo},
     document::tests::snapshot,
     transport::Connection,
     views::{Intent, Intents},
@@ -19,13 +19,11 @@ fn server() -> Backend {
 #[test]
 fn signing_in_to_the_demo_opens_its_workspace_and_reads_the_list() {
     let mut workbench = Workbench::new(SERVER.into());
-    let demo = Backend::Demo(Demo::new().unwrap());
+    let world = Demo::new().unwrap();
+    let profile = world.me().unwrap();
+    let demo = Backend::Demo(world);
     workbench.begin_sign_in(demo.clone());
     let stamp = workbench.session.begin().unwrap();
-    let profile = match &demo {
-        Backend::Demo(world) => world.me().unwrap(),
-        Backend::Server(_) => unreachable!("built as the demo"),
-    };
 
     workbench.receive(
         stamp,
@@ -37,8 +35,8 @@ fn signing_in_to_the_demo_opens_its_workspace_and_reads_the_list() {
     );
 
     let context = workbench.session.context.clone().unwrap();
-    assert_eq!(context.endpoint, crate::api::DEMO_ENDPOINT);
-    assert_eq!(context.organization, crate::demo::ORG);
+    assert_eq!(context.endpoint, api::DEMO_ENDPOINT);
+    assert_eq!(context.organization, demo::ORG);
     assert!(workbench.navigator.take_refresh());
     // Listing the demo workspace does not add it to the recent servers' workspaces.
     let stamp = workbench.session.begin().unwrap();
@@ -689,14 +687,14 @@ fn a_repeated_message_is_a_new_toast_and_dismissing_clears_it() {
 }
 
 #[test]
-fn choosing_a_workflow_hands_the_narrow_page_back_to_the_editor() {
+fn choosing_a_workflow_opens_the_editor() {
     let mut workbench = Workbench::new(SERVER.into());
     open_workspace_session(&mut workbench);
-    workbench.sidebar_open = true;
+    workbench.go(Page::Catalog);
 
     assert!(workbench.select_workflow("wf_test"));
 
-    assert!(!workbench.sidebar_open);
+    assert_eq!(workbench.page, Page::Editor);
 }
 
 #[test]

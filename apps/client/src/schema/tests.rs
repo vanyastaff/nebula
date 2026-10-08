@@ -184,7 +184,7 @@ fn the_reader_matches_what_nebula_schema_serializes() {
     );
     // A rule without an argument travels as a bare name.
     assert!(field(&form, "contact").bounds.email);
-    assert!(!form.free_form);
+    assert!(!form.any_value);
     // A nested field's condition names a path from the root of the node's values.
     let detail = match &field(&form, "extra").kind {
         Kind::Object { fields, .. } => fields[0].clone(),
@@ -204,8 +204,8 @@ fn the_reader_matches_what_nebula_schema_serializes() {
 
 #[test]
 fn a_root_without_fields_is_free_form() {
-    assert!(served(&nebula_schema::ValidSchema::any()).free_form);
-    assert!(!Form::parse(&json!({"fields": []})).free_form);
+    assert!(served(&nebula_schema::ValidSchema::any()).any_value);
+    assert!(!Form::parse(&json!({"fields": []})).any_value);
 }
 
 #[test]

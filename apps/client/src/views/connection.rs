@@ -81,8 +81,7 @@ fn introduction(ui: &mut egui::Ui) {
 /// One feature with a badge in the shape the canvas gives nodes, so the page previews the product.
 fn feature(ui: &mut egui::Ui, color: egui::Color32, heading: &str, body: &str) {
     ui.horizontal_top(|ui| {
-        let letter: String = heading.chars().take(1).collect();
-        widgets::mark(ui, &letter, color, 32.0);
+        widgets::mark(ui, &widgets::initial(heading), color, 32.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = theme::SPACE_XS;
             ui.label(RichText::new(heading).strong());

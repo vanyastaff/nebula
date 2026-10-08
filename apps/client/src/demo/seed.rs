@@ -202,15 +202,30 @@ pub(super) fn populate(world: &mut World, now: i64) {
 
 fn populate_credentials(world: &mut World, now: i64) {
     let seeded = [
-        ("Stripe (live)", "api_key", 41, CredentialLifecycleState::Ready),
-        ("Warehouse SFTP", "basic_auth", 63, CredentialLifecycleState::Ready),
+        (
+            "Stripe (live)",
+            "api_key",
+            41,
+            CredentialLifecycleState::Ready,
+        ),
+        (
+            "Warehouse SFTP",
+            "basic_auth",
+            63,
+            CredentialLifecycleState::Ready,
+        ),
         (
             "Google Sheets",
             "oauth2",
             12,
             CredentialLifecycleState::ReauthRequired,
         ),
-        ("Billing webhooks", "signing_key", 8, CredentialLifecycleState::Ready),
+        (
+            "Billing webhooks",
+            "signing_key",
+            8,
+            CredentialLifecycleState::Ready,
+        ),
     ];
     for (name, kind, days_ago, lifecycle) in seeded {
         let Some(info) = world
@@ -242,7 +257,12 @@ fn populate_credentials(world: &mut World, now: i64) {
 
 fn populate_tokens(world: &mut World, now: i64) {
     let seeded = [
-        ("CI deploy", vec!["workflows:write", "executions:read"], 30, Some(2)),
+        (
+            "CI deploy",
+            vec!["workflows:write", "executions:read"],
+            30,
+            Some(2),
+        ),
         ("Local CLI", vec!["workflows:read"], 90, None),
     ];
     for (name, scopes, days_ago, used_hours_ago) in seeded {

@@ -28,6 +28,28 @@ pub(crate) fn rfc3339(unix_millis: i64) -> String {
     )
 }
 
+/// How long ago `then` was, as a person says it: `just now`, `5 min ago`, `3 h ago`, `2 days ago`.
+pub(crate) fn ago(now: i64, then: i64) -> String {
+    let seconds = (now - then).max(0) / 1000;
+    match seconds {
+        0..=44 => "just now".to_owned(),
+        45..=3_599 => format!("{} min ago", (seconds + 30) / 60),
+        3_600..=86_399 => format!("{} h ago", seconds / 3600),
+        86_400..=172_799 => "yesterday".to_owned(),
+        _ => format!("{} days ago", seconds / 86_400),
+    }
+}
+
+/// A duration between two instants, as runs report it: `840 ms`, `3.2 s`, `2 min 05 s`.
+pub(crate) fn duration(millis: i64) -> String {
+    let millis = millis.max(0);
+    match millis {
+        0..=999 => format!("{millis} ms"),
+        1_000..=59_999 => format!("{:.1} s", millis as f64 / 1000.0),
+        _ => format!("{} min {:02} s", millis / 60_000, millis % 60_000 / 1000),
+    }
+}
+
 /// Milliseconds since the epoch of `2026-10-08T20:34:40.939Z` or `...+02:00`; fractions beyond
 /// milliseconds are dropped. `None` for anything else.
 pub(crate) fn parse_rfc3339(text: &str) -> Option<i64> {
@@ -64,8 +86,8 @@ pub(crate) fn parse_rfc3339(text: &str) -> Option<i64> {
         },
         _ => return None,
     };
-    let seconds = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second
-        - offset;
+    let seconds =
+        days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second - offset;
     Some(seconds * 1000 + millis)
 }
 
@@ -109,8 +131,8 @@ pub(crate) async fn sleep(millis: u32) {
             let delay = i32::try_from(millis).unwrap_or(i32::MAX);
             if let Some(window) = web_sys::window() {
                 // A refused timer resolves nothing; the caller's next read still happens on its turn.
-                let _scheduled = window
-                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, delay);
+                let _scheduled =
+                    window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, delay);
             }
         });
         let _elapsed = wasm_bindgen_futures::JsFuture::from(promise).await;
@@ -141,6 +163,13 @@ mod tests {
             parse_rfc3339("2026-10-08T20:34:40Z")
         );
         assert_eq!(parse_rfc3339("8 Oct 2026"), None);
+        assert_eq!(ago(100_000, 90_000), "just now");
+        assert_eq!(ago(10 * 60_000, 0), "10 min ago");
+        assert_eq!(ago(5 * 3_600_000, 0), "5 h ago");
+        assert_eq!(ago(30 * 3_600_000, 0), "yesterday");
+        assert_eq!(duration(840), "840 ms");
+        assert_eq!(duration(3_240), "3.2 s");
+        assert_eq!(duration(125_000), "2 min 05 s");
         assert_eq!(parse_rfc3339("2026-13-08T20:34:40Z"), None);
     }
 }

@@ -60,7 +60,10 @@ fn every_action_in_the_catalog_has_a_form() {
         let form = Form::parse(&parameters.parameters);
         assert!(!form.fields.is_empty(), "{} has fields", action.key);
     }
-    assert_eq!(demo.action_parameters("core.missing").unwrap_err(), Failure::Rejected(404));
+    assert_eq!(
+        demo.action_parameters("core.missing").unwrap_err(),
+        Failure::Rejected(404)
+    );
 }
 
 #[test]
@@ -115,13 +118,16 @@ fn saves_and_publications_are_fenced_by_revision() {
         },
         expected_revision: Some(revision),
     };
-    let saved = demo.save(&workflow.id, &request(document.revision)).unwrap();
+    let saved = demo
+        .save(&workflow.id, &request(document.revision))
+        .unwrap();
     assert_eq!(saved.revision, document.revision + 1);
     // The patch merges its top-level keys; the graph stays.
     assert_eq!(saved.definition["variables"]["region"], "EU");
     assert_eq!(saved.definition["nodes"], document.definition["nodes"]);
     assert_eq!(
-        demo.save(&workflow.id, &request(document.revision)).unwrap_err(),
+        demo.save(&workflow.id, &request(document.revision))
+            .unwrap_err(),
         Failure::Conflict
     );
     assert_eq!(
@@ -140,9 +146,15 @@ fn publication_reports_what_the_graph_is_missing() {
     let Failure::Invalid(message) = demo.publish(&draft.id, revision).unwrap_err() else {
         panic!("a validation failure");
     };
-    assert!(message.contains("nodes[0].parameters.keys: Provide a value."), "{message}");
+    assert!(
+        message.contains("nodes[0].parameters.keys: Provide a value."),
+        "{message}"
+    );
     // A draft was never published, so it cannot run either.
-    assert!(matches!(demo.run(&draft.id, "k1"), Err(Failure::Invalid(_))));
+    assert!(matches!(
+        demo.run(&draft.id, "k1"),
+        Err(Failure::Invalid(_))
+    ));
 }
 
 #[test]
@@ -156,7 +168,10 @@ fn a_start_is_idempotent_per_key_and_its_run_advances() {
     assert_ne!(first.id, other.id);
     let detail = demo.status(&first.id).unwrap();
     assert_eq!(detail.execution.workflow_id, workflow.id);
-    assert!(!detail.execution.status.eq(&ExecutionStatus::Completed));
+    assert_ne!(
+        detail.execution.status,
+        nebula_api_contract::v1::execution::ExecutionStatus::Completed
+    );
     let cancelled = demo.cancel(&first.id).unwrap();
     assert_eq!(cancelled.status, "cancelling");
     assert!(matches!(demo.cancel(&first.id), Err(Failure::Invalid(_))));
@@ -174,24 +189,50 @@ fn credentials_are_checked_against_their_type_schema() {
             tags: None,
         })
     };
-    let Failure::Invalid(message) = create("basic_auth", json!({"username": "ops"})).unwrap_err() else {
+    let Failure::Invalid(message) = create("basic_auth", json!({"username": "ops"})).unwrap_err()
+    else {
         panic!("a validation failure");
     };
     assert_eq!(message, "data.password: Provide a value.");
-    let created = create("basic_auth", json!({"username": "ops", "password": "s3cret"})).unwrap();
+    let created = create(
+        "basic_auth",
+        json!({"username": "ops", "password": "s3cret"}),
+    )
+    .unwrap();
     assert_eq!(created.auth_pattern, "IdentityPassword");
-    assert!(demo.credentials().unwrap().credentials.iter().any(|c| c.id == created.id));
+    assert!(
+        demo.credentials()
+            .unwrap()
+            .credentials
+            .iter()
+            .any(|c| c.id == created.id)
+    );
     // A union holds one of its tags.
-    assert!(matches!(create("oauth2", json!({})), Err(Failure::Invalid(_))));
-    assert!(create("oauth2", json!({"client_credentials": {"token_url": "https://id.example/token"}})).is_ok());
-    assert!(matches!(create("nope", json!({})), Err(Failure::Invalid(_))));
+    assert!(matches!(
+        create("oauth2", json!({})),
+        Err(Failure::Invalid(_))
+    ));
+    assert!(
+        create(
+            "oauth2",
+            json!({"client_credentials": {"token_url": "https://id.example/token"}})
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        create("nope", json!({})),
+        Err(Failure::Invalid(_))
+    ));
 
     assert!(matches!(
         demo.test_credential(&created.id).unwrap(),
         TestCredentialResponse::Success { .. }
     ));
     demo.delete_credential(&created.id).unwrap();
-    assert_eq!(demo.delete_credential(&created.id).unwrap_err(), Failure::Rejected(404));
+    assert_eq!(
+        demo.delete_credential(&created.id).unwrap_err(),
+        Failure::Rejected(404)
+    );
 }
 
 #[test]
@@ -229,7 +270,10 @@ fn a_webhook_registers_only_for_a_bound_trigger() {
     let registered = demo.register_webhook(&request("billing_webhook")).unwrap();
     assert!(registered.webhook_url.starts_with("https://"));
     assert!(registered.signing_secret.starts_with("whsec_"));
-    assert!(matches!(demo.register_webhook(&request("nope")), Err(Failure::Invalid(_))));
+    assert!(matches!(
+        demo.register_webhook(&request("nope")),
+        Err(Failure::Invalid(_))
+    ));
 }
 
 #[test]
@@ -245,7 +289,10 @@ fn tokens_and_members_follow_the_server_s_rules() {
     assert!(created.token.starts_with("nbl_pat_"));
     assert_eq!(demo.me().unwrap().tokens_count, 3);
     demo.revoke_token(&created.summary.id).unwrap();
-    assert_eq!(demo.revoke_token(&created.summary.id).unwrap_err(), Failure::Rejected(404));
+    assert_eq!(
+        demo.revoke_token(&created.summary.id).unwrap_err(),
+        Failure::Rejected(404)
+    );
 
     let add = |principal: &str, role: &str| {
         demo.add_org_member(
@@ -257,11 +304,23 @@ fn tokens_and_members_follow_the_server_s_rules() {
         )
     };
     assert!(matches!(add("ada", "member"), Err(Failure::Invalid(_))));
-    assert!(matches!(add("usr_01HZ8K7E5F7G9H1J3K5M7N9P1Q", "emperor"), Err(Failure::Invalid(_))));
+    assert!(matches!(
+        add("usr_01HZ8K7E5F7G9H1J3K5M7N9P1Q", "emperor"),
+        Err(Failure::Invalid(_))
+    ));
     add("usr_01HZ8K7E5F7G9H1J3K5M7N9P1Q", "member").unwrap();
-    assert_eq!(add("usr_01HZ8K7E5F7G9H1J3K5M7N9P1Q", "member").unwrap_err(), Failure::Conflict);
-    assert!(matches!(demo.remove_org_member(ORG, seed::ME), Err(Failure::Invalid(_))));
-    assert_eq!(demo.org_members("elsewhere").unwrap_err(), Failure::Forbidden);
+    assert_eq!(
+        add("usr_01HZ8K7E5F7G9H1J3K5M7N9P1Q", "member").unwrap_err(),
+        Failure::Conflict
+    );
+    assert!(matches!(
+        demo.remove_org_member(ORG, seed::ME),
+        Err(Failure::Invalid(_))
+    ));
+    assert_eq!(
+        demo.org_members("elsewhere").unwrap_err(),
+        Failure::Forbidden
+    );
 
     let member = demo
         .set_workspace_member(

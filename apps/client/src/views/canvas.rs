@@ -3,7 +3,7 @@
 //! a card moves it and records the placement as an undoable edit. Dragging an output port onto an input
 //! port connects two nodes. Zoom scales everything, and drawing never changes the graph by itself.
 use crate::{
-    theme,
+    theme, widgets,
     workbench::{NodeDrag, Workbench},
 };
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
@@ -478,16 +478,10 @@ fn paint_node(painter: &egui::Painter, card: Rect, node: &NodeView, zoom: f32, s
     );
     let badge = Rect::from_center_size(card.center(), Vec2::splat(BADGE * zoom));
     painter.rect_filled(badge, theme::RADIUS_SM, theme::node_accent(&node.action));
-    let initial = node
-        .name
-        .chars()
-        .next()
-        .map(|letter| letter.to_uppercase().collect::<String>())
-        .unwrap_or_default();
     painter.text(
         badge.center(),
         Align2::CENTER_CENTER,
-        initial,
+        widgets::initial(&node.name),
         FontId::proportional(theme::SIZE_TITLE * zoom),
         theme::ON_ACCENT,
     );

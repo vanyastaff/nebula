@@ -73,6 +73,10 @@ impl Session {
             false
         }
     }
+    /// Changes with every switch of workspace or sign-in, so state read before it can be told apart.
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
+    }
     pub(crate) fn busy(&self) -> bool {
         self.pending.is_some()
     }

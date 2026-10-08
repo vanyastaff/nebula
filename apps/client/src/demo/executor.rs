@@ -71,6 +71,13 @@ struct Edge<'a> {
     to: &'a str,
 }
 
+/// What a finished node handed on: when it finished and, if it produced data, the port and the
+/// data. A skipped node hands nothing on.
+struct Handoff {
+    at: i64,
+    data: Option<(String, Value)>,
+}
+
 impl Run {
     /// Plans a run of `definition` created at `created` (Unix milliseconds) with `input`.
     pub(super) fn plan(
@@ -109,9 +116,7 @@ impl Run {
 
         let start = created + DISPATCH_MS;
         let root_input = input.clone().unwrap_or_else(|| json!({}));
-        // What each finished node handed on: its finish time and, if it produced data, the port and
-        // the data. A skipped node hands nothing on.
-        let mut handed: BTreeMap<&str, (i64, Option<(String, Value)>)> = BTreeMap::new();
+        let mut handed: BTreeMap<&str, Handoff> = BTreeMap::new();
         let mut steps = Vec::new();
         let mut failure_at: Option<i64> = None;
 
@@ -122,12 +127,11 @@ impl Run {
             } else {
                 let ready = incoming
                     .iter()
-                    .filter_map(|edge| handed.get(edge.from).map(|(at, _)| *at))
+                    .filter_map(|edge| handed.get(edge.from).map(|handoff| handoff.at))
                     .max()
                     .unwrap_or(start);
                 let input = incoming.iter().find_map(|edge| {
-                    let (_, produced) = handed.get(edge.from)?;
-                    let (port, data) = produced.as_ref()?;
+                    let (port, data) = handed.get(edge.from)?.data.as_ref()?;
                     (port == edge.port).then(|| data.clone())
                 });
                 (ready, input)
@@ -137,7 +141,13 @@ impl Run {
                 continue;
             }
             let Some(input) = input.filter(|_| node.enabled) else {
-                handed.insert(node.id, (ready, None));
+                handed.insert(
+                    node.id,
+                    Handoff {
+                        at: ready,
+                        data: None,
+                    },
+                );
                 steps.push(Step {
                     node: node.id.to_owned(),
                     scheduled: ready,
@@ -180,7 +190,13 @@ impl Run {
                         (finished, StepResult::Failed(error), handed_on, false)
                     },
                 };
-            handed.insert(node.id, (finished, handed_on));
+            handed.insert(
+                node.id,
+                Handoff {
+                    at: finished,
+                    data: handed_on,
+                },
+            );
             steps.push(Step {
                 node: node.id.to_owned(),
                 scheduled: ready,
@@ -253,7 +269,10 @@ impl Run {
             } else {
                 ExecutionStatus::Completed
             }
-        } else if self.cancel_requested.is_some_and(|requested| at >= requested) {
+        } else if self
+            .cancel_requested
+            .is_some_and(|requested| at >= requested)
+        {
             ExecutionStatus::Cancelling
         } else if at < self.created + DISPATCH_MS {
             ExecutionStatus::Created
@@ -417,7 +436,9 @@ fn base_duration(node: &str, action: &str) -> i64 {
     let hash = node
         .bytes()
         .chain(action.bytes())
-        .fold(17_i64, |hash, byte| (hash * 31 + i64::from(byte)) % 1_000_003);
+        .fold(17_i64, |hash, byte| {
+            (hash * 31 + i64::from(byte)) % 1_000_003
+        });
     280 + hash % 620
 }
 
@@ -473,7 +494,10 @@ fn lookup(path: &str, input: &Value) -> Value {
     rest.split('.')
         .filter(|step| !step.is_empty())
         .try_fold(input, |value, step| match value {
-            Value::Array(items) => step.parse::<usize>().ok().and_then(|index| items.get(index)),
+            Value::Array(items) => step
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get(index)),
             other => other.get(step),
         })
         .cloned()
@@ -511,11 +535,19 @@ mod tests {
     fn a_chain_advances_node_by_node_and_hands_data_on() {
         let run = plan(
             json!([
-                node("paid", "filter", json!({
-                    "data": {"type": "expression", "expr": "{{ $input.orders }}"},
-                    "condition": literal(json!({"field": "paid", "op": "truthy"}))
-                })),
-                node("count", "aggregate", json!({"aggregations": literal(json!([{"fn": "count", "field": "id", "out": "n"}]))}))
+                node(
+                    "paid",
+                    "filter",
+                    json!({
+                        "data": {"type": "expression", "expr": "{{ $input.orders }}"},
+                        "condition": literal(json!({"field": "paid", "op": "truthy"}))
+                    })
+                ),
+                node(
+                    "count",
+                    "aggregate",
+                    json!({"aggregations": literal(json!([{"fn": "count", "field": "id", "out": "n"}]))})
+                )
             ]),
             json!([{"from_node": "paid", "to_node": "count"}]),
             json!({"orders": [{"id": 1, "paid": true}, {"id": 2, "paid": false}]}),
@@ -525,9 +557,15 @@ mod tests {
 
         let scheduled = run.detail(T0 + DISPATCH_MS + 10);
         assert_eq!(scheduled.execution.status, ExecutionStatus::Running);
-        assert_eq!(statuses(&scheduled), vec![("paid", ExecutionNodeStatus::Ready)]);
+        assert_eq!(
+            statuses(&scheduled),
+            vec![("paid", ExecutionNodeStatus::Ready)]
+        );
         let early = run.detail(T0 + DISPATCH_MS + START_MS + 10);
-        assert_eq!(statuses(&early), vec![("paid", ExecutionNodeStatus::Running)]);
+        assert_eq!(
+            statuses(&early),
+            vec![("paid", ExecutionNodeStatus::Running)]
+        );
 
         let end = run.end();
         let done = run.detail(end);
@@ -540,7 +578,8 @@ mod tests {
                 ("paid", ExecutionNodeStatus::Completed)
             ]
         );
-        let ExecutionNodeOutput::Inline { value } = done.nodes["count"].output.clone().unwrap() else {
+        let ExecutionNodeOutput::Inline { value } = done.nodes["count"].output.clone().unwrap()
+        else {
             panic!("inline output");
         };
         assert_eq!(value, json!({"n": 1}));
@@ -552,7 +591,11 @@ mod tests {
     fn the_untaken_branch_of_an_if_is_skipped() {
         let run = plan(
             json!([
-                node("check", "if", json!({"condition": literal(json!({"field": "total", "op": "gte", "value": 100}))})),
+                node(
+                    "check",
+                    "if",
+                    json!({"condition": literal(json!({"field": "total", "op": "gte", "value": 100}))})
+                ),
                 node("big", "set_fields", json!({})),
                 node("small", "set_fields", json!({}))
             ]),
@@ -572,7 +615,11 @@ mod tests {
     fn a_failure_stops_the_run_and_nothing_after_it_is_scheduled() {
         let run = plan(
             json!([
-                node("bad", "filter", json!({"condition": literal(json!({"field": "a", "op": "exists"}))})),
+                node(
+                    "bad",
+                    "filter",
+                    json!({"condition": literal(json!({"field": "a", "op": "exists"}))})
+                ),
                 node("after", "set_fields", json!({}))
             ]),
             json!([{"from_node": "bad", "to_node": "after"}]),
@@ -582,7 +629,10 @@ mod tests {
         assert_eq!(done.execution.status, ExecutionStatus::Failed);
         assert_eq!(done.nodes["bad"].status, ExecutionNodeStatus::Failed);
         assert_eq!(
-            done.nodes["bad"].error.as_ref().map(|error| error.code.as_str()),
+            done.nodes["bad"]
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str()),
             Some("core.invalid_input")
         );
         assert!(!done.nodes.contains_key("after"));
@@ -592,8 +642,16 @@ mod tests {
     fn an_error_connection_handles_a_failure_and_the_run_completes() {
         let run = plan(
             json!([
-                node("bad", "filter", json!({"condition": literal(json!({"field": "a", "op": "exists"}))})),
-                node("recover", "set_fields", json!({"assignments": literal(json!([{"name": "handled", "value": true}]))}))
+                node(
+                    "bad",
+                    "filter",
+                    json!({"condition": literal(json!({"field": "a", "op": "exists"}))})
+                ),
+                node(
+                    "recover",
+                    "set_fields",
+                    json!({"assignments": literal(json!([{"name": "handled", "value": true}]))})
+                )
             ]),
             json!([{"from_node": "bad", "from_port": "error", "to_node": "recover"}]),
             json!({}),
@@ -607,7 +665,11 @@ mod tests {
     fn a_cancellation_drains_and_cancels_what_is_still_running() {
         let mut run = plan(
             json!([
-                node("wait", "delay", json!({"mode": literal(json!("for")), "amount": literal(json!(3)), "unit": literal(json!("seconds"))})),
+                node(
+                    "wait",
+                    "delay",
+                    json!({"mode": literal(json!("for")), "amount": literal(json!(3)), "unit": literal(json!("seconds"))})
+                ),
                 node("after", "set_fields", json!({}))
             ]),
             json!([{"from_node": "wait", "to_node": "after"}]),
@@ -622,7 +684,10 @@ mod tests {
         assert_eq!(run.status(T0 + 650), ExecutionStatus::Cancelling);
         let cancelled = run.detail(T0 + 600 + DRAIN_MS);
         assert_eq!(cancelled.execution.status, ExecutionStatus::Cancelled);
-        assert_eq!(cancelled.nodes["wait"].status, ExecutionNodeStatus::Cancelled);
+        assert_eq!(
+            cancelled.nodes["wait"].status,
+            ExecutionNodeStatus::Cancelled
+        );
         assert!(!cancelled.nodes.contains_key("after"));
         // A finished run cannot be cancelled.
         assert!(!run.cancel(T0 + 60_000));
@@ -632,7 +697,10 @@ mod tests {
     fn expressions_read_the_node_input() {
         let input = json!({"customer": {"name": "Ada", "tags": ["vip"]}});
         assert_eq!(evaluate("{{ $input.customer.name }}", &input), json!("Ada"));
-        assert_eq!(evaluate("{{ $json.customer.tags.0 }}", &input), json!("vip"));
+        assert_eq!(
+            evaluate("{{ $json.customer.tags.0 }}", &input),
+            json!("vip")
+        );
         assert_eq!(
             evaluate("Hello {{ $input.customer.name }}!", &input),
             json!("Hello Ada!")

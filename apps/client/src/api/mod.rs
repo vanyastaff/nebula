@@ -8,7 +8,7 @@ use crate::{
     transport::{Connection, ExecutionQuery, Failure, SignIn},
 };
 use nebula_api_contract::v1::{
-    catalog::{ActionParametersResponse, ListActionsResponse},
+    catalog::{ActionDetailResponse, ActionParametersResponse, ListActionsResponse},
     credential::{
         CreateCredentialRequest, CredentialResponse, ListCredentialTypesResponse,
         ListCredentialsResponse, TestCredentialResponse,
@@ -198,6 +198,10 @@ impl Backend {
 
     pub(crate) async fn actions(&self) -> Result<ListActionsResponse, Failure> {
         unscoped!(self, actions())
+    }
+
+    pub(crate) async fn action(&self, key: &str) -> Result<ActionDetailResponse, Failure> {
+        unscoped!(self, action(key))
     }
 
     pub(crate) async fn action_parameters(

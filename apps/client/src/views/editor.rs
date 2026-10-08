@@ -7,7 +7,7 @@ use crate::{
     document::Draft,
     theme,
     widgets::{self, Tone},
-    workbench::{CATALOG_UNAVAILABLE, Catalog, DraftGate, Workbench, draft_gate},
+    workbench::{CATALOG_UNAVAILABLE, Catalog, DraftGate, Page, Workbench, draft_gate},
 };
 use eframe::egui::{self, Align, Layout, RichText};
 use serde_json::Value;
@@ -145,7 +145,7 @@ fn no_workflow(ui: &mut egui::Ui, workbench: &mut Workbench) {
         ui.add_space(theme::SPACE_SM);
         if ui.add(widgets::primary_button("New workflow")).clicked() {
             workbench.navigator.start_creating();
-            workbench.sidebar_open = true;
+            workbench.go(Page::Workflows);
         }
     });
 }
@@ -567,7 +567,9 @@ fn add_node_fields(ui: &mut egui::Ui, workbench: &mut Workbench) {
     }
 }
 
-fn add_node(workbench: &mut Workbench, action_key: &str, name: &str) {
+/// Adds an action to the open draft, connected after the palette's source node if one was chosen,
+/// and selects it.
+pub(crate) fn add_node(workbench: &mut Workbench, action_key: &str, name: &str) {
     let Some(draft) = workbench.session.draft_mut() else {
         return;
     };

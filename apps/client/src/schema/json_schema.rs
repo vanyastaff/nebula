@@ -21,7 +21,8 @@ impl Form {
                 .iter()
                 .filter_map(|variant| {
                     let properties = variant["properties"].as_object()?;
-                    let (tag, property) = properties.iter().next().filter(|_| properties.len() == 1)?;
+                    let (tag, property) =
+                        properties.iter().next().filter(|_| properties.len() == 1)?;
                     Some(Variant {
                         key: tag.clone(),
                         label: humanize(tag),
@@ -29,7 +30,7 @@ impl Form {
                     })
                 })
                 .collect();
-            let default_variant = variants.first().map(|variant| variant.key.clone());
+            // `oneOf` names no default, so the person picks the type.
             return Self {
                 fields: vec![Field {
                     key: UNION_FIELD.to_owned(),
@@ -44,16 +45,16 @@ impl Form {
                     bounds: Bounds::default(),
                     kind: Kind::Mode {
                         variants,
-                        default_variant,
+                        default_variant: None,
                     },
                 }],
-                free_form: false,
+                any_value: false,
                 tagged_union: true,
             };
         }
         Self {
             fields: object_fields(schema),
-            free_form: false,
+            any_value: false,
             tagged_union: false,
         }
     }
@@ -104,7 +105,9 @@ fn property_field(key: &str, property: &Value, required: bool) -> Field {
         },
         "select" => Kind::Select {
             options: choices(value),
-            multiple: property["x-nebula-select-multiple"].as_bool().unwrap_or(false),
+            multiple: property["x-nebula-select-multiple"]
+                .as_bool()
+                .unwrap_or(false),
             allow_custom: property["x-nebula-select-allow-custom"]
                 .as_bool()
                 .unwrap_or(false),

@@ -1,13 +1,21 @@
 //! Workbench state and transitions. Nothing here touches egui or the network, so every
 //! reducer is testable with fabricated replies.
 
+mod page_replies;
+pub(crate) mod pages;
+
+pub(crate) use pages::{
+    CatalogPage, CredentialsPage, ExecutionsPage, Page, Remote, SettingsPage, TeamPage,
+    TriggersPage,
+};
+
 use crate::{
-    document::Draft,
-    effects::{Reply, RequestKind},
-    schema::Form,
-    session::{DraftKey, RequestStamp, Session, SessionContext},
     api::Backend,
     demo,
+    document::Draft,
+    effects::{Reply, RequestKind, Target},
+    schema::Form,
+    session::{DraftKey, RequestStamp, Session, SessionContext},
     transport::{Failure, PAGE_SIZE},
 };
 use nebula_api_contract::v1::{
@@ -135,6 +143,8 @@ impl Drop for ConnectionForm {
 
 #[derive(Default)]
 pub(crate) struct Navigator {
+    /// Whether the list has been read, is being read, or could not be read.
+    pub(crate) read: Remote<()>,
     pub(crate) workflows: Vec<WorkflowResponse>,
     pub(crate) page: usize,
     pub(crate) total: usize,
@@ -262,13 +272,9 @@ pub(crate) struct Workbench {
     pub(crate) history_requested: bool,
     /// Why the last read of recent runs failed, shown in place of the list until a read succeeds.
     pub(crate) history_error: Option<String>,
-    /// When a read of runs last started, in UI seconds. Following a run spaces its reads from it.
-    pub(crate) runs_read_at: Option<f64>,
     pub(crate) feedback: Feedback,
     /// Lets the user return to the workspace form while a workspace is open.
     pub(crate) workspace_form_open: bool,
-    /// Narrow layouts show the workflow list as a page while this is set. Wide layouts always show it.
-    pub(crate) sidebar_open: bool,
     /// Node shown in the inspector. Cleared with the rest of the selection.
     pub(crate) selected_node: Option<String>,
     /// Name being edited for the selected node.
@@ -288,6 +294,17 @@ pub(crate) struct Workbench {
     /// The action whose schema is being read, so a failure knows which entry it settles.
     pub(crate) schema_request: Option<String>,
     pub(crate) inspector_tab: InspectorTab,
+    pub(crate) page: Page,
+    pub(crate) executions: ExecutionsPage,
+    pub(crate) catalog_page: CatalogPage,
+    pub(crate) credentials: CredentialsPage,
+    pub(crate) triggers: TriggersPage,
+    pub(crate) settings: SettingsPage,
+    pub(crate) team: TeamPage,
+    /// The keyboard shortcut sheet is open.
+    pub(crate) shortcuts_open: bool,
+    /// An execution whose live status failed; it is not watched again until it is opened again.
+    pub(crate) watch_failed: Option<String>,
 }
 
 /// A card being dragged. The offset is in screen pixels, so the card follows the pointer.
@@ -383,10 +400,8 @@ impl Workbench {
             history: None,
             history_requested: false,
             history_error: None,
-            runs_read_at: None,
             feedback: Feedback::default(),
             workspace_form_open: false,
-            sidebar_open: true,
             selected_node: None,
             rename: String::new(),
             link_from: None,
@@ -398,7 +413,36 @@ impl Workbench {
             schemas: HashMap::new(),
             schema_request: None,
             inspector_tab: InspectorTab::default(),
+            page: Page::default(),
+            executions: ExecutionsPage::default(),
+            catalog_page: CatalogPage::default(),
+            credentials: CredentialsPage::default(),
+            triggers: TriggersPage::default(),
+            settings: SettingsPage::default(),
+            team: TeamPage::default(),
+            shortcuts_open: false,
+            watch_failed: None,
         }
+    }
+
+    /// Forgets what the pages read, as a new workspace or sign-in shows other data.
+    fn reset_pages(&mut self) {
+        self.page = Page::default();
+        self.executions = ExecutionsPage::default();
+        self.catalog_page = CatalogPage::default();
+        self.credentials = CredentialsPage::default();
+        self.triggers = TriggersPage::default();
+        self.settings = SettingsPage::default();
+        self.team = TeamPage::default();
+    }
+
+    /// Shows a page of the workspace. Leaving the editor keeps its draft for when it is opened again.
+    pub(crate) fn go(&mut self, page: Page) {
+        if page != Page::Editor {
+            self.parameter.close();
+            self.add_node.close();
+        }
+        self.page = page;
     }
 
     /// Marks the schema of `action` as being read. Returns false when it is already known or pending,
@@ -520,8 +564,8 @@ impl Workbench {
         self.navigator.total = 0;
         self.navigator.page = 1;
         self.clear_selection();
+        self.reset_pages();
         self.workspace_form_open = false;
-        self.sidebar_open = true;
         true
     }
 
@@ -535,8 +579,7 @@ impl Workbench {
             workflow: workflow.into(),
         });
         self.clear_selection();
-        // On narrow layouts the list is a page, so opening a workflow hands the page back to the editor.
-        self.sidebar_open = false;
+        self.go(Page::Editor);
         true
     }
 
@@ -562,7 +605,6 @@ impl Workbench {
         self.history = None;
         self.history_requested = false;
         self.history_error = None;
-        self.runs_read_at = None;
     }
 
     pub(crate) fn disconnect(&mut self) {
@@ -575,6 +617,7 @@ impl Workbench {
         self.form.clear_secrets();
         self.clear_selection();
         self.forget_server();
+        self.reset_pages();
         self.feedback
             .info("Disconnected. Your drafts remain available in this app session.");
     }
@@ -614,6 +657,21 @@ impl Workbench {
         if kind == RequestKind::Schema && error != Failure::Unauthorized {
             self.receive_schema_failure(&error);
             return;
+        }
+        match kind {
+            RequestKind::Load(target) if error != Failure::Unauthorized => {
+                self.receive_load_failure(target, &error);
+                return;
+            },
+            RequestKind::Change(target) if error != Failure::Unauthorized => {
+                if target == Target::Executions {
+                    // A start whose answer was lost may have happened; the list shows whether.
+                    self.executions.list.invalidate();
+                }
+                self.feedback.error(error.to_string());
+                return;
+            },
+            _ => {},
         }
         if kind == RequestKind::History && error != Failure::Unauthorized {
             // The runs panel says it where the list would be, so no toast repeats it.
@@ -675,6 +733,7 @@ impl Workbench {
                 }
             },
             Reply::Listed(page) => {
+                self.navigator.read = Remote::Ready(());
                 self.navigator.workflows = page.workflows;
                 self.navigator.total = page.total;
                 self.navigator.page = page.page;
@@ -708,12 +767,9 @@ impl Workbench {
             },
             Reply::Status(status) => self.status = Some(status),
             Reply::Action(action, detail) => self.receive_schema(action, &detail),
-            Reply::Actions(list) => {
-                let count = list.actions.len();
-                self.catalog = Catalog::Ready(list.actions);
-                self.feedback
-                    .info(format!("{count} actions in the server catalog."));
-            },
+            // The palette and the catalog page show the actions, which is their confirmation.
+            Reply::Actions(list) => self.catalog = Catalog::Ready(list.actions),
+            page => self.receive_page_reply(page),
         }
     }
 
@@ -802,9 +858,11 @@ impl Workbench {
         // The new run belongs in the list, so the runs panel reads it again.
         self.history_requested = false;
         self.feedback
-            .info("Run accepted. Read persisted status to see whether it has started.");
+            .info("Run accepted. Its nodes update in Runs as they run.");
     }
 }
 
+#[cfg(test)]
+mod page_tests;
 #[cfg(test)]
 mod tests;

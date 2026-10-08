@@ -77,7 +77,9 @@ pub(super) fn run_action(
                 let name = assignment["name"]
                     .as_str()
                     .filter(|name| !name.is_empty())
-                    .ok_or_else(|| failure("invalid_parameters", "Each assignment needs a name."))?;
+                    .ok_or_else(|| {
+                        failure("invalid_parameters", "Each assignment needs a name.")
+                    })?;
                 object.insert(name.to_owned(), assignment["value"].clone());
             }
             Ok(Produced::on(OUT, Value::Object(object)))
@@ -179,15 +181,14 @@ pub(super) fn run_action(
             aggregate(array(&data)?, list("group_by"), list("aggregations"))?,
         )),
         "core.delay" => {
-            let wait = match param(parameters, "mode").as_str() {
-                Some("until") => param(parameters, "datetime")
+            let wait = if param(parameters, "mode").as_str() == Some("until") {
+                param(parameters, "datetime")
                     .as_str()
                     .and_then(clock::parse_rfc3339)
-                    .map_or(0, |until| until - now_ms),
-                _ => {
-                    let amount = param(parameters, "amount").as_f64().unwrap_or(0.0);
-                    unit_ms(param(parameters, "unit").as_str(), amount)
-                },
+                    .map_or(0, |until| until - now_ms)
+            } else {
+                let amount = param(parameters, "amount").as_f64().unwrap_or(0.0);
+                unit_ms(param(parameters, "unit").as_str(), amount)
             };
             Ok(Produced {
                 output: data,
@@ -258,7 +259,10 @@ fn transform(
             Some("rename") => {
                 let (Some(from), Some(to)) = (operation["from"].as_str(), operation["to"].as_str())
                 else {
-                    return Err(failure("invalid_parameters", "Rename needs `from` and `to`."));
+                    return Err(failure(
+                        "invalid_parameters",
+                        "Rename needs `from` and `to`.",
+                    ));
                 };
                 if let Some(value) = object.remove(from) {
                     object.insert(to.to_owned(), value);
@@ -270,7 +274,12 @@ fn transform(
                 flatten_into(&mut flat, "", &Value::Object(object), separator);
                 object = flat;
             },
-            _ => return Err(failure("invalid_parameters", "Unknown transform operation.")),
+            _ => {
+                return Err(failure(
+                    "invalid_parameters",
+                    "Unknown transform operation.",
+                ));
+            },
         }
     }
     Ok(Value::Object(object))
@@ -322,9 +331,12 @@ pub(super) fn holds(condition: &Value, data: &Value) -> Result<bool, ExecutionFa
     if let Some(inner) = condition.get("not") {
         return holds(inner, data).map(|inner| !inner);
     }
-    let field = condition["field"]
-        .as_str()
-        .ok_or_else(|| failure("invalid_condition", "A condition needs a `field` and an `op`."))?;
+    let field = condition["field"].as_str().ok_or_else(|| {
+        failure(
+            "invalid_condition",
+            "A condition needs a `field` and an `op`.",
+        )
+    })?;
     let actual = data.get(field);
     let expected = &condition["value"];
     Ok(match condition["op"].as_str() {
@@ -402,7 +414,12 @@ fn aggregate(
         .collect();
     let aggregations = aggregations
         .filter(|aggregations| !aggregations.is_empty())
-        .ok_or_else(|| failure("invalid_parameters", "Aggregate needs at least one aggregation."))?;
+        .ok_or_else(|| {
+            failure(
+                "invalid_parameters",
+                "Aggregate needs at least one aggregation.",
+            )
+        })?;
     let mut buckets: Vec<(Vec<Value>, Vec<&Value>)> = Vec::new();
     for item in items {
         let identity: Vec<Value> = groups.iter().map(|group| item[*group].clone()).collect();
@@ -438,8 +455,16 @@ fn aggregate(
                 "sum" => json!(round(numbers.iter().sum())),
                 "avg" if numbers.is_empty() => Value::Null,
                 "avg" => json!(round(numbers.iter().sum::<f64>() / numbers.len() as f64)),
-                "min" => numbers.iter().copied().reduce(f64::min).map_or(Value::Null, |n| json!(n)),
-                "max" => numbers.iter().copied().reduce(f64::max).map_or(Value::Null, |n| json!(n)),
+                "min" => numbers
+                    .iter()
+                    .copied()
+                    .reduce(f64::min)
+                    .map_or(Value::Null, |n| json!(n)),
+                "max" => numbers
+                    .iter()
+                    .copied()
+                    .reduce(f64::max)
+                    .map_or(Value::Null, |n| json!(n)),
                 "collect" => Value::Array(values.into_iter().cloned().collect()),
                 "join" => {
                     let separator = aggregation["sep"].as_str().unwrap_or(", ");
@@ -505,7 +530,9 @@ fn datetime(parameters: &Map<String, Value>, now_ms: i64) -> Result<Value, Execu
     let unit = param(parameters, "unit").as_str();
     match param(parameters, "op").as_str() {
         Some("format" | "parse") => Ok(json!({"value": clock::rfc3339(instant("input")?)})),
-        Some("add") => Ok(json!({"value": clock::rfc3339(instant("input")? + unit_ms(unit, amount))})),
+        Some("add") => {
+            Ok(json!({"value": clock::rfc3339(instant("input")? + unit_ms(unit, amount))}))
+        },
         Some("subtract") => {
             Ok(json!({"value": clock::rfc3339(instant("input")? - unit_ms(unit, amount))}))
         },
@@ -558,24 +585,42 @@ mod tests {
     #[test]
     fn an_explicit_data_parameter_replaces_the_input() {
         assert_eq!(
-            output("core.set_fields", json!({"data": {"a": 1}, "assignments": [{"name": "b", "value": 2}]}), json!({"ignored": true})),
+            output(
+                "core.set_fields",
+                json!({"data": {"a": 1}, "assignments": [{"name": "b", "value": 2}]}),
+                json!({"ignored": true})
+            ),
             json!({"a": 1, "b": 2})
         );
     }
 
     #[test]
     fn conditions_filter_and_route_as_core_evaluates_them() {
-        let orders = json!([{"status": "paid", "total": 5}, {"status": "open", "total": 9}, {"total": 1}]);
+        let orders =
+            json!([{"status": "paid", "total": 5}, {"status": "open", "total": 9}, {"total": 1}]);
         assert_eq!(
-            output("core.filter", json!({"condition": {"field": "status", "op": "eq", "value": "paid"}}), orders.clone()),
+            output(
+                "core.filter",
+                json!({"condition": {"field": "status", "op": "eq", "value": "paid"}}),
+                orders.clone()
+            ),
             json!([{"status": "paid", "total": 5}])
         );
         // A missing field never equals, and is never greater; `ne` holds for it.
         assert_eq!(
-            output("core.filter", json!({"condition": {"any": [{"field": "total", "op": "gt", "value": 8}, {"field": "status", "op": "not_exists"}]}}), orders),
+            output(
+                "core.filter",
+                json!({"condition": {"any": [{"field": "total", "op": "gt", "value": 8}, {"field": "status", "op": "not_exists"}]}}),
+                orders
+            ),
             json!([{"status": "open", "total": 9}, {"total": 1}])
         );
-        let routed = run("core.if", json!({"condition": {"not": {"field": "vip", "op": "truthy"}}}), json!({"vip": false})).unwrap();
+        let routed = run(
+            "core.if",
+            json!({"condition": {"not": {"field": "vip", "op": "truthy"}}}),
+            json!({"vip": false}),
+        )
+        .unwrap();
         assert_eq!(routed.port, "true");
         let switched = run(
             "core.switch",
@@ -588,7 +633,12 @@ mod tests {
 
     #[test]
     fn comparing_values_of_different_kinds_is_a_configuration_failure() {
-        let failure = run("core.if", json!({"condition": {"field": "total", "op": "gt", "value": "10"}}), json!({"total": 3})).unwrap_err();
+        let failure = run(
+            "core.if",
+            json!({"condition": {"field": "total", "op": "gt", "value": "10"}}),
+            json!({"total": 3}),
+        )
+        .unwrap_err();
         assert_eq!(failure.code, "core.invalid_condition");
     }
 
@@ -601,14 +651,35 @@ mod tests {
             {"id": "a", "region": "EU", "total": 10.0}
         ]);
         assert_eq!(
-            output("core.sort", json!({"keys": [{"field": "total", "order": "desc"}]}), rows.clone())[0]["id"],
+            output(
+                "core.sort",
+                json!({"keys": [{"field": "total", "order": "desc"}]}),
+                rows.clone()
+            )[0]["id"],
             "c"
         );
         // Nulls sort last whichever way the order runs, as the core sort's default places them.
-        assert_eq!(output("core.sort", json!({"keys": [{"field": "total"}]}), rows.clone())[3]["id"], "b");
-        assert_eq!(output("core.dedupe", json!({"keys": ["id"]}), rows.clone()).as_array().unwrap().len(), 3);
         assert_eq!(
-            output("core.array", json!({"operations": [{"op": "chunk", "size": 3}, {"op": "take", "count": 1}]}), rows.clone()),
+            output(
+                "core.sort",
+                json!({"keys": [{"field": "total"}]}),
+                rows.clone()
+            )[3]["id"],
+            "b"
+        );
+        assert_eq!(
+            output("core.dedupe", json!({"keys": ["id"]}), rows.clone())
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            output(
+                "core.array",
+                json!({"operations": [{"op": "chunk", "size": 3}, {"op": "take", "count": 1}]}),
+                rows.clone()
+            ),
             json!([[rows[0], rows[1], rows[2]]])
         );
         assert_eq!(
@@ -623,24 +694,49 @@ mod tests {
 
     #[test]
     fn the_wrong_shape_of_input_fails_with_a_readable_reason() {
-        let failure = run("core.filter", json!({"condition": {"field": "a", "op": "exists"}}), json!({"a": 1})).unwrap_err();
+        let failure = run(
+            "core.filter",
+            json!({"condition": {"field": "a", "op": "exists"}}),
+            json!({"a": 1}),
+        )
+        .unwrap_err();
         assert_eq!(failure.code, "core.invalid_input");
-        assert_eq!(failure.message.as_deref(), Some("Expected an array for `data`, got an object."));
+        assert_eq!(
+            failure.message.as_deref(),
+            Some("Expected an array for `data`, got an object.")
+        );
     }
 
     #[test]
     fn a_delay_waits_no_longer_than_the_demo_cap() {
-        let short = run("core.delay", json!({"mode": "for", "amount": 2, "unit": "seconds"}), json!({})).unwrap();
+        let short = run(
+            "core.delay",
+            json!({"mode": "for", "amount": 2, "unit": "seconds"}),
+            json!({}),
+        )
+        .unwrap();
         assert_eq!(short.wait_ms, Some(2_000));
-        let long = run("core.delay", json!({"mode": "for", "amount": 3, "unit": "hours"}), json!({})).unwrap();
+        let long = run(
+            "core.delay",
+            json!({"mode": "for", "amount": 3, "unit": "hours"}),
+            json!({}),
+        )
+        .unwrap();
         assert_eq!(long.wait_ms, Some(DELAY_CAP_MS));
     }
 
     #[test]
     fn datetime_formats_and_shifts_instants() {
         let now = clock::parse_rfc3339("2026-10-08T12:00:00Z").unwrap();
-        let parameters = json!({"op": "add", "input": "2026-10-08T12:00:00Z", "amount": 90, "unit": "minutes"});
-        let shifted = run_action("core.datetime", parameters.as_object().unwrap(), Value::Null, now).unwrap();
+        let parameters =
+            json!({"op": "add", "input": "2026-10-08T12:00:00Z", "amount": 90, "unit": "minutes"});
+        let shifted = run_action(
+            "core.datetime",
+            parameters.as_object().unwrap(),
+            Value::Null,
+            now,
+        )
+        .unwrap();
         assert_eq!(shifted.output["value"], "2026-10-08T13:30:00.000000Z");
     }
 }
