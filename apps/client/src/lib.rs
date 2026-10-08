@@ -17,6 +17,8 @@ mod document;
 #[cfg(feature = "ui")]
 mod effects;
 #[cfg(feature = "ui")]
+mod schema;
+#[cfg(feature = "ui")]
 mod session;
 #[cfg(feature = "ui")]
 mod theme;

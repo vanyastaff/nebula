@@ -4,6 +4,7 @@
 pub(crate) mod canvas;
 pub(crate) mod connection;
 pub(crate) mod editor;
+pub(crate) mod form;
 pub(crate) mod inspector;
 pub(crate) mod navigator;
 pub(crate) mod runs;
@@ -22,6 +23,8 @@ pub(crate) enum Intent {
     LoadRecentRuns,
     LoadExecution(String),
     LoadCatalog,
+    /// The parameter schema of an action, for the node form.
+    LoadSchema(String),
 }
 
 pub(crate) type Intents = Vec<Intent>;

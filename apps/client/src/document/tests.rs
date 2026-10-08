@@ -22,6 +22,58 @@ fn two_node_snapshot(revision: u64, connections: Value) -> WorkflowDocumentRespo
 }
 
 #[test]
+fn a_parameter_the_node_lacks_can_be_set_and_undone_to_absence() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    draft.add_node("http.request", "HTTP request").unwrap();
+
+    draft
+        .set_literal("http_request", "url", json!("https://example.test"))
+        .unwrap();
+    let node = |draft: &Draft| draft.definition["nodes"][1].clone();
+    assert_eq!(
+        node(&draft)["parameters"]["url"],
+        json!({"type": "literal", "value": "https://example.test"})
+    );
+
+    draft.undo().unwrap();
+    assert!(node(&draft)["parameters"].get("url").is_none());
+}
+
+#[test]
+fn a_parameter_switches_to_an_expression_and_back_and_clears() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    draft
+        .set_expression("echo", "message", "{{ $input.text }}")
+        .unwrap();
+    assert_eq!(
+        draft.definition["nodes"][0]["parameters"]["message"],
+        json!({"type": "expression", "expr": "{{ $input.text }}"})
+    );
+
+    draft.clear_parameter("echo", "message").unwrap();
+    assert!(
+        draft.definition["nodes"][0]["parameters"]
+            .get("message")
+            .is_none()
+    );
+
+    draft.undo().unwrap();
+    draft.undo().unwrap();
+    assert_eq!(
+        draft.definition["nodes"][0]["parameters"]["message"],
+        json!({"type": "literal", "value": 7})
+    );
+    assert!(!draft.dirty());
+}
+
+#[test]
+fn clearing_a_parameter_that_is_not_set_is_not_an_undo_step() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    draft.clear_parameter("echo", "absent").unwrap();
+    assert!(!draft.can_undo());
+}
+
+#[test]
 fn typed_edits_undo_redo_and_wire_patch_preserve_server_identity() {
     let mut draft = Draft::new(snapshot(1, 7)).unwrap();
     draft.edit("echo", "message", "8").unwrap();

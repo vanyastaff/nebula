@@ -2,7 +2,7 @@
 
 use nebula_api_contract::v1::{
     auth::{LoginRequest, LoginResponse},
-    catalog::ListActionsResponse,
+    catalog::{ActionDetailResponse, ListActionsResponse},
     execution::{
         ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse, StartExecutionRequest,
     },
@@ -220,6 +220,11 @@ impl Connection {
     /// The action catalog. A server without an action registry answers 503, which the caller reports.
     pub(crate) async fn actions(&self) -> Result<ListActionsResponse, Failure> {
         self.read(self.url(&["actions"])?).await
+    }
+
+    /// One action's detail, including its parameter schema when the server publishes it.
+    pub(crate) async fn action(&self, key: &str) -> Result<ActionDetailResponse, Failure> {
+        self.read(self.url(&["actions", key])?).await
     }
 
     pub(crate) async fn list(

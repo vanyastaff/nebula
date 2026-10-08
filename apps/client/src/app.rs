@@ -104,6 +104,11 @@ impl ClientApp {
             },
             Intent::LoadExecution(id) => self.dispatch(context, Operation::Status(id)),
             Intent::LoadCatalog => self.dispatch(context, Operation::Actions),
+            Intent::LoadSchema(action) => {
+                if self.workbench.begin_schema(&action) {
+                    self.dispatch(context, Operation::Action(action));
+                }
+            },
         }
     }
 
@@ -170,6 +175,24 @@ impl eframe::App for ClientApp {
                         .show(ui, |ui| navigator::show(ui, workbench, &mut intents));
                 });
             if has_draft {
+                // The node sidebar slides in from the right over the full height, before the runs
+                // panel claims the bottom. Dragging its edge shut closes it like the Close button.
+                let mut open = editor::has_side_panel(workbench);
+                let was_open = open;
+                egui::Panel::right("side")
+                    .default_size(400.0)
+                    .size_range(320.0..=640.0)
+                    .resizable(true)
+                    .drag_to_open(false)
+                    .frame(theme::panel(theme::SIDEBAR))
+                    .show_collapsible(ui, &mut open, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("side")
+                            .show(ui, |ui| editor::side(ui, workbench, &mut intents));
+                    });
+                if was_open && !open {
+                    editor::close_side_panel(workbench);
+                }
                 egui::Panel::bottom("runs")
                     // Tall enough for a run's status, a node and its error without scrolling.
                     .default_size(260.0)
@@ -180,18 +203,6 @@ impl eframe::App for ClientApp {
                         egui::ScrollArea::vertical()
                             .id_salt("runs")
                             .show(ui, |ui| runs::show(ui, workbench, &mut intents));
-                    });
-            }
-            if editor::has_side_panel(workbench) {
-                egui::Panel::right("side")
-                    .default_size(340.0)
-                    .size_range(280.0..=520.0)
-                    .resizable(true)
-                    .frame(theme::panel(theme::SIDEBAR))
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("side")
-                            .show(ui, |ui| editor::side(ui, workbench, &mut intents));
                     });
             }
         }

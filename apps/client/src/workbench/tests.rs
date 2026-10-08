@@ -1,7 +1,7 @@
 use super::*;
 use crate::{document::tests::snapshot, transport::SignedIn};
 use nebula_api_contract::v1::{catalog::ListActionsResponse, workflow::ListWorkflowsResponse};
-use serde_json::json;
+use serde_json::{Value, json};
 
 const SERVER: &str = "http://127.0.0.1:8080";
 
@@ -372,6 +372,70 @@ fn remembered_settings_round_trip_without_secrets() {
     assert_eq!(restored.form.email, "fixture@example.test");
     assert_eq!(restored.form.mode, SignInMode::Token);
     assert_eq!(restored.recent.len(), 1);
+}
+
+fn schema_reply(workbench: &mut Workbench, action: &str, parameters: Option<Value>) {
+    assert!(workbench.begin_schema(action));
+    let detail: ActionDetailResponse = serde_json::from_value(json!({
+        "key": action, "name": action, "description": "", "version": "1.0",
+        "isolation_level": "None", "parameters": parameters
+    }))
+    .unwrap();
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(
+        stamp,
+        RequestKind::Schema,
+        Ok(Reply::Action(action.to_owned(), Box::new(detail))),
+    );
+}
+
+#[test]
+fn a_published_schema_becomes_a_form_and_is_asked_for_once() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    schema_reply(
+        &mut workbench,
+        "http.request",
+        Some(json!({"fields": [{"type": "string", "key": "url", "hint": "url"}]})),
+    );
+
+    match &workbench.schemas["http.request"] {
+        SchemaState::Ready(form) => assert_eq!(form.fields[0].key, "url"),
+        other => panic!("expected a form, found {other:?}"),
+    }
+    assert!(!workbench.begin_schema("http.request"));
+}
+
+#[test]
+fn an_action_without_a_schema_or_a_catalog_explains_itself_without_a_toast() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    schema_reply(&mut workbench, "noop", None);
+    assert!(matches!(
+        workbench.schemas["noop"],
+        SchemaState::Unavailable(_)
+    ));
+
+    assert!(workbench.begin_schema("json_transform"));
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(stamp, RequestKind::Schema, Err(Failure::Rejected(503)));
+
+    match &workbench.schemas["json_transform"] {
+        SchemaState::Unavailable(reason) => assert!(reason.contains("no action catalog")),
+        other => panic!("expected an explanation, found {other:?}"),
+    }
+    assert!(workbench.feedback.message.is_empty());
+}
+
+#[test]
+fn signing_out_forgets_the_schemas_of_that_server() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    schema_reply(&mut workbench, "noop", None);
+
+    workbench.disconnect();
+
+    assert!(workbench.schemas.is_empty());
 }
 
 #[test]

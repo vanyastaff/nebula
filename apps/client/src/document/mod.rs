@@ -116,6 +116,7 @@ impl Draft {
         Ok(())
     }
 
+    /// Sets a literal from JSON text, as the raw parameter editor does.
     pub(crate) fn edit(
         &mut self,
         node: &str,
@@ -123,10 +124,51 @@ impl Draft {
         text: &str,
     ) -> Result<(), EditError> {
         let value: Value = serde_json::from_str(text).map_err(|_| EditError::InvalidValue)?;
+        self.set_literal(node, parameter, value)
+    }
+
+    pub(crate) fn set_literal(
+        &mut self,
+        node: &str,
+        parameter: &str,
+        value: Value,
+    ) -> Result<(), EditError> {
+        self.set_entry(
+            node,
+            parameter,
+            Some(json!({"type": "literal", "value": value})),
+        )
+    }
+
+    /// An expression the engine evaluates at run time, such as `{{ $input.name }}`.
+    pub(crate) fn set_expression(
+        &mut self,
+        node: &str,
+        parameter: &str,
+        expression: &str,
+    ) -> Result<(), EditError> {
+        self.set_entry(
+            node,
+            parameter,
+            Some(json!({"type": "expression", "expr": expression})),
+        )
+    }
+
+    /// Removes the parameter, so the action's default applies.
+    pub(crate) fn clear_parameter(&mut self, node: &str, parameter: &str) -> Result<(), EditError> {
+        self.set_entry(node, parameter, None)
+    }
+
+    fn set_entry(
+        &mut self,
+        node: &str,
+        parameter: &str,
+        entry: Option<Value>,
+    ) -> Result<(), EditError> {
         self.apply(Edit::SetParameter {
             node: node.into(),
             parameter: parameter.into(),
-            value,
+            entry,
         })
     }
 

@@ -7,8 +7,6 @@ use serde_json::{Value, json};
 pub(crate) enum EditError {
     #[error("This server does not expose an editable workflow document.")]
     UnsupportedDocument,
-    #[error("The selected node or literal parameter no longer exists.")]
-    MissingParameter,
     #[error("Enter a valid JSON value for the parameter.")]
     InvalidValue,
     #[error("The selected node no longer exists.")]
@@ -26,10 +24,12 @@ pub(crate) enum EditError {
 /// A graph edit as the user requested it. Applying it records what undo needs.
 #[derive(Clone)]
 pub(crate) enum Edit {
+    /// Sets the whole parameter entry, a `{"type": ...}` value such as a literal or an expression, or
+    /// removes it with `None` so the action's default applies.
     SetParameter {
         node: String,
         parameter: String,
-        value: Value,
+        entry: Option<Value>,
     },
     RenameNode {
         node: String,
@@ -60,11 +60,12 @@ pub(crate) enum Edit {
 /// An applied edit with the state needed to reverse and redo it. `index` positions keep undo exact.
 #[derive(Clone)]
 pub(super) enum Change {
+    /// Whole parameter entries; `None` is an absent parameter.
     Parameter {
         node: String,
         parameter: String,
-        before: Value,
-        after: Value,
+        before: Option<Value>,
+        after: Option<Value>,
     },
     Name {
         node: String,
@@ -124,7 +125,7 @@ impl Change {
             } => Edit::SetParameter {
                 node: node.clone(),
                 parameter: parameter.clone(),
-                value: after.clone(),
+                entry: after.clone(),
             },
             Self::Name { node, after, .. } => Edit::RenameNode {
                 node: node.clone(),
@@ -172,14 +173,16 @@ pub(super) fn capture(definition: &Value, edit: Edit) -> Result<Change, EditErro
         Edit::SetParameter {
             node,
             parameter,
-            value,
+            entry,
         } => {
-            let before = literal(definition, &node, &parameter)?.clone();
+            let before = find_node(definition, &node)?["parameters"]
+                .get(&parameter)
+                .cloned();
             Change::Parameter {
                 node,
                 parameter,
                 before,
-                after: value,
+                after: entry,
             }
         },
         Edit::RenameNode { node, name } => {
@@ -267,8 +270,8 @@ pub(super) fn replay(
             before,
             after,
         } => {
-            let value = if forward { after } else { before };
-            *literal_mut(definition, node, parameter)? = value.clone();
+            let entry = if forward { after } else { before };
+            set_parameter_entry(definition, node, parameter, entry.clone())?;
         },
         Change::Name {
             node,
@@ -549,29 +552,28 @@ fn set_field(node: &mut Value, key: &str, value: Value) -> Result<(), EditError>
     Ok(())
 }
 
-/// The literal value of a parameter. Expressions and templates are not editable yet.
-fn literal<'a>(definition: &'a Value, node: &str, parameter: &str) -> Result<&'a Value, EditError> {
-    let value = find_node(definition, node).map_err(|_| EditError::MissingParameter)?["parameters"]
-        .get(parameter)
-        .ok_or(EditError::MissingParameter)?;
-    if value["type"].as_str() != Some("literal") {
-        return Err(EditError::MissingParameter);
-    }
-    value.get("value").ok_or(EditError::MissingParameter)
-}
-
-fn literal_mut<'a>(
-    definition: &'a mut Value,
+/// Writes or removes one parameter entry. A node without a `parameters` object gets one.
+fn set_parameter_entry(
+    definition: &mut Value,
     node: &str,
     parameter: &str,
-) -> Result<&'a mut Value, EditError> {
-    let value = find_node_mut(definition, node)
-        .map_err(|_| EditError::MissingParameter)?
-        .get_mut("parameters")
-        .and_then(|parameters| parameters.get_mut(parameter))
-        .ok_or(EditError::MissingParameter)?;
-    if value["type"].as_str() != Some("literal") {
-        return Err(EditError::MissingParameter);
+    entry: Option<Value>,
+) -> Result<(), EditError> {
+    let node = find_node_mut(definition, node)?
+        .as_object_mut()
+        .ok_or(EditError::UnsupportedDocument)?;
+    let parameters = node
+        .entry("parameters")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or(EditError::UnsupportedDocument)?;
+    match entry {
+        Some(entry) => {
+            parameters.insert(parameter.to_owned(), entry);
+        },
+        None => {
+            parameters.remove(parameter);
+        },
     }
-    value.get_mut("value").ok_or(EditError::MissingParameter)
+    Ok(())
 }

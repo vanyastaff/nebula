@@ -4,16 +4,18 @@
 use crate::{
     document::{Draft, parameters_match},
     effects::{Reply, RequestKind},
+    schema::Form,
     session::{DraftKey, RequestStamp, Session, SessionContext},
     transport::{Connection, Failure, PAGE_SIZE},
 };
 use nebula_api_contract::v1::{
-    catalog::ActionSummary,
+    catalog::{ActionDetailResponse, ActionSummary},
     execution::{ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse},
     me::MeResponse,
     workflow::{WorkflowDocumentResponse, WorkflowResponse},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use zeroize::Zeroize;
 
 /// How many workspaces the workspace page offers again.
@@ -274,6 +276,11 @@ pub(crate) struct Workbench {
     pub(crate) catalog: Catalog,
     /// Workspaces that listed successfully, most recent first.
     pub(crate) recent: Vec<WorkspaceRef>,
+    /// Parameter schemas by action key, for the node form. They belong to the server signed in to.
+    pub(crate) schemas: HashMap<String, SchemaState>,
+    /// The action whose schema is being read, so a failure knows which entry it settles.
+    pub(crate) schema_request: Option<String>,
+    pub(crate) inspector_tab: InspectorTab,
 }
 
 /// A card being dragged. The offset is in screen pixels, so the card follows the pointer.
@@ -294,6 +301,24 @@ pub(crate) enum Catalog {
     Ready(Vec<ActionSummary>),
     /// The server has no action registry (503) or the request failed.
     Unavailable,
+}
+
+/// Tab of the node sidebar.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InspectorTab {
+    #[default]
+    Parameters,
+    Settings,
+    Output,
+}
+
+/// What the editor knows about one action's parameter schema.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum SchemaState {
+    Loading,
+    Ready(Form),
+    /// The server has no schema for this action; the reason says why, for the inspector.
+    Unavailable(String),
 }
 
 /// The add-node palette: whether it is open, its catalog filter, and the hand-typed action for servers
@@ -361,7 +386,49 @@ impl Workbench {
             add_node: AddNodeForm::default(),
             catalog: Catalog::NotRequested,
             recent: Vec::new(),
+            schemas: HashMap::new(),
+            schema_request: None,
+            inspector_tab: InspectorTab::default(),
         }
+    }
+
+    /// Marks the schema of `action` as being read. Returns false when it is already known or pending,
+    /// so each action is asked for once per sign-in.
+    pub(crate) fn begin_schema(&mut self, action: &str) -> bool {
+        if self.schemas.contains_key(action) {
+            return false;
+        }
+        self.schemas.insert(action.to_owned(), SchemaState::Loading);
+        self.schema_request = Some(action.to_owned());
+        true
+    }
+
+    fn receive_schema(&mut self, action: String, detail: &ActionDetailResponse) {
+        let state = match &detail.parameters {
+            Some(schema) => SchemaState::Ready(Form::parse(schema)),
+            None => SchemaState::Unavailable(format!(
+                "The server publishes no parameter schema for {action}."
+            )),
+        };
+        self.schemas.insert(action, state);
+        self.schema_request = None;
+    }
+
+    /// A failed read settles the pending entry with a reason the inspector shows instead of a toast.
+    fn receive_schema_failure(&mut self, error: &Failure) {
+        let Some(action) = self.schema_request.take() else {
+            return;
+        };
+        let reason = match error {
+            Failure::Rejected(503) => {
+                "This server publishes no action catalog, so the form for this node is not available."
+                    .to_owned()
+            },
+            Failure::Rejected(404) => format!("The server does not know the action {action}."),
+            other => other.to_string(),
+        };
+        self.schemas
+            .insert(action, SchemaState::Unavailable(reason));
     }
 
     /// Fills the sign-in form and the recent workspaces from the previous launch. An empty remembered
@@ -409,6 +476,8 @@ impl Workbench {
 
     pub(crate) fn begin_sign_in(&mut self, connection: Connection) {
         self.session.switch(None);
+        self.schemas.clear();
+        self.schema_request = None;
         self.connection = Some(connection);
     }
 
@@ -483,6 +552,9 @@ impl Workbench {
         self.navigator.total = 0;
         self.form.clear_secrets();
         self.clear_selection();
+        // The next sign-in may reach another server, whose actions differ.
+        self.schemas.clear();
+        self.schema_request = None;
         self.feedback
             .info("Disconnected. Your drafts remain available in this app session.");
     }
@@ -517,6 +589,10 @@ impl Workbench {
     fn receive_failure(&mut self, kind: RequestKind, error: Failure) {
         if kind == RequestKind::Connect {
             self.receive_sign_in_failure(error);
+            return;
+        }
+        if kind == RequestKind::Schema && error != Failure::Unauthorized {
+            self.receive_schema_failure(&error);
             return;
         }
         if kind == RequestKind::Catalog {
@@ -574,6 +650,7 @@ impl Workbench {
             // Both land in the runs panel, which is their confirmation; a toast would only repeat it.
             Reply::History(history) => self.history = Some(history),
             Reply::Status(status) => self.status = Some(status),
+            Reply::Action(action, detail) => self.receive_schema(action, &detail),
             Reply::Actions(list) => {
                 let count = list.actions.len();
                 self.catalog = Catalog::Ready(list.actions);

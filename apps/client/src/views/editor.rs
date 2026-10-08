@@ -128,12 +128,7 @@ fn shortcuts(ui: &egui::Ui, workbench: &mut Workbench, view: &DraftView, intents
         inspector::remove_selected(workbench);
     }
     if pressed(Modifiers::NONE, Key::Escape) {
-        if workbench.add_node.open {
-            workbench.add_node.close();
-        } else {
-            workbench.selected_node = None;
-            workbench.parameter.close();
-        }
+        close_side_panel(workbench);
     }
 }
 
@@ -412,12 +407,22 @@ fn run_button(ui: &mut egui::Ui, view: &DraftView, intents: &mut Intents) {
     }
 }
 
+/// Closes whatever the side panel shows, as Escape does.
+pub(crate) fn close_side_panel(workbench: &mut Workbench) {
+    if workbench.add_node.open {
+        workbench.add_node.close();
+    } else {
+        workbench.selected_node = None;
+        workbench.parameter.close();
+    }
+}
+
 /// The side panel: the add-node palette while it is open, otherwise the selected node.
 pub(crate) fn side(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
     if workbench.add_node.open {
         palette(ui, workbench, intents);
     } else {
-        inspector::show(ui, workbench);
+        inspector::show(ui, workbench, intents);
     }
 }
 
