@@ -38,10 +38,20 @@ pub struct ActionDetailResponse {
     pub version: String,
     /// Isolation level name
     pub isolation_level: String,
-    /// Input parameters in the `nebula-schema` wire format (`{"fields": [...]}`), so an editor can
-    /// render a form for the node. Absent when the schema cannot be encoded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<serde_json::Value>,
+}
+
+/// Input parameter schema of an action, for `GET /actions/{key}/parameters`.
+///
+/// Editors render a node's parameter form from it. A separate response keeps
+/// [`ActionDetailResponse`] unchanged for existing consumers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct ActionParametersResponse {
+    /// Action key (e.g. `"core.json_transform"`)
+    pub key: String,
+    /// Admitted input schema in the `nebula-schema` wire format
+    /// (`{"fields": [...]}`).
+    pub parameters: serde_json::Value,
 }
 
 /// Summary entry in the plugin list.

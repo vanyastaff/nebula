@@ -10,6 +10,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(handler::list_actions))
         .routes(routes!(handler::get_action))
+        .routes(routes!(handler::get_action_parameters))
         .routes(routes!(handler::list_plugins))
         .routes(routes!(handler::get_plugin))
 }

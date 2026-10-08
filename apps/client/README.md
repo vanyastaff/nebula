@@ -28,7 +28,7 @@ client does not start a server or worker.
   server publishes one, or a typed action key) or the inspector of the selected node: rename,
   literal parameters as JSON, connections, removal.
 - **Node sidebar.** Selecting a node slides in a panel with Parameters, Settings and Output.
-  Parameters is a form built from the action's schema (`GET /actions/{key}` → `parameters`, the
+  Parameters is a form built from the action's schema (`GET /actions/{key}/parameters`, the
   `nebula-schema` wire format): every field kind and widget, groups, conditional visibility and
   requirement, Fixed/Expression per field, Reset to the default, a readiness line and inline
   checks. A field type newer than the client stays editable as JSON; without a schema the tab says

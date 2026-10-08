@@ -374,13 +374,12 @@ fn remembered_settings_round_trip_without_secrets() {
     assert_eq!(restored.recent.len(), 1);
 }
 
-fn schema_reply(workbench: &mut Workbench, action: &str, parameters: Option<Value>) {
+fn schema_reply(workbench: &mut Workbench, action: &str, parameters: Value) {
     assert!(workbench.begin_schema(action));
-    let detail: ActionDetailResponse = serde_json::from_value(json!({
-        "key": action, "name": action, "description": "", "version": "1.0",
-        "isolation_level": "None", "parameters": parameters
-    }))
-    .unwrap();
+    let detail = ActionParametersResponse {
+        key: action.to_owned(),
+        parameters,
+    };
     let stamp = workbench.session.begin().unwrap();
     workbench.receive(
         stamp,
@@ -396,7 +395,7 @@ fn a_published_schema_becomes_a_form_and_is_asked_for_once() {
     schema_reply(
         &mut workbench,
         "http.request",
-        Some(json!({"fields": [{"type": "string", "key": "url", "hint": "url"}]})),
+        json!({"fields": [{"type": "string", "key": "url", "hint": "url"}]}),
     );
 
     match &workbench.schemas["http.request"] {
@@ -407,14 +406,9 @@ fn a_published_schema_becomes_a_form_and_is_asked_for_once() {
 }
 
 #[test]
-fn an_action_without_a_schema_or_a_catalog_explains_itself_without_a_toast() {
+fn a_server_without_a_catalog_explains_itself_without_a_toast() {
     let mut workbench = Workbench::new(String::new());
     open_workspace_session(&mut workbench);
-    schema_reply(&mut workbench, "noop", None);
-    assert!(matches!(
-        workbench.schemas["noop"],
-        SchemaState::Unavailable(_)
-    ));
 
     assert!(workbench.begin_schema("json_transform"));
     let stamp = workbench.session.begin().unwrap();
@@ -431,7 +425,7 @@ fn an_action_without_a_schema_or_a_catalog_explains_itself_without_a_toast() {
 fn signing_out_forgets_the_schemas_of_that_server() {
     let mut workbench = Workbench::new(String::new());
     open_workspace_session(&mut workbench);
-    schema_reply(&mut workbench, "noop", None);
+    schema_reply(&mut workbench, "noop", json!({"fields": []}));
 
     workbench.disconnect();
 

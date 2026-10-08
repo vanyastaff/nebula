@@ -2,7 +2,7 @@
 
 use nebula_api_contract::v1::{
     auth::{LoginRequest, LoginResponse},
-    catalog::{ActionDetailResponse, ListActionsResponse},
+    catalog::{ActionParametersResponse, ListActionsResponse},
     execution::{
         ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse, StartExecutionRequest,
     },
@@ -222,9 +222,12 @@ impl Connection {
         self.read(self.url(&["actions"])?).await
     }
 
-    /// One action's detail, including its parameter schema when the server publishes it.
-    pub(crate) async fn action(&self, key: &str) -> Result<ActionDetailResponse, Failure> {
-        self.read(self.url(&["actions", key])?).await
+    /// One action's parameter schema, from which the node form is built.
+    pub(crate) async fn action_parameters(
+        &self,
+        key: &str,
+    ) -> Result<ActionParametersResponse, Failure> {
+        self.read(self.url(&["actions", key, "parameters"])?).await
     }
 
     pub(crate) async fn list(

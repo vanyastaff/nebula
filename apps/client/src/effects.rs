@@ -7,7 +7,7 @@ use crate::{
 };
 use eframe::egui;
 use nebula_api_contract::v1::{
-    catalog::{ActionDetailResponse, ListActionsResponse},
+    catalog::{ActionParametersResponse, ListActionsResponse},
     execution::{ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse},
     workflow::{
         CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowDocumentRequest,
@@ -27,7 +27,7 @@ pub(crate) enum Operation {
     History(String),
     Status(String),
     Actions,
-    /// One action's detail, for its parameter schema.
+    /// One action's parameter schema.
     Action(String),
 }
 
@@ -70,7 +70,7 @@ pub(crate) enum Reply {
     History(ListExecutionsResponse),
     Status(Box<ExecutionDetailResponse>),
     Actions(ListActionsResponse),
-    Action(String, Box<ActionDetailResponse>),
+    Action(String, Box<ActionParametersResponse>),
 }
 
 pub(crate) type Completion = (RequestStamp, RequestKind, Result<Reply, Failure>);
@@ -122,9 +122,9 @@ async fn perform(
             .map(|detail| Reply::Status(Box::new(detail))),
         Operation::Actions => connection.actions().await.map(Reply::Actions),
         Operation::Action(key) => connection
-            .action(&key)
+            .action_parameters(&key)
             .await
-            .map(|detail| Reply::Action(key, Box::new(detail))),
+            .map(|schema| Reply::Action(key, Box::new(schema))),
     }
 }
 

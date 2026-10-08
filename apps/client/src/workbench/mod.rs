@@ -9,7 +9,7 @@ use crate::{
     transport::{Connection, Failure, PAGE_SIZE},
 };
 use nebula_api_contract::v1::{
-    catalog::{ActionDetailResponse, ActionSummary},
+    catalog::{ActionParametersResponse, ActionSummary},
     execution::{ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse},
     me::MeResponse,
     workflow::{WorkflowDocumentResponse, WorkflowResponse},
@@ -403,14 +403,9 @@ impl Workbench {
         true
     }
 
-    fn receive_schema(&mut self, action: String, detail: &ActionDetailResponse) {
-        let state = match &detail.parameters {
-            Some(schema) => SchemaState::Ready(Form::parse(schema)),
-            None => SchemaState::Unavailable(format!(
-                "The server publishes no parameter schema for {action}."
-            )),
-        };
-        self.schemas.insert(action, state);
+    fn receive_schema(&mut self, action: String, schema: &ActionParametersResponse) {
+        self.schemas
+            .insert(action, SchemaState::Ready(Form::parse(&schema.parameters)));
         self.schema_request = None;
     }
 
