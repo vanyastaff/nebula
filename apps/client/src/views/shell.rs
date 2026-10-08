@@ -12,7 +12,8 @@ pub(crate) fn header(ui: &mut egui::Ui, workbench: &mut Workbench) {
         .context
         .as_ref()
         .map(|context| format!("{} / {}", context.organization, context.workspace_selector));
-    // Wrapping rows keep the header usable at phone width without horizontal scrolling.
+    // One wrapping row: brand, workspace and actions share the line on wide windows and wrap on
+    // phones without horizontal scrolling.
     ui.horizontal_wrapped(|ui| {
         ui.label(
             RichText::new("Nebula")
@@ -21,8 +22,6 @@ pub(crate) fn header(ui: &mut egui::Ui, workbench: &mut Workbench) {
                 .color(theme::ACCENT),
         );
         widgets::caption(ui, "Workflow workbench");
-    });
-    ui.horizontal_wrapped(|ui| {
         if let Some(workspace) = workspace {
             widgets::badge(ui, workspace, Tone::Neutral);
         }
