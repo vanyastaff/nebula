@@ -1,0 +1,52 @@
+//! Header and feedback strip shared by every layout.
+use crate::{
+    theme,
+    widgets::{self, Tone},
+    workbench::Workbench,
+};
+use eframe::egui::{self, RichText};
+
+pub(crate) fn header(ui: &mut egui::Ui, workbench: &mut Workbench) {
+    let workspace = workbench
+        .session
+        .context
+        .as_ref()
+        .map(|context| format!("{} / {}", context.organization, context.workspace_selector));
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Nebula")
+                .size(22.0)
+                .strong()
+                .color(theme::ACCENT),
+        );
+        widgets::caption(ui, "Workflow workbench");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if workbench.is_signed_in() {
+                if ui.button("Sign out").clicked() {
+                    workbench.disconnect();
+                }
+                if ui.button("Switch workspace").clicked() {
+                    workbench.workspace_form_open = !workbench.workspace_form_open;
+                }
+            }
+            if let Some(workspace) = workspace {
+                widgets::badge(ui, workspace, Tone::Neutral);
+            }
+        });
+    });
+}
+
+/// Latest outcome of the last action, plus a spinner while a request is in flight.
+pub(crate) fn feedback(ui: &mut egui::Ui, workbench: &Workbench) {
+    let tone = if workbench.feedback.failure {
+        Tone::Danger
+    } else {
+        Tone::Neutral
+    };
+    ui.horizontal(|ui| {
+        if workbench.session.busy() {
+            ui.spinner();
+        }
+        widgets::banner(ui, tone, &workbench.feedback.message);
+    });
+}

@@ -11,18 +11,26 @@
 )]
 
 #[cfg(feature = "ui")]
+mod app;
+#[cfg(feature = "ui")]
 mod document;
 #[cfg(feature = "ui")]
-mod presentation;
+mod effects;
 #[cfg(feature = "ui")]
 mod session;
 #[cfg(feature = "ui")]
 mod theme;
 #[cfg(feature = "ui")]
 mod transport;
+#[cfg(feature = "ui")]
+mod views;
+#[cfg(feature = "ui")]
+mod widgets;
+#[cfg(feature = "ui")]
+mod workbench;
 
 #[cfg(feature = "ui")]
-pub use presentation::ClientApp;
+pub use app::ClientApp;
 
 #[cfg(all(feature = "ui", target_arch = "wasm32"))]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]

@@ -20,6 +20,9 @@ use zeroize::Zeroizing;
 
 const MAX_BODY: usize = 1024 * 1024;
 
+/// Workflows per list page, shared by the request and the navigator's paging.
+pub(crate) const PAGE_SIZE: usize = 25;
+
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub(crate) enum Failure {
     #[error("Use an HTTPS server address, or HTTP on loopback, without credentials or a query.")]
@@ -219,7 +222,7 @@ impl Connection {
         let mut url = self.url(&["orgs", org, "workspaces", workspace, "workflows"])?;
         url.query_pairs_mut()
             .append_pair("page", &page.to_string())
-            .append_pair("page_size", "25");
+            .append_pair("page_size", &PAGE_SIZE.to_string());
         self.read(url).await
     }
     pub(crate) async fn load(
