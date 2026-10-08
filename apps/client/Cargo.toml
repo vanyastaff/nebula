@@ -1,0 +1,55 @@
+[package]
+name = "nebula-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "First-party desktop and browser workflow client"
+
+[lib]
+name = "nebula_client_app"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "nebula-client"
+path = "src/main.rs"
+required-features = ["ui"]
+
+[features]
+default = ["ui"]
+ui = ["dep:eframe"]
+
+[dependencies]
+nebula-api-contract = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
+uuid = { version = "1", features = ["v4", "js"] }
+eframe = { version = "=0.36.2", optional = true, default-features = false, features = [
+  "default_fonts",
+  "glow",
+  "accesskit",
+  "wayland",
+  "x11",
+  "web_screen_reader",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true, features = ["rustls", "stream"] }
+tokio = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+serde-wasm-bindgen = "0.6"
+web-sys = { version = "0.3", features = ["Window", "Location", "Document", "HtmlCanvasElement"] }
+
+[dev-dependencies]
+wiremock = "0.6"
+
+[lints]
+workspace = true
