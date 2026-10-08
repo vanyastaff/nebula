@@ -1,9 +1,5 @@
 # Nebula client
 
-The workbench uses a light palette, Inter body text, resizable navigation and runs
-panes, a graph canvas with an inspector for the selected node, and a stacked layout in
-narrow windows.
-
 First-party egui/eframe workbench for an **existing** Nebula HTTP server. Native:
 `task client:run`. Browser: `task client:web`, which needs `cargo binstall trunk` and the
 `wasm32-unknown-unknown` target. It serves on port 8090 and proxies `/api` and `/version`
@@ -11,18 +7,40 @@ to the server on port 8080, so browser password sign-in stays same-origin. Deplo
 serve the static build (`task client:web:build`) under the same origin as `/api/v1`; the
 client does not start a server or worker.
 
-Sign in with email/password (optional TOTP) or a PAT. Enter organization and workspace
-slugs/IDs, then create a blank workflow or select one. The graph canvas shows nodes and
-connections. Add a node by action key, drag from an output port onto an input port to connect,
-select a node to rename it, edit its literal parameters, disconnect it or remove it. Undo and
-redo cover every graph and parameter edit. Save changes, publish, run the server's current
-publication, then read persisted execution status. Recent runs make accepted work discoverable
-after reconnect. A rejected save or publication names the server's first validation paths.
+## What it does
 
-Not in this release: moving nodes on the canvas (positions are derived from connections),
-editing expression or template parameters, choosing actions from a catalog (the server does
-not attach an action registry in its current composition, so the catalog answers 503 and
-action keys are typed), managed local launch, packaging and updates.
+- **Sign-in.** A welcome page beside the sign-in card. Password or personal access token; the
+  authenticator-code field appears only when the server asks for a second factor, and the
+  password is kept for that retry. Sign in stays disabled until the chosen credentials are
+  filled in, and Enter submits.
+- **Workspace.** Organization and workspace slug or ID, or one click on a recent workspace. The
+  API has no endpoint that lists a user's workspaces, so the app remembers the ones that
+  answered.
+- **Shell.** A compact top bar with the workspace breadcrumb, account, a busy spinner, Switch
+  workspace and Sign out. The workflow sidebar has search over the listed page, inline
+  creation, an "Unsaved" marker for drafts with local edits, and paging when there is more
+  than one page. Outcomes appear as toasts: information fades, a failure stays until dismissed.
+- **Editor.** In the style of node editors: an action bar (name, state, Undo, Redo, Reload,
+  Publish, Save), then a full-height canvas. Nodes are square cards; drag a card to place it
+  (stored in `ui_metadata`, undoable), drag an output port onto an input port to connect, or
+  use the "+" after a port to add a connected node. Zoom, Add node and Execute workflow float
+  over the canvas. A side panel shows the add-node palette (the action catalog when the
+  server publishes one, or a typed action key) or the inspector of the selected node: rename,
+  literal parameters as JSON, connections, removal.
+- **Runs.** Recent runs load when a workflow opens and after every start. The chosen run is
+  followed until it ends, with each node's status, output preview and failure reason.
+- **Keyboard.** Ctrl+S saves, Ctrl+Enter runs, Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y undo and redo,
+  Delete removes the selected node, Escape closes the side panel.
+- **Layouts.** Below 760 points the sidebar becomes a page behind a Workflows toggle and the
+  editor, side panel and runs stack in one scrolling column.
+
+A rejected save or publication names the server's first validation paths. The API does not
+report which revision is published, so the editor says "Published" only for a revision it saw
+the server publish in this session.
+
+Not in this release: editing expression or template parameters, an action catalog on this
+server (its composition attaches no action registry, so the catalog answers 503 and the
+palette asks for a typed key), managed local launch, packaging and updates.
 
 ## Structure
 
@@ -31,8 +49,10 @@ action keys are typed), managed local launch, packaging and updates.
 - `effects`: runs requests off the render thread. Each request carries its session stamp,
   and late replies from an earlier session are dropped.
 - `views/`: rendering only. Views change local UI state directly and return `Intent`s for
-  anything that needs the network; `app` runs them after the frame. `canvas` draws the graph,
-  `editor` holds the toolbar and reconciliation, `inspector` edits the selected node.
+  anything that needs the network; `app` runs them after the frame and lays out the panels.
+  `shell` is the top bar and toasts, `connection` the welcome and workspace pages,
+  `navigator` the workflow sidebar, `editor` the action bar, canvas controls, shortcuts and
+  side panel, `canvas` the graph, `inspector` the selected node, `runs` the runs panel.
 - `theme` and `widgets`: design tokens (colors, spacing, radii, type scale) and the shared
   controls every view uses. Views take their colors and spacing from here only.
 - `document/`: the draft and its undo history. `graph` holds the edits, the recorded changes
@@ -56,8 +76,10 @@ at server admission; it is not an atomic save/publish/run transaction.
 
 Drafts survive disconnects and server/workspace switches **in memory**, keyed by
 normalized endpoint, authenticated principal, organization, workspace and workflow.
-Closing/reloading the app clears them; no secrets or parameter values are written to
-disk/localStorage. Network work runs outside rendering. Session generation and request
+Closing/reloading the app clears them. Between launches the app keeps only the server
+address, email, sign-in mode, recent workspaces and panel sizes (eframe persistence: a file
+natively, localStorage in the browser); no secret, draft or parameter value is written. The
+browser build always signs in against its own origin. Network work runs outside rendering. Session generation and request
 sequence reject stale replies before state changes. Indeterminate saves/publications
 require a server read and explicit draft recovery. An indeterminate run retains its
 Idempotency-Key; **Reconcile pending run** repeats that same intent, never a new key.
@@ -70,7 +92,9 @@ PAT requests omit browser cookies, and remote browser access requires operator-a
 CORS. Both transports reject redirects, bound responses to 1 MiB and requests to 30s,
 and never automatically replay writes. Failures exclude raw URLs, tokens, bodies and
 provider error prose. TLS certificates must be trusted by the host. Credentials stay
-in memory; password/token inputs are cleared after submission.
+in memory. A token is taken out of its field when sent; a password and code stay until the
+sign-in settles, so a second-factor retry need not ask again, and are wiped when it succeeds
+or fails.
 
 Checks from the workspace root:
 
