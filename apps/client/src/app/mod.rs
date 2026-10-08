@@ -262,6 +262,9 @@ impl ClientApp {
             if was_open && !open {
                 editor::close_side_panel(workbench);
             }
+            if open {
+                name_resize_handle(ui, "side", "Resize the node panel");
+            }
             egui::Panel::bottom("runs")
                 // Tall enough for a run's status, a node and its error without scrolling.
                 .default_size(260.0)
@@ -273,6 +276,7 @@ impl ClientApp {
                         .id_salt("runs")
                         .show(ui, |ui| runs::show(ui, workbench, intents));
                 });
+            name_resize_handle(ui, "runs", "Resize the runs panel");
         }
         egui::CentralPanel::default()
             .frame(theme::canvas())
@@ -380,6 +384,15 @@ impl eframe::App for ClientApp {
         }
         self.reconcile_watch(ui.ctx());
     }
+}
+
+/// Names the drag handle egui gives a resizable panel, which it registers under the panel's id
+/// with `__resize` (egui's `resize_widget_id`), so assistive technology says what it resizes.
+fn name_resize_handle(ui: &egui::Ui, panel: &str, name: &str) {
+    ui.ctx()
+        .accesskit_node_builder(egui::Id::new(panel).with("__resize"), |node| {
+            node.set_label(name);
+        });
 }
 
 const REMEMBERED_KEY: &str = "nebula-client-remembered";

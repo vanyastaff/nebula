@@ -45,11 +45,12 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         );
         return;
     }
-    ui.add(
+    let search = ui.add(
         widgets::field(&mut workbench.catalog_page.filter)
             .hint_text("Search by name or key")
             .desired_width(f32::INFINITY),
     );
+    widgets::named(ui, &search, "Search actions by name or key");
     ui.add_space(theme::SPACE_MD);
     if ui.available_width() >= SIDE_BY_SIDE_MIN {
         ui.columns(2, |columns| {

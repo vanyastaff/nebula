@@ -160,13 +160,15 @@ fn header(ui: &mut egui::Ui, node: &NodeView) -> bool {
             widgets::caption(ui, node.action.as_str());
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add(
-                egui::Button::new(RichText::new("×").size(20.0).color(theme::TEXT_MUTED))
-                    .frame_when_inactive(false)
-                    .min_size(egui::vec2(28.0, 28.0)),
-            )
-            .on_hover_text("Close (Esc)")
-            .clicked()
+            let close = ui
+                .add(
+                    egui::Button::new(RichText::new("×").size(20.0).color(theme::TEXT_MUTED))
+                        .frame_when_inactive(false)
+                        .min_size(egui::vec2(28.0, 28.0)),
+                )
+                .on_hover_text("Close (Esc)");
+            widgets::named(ui, &close, "Close the node panel");
+            close.clicked()
         })
         .inner
     })
@@ -300,7 +302,7 @@ fn settings(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView, scope
             if row.link.from == node.id {
                 let current = row.link.source_port().to_owned();
                 let mut chosen = current.clone();
-                egui::ComboBox::from_id_salt(("link-port", &row.label))
+                let choice = egui::ComboBox::from_id_salt(("link-port", &row.label))
                     .selected_text(format!("from {current}"))
                     .show_ui(ui, |ui| {
                         for port in &node.ports {
@@ -309,6 +311,7 @@ fn settings(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView, scope
                     })
                     .response
                     .on_hover_text("The output port this connection leaves by");
+                widgets::named(ui, &choice, &format!("Output port of {}", row.label));
                 if chosen != current {
                     reroute(workbench, row, chosen);
                 }
@@ -508,16 +511,15 @@ fn parameter_editor(ui: &mut egui::Ui, workbench: &mut Workbench) {
     } else {
         "value"
     };
-    widgets::caption(
-        ui,
-        format!("{} {what} as JSON", workbench.parameter.parameter),
-    );
-    ui.add(
+    let caption = format!("{} {what} as JSON", workbench.parameter.parameter);
+    widgets::caption(ui, &caption);
+    let editor = ui.add(
         egui::TextEdit::multiline(&mut workbench.parameter.text)
             .code_editor()
             .desired_rows(6)
             .desired_width(f32::INFINITY),
     );
+    widgets::named(ui, &editor, &caption);
     ui.horizontal(|ui| {
         if ui.add(widgets::primary_button("Apply")).clicked() {
             apply_parameter(workbench);
@@ -551,11 +553,12 @@ fn add_parameter(ui: &mut egui::Ui, workbench: &mut Workbench, node: &str) {
         .unwrap_or_default();
     ui.add_space(theme::SPACE_SM);
     ui.horizontal(|ui| {
-        ui.add(
+        let field = ui.add(
             egui::TextEdit::singleline(&mut name)
                 .hint_text("New parameter name")
                 .desired_width(ui.available_width() - 64.0),
         );
+        widgets::named(ui, &field, "New parameter name");
         let ready = !name.trim().is_empty();
         if ui.add_enabled(ready, egui::Button::new("Add")).clicked() {
             let key = name.trim().to_owned();

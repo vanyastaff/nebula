@@ -85,13 +85,18 @@ fn workspace(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents
             |ui| {
                 remove_button(ui, workbench, intents, &member.principal_id, busy, true);
                 let mut role = member.role.0.clone();
-                egui::ComboBox::from_id_salt(("workspace-role", &member.principal_id))
+                let choice = egui::ComboBox::from_id_salt(("workspace-role", &member.principal_id))
                     .selected_text(&role)
                     .show_ui(ui, |ui| {
                         for candidate in WORKSPACE_ROLES {
                             ui.selectable_value(&mut role, candidate.to_owned(), candidate);
                         }
                     });
+                widgets::named(
+                    ui,
+                    &choice.response,
+                    &format!("Workspace role of {}", member.principal_id),
+                );
                 if role != member.role.0 && !busy {
                     intents.push(Intent::SetWorkspaceMember(
                         member.principal_id.clone(),
@@ -185,15 +190,17 @@ fn add_member(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intent
         "member".clone_into(&mut team.new_role);
     }
     let field = ui.add(widgets::field(&mut team.new_member).hint_text("usr_…"));
+    widgets::named(ui, &field, "User identity of the new member");
     ui.horizontal(|ui| {
         widgets::caption(ui, "Organization role");
-        egui::ComboBox::from_id_salt("new-member-role")
+        let choice = egui::ComboBox::from_id_salt("new-member-role")
             .selected_text(&team.new_role)
             .show_ui(ui, |ui| {
                 for role in ORG_ROLES {
                     ui.selectable_value(&mut team.new_role, role.to_owned(), role);
                 }
             });
+        widgets::named(ui, &choice.response, "Organization role of the new member");
     });
     let ready = !busy && !team.new_member.trim().is_empty();
     if ui
@@ -209,13 +216,14 @@ fn add_member(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intent
     }
     ui.horizontal_wrapped(|ui| {
         widgets::caption(ui, "Workspace role");
-        egui::ComboBox::from_id_salt("new-member-workspace-role")
+        let choice = egui::ComboBox::from_id_salt("new-member-workspace-role")
             .selected_text(&team.new_workspace_role)
             .show_ui(ui, |ui| {
                 for role in WORKSPACE_ROLES {
                     ui.selectable_value(&mut team.new_workspace_role, role.to_owned(), role);
                 }
             });
+        widgets::named(ui, &choice.response, "Workspace role of the new member");
         if ui
             .add_enabled(ready, egui::Button::new("Give workspace access"))
             .on_hover_text("Let this person work in this workspace with the chosen role")

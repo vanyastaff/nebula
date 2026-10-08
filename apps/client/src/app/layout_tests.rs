@@ -5,7 +5,7 @@ use super::ClientApp;
 use crate::{views::Intent, workbench::Page};
 use eframe::egui::{
     self,
-    accesskit::{Node, Role},
+    accesskit::{Action, Node, Role},
 };
 
 /// A phone held upright, in points.
@@ -104,6 +104,17 @@ fn overflowing(nodes: &[Node], width: f32) -> Vec<String> {
         .collect()
 }
 
+/// Elements the keyboard can reach that have no name: a screen reader moving through them would
+/// announce only their role.
+fn unnamed_focusable(nodes: &[Node]) -> Vec<String> {
+    nodes
+        .iter()
+        .filter(|node| node.supports_action(Action::Focus))
+        .filter(|node| node.label().is_none_or(|label| label.trim().is_empty()))
+        .map(|node| format!("{:?} at {:?}", node.role(), node.bounds()))
+        .collect()
+}
+
 /// Bounds of the page entries of the navigation, by title.
 fn navigation(nodes: &[Node]) -> Vec<(String, f64, f64)> {
     Page::NAVIGATION
@@ -133,6 +144,53 @@ fn a_laptop_window_lists_the_pages_in_a_rail() {
     assert!(
         entries.windows(2).all(|pair| pair[1].2 > pair[0].2),
         "{entries:?}"
+    );
+}
+
+#[test]
+fn everything_the_keyboard_reaches_has_a_name() {
+    let mut harness = Harness::demo(LAPTOP);
+    for page in Page::NAVIGATION {
+        harness.app.workbench.go(page);
+        let nodes = harness.until(page.title(), |app| !app.workbench.session.busy());
+        let unnamed = unnamed_focusable(&nodes);
+        assert!(unnamed.is_empty(), "{}: {unnamed:?}", page.title());
+    }
+
+    // The editor with a node open in its panel: the canvas, its nodes and the node's form.
+    let workflow = harness.app.workbench.navigator.workflows[0].id.clone();
+    assert!(harness.app.workbench.select_workflow(&workflow));
+    let context = harness.context.clone();
+    harness
+        .app
+        .run_intent(&context, Intent::LoadWorkflow(workflow));
+    harness.until("the workflow to open", |app| {
+        app.workbench.session.draft().is_some() && !app.workbench.session.busy()
+    });
+    let node = harness.app.workbench.session.draft().unwrap().definition["nodes"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    harness.app.workbench.selected_node = Some(node);
+    let nodes = harness.until("the node's form", |app| {
+        app.workbench
+            .schemas
+            .values()
+            .any(|schema| matches!(schema, crate::workbench::SchemaState::Ready(_)))
+            && !app.workbench.session.busy()
+    });
+    let unnamed = unnamed_focusable(&nodes);
+    assert!(unnamed.is_empty(), "editor: {unnamed:?}");
+    let names: Vec<&str> = nodes.iter().map(name).collect();
+    assert!(
+        names.iter().any(|name| name.starts_with("Node ")),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .any(|name| name.starts_with("Add a node after ")),
+        "{names:?}"
     );
 }
 

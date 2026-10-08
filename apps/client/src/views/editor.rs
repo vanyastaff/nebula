@@ -504,7 +504,9 @@ fn catalog(
             }
         },
         Catalog::Ready(actions) => {
-            ui.add(widgets::field(&mut workbench.add_node.filter).hint_text("Search actions"));
+            let search =
+                ui.add(widgets::field(&mut workbench.add_node.filter).hint_text("Search actions"));
+            widgets::named(ui, &search, "Search actions to add");
             let filter = workbench.add_node.filter.trim().to_lowercase();
             let matches: Vec<_> = actions
                 .iter()

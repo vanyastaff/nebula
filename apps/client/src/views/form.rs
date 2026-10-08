@@ -55,8 +55,11 @@ pub(crate) fn show(
             }
         }
         let required = field.is_required(&values);
-        if let Some(edit) = top_field(ui, field, entries.get(&field.key), required, scope, &values)
-        {
+        // One named group per field, so assistive technology reads its inputs under its label.
+        let edit = widgets::named_group(ui, &field.title(), |ui| {
+            top_field(ui, field, entries.get(&field.key), required, scope, &values)
+        });
+        if let Some(edit) = edit {
             edits.push(edit);
         }
         ui.add_space(theme::SPACE_MD);
@@ -510,6 +513,10 @@ fn buffered_input(
     };
     let response = ui
         .add(style(edit.id(id).desired_width(f32::INFINITY)).margin(egui::Margin::symmetric(8, 6)));
+    // The field's label is drawn above the input, so the input takes it from its field's group.
+    if let Some(name) = widgets::group_name(ui) {
+        widgets::named(ui, &response, &name);
+    }
     let session_id = id.with("typing-session");
     if response.gained_focus() {
         // Distinct per focus, so typing into the field again later is a new undo step.
@@ -530,6 +537,35 @@ fn buffered_input(
         ui.data_mut(|data| data.insert_temp(egui::Id::new(TYPING), session));
     }
     Some(text)
+}
+
+/// A stepper's − or + button, named for assistive technology after the field it changes. Returns
+/// true when it was pressed.
+fn step_button(ui: &mut egui::Ui, enabled: bool, up: bool) -> bool {
+    let (symbol, verb) = if up {
+        ("+", "Increase")
+    } else {
+        ("−", "Decrease")
+    };
+    let button = ui.add_enabled(enabled, egui::Button::new(symbol));
+    let name =
+        widgets::group_name(ui).map_or_else(|| verb.to_owned(), |field| format!("{verb} {field}"));
+    widgets::named(ui, &button, &name);
+    button.clicked()
+}
+
+/// The value between a stepper's buttons, drawn at a fixed width so the buttons stay put, and read
+/// out as text.
+fn stepper_value(ui: &mut egui::Ui, text: &str) {
+    let response = ui.allocate_response(egui::vec2(72.0, 28.0), egui::Sense::hover());
+    ui.painter().text(
+        response.rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(theme::SIZE_LABEL),
+        theme::TEXT,
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
 }
 
 /// A whole number exactly as JSON holds it, signed or unsigned.
@@ -582,6 +618,9 @@ fn entry_box(ui: &mut egui::Ui, id: egui::Id, hint: &str) -> Option<String> {
             .desired_width(f32::INFINITY)
             .margin(egui::Margin::symmetric(8, 6)),
     );
+    let name =
+        widgets::group_name(ui).map_or_else(|| hint.to_owned(), |group| format!("{group}: {hint}"));
+    widgets::named(ui, &response, &name);
     if response.has_focus() {
         ui.data_mut(|data| data.insert_temp(buffer_id, text));
         return None;
@@ -750,29 +789,12 @@ fn number_control(
                     field.bounds.min.is_none_or(|min| candidate >= min)
                         && field.bounds.max.is_none_or(|max| candidate <= max)
                 };
-                if ui
-                    .add_enabled(within(number - step), egui::Button::new("−"))
-                    .clicked()
-                {
+                if step_button(ui, within(number - step), false) {
                     *value = integer_value(number - step);
                     changed = true;
                 }
-                ui.add_sized([72.0, 28.0], |ui: &mut egui::Ui| {
-                    let response =
-                        ui.allocate_response(egui::vec2(72.0, 28.0), egui::Sense::hover());
-                    ui.painter().text(
-                        response.rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        number.to_string(),
-                        egui::FontId::proportional(theme::SIZE_LABEL),
-                        theme::TEXT,
-                    );
-                    response
-                });
-                if ui
-                    .add_enabled(within(number + step), egui::Button::new("+"))
-                    .clicked()
-                {
+                stepper_value(ui, &number.to_string());
+                if step_button(ui, within(number + step), true) {
                     *value = integer_value(number + step);
                     changed = true;
                 }
@@ -785,29 +807,12 @@ fn number_control(
                     field.bounds.min.is_none_or(|min| candidate >= min)
                         && field.bounds.max.is_none_or(|max| candidate <= max)
                 };
-                if ui
-                    .add_enabled(within(number - step), egui::Button::new("−"))
-                    .clicked()
-                {
+                if step_button(ui, within(number - step), false) {
                     store(value, number - step);
                     changed = true;
                 }
-                ui.add_sized([72.0, 28.0], |ui: &mut egui::Ui| {
-                    let response =
-                        ui.allocate_response(egui::vec2(72.0, 28.0), egui::Sense::hover());
-                    ui.painter().text(
-                        response.rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        schema::format_number(number),
-                        egui::FontId::proportional(theme::SIZE_LABEL),
-                        theme::TEXT,
-                    );
-                    response
-                });
-                if ui
-                    .add_enabled(within(number + step), egui::Button::new("+"))
-                    .clicked()
-                {
+                stepper_value(ui, &schema::format_number(number));
+                if step_button(ui, within(number + step), true) {
                     store(value, number + step);
                     changed = true;
                 }
@@ -1059,7 +1064,7 @@ fn select_control(
                 choice_label(spec.options, value)
             };
             let search_id = id.with("search");
-            egui::ComboBox::from_id_salt(id)
+            let dropdown = egui::ComboBox::from_id_salt(id)
                 .selected_text(selected_text)
                 .width(ui.available_width())
                 .show_ui(ui, |ui| {
@@ -1070,6 +1075,7 @@ fn select_control(
                             .unwrap_or_default();
                         let response =
                             ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Search"));
+                        widgets::named(ui, &response, "Search the options");
                         response.request_focus();
                         ui.data_mut(|data| data.insert_temp(search_id, filter.clone()));
                     }
@@ -1092,6 +1098,7 @@ fn select_control(
                         }
                     }
                 });
+            widgets::named_by_group(ui, &dropdown.response, "Choose a value");
         },
     }
     if spec.allow_custom {
@@ -1133,7 +1140,7 @@ fn multi_select(ui: &mut egui::Ui, spec: &SelectSpec<'_>, value: &mut Value, id:
                     .filter(|choice| !choice.disabled && !chosen.contains(&choice.value))
                     .collect();
                 if !left.is_empty() {
-                    egui::ComboBox::from_id_salt(id.with("add"))
+                    let add = egui::ComboBox::from_id_salt(id.with("add"))
                         .selected_text("+ Add")
                         .show_ui(ui, |ui| {
                             for choice in left {
@@ -1142,6 +1149,7 @@ fn multi_select(ui: &mut egui::Ui, spec: &SelectSpec<'_>, value: &mut Value, id:
                                 }
                             }
                         });
+                    widgets::named_by_group(ui, &add.response, "Add a value");
                 }
             });
         },
@@ -1201,6 +1209,11 @@ fn custom_values(ui: &mut egui::Ui, spec: &SelectSpec<'_>, chosen: &mut Vec<Valu
                 .hint_text("Another value")
                 .desired_width((ui.available_width() - 64.0).max(80.0)),
         );
+        let name = widgets::group_name(ui).map_or_else(
+            || "Another value".to_owned(),
+            |group| format!("{group}: another value"),
+        );
+        widgets::named(ui, &field, &name);
         let typed = Value::from(text.trim());
         let ready = !text.trim().is_empty() && !chosen.contains(&typed);
         let entered = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
@@ -1245,32 +1258,34 @@ fn fields_block(
             continue;
         }
         let required = field.is_required(values);
-        ui.horizontal(|ui| label(ui, field, required));
-        let mut value = map
-            .get(&field.key)
-            .cloned()
-            .unwrap_or_else(|| field.initial());
-        if control(
-            ui,
-            field,
-            &mut value,
-            id.with(("field", &field.key)),
-            values,
-        ) {
-            map.insert(field.key.clone(), value.clone());
-            changed = true;
-        }
-        // An empty required value is a reminder; anything typed that breaks a rule is an error.
-        if required && schema::is_empty(&value) {
-            needed(ui);
-        } else if let Some(text) = field.problem(&value, required) {
-            problem(ui, &text);
-        } else if let Some(text) = field.advice(&value) {
-            hint(ui, &text);
-        }
-        if let Some(description) = &field.description {
-            hint(ui, description);
-        }
+        widgets::named_group(ui, &field.title(), |ui| {
+            ui.horizontal(|ui| label(ui, field, required));
+            let mut value = map
+                .get(&field.key)
+                .cloned()
+                .unwrap_or_else(|| field.initial());
+            if control(
+                ui,
+                field,
+                &mut value,
+                id.with(("field", &field.key)),
+                values,
+            ) {
+                map.insert(field.key.clone(), value.clone());
+                changed = true;
+            }
+            // An empty required value is a reminder; anything typed that breaks a rule is an error.
+            if required && schema::is_empty(&value) {
+                needed(ui);
+            } else if let Some(text) = field.problem(&value, required) {
+                problem(ui, &text);
+            } else if let Some(text) = field.advice(&value) {
+                hint(ui, &text);
+            }
+            if let Some(description) = &field.description {
+                hint(ui, description);
+            }
+        });
         ui.add_space(theme::SPACE_SM);
     }
     changed
@@ -1373,7 +1388,7 @@ fn object_control(
                 .filter(|field| !map.contains_key(&field.key))
                 .collect();
             if !absent.is_empty() {
-                egui::ComboBox::from_id_salt(id.with("pick"))
+                let pick = egui::ComboBox::from_id_salt(id.with("pick"))
                     .selected_text("+ Add field")
                     .show_ui(ui, |ui| {
                         for field in absent {
@@ -1383,6 +1398,7 @@ fn object_control(
                             }
                         }
                     });
+                widgets::named_by_group(ui, &pick.response, "Add a field");
             }
             changed
         }),
@@ -1663,7 +1679,7 @@ fn mode_control(
             .iter()
             .find(|variant| variant.key == chosen)
             .map_or("Choose…", |variant| variant.label.as_str());
-        egui::ComboBox::from_id_salt(id.with("mode"))
+        let mode = egui::ComboBox::from_id_salt(id.with("mode"))
             .selected_text(selected)
             .width(ui.available_width())
             .show_ui(ui, |ui| {
@@ -1671,6 +1687,7 @@ fn mode_control(
                     ui.selectable_value(&mut chosen, variant.key.clone(), &variant.label);
                 }
             });
+        widgets::named_by_group(ui, &mode.response, "Choose a mode");
     }
     if chosen != current_key {
         let payload = variants

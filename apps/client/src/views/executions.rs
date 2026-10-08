@@ -88,7 +88,7 @@ fn filters(ui: &mut egui::Ui, workbench: &mut Workbench) {
         || "All workflows".to_owned(),
         |id| workflow_name(workbench, id),
     );
-    egui::ComboBox::from_id_salt("executions-workflow")
+    let filter = egui::ComboBox::from_id_salt("executions-workflow")
         .selected_text(label)
         .width(ui.available_width().min(260.0))
         .truncate()
@@ -103,6 +103,7 @@ fn filters(ui: &mut egui::Ui, workbench: &mut Workbench) {
                 changed = true;
             }
         });
+    widgets::named(ui, &filter.response, "Show runs of workflow");
     if changed {
         workbench.executions.list.invalidate();
         workbench.executions.next_cursor = None;
@@ -268,7 +269,9 @@ fn detail(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, b
             ui.add_space(theme::SPACE_MD);
             egui::CollapsingHeader::new("Run input")
                 .id_salt("run-input")
-                .show(ui, |ui| json_block(ui, input, "run-input-json"));
+                .show(ui, |ui| {
+                    json_block(ui, "Run input", input, "run-input-json");
+                });
         }
     });
 }
@@ -510,7 +513,7 @@ fn node_detail(ui: &mut egui::Ui, key: &str, node: &ExecutionNode) {
         Some(ExecutionNodeOutput::Inline { value }) => {
             ui.add_space(theme::SPACE_SM);
             widgets::caption(ui, "Output");
-            json_block(ui, value, ("node-output", key));
+            json_block(ui, &format!("Output of {key}"), value, ("node-output", key));
         },
         Some(ExecutionNodeOutput::External { size, mime }) => widgets::caption(
             ui,
@@ -534,8 +537,10 @@ fn node_detail(ui: &mut egui::Ui, key: &str, node: &ExecutionNode) {
 }
 
 /// Pretty JSON in a bounded, scrolling block that can be selected and copied but not edited.
+/// `name` is what assistive technology calls it.
 pub(crate) fn json_block(
     ui: &mut egui::Ui,
+    name: &str,
     value: &serde_json::Value,
     salt: impl std::hash::Hash + std::fmt::Debug,
 ) {
@@ -546,11 +551,12 @@ pub(crate) fn json_block(
         .id_salt(salt)
         .max_height(280.0)
         .show(ui, |ui| {
-            ui.add(
+            let block = ui.add(
                 egui::TextEdit::multiline(&mut text)
                     .code_editor()
                     .desired_width(f32::INFINITY)
                     .desired_rows(1),
             );
+            widgets::named(ui, &block, name);
         });
 }

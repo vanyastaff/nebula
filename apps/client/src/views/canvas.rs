@@ -351,6 +351,15 @@ pub(crate) fn show(
                     egui::Id::new(("workflow-node", node.id.as_str())),
                     Sense::click_and_drag(),
                 );
+                let selected = workbench.selected_node.as_deref() == Some(node.id.as_str());
+                body.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        true,
+                        selected,
+                        format!("Node {}, {}", node.name, node.action),
+                    )
+                });
                 if body.clicked() {
                     gestures.push(Gesture::Select {
                         id: node.id.clone(),
@@ -414,6 +423,13 @@ pub(crate) fn show(
                     egui::Id::new(("workflow-add-after", node.id.as_str())),
                     Sense::click(),
                 );
+                add.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        true,
+                        format!("Add a node after {}", node.name),
+                    )
+                });
                 if add.clicked() {
                     gestures.push(Gesture::AddAfter {
                         id: node.id.clone(),
@@ -424,6 +440,16 @@ pub(crate) fn show(
                     egui::Id::new(("workflow-out", node.id.as_str())),
                     Sense::drag(),
                 );
+                out.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Other,
+                        true,
+                        format!(
+                            "Output of {}: drag onto another node's input to connect",
+                            node.name
+                        ),
+                    )
+                });
                 if out.drag_started() {
                     workbench.link_from = Some(node.id.clone());
                 }
@@ -482,11 +508,15 @@ pub(crate) fn show(
 /// Zoom buttons. Fit scales the graph to the visible width, never above 100%.
 pub(crate) fn zoom_controls(ui: &mut egui::Ui, workbench: &mut Workbench, frame: &CanvasFrame) {
     ui.horizontal(|ui| {
-        if ui.button("−").on_hover_text("Zoom out").clicked() {
+        let out = ui.button("−").on_hover_text("Zoom out");
+        widgets::named(ui, &out, "Zoom out");
+        if out.clicked() {
             workbench.zoom = (workbench.zoom - ZOOM_STEP).max(MIN_ZOOM);
         }
         ui.label(format!("{:.0}%", workbench.zoom * 100.0));
-        if ui.button("+").on_hover_text("Zoom in").clicked() {
+        let into = ui.button("+").on_hover_text("Zoom in");
+        widgets::named(ui, &into, "Zoom in");
+        if into.clicked() {
             workbench.zoom = (workbench.zoom + ZOOM_STEP).min(MAX_ZOOM);
         }
         if ui

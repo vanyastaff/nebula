@@ -224,6 +224,7 @@ fn new_token(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents
     let form = &mut workbench.settings.new_token;
     let name =
         ui.add(widgets::field(&mut form.name).hint_text("What will use it, such as CI deploy"));
+    widgets::named(ui, &name, "New token name");
     let mut full = form.scopes.contains(FULL_ACCESS);
     if ui
         .checkbox(&mut full, "Full access")
@@ -255,13 +256,14 @@ fn new_token(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents
     });
     ui.horizontal(|ui| {
         widgets::caption(ui, "Expires after");
-        egui::ComboBox::from_id_salt("token-lifetime")
+        let choice = egui::ComboBox::from_id_salt("token-lifetime")
             .selected_text(format!("{} days", form.ttl_days))
             .show_ui(ui, |ui| {
                 for days in LIFETIMES {
                     ui.selectable_value(&mut form.ttl_days, days, format!("{days} days"));
                 }
             });
+        widgets::named(ui, &choice.response, "New token expires after");
     });
     let ready = !busy && settled && !form.name.trim().is_empty() && !form.scopes.is_empty();
     if ui

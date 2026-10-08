@@ -90,13 +90,14 @@ fn account_item(ui: &mut egui::Ui, workbench: &mut Workbench, item: AccountItem)
             }
         },
         AccountItem::Shortcuts => {
-            if workbench.workspace_open()
-                && ui
+            if workbench.workspace_open() {
+                let sheet = ui
                     .add(egui::Button::new("?").selected(workbench.shortcuts_open))
-                    .on_hover_text("Keyboard shortcuts (?)")
-                    .clicked()
-            {
-                workbench.shortcuts_open = !workbench.shortcuts_open;
+                    .on_hover_text("Keyboard shortcuts (?)");
+                widgets::named(ui, &sheet, "Keyboard shortcuts");
+                if sheet.clicked() {
+                    workbench.shortcuts_open = !workbench.shortcuts_open;
+                }
             }
         },
         AccountItem::SwitchWorkspace => {

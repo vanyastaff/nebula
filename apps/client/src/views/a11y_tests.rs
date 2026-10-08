@@ -1,7 +1,9 @@
 //! What assistive technology reads: each page is drawn in a headless frame with AccessKit on, on the
 //! demo workspace's data, and the tree it hands to the platform is checked for names and roles.
 
-use super::{Intents, catalog, credentials, executions, nav, settings, team, triggers, workflows};
+use super::{
+    Intents, catalog, connection, credentials, executions, nav, settings, team, triggers, workflows,
+};
 use crate::{
     api::{Backend, SignedIn},
     demo::{self, Demo},
@@ -97,9 +99,11 @@ fn tree(
         .unwrap()
         .nodes
         .into_iter()
-        // egui names a control by its label and reads a text label out as its value.
+        // egui names a control by its label and reads a text label out as its value. An input's
+        // value is what was typed into it, never its name.
         .map(|(_, node)| {
-            let name = node.label().or_else(|| node.value()).unwrap_or_default();
+            let text = (node.role() == Role::Label).then(|| node.value()).flatten();
+            let name = node.label().or(text).unwrap_or_default();
             (node.role(), name.to_owned())
         })
         .collect()
@@ -113,7 +117,8 @@ fn names(nodes: &[(Role, String)], role: Role) -> Vec<&str> {
         .collect()
 }
 
-/// Every button on the page has a name, so a screen reader never announces a bare "button".
+/// Every button and every input on the page has a name, so a screen reader never announces a bare
+/// "button" or "edit".
 fn every_button_is_named(nodes: &[(Role, String)]) {
     let buttons = names(nodes, Role::Button);
     assert!(!buttons.is_empty());
@@ -121,6 +126,48 @@ fn every_button_is_named(nodes: &[(Role, String)]) {
         buttons.iter().all(|name| !name.trim().is_empty()),
         "unnamed button among {buttons:?}"
     );
+    every_input_is_named(nodes);
+}
+
+fn every_input_is_named(nodes: &[(Role, String)]) {
+    let inputs: Vec<&str> = [
+        Role::TextInput,
+        Role::MultilineTextInput,
+        Role::PasswordInput,
+    ]
+    .into_iter()
+    .flat_map(|role| names(nodes, role))
+    .collect();
+    assert!(
+        inputs.iter().all(|name| !name.trim().is_empty()),
+        "unnamed input among {inputs:?}"
+    );
+}
+
+#[test]
+fn every_input_of_a_schema_form_takes_its_field_s_name() {
+    let mut workbench = demo_workspace();
+    workbench.start_credential(Some("basic_auth".into()));
+    let nodes = tree(&mut workbench, credentials::show);
+
+    every_input_is_named(&nodes);
+    let inputs: Vec<&str> = [Role::TextInput, Role::PasswordInput]
+        .into_iter()
+        .flat_map(|role| names(&nodes, role))
+        .collect();
+    assert!(inputs.contains(&"Username"), "{inputs:?}");
+    assert!(inputs.contains(&"Password"), "{inputs:?}");
+    // Each field is a named group, as a fieldset with its legend.
+    assert!(names(&nodes, Role::Group).contains(&"Username"));
+}
+
+#[test]
+fn the_sign_in_fields_are_named_by_their_labels() {
+    let mut workbench = Workbench::new("https://nebula.example/".into());
+    let nodes = tree(&mut workbench, |ui, workbench, intents| {
+        connection::show(ui, workbench, intents);
+    });
+    every_input_is_named(&nodes);
 }
 
 #[test]

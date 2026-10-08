@@ -53,7 +53,51 @@ pub(crate) fn labeled_field(
             .color(theme::TEXT_MUTED)
             .size(theme::SIZE_BODY),
     );
-    ui.add(field(value).password(password))
+    let response = ui.add(field(value).password(password));
+    named(ui, &response, label);
+    response
+}
+
+/// Gives a control the name assistive technology reads for it, for a control whose label is drawn
+/// apart from it or not at all. A hint inside a field is not a name.
+pub(crate) fn named(ui: &egui::Ui, response: &egui::Response, name: &str) {
+    ui.ctx()
+        .accesskit_node_builder(response.id, |node| node.set_label(name));
+}
+
+/// Names a control after the field around it: "`field`: `what`", or `what` alone outside a field.
+pub(crate) fn named_by_group(ui: &egui::Ui, response: &egui::Response, what: &str) {
+    let name = group_name(ui).map_or_else(|| what.to_owned(), |field| format!("{field}: {what}"));
+    named(ui, response, &name);
+}
+
+/// The tag a [`named_group`] leaves on the `Ui` stack for the controls inside it.
+const GROUP_NAME: &str = "nebula-group-name";
+
+/// Draws `add` as one group named `name` for assistive technology, as a fieldset with its legend.
+/// Inputs inside that have no visible label of their own take the name through [`group_name`].
+pub(crate) fn named_group<R>(
+    ui: &mut egui::Ui,
+    name: &str,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let builder = egui::UiBuilder::new()
+        .ui_stack_info(egui::UiStackInfo::default().with_tag_value(GROUP_NAME, name.to_owned()));
+    ui.scope_builder(builder, |ui| {
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::Group);
+            node.set_label(name);
+        });
+        add(ui)
+    })
+    .inner
+}
+
+/// The name of the innermost [`named_group`] around `ui`, if any.
+pub(crate) fn group_name(ui: &egui::Ui) -> Option<String> {
+    ui.stack()
+        .iter()
+        .find_map(|frame| frame.tags().get_downcast::<String>(GROUP_NAME).cloned())
 }
 
 /// Enter was pressed in this field, which submits its form.
@@ -222,11 +266,12 @@ pub(crate) fn copyable(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
         // A `&str` buffer is read-only: the value can be selected but not edited.
         let mut text = value;
-        ui.add(
+        let shown = ui.add(
             egui::TextEdit::singleline(&mut text)
                 .font(egui::TextStyle::Monospace)
                 .desired_width((ui.available_width() - 70.0).max(80.0)),
         );
+        named(ui, &shown, label);
         if ui
             .button("Copy")
             .on_hover_text(format!("Copy the {}", label.to_lowercase()))

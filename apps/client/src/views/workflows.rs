@@ -66,11 +66,12 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         }
         return;
     }
-    ui.add(
+    let search = ui.add(
         widgets::field(&mut workbench.navigator.filter)
             .hint_text("Search this page by name")
             .desired_width(f32::INFINITY),
     );
+    widgets::named(ui, &search, "Search workflows on this page");
     ui.add_space(theme::SPACE_SM);
     rows(ui, workbench, intents, busy);
     paging(ui, workbench, intents, busy);
