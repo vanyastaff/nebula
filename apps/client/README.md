@@ -28,17 +28,20 @@ action keys are typed), managed local launch, packaging and updates.
 
 ## Structure
 
-- `workbench`: pure state and reducers for sign-in, workspace, drafts and replies. No egui
+- `workbench/`: pure state and reducers for sign-in, workspace, drafts and replies. No egui
   or network types, so every transition is unit-tested with fabricated replies.
 - `effects`: runs requests off the render thread. Each request carries its session stamp,
   and late replies from an earlier session are dropped.
-- `views`: rendering only. Views change local UI state directly and return `Intent`s for
-  anything that needs the network; `app` runs them after the frame.
+- `views/`: rendering only. Views change local UI state directly and return `Intent`s for
+  anything that needs the network; `app` runs them after the frame. `canvas` draws the graph,
+  `editor` holds the toolbar and reconciliation, `inspector` edits the selected node.
 - `theme` and `widgets`: design tokens (colors, spacing, radii, type scale) and the shared
   controls every view uses. Views take their colors and spacing from here only.
-- `document` and `session`: editing commands, draft recovery and generation fences,
-  independent of presentation.
-- `transport`: HTTP adapter with bounded requests and explicit reconciliation.
+- `document/`: the draft and its undo history. `graph` holds the edits, the recorded changes
+  and their replay as pure functions over the definition. Presentation never edits the
+  definition directly.
+- `session`: draft ownership and generation fences, independent of presentation.
+- `transport/`: HTTP adapter with bounded requests and explicit reconciliation.
 
 The library denies `unwrap`, `expect`, `panic`, `todo` and `unimplemented` through
 `#![deny]` in `lib.rs`. Tests keep them through `clippy.toml`.
@@ -46,10 +49,12 @@ The library denies `unwrap`, `expect`, `panic`, `todo` and `unimplemented` throu
 The editor requires the workflow detail `definition` and storage `revision`, added
 alongside this app. Old metadata-only servers are explicitly unsupported for editing.
 Save supplies `expected_revision`; 409 preserves the draft. Read the server version,
-compare nodes, then explicitly discard the draft or reapply parameter commands to it.
-Reapply may overwrite the same parameters changed remotely, but preserves other server
-changes. Publication is also revision-fenced. Run captures the server's current
-publication at server admission; it is not an atomic save/publish/run transaction.
+compare nodes, then explicitly discard the draft or reapply the recorded edits to it.
+Reapply replays graph and parameter edits in order. An edit whose outcome the server
+already has, such as an existing connection, counts as applied. An edit that cannot be
+honored, such as a connection to a node the server removed, stops the replay and keeps the
+draft. Publication is also revision-fenced. Run captures the server's current publication
+at server admission; it is not an atomic save/publish/run transaction.
 
 Drafts survive disconnects and server/workspace switches **in memory**, keyed by
 normalized endpoint, authenticated principal, organization, workspace and workflow.
