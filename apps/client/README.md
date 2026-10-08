@@ -1,10 +1,8 @@
 # Nebula client
 
-![Workflow workbench with an edited parameter and completed server execution](docs/workbench.png)
-
 The workbench uses a light palette, Inter body text, resizable navigation and runs
-panes, and a parameter editor in the main document area. Narrow windows stack these
-sections vertically. The screenshot shows an isolated acceptance fixture.
+panes, a graph canvas with an inspector for the selected node, and a stacked layout in
+narrow windows.
 
 First-party egui/eframe workbench for an **existing** Nebula HTTP server. Native:
 `task client:run`. Browser: `task client:web`, which needs `cargo binstall trunk` and the
