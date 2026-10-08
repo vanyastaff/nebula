@@ -6,7 +6,9 @@ use crate::{
     effects::{Reply, RequestKind},
     schema::Form,
     session::{DraftKey, RequestStamp, Session, SessionContext},
-    transport::{Connection, Failure, PAGE_SIZE},
+    api::Backend,
+    demo,
+    transport::{Failure, PAGE_SIZE},
 };
 use nebula_api_contract::v1::{
     catalog::{ActionParametersResponse, ActionSummary},
@@ -247,7 +249,8 @@ impl Feedback {
 
 pub(crate) struct Workbench {
     pub(crate) session: Session,
-    pub(crate) connection: Option<Connection>,
+    /// The server, or the demo workspace, signed in to.
+    pub(crate) backend: Option<Backend>,
     pub(crate) profile: Option<MeResponse>,
     pub(crate) form: ConnectionForm,
     pub(crate) navigator: Navigator,
@@ -371,7 +374,7 @@ impl Workbench {
     pub(crate) fn new(endpoint: String) -> Self {
         Self {
             session: Session::default(),
-            connection: None,
+            backend: None,
             profile: None,
             form: ConnectionForm::new(endpoint),
             navigator: Navigator::default(),
@@ -464,6 +467,10 @@ impl Workbench {
         let Some(context) = &self.session.context else {
             return;
         };
+        // The demo workspace is always one click away; recent workspaces are for real servers.
+        if self.backend.as_ref().is_some_and(Backend::is_demo) {
+            return;
+        }
         let opened = WorkspaceRef {
             organization: context.organization.clone(),
             workspace: context.workspace_selector.clone(),
@@ -481,10 +488,10 @@ impl Workbench {
         self.session.context.is_some()
     }
 
-    pub(crate) fn begin_sign_in(&mut self, connection: Connection) {
+    pub(crate) fn begin_sign_in(&mut self, backend: Backend) {
         self.session.switch(None);
         self.forget_server();
-        self.connection = Some(connection);
+        self.backend = Some(backend);
     }
 
     /// Forgets what was read about the server's actions; the next server may publish others.
@@ -497,14 +504,14 @@ impl Workbench {
     /// Scopes the session to the form's workspace. Returns false until a sign-in has completed and both
     /// slugs are filled in.
     pub(crate) fn open_workspace(&mut self) -> bool {
-        let (Some(connection), Some(profile)) = (&self.connection, &self.profile) else {
+        let (Some(backend), Some(profile)) = (&self.backend, &self.profile) else {
             return false;
         };
         if !self.form.can_open_workspace() {
             return false;
         }
         self.session.switch(Some(SessionContext {
-            endpoint: connection.endpoint().into(),
+            endpoint: backend.endpoint().into(),
             principal: profile.user_id.clone(),
             organization: self.form.organization.trim().into(),
             workspace_selector: self.form.workspace.trim().into(),
@@ -560,7 +567,7 @@ impl Workbench {
 
     pub(crate) fn disconnect(&mut self) {
         self.session.switch(None);
-        self.connection = None;
+        self.backend = None;
         self.profile = None;
         self.workspace_form_open = false;
         self.navigator.workflows.clear();
@@ -653,10 +660,19 @@ impl Workbench {
     fn receive_reply(&mut self, reply: Reply) {
         match reply {
             Reply::Connected(signed_in) => {
-                self.connection = Some(signed_in.connection);
+                let demo = signed_in.backend.is_demo();
+                self.backend = Some(signed_in.backend);
                 self.profile = Some(signed_in.profile);
                 // The workspace page that follows is the confirmation, so no toast repeats it.
                 self.form.clear_secrets();
+                // The demo has one workspace, so it opens straight away.
+                if demo {
+                    demo::ORG.clone_into(&mut self.form.organization);
+                    demo::WORKSPACE.clone_into(&mut self.form.workspace);
+                    if self.open_workspace() {
+                        self.navigator.refresh_pending = true;
+                    }
+                }
             },
             Reply::Listed(page) => {
                 self.navigator.workflows = page.workflows;

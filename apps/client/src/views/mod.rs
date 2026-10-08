@@ -13,6 +13,8 @@ pub(crate) mod shell;
 /// A network operation a view asked for.
 pub(crate) enum Intent {
     SignIn,
+    /// Opens the built-in demo workspace instead of signing in to a server.
+    OpenDemo,
     OpenWorkspace,
     ListWorkflows(usize),
     CreateWorkflow,

@@ -4291,6 +4291,7 @@ name = "nebula-client"
 version = "0.33.0"
 dependencies = [
  "eframe",
+ "js-sys",
  "nebula-api-contract",
  "nebula-schema",
  "reqwest",
@@ -4305,6 +4306,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
  "wiremock",
  "zeroize",
 ]

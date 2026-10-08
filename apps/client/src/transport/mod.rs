@@ -19,6 +19,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use url::Url;
 use zeroize::Zeroizing;
 
+mod resources;
+
+pub(crate) use resources::ExecutionQuery;
+
 const MAX_BODY: usize = 1024 * 1024;
 
 /// Workflows per list page, shared by the request and the navigator's paging.

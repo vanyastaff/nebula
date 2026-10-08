@@ -11,7 +11,13 @@
 )]
 
 #[cfg(feature = "ui")]
+mod api;
+#[cfg(feature = "ui")]
 mod app;
+#[cfg(feature = "ui")]
+mod clock;
+#[cfg(feature = "ui")]
+mod demo;
 #[cfg(feature = "ui")]
 mod document;
 #[cfg(feature = "ui")]

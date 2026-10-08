@@ -2,6 +2,8 @@
 //! turns the intents that views emitted into network requests.
 use crate::{
     document::new_workflow_request,
+    api::Backend,
+    demo::Demo,
     effects::{Effects, Operation},
     theme,
     transport::{Connection, SignIn},
@@ -40,7 +42,7 @@ impl ClientApp {
     /// flight. Callers change state for a request only after it started, so a dropped intent never
     /// leaves a "loading" or "uncertain" mark behind.
     fn dispatch(&mut self, context: &egui::Context, operation: Operation) -> bool {
-        let Some(connection) = self.workbench.connection.clone() else {
+        let Some(backend) = self.workbench.backend.clone() else {
             return false;
         };
         let writes = matches!(operation, Operation::Save(..) | Operation::Publish(..));
@@ -57,7 +59,7 @@ impl ClientApp {
         }
         let session = self.workbench.session.context.clone();
         self.effects
-            .start(context, stamp, connection, session, operation);
+            .start(context, stamp, backend, session, operation);
         true
     }
 
@@ -72,6 +74,7 @@ impl ClientApp {
         }
         match intent {
             Intent::SignIn => self.sign_in(context),
+            Intent::OpenDemo => self.open_demo(context),
             Intent::OpenWorkspace => {
                 if self.workbench.open_workspace() {
                     self.dispatch(context, Operation::List(1));
@@ -178,8 +181,19 @@ impl ClientApp {
                 totp: (!form.totp.is_empty()).then(|| form.totp.clone()),
             }),
         };
-        self.workbench.begin_sign_in(connection);
-        self.dispatch(context, Operation::Connect(intent));
+        self.workbench.begin_sign_in(Backend::Server(connection));
+        self.dispatch(context, Operation::Connect(Some(intent)));
+    }
+
+    /// Opens a fresh demo workspace, which needs no server and no credentials.
+    fn open_demo(&mut self, context: &egui::Context) {
+        match Demo::new() {
+            Ok(demo) => {
+                self.workbench.begin_sign_in(Backend::Demo(demo));
+                self.dispatch(context, Operation::Connect(None));
+            },
+            Err(error) => self.workbench.feedback.error(error.to_string()),
+        }
     }
 
     fn receive(&mut self) {

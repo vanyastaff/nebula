@@ -55,7 +55,7 @@ fn introduction(ui: &mut egui::Ui) {
     ui.add_space(theme::SPACE_SM);
     widgets::caption(
         ui,
-        "The workbench edits the workflows stored on a Nebula server. Sign in, choose a workspace, then work through its workflows.",
+        "The workbench edits the workflows stored on a Nebula server. Sign in and choose a workspace, or explore the demo workspace without a server.",
     );
     ui.add_space(theme::SPACE_LG);
     feature(
@@ -150,6 +150,23 @@ fn sign_in_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Inte
         if ui.add_enabled(ready, sign_in).clicked() || (entered && ready) {
             intents.push(Intent::SignIn);
         }
+        ui.add_space(theme::SPACE_MD);
+        widgets::divider_label(ui, "or");
+        ui.add_space(theme::SPACE_SM);
+        if ui
+            .add(egui::Button::new("Explore the demo workspace").min_size(egui::vec2(
+                ui.available_width(),
+                36.0,
+            )))
+            .on_hover_text("Sample workflows, runs, credentials and team, simulated in this app")
+            .clicked()
+        {
+            intents.push(Intent::OpenDemo);
+        }
+        widgets::caption(
+            ui,
+            "No server needed: the demo runs workflows on a simulated executor and resets when you sign out.",
+        );
     });
 }
 

@@ -164,6 +164,28 @@ pub(crate) fn link(ui: &mut egui::Ui, text: &str, active: bool) -> egui::Respons
     ui.add(egui::Button::new(RichText::new(text).size(theme::SIZE_SMALL).color(color)).frame(false))
 }
 
+/// A hairline across the width with a short word in its middle, such as "or" between two ways in.
+pub(crate) fn divider_label(ui: &mut egui::Ui, text: &str) {
+    let galley = ui.painter().layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::proportional(theme::SIZE_SMALL),
+        theme::TEXT_MUTED,
+    );
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), galley.size().y),
+        egui::Sense::hover(),
+    );
+    let half = galley.size().x / 2.0 + theme::SPACE_SM;
+    let stroke = Stroke::new(1.0, theme::BORDER);
+    let y = rect.center().y;
+    ui.painter()
+        .hline(rect.left()..=rect.center().x - half, y, stroke);
+    ui.painter()
+        .hline(rect.center().x + half..=rect.right(), y, stroke);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, theme::TEXT_MUTED);
+}
+
 pub(crate) fn caption(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(
         RichText::new(text.into())

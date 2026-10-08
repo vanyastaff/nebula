@@ -1,0 +1,237 @@
+{
+  "_about": "Seed workflows of the demo workspace. Each runs on the release's core actions with a sample payload standing in for its trigger's event. `history` lists past runs: when they started, and optionally a different payload or a cancellation.",
+  "workflows": [
+    {
+      "name": "Order fulfillment",
+      "description": "Keeps paid orders, ranks them by value and totals revenue per region.",
+      "published": true,
+      "sample_input": {
+        "orders": [
+          {"id": "ord_1042", "customer": "Northwind Traders", "region": "EMEA", "status": "paid", "total": 1840.5},
+          {"id": "ord_1043", "customer": "Contoso Ltd", "region": "AMER", "status": "pending", "total": 312.0},
+          {"id": "ord_1044", "customer": "Fabrikam", "region": "AMER", "status": "paid", "total": 920.25},
+          {"id": "ord_1045", "customer": "Tailspin Toys", "region": "APAC", "status": "paid", "total": 2480.0},
+          {"id": "ord_1046", "customer": "Adventure Works", "region": "EMEA", "status": "refunded", "total": 150.0},
+          {"id": "ord_1047", "customer": "Wide World Importers", "region": "EMEA", "status": "paid", "total": 605.75}
+        ]
+      },
+      "definition": {
+        "nodes": [
+          {"id": "paid_orders", "name": "Paid orders", "plugin_key": "core", "action_key": "filter", "parameters": {
+            "data": {"type": "expression", "expr": "{{ $input.orders }}"},
+            "condition": {"type": "literal", "value": {"field": "status", "op": "eq", "value": "paid"}}
+          }},
+          {"id": "by_value", "name": "Rank by value", "plugin_key": "core", "action_key": "sort", "parameters": {
+            "keys": {"type": "literal", "value": [{"field": "total", "order": "desc"}]}
+          }},
+          {"id": "revenue", "name": "Revenue by region", "plugin_key": "core", "action_key": "aggregate", "parameters": {
+            "group_by": {"type": "literal", "value": ["region"]},
+            "aggregations": {"type": "literal", "value": [
+              {"fn": "sum", "field": "total", "out": "revenue"},
+              {"fn": "count", "field": "id", "out": "orders"}
+            ]}
+          }}
+        ],
+        "connections": [
+          {"from_node": "paid_orders", "to_node": "by_value"},
+          {"from_node": "by_value", "to_node": "revenue"}
+        ],
+        "ui_metadata": {"node_positions": {
+          "paid_orders": {"x": 40.0, "y": 60.0},
+          "by_value": {"x": 244.0, "y": 60.0},
+          "revenue": {"x": 448.0, "y": 60.0}
+        }}
+      },
+      "history": [
+        {"minutes_ago": 26},
+        {"minutes_ago": 190},
+        {"minutes_ago": 410, "input": {"orders": {"id": "ord_0999"}}},
+        {"minutes_ago": 1460}
+      ]
+    },
+    {
+      "name": "High-value order alert",
+      "description": "Routes large orders to the VIP channel and the rest to the standard queue.",
+      "published": true,
+      "sample_input": {"id": "ord_1045", "customer": "Tailspin Toys", "total": 2480.0, "currency": "EUR"},
+      "definition": {
+        "nodes": [
+          {"id": "check_total", "name": "Over 1,000?", "plugin_key": "core", "action_key": "if", "parameters": {
+            "condition": {"type": "literal", "value": {"field": "total", "op": "gte", "value": 1000}}
+          }},
+          {"id": "vip", "name": "Flag as VIP", "plugin_key": "core", "action_key": "set_fields", "parameters": {
+            "assignments": {"type": "literal", "value": [
+              {"name": "priority", "value": "high"},
+              {"name": "channel", "value": "#sales-vip"}
+            ]}
+          }},
+          {"id": "standard", "name": "Standard queue", "plugin_key": "core", "action_key": "set_fields", "parameters": {
+            "assignments": {"type": "literal", "value": [
+              {"name": "priority", "value": "normal"},
+              {"name": "channel", "value": "#orders"}
+            ]}
+          }},
+          {"id": "notification", "name": "Notification", "plugin_key": "core", "action_key": "json_transform", "parameters": {
+            "operations": {"type": "literal", "value": [
+              {"op": "pick", "fields": ["id", "customer", "total", "priority", "channel"]}
+            ]}
+          }}
+        ],
+        "connections": [
+          {"from_node": "check_total", "from_port": "true", "to_node": "vip"},
+          {"from_node": "check_total", "from_port": "false", "to_node": "standard"},
+          {"from_node": "vip", "to_node": "notification"},
+          {"from_node": "standard", "to_node": "notification"}
+        ],
+        "ui_metadata": {"node_positions": {
+          "check_total": {"x": 40.0, "y": 120.0},
+          "vip": {"x": 244.0, "y": 40.0},
+          "standard": {"x": 244.0, "y": 210.0},
+          "notification": {"x": 448.0, "y": 120.0}
+        }}
+      },
+      "history": [
+        {"minutes_ago": 12},
+        {"minutes_ago": 95, "input": {"id": "ord_1043", "customer": "Contoso Ltd", "total": 312.0, "currency": "USD"}},
+        {"minutes_ago": 540, "cancel_after_ms": 120}
+      ]
+    },
+    {
+      "name": "Lead dedupe",
+      "description": "Removes duplicate sign-ups by email, keeps the fields sales needs and batches them.",
+      "published": true,
+      "sample_input": {
+        "leads": [
+          {"email": "dana@contoso.example", "name": "Dana Ruiz", "company": "Contoso", "utm": "spring"},
+          {"email": "lee@fabrikam.example", "name": "Lee Chen", "company": "Fabrikam", "utm": "webinar"},
+          {"email": "dana@contoso.example", "name": "Dana Ruiz", "company": "Contoso", "utm": "retarget"},
+          {"email": "sam@northwind.example", "name": "Sam Okafor", "company": "Northwind", "utm": "spring"}
+        ]
+      },
+      "definition": {
+        "nodes": [
+          {"id": "unique", "name": "Unique emails", "plugin_key": "core", "action_key": "dedupe", "parameters": {
+            "data": {"type": "expression", "expr": "{{ $input.leads }}"},
+            "keys": {"type": "literal", "value": ["email"]}
+          }},
+          {"id": "clean", "name": "Sales fields", "plugin_key": "core", "action_key": "map", "parameters": {
+            "operations": {"type": "literal", "value": [
+              {"op": "pick", "fields": ["email", "name", "company"]},
+              {"op": "rename", "from": "company", "to": "account"}
+            ]}
+          }},
+          {"id": "batches", "name": "Batches of two", "plugin_key": "core", "action_key": "array", "parameters": {
+            "operations": {"type": "literal", "value": [{"op": "chunk", "size": 2}]}
+          }}
+        ],
+        "connections": [
+          {"from_node": "unique", "to_node": "clean"},
+          {"from_node": "clean", "to_node": "batches"}
+        ],
+        "ui_metadata": {"node_positions": {
+          "unique": {"x": 40.0, "y": 60.0},
+          "clean": {"x": 244.0, "y": 60.0},
+          "batches": {"x": 448.0, "y": 60.0}
+        }}
+      },
+      "history": [
+        {"minutes_ago": 48},
+        {"minutes_ago": 2900}
+      ]
+    },
+    {
+      "name": "Invoice events",
+      "description": "Receives billing webhooks, drops transport fields and routes paid and failed invoices.",
+      "published": true,
+      "sample_input": {"type": "invoice.paid", "invoice": "in_8812", "amount": 129.0, "signature": "t=1791491680,v1=9f2c"},
+      "definition": {
+        "trigger_bindings": [
+          {"id": "billing_webhook", "plugin_key": "core", "action_key": "webhook", "config": {"provider": "generic"}}
+        ],
+        "nodes": [
+          {"id": "normalize", "name": "Drop transport fields", "plugin_key": "core", "action_key": "json_transform", "parameters": {
+            "operations": {"type": "literal", "value": [{"op": "omit", "fields": ["signature"]}]}
+          }},
+          {"id": "route", "name": "Route by event", "plugin_key": "core", "action_key": "switch", "parameters": {
+            "cases": {"type": "literal", "value": [
+              {"condition": {"field": "type", "op": "eq", "value": "invoice.paid"}, "port": "paid"},
+              {"condition": {"field": "type", "op": "eq", "value": "invoice.payment_failed"}, "port": "failed"}
+            ]}
+          }},
+          {"id": "mark_paid", "name": "Mark paid", "plugin_key": "core", "action_key": "set_fields", "parameters": {
+            "assignments": {"type": "literal", "value": [{"name": "ledger", "value": "settled"}]}
+          }},
+          {"id": "dunning", "name": "Start dunning", "plugin_key": "core", "action_key": "set_fields", "parameters": {
+            "assignments": {"type": "literal", "value": [{"name": "ledger", "value": "overdue"}, {"name": "retry_in_days", "value": 3}]}
+          }}
+        ],
+        "connections": [
+          {"from_node": "normalize", "to_node": "route"},
+          {"from_node": "route", "from_port": "paid", "to_node": "mark_paid"},
+          {"from_node": "route", "from_port": "failed", "to_node": "dunning"}
+        ],
+        "ui_metadata": {"node_positions": {
+          "normalize": {"x": 40.0, "y": 110.0},
+          "route": {"x": 244.0, "y": 110.0},
+          "mark_paid": {"x": 448.0, "y": 30.0},
+          "dunning": {"x": 448.0, "y": 200.0}
+        }}
+      },
+      "history": [
+        {"minutes_ago": 7},
+        {"minutes_ago": 33, "input": {"type": "invoice.payment_failed", "invoice": "in_8790", "amount": 59.0, "signature": "t=1791489680,v1=11ab"}},
+        {"minutes_ago": 300}
+      ]
+    },
+    {
+      "name": "Nightly report",
+      "description": "Waits for the warehouse export window, stamps the run time and labels the report.",
+      "published": true,
+      "sample_input": {"report": "inventory", "warehouse": "BER-2"},
+      "definition": {
+        "nodes": [
+          {"id": "export_window", "name": "Wait for export", "plugin_key": "core", "action_key": "delay", "parameters": {
+            "mode": {"type": "literal", "value": "for"},
+            "amount": {"type": "literal", "value": 3},
+            "unit": {"type": "literal", "value": "seconds"}
+          }},
+          {"id": "stamp", "name": "Run time", "plugin_key": "core", "action_key": "datetime", "parameters": {
+            "op": {"type": "literal", "value": "format"}
+          }},
+          {"id": "label", "name": "Label report", "plugin_key": "core", "action_key": "set_fields", "parameters": {
+            "assignments": {"type": "literal", "value": [{"name": "kind", "value": "nightly-inventory"}]}
+          }}
+        ],
+        "connections": [
+          {"from_node": "export_window", "to_node": "stamp"},
+          {"from_node": "stamp", "to_node": "label"}
+        ],
+        "ui_metadata": {"node_positions": {
+          "export_window": {"x": 40.0, "y": 60.0},
+          "stamp": {"x": 244.0, "y": 60.0},
+          "label": {"x": 448.0, "y": 60.0}
+        }}
+      },
+      "history": [
+        {"minutes_ago": 720},
+        {"minutes_ago": 2160}
+      ]
+    },
+    {
+      "name": "Customer sync (draft)",
+      "description": "Work in progress: the sort keys are not chosen yet, so publication reports what is missing.",
+      "published": false,
+      "sample_input": {"customers": []},
+      "definition": {
+        "nodes": [
+          {"id": "newest_first", "name": "Newest first", "plugin_key": "core", "action_key": "sort", "parameters": {
+            "data": {"type": "expression", "expr": "{{ $input.customers }}"}
+          }}
+        ],
+        "connections": [],
+        "ui_metadata": {"node_positions": {"newest_first": {"x": 40.0, "y": 60.0}}}
+      },
+      "history": []
+    }
+  ]
+}

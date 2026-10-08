@@ -6,6 +6,9 @@
 //!
 //! Nothing here touches egui, so parsing, visibility and the inline checks are unit-tested.
 
+mod json_schema;
+
+pub(crate) use json_schema::{UNION_FIELD, credential_data};
 use serde_json::{Map, Value};
 
 /// The parameters of one action.
@@ -14,6 +17,9 @@ pub(crate) struct Form {
     pub(crate) fields: Vec<Field>,
     /// The action takes one free-form value (`kind: any`, or a scalar root) that no field describes.
     pub(crate) free_form: bool,
+    /// The root is a union tagged by a single key (`{"authorization_code": {...}}`), drawn as one
+    /// mode field named [`UNION_FIELD`].
+    pub(crate) tagged_union: bool,
 }
 
 /// What conditions read: the node's fixed parameter values from the root, as the server's predicate
@@ -264,6 +270,7 @@ impl Form {
         Self {
             fields: fields_of(&schema["fields"]),
             free_form: matches!(word(schema, "kind"), "any" | "scalar"),
+            tagged_union: false,
         }
     }
 }

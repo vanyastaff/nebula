@@ -29,6 +29,8 @@ tracing = { workspace = true }
 url = { workspace = true }
 zeroize = { workspace = true }
 uuid = { version = "1", features = ["v4", "js"] }
+# Wall and monotonic time on both hosts, for timestamps and the demo executor's timeline.
+web-time = "1"
 eframe = { version = "=0.36.2", optional = true, default-features = false, features = [
   "default_fonts",
   "glow",
@@ -46,6 +48,7 @@ tokio = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 serde-wasm-bindgen = "0.6"
 web-sys = { version = "0.3", features = ["Window", "Location", "Document", "HtmlCanvasElement"] }
 

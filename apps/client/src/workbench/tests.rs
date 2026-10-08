@@ -1,7 +1,9 @@
 use super::*;
 use crate::{
+    api::SignedIn,
+    demo::Demo,
     document::tests::snapshot,
-    transport::SignedIn,
+    transport::Connection,
     views::{Intent, Intents},
 };
 use eframe::egui;
@@ -9,6 +11,49 @@ use nebula_api_contract::v1::{catalog::ListActionsResponse, workflow::ListWorkfl
 use serde_json::{Value, json};
 
 const SERVER: &str = "http://127.0.0.1:8080";
+
+fn server() -> Backend {
+    Backend::Server(Connection::new(SERVER).unwrap())
+}
+
+#[test]
+fn signing_in_to_the_demo_opens_its_workspace_and_reads_the_list() {
+    let mut workbench = Workbench::new(SERVER.into());
+    let demo = Backend::Demo(Demo::new().unwrap());
+    workbench.begin_sign_in(demo.clone());
+    let stamp = workbench.session.begin().unwrap();
+    let profile = match &demo {
+        Backend::Demo(world) => world.me().unwrap(),
+        Backend::Server(_) => unreachable!("built as the demo"),
+    };
+
+    workbench.receive(
+        stamp,
+        RequestKind::Connect,
+        Ok(Reply::Connected(SignedIn {
+            backend: demo,
+            profile,
+        })),
+    );
+
+    let context = workbench.session.context.clone().unwrap();
+    assert_eq!(context.endpoint, crate::api::DEMO_ENDPOINT);
+    assert_eq!(context.organization, crate::demo::ORG);
+    assert!(workbench.navigator.take_refresh());
+    // Listing the demo workspace does not add it to the recent servers' workspaces.
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(
+        stamp,
+        RequestKind::Read,
+        Ok(Reply::Listed(ListWorkflowsResponse {
+            workflows: Vec::new(),
+            total: 0,
+            page: 1,
+            page_size: 25,
+        })),
+    );
+    assert!(workbench.recent.is_empty());
+}
 
 fn fixture_profile() -> MeResponse {
     serde_json::from_value(json!({
@@ -227,7 +272,7 @@ fn a_published_catalog_is_kept_for_the_add_node_form() {
 #[test]
 fn a_blank_slug_never_opens_a_workspace() {
     let mut workbench = Workbench::new(String::new());
-    workbench.begin_sign_in(Connection::new(SERVER).unwrap());
+    workbench.begin_sign_in(server());
     workbench.profile = Some(fixture_profile());
     workbench.form.organization = "personal".into();
     workbench.form.workspace = "   ".into();
@@ -308,14 +353,13 @@ fn a_completed_sign_in_clears_every_secret() {
     let stamp = workbench.session.begin().unwrap();
     workbench.receive(stamp, RequestKind::Connect, Err(Failure::MfaRequired));
     workbench.form.totp = "123456".into();
-    let connection = Connection::new(SERVER).unwrap();
     let stamp = workbench.session.begin().unwrap();
 
     workbench.receive(
         stamp,
         RequestKind::Connect,
         Ok(Reply::Connected(SignedIn {
-            connection,
+            backend: server(),
             profile: fixture_profile(),
         })),
     );
