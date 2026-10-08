@@ -44,10 +44,12 @@ A rejected save or publication names the server's first validation paths. The AP
 report which revision is published, so the editor says "Published" only for a revision it saw
 the server publish in this session.
 
+The bundled server lists the actions of its plugin release at `/actions`, so the palette offers
+them and every node gets its form. A server without a catalog answers 503: the palette then asks
+for a typed key and the node form falls back to JSON.
+
 Not in this release: template and reference parameters (shown, edited as JSON), select options
-and inputs that a server loader resolves, file uploads, and an action catalog on the bundled
-server: its composition attaches no action registry, so `/actions` answers 503, the palette asks
-for a typed key and the node form falls back to JSON. Also managed local launch, packaging and
+and inputs that a server loader resolves, file uploads, managed local launch, packaging and
 updates.
 
 ## Structure
