@@ -747,6 +747,16 @@ pub(crate) fn default_state(
         registry.all_resources().map(|(_plugin, factory)| factory),
     )?);
 
+    // The action catalog lists exactly what this release can run: the frozen plugin factories,
+    // with their admitted metadata and parameter schemas, so editors can build node forms.
+    // Execution keeps resolving actions through the frozen registry. The same `AppState` slot is
+    // where webhook registration looks up providers; this release registers none, and the API
+    // process wires no webhook transport, so those routes still answer 503 before the lookup.
+    let action_catalog = Arc::new(nebula_engine::ActionRegistry::new());
+    for (_plugin, factory) in registry.all_actions() {
+        action_catalog.register_factory(Arc::clone(factory));
+    }
+
     // Identity is assembled by `build_auth_backend` on the admitted deployment
     // database before serving; secret admission failure aborts startup.
 
@@ -840,6 +850,7 @@ pub(crate) fn default_state(
     )
     .with_workflow_activation(activation)
     .with_workflow_start(start)
+    .with_action_registry(action_catalog)
     .with_resource_store(Arc::clone(&resource_store))
     // Resources run in worker processes; their status is read back from
     // what those workers publish on the same backend.
@@ -1361,11 +1372,14 @@ mod tests {
         );
     }
 
-    /// The production `AppState` must carry the resource allowlist built from
-    /// the plugin set; without it resource create/update answered 422
-    /// "validation is unavailable" on every deployment.
-    #[tokio::test]
-    async fn default_state_wires_the_resource_allowlist_from_the_plugin_set() {
+    /// What `default_state` composes from: in-memory execution stores and the
+    /// linked plugin release.
+    async fn memory_composition() -> (
+        nebula_api::ApiConfig,
+        std::sync::Arc<nebula_metrics::MetricsRegistry>,
+        super::ExecutionStoreBundle,
+        std::sync::Arc<nebula_plugin::FrozenPluginRegistry>,
+    ) {
         let mut api_config = nebula_api::ApiConfig::for_test();
         api_config.execution = nebula_api::config::ExecutionStoreConfig {
             backend: nebula_api::config::ExecutionBackendKind::Memory,
@@ -1377,6 +1391,15 @@ mod tests {
             .expect("in-memory execution stores");
         let registry =
             crate::transport::worker_registry(Ok("71".repeat(32))).expect("linked plugin registry");
+        (api_config, metrics, stores, registry)
+    }
+
+    /// The production `AppState` must carry the resource allowlist built from
+    /// the plugin set; without it resource create/update answered 422
+    /// "validation is unavailable" on every deployment.
+    #[tokio::test]
+    async fn default_state_wires_the_resource_allowlist_from_the_plugin_set() {
+        let (api_config, metrics, stores, registry) = memory_composition().await;
         let expected: Vec<String> = registry
             .all_resources()
             .map(|(_plugin, factory)| factory.key().as_str().to_owned())
@@ -1392,6 +1415,38 @@ mod tests {
         assert_eq!(registrars.len(), expected.len());
         for kind in &expected {
             assert!(registrars.contains(kind), "`{kind}` must be registrable");
+        }
+    }
+
+    /// The catalog API lists every action this release runs, each with a
+    /// parameter schema an editor can build a form from.
+    #[tokio::test]
+    async fn default_state_lists_the_release_actions_in_the_catalog() {
+        let (api_config, metrics, stores, registry) = memory_composition().await;
+        let expected: Vec<String> = registry
+            .all_actions()
+            .map(|(_plugin, factory)| factory.metadata().base().key().as_str().to_owned())
+            .collect();
+        assert!(!expected.is_empty(), "the linked release ships actions");
+
+        let state = super::default_state(&api_config, metrics, stores, registry, None)
+            .expect("default state composes");
+
+        let catalog = state
+            .action_registry
+            .as_ref()
+            .expect("the action catalog is wired");
+        for key in &expected {
+            let action = nebula_core::ActionKey::new(key).expect("admitted action key");
+            let (metadata, _) = catalog
+                .get_factory(&action)
+                .unwrap_or_else(|| panic!("`{key}` must be listed"));
+            let schema = serde_json::to_value(metadata.base().schema())
+                .unwrap_or_else(|error| panic!("`{key}` schema encodes: {error}"));
+            assert!(
+                schema.is_object(),
+                "`{key}` exposes its parameter schema as an object, not {schema}"
+            );
         }
     }
 

@@ -1,5 +1,6 @@
 use nebula_api_contract::v1::{
     auth::{LoginRequest, LoginResponse, OAuthCallbackParams, OAuthProvider},
+    catalog::ActionParametersResponse,
     credential::{
         CredentialLifecycleState, CredentialReconcileDecisionV1, CredentialReconcileOperationV1,
         CredentialResponse, ReconcileCredentialRequest, ReconcileCredentialResponse,
@@ -165,4 +166,29 @@ fn workflow_update_keeps_absence_distinct_from_explicit_null() {
         serde_json::from_value(json!({"definition":null})).unwrap();
     assert!(absent.definition.is_none());
     assert_eq!(explicit_null.definition, Some(Value::Null));
+}
+
+#[test]
+fn action_parameters_carry_the_action_kind() {
+    round_trip::<ActionParametersResponse>(json!({
+        "key": "core.if", "parameters": {"fields": []}, "kind": "control"
+    }));
+    // Without a kind the action is not refused; publication judges it.
+    let unknown: ActionParametersResponse =
+        serde_json::from_value(json!({"key": "core.map", "parameters": {"fields": []}}))
+            .expect("parameters without kind decode");
+    assert!(unknown.kind.is_none());
+    assert!(unknown.is_graph_node());
+
+    let kind = |kind: &str| ActionParametersResponse {
+        key: "plugin.action".into(),
+        parameters: json!({"fields": []}),
+        kind: Some(kind.into()),
+    };
+    for graph in ["stateless", "stateful", "control", "agent"] {
+        assert!(kind(graph).is_graph_node(), "{graph}");
+    }
+    for other in ["trigger", "stream", "resource", "interactive"] {
+        assert!(!kind(other).is_graph_node(), "{other}");
+    }
 }

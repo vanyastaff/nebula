@@ -1123,6 +1123,7 @@ async fn drift_smoke_known_paths_are_present() {
         "/api/v1/auth/logout",
         // Catalog
         "/api/v1/actions",
+        "/api/v1/actions/{key}/parameters",
         "/api/v1/plugins",
         // Tenant
         "/api/v1/orgs/{org}/workspaces/{ws}/workflows",

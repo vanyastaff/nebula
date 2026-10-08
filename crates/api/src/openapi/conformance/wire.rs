@@ -27,6 +27,7 @@ pub(super) fn decode(name: &str, value: Value) -> Option<bool> {
         "ActionSummary" => decode::<v1::catalog::ActionSummary>(value),
         "ListActionsResponse" => decode::<v1::catalog::ListActionsResponse>(value),
         "ActionDetailResponse" => decode::<v1::catalog::ActionDetailResponse>(value),
+        "ActionParametersResponse" => decode::<v1::catalog::ActionParametersResponse>(value),
         "PluginSummary" => decode::<v1::catalog::PluginSummary>(value),
         "ListPluginsResponse" => decode::<v1::catalog::ListPluginsResponse>(value),
         "PluginDetailResponse" => decode::<v1::catalog::PluginDetailResponse>(value),

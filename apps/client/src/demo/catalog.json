@@ -1,0 +1,1283 @@
+{
+  "_source": "Snapshot of GET /actions, /actions/{key} and /actions/{key}/parameters from the bundled server (release plugin set).",
+  "actions": [
+    {
+      "detail": {
+        "key": "core.aggregate",
+        "name": "Aggregate",
+        "description": "Reduce an array of objects to grouped/scalar summaries (sum/count/avg/min/max/collect/join)",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "description": "Required array of open JSON objects; an empty array is valid.",
+            "item": {
+              "fields": [],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "data",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          },
+          {
+            "item": {
+              "hint": "text",
+              "key": "item",
+              "type": "string",
+              "widget": "plain"
+            },
+            "key": "group_by",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          },
+          {
+            "item": {
+              "description": "Tagged aggregation; variant-specific field presence is checked by serde.",
+              "fields": [
+                {
+                  "allow_custom": false,
+                  "depends_on": [],
+                  "dynamic": false,
+                  "expression": "forbidden",
+                  "key": "fn",
+                  "loader": null,
+                  "multiple": false,
+                  "options": [
+                    {
+                      "label": "Count",
+                      "value": "count"
+                    },
+                    {
+                      "label": "Count distinct",
+                      "value": "count_distinct"
+                    },
+                    {
+                      "label": "Sum",
+                      "value": "sum"
+                    },
+                    {
+                      "label": "Average",
+                      "value": "avg"
+                    },
+                    {
+                      "label": "Minimum",
+                      "value": "min"
+                    },
+                    {
+                      "label": "Maximum",
+                      "value": "max"
+                    },
+                    {
+                      "label": "Collect",
+                      "value": "collect"
+                    },
+                    {
+                      "label": "Join",
+                      "value": "join"
+                    }
+                  ],
+                  "required": {
+                    "kind": "always"
+                  },
+                  "searchable": false,
+                  "type": "select",
+                  "widget": "dropdown"
+                },
+                {
+                  "hint": "text",
+                  "key": "field",
+                  "type": "string",
+                  "widget": "plain"
+                },
+                {
+                  "hint": "text",
+                  "key": "out",
+                  "type": "string",
+                  "widget": "plain"
+                },
+                {
+                  "hint": "text",
+                  "key": "sep",
+                  "type": "string",
+                  "widget": "plain"
+                }
+              ],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "aggregations",
+            "max_items": null,
+            "min_items": null,
+            "required": {
+              "kind": "always"
+            },
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          },
+          {
+            "allow_custom": false,
+            "depends_on": [],
+            "dynamic": false,
+            "expression": "forbidden",
+            "key": "on_error",
+            "loader": null,
+            "multiple": false,
+            "options": [
+              {
+                "label": "Fail",
+                "value": "fail"
+              },
+              {
+                "label": "Skip",
+                "value": "skip"
+              }
+            ],
+            "searchable": false,
+            "type": "select",
+            "widget": "dropdown"
+          }
+        ],
+        "policy_version": 2,
+        "root_rules": [
+          {
+            "any": [
+              {
+                "set": "/data"
+              },
+              {
+                "eq": [
+                  "/data",
+                  []
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "detail": {
+        "key": "core.array",
+        "name": "Array",
+        "description": "Shape a JSON array with chunk/flatten/take/skip operations applied left-to-right",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "description": "Required array of arbitrary JSON values; an empty array is valid.",
+            "item": {
+              "depends_on": [],
+              "key": "item",
+              "loader": null,
+              "type": "dynamic"
+            },
+            "key": "data",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          },
+          {
+            "item": {
+              "description": "Tagged array operation; variant-specific field presence is checked by serde.",
+              "fields": [
+                {
+                  "allow_custom": false,
+                  "depends_on": [],
+                  "dynamic": false,
+                  "expression": "forbidden",
+                  "key": "op",
+                  "loader": null,
+                  "multiple": false,
+                  "options": [
+                    {
+                      "label": "Chunk",
+                      "value": "chunk"
+                    },
+                    {
+                      "label": "Flatten",
+                      "value": "flatten"
+                    },
+                    {
+                      "label": "Take",
+                      "value": "take"
+                    },
+                    {
+                      "label": "Skip",
+                      "value": "skip"
+                    }
+                  ],
+                  "required": {
+                    "kind": "always"
+                  },
+                  "searchable": false,
+                  "type": "select",
+                  "widget": "dropdown"
+                },
+                {
+                  "integer": true,
+                  "key": "size",
+                  "rules": [
+                    {
+                      "min": 1
+                    },
+                    {
+                      "max": 18446744073709551615
+                    }
+                  ],
+                  "step": null,
+                  "type": "number",
+                  "widget": "plain"
+                },
+                {
+                  "integer": true,
+                  "key": "depth",
+                  "rules": [
+                    {
+                      "min": 0
+                    },
+                    {
+                      "max": 18446744073709551615
+                    }
+                  ],
+                  "step": null,
+                  "type": "number",
+                  "widget": "plain"
+                },
+                {
+                  "integer": true,
+                  "key": "count",
+                  "rules": [
+                    {
+                      "min": 0
+                    },
+                    {
+                      "max": 18446744073709551615
+                    }
+                  ],
+                  "step": null,
+                  "type": "number",
+                  "widget": "plain"
+                }
+              ],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "operations",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          }
+        ],
+        "policy_version": 2,
+        "root_rules": [
+          {
+            "any": [
+              {
+                "set": "/data"
+              },
+              {
+                "eq": [
+                  "/data",
+                  []
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "detail": {
+        "key": "core.datetime",
+        "name": "DateTime",
+        "description": "Offset-aware RFC3339 timestamp formatting, parsing, arithmetic, and diff",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "depends_on": [],
+            "description": "Optional open JSON object or null; the action checks this nullable shape.",
+            "key": "data",
+            "loader": null,
+            "type": "dynamic"
+          },
+          {
+            "allow_custom": false,
+            "depends_on": [],
+            "dynamic": false,
+            "expression": "forbidden",
+            "key": "op",
+            "loader": null,
+            "multiple": false,
+            "options": [
+              {
+                "label": "Format",
+                "value": "format"
+              },
+              {
+                "label": "Parse",
+                "value": "parse"
+              },
+              {
+                "label": "Add",
+                "value": "add"
+              },
+              {
+                "label": "Subtract",
+                "value": "subtract"
+              },
+              {
+                "label": "Difference",
+                "value": "diff"
+              }
+            ],
+            "required": {
+              "kind": "always"
+            },
+            "searchable": false,
+            "type": "select",
+            "widget": "dropdown"
+          },
+          {
+            "hint": "text",
+            "key": "input",
+            "required": {
+              "in": [
+                "/op",
+                [
+                  "format",
+                  "parse",
+                  "add",
+                  "subtract"
+                ]
+              ],
+              "kind": "when"
+            },
+            "type": "string",
+            "widget": "plain"
+          },
+          {
+            "depends_on": [],
+            "description": "String format; parse also accepts null. An empty string is valid.",
+            "key": "format",
+            "loader": null,
+            "required": {
+              "in": [
+                "/op",
+                [
+                  "format"
+                ]
+              ],
+              "kind": "when"
+            },
+            "rules": [
+              {
+                "any": [
+                  {
+                    "one_of": [
+                      null
+                    ]
+                  },
+                  {
+                    "min_length": 0
+                  }
+                ]
+              }
+            ],
+            "type": "dynamic"
+          },
+          {
+            "depends_on": [],
+            "description": "Nullable i32 UTC offset; serde checks the integer representation.",
+            "key": "tz_offset_seconds",
+            "loader": null,
+            "rules": [
+              {
+                "any": [
+                  {
+                    "one_of": [
+                      null
+                    ]
+                  },
+                  {
+                    "all": [
+                      {
+                        "min": -2147483648
+                      },
+                      {
+                        "max": 2147483647
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "type": "dynamic"
+          },
+          {
+            "integer": true,
+            "key": "amount",
+            "required": {
+              "in": [
+                "/op",
+                [
+                  "add",
+                  "subtract"
+                ]
+              ],
+              "kind": "when"
+            },
+            "rules": [
+              {
+                "min": 0
+              },
+              {
+                "max": 9223372036854775807
+              }
+            ],
+            "step": null,
+            "type": "number",
+            "widget": "plain"
+          },
+          {
+            "allow_custom": false,
+            "depends_on": [],
+            "dynamic": false,
+            "expression": "forbidden",
+            "key": "unit",
+            "loader": null,
+            "multiple": false,
+            "options": [
+              {
+                "label": "Milliseconds",
+                "value": "milliseconds"
+              },
+              {
+                "label": "Seconds",
+                "value": "seconds"
+              },
+              {
+                "label": "Minutes",
+                "value": "minutes"
+              },
+              {
+                "label": "Hours",
+                "value": "hours"
+              },
+              {
+                "label": "Days",
+                "value": "days"
+              },
+              {
+                "label": "Weeks",
+                "value": "weeks"
+              }
+            ],
+            "required": {
+              "in": [
+                "/op",
+                [
+                  "add",
+                  "subtract",
+                  "diff"
+                ]
+              ],
+              "kind": "when"
+            },
+            "searchable": false,
+            "type": "select",
+            "widget": "dropdown"
+          },
+          {
+            "hint": "text",
+            "key": "from",
+            "required": {
+              "in": [
+                "/op",
+                [
+                  "diff"
+                ]
+              ],
+              "kind": "when"
+            },
+            "type": "string",
+            "widget": "plain"
+          },
+          {
+            "hint": "text",
+            "key": "to",
+            "required": {
+              "in": [
+                "/op",
+                [
+                  "diff"
+                ]
+              ],
+              "kind": "when"
+            },
+            "type": "string",
+            "widget": "plain"
+          }
+        ],
+        "policy_version": 2
+      }
+    },
+    {
+      "detail": {
+        "key": "core.dedupe",
+        "name": "Dedupe",
+        "description": "Remove duplicate array elements by one or more key fields (first occurrence wins)",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "description": "Required array of open JSON objects; an empty array is valid.",
+            "item": {
+              "fields": [],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "data",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          },
+          {
+            "item": {
+              "hint": "text",
+              "key": "item",
+              "type": "string",
+              "widget": "plain"
+            },
+            "key": "keys",
+            "max_items": null,
+            "min_items": null,
+            "required": {
+              "kind": "always"
+            },
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          }
+        ],
+        "policy_version": 2,
+        "root_rules": [
+          {
+            "any": [
+              {
+                "set": "/data"
+              },
+              {
+                "eq": [
+                  "/data",
+                  []
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "detail": {
+        "key": "core.delay",
+        "name": "Delay",
+        "description": "Parks the execution for a fixed duration or until a timestamp, then resumes",
+        "version": "1.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "allow_custom": false,
+            "depends_on": [],
+            "dynamic": false,
+            "expression": "forbidden",
+            "key": "mode",
+            "loader": null,
+            "multiple": false,
+            "options": [
+              {
+                "label": "For a duration",
+                "value": "for"
+              },
+              {
+                "label": "Until an instant",
+                "value": "until"
+              }
+            ],
+            "required": {
+              "kind": "always"
+            },
+            "searchable": false,
+            "type": "select",
+            "widget": "dropdown"
+          },
+          {
+            "integer": true,
+            "key": "amount",
+            "required": {
+              "eq": [
+                "/mode",
+                "for"
+              ],
+              "kind": "when"
+            },
+            "rules": [
+              {
+                "min": 1
+              }
+            ],
+            "step": null,
+            "type": "number",
+            "widget": "plain"
+          },
+          {
+            "allow_custom": false,
+            "depends_on": [],
+            "dynamic": false,
+            "expression": "forbidden",
+            "key": "unit",
+            "loader": null,
+            "multiple": false,
+            "options": [
+              {
+                "label": "Milliseconds",
+                "value": "milliseconds"
+              },
+              {
+                "label": "Seconds",
+                "value": "seconds"
+              },
+              {
+                "label": "Minutes",
+                "value": "minutes"
+              },
+              {
+                "label": "Hours",
+                "value": "hours"
+              },
+              {
+                "label": "Days",
+                "value": "days"
+              },
+              {
+                "label": "Weeks",
+                "value": "weeks"
+              }
+            ],
+            "required": {
+              "eq": [
+                "/mode",
+                "for"
+              ],
+              "kind": "when"
+            },
+            "searchable": false,
+            "type": "select",
+            "widget": "dropdown"
+          },
+          {
+            "hint": "text",
+            "key": "datetime",
+            "required": {
+              "eq": [
+                "/mode",
+                "until"
+              ],
+              "kind": "when"
+            },
+            "type": "string",
+            "widget": "plain"
+          },
+          {
+            "depends_on": [],
+            "key": "data",
+            "loader": null,
+            "type": "dynamic"
+          }
+        ],
+        "policy_version": 2
+      }
+    },
+    {
+      "detail": {
+        "key": "core.filter",
+        "name": "Filter",
+        "description": "Filter an array of JSON objects by a condition",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "description": "Required array of open JSON objects; an empty array is valid.",
+            "item": {
+              "fields": [],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "data",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          },
+          {
+            "description": "Recursive condition object; its contents are checked by the Condition decoder.",
+            "fields": [],
+            "key": "condition",
+            "required": {
+              "kind": "always"
+            },
+            "type": "object",
+            "widget": "inline"
+          }
+        ],
+        "policy_version": 2,
+        "root_rules": [
+          {
+            "any": [
+              {
+                "set": "/data"
+              },
+              {
+                "eq": [
+                  "/data",
+                  []
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "detail": {
+        "key": "core.if",
+        "name": "If",
+        "description": "Routes execution to 'true' or 'false' port based on a field condition",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "depends_on": [],
+            "description": "Optional open JSON object or null; the action checks this nullable shape.",
+            "key": "data",
+            "loader": null,
+            "type": "dynamic"
+          },
+          {
+            "description": "Recursive condition object; its contents are checked by the Condition decoder.",
+            "fields": [],
+            "key": "condition",
+            "required": {
+              "kind": "always"
+            },
+            "type": "object",
+            "widget": "inline"
+          }
+        ],
+        "policy_version": 2
+      }
+    },
+    {
+      "detail": {
+        "key": "core.json_transform",
+        "name": "JSON Transform",
+        "description": "Applies a sequence of pick/omit/rename/flatten operations to a JSON object",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "depends_on": [],
+            "description": "Optional open JSON object or null; the action checks this nullable shape.",
+            "key": "data",
+            "loader": null,
+            "type": "dynamic"
+          },
+          {
+            "item": {
+              "description": "Tagged transform; variant-specific field presence is checked by serde.",
+              "fields": [
+                {
+                  "allow_custom": false,
+                  "depends_on": [],
+                  "dynamic": false,
+                  "expression": "forbidden",
+                  "key": "op",
+                  "loader": null,
+                  "multiple": false,
+                  "options": [
+                    {
+                      "label": "Pick",
+                      "value": "pick"
+                    },
+                    {
+                      "label": "Omit",
+                      "value": "omit"
+                    },
+                    {
+                      "label": "Rename",
+                      "value": "rename"
+                    },
+                    {
+                      "label": "Flatten",
+                      "value": "flatten"
+                    }
+                  ],
+                  "required": {
+                    "kind": "always"
+                  },
+                  "searchable": false,
+                  "type": "select",
+                  "widget": "dropdown"
+                },
+                {
+                  "item": {
+                    "hint": "text",
+                    "key": "item",
+                    "type": "string",
+                    "widget": "plain"
+                  },
+                  "key": "fields",
+                  "max_items": null,
+                  "min_items": null,
+                  "type": "list",
+                  "unique": false,
+                  "widget": "plain"
+                },
+                {
+                  "hint": "text",
+                  "key": "from",
+                  "type": "string",
+                  "widget": "plain"
+                },
+                {
+                  "hint": "text",
+                  "key": "to",
+                  "type": "string",
+                  "widget": "plain"
+                },
+                {
+                  "hint": "text",
+                  "key": "separator",
+                  "type": "string",
+                  "widget": "plain"
+                }
+              ],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "operations",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          }
+        ],
+        "policy_version": 2
+      }
+    },
+    {
+      "detail": {
+        "key": "core.map",
+        "name": "Map",
+        "description": "Reshape each element of a JSON array of objects (per-element pick/omit/rename/flatten)",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "description": "Required array of open JSON objects; an empty array is valid.",
+            "item": {
+              "fields": [],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "data",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          },
+          {
+            "description": "Required operation array; an empty array is a no-op.",
+            "item": {
+              "description": "Tagged transform; variant-specific field presence is checked by serde.",
+              "fields": [
+                {
+                  "allow_custom": false,
+                  "depends_on": [],
+                  "dynamic": false,
+                  "expression": "forbidden",
+                  "key": "op",
+                  "loader": null,
+                  "multiple": false,
+                  "options": [
+                    {
+                      "label": "Pick",
+                      "value": "pick"
+                    },
+                    {
+                      "label": "Omit",
+                      "value": "omit"
+                    },
+                    {
+                      "label": "Rename",
+                      "value": "rename"
+                    },
+                    {
+                      "label": "Flatten",
+                      "value": "flatten"
+                    }
+                  ],
+                  "required": {
+                    "kind": "always"
+                  },
+                  "searchable": false,
+                  "type": "select",
+                  "widget": "dropdown"
+                },
+                {
+                  "item": {
+                    "hint": "text",
+                    "key": "item",
+                    "type": "string",
+                    "widget": "plain"
+                  },
+                  "key": "fields",
+                  "max_items": null,
+                  "min_items": null,
+                  "type": "list",
+                  "unique": false,
+                  "widget": "plain"
+                },
+                {
+                  "hint": "text",
+                  "key": "from",
+                  "type": "string",
+                  "widget": "plain"
+                },
+                {
+                  "hint": "text",
+                  "key": "to",
+                  "type": "string",
+                  "widget": "plain"
+                },
+                {
+                  "hint": "text",
+                  "key": "separator",
+                  "type": "string",
+                  "widget": "plain"
+                }
+              ],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "operations",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          }
+        ],
+        "policy_version": 2,
+        "root_rules": [
+          {
+            "any": [
+              {
+                "set": "/data"
+              },
+              {
+                "eq": [
+                  "/data",
+                  []
+                ]
+              }
+            ]
+          },
+          {
+            "any": [
+              {
+                "set": "/operations"
+              },
+              {
+                "eq": [
+                  "/operations",
+                  []
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "detail": {
+        "key": "core.set_fields",
+        "name": "Set Fields",
+        "description": "Merges a list of named field assignments onto a JSON object",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "depends_on": [],
+            "description": "Optional open JSON object or null; the action checks this nullable shape.",
+            "key": "data",
+            "loader": null,
+            "type": "dynamic"
+          },
+          {
+            "item": {
+              "description": "Assignment; serde requires both keys while allowing empty names and null values.",
+              "fields": [
+                {
+                  "hint": "text",
+                  "key": "name",
+                  "type": "string",
+                  "widget": "plain"
+                },
+                {
+                  "depends_on": [],
+                  "key": "value",
+                  "loader": null,
+                  "type": "dynamic"
+                }
+              ],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "assignments",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          }
+        ],
+        "policy_version": 2
+      }
+    },
+    {
+      "detail": {
+        "key": "core.sort",
+        "name": "Sort",
+        "description": "Sort an array of objects by one or more fields (asc/desc)",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "description": "Required array of open JSON objects; an empty array is valid.",
+            "item": {
+              "fields": [],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "data",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          },
+          {
+            "item": {
+              "description": "Sort key; serde requires field while allowing the empty JSON key.",
+              "fields": [
+                {
+                  "hint": "text",
+                  "key": "field",
+                  "type": "string",
+                  "widget": "plain"
+                },
+                {
+                  "allow_custom": false,
+                  "depends_on": [],
+                  "dynamic": false,
+                  "expression": "forbidden",
+                  "key": "order",
+                  "loader": null,
+                  "multiple": false,
+                  "options": [
+                    {
+                      "label": "Ascending",
+                      "value": "asc"
+                    },
+                    {
+                      "label": "Descending",
+                      "value": "desc"
+                    }
+                  ],
+                  "searchable": false,
+                  "type": "select",
+                  "widget": "dropdown"
+                },
+                {
+                  "allow_custom": false,
+                  "depends_on": [],
+                  "dynamic": false,
+                  "expression": "forbidden",
+                  "key": "nulls",
+                  "loader": null,
+                  "multiple": false,
+                  "options": [
+                    {
+                      "label": "Greatest",
+                      "value": "greatest"
+                    },
+                    {
+                      "label": "First",
+                      "value": "first"
+                    },
+                    {
+                      "label": "Last",
+                      "value": "last"
+                    }
+                  ],
+                  "searchable": false,
+                  "type": "select",
+                  "widget": "dropdown"
+                },
+                {
+                  "expression": "forbidden",
+                  "key": "case_insensitive",
+                  "type": "boolean",
+                  "widget": "toggle"
+                }
+              ],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "keys",
+            "max_items": null,
+            "min_items": null,
+            "required": {
+              "kind": "always"
+            },
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          }
+        ],
+        "policy_version": 2,
+        "root_rules": [
+          {
+            "any": [
+              {
+                "set": "/data"
+              },
+              {
+                "eq": [
+                  "/data",
+                  []
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "detail": {
+        "key": "core.switch",
+        "name": "Switch",
+        "description": "Routes execution to the first matching case port, or 'default' if none match",
+        "version": "2.0.0",
+        "isolation_level": "None"
+      },
+      "parameters": {
+        "fields": [
+          {
+            "depends_on": [],
+            "description": "Optional open JSON object or null; the action checks this nullable shape.",
+            "key": "data",
+            "loader": null,
+            "type": "dynamic"
+          },
+          {
+            "item": {
+              "fields": [
+                {
+                  "description": "Recursive condition object; its contents are checked by the Condition decoder.",
+                  "fields": [],
+                  "key": "condition",
+                  "required": {
+                    "kind": "always"
+                  },
+                  "type": "object",
+                  "widget": "inline"
+                },
+                {
+                  "hint": "text",
+                  "key": "port",
+                  "required": {
+                    "kind": "always"
+                  },
+                  "type": "string",
+                  "widget": "plain"
+                }
+              ],
+              "key": "item",
+              "type": "object",
+              "widget": "inline"
+            },
+            "key": "cases",
+            "max_items": null,
+            "min_items": null,
+            "type": "list",
+            "unique": false,
+            "widget": "plain"
+          }
+        ],
+        "policy_version": 2
+      }
+    }
+  ]
+}

@@ -791,6 +791,26 @@ async fn catalog_read_models_return_their_contract_types() {
         200,
     )
     .await;
+    let (_, parameters) = exchange(
+        &app,
+        &spec,
+        "get_action_parameters",
+        request(
+            "GET",
+            "/api/v1/actions/core.echo/parameters",
+            Some(&jwt),
+            None,
+        ),
+        200,
+    )
+    .await;
+    let parameters: v1::catalog::ActionParametersResponse =
+        serde_json::from_value(parameters).unwrap();
+    assert_eq!(parameters.key, "core.echo");
+    assert!(
+        parameters.parameters["fields"].is_array(),
+        "the schema travels in its wire format"
+    );
     let (_, listed) = exchange(
         &app,
         &spec,

@@ -1,0 +1,82 @@
+{
+  "policy_version": 2,
+  "fields": [
+    {"type": "notice", "key": "intro", "label": "About", "description": "Shows every input.", "severity": "info"},
+    {"type": "string", "key": "name", "label": "Name", "required": {"kind": "always"}, "hint": "text", "widget": "plain",
+     "rules": [{"min_length": 2}, {"max_length": 40}]},
+    {"type": "string", "key": "notes", "hint": "markdown", "widget": "multiline", "group": "Text"},
+    {"type": "string", "key": "contact", "hint": "email", "widget": "plain", "group": "Text"},
+    {"type": "string", "key": "site", "hint": "url", "widget": "plain", "group": "Text"},
+    {"type": "string", "key": "starts", "hint": "date", "widget": "plain", "group": "Text"},
+    {"type": "string", "key": "brand", "hint": "color", "widget": "plain", "group": "Text"},
+    {"type": "string", "key": "schedule", "hint": "cron", "widget": "plain", "group": "Text"},
+    {"type": "secret", "key": "token", "widget": "plain", "reveal_last": 4},
+    {"type": "secret", "key": "certificate", "widget": "multiline"},
+    {"type": "number", "key": "count", "integer": true, "widget": "plain", "step": null, "rules": [{"min": 1}, {"max": 10}]},
+    {"type": "number", "key": "ratio", "integer": false, "widget": "slider", "step": 0.1, "rules": [{"min": 0}, {"max": 1}]},
+    {"type": "number", "key": "retries", "integer": true, "widget": "stepper", "step": 1},
+    {"type": "number", "key": "share", "widget": "percent"},
+    {"type": "number", "key": "price", "widget": "currency"},
+    {"type": "number", "key": "timeout", "widget": "duration"},
+    {"type": "number", "key": "limit", "widget": "bytes"},
+    {"type": "boolean", "key": "enabled", "widget": "toggle", "expression": "forbidden"},
+    {"type": "boolean", "key": "verbose", "widget": "checkbox", "expression": "forbidden"},
+    {"type": "boolean", "key": "strict", "widget": "radio", "expression": "forbidden"},
+    {"type": "select", "key": "method", "widget": "dropdown", "expression": "forbidden",
+     "options": [{"value": "GET", "label": "GET"}, {"value": "POST", "label": "POST", "description": "Sends a body"}]},
+    {"type": "select", "key": "level", "widget": "radio", "expression": "forbidden",
+     "options": [{"value": 1, "label": "Low"}, {"value": 2, "label": "High", "disabled": true}]},
+    {"type": "select", "key": "days", "widget": "checkboxes", "multiple": true, "expression": "forbidden",
+     "options": [{"value": "mon", "label": "Monday"}, {"value": "tue", "label": "Tuesday"}]},
+    {"type": "select", "key": "region", "widget": "combobox", "searchable": true, "allow_custom": true, "expression": "forbidden",
+     "options": [{"value": "eu", "label": "Europe"}, {"value": "us", "label": "United States"}]},
+    {"type": "select", "key": "labels", "widget": "tags", "multiple": true, "expression": "forbidden",
+     "options": [{"value": "a", "label": "Alpha"}, {"value": "b", "label": "Beta"}]},
+    {"type": "select", "key": "sheet", "widget": "dropdown", "dynamic": true, "loader": "sheets", "expression": "forbidden", "options": []},
+    {"type": "object", "key": "address", "widget": "inline", "fields": [
+      {"type": "string", "key": "city", "hint": "text", "widget": "plain"},
+      {"type": "string", "key": "zip", "hint": "text", "widget": "plain", "required": {"kind": "always"}}
+    ]},
+    {"type": "object", "key": "advanced", "widget": "collapsed", "fields": [
+      {"type": "boolean", "key": "debug", "widget": "toggle", "expression": "forbidden"}
+    ]},
+    {"type": "object", "key": "extras", "widget": "pick_fields", "fields": [
+      {"type": "string", "key": "suffix", "hint": "text", "widget": "plain"},
+      {"type": "number", "key": "weight", "widget": "plain"}
+    ]},
+    {"type": "object", "key": "layout", "widget": "sections", "fields": [
+      {"type": "string", "key": "title", "hint": "text", "widget": "plain", "group": "Header"},
+      {"type": "string", "key": "footer", "hint": "text", "widget": "plain", "group": "Footer"}
+    ]},
+    {"type": "object", "key": "pages", "widget": "tabs", "fields": [
+      {"type": "string", "key": "first", "hint": "text", "widget": "plain", "group": "One"},
+      {"type": "string", "key": "second", "hint": "text", "widget": "plain", "group": "Two"}
+    ]},
+    {"type": "list", "key": "recipients", "widget": "plain", "min_items": 1, "max_items": 3,
+     "item": {"type": "string", "key": "item", "hint": "email", "widget": "plain"}},
+    {"type": "list", "key": "steps", "widget": "sortable", "item": {"type": "string", "key": "item", "hint": "text", "widget": "plain"}},
+    {"type": "list", "key": "keywords", "widget": "tags", "item": {"type": "string", "key": "item", "hint": "text", "widget": "plain"}},
+    {"type": "list", "key": "headers", "widget": "key_value", "item": {"type": "object", "key": "item", "widget": "inline", "fields": [
+      {"type": "string", "key": "key", "hint": "text", "widget": "plain"},
+      {"type": "string", "key": "value", "hint": "text", "widget": "plain"}
+    ]}},
+    {"type": "list", "key": "rules", "widget": "accordion", "item": {"type": "object", "key": "item", "widget": "inline", "fields": [
+      {"type": "string", "key": "when", "hint": "text", "widget": "plain"}
+    ]}},
+    {"type": "mode", "key": "auth", "default_variant": "none", "variants": [
+      {"key": "none", "label": "None", "field": {"type": "string", "key": "_nebula_mode_empty", "visible": {"kind": "never"}, "expression": "forbidden", "hint": "text", "widget": "plain"}},
+      {"key": "basic", "label": "Basic", "field": {"type": "object", "key": "basic", "widget": "inline", "fields": [
+        {"type": "string", "key": "user", "hint": "text", "widget": "plain"},
+        {"type": "secret", "key": "password", "widget": "plain"}
+      ]}}
+    ]},
+    {"type": "code", "key": "script", "language": "javascript", "widget": "monaco"},
+    {"type": "code", "key": "query", "language": "sql", "widget": "simple"},
+    {"type": "file", "key": "attachment", "accept": "image/*", "max_size": 1048576, "multiple": false},
+    {"type": "computed", "key": "total", "returns": "number", "expression": "required"},
+    {"type": "dynamic", "key": "columns", "loader": "sheet_columns"},
+    {"type": "string", "key": "api_key", "hint": "password", "widget": "plain",
+     "visible": {"kind": "when", "eq": ["/method", "POST"]}, "required": {"kind": "when", "eq": ["/method", "POST"]}},
+    {"type": "hologram", "key": "future", "depth": 3}
+  ]
+}

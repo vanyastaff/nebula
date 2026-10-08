@@ -1052,7 +1052,10 @@ above for the enforcement guarantee.
 | `POST`   | `/api/v1/me/tokens`                                                       | Create personal access token                                               |
 | `DELETE` | `/api/v1/me/tokens/{token_id}`                                            | Revoke a personal access token                                             |
 | `GET`    | `/api/v1/actions`                                                         | List action catalog                                                        |
+| `GET`    | `/api/v1/actions/{key}`                                                   | Action detail                                                              |
+| `GET`    | `/api/v1/actions/{key}/parameters`                                        | Action parameter schema (`nebula-schema` wire format), for node forms      |
 | `GET`    | `/api/v1/plugins`                                                         | List plugin catalog                                                        |
+| `GET`    | `/api/v1/plugins/{key}`                                                   | Plugin detail                                                              |
 | `GET`    | `/api/v1/orgs/{org}`                                                      | Get org by slug or ID `(honest 501)`                                       |
 | `PATCH`  | `/api/v1/orgs/{org}`                                                      | Update org settings `(honest 501)`                                         |
 | `DELETE` | `/api/v1/orgs/{org}`                                                      | Delete org `(honest 501)`                                                  |

@@ -351,6 +351,33 @@ tasks:
     cmds:
       - npm run preview
 
+  # ── Workflow client (egui, native + WASM) ────────────────────────────────
+
+  client:run:
+    desc: Run the native workflow client against an existing Nebula server
+    cmds:
+      - cargo run -p nebula-client --bin nebula-client
+
+  client:web:
+    desc: "Serve the browser workflow client with live reload (needs trunk; /api proxies to :8080)"
+    dir: apps/client
+    cmds:
+      - trunk serve
+
+  client:web:build:
+    desc: Build the static browser bundle into apps/client/dist
+    dir: apps/client
+    cmds:
+      - trunk build --release
+
+  client:check:
+    desc: "Workflow client gate: fmt, clippy (native + WASM), unit tests, WASM compile"
+    cmds:
+      - cargo fmt -p nebula-client -- --check
+      - cargo clippy -p nebula-client --all-targets -- -D warnings
+      - cargo nextest run -p nebula-client --lib
+      - cargo clippy -p nebula-client --lib --target wasm32-unknown-unknown -- -D warnings
+
   # ── CI (aggregate) ────────────────────────────────────────────────────────
 
   ci:

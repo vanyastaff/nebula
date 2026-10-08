@@ -1,0 +1,14 @@
+# Browser dev server for the workflow client. Run through `task client:web`.
+[serve]
+# The API server owns 8080 by default, so the bundle gets its own port.
+port = 8090
+
+# Same-origin /api keeps browser password sign-in (cookies + CSRF) working locally.
+[[proxy]]
+rewrite = "/api/"
+backend = "http://127.0.0.1:8080/api/"
+
+# The sign-in probe reads the server root version, outside /api.
+[[proxy]]
+rewrite = "/version"
+backend = "http://127.0.0.1:8080/version"

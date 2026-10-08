@@ -28,6 +28,8 @@ pub(crate) struct Session {
     generation: u64,
     sequence: u64,
     pending: Option<RequestStamp>,
+    /// The pending request writes the open draft (a save or publish), whose reply replaces it.
+    writing: bool,
     pub(crate) context: Option<SessionContext>,
     pub(crate) selected: Option<DraftKey>,
     pub(crate) drafts: BTreeMap<DraftKey, Draft>,
@@ -38,6 +40,7 @@ impl Session {
     pub(crate) fn switch(&mut self, context: Option<SessionContext>) {
         self.generation += 1;
         self.pending = None;
+        self.writing = false;
         self.context = context;
         self.selected = None;
     }
@@ -51,19 +54,35 @@ impl Session {
             sequence: self.sequence,
         };
         self.pending = Some(stamp);
+        self.writing = false;
+        Some(stamp)
+    }
+    /// Begins a request that writes the open draft, such as a save or publish.
+    pub(crate) fn begin_write(&mut self) -> Option<RequestStamp> {
+        let stamp = self.begin()?;
+        self.writing = true;
         Some(stamp)
     }
     #[tracing::instrument(name = "client.session.reply", skip_all)]
     pub(crate) fn accept(&mut self, stamp: RequestStamp) -> bool {
         if self.pending == Some(stamp) {
             self.pending = None;
+            self.writing = false;
             true
         } else {
             false
         }
     }
+    /// Changes with every switch of workspace or sign-in, so state read before it can be told apart.
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
+    }
     pub(crate) fn busy(&self) -> bool {
         self.pending.is_some()
+    }
+    /// A save or publish is in flight.
+    pub(crate) fn writing(&self) -> bool {
+        self.writing
     }
     pub(crate) fn draft(&self) -> Option<&Draft> {
         self.drafts.get(self.selected.as_ref()?)
@@ -86,6 +105,23 @@ mod tests {
         assert!(session.busy());
         assert!(session.accept(current));
         assert!(!session.accept(current));
+    }
+    #[test]
+    fn only_a_save_or_publish_in_flight_counts_as_writing() {
+        let mut session = Session::default();
+        let read = session.begin().unwrap();
+        assert!(session.busy() && !session.writing());
+        assert!(session.accept(read));
+
+        let write = session.begin_write().unwrap();
+        assert!(session.writing());
+        assert!(session.begin_write().is_none());
+        assert!(session.accept(write));
+        assert!(!session.writing());
+
+        session.begin_write().unwrap();
+        session.switch(None);
+        assert!(!session.writing());
     }
     #[test]
     fn reconnect_restores_only_the_originating_server_principal_workspace_draft() {

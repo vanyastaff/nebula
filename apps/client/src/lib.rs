@@ -1,19 +1,44 @@
 //! First-party HTTP workflow client. Document and session behavior are UI-independent.
 #![forbid(unsafe_code)]
+// Library code propagates typed errors; tests may still unwrap (see clippy.toml).
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unreachable
+)]
 
+#[cfg(feature = "ui")]
+mod api;
+#[cfg(feature = "ui")]
+mod app;
+#[cfg(feature = "ui")]
+mod clock;
+#[cfg(feature = "ui")]
+mod demo;
 #[cfg(feature = "ui")]
 mod document;
 #[cfg(feature = "ui")]
-mod presentation;
+mod effects;
+#[cfg(feature = "ui")]
+mod schema;
 #[cfg(feature = "ui")]
 mod session;
 #[cfg(feature = "ui")]
 mod theme;
 #[cfg(feature = "ui")]
 mod transport;
+#[cfg(feature = "ui")]
+mod views;
+#[cfg(feature = "ui")]
+mod widgets;
+#[cfg(feature = "ui")]
+mod workbench;
 
 #[cfg(feature = "ui")]
-pub use presentation::ClientApp;
+pub use app::ClientApp;
 
 #[cfg(all(feature = "ui", target_arch = "wasm32"))]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
