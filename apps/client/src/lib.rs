@@ -1,5 +1,14 @@
 //! First-party HTTP workflow client. Document and session behavior are UI-independent.
 #![forbid(unsafe_code)]
+// Library code propagates typed errors; tests may still unwrap (see clippy.toml).
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::unreachable
+)]
 
 #[cfg(feature = "ui")]
 mod document;
