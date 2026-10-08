@@ -138,11 +138,19 @@ pub(crate) struct Navigator {
     pub(crate) filter: String,
     /// The inline form for a new workflow is open.
     pub(crate) creating: bool,
+    /// The name field takes the cursor on the next frame, once.
+    pub(crate) focus_name: bool,
     pub(crate) new_name: String,
     refresh_pending: bool,
 }
 
 impl Navigator {
+    /// Opens the inline form with the cursor in its name field.
+    pub(crate) fn start_creating(&mut self) {
+        self.creating = true;
+        self.focus_name = true;
+    }
+
     pub(crate) fn has_previous_page(&self) -> bool {
         self.page > 1
     }

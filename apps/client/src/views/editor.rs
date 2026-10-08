@@ -146,14 +146,14 @@ fn no_workflow(ui: &mut egui::Ui, workbench: &mut Workbench) {
         widgets::caption(ui, "Pick a workflow from the list, or start a new one.");
         ui.add_space(theme::SPACE_SM);
         if ui.add(widgets::primary_button("New workflow")).clicked() {
-            workbench.navigator.creating = true;
+            workbench.navigator.start_creating();
             workbench.sidebar_open = true;
         }
     });
 }
 
-/// The canvas with its controls floating over the corners: adding a node at the top left, zoom at the
-/// bottom left, and running the workflow at the bottom centre.
+/// The canvas with its controls floating over the corners: adding a node at the top right, where the
+/// layout never places a node, zoom at the bottom left, and running the workflow at the bottom centre.
 fn graph(
     ui: &mut egui::Ui,
     workbench: &mut Workbench,
@@ -168,7 +168,7 @@ fn graph(
     let overlay = |ui: &mut egui::Ui, layout: Layout| {
         ui.new_child(egui::UiBuilder::new().max_rect(inset).layout(layout))
     };
-    if overlay(ui, Layout::top_down(Align::Min))
+    if overlay(ui, Layout::top_down(Align::Max))
         .button("+ Add node")
         .on_hover_text("Add a node from the action catalog")
         .clicked()
@@ -513,19 +513,21 @@ fn add_node_fields(ui: &mut egui::Ui, workbench: &mut Workbench) {
     if matches!(workbench.catalog, Catalog::Ready(_)) {
         widgets::caption(ui, "Or add an action by its key.");
     }
-    widgets::labeled_field(ui, "Action key", &mut workbench.add_node.action_key, false);
-    widgets::labeled_field(
+    let key_field =
+        widgets::labeled_field(ui, "Action key", &mut workbench.add_node.action_key, false);
+    let name_field = widgets::labeled_field(
         ui,
         "Display name (optional)",
         &mut workbench.add_node.name,
         false,
     );
+    let entered = widgets::submitted(ui, &key_field) || widgets::submitted(ui, &name_field);
     let key = workbench.add_node.action_key.trim().to_owned();
-    if ui
+    let clicked = ui
         .add_enabled(!key.is_empty(), egui::Button::new("Add node"))
         .on_hover_text("New nodes start without parameters; the server checks inputs on publish")
-        .clicked()
-    {
+        .clicked();
+    if !key.is_empty() && (clicked || entered) {
         let typed = workbench.add_node.name.trim().to_owned();
         let name = if typed.is_empty() { key.clone() } else { typed };
         add_node(workbench, &key, &name);

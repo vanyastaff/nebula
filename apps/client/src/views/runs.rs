@@ -13,6 +13,8 @@ use nebula_api_contract::v1::execution::{ExecutionNodeOutput, ExecutionStatus};
 const SIDE_BY_SIDE_MIN: f32 = 720.0;
 /// Longest node output shown inline; the rest is behind the run details.
 const OUTPUT_PREVIEW: usize = 160;
+/// Seconds between reads of a run that has not ended.
+const FOLLOW_SECONDS: f64 = 2.0;
 
 pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
     let Some(draft) = workbench.session.draft() else {
@@ -25,6 +27,7 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         workbench.history_requested = true;
         intents.push(Intent::LoadRecentRuns);
     }
+    follow(ui, workbench, execution.as_deref(), intents, busy);
     ui.horizontal(|ui| {
         widgets::section(ui, "Runs");
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -50,6 +53,62 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         ui.add_space(theme::SPACE_SM);
         status(ui, workbench);
     }
+}
+
+/// Keeps the chosen run current: it is read once chosen, then every few seconds until it ends, and the
+/// list is read again while its row still shows an older status. Reads stay spaced out even when they
+/// fail, so a server in trouble is not asked every frame.
+fn follow(
+    ui: &egui::Ui,
+    workbench: &Workbench,
+    execution: Option<&str>,
+    intents: &mut Intents,
+    busy: bool,
+) {
+    let Some(id) = execution else {
+        return;
+    };
+    let shown = workbench
+        .status
+        .as_ref()
+        .filter(|status| status.execution.id == id);
+    let ended = shown.is_some_and(|status| ended(status.execution.status));
+    let row_behind = shown
+        .zip(workbench.history.as_ref())
+        .is_some_and(|(status, runs)| {
+            runs.items
+                .iter()
+                .any(|run| run.id == id && run.status != status.execution.status)
+        });
+    if ended && !row_behind {
+        return;
+    }
+    let context = ui.ctx();
+    let now = context.input(|input| input.time);
+    let clock = egui::Id::new(("run-follow", id));
+    let due = context
+        .data(|data| data.get_temp::<f64>(clock))
+        .is_none_or(|last| now - last >= FOLLOW_SECONDS);
+    if due && !busy {
+        context.data_mut(|data| data.insert_temp(clock, now));
+        intents.push(if ended {
+            Intent::LoadRecentRuns
+        } else {
+            Intent::LoadExecution(id.to_owned())
+        });
+    }
+    context.request_repaint_after(std::time::Duration::from_secs_f64(FOLLOW_SECONDS));
+}
+
+/// A run in one of these states will not change again.
+const fn ended(status: ExecutionStatus) -> bool {
+    matches!(
+        status,
+        ExecutionStatus::Completed
+            | ExecutionStatus::Failed
+            | ExecutionStatus::Cancelled
+            | ExecutionStatus::TimedOut
+    )
 }
 
 fn status_tone(status: ExecutionStatus) -> Tone {

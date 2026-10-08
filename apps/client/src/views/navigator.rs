@@ -55,7 +55,11 @@ fn header(ui: &mut egui::Ui, workbench: &mut Workbench, busy: bool) {
                 .on_hover_text("Create a workflow")
                 .clicked()
             {
-                workbench.navigator.creating = !workbench.navigator.creating;
+                if workbench.navigator.creating {
+                    workbench.navigator.creating = false;
+                } else {
+                    workbench.navigator.start_creating();
+                }
             }
         });
     });
@@ -66,8 +70,11 @@ fn create_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Inten
     let field = ui.add(
         widgets::field(&mut workbench.navigator.new_name).hint_text("Name of the new workflow"),
     );
+    if std::mem::take(&mut workbench.navigator.focus_name) {
+        field.request_focus();
+    }
     let ready = !busy && !workbench.navigator.new_name.trim().is_empty();
-    let submitted = field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+    let submitted = widgets::submitted(ui, &field);
     ui.horizontal(|ui| {
         let create = ui
             .add_enabled(ready, widgets::primary_button("Create"))
@@ -90,7 +97,7 @@ fn empty(ui: &mut egui::Ui, workbench: &mut Workbench) {
         .add(widgets::primary_button("Create a workflow"))
         .clicked()
     {
-        workbench.navigator.creating = true;
+        workbench.navigator.start_creating();
     }
 }
 
