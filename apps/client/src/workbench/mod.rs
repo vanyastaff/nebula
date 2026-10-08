@@ -291,6 +291,8 @@ impl Workbench {
         self.selected_node = None;
         self.link_from = None;
         self.node_drag = None;
+        // A "connect after" target belongs to the workflow that was open, so it cannot outlive it.
+        self.add_node.connect_from = None;
         self.status = None;
         self.history = None;
     }
