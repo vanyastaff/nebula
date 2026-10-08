@@ -76,6 +76,19 @@ pub(crate) fn segmented<T: Copy + PartialEq>(
     });
 }
 
+/// A rounded square with a letter, the shape of a node badge on the canvas. The brand uses it too.
+pub(crate) fn mark(ui: &mut egui::Ui, letter: &str, color: Color32, side: f32) {
+    let (square, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+    ui.painter().rect_filled(square, theme::RADIUS_SM, color);
+    ui.painter().text(
+        square.center(),
+        egui::Align2::CENTER_CENTER,
+        letter,
+        egui::FontId::proportional(side * 0.58),
+        Color32::WHITE,
+    );
+}
+
 /// Page-level heading.
 pub(crate) fn title(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(22.0).strong());

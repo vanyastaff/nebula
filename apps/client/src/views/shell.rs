@@ -51,16 +51,7 @@ const TOAST_SECONDS: f64 = 4.0;
 const TOAST_WIDTH: f32 = 360.0;
 
 fn brand(ui: &mut egui::Ui) {
-    let (mark, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
-    ui.painter()
-        .rect_filled(mark, theme::RADIUS_SM, theme::ACCENT);
-    ui.painter().text(
-        mark.center(),
-        egui::Align2::CENTER_CENTER,
-        "N",
-        egui::FontId::proportional(14.0),
-        egui::Color32::WHITE,
-    );
+    widgets::mark(ui, "N", theme::ACCENT, 24.0);
     ui.label(RichText::new("Nebula").size(17.0).strong());
 }
 

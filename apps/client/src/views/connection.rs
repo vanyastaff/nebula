@@ -9,8 +9,18 @@ use eframe::egui::{self, RichText};
 /// Width of the single-card page: the workspace choice, and sign-in on narrow windows.
 const CARD_WIDTH: f32 = 440.0;
 
+/// Rough height of the welcome and workspace pages, to centre them vertically on tall windows. It is a
+/// little generous, which lifts the page slightly above the true centre, where it reads as centred.
+const PAGE_HEIGHT: f32 = 520.0;
+
 pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
-    ui.add_space(theme::SPACE_XL);
+    // Centred on tall windows instead of hugging the top; a scrolling page has no height to share.
+    let spare = ui.available_height() - PAGE_HEIGHT;
+    ui.add_space(if spare.is_finite() {
+        (spare / 2.0).max(theme::SPACE_XL)
+    } else {
+        theme::SPACE_XL
+    });
     if workbench.is_signed_in() {
         widgets::page_column(ui, CARD_WIDTH, |ui| {
             theme::card_block(ui, |ui| workspace_form(ui, workbench, intents));
@@ -50,25 +60,36 @@ fn introduction(ui: &mut egui::Ui) {
     ui.add_space(theme::SPACE_LG);
     feature(
         ui,
+        theme::ACCENT,
         "Canvas",
         "Drag nodes, connect their ports and add actions.",
     );
     feature(
         ui,
+        theme::WARNING,
         "Drafts",
         "Save changes, review a newer server version and reapply your edits.",
     );
     feature(
         ui,
+        theme::SUCCESS,
         "Runs",
         "Publish a version, execute it and read each node's output.",
     );
 }
 
-fn feature(ui: &mut egui::Ui, heading: &str, body: &str) {
-    ui.label(RichText::new(heading).strong());
-    widgets::caption(ui, body);
-    ui.add_space(theme::SPACE_MD);
+/// One feature with a badge in the shape the canvas gives nodes, so the page previews the product.
+fn feature(ui: &mut egui::Ui, color: egui::Color32, heading: &str, body: &str) {
+    ui.horizontal_top(|ui| {
+        let letter: String = heading.chars().take(1).collect();
+        widgets::mark(ui, &letter, color, 32.0);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = theme::SPACE_XS;
+            ui.label(RichText::new(heading).strong());
+            widgets::caption(ui, body);
+        });
+    });
+    ui.add_space(theme::SPACE_SM);
 }
 
 fn sign_in_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
