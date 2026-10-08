@@ -42,6 +42,56 @@ fn a_catalog_key_is_stored_as_plugin_and_action_and_read_back() {
 }
 
 #[test]
+fn a_link_can_leave_by_a_named_port_and_back_in_one_undo_step() {
+    let mut draft = Draft::new(two_node_snapshot(1, json!([]))).unwrap();
+    draft.connect("echo", "http_request").unwrap();
+    let link = Link::between("echo", "http_request");
+
+    draft.reroute(&link, Some("true".into())).unwrap();
+    assert_eq!(draft.connections()[0]["from_port"], "true");
+    assert_eq!(draft.connections().len(), 1);
+
+    draft.undo().unwrap();
+    assert!(draft.connections()[0].get("from_port").is_none());
+    draft.redo().unwrap();
+    assert_eq!(draft.connections()[0]["from_port"], "true");
+
+    // Back to `out` drops the field rather than spelling the default.
+    let routed = draft.links("echo").into_iter().next().unwrap();
+    draft.reroute(&routed, Some("out".into())).unwrap();
+    assert!(draft.connections()[0].get("from_port").is_none());
+}
+
+#[test]
+fn rerouting_onto_an_existing_edge_is_refused() {
+    let mut draft = Draft::new(two_node_snapshot(1, json!([]))).unwrap();
+    draft.connect("echo", "http_request").unwrap();
+    let link = Link::between("echo", "http_request");
+    draft.reroute(&link, Some("error".into())).unwrap();
+    draft.connect("echo", "http_request").unwrap();
+
+    assert_eq!(
+        draft.reroute(&link, Some("error".into())),
+        Err(EditError::ConnectionExists)
+    );
+}
+
+#[test]
+fn branching_actions_offer_their_routes() {
+    let plain = json!({"plugin_key": "core", "action_key": "map"});
+    assert_eq!(source_ports(&plain), ["out", "error"]);
+    let branch = json!({"plugin_key": "core", "action_key": "if"});
+    assert_eq!(source_ports(&branch), ["out", "error", "true", "false"]);
+    let switch = json!({"plugin_key": "core", "action_key": "switch", "parameters": {
+        "cases": {"type": "literal", "value": [{"port": "vip"}, {"port": "eu"}, {"port": "vip"}]}
+    }});
+    assert_eq!(
+        source_ports(&switch),
+        ["out", "error", "vip", "eu", "default"]
+    );
+}
+
+#[test]
 fn an_action_key_already_qualified_by_its_plugin_is_kept() {
     let node = json!({"plugin_key": "core", "action_key": "core.delay"});
     assert_eq!(catalog_key(&node), "core.delay");

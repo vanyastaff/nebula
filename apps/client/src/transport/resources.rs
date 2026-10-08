@@ -20,6 +20,9 @@ use nebula_api_contract::v1::{
 use serde::de::DeserializeOwned;
 use url::Url;
 
+/// Credentials per page; the server serves at most this many.
+pub(crate) const CREDENTIALS_PER_PAGE: usize = 100;
+
 /// Filters of the workspace execution history, newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ExecutionQuery {
@@ -99,13 +102,18 @@ impl Connection {
         self.read(self.url(&["credentials", "types"])?).await
     }
 
+    /// One page of the workspace's credentials, as large as the server allows.
     pub(crate) async fn credentials(
         &self,
         org: &str,
         workspace: &str,
+        page: usize,
     ) -> Result<ListCredentialsResponse, Failure> {
-        self.read(self.workspace_url(org, workspace, &["credentials"])?)
-            .await
+        let mut url = self.workspace_url(org, workspace, &["credentials"])?;
+        url.query_pairs_mut()
+            .append_pair("page", &page.to_string())
+            .append_pair("page_size", &CREDENTIALS_PER_PAGE.to_string());
+        self.read(url).await
     }
 
     pub(crate) async fn create_credential(

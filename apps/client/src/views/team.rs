@@ -30,8 +30,10 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
                 .on_hover_text("Read both member lists again")
                 .clicked()
             {
-                intents.push(Intent::LoadOrgMembers);
-                intents.push(Intent::LoadWorkspaceMembers);
+                // Only one request runs at a time, so both lists are marked out of date and each
+                // is read in turn as the page asks for it; the shown members stay meanwhile.
+                workbench.team.organization.invalidate();
+                workbench.team.workspace.invalidate();
             }
         },
     );

@@ -186,6 +186,87 @@ fn a_further_page_of_executions_extends_the_list() {
 }
 
 #[test]
+fn a_creation_whose_answer_was_lost_closes_its_form_and_waits_for_the_list() {
+    let mut workbench = workspace();
+    let demo = Demo::new().unwrap();
+    workbench.credentials.list = Remote::Ready(demo.credentials(1).unwrap().credentials);
+    workbench.start_credential(Some("api_key".into()));
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(
+        stamp,
+        RequestKind::Change(Target::Credentials),
+        Err(Failure::OutcomeUnknown),
+    );
+
+    assert!(workbench.credentials.draft.is_none());
+    // Shown while it is read again, but not settled, so creating stays off.
+    assert!(workbench.credentials.list.value().is_some());
+    assert!(!workbench.credentials.list.settled());
+    assert!(workbench.credentials.list.wants_read());
+    assert!(workbench.feedback.failure);
+}
+
+#[test]
+fn members_follow_the_server_s_upsert_and_cascade() {
+    let mut workbench = workspace();
+    let demo = Demo::new().unwrap();
+    let organization = demo.org_members(demo::ORG).unwrap().members;
+    let workspace_members = demo.workspace_members().unwrap().members;
+    let grace = workspace_members
+        .iter()
+        .find(|member| {
+            organization
+                .iter()
+                .any(|org| org.principal_id == member.principal_id)
+        })
+        .unwrap()
+        .principal_id
+        .clone();
+    let count = organization.len();
+    workbench.team.organization = Remote::Ready(organization.clone());
+    workbench.team.workspace = Remote::Ready(workspace_members);
+
+    // Adding someone already in the organization changes their role in place.
+    let mut promoted = organization
+        .iter()
+        .find(|member| member.principal_id == grace)
+        .unwrap()
+        .clone();
+    promoted.role.0 = "admin".into();
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(
+        stamp,
+        RequestKind::Change(Target::OrgMembers),
+        Ok(Reply::OrgMemberAdded(promoted)),
+    );
+    let members = workbench.team.organization.value().unwrap();
+    assert_eq!(members.len(), count);
+    assert!(
+        members
+            .iter()
+            .any(|member| member.principal_id == grace && member.role.0 == "admin")
+    );
+
+    // Leaving the organization ends their workspace access too.
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(
+        stamp,
+        RequestKind::Change(Target::OrgMembers),
+        Ok(Reply::OrgMemberRemoved(grace.clone())),
+    );
+    assert!(
+        !workbench
+            .team
+            .workspace
+            .value()
+            .unwrap()
+            .iter()
+            .any(|member| member.principal_id == grace)
+    );
+}
+
+#[test]
 fn a_failed_read_replaces_the_page_and_a_failed_change_keeps_it() {
     let mut workbench = workspace();
     let stamp = workbench.session.begin().unwrap();

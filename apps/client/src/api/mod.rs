@@ -2,6 +2,8 @@
 //! (`nebula-api-contract`), answered either by a Nebula server over HTTP or by the built-in demo
 //! workspace, so pages and reducers never know which one is behind them.
 
+mod scopes;
+
 use crate::{
     demo::Demo,
     session::SessionContext,
@@ -26,6 +28,7 @@ use nebula_api_contract::v1::{
         UpsertWorkspaceMemberRequest, WorkspaceMemberSummary, WorkspaceMembersResponse,
     },
 };
+pub(crate) use scopes::{FULL_ACCESS, TOKEN_SCOPES, check_scopes};
 
 /// Where requests go. Cloning shares the same server session or the same demo world.
 #[derive(Clone)]
@@ -116,14 +119,25 @@ impl Backend {
         scoped!(self, scope, load(id))
     }
 
-    /// Every workflow of the first page with its document, as the triggers page lists them.
+    /// Every workflow of the workspace with its document, as the triggers page lists them. Pages
+    /// are read until the server's total is covered or a page comes back empty.
     pub(crate) async fn workflow_documents(
         &self,
         scope: &SessionContext,
     ) -> Result<Vec<WorkflowDocumentResponse>, Failure> {
-        let page = self.workflows(scope, 1).await?;
-        let mut documents = Vec::with_capacity(page.workflows.len());
-        for workflow in &page.workflows {
+        let mut summaries = Vec::new();
+        let mut page = 1;
+        loop {
+            let listed = self.workflows(scope, page).await?;
+            let empty = listed.workflows.is_empty();
+            summaries.extend(listed.workflows);
+            if empty || summaries.len() >= listed.total {
+                break;
+            }
+            page += 1;
+        }
+        let mut documents = Vec::with_capacity(summaries.len());
+        for workflow in &summaries {
             documents.push(self.workflow(scope, &workflow.id).await?);
         }
         Ok(documents)
@@ -215,11 +229,24 @@ impl Backend {
         unscoped!(self, credential_types())
     }
 
+    /// Every credential of the workspace, read page by page until the server's total is covered.
     pub(crate) async fn credentials(
         &self,
         scope: &SessionContext,
     ) -> Result<ListCredentialsResponse, Failure> {
-        scoped!(self, scope, credentials())
+        let mut all = scoped!(self, scope, credentials(1))?;
+        let mut page = 1;
+        while all.credentials.len() < all.total {
+            page += 1;
+            let next = scoped!(self, scope, credentials(page))?;
+            if next.credentials.is_empty() {
+                break;
+            }
+            all.credentials.extend(next.credentials);
+        }
+        all.page = 1;
+        all.page_size = all.credentials.len();
+        Ok(all)
     }
 
     pub(crate) async fn create_credential(

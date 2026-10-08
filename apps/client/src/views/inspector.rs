@@ -3,7 +3,7 @@
 //! Output shows what the node produced in the chosen run. Every change here is a local draft command.
 use super::{Intent, Intents, form, status};
 use crate::{
-    document::{Draft, Link, catalog_key, expression, literal},
+    document::{Draft, Link, catalog_key, expression, literal, source_ports},
     schema::display,
     theme,
     widgets::{self, Tone},
@@ -46,6 +46,8 @@ struct NodeView {
     catalog: String,
     parameters: Map<String, Value>,
     links: Vec<LinkRow>,
+    /// Output ports a link from this node can leave by.
+    ports: Vec<String>,
 }
 
 impl NodeView {
@@ -65,6 +67,7 @@ impl NodeView {
                 .into_iter()
                 .map(|link| LinkRow::of(draft, link))
                 .collect(),
+            ports: source_ports(node),
         })
     }
 }
@@ -292,6 +295,24 @@ fn settings(ui: &mut egui::Ui, workbench: &mut Workbench, node: &NodeView, scope
     for row in &node.links {
         ui.horizontal_wrapped(|ui| {
             widgets::caption(ui, row.label.as_str());
+            // A link leaving this node chooses its output port, so branches of `if` and `switch`
+            // can be drawn from the canvas and routed here.
+            if row.link.from == node.id {
+                let current = row.link.source_port().to_owned();
+                let mut chosen = current.clone();
+                egui::ComboBox::from_id_salt(("link-port", &row.label))
+                    .selected_text(format!("from {current}"))
+                    .show_ui(ui, |ui| {
+                        for port in &node.ports {
+                            ui.selectable_value(&mut chosen, port.clone(), port);
+                        }
+                    })
+                    .response
+                    .on_hover_text("The output port this connection leaves by");
+                if chosen != current {
+                    reroute(workbench, row, chosen);
+                }
+            }
             if ui.small_button("Disconnect").clicked() {
                 disconnect(workbench, row);
             }
@@ -393,6 +414,16 @@ fn remove(workbench: &mut Workbench, node: &str, name: &str) {
     workbench
         .feedback
         .report(result, &format!("Removed {name} and its connections."));
+}
+
+fn reroute(workbench: &mut Workbench, row: &LinkRow, port: String) {
+    let Some(draft) = workbench.session.draft_mut() else {
+        return;
+    };
+    let result = draft.reroute(&row.link, Some(port.clone()));
+    workbench
+        .feedback
+        .report(result, &format!("{} now leaves by {port}.", row.label));
 }
 
 fn disconnect(workbench: &mut Workbench, row: &LinkRow) {

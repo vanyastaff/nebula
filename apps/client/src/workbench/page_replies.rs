@@ -145,14 +145,25 @@ impl Workbench {
             },
             Reply::OrgMembers(list) => self.team.organization = Remote::Ready(list.members),
             Reply::OrgMemberAdded(member) => {
+                // Adding someone already in the organization changes their role.
                 if let Some(members) = self.team.organization.value_mut() {
-                    members.push(member);
+                    match members
+                        .iter_mut()
+                        .find(|existing| existing.principal_id == member.principal_id)
+                    {
+                        Some(existing) => *existing = member,
+                        None => members.push(member),
+                    }
                 }
                 self.team.new_member.clear();
                 self.feedback.info("Member added to the organization.");
             },
             Reply::OrgMemberRemoved(principal) => {
                 if let Some(members) = self.team.organization.value_mut() {
+                    members.retain(|member| member.principal_id != principal);
+                }
+                // The server takes their workspace access away with them.
+                if let Some(members) = self.team.workspace.value_mut() {
                     members.retain(|member| member.principal_id != principal);
                 }
                 self.team.confirm_remove = None;
@@ -218,6 +229,39 @@ impl Workbench {
             Target::OrgMembers => self.team.organization = Remote::Failed(reason),
             Target::WorkspaceMembers => self.team.workspace = Remote::Failed(reason),
         }
+    }
+
+    /// A change whose answer was lost may have happened. Creations are not keyed, so a blind retry
+    /// could make a second credential or token, or register a webhook again: the form closes, the
+    /// list it changes is read again, and creating stays off until that read settles (see
+    /// [`Remote::settled`]), so the person decides with the server's state in view.
+    pub(super) fn receive_uncertain_change(&mut self, target: Target) {
+        match target {
+            Target::Executions => self.executions.list.invalidate(),
+            Target::Execution => {
+                self.executions.detail.invalidate();
+                self.executions.list.invalidate();
+            },
+            Target::Credentials => {
+                self.credentials.draft = None;
+                self.credentials.list.invalidate();
+            },
+            Target::Tokens => {
+                self.settings.new_token = super::pages::NewToken::default();
+                self.settings.tokens.invalidate();
+            },
+            Target::Triggers => self.triggers.documents.invalidate(),
+            Target::Profile => self.settings.profile.invalidate(),
+            Target::OrgMembers => {
+                self.team.organization.invalidate();
+                self.team.workspace.invalidate();
+            },
+            Target::WorkspaceMembers => self.team.workspace.invalidate(),
+            Target::Workflows | Target::ActionDetail | Target::CredentialTypes => {},
+        }
+        self.feedback.error(
+            "The change may have been made. The list is being read again; check it before trying again.",
+        );
     }
 
     /// One execution's state, from a read or the watch: the executions page's detail and row, and

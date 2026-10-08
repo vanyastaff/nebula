@@ -13,7 +13,7 @@ use crate::{
     api::Backend,
     demo,
     document::Draft,
-    effects::{Reply, RequestKind, Target},
+    effects::{Reply, RequestKind},
     schema::Form,
     session::{DraftKey, RequestStamp, Session, SessionContext},
     transport::{Failure, PAGE_SIZE, endpoint_url},
@@ -715,11 +715,11 @@ impl Workbench {
                 self.receive_load_failure(target, &error);
                 return;
             },
-            RequestKind::Change(target) if error != Failure::Unauthorized => {
-                if target == Target::Executions {
-                    // A start whose answer was lost may have happened; the list shows whether.
-                    self.executions.list.invalidate();
-                }
+            RequestKind::Change(target) if error == Failure::OutcomeUnknown => {
+                self.receive_uncertain_change(target);
+                return;
+            },
+            RequestKind::Change(_) if error != Failure::Unauthorized => {
                 self.feedback.error(error.to_string());
                 return;
             },

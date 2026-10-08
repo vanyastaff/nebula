@@ -3,10 +3,10 @@
 
 use super::{Intent, Intents, states};
 use crate::{
-    api::Backend,
+    api::{Backend, FULL_ACCESS, TOKEN_SCOPES},
     clock, theme,
     widgets::{self, Tone},
-    workbench::{Workbench, pages::TOKEN_SCOPES},
+    workbench::Workbench,
 };
 use eframe::egui::{self, RichText};
 
@@ -218,19 +218,39 @@ fn tokens(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, b
 
 fn new_token(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, busy: bool) {
     widgets::caption(ui, "New token");
+    // Creating waits until the list shows the server's tokens, so a token whose creation answer
+    // was lost is seen before another is made.
+    let settled = workbench.settings.tokens.settled();
     let form = &mut workbench.settings.new_token;
     let name =
         ui.add(widgets::field(&mut form.name).hint_text("What will use it, such as CI deploy"));
-    ui.horizontal_wrapped(|ui| {
-        for scope in TOKEN_SCOPES {
-            let mut on = form.scopes.contains(scope);
-            if ui.checkbox(&mut on, scope).changed() {
-                if on {
-                    form.scopes.insert(scope.to_owned());
-                } else {
-                    form.scopes.remove(scope);
+    let mut full = form.scopes.contains(FULL_ACCESS);
+    if ui
+        .checkbox(&mut full, "Full access")
+        .on_hover_text("Everything your account may do; it replaces every other scope")
+        .changed()
+    {
+        form.scopes.clear();
+        if full {
+            form.scopes.insert(FULL_ACCESS.to_owned());
+        }
+    }
+    ui.add_enabled_ui(!full, |ui| {
+        for (group, scopes) in TOKEN_SCOPES {
+            ui.horizontal_wrapped(|ui| {
+                widgets::caption(ui, group);
+                for scope in scopes {
+                    let mut on = form.scopes.contains(*scope);
+                    let action = scope.split_once(':').map_or(*scope, |(_, action)| action);
+                    if ui.checkbox(&mut on, action).on_hover_text(*scope).changed() {
+                        if on {
+                            form.scopes.insert((*scope).to_owned());
+                        } else {
+                            form.scopes.remove(*scope);
+                        }
+                    }
                 }
-            }
+            });
         }
     });
     ui.horizontal(|ui| {
@@ -243,10 +263,14 @@ fn new_token(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents
                 }
             });
     });
-    let ready = !busy && !form.name.trim().is_empty() && !form.scopes.is_empty();
+    let ready = !busy && settled && !form.name.trim().is_empty() && !form.scopes.is_empty();
     if ui
         .add_enabled(ready, widgets::primary_button("Create token"))
-        .on_disabled_hover_text("Name the token and give it at least one scope")
+        .on_disabled_hover_text(if settled {
+            "Name the token and give it at least one scope"
+        } else {
+            "Waiting for the token list to be read"
+        })
         .clicked()
         || (ready && widgets::submitted(ui, &name))
     {

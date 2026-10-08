@@ -106,6 +106,12 @@ pub(crate) enum Edit {
     Disconnect {
         link: Link,
     },
+    /// Routes an existing link from another output port of its source, such as `true` of an `if`;
+    /// `None` is the default `out`.
+    Reroute {
+        link: Link,
+        from_port: Option<String>,
+    },
     /// Places a node on the editor canvas. Positions live in `ui_metadata`, not in the graph itself.
     MoveNode {
         node: String,
@@ -150,6 +156,11 @@ pub(super) enum Change {
         connection: Value,
         index: usize,
     },
+    /// The same link from another source port; it keeps its place among the connections.
+    ConnectionRerouted {
+        before: Value,
+        after: Value,
+    },
     /// `before` is the position entry the node had, or `None` when it had none.
     Position {
         node: String,
@@ -168,6 +179,9 @@ impl Change {
             (Self::ConnectionAdded { .. }, EditError::ConnectionExists)
             | (Self::ConnectionRemoved { .. }, EditError::ConnectionNotFound)
             | (Self::NodeRemoved { .. }, EditError::NodeNotFound) => true,
+            (Self::ConnectionRerouted { after, .. }, EditError::ConnectionNotFound) => {
+                position_of(connections_of(definition), after).is_some()
+            },
             (Self::NodeInserted { node, .. }, EditError::NodeExists) => {
                 find_node(definition, node["id"].as_str().unwrap_or_default())
                     .is_ok_and(|stored| same_node(node, stored))
@@ -202,6 +216,10 @@ impl Change {
             },
             Self::ConnectionRemoved { connection, .. } => Edit::Disconnect {
                 link: Link::of(connection),
+            },
+            Self::ConnectionRerouted { before, after } => Edit::Reroute {
+                link: Link::of(before),
+                from_port: Link::of(after).from_port,
             },
             Self::Position { node, after, .. } => Edit::MoveNode {
                 node: node.clone(),
@@ -314,6 +332,29 @@ pub(super) fn capture(definition: &Value, edit: Edit) -> Result<Change, EditErro
                 .ok_or(EditError::ConnectionNotFound)?;
             Change::ConnectionRemoved { connection, index }
         },
+        Edit::Reroute { link, from_port } => {
+            let index = link_position(definition, &link).ok_or(EditError::ConnectionNotFound)?;
+            let before = connections_of(definition)
+                .get(index)
+                .cloned()
+                .ok_or(EditError::ConnectionNotFound)?;
+            let rerouted = Link {
+                from_port: from_port.filter(|port| port != "out"),
+                ..link
+            };
+            if link_position(definition, &rerouted).is_some() {
+                return Err(EditError::ConnectionExists);
+            }
+            // Fields the connection carries beyond its ends stay as they were.
+            let mut after = before.clone();
+            if let Some(object) = after.as_object_mut() {
+                match &rerouted.from_port {
+                    Some(port) => object.insert("from_port".into(), json!(port)),
+                    None => object.remove("from_port"),
+                };
+            }
+            Change::ConnectionRerouted { before, after }
+        },
         Edit::MoveNode { node, x, y } => {
             require_node(definition, &node)?;
             Change::Position {
@@ -401,6 +442,18 @@ pub(super) fn replay(
                 stored.remove(position);
             } else {
                 stored.insert((*index).min(stored.len()), connection.clone());
+            }
+        },
+        Change::ConnectionRerouted { before, after } => {
+            let (from, to) = if forward {
+                (before, after)
+            } else {
+                (after, before)
+            };
+            let stored = connections_mut(definition)?;
+            let position = position_of(stored, from).ok_or(EditError::ConnectionNotFound)?;
+            if let Some(slot) = stored.get_mut(position) {
+                slot.clone_from(to);
             }
         },
         Change::Position {

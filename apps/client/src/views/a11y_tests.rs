@@ -48,7 +48,7 @@ fn demo_world() -> (Workbench, Demo) {
         limit: 25,
     };
     workbench.executions.list = Remote::Ready(world.executions(&query).unwrap().items);
-    workbench.credentials.list = Remote::Ready(world.credentials().unwrap().credentials);
+    workbench.credentials.list = Remote::Ready(world.credentials(1).unwrap().credentials);
     workbench.credentials.types = Remote::Ready(world.credential_types().unwrap().types);
     let documents = world
         .list(1)

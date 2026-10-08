@@ -136,6 +136,26 @@ async fn live_existing_server_edit_conflict_publish_run_and_persisted_output() {
 }
 
 #[test]
+fn a_save_is_judged_only_on_what_its_patch_wrote() {
+    let stored = serde_json::json!({
+        "nodes": [{"id": "echo", "enabled": true, "parameters": {}}],
+        "trigger_bindings": [{"id": "webhook", "plugin_key": "core", "config": {"provider": "generic"}}],
+    });
+    // A trigger-only patch says nothing about nodes.
+    let triggers = serde_json::json!({"trigger_bindings": [{"id": "webhook"}]});
+    assert!(holds_patch(&triggers, &stored));
+    let other = serde_json::json!({"trigger_bindings": [{"id": "webhook_2"}]});
+    assert!(!holds_patch(&other, &stored));
+    let removed = serde_json::json!({"trigger_bindings": []});
+    assert!(!holds_patch(&removed, &stored));
+    // A graph patch is judged on its nodes' parameters, as before.
+    let graph = serde_json::json!({"nodes": [{"id": "echo", "parameters": {}}], "connections": []});
+    assert!(holds_patch(&graph, &stored));
+    let changed = serde_json::json!({"nodes": [{"id": "echo", "parameters": {"x": 1}}]});
+    assert!(!holds_patch(&changed, &stored));
+}
+
+#[test]
 fn endpoints_cannot_smuggle_authority_or_use_cleartext_remote_transport() {
     for url in [
         "http://remote.test",

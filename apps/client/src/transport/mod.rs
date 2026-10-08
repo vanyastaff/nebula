@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 
 mod resources;
 
-pub(crate) use resources::ExecutionQuery;
+pub(crate) use resources::{CREDENTIALS_PER_PAGE, ExecutionQuery};
 
 const MAX_BODY: usize = 1024 * 1024;
 
@@ -313,9 +313,11 @@ impl Connection {
                 .expected_revision
                 .and_then(|value| value.checked_add(1))
                 != Some(document.revision)
-            || request.update.definition.as_ref().is_some_and(|patch| {
-                !crate::document::parameters_match(&patch["nodes"], &document.definition["nodes"])
-            })
+            || request
+                .update
+                .definition
+                .as_ref()
+                .is_some_and(|patch| !holds_patch(patch, &document.definition))
         {
             return Err(Failure::OutcomeUnknown);
         }
@@ -531,6 +533,29 @@ impl Connection {
             })
         }
     }
+}
+
+/// The stored definition holds what the patch wrote, judged only on the parts the patch carries:
+/// its nodes' parameters, and its trigger bindings by id. The server merges top-level keys and
+/// fills in defaults, so a patch without nodes says nothing about them.
+pub(crate) fn holds_patch(patch: &serde_json::Value, stored: &serde_json::Value) -> bool {
+    let ids = |bindings: &serde_json::Value| {
+        bindings.as_array().map(|bindings| {
+            let mut ids: Vec<String> = bindings
+                .iter()
+                .map(|binding| binding["id"].to_string())
+                .collect();
+            ids.sort();
+            ids
+        })
+    };
+    let nodes = patch
+        .get("nodes")
+        .is_none_or(|nodes| crate::document::parameters_match(nodes, &stored["nodes"]));
+    let triggers = patch.get("trigger_bindings").is_none_or(|bindings| {
+        ids(bindings).is_some() && ids(bindings) == ids(&stored["trigger_bindings"])
+    });
+    nodes && triggers
 }
 
 /// A server address as the client accepts it: HTTPS, or HTTP on loopback, with no user info, query or

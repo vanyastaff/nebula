@@ -29,9 +29,13 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         "Credentials",
         "Secrets your workflows use to reach other services. Stored values are never shown again.",
         |ui| {
+            // Creating waits until the list shows the server's credentials, so one whose
+            // creation answer was lost is seen before another is made.
+            let settled = workbench.credentials.list.settled();
             if workbench.credentials.draft.is_none()
                 && ui
-                    .add_enabled(!busy, widgets::primary_button("New credential"))
+                    .add_enabled(!busy && settled, widgets::primary_button("New credential"))
+                    .on_disabled_hover_text("Waiting for the credential list to be read")
                     .clicked()
             {
                 workbench.start_credential(Some(String::new()));

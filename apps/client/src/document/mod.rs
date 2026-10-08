@@ -42,6 +42,31 @@ pub(crate) fn catalog_key(node: &Value) -> String {
     format!("{plugin}.{action}")
 }
 
+/// The output ports a link from this node can leave by, as the engine routes them: `out` and the
+/// `error` route of every node, `true` and `false` of `core.if`, and each case's `port` and
+/// `default` of `core.switch`.
+pub(crate) fn source_ports(node: &Value) -> Vec<String> {
+    let mut ports = vec!["out".to_owned(), "error".to_owned()];
+    match catalog_key(node).as_str() {
+        "core.if" => ports.extend(["true".to_owned(), "false".to_owned()]),
+        "core.switch" => {
+            let cases = node["parameters"]["cases"]["value"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|case| case["port"].as_str())
+                .map(str::to_owned);
+            for port in cases.chain(["default".to_owned()]) {
+                if !ports.contains(&port) {
+                    ports.push(port);
+                }
+            }
+        },
+        _ => {},
+    }
+    ports
+}
+
 pub(crate) struct Draft {
     pub(crate) base: WorkflowDocumentResponse,
     pub(crate) definition: Value,
@@ -290,6 +315,18 @@ impl Draft {
     /// Removes exactly this link; other links between the same nodes on other ports stay.
     pub(crate) fn disconnect(&mut self, link: &Link) -> Result<(), EditError> {
         self.apply(Edit::Disconnect { link: link.clone() })
+    }
+
+    /// Routes `link` from another output port of its source; `None` or `out` is the default port.
+    pub(crate) fn reroute(
+        &mut self,
+        link: &Link,
+        from_port: Option<String>,
+    ) -> Result<(), EditError> {
+        self.apply(Edit::Reroute {
+            link: link.clone(),
+            from_port,
+        })
     }
 
     /// Places a node on the canvas at the given top-left corner, in canvas coordinates.

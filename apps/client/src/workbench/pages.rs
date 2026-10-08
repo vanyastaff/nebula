@@ -92,6 +92,11 @@ impl<T> Remote<T> {
         }
     }
 
+    /// The data was read and nothing has changed it since: what is shown is the server's state.
+    pub(crate) const fn settled(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
     /// The page should ask for the data: it never was, or what is shown is out of date.
     pub(crate) const fn wants_read(&self) -> bool {
         matches!(self, Self::Idle | Self::Stale(_))
@@ -254,14 +259,6 @@ impl Default for NewToken {
         }
     }
 }
-
-/// Scopes a personal access token can carry.
-pub(crate) const TOKEN_SCOPES: [&str; 4] = [
-    "workflows:read",
-    "workflows:write",
-    "executions:read",
-    "executions:write",
-];
 
 #[derive(Default)]
 pub(crate) struct TeamPage {

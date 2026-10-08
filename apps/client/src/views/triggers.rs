@@ -54,8 +54,11 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         }
         return;
     }
+    // Changes wait until the page shows the server's documents again, so a change whose answer was
+    // lost is seen before it is repeated, and each edit starts from the stored revision.
+    let locked = busy || !workbench.triggers.documents.settled();
     for document in &documents {
-        workflow(ui, workbench, intents, document, busy);
+        workflow(ui, workbench, intents, document, locked);
         ui.add_space(theme::SPACE_SM);
     }
 }

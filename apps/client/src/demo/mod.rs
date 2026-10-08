@@ -11,7 +11,7 @@ mod seed;
 use crate::{
     clock,
     schema::{self, Form, Values},
-    transport::{ExecutionQuery, Failure, PAGE_SIZE, status_key},
+    transport::{CREDENTIALS_PER_PAGE, ExecutionQuery, Failure, PAGE_SIZE, status_key},
 };
 use executor::Run;
 use nebula_api_contract::v1::{
@@ -412,11 +412,15 @@ impl Demo {
         })
     }
 
-    pub(crate) fn credentials(&self) -> Result<ListCredentialsResponse, Failure> {
+    /// One page of credentials, paged as the server pages them.
+    pub(crate) fn credentials(&self, page: usize) -> Result<ListCredentialsResponse, Failure> {
         self.with(|world| {
+            let page = page.max(1);
             let credentials: Vec<CredentialSummary> = world
                 .credentials
                 .iter()
+                .skip((page - 1) * CREDENTIALS_PER_PAGE)
+                .take(CREDENTIALS_PER_PAGE)
                 .map(|credential| CredentialSummary {
                     id: credential.id.clone(),
                     credential_key: credential.credential_key.clone(),
@@ -428,10 +432,10 @@ impl Demo {
                 })
                 .collect();
             Ok(ListCredentialsResponse {
-                total: credentials.len(),
+                total: world.credentials.len(),
                 credentials,
-                page: 1,
-                page_size: 20,
+                page,
+                page_size: CREDENTIALS_PER_PAGE,
             })
         })
     }
@@ -590,6 +594,7 @@ impl Demo {
             if request.name.trim().is_empty() {
                 return Err(Failure::Invalid("name: Enter a name.".to_owned()));
             }
+            crate::api::check_scopes(&request.scopes).map_err(Failure::Invalid)?;
             let now = clock::now_millis();
             let summary = TokenSummary {
                 id: world.next_id("pat", now),
@@ -683,6 +688,10 @@ impl Demo {
             }
             world
                 .org_members
+                .retain(|member| member.principal_id != principal);
+            // As the server does: leaving the organization ends every workspace grant in it.
+            world
+                .workspace_members
                 .retain(|member| member.principal_id != principal);
             Ok(AckResponse::ok())
         })

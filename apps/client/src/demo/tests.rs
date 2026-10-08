@@ -45,7 +45,7 @@ fn the_seeded_workspace_answers_in_the_contract_s_own_shapes() {
     }
     round_trips(&demo.actions().unwrap());
     round_trips(&demo.credential_types().unwrap());
-    round_trips(&demo.credentials().unwrap());
+    round_trips(&demo.credentials(1).unwrap());
     round_trips(&demo.tokens().unwrap());
     round_trips(&demo.org_members(ORG).unwrap());
     round_trips(&demo.workspace_members().unwrap());
@@ -201,7 +201,7 @@ fn credentials_are_checked_against_their_type_schema() {
     .unwrap();
     assert_eq!(created.auth_pattern, "IdentityPassword");
     assert!(
-        demo.credentials()
+        demo.credentials(1)
             .unwrap()
             .credentials
             .iter()
@@ -239,7 +239,7 @@ fn credentials_are_checked_against_their_type_schema() {
 fn a_credential_that_needs_reauthorization_fails_its_test() {
     let demo = demo();
     let sheets = demo
-        .credentials()
+        .credentials(1)
         .unwrap()
         .credentials
         .into_iter()
