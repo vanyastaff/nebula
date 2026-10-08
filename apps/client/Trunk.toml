@@ -7,3 +7,8 @@ port = 8090
 [[proxy]]
 rewrite = "/api/"
 backend = "http://127.0.0.1:8080/api/"
+
+# The sign-in probe reads the server root version, outside /api.
+[[proxy]]
+rewrite = "/version"
+backend = "http://127.0.0.1:8080/version"
