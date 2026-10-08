@@ -22,6 +22,25 @@ pub(crate) const WARNING_SOFT: Color32 = Color32::from_rgb(252, 242, 224);
 pub(crate) const DANGER: Color32 = Color32::from_rgb(161, 42, 38);
 pub(crate) const DANGER_SOFT: Color32 = Color32::from_rgb(251, 232, 231);
 
+// Graph: connection lines, and the badge colours that tell action kinds apart.
+pub(crate) const EDGE: Color32 = Color32::from_rgb(150, 162, 180);
+const NODE_ACCENTS: [Color32; 6] = [
+    Color32::from_rgb(35, 95, 198),
+    Color32::from_rgb(27, 112, 80),
+    Color32::from_rgb(137, 84, 16),
+    Color32::from_rgb(112, 74, 178),
+    Color32::from_rgb(0, 122, 135),
+    Color32::from_rgb(170, 70, 90),
+];
+
+/// A badge colour that stays the same for the same action key, so related nodes match at a glance.
+pub(crate) fn node_accent(action_key: &str) -> Color32 {
+    let hash = action_key.bytes().fold(0usize, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(usize::from(byte))
+    });
+    NODE_ACCENTS[hash % NODE_ACCENTS.len()]
+}
+
 // Spacing scale in logical pixels, and corner radii.
 pub(crate) const SPACE_XS: f32 = 4.0;
 pub(crate) const SPACE_SM: f32 = 8.0;
