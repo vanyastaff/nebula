@@ -7,6 +7,10 @@
 //! `--help` and `--version` exit before reading deployment configuration.
 //! Unrecognized arguments are rejected before initialization.
 //! Credential key configuration is validated before opening deployment storage.
+//! Shutdown cancels and joins the owned runtime task. On its twenty-second drain
+//! timeout the host aborts and joins that task, then exits unsuccessfully; it does
+//! not report a completed drain or detach the task. Blocking/non-yielding code
+//! still requires the external process supervisor's termination deadline.
 //!
 //! ## Configuration (environment variables)
 //!

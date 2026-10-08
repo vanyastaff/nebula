@@ -52,6 +52,14 @@ pub(crate) enum ServerRunError {
     /// Listener/runtime error from axum server.
     #[error("server failed")]
     Io(#[from] std::io::Error),
+    /// HTTP connections or requests did not drain before the HTTP deadline.
+    #[error(
+        "HTTP shutdown did not finish within {budget:?}; {active_requests} handlers remain active"
+    )]
+    HttpDrainTimedOut {
+        budget: Duration,
+        active_requests: u32,
+    },
     /// OTLP metrics pipeline failed to attach to the telemetry guard.
     ///
     /// Surfacing this as a hard error matches the fail-closed policy of the other OTLP
@@ -457,16 +465,6 @@ impl ServerRuntime {
             Duration::from_secs(api_config.idempotency.sweep_interval_secs),
         );
         let app = transport.build_router(state, &api_config)?;
-        // Bound the graceful drain. `axum::serve(...).with_graceful_shutdown`
-        // waits for in-flight requests without a deadline, so one handler
-        // parked on an unresponsive dependency keeps the process alive until
-        // the orchestrator's SIGKILL — telemetry flush, credential-runtime
-        // shutdown, and the reservation-sweep join below never run.
-        // `ShutdownGate` rejects new requests with 503 once closing and lets
-        // the composition root abandon the drain on its own budget.
-        let shutdown_gate = nebula_api::middleware::ShutdownGate::new();
-        let app = shutdown_gate.install(app);
-
         let listener = TcpListener::bind(bind_address).await?;
         let local_address = listener.local_addr()?;
         tracing::info!(transport = transport.name(), %local_address, "starting transport");
@@ -488,49 +486,77 @@ impl ServerRuntime {
             );
         }
 
-        let serve_future = serve_prebound(app, listener, shutdown.clone().cancelled_owned());
-        tokio::pin!(serve_future);
-        let serve_result = tokio::select! {
-            result = &mut serve_future => result,
-            () = wait_for_shutdown_signal() => {
-                shutdown.cancel();
-                match shutdown_gate.close(SHUTDOWN_DRAIN_BUDGET).await {
-                    Ok(()) => {
-                        tracing::info!(
-                            "all in-flight requests drained within the shutdown budget"
-                        );
-                        serve_future.await
-                    },
-                    Err(timeout) => {
-                        // The gate budget is the drain deadline. Axum's own
-                        // graceful shutdown has no bound, so awaiting
-                        // `serve_future` here would reintroduce the unbounded
-                        // wait this gate exists to remove. Dropping it closes
-                        // remaining connections; the process is exiting anyway.
-                        tracing::warn!(
-                            active_requests = timeout.active_guards,
-                            budget_ms = timeout.timeout.as_millis() as u64,
-                            "shutdown drain budget elapsed; abandoning in-flight requests"
-                        );
-                        Ok(())
-                    },
-                }
-            },
-        };
-        // The token is already cancelled on every path out of the select, so
-        // this join is bounded by one sweep iteration.
+        let serve_result = serve_until_shutdown(
+            app,
+            listener,
+            shutdown.clone(),
+            wait_for_shutdown_signal(),
+            SHUTDOWN_DRAIN_BUDGET,
+        )
+        .await;
+        // Stop background owners even when HTTP draining failed. Their cleanup
+        // is separate from the HTTP drain budget.
         shutdown.cancel();
         if let Some(handle) = reservation_sweep
             && let Err(error) = handle.await
         {
             tracing::warn!(%error, "start-key reservation sweep did not stop cleanly");
         }
-        // Stop every credential lifecycle task through its single owner after
-        // request handling has drained. Drop remains the fail-safe path.
+        // Stop credential lifecycle tasks through their owner before returning
+        // the serving result. Drop remains the fail-safe path.
         credential_runtime.shutdown().await;
         drop(credential_runtime);
         serve_result?;
         Ok(())
+    }
+}
+
+/// Serve until an application shutdown request, then drain on the given budget.
+#[tracing::instrument(skip_all)]
+async fn serve_until_shutdown(
+    app: Router,
+    listener: TcpListener,
+    shutdown: CancellationToken,
+    signal: impl Future<Output = ()>,
+    drain_budget: Duration,
+) -> Result<(), ServerRunError> {
+    let _cancel_on_drop = shutdown.clone().drop_guard();
+    let shutdown_gate = nebula_api::middleware::ShutdownGate::new();
+    let app = shutdown_gate.install(app);
+    let serve_future = serve_prebound(app, listener, shutdown.clone().cancelled_owned());
+    tokio::pin!(serve_future);
+    tokio::select! {
+        result = &mut serve_future => result.map_err(ServerRunError::from),
+        () = signal => {
+            let deadline = tokio::time::Instant::now() + drain_budget;
+            shutdown.cancel();
+            match shutdown_gate.close(drain_budget).await {
+                Ok(()) => {
+                    // The gate tracks handler completion. Streaming response
+                    // bodies and connection shutdown still share the deadline.
+                    if let Ok(result) = tokio::time::timeout_at(deadline, serve_future).await {
+                        result.map_err(ServerRunError::from)
+                    } else {
+                        tracing::error!(?drain_budget, "HTTP connections did not drain before shutdown deadline");
+                        Err(ServerRunError::HttpDrainTimedOut {
+                            budget: drain_budget,
+                            active_requests: shutdown_gate.active_requests(),
+                        })
+                    }
+                },
+                Err(timeout) => {
+                    tracing::error!(
+                        active_requests = timeout.active_guards,
+                        ?drain_budget,
+                        "shutdown drain budget elapsed; abandoning in-flight requests"
+                    );
+                    Err(ServerRunError::HttpDrainTimedOut {
+                        budget: drain_budget,
+                        active_requests: timeout.active_guards,
+                    })
+                },
+            }
+        },
     }
 }
 
@@ -1072,6 +1098,196 @@ mod tests {
     use std::net::SocketAddr;
 
     use super::{ServerRunError, parse_bind_address, resolve_bind_address};
+
+    #[tokio::test]
+    async fn completed_http_request_allows_clean_shutdown() {
+        use std::time::Duration;
+        use tokio::{net::TcpListener, sync::oneshot};
+        use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
+
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { "done" }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let (stop, stopped) = oneshot::channel();
+        let cancel = CancellationToken::new();
+        let server = AbortOnDropHandle::new(tokio::spawn(super::serve_until_shutdown(
+            app,
+            listener,
+            cancel.clone(),
+            async {
+                let _ = stopped.await;
+            },
+            Duration::from_secs(1),
+        )));
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .expect("client")
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect("response")
+            .text()
+            .await
+            .expect("body");
+        assert_eq!(response, "done");
+        stop.send(()).expect("request shutdown");
+        tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .expect("bounded shutdown")
+            .expect("server task")
+            .expect("clean drain");
+        assert!(cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn stalled_http_request_makes_shutdown_fail() {
+        use std::{sync::Arc, time::Duration};
+        use tokio::{
+            net::TcpListener,
+            sync::{Notify, oneshot},
+        };
+        use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
+
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let app = axum::Router::new().route(
+            "/park",
+            axum::routing::get({
+                let entered = entered.clone();
+                let release = release.clone();
+                move || {
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    async move {
+                        entered.notify_one();
+                        release.notified().await;
+                        "done"
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let (stop, stopped) = oneshot::channel();
+        let server = AbortOnDropHandle::new(tokio::spawn(super::serve_until_shutdown(
+            app,
+            listener,
+            CancellationToken::new(),
+            async {
+                let _ = stopped.await;
+            },
+            Duration::from_millis(20),
+        )));
+        let request = AbortOnDropHandle::new(tokio::spawn(async move {
+            reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .expect("client")
+                .get(format!("http://{address}/park"))
+                .send()
+                .await
+        }));
+        tokio::time::timeout(Duration::from_secs(3), entered.notified())
+            .await
+            .expect("handler entered");
+        stop.send(()).expect("request shutdown");
+        let result = tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .expect("bounded serving shutdown")
+            .expect("server task");
+        release.notify_one();
+        let _response = request.await;
+        assert!(
+            matches!(
+                result,
+                Err(ServerRunError::HttpDrainTimedOut {
+                    active_requests: 1,
+                    ..
+                })
+            ),
+            "shutdown must report an unfinished HTTP request, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_response_makes_shutdown_fail_at_the_drain_deadline() {
+        use futures::StreamExt;
+        use std::{convert::Infallible, sync::Arc, time::Duration};
+        use tokio::{
+            net::TcpListener,
+            sync::{Notify, oneshot},
+        };
+        use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
+
+        let release = Arc::new(Notify::new());
+        let app = axum::Router::new().route(
+            "/stream",
+            axum::routing::get({
+                let release = release.clone();
+                move || {
+                    let release = release.clone();
+                    async move {
+                        let first = futures::stream::iter([Ok::<_, Infallible>("first")]);
+                        let last = futures::stream::once(async move {
+                            release.notified().await;
+                            Ok::<_, Infallible>("last")
+                        });
+                        axum::body::Body::from_stream(first.chain(last))
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let (stop, stopped) = oneshot::channel();
+        let mut server = AbortOnDropHandle::new(tokio::spawn(super::serve_until_shutdown(
+            app,
+            listener,
+            CancellationToken::new(),
+            async {
+                let _ = stopped.await;
+            },
+            Duration::from_millis(20),
+        )));
+        let mut response = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .expect("client")
+            .get(format!("http://{address}/stream"))
+            .send()
+            .await
+            .expect("streaming response");
+        assert_eq!(
+            response.chunk().await.expect("first chunk").expect("body"),
+            "first"
+        );
+        stop.send(()).expect("request shutdown");
+        let result = tokio::time::timeout(Duration::from_secs(1), &mut server).await;
+        // Complete the controlled response even when the old unbounded drain
+        // is reproduced, so the regression does not leave a connection alive.
+        release.notify_one();
+        let _body = response.bytes().await;
+        if result.is_err() {
+            server
+                .await
+                .expect("clean up the old unbounded server")
+                .expect("released stream");
+        }
+        assert!(
+            matches!(
+                result,
+                Ok(Ok(Err(ServerRunError::HttpDrainTimedOut {
+                    active_requests: 0,
+                    ..
+                })))
+            ),
+            "stream body must be bounded after the handler returned: {result:?}"
+        );
+    }
 
     /// The production `AppState` must carry the resource allowlist built from
     /// the plugin set; without it resource create/update answered 422

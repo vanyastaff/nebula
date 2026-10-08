@@ -37,6 +37,13 @@ canonical registry is `crates/api/src/config/env.rs`. The composition
 root selects concrete ports. Serving and operator setup share the deployment
 database opener and storage-selection parser.
 
+HTTP shutdown gives handlers and response connections one ten-second drain
+budget. An unfinished handler or streaming response makes shutdown fail rather
+than report a clean exit. Credential and reservation owners are cleaned up before
+that error returns; their cleanup is separate from the HTTP budget. The process
+supervisor still needs an overall termination deadline. A timed-out HTTP drain
+does not assert that every connection task has already stopped.
+
 ## Offline first owner
 
 Run setup with operator access to the deployment database, before opening signup

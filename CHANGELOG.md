@@ -1085,6 +1085,13 @@ let admitted = recorded.readmit_against(fresh)?;
 
 ### Fixed
 
+- **Shutdown failures remain failures.** The standalone worker cancels its
+  runtime when signal registration fails and aborts/joins its owned task after
+  a drain timeout. HTTP handlers and streaming connections share one drain
+  deadline; exceeding it produces a server error after owner cleanup rather
+  than a successful exit. These are host lifecycle fixes, not an overall
+  process-termination guarantee or combined API/worker launch.
+
 - **Journaled requests canonicalize without losing or hiding members.** The
   canonical request of an `Operation` was built from `serde_json::to_value`,
   which keeps only the last member of an object that writes one key twice (a

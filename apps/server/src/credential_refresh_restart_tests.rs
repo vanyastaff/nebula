@@ -251,8 +251,8 @@ fn scheduler_outcome_count(registry: &MetricsRegistry, outcome: &str) -> u64 {
 fn restart_policy() -> RefreshCoordConfig {
     RefreshCoordConfig {
         // Provider work gets an integration-scale deadline. The synthetic
-        // crashed claim below carries its own short TTL, so restart recovery
-        // remains fast without making the real TLS refresh timing-sensitive.
+        // crashed claim is expired by the fixture after marking the provider
+        // boundary, independently of TLS and test-process scheduling.
         claim_ttl: Duration::from_secs(3),
         heartbeat_interval: Duration::from_millis(250),
         refresh_timeout: Duration::from_secs(2),
@@ -308,7 +308,7 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
     assert_eq!(provider.request_count(), 1);
 
     // Stop every task owned by replica A before constructing its crash residue.
-    // Otherwise A's 40 ms sweeper could account the short fixture claim during
+    // Otherwise A's 40 ms sweeper could account the expired fixture claim during
     // a delayed shutdown and make replica B's startup recovery vacuous.
     drop(first_controller);
     first.shutdown().await;
@@ -318,7 +318,7 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
         .try_claim(
             &selector,
             &ReplicaId::new("crashed-refresh-owner"),
-            Duration::from_millis(60),
+            Duration::from_secs(30),
             CredentialOperationIntent::Refresh,
         )
         .await
@@ -331,7 +331,31 @@ async fn crashed_refresh_is_reclaimed_without_replay_then_reauthorized_once() {
         .await
         .expect("provider boundary is durably marked");
 
-    tokio::time::sleep(Duration::from_millis(90)).await;
+    // SQL owns lease time. Expire this exact sentinel after it was admitted,
+    // instead of racing mark_sentinel against a 60 ms wall-clock lease.
+    {
+        use sqlx::Connection;
+
+        let options = sqlx::sqlite::SqliteConnectOptions::new().filename(database);
+        let mut connection = sqlx::SqliteConnection::connect_with(&options)
+            .await
+            .expect("open the crash-residue fixture");
+        let affected = sqlx::query(
+            "UPDATE credential_refresh_claims SET expires_at = 0 \
+             WHERE org_id = ?1 AND workspace_id = ?2 AND credential_id = ?3 \
+               AND claim_id = ?4 AND sentinel = 1",
+        )
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .bind(id.to_string())
+        .bind(claim.token.claim_id.to_string())
+        .execute(&mut connection)
+        .await
+        .expect("expire the crashed holder")
+        .rows_affected();
+        assert_eq!(affected, 1, "expire only the admitted sentinel claim");
+        connection.close().await.expect("close fixture connection");
+    }
     assert!(matches!(
         first_claims
             .try_claim(
