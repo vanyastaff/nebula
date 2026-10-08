@@ -7,7 +7,7 @@ surface to one of three ingress transports (`api`, `webhook`,
 email transport, metrics + telemetry exporters). The tenant directory uses
 the same selected memory, SQLite, or PostgreSQL backend as execution storage.
 Startup does not create an organization, workspace, or privileged member;
-durable tenants are provisioned explicitly through the operator bootstrap path.
+durable tenants are provisioned explicitly through operator setup or bootstrap.
 
 Linked plugin release selection is shared with the standalone worker through
 `apps/deployment`. The evidence profile uses that package's runtime assembly;
@@ -31,10 +31,55 @@ PostgreSQL auth and HTTP replay require `API_EXECUTION_BACKEND=postgres` and
 reuse its admitted pool. Incompatible backend selections fail before storage
 creation; these adapters never open independent connections from `DATABASE_URL`.
 
-All operator-facing configuration lives in environment variables; the
+Deployment configuration lives in environment variables; the
 canonical registry is `crates/api/src/config/env.rs`. The composition
-root in `apps/server/src/compose.rs` is the only place those values
-turn into concrete `Arc<dyn …>` ports.
+root selects concrete ports. Serving and operator setup share the deployment
+database opener and storage-selection parser.
+
+## Offline first owner
+
+Run setup with operator access to the deployment database, before opening signup
+or starting other writers. The same commands work in a native process or through
+`docker exec -i` in a locally or remotely operated container. Use the same database
+configuration and mounted data directory as the server. Desktop lifecycle ownership
+is independent of whether the server runs natively or in Docker.
+
+```bash
+export API_EXECUTION_BACKEND=sqlite
+export API_EXECUTION_DB_PATH=/path/to/nebula.db
+read -r -s -p 'Initial password: ' owner_password
+printf '%s' "$owner_password" | nebula-server setup begin \
+  --email owner@example.test --display-name Owner --organization-name Workflows
+unset owner_password
+nebula-server setup status
+nebula-server setup resume
+```
+
+PostgreSQL uses `API_EXECUTION_BACKEND=postgres` and the deployment's `DATABASE_URL`
+with a PostgreSQL-enabled binary. Setup needs neither mail, HTTP/JWT configuration,
+credential encryption keys, worker artifacts nor cloud access. It does not start a
+listener. Serving still has its own required configuration and runtime prerequisites.
+
+The password is one UTF-8 value from piped stdin, at most 4096 bytes; a final newline
+is removed, other spaces are preserved. Terminal input is rejected to avoid echo.
+Do not place passwords in command arguments, exported variables or shell history.
+The example reads into an unexported shell variable and clears it immediately.
+
+`begin` creates an unverified account, then an organization, its default workspace,
+and the organization-owner grant. Ordinary password login works without mail; setup
+does not fabricate email verification or issue a session. Identity and tenant writes
+commit separately. After interruption, `resume` uses only the saved command and never
+replaces the password. `status` admits and updates the database catalog, then reports
+`available`, `sealed`, `pending`, `owner-unavailable`, `accepted`, or `conflict`.
+Here `accepted` proves historical completion, not current access: replay never
+restores removed tenants, revoked grants or deleted accounts. A missing/archived
+account before acceptance prevents granting ownership. Repeated `begin` is rejected.
+
+Existing deployments are sealed by migration 0010; ordinary account creation also
+permanently closes first-owner enrollment. This creates an organization owner, not a
+global server administrator. It is an operator command, never a public first-visitor
+HTTP endpoint. Stop older writers before upgrading; mixed-version writers are not
+supported. Setup is not a migration/import or recovery mechanism for existing users.
 
 Credential composition admits the complete registry and exports its catalog before
 starting runtime maintenance. Registration or schema-export failure propagates as

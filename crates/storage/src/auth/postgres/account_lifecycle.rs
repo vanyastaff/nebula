@@ -11,7 +11,7 @@ use crate::{
 /// Account transitions on the admitted deployment pool.
 #[derive(Clone)]
 pub struct PgAccountLifecycle {
-    pool: PgPool,
+    pub(super) pool: PgPool,
 }
 
 impl PgAccountLifecycle {

@@ -20,6 +20,7 @@ belongs to the executions and dispatch aggregates; it has no separate empty migr
 | `0007_resources.sql` | Resources, status heartbeats and snapshots, shared resources, subscriptions, source leases, events, deliveries, execution handoffs |
 | `0008_platform.sql` | HTTP response replay cache and PostgreSQL shared GCRA rate-limit state |
 | `0009_tenant_provisioning_receipts.sql` | Permanent provisioning request receipts and identity seals for existing organizations |
+| `0010_initial_owner_enrollment.sql` | Permanent initial-account eligibility and frozen owner enrollment command; ordinary account insertion seals eligibility |
 
 `credential_migration_catalog` checks this inventory against the SQL files, including
 future additions. The baseline is a fixed named prefix, not the maximum catalog size.
@@ -33,6 +34,12 @@ Ordinary startup and existing tenant data remain unchanged. New accepted request
 replay from receipts and never restore revoked grants or deleted tenants.
 
 ## Dialect and ownership
+
+Migration 0010 seals initial enrollment on existing accounts, organizations or
+provisioning receipts. A fresh deployment retains eligibility until operator
+enrollment or ordinary account creation. The identity-owned user-insert trigger
+locks eligibility before inserting the account, matching operator enrollment's
+lock order. The singleton deliberately survives account and tenant purge.
 
 The [database standard](../../docs/database-standard.md) defines names, constraints,
 ownership, and deletion rules. PostgreSQL uses `TIMESTAMPTZ` for microsecond instants,
@@ -72,5 +79,5 @@ valuable data requires a separately designed migration plan.
 
 The paired SQLite catalog defines the same shared logical relations and foreign-key
 actions. `schema_parity_postgres` compares their physical schemas with explicit
-dialect exceptions, including the PostgreSQL-only GCRA tables. Shared identity schema
-does not imply that every authentication adapter already exists on SQLite.
+dialect exceptions, including the PostgreSQL-only GCRA tables. Authentication and
+initial-enrollment conformance test the corresponding behavior on both backends.

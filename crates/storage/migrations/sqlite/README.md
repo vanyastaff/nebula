@@ -20,6 +20,7 @@ belongs to the executions and dispatch aggregates; it has no separate empty migr
 | `0007_resources.sql` | Resources, status heartbeats and snapshots, shared resources, subscriptions, source leases, events, deliveries, execution handoffs |
 | `0008_platform.sql` | HTTP response replay cache; shared PostgreSQL GCRA tables have no SQLite counterpart |
 | `0009_tenant_provisioning_receipts.sql` | Permanent provisioning request receipts and identity seals for existing organizations |
+| `0010_initial_owner_enrollment.sql` | Permanent initial-account eligibility and frozen owner enrollment command; ordinary account insertion seals eligibility |
 
 `credential_migration_catalog` checks this inventory against the SQL files, including
 future additions. The baseline is a fixed named prefix, not the maximum catalog size.
@@ -33,6 +34,12 @@ Ordinary startup and existing tenant data remain unchanged. New accepted request
 replay from receipts and never restore revoked grants or deleted tenants.
 
 ## Dialect and ownership
+
+Migration 0010 seals initial enrollment on existing accounts, organizations or
+provisioning receipts. A fresh deployment retains eligibility until operator
+enrollment or ordinary account creation. The identity-owned user-insert trigger
+keeps ordinary registration from reopening setup after account deletion. The
+enrollment singleton deliberately survives account and tenant purge.
 
 The [database standard](../../docs/database-standard.md) defines names, constraints,
 ownership, and deletion rules. SQLite stores instants as integer microseconds since
@@ -73,5 +80,5 @@ file-reset command. Valuable data requires a separately designed migration plan.
 `schema_parity_postgres` compares the paired schemas, including foreign-key actions,
 with explicit dialect exceptions. SQLite's JSON and boolean type checks have no
 PostgreSQL counterparts because PostgreSQL column types enforce them. Identity tables
-exist on both backends; schema parity does not claim that all durable authentication
-adapters are implemented on SQLite.
+and durable authentication exist on both backends. Schema parity checks structure;
+authentication and enrollment conformance tests check behavior separately.

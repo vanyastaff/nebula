@@ -345,7 +345,7 @@ pub enum ExecutionBackendKind {
 /// `db_path` field consumed by the SQLite arm. Future PRs (pool size, schema
 /// namespace) extend this struct under the `API_EXECUTION_*` prefix without
 /// changing the overall shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ExecutionStoreConfig {
     /// Selected execution-store backend. Defaults to
     /// [`ExecutionBackendKind::Memory`] so a missing `API_EXECUTION_BACKEND`
@@ -359,6 +359,45 @@ pub struct ExecutionStoreConfig {
     /// `"nebula-server-execution.db"` (relative to the working directory).
     /// Env var: `API_EXECUTION_DB_PATH`.
     pub db_path: String,
+}
+
+impl ExecutionStoreConfig {
+    /// Read only deployment storage selection from the environment.
+    ///
+    /// Operator commands share this parser with [`super::ApiConfig`] without
+    /// requiring HTTP, JWT, email or OAuth configuration. PostgreSQL connection
+    /// credentials are resolved by deployment composition when opening its pool.
+    ///
+    /// # Errors
+    /// Returns [`super::ApiConfigError::ParseEnum`] for an unsupported backend.
+    pub fn from_env() -> Result<Self, super::ApiConfigError> {
+        let backend = match std::env::var("API_EXECUTION_BACKEND") {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "memory" => ExecutionBackendKind::Memory,
+                "sqlite" => ExecutionBackendKind::Sqlite,
+                "postgres" => ExecutionBackendKind::Postgres,
+                _ => {
+                    return Err(super::ApiConfigError::ParseEnum {
+                        var: "EXECUTION_BACKEND",
+                        raw,
+                    });
+                },
+            },
+            Err(_) => ExecutionBackendKind::Memory,
+        };
+        let db_path =
+            std::env::var("API_EXECUTION_DB_PATH").unwrap_or_else(|_| Self::default().db_path);
+        Ok(Self { backend, db_path })
+    }
+}
+
+impl std::fmt::Debug for ExecutionStoreConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExecutionStoreConfig")
+            .field("backend", &self.backend)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for ExecutionStoreConfig {
@@ -396,6 +435,41 @@ mod tests {
 
     static_assertions::assert_not_impl_any!(AuthApiConfig: Clone);
     static_assertions::assert_not_impl_any!(SmtpEmailConfig: Clone);
+
+    #[test]
+    fn execution_config_does_not_require_http_configuration() {
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_EXECUTION_BACKEND", "SQLite");
+        env.set("API_EXECUTION_DB_PATH", "private-deployment.db");
+        env.set("API_SMTP_HOST", "mail.example.test");
+        env.set("API_SMTP_PORT", "invalid-port");
+
+        let config = ExecutionStoreConfig::from_env().unwrap();
+        assert_eq!(config.backend, ExecutionBackendKind::Sqlite);
+        assert_eq!(config.db_path, "private-deployment.db");
+        assert!(!format!("{config:?}").contains("private-deployment"));
+        assert!(ApiConfig::from_env().is_err());
+    }
+
+    #[test]
+    fn execution_config_preserves_default_and_rejects_unknown_backend() {
+        let mut env = env_guard();
+        env.remove("API_EXECUTION_BACKEND");
+        env.remove("API_EXECUTION_DB_PATH");
+        let config = ExecutionStoreConfig::from_env().unwrap();
+        assert_eq!(config.backend, ExecutionBackendKind::Memory);
+        assert_eq!(config.db_path, ExecutionStoreConfig::default().db_path);
+
+        env.set("API_EXECUTION_BACKEND", "unsupported");
+        assert!(matches!(
+            ExecutionStoreConfig::from_env(),
+            Err(crate::config::ApiConfigError::ParseEnum {
+                var: "EXECUTION_BACKEND",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn from_env_idempotency_defaults_to_memory() {

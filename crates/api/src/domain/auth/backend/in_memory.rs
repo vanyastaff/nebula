@@ -501,17 +501,11 @@ impl AuthBackend for InMemoryAuthBackend {
             NEBULA_API_AUTH_ATTEMPTS_TOTAL,
             None,
             async move {
-                let email = req.email.trim().to_lowercase();
-                if email.is_empty() || !email.contains('@') {
-                    return Err(AuthError::InvalidCredentials);
-                }
-                if req.password.len() < 8 {
-                    return Err(AuthError::InvalidCredentials);
-                }
-                let display_name = req.display_name.trim();
-                if display_name.is_empty() || display_name.len() > 128 {
-                    return Err(AuthError::InvalidCredentials);
-                }
+                let (email, display_name) = password::validate_registration(
+                    &req.email,
+                    req.password.expose(),
+                    &req.display_name,
+                )?;
                 if self.users_by_email.contains_key(&email) {
                     return Err(AuthError::EmailAlreadyRegistered);
                 }

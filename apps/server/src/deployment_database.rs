@@ -2,7 +2,7 @@
 
 use nebula_api::{
     ApiConfig,
-    config::{AuthBackendKind, ExecutionBackendKind, IdempotencyBackend},
+    config::{AuthBackendKind, ExecutionBackendKind, ExecutionStoreConfig, IdempotencyBackend},
 };
 
 use crate::compose::TransportInitError;
@@ -21,6 +21,88 @@ pub(crate) enum DeploymentDatabase {
 }
 
 impl DeploymentDatabase {
+    /// Open and admit the one database used by server-owned persistence.
+    /// Operator commands reuse this stage without constructing HTTP or runtime
+    /// dependencies. An explicit PostgreSQL DSN takes precedence over the environment.
+    #[tracing::instrument(skip_all)]
+    pub(crate) async fn open(
+        config: &ExecutionStoreConfig,
+        postgres_dsn_override: Option<&str>,
+    ) -> Result<Self, TransportInitError> {
+        match config.backend {
+            ExecutionBackendKind::Memory => nebula_storage::sqlite::open_memory_deployment()
+                .await
+                .map(Self::Memory)
+                .map_err(|error| database_failure("memory", "open", &error)),
+            ExecutionBackendKind::Sqlite => {
+                use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
+
+                let options = SqliteConnectOptions::new()
+                    .filename(&config.db_path)
+                    .create_if_missing(true)
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .synchronous(SqliteSynchronous::Normal);
+                let deployment = nebula_storage::sqlite::DeploymentPool::connect(options)
+                    .await
+                    .map_err(|error| database_failure("sqlite", "open", &error))?;
+                if let Err(error) = nebula_storage::sqlite::init_schema(deployment.pool()).await {
+                    deployment.pool().close().await;
+                    return Err(database_failure("sqlite", "schema admission", &error));
+                }
+                tracing::info!(backend = "sqlite", "deployment database admitted");
+                Ok(Self::Sqlite(deployment))
+            },
+            ExecutionBackendKind::Postgres => Self::open_postgres(postgres_dsn_override).await,
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    async fn open_postgres(dsn_override: Option<&str>) -> Result<Self, TransportInitError> {
+        let environment_dsn;
+        let dsn = if let Some(explicit) = dsn_override {
+            explicit
+        } else {
+            environment_dsn = std::env::var("DATABASE_URL").map_err(|_| {
+                TransportInitError::ExecutionBackendUnavailable {
+                    requested: "postgres",
+                    requirement: "DATABASE_URL must be set when API_EXECUTION_BACKEND=postgres",
+                }
+            })?;
+            &environment_dsn
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(8)
+            .connect(dsn)
+            .await
+            .map_err(|error| {
+                let category = match error {
+                    sqlx::Error::Io(error) => format!("io:{:?}", error.kind()),
+                    sqlx::Error::Tls(_) => "tls".into(),
+                    sqlx::Error::Configuration(_) => "configuration".into(),
+                    sqlx::Error::Database(_) => "database".into(),
+                    sqlx::Error::PoolTimedOut => "timeout".into(),
+                    _ => "connection".into(),
+                };
+                TransportInitError::ExecutionDatabase(format!(
+                    "postgres: deployment database connection failed ({category})"
+                ))
+            })?;
+        if let Err(error) = nebula_storage::postgres::init_schema(&pool).await {
+            pool.close().await;
+            return Err(database_failure("postgres", "schema admission", &error));
+        }
+        tracing::info!(backend = "postgres", "deployment database admitted");
+        Ok(Self::Postgres(pool))
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    async fn open_postgres(_dsn_override: Option<&str>) -> Result<Self, TransportInitError> {
+        Err(TransportInitError::ExecutionBackendUnavailable {
+            requested: "postgres",
+            requirement: "build with the `postgres` cargo feature to link PostgreSQL storage",
+        })
+    }
+
     pub(crate) const fn backend(&self) -> &'static str {
         match self {
             Self::Memory(_) => "memory",
@@ -29,6 +111,21 @@ impl DeploymentDatabase {
             Self::Postgres(_) => "postgres",
         }
     }
+}
+
+fn database_failure(
+    backend: &'static str,
+    stage: &'static str,
+    error: &nebula_storage_port::StorageError,
+) -> TransportInitError {
+    let category = crate::storage_diagnostics::storage_error_category(error);
+    tracing::error!(
+        backend,
+        stage,
+        error.category = category,
+        "deployment database setup failed"
+    );
+    TransportInitError::ExecutionDatabase(format!("{backend}: {stage} failed ({category})"))
 }
 
 impl std::fmt::Debug for DeploymentDatabase {
@@ -69,6 +166,82 @@ pub(crate) fn validate_backend_selection(config: &ApiConfig) -> Result<(), Trans
 #[cfg(test)]
 mod tests {
     use super::DeploymentDatabase;
+
+    #[tokio::test]
+    async fn database_opener_rejects_foreign_schema_without_disclosing_locator() {
+        use nebula_api::config::{ExecutionBackendKind, ExecutionStoreConfig};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private-locator-canary.db");
+        let foreign = sqlx::SqlitePool::connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        sqlx::query("CREATE TABLE foreign_owner (id INTEGER PRIMARY KEY)")
+            .execute(&foreign)
+            .await
+            .unwrap();
+        foreign.close().await;
+
+        let config = ExecutionStoreConfig {
+            backend: ExecutionBackendKind::Sqlite,
+            db_path: path.to_str().unwrap().to_owned(),
+        };
+        let error = DeploymentDatabase::open(&config, None).await.unwrap_err();
+        assert!(matches!(
+            error,
+            crate::compose::TransportInitError::ExecutionDatabase(_)
+        ));
+        let diagnostic = format!("{error} {error:?}");
+        assert!(!diagnostic.contains("private-locator-canary"));
+        assert!(!diagnostic.contains("foreign_owner"));
+        assert!(diagnostic.contains("schema admission"));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn database_opener_does_not_disclose_rejected_postgres_dsn() {
+        use nebula_api::config::{ExecutionBackendKind, ExecutionStoreConfig};
+
+        let config = ExecutionStoreConfig {
+            backend: ExecutionBackendKind::Postgres,
+            ..ExecutionStoreConfig::default()
+        };
+        let error = DeploymentDatabase::open(
+            &config,
+            Some("postgres://operator:private-password-canary@localhost:invalid-port/nebula"),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::compose::TransportInitError::ExecutionDatabase(_)
+        ));
+        assert!(!format!("{error} {error:?}").contains("private-password-canary"));
+    }
+
+    #[cfg(not(feature = "postgres"))]
+    #[tokio::test]
+    async fn database_opener_rejects_unlinked_postgres_backend() {
+        use nebula_api::config::{ExecutionBackendKind, ExecutionStoreConfig};
+
+        let config = ExecutionStoreConfig {
+            backend: ExecutionBackendKind::Postgres,
+            ..ExecutionStoreConfig::default()
+        };
+        assert!(matches!(
+            DeploymentDatabase::open(&config, Some("never-opened")).await,
+            Err(
+                crate::compose::TransportInitError::ExecutionBackendUnavailable {
+                    requested: "postgres",
+                    ..
+                }
+            )
+        ));
+    }
 
     #[tokio::test]
     async fn sqlite_auth_lifecycle_reopens_and_observes_deployment_pool_shutdown() {

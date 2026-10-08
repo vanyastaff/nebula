@@ -3,6 +3,7 @@
 
 mod account_lifecycle;
 mod identity_secret;
+mod initial_owner;
 mod mfa_enrollment;
 mod oauth_login;
 mod oauth_state;

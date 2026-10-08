@@ -12,7 +12,7 @@ use crate::{
 /// SQLite owner of registration, verification and password-reset transactions.
 #[derive(Clone)]
 pub struct SqliteAccountLifecycle {
-    pool: SqlitePool,
+    pub(super) pool: SqlitePool,
 }
 
 impl SqliteAccountLifecycle {

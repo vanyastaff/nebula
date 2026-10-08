@@ -1233,6 +1233,13 @@ mod tests {
     /// reaches the same baseline before existing org IDs are sealed without
     /// inventing an original request. No rows are deleted or authority granted;
     /// configured bootstrap on a sealed tenant must be removed explicitly.
+    ///
+    /// 0010 adds identity-owned initial enrollment. Each admitted older prefix
+    /// reaches 0009 first; any existing account, organization or tenant receipt
+    /// permanently seals the singleton. Fresh deployments remain available until
+    /// enrollment or an ordinary identity insertion closes it. The insert trigger
+    /// changes only identity admission in the same transaction; account and tenant
+    /// rows are never deleted, rewritten or granted authority by this migration.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         use crate::migration_catalog::REVIEWED_HEAD;

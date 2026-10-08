@@ -4,6 +4,9 @@
 //!
 //! Repository traits and row types live here; backend implementations live in
 //! `postgres` and `sqlite`, enabled by their corresponding Cargo features.
+//! Initial owner enrollment persists account eligibility and a frozen tenant
+//! command here. Tenant acceptance belongs to each deployment's tenant adapter;
+//! account enrollment never writes organizations or membership grants.
 //! [`AuthPersistence`] binds the repository roles to one deployment pool and
 //! identity codec. Its factories run no schema or key admission themselves.
 //!
@@ -16,6 +19,7 @@
 
 mod account_lifecycle;
 pub mod identity_secret;
+pub(crate) mod initial_owner;
 mod mfa_enrollment;
 mod oauth_login;
 mod persistence;
@@ -35,6 +39,7 @@ mod rows;
 pub mod session_token;
 
 pub use account_lifecycle::{AccountLifecycle, AccountTokenOutcome, PasswordRegistration};
+pub use initial_owner::{InitialOwnerBegin, InitialOwnerRegistration, InitialOwnerStatus};
 pub use mfa_enrollment::{MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo};
 pub use oauth_login::{
     OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized, OAuthLoginFinalizer,

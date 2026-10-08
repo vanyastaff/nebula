@@ -14,9 +14,16 @@ pub(crate) const REQUEST_VERSION: i64 = 1;
 pub(crate) fn request_digest(
     request: &TenantProvisioningRequest,
 ) -> Result<[u8; 32], StorageError> {
+    let mut value = encode_request(request);
+    value.sort_all_objects();
+    Ok(Sha256::digest(serde_json::to_vec(&value)?).into())
+}
+
+/// Frozen version-1 command shared by receipts and operator enrollment.
+pub(crate) fn encode_request(request: &TenantProvisioningRequest) -> serde_json::Value {
     let org = request.org();
     let workspace = request.default_workspace();
-    let mut value = serde_json::json!({
+    serde_json::json!({
         "version": REQUEST_VERSION,
         "org": {
             "id": org.id(), "slug": org.slug(), "display_name": org.display_name(),
@@ -32,9 +39,93 @@ pub(crate) fn request_digest(
             "kind": request.owner_principal_kind().as_str(),
             "id": request.owner_principal_id(), "added_by": request.owner_added_by(),
         },
-    });
-    value.sort_all_objects();
-    Ok(Sha256::digest(serde_json::to_vec(&value)?).into())
+    })
+}
+
+/// Rebuild through validated constructors; stored JSON is never trusted input.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn decode_request(
+    value: serde_json::Value,
+) -> Result<TenantProvisioningRequest, StorageError> {
+    use nebula_storage_port::dto::{PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate};
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Org {
+        id: String,
+        slug: String,
+        display_name: String,
+        created_by: String,
+        plan: String,
+        billing_email: Option<String>,
+        settings: serde_json::Value,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Workspace {
+        id: String,
+        slug: String,
+        display_name: String,
+        description: Option<String>,
+        created_by: String,
+        settings: serde_json::Value,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Owner {
+        kind: String,
+        id: String,
+        added_by: Option<String>,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Command {
+        version: i64,
+        org: Org,
+        workspace: Workspace,
+        owner: Owner,
+    }
+
+    fn corrupt() -> StorageError {
+        StorageError::Corrupt("invalid stored tenant provisioning command".into())
+    }
+    let command: Command = serde_json::from_value(value).map_err(|_| corrupt())?;
+    if command.version != REQUEST_VERSION {
+        return Err(corrupt());
+    }
+    let kind = match command.owner.kind.as_str() {
+        "user" => PrincipalKind::User,
+        "service_account" => PrincipalKind::ServiceAccount,
+        _ => return Err(corrupt()),
+    };
+    let org = command.org;
+    let workspace = command.workspace;
+    TenantProvisioningRequest::new(
+        TenantOrgCreate::new(
+            org.id,
+            org.slug,
+            org.display_name,
+            org.created_by,
+            org.plan,
+            org.billing_email,
+            org.settings,
+        )
+        .map_err(|_| corrupt())?,
+        TenantDefaultWorkspaceCreate::new(
+            workspace.id,
+            workspace.slug,
+            workspace.display_name,
+            workspace.description,
+            workspace.created_by,
+            workspace.settings,
+        )
+        .map_err(|_| corrupt())?,
+        kind,
+        command.owner.id,
+        command.owner.added_by,
+    )
+    .map_err(|_| corrupt())
 }
 
 /// Decode the two legal receipt forms; unknown encodings fail closed.

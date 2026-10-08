@@ -319,7 +319,7 @@ impl ApiConfig {
         );
         let auth = Self::auth_from_env()?;
         tracing::info!(backend = ?auth.backend, "auth: config loaded");
-        let execution = Self::execution_from_env()?;
+        let execution = ExecutionStoreConfig::from_env()?;
         tracing::info!(backend = ?execution.backend, db_path = %execution.db_path, "execution-stores: config loaded");
         let smtp = Self::smtp_from_env()?;
         if let Some(cfg) = smtp.as_ref() {
@@ -429,26 +429,6 @@ impl ApiConfig {
         Ok(WebhookApiConfig {
             bootstrap_from_storage,
         })
-    }
-
-    fn execution_from_env() -> Result<ExecutionStoreConfig, ApiConfigError> {
-        let backend = match std::env::var("API_EXECUTION_BACKEND") {
-            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "memory" => ExecutionBackendKind::Memory,
-                "sqlite" => ExecutionBackendKind::Sqlite,
-                "postgres" => ExecutionBackendKind::Postgres,
-                _ => {
-                    return Err(ApiConfigError::ParseEnum {
-                        var: "EXECUTION_BACKEND",
-                        raw,
-                    });
-                },
-            },
-            Err(_) => ExecutionBackendKind::Memory,
-        };
-        let db_path = std::env::var("API_EXECUTION_DB_PATH")
-            .unwrap_or_else(|_| "nebula-server-execution.db".to_string());
-        Ok(ExecutionStoreConfig { backend, db_path })
     }
 
     /// Load the optional SMTP transport config.
