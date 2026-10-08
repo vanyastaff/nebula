@@ -50,6 +50,9 @@ pub(crate) enum Failure {
     )]
     #[cfg(target_arch = "wasm32")]
     BrowserOrigin,
+    /// Validation problem with the server's own paths and remediation. Never raw bodies.
+    #[error("{0}")]
+    Invalid(String),
     #[error("The server rejected the request (HTTP {0}).")]
     Rejected(u16),
 }
@@ -541,10 +544,32 @@ fn decode<T: DeserializeOwned>(
         401 => Failure::Unauthorized,
         403 => Failure::Forbidden,
         409 => Failure::Conflict,
+        422 => Failure::Invalid(invalid_workflow_message(&response.body)),
         501 => Failure::Unsupported,
         500..=599 if mutation => Failure::OutcomeUnknown,
         status => Failure::Rejected(status),
     })
+}
+
+/// The first validation issues as `path: remediation`. Free-form detail and provider text stay out.
+fn invalid_workflow_message(body: &[u8]) -> String {
+    let issues: Vec<String> = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|problem| problem["errors"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .take(3)
+        .map(|issue| {
+            let path = issue["path"].as_str().unwrap_or("workflow");
+            let remediation = issue["remediation"].as_str().unwrap_or("review this step");
+            format!("{path}: {remediation}")
+        })
+        .collect();
+    if issues.is_empty() {
+        "The server rejected this workflow.".to_owned()
+    } else {
+        format!("The server rejected this workflow. {}", issues.join(" "))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -909,6 +934,25 @@ mod tests {
             Failure::OutcomeUnknown
         );
         server.verify().await;
+    }
+    #[test]
+    fn invalid_workflow_problem_names_the_path_and_remediation_but_not_free_form_detail() {
+        let body = serde_json::json!({"errors": [{
+            "path": "/nodes/http_request/action_key",
+            "remediation": "register the exact namespaced action",
+            "detail": "provider text that must stay out"
+        }]})
+        .to_string();
+        let message = invalid_workflow_message(body.as_bytes());
+        assert!(
+            message
+                .contains("/nodes/http_request/action_key: register the exact namespaced action")
+        );
+        assert!(!message.contains("provider text"));
+        assert_eq!(
+            invalid_workflow_message(b"not json"),
+            "The server rejected this workflow."
+        );
     }
     #[tokio::test]
     async fn old_servers_without_document_revision_are_explicitly_unsupported() {
