@@ -61,6 +61,24 @@ async fn rejected_startup(overrides: &[(&str, &str)], diagnostic: &str) {
 }
 
 #[tokio::test]
+async fn memory_is_not_a_deployment_backend() {
+    rejected_startup(
+        &[("API_EXECUTION_BACKEND", "memory")],
+        "memory is a test adapter",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn separate_workers_reject_sqlite_before_database_creation() {
+    rejected_startup(
+        &[("NEBULA_EXECUTION", "separate-workers")],
+        "separate workers require PostgreSQL",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn removed_postgres_auth_selector_fails_before_opening_sqlite() {
     rejected_startup(
         &[("API_AUTH_BACKEND", "postgres")],
@@ -195,6 +213,13 @@ async fn incomplete_tenant_bootstrap_does_not_create_database() {
         "tenant bootstrap configuration",
     )
     .await;
+}
+
+#[tokio::test]
+async fn occupied_listener_does_not_create_database_or_start_owners() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    rejected_startup(&[("SERVER_BIND_ADDRESS", &address)], "server failed").await;
 }
 
 #[tokio::test]

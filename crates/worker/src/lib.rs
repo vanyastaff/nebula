@@ -126,6 +126,9 @@ pub enum WorkerBuildError {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WorkerRuntimeError {
+    /// Shutdown interrupted startup before the supervised loops were installed.
+    #[error("worker startup was cancelled")]
+    StartupCancelled,
     /// A component returned before the runtime was asked to stop.
     #[error("worker component `{component}` stopped unexpectedly")]
     ComponentStopped {
@@ -246,6 +249,59 @@ impl WorkerRuntime {
     /// fanout, maintenance, and timer scanning. In-flight engine turns observe
     /// the relayed engine shutdown.
     pub async fn run(self, shutdown: CancellationToken) -> Result<(), WorkerRuntimeError> {
+        self.run_with_startup(shutdown, None).await
+    }
+
+    /// Start and acknowledge runtime admission before returning its owned task.
+    ///
+    /// Success means reconciliation was admitted and the supervised loops were
+    /// installed. It does not wait for the initial recovery sweep or prove ongoing
+    /// backend availability. The caller must continue observing the returned task;
+    /// dropping it aborts the runtime and cancels its shared shutdown token.
+    ///
+    /// # Errors
+    /// Returns the startup failure, task failure, or cancellation before admission.
+    pub async fn start(
+        self,
+        shutdown: CancellationToken,
+    ) -> Result<
+        tokio_util::task::AbortOnDropHandle<Result<(), WorkerRuntimeError>>,
+        WorkerRuntimeError,
+    > {
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let runtime_shutdown = shutdown.clone();
+        let mut task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            self.run_with_startup(runtime_shutdown, Some(started)).await
+        }));
+        tokio::select! {
+            result = ready => {
+                if result.is_ok() && !shutdown.is_cancelled() {
+                    Ok(task)
+                } else {
+                    task.await.map_err(|source| WorkerRuntimeError::ComponentJoin {
+                        component: "startup", source,
+                    })??;
+                    Err(WorkerRuntimeError::StartupCancelled)
+                }
+            },
+            result = &mut task => {
+                result.map_err(|source| WorkerRuntimeError::ComponentJoin {
+                    component: "startup", source,
+                })??;
+                Err(WorkerRuntimeError::StartupCancelled)
+            },
+        }
+    }
+
+    async fn run_with_startup(
+        self,
+        shutdown: CancellationToken,
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> Result<(), WorkerRuntimeError> {
+        let _cancel_on_drop = shutdown.clone().drop_guard();
+        if shutdown.is_cancelled() {
+            return Err(WorkerRuntimeError::StartupCancelled);
+        }
         tracing::info!(
             processor = %hex_id(&self.processor_id),
             available_plugins = self.available_plugins_count,
@@ -397,6 +453,10 @@ impl WorkerRuntime {
             labels.insert(handle.id(), Component::ResourceStatus);
         }
 
+        if let Some(started) = started {
+            let _ = started.send(());
+        }
+        tracing::info!("worker runtime admitted; supervised loops installed");
         let mut first_failure = None;
         while let Some(joined) = components.join_next().await {
             let failure = match joined {

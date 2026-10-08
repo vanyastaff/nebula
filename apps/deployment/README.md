@@ -16,9 +16,10 @@ Shared storage does not transfer aggregate write authority.
 
 The standalone worker owns its environment adapter in `apps/worker/src/config.rs`.
 The server owns HTTP, identity, credential commands and its admitted deployment
-pool. The ordinary server still does not start an execution worker; the server's
-`runtime-repair-red` profile consumes this assembly for evidence only. Its optional
-clock and event inputs remain behind the matching feature.
+pool. The ordinary server starts an in-process execution worker by default and
+can explicitly delegate execution to separate PostgreSQL workers. Both use this
+assembly. The server's `runtime-repair-red` profile additionally injects optional
+clock and event inputs behind its matching feature for evidence only.
 
 Validation uses the worker smoke scenarios and server profile lifecycle tests in
 addition to this package's tests. A successful assembly test does not establish a

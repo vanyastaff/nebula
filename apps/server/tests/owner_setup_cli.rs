@@ -93,6 +93,14 @@ async fn postgres_operator_cli_uses_the_selected_deployment_database() {
         assert_serving_identity_survives_restart(
             directory.path(), "postgres", Some(url.as_str()), "Postgres-password-canary-2026",
         ).await;
+        assert_execution_survives_restart(
+            directory.path(), "postgres", Some(url.as_str()), "Postgres-password-canary-2026",
+            ReopenMoment::Completed,
+        ).await;
+        assert_execution_survives_restart(
+            directory.path(), "postgres", Some(url.as_str()), "Postgres-password-canary-2026",
+            ReopenMoment::TimerParked,
+        ).await;
     }).catch_unwind().await;
     let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
         .execute(&admin)
@@ -135,7 +143,6 @@ impl ServingProcess {
         command
             .env_clear()
             .env("NEBULA_ENV", "local")
-            .env("API_EXECUTION_BACKEND", backend)
             .env("API_EXECUTION_DB_PATH", "deployment.db")
             .env("NEBULA_CRED_DEV_KEY", "1")
             .env("NEBULA_WORKER_ARTIFACT_SET_DIGEST", "71".repeat(32))
@@ -153,6 +160,9 @@ impl ServingProcess {
         }
         if let Some(dsn) = dsn {
             command.env("DATABASE_URL", dsn);
+        }
+        if !backend.is_empty() {
+            command.env("API_EXECUTION_BACKEND", backend);
         }
         let mut child = command.spawn().unwrap();
         let (sender, mut readiness) = tokio::sync::mpsc::channel(1);
@@ -274,6 +284,172 @@ async fn assert_serving_identity_survives_restart(
                 .json(&serde_json::json!({"email":"owner@local.example", "password":"incorrect-password-canary"}))
                 .send().await.unwrap();
             assert_eq!(rejected.status(), 401);
+        }).catch_unwind().await;
+        server.stop().await;
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
+#[tokio::test]
+async fn mandatory_worker_failure_stops_the_ordinary_server() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut server = ServingProcess::start(directory.path(), "sqlite", None).await;
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(directory.path().join("deployment.db")),
+    )
+    .await
+    .unwrap();
+    // Fault injection into this private deployment: resource fanout loses its
+    // durable relation. No test-only switch alters the production supervisor.
+    sqlx::query("DROP TABLE resource_deliveries")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    let result = tokio::time::timeout(Duration::from_secs(15), server.child.wait()).await;
+    if result.is_err() {
+        server.child.kill().await.unwrap();
+    }
+    for reader in server.readers {
+        reader.await.unwrap();
+    }
+    let status = result
+        .expect("mandatory worker failure must stop HTTP and the process")
+        .unwrap();
+    assert!(
+        !status.success(),
+        "mandatory owner failure must not report clean exit"
+    );
+}
+
+#[tokio::test]
+async fn default_local_server_executes_workflow_and_preserves_output_on_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = invoke(directory.path(), BEGIN, b"Owner-password-canary-2026").await;
+    assert!(output.status.success(), "{output:?}");
+    assert_execution_survives_restart(
+        directory.path(),
+        "",
+        None,
+        "Owner-password-canary-2026",
+        ReopenMoment::Completed,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn default_local_server_recovers_timer_after_process_crash() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = invoke(directory.path(), BEGIN, b"Owner-password-canary-2026").await;
+    assert!(output.status.success(), "{output:?}");
+    assert_execution_survives_restart(
+        directory.path(),
+        "",
+        None,
+        "Owner-password-canary-2026",
+        ReopenMoment::TimerParked,
+    )
+    .await;
+}
+
+#[derive(Clone, Copy)]
+enum ReopenMoment {
+    Completed,
+    TimerParked,
+}
+
+async fn assert_execution_survives_restart(
+    directory: &Path,
+    backend: &str,
+    dsn: Option<&str>,
+    password: &str,
+    reopen: ReopenMoment,
+) {
+    use futures::FutureExt;
+    use serde_json::json;
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let mut execution_url = None;
+    let mut session = None;
+    for process in 0..2 {
+        let server = ServingProcess::start(directory, backend, dsn).await;
+        let result = std::panic::AssertUnwindSafe(async {
+            let prefix = format!("{}/api/v1/orgs/personal/workspaces/default", server.base_url);
+            if execution_url.is_none() {
+                let response = client.post(format!("{}/api/v1/auth/login", server.base_url))
+                    .json(&json!({"email":"owner@local.example", "password":password}))
+                    .send().await.unwrap();
+                assert_eq!(response.status(), 200);
+                let cookie = response.headers().get_all(reqwest::header::SET_COOKIE).iter()
+                    .map(|value| value.to_str().unwrap().split(';').next().unwrap())
+                    .collect::<Vec<_>>().join("; ");
+                let login: serde_json::Value = response.json().await.unwrap();
+                let csrf = login["csrf_token"].as_str().unwrap();
+                let (action, parameters) = match reopen {
+                    ReopenMoment::Completed => ("core.set_fields", json!({
+                        "data":{"type":"literal","value":{"answer":42}}
+                    })),
+                    ReopenMoment::TimerParked => ("core.delay", json!({
+                        "data":{"type":"literal","value":{"answer":42}},
+                        "mode":{"type":"literal","value":"for"},
+                        "amount":{"type":"literal","value":2000},
+                        "unit":{"type":"literal","value":"milliseconds"}
+                    })),
+                };
+                let response = client.post(format!("{prefix}/workflows"))
+                    .header(reqwest::header::COOKIE, &cookie).header("x-csrf-token", csrf)
+                    .json(&json!({"name":format!("Local execution {}", uuid::Uuid::new_v4()), "definition": {
+                        "nodes":[{"id":"step", "name":"Step", "plugin_key":"core", "action_key":action,
+                            "parameters":parameters, "enabled":true}],
+                        "connections":[]
+                    }})).send().await.unwrap();
+                let status = response.status();
+                let body: serde_json::Value = response.json().await.unwrap();
+                assert_eq!(status, 201, "{body}");
+                let workflow = body["id"].as_str().unwrap();
+                let response = client.post(format!("{prefix}/workflows/{workflow}/activate"))
+                    .header(reqwest::header::COOKIE, &cookie).header("x-csrf-token", csrf)
+                    .send().await.unwrap();
+                let status = response.status();
+                let body: serde_json::Value = response.json().await.unwrap();
+                assert_eq!(status, 200, "{body}");
+                let response = client.post(format!("{prefix}/workflows/{workflow}/executions"))
+                    .header(reqwest::header::COOKIE, &cookie).header("x-csrf-token", csrf)
+                    .json(&json!({"input":{}})).send().await.unwrap();
+                let status = response.status();
+                let body: serde_json::Value = response.json().await.unwrap();
+                assert_eq!(status, 202, "{body}");
+                execution_url = Some(format!("/executions/{}", body["id"].as_str().unwrap()));
+                session = Some(cookie);
+            }
+            // The production timer scanner runs every 30 seconds. Reopening
+            // before the timer is due must still recover on its next scan.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+            loop {
+                let response = client.get(format!("{prefix}{}", execution_url.as_ref().unwrap()))
+                    .header(reqwest::header::COOKIE, session.as_ref().unwrap()).send().await.unwrap();
+                assert_eq!(response.status(), 200);
+                let body: serde_json::Value = response.json().await.unwrap();
+                if process == 0 && matches!(reopen, ReopenMoment::TimerParked) {
+                    assert_ne!(body["status"], "completed", "must crash while the timer is parked");
+                    if body["nodes"]["step"]["status"] == "waiting" {
+                        break;
+                    }
+                }
+                if body["status"] == "completed" {
+                    assert_eq!(body["nodes"]["step"]["status"], "completed");
+                    assert_eq!(body["nodes"]["step"]["output"], json!({"type":"inline","value":{"answer":42}}));
+                    break;
+                }
+                assert!(tokio::time::Instant::now() < deadline, "ordinary server never completed accepted work: {body}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         }).catch_unwind().await;
         server.stop().await;
         if let Err(panic) = result {

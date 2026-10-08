@@ -84,6 +84,8 @@ deny = [
   # composition root. First-party app assembly and the standalone worker may
   # depend on it; product crates cannot choose deployment policy.
   { crate = "nebula-worker", wrappers = [
+    # The server owns the optional in-process execution runtime.
+    "nebula-server",
     # The core-flavor first-party worker binary wraps the reusable runtime.
     "nebula-worker-bin",
     "nebula-deployment",

@@ -608,9 +608,8 @@ the **single shared store** `rbac_middleware` also consults, so a
 guarded membership addition is immediately visible to the next RBAC check (no
 propagation window). `nebula-storage-port` provides consistent membership snapshots
 and parent-qualified mutations, implemented by its storage backends and wired by
-`apps/server`. The in-memory
-implementation is the §4.5-honest reference backing, with the same
-restart/replica limits as `API_EXECUTION_BACKEND=memory`.
+`apps/server`. The in-memory implementation is an internal test/reference
+adapter. Deployment startup accepts SQLite or PostgreSQL only.
 
 The technical API `MembershipStore` exposes guarded organization mutations and
 parent-qualified workspace grant list/upsert/remove operations.
@@ -628,9 +627,9 @@ verified owner in the same deployment database.
 
 | Aspect | First-party tenant membership composition |
 |---|---|
-| Default binary | Wired to the selected memory, SQLite, or PostgreSQL execution backend |
-| Restart-survival | SQLite/PostgreSQL: **yes**; memory: **no** |
-| Multi-replica share | PostgreSQL: **yes**; SQLite/memory: **no** |
+| Default binary | Wired to SQLite by default, or explicitly selected PostgreSQL |
+| Restart-survival | SQLite/PostgreSQL: **yes** |
+| Multi-replica share | PostgreSQL: **yes**; SQLite: **no** |
 | Provisioning | Offline first-owner setup persists an unverified account and a resumable tenant command; environment-driven bootstrap accepts an existing verified owner. Tenant acceptance atomically creates the org, default workspace, owner grant and receipt; exact replay acknowledges history without restoring removed authority |
 
 > RBAC applies role enforcement on every

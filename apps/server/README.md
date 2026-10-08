@@ -5,14 +5,14 @@ surface to one of three ingress transports (`api`, `webhook`,
 `realtime`, or `all`) and instantiates the currently configured runtime ports
 (storage adapters, idempotency store, identity backend, tenant directory,
 email transport, metrics + telemetry exporters). The tenant directory uses
-the same selected memory, SQLite, or PostgreSQL backend as execution storage.
+the same selected SQLite or PostgreSQL backend as execution storage.
 Startup does not create an organization, workspace, or privileged member;
 durable tenants are provisioned explicitly through operator setup or bootstrap.
 
 Linked plugin release selection is shared with the standalone worker through
-`apps/deployment`. The evidence profile uses that package's runtime assembly;
-the server does not depend on the worker executable package. Ordinary launch
-still serves the API without an in-process execution worker.
+`apps/deployment`. Both ordinary launch and the evidence profile use that
+package's runtime assembly; the server does not depend on the worker executable
+package. Ordinary launch serves HTTP and runs executions in one process.
 
 Run the default profile locally:
 
@@ -40,7 +40,9 @@ database opener and storage-selection parser.
 HTTP shutdown gives handlers and response connections one ten-second drain
 budget. An unfinished handler or streaming response makes shutdown fail rather
 than report a clean exit. Credential and reservation owners are cleaned up before
-that error returns; their cleanup is separate from the HTTP budget. The process
+that error returns; their cleanup is separate from the HTTP budget. Pool cleanup
+has a five-second limit so a connection retained by a timed-out handler cannot
+hide the original failure indefinitely. The process
 supervisor still needs an overall termination deadline. A timed-out HTTP drain
 does not assert that every connection task has already stopped.
 
@@ -141,12 +143,11 @@ and fixed-width digests. Secret-bearing and raw-business-payload
 classifications are rejected before an artifact entry can be constructed; no
 caller-provided text or arbitrary payload is retained or printed by `Debug`.
 
-The worker runtime currently spawns its durable timer scanner internally and
-drops that nested `JoinHandle`. Profile cancellation and pool close stop its
-work, but a scanner-only panic is not yet join-visible to the app supervisor.
-HTTP, the worker pull loop, and lifecycle observer are owned and joined. This
-residual must be closed in the worker runtime before the profile can claim
-complete nested structured-concurrency evidence.
+The worker runtime owns its durable timer scanner through an abort-on-drop
+handle and propagates scanner join failures to its supervisor. HTTP, the worker
+pull loop, and lifecycle observer are also owned and joined. Forced shutdown
+still needs an external process deadline; this ownership does not prove that
+non-yielding tasks or every borrowed connection have stopped.
 
 Run the passing infrastructure-integrity slice independently:
 
@@ -221,25 +222,36 @@ credential-runtime or integration surface.
 ## Execution-store backend
 
 The server's execution engine (workflow execution rows, control queue, journal)
-is backed by one of three selectable stores. Choose based on your deployment needs.
+uses SQLite by default, or PostgreSQL when explicitly selected. Memory adapters
+are internal test/reference implementations and cannot be selected for deployment.
+
+`--execution in-process` (default, also `NEBULA_EXECUTION=in-process`) starts the
+execution worker on the same admitted pool and exact linked release as HTTP.
+The server waits for worker startup admission before serving requests and fails
+if that mandatory runtime fails. Admission confirms installed supervised loops;
+it does not claim the initial recovery sweep has completed or ongoing DB health.
+
+`--execution separate-workers` requires PostgreSQL and leaves command consumption
+to independently supervised workers. This selection is independent of native or
+Docker launch and local or remote endpoint location. It does not discover whether
+an external worker is currently available.
 
 ### Behaviour contract
 
 | `API_EXECUTION_BACKEND` | Store | When to use |
 |-------------------------|-------|-------------|
-| **unset** / `memory`    | In-memory (dev default) | Local development. Execution state is lost on restart. Cannot be shared across processes. |
-| `sqlite`                | WAL-mode SQLite file | Single-process production. State survives restarts. Not shareable across hosts or concurrent writers. |
+| **unset** / `sqlite`     | WAL-mode SQLite file | Single-process deployment with in-process execution. State survives restart. |
 | `postgres`              | PostgreSQL (build with `--features postgres`) | Multi-process or multi-host production. State is shared across all replicas that point at the same database. |
 
-Without an explicit `API_EXECUTION_BACKEND`, the server uses in-memory adapters
-and emits a `tracing::warn!` at startup when `NEBULA_ENV` is not `dev` / `development`
-/ `local`. This matches the idempotency-store convention.
+Without an explicit `API_EXECUTION_BACKEND`, serving and operator setup open the
+same SQLite file. `memory` is rejected before creating storage.
 
 ### Env vars
 
 | Variable | Type | Default | Notes |
 |----------|------|---------|-------|
-| `API_EXECUTION_BACKEND` | enum | `memory` | Case-insensitive: `memory`, `sqlite`, `postgres`. |
+| `API_EXECUTION_BACKEND` | enum | `sqlite` | Case-insensitive: `sqlite`, `postgres`. |
+| `NEBULA_EXECUTION` | enum | `in-process` | `in-process` or `separate-workers`; CLI `--execution` takes precedence. |
 | `API_EXECUTION_DB_PATH` | string | `nebula-server-execution.db` | SQLite only. Path relative to the working directory. |
 | `DATABASE_URL` | string | — | Postgres only. Standard sqlx DSN (`postgres://user:pass@host/db`). Required when `API_EXECUTION_BACKEND=postgres`. |
 
@@ -292,13 +304,12 @@ deployment file. `setup begin` and subsequent ordinary server startup therefore
 use the same identity database when given the same deployment configuration.
 Startup authenticates stored identity envelopes before exposing the backend;
 explicitly configured old keys permit rotation, never plaintext adoption.
-Offline first-owner enrollment is available through `setup`; ordinary server
-startup still does not launch an in-process execution worker.
+Offline first-owner enrollment is available through `setup`; serving defaults
+to the in-process execution runtime.
 
 | `API_EXECUTION_BACKEND` | Identity backend | Durability |
 |--------------------|------------------|------------|
-| **unset** / `memory` | `InMemoryAuthBackend` | Process-local; lost on restart and not shared across replicas |
-| `sqlite` | `DurableAuthBackend` with SQLite persistence | Identity survives restart in the execution deployment file; shares its pool and shutdown |
+| **unset** / `sqlite` | `DurableAuthBackend` with SQLite persistence | Identity survives restart in the execution deployment file; shares its pool and shutdown |
 | `postgres` | `DurableAuthBackend` with PostgreSQL persistence (build with `--features postgres`) | Users, sessions, PATs, verification/OAuth state, and external identity links survive restart and share the admitted deployment pool |
 
 ### PostgreSQL identity-authority upgrade runbook
@@ -460,8 +471,7 @@ separate credential database.
 
 | `API_EXECUTION_BACKEND` | Credential database | Deployment |
 |-------------------------|---------------------|------------|
-| `memory` (default) | the process-local `sqlite::memory:` database that also holds tenancy | Development only; nothing survives a restart |
-| `sqlite` | the `API_EXECUTION_DB_PATH` file | Durable single process |
+| **unset** / `sqlite` | the `API_EXECUTION_DB_PATH` file | Durable single process |
 | `postgres` | `DATABASE_URL` (build with `--features postgres`) | Shared multi-replica production |
 
 The credential store opens on the execution backend's own pool — there is no

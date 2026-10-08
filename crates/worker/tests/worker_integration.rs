@@ -279,6 +279,65 @@ fn reconciliation_runtime(
 }
 
 #[tokio::test]
+async fn worker_start_rejects_reconciliation_failure_before_acknowledgement() {
+    let stores = TestStores::new();
+    let engine = reconciliation_engine(&stores).await;
+    let mut prior = engine
+        .spawn_resource_rotation_fanout(None, None)
+        .unwrap()
+        .unwrap();
+    let queue = Arc::new(ControlPollingWitness::new(&stores));
+    let runtime = reconciliation_runtime(&stores, engine, queue.clone());
+    let shutdown = CancellationToken::new();
+    let result = runtime.start(shutdown.clone()).await;
+    prior.abort();
+    let _ = prior.wait().await;
+    assert!(matches!(
+        result,
+        Err(nebula_worker::WorkerRuntimeError::ResourceReconciliationStartup(_))
+    ));
+    assert!(shutdown.is_cancelled());
+    assert_eq!(queue.poll_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn worker_start_acknowledges_installed_reconciliation_and_joins_on_shutdown() {
+    let stores = TestStores::new();
+    let engine = reconciliation_engine(&stores).await;
+    let queue = Arc::new(ControlPollingWitness::new(&stores));
+    let runtime = reconciliation_runtime(&stores, engine.clone(), queue);
+    let shutdown = CancellationToken::new();
+    let running = runtime.start(shutdown.clone()).await.unwrap();
+    assert!(matches!(
+        engine.spawn_resource_rotation_fanout(None, None),
+        Err(nebula_engine::ResourceReconciliationStartupError::AlreadyRunning)
+    ));
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn worker_start_rejects_already_cancelled_startup() {
+    let stores = TestStores::new();
+    let engine = reconciliation_engine(&stores).await;
+    let runtime = reconciliation_runtime(
+        &stores,
+        engine,
+        Arc::new(ControlPollingWitness::new(&stores)),
+    );
+    let shutdown = CancellationToken::new();
+    shutdown.cancel();
+    assert!(matches!(
+        runtime.start(shutdown).await,
+        Err(nebula_worker::WorkerRuntimeError::StartupCancelled)
+    ));
+}
+
+#[tokio::test]
 async fn worker_resource_reconciliation_rejects_an_already_running_driver_before_controls() {
     let stores = TestStores::new();
     let engine = reconciliation_engine(&stores).await;

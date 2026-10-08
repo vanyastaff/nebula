@@ -49,6 +49,7 @@ nebula-metadata = { path = "../../crates/metadata" }
 nebula-schema = { path = "../../crates/schema", features = ["schemars"] }
 # Linked release selection and first-party runtime assembly shared with worker.
 nebula-deployment = { path = "../deployment" }
+nebula-worker = { path = "../../crates/worker" }
 # Ephemeral execution observations used only by the runtime-repair evidence
 # profile. Durable state remains authoritative.
 nebula-eventbus = { path = "../../crates/eventbus", optional = true }

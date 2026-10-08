@@ -38,6 +38,20 @@ pub(crate) enum ServerRunError {
     /// API configuration cannot be loaded from environment.
     #[error("failed to load API config")]
     Config(#[from] ApiConfigError),
+    #[error("separate workers require PostgreSQL deployment storage")]
+    SeparateWorkersRequirePostgres,
+    #[error("in-process worker assembly failed")]
+    WorkerComposition(#[source] Box<nebula_deployment::worker::ComposeError>),
+    #[error("in-process worker construction failed")]
+    WorkerBuild(#[from] nebula_worker::WorkerBuildError),
+    #[error("in-process worker failed")]
+    Worker(#[from] nebula_worker::WorkerRuntimeError),
+    #[error("in-process worker task failed")]
+    WorkerTask(#[source] tokio::task::JoinError),
+    #[error("in-process worker shutdown timed out")]
+    WorkerDrainTimedOut,
+    #[error(transparent)]
+    DatabaseClose(#[from] crate::deployment_database::DatabaseCloseTimedOut),
     /// Address override is present but invalid.
     #[error("{var_name} invalid")]
     InvalidBindAddress {
@@ -251,13 +265,11 @@ pub(crate) struct ExecutionStoreBundle {
     /// the burn and the enqueue across two backends — exactly the durability gap
     /// this seam closes.
     pub(super) resume_producer: Arc<dyn nebula_storage_port::store::ResumeProducer>,
-    #[cfg(feature = "runtime-repair-red")]
     pub(super) worker_projection: WorkerStoreProjection,
     #[cfg(feature = "runtime-repair-red")]
     pub(super) backend_lifecycle: ProfileBackendLifecycle,
 }
 
-#[cfg(feature = "runtime-repair-red")]
 #[derive(Clone)]
 pub(crate) struct WorkerStoreProjection {
     pub(crate) bundles: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
@@ -323,9 +335,10 @@ pub(crate) use crate::execution_store_backends::build_execution_stores;
 pub(crate) async fn run_transport<T: ServerTransport>(
     transport: T,
     telemetry_guard: TelemetryGuard,
+    execution: crate::execution_runtime::ExecutionTopology,
 ) -> Result<(), ServerRunError> {
     ServerRuntime::new()
-        .run_transport(transport, telemetry_guard)
+        .run_transport(transport, telemetry_guard, execution)
         .await
 }
 
@@ -353,8 +366,16 @@ impl ServerRuntime {
         &self,
         transport: T,
         mut telemetry_guard: TelemetryGuard,
+        execution: crate::execution_runtime::ExecutionTopology,
     ) -> Result<(), ServerRunError> {
         let mut api_config = ApiConfig::from_env()?;
+        if matches!(
+            execution,
+            crate::execution_runtime::ExecutionTopology::SeparateWorkers
+        ) && api_config.execution.backend != nebula_api::config::ExecutionBackendKind::Postgres
+        {
+            return Err(ServerRunError::SeparateWorkersRequirePostgres);
+        }
         // Reject startup inputs before opening or migrating deployment storage.
         validate_idempotency_backend(&api_config)?;
         let bind_address =
@@ -373,147 +394,192 @@ impl ServerRuntime {
         )
         .map_err(TransportInitError::from)?;
 
+        // Acquire ingress before starting aggregate lifecycle tasks. A port
+        // conflict must not leave a worker consuming accepted commands.
+        let listener = TcpListener::bind(bind_address).await?;
         let metrics_registry = Arc::new(MetricsRegistry::new());
         telemetry_guard
             .attach_metrics_exporter(Arc::clone(&metrics_registry))
             .map_err(ServerRunError::MetricsExporter)?;
         let execution_bundle = build_execution_stores(&api_config, None, &metrics_registry).await?;
-        // Identity must exist before tenant authority can be granted. The
-        // opt-in bootstrap verifies its stable owner against this backend.
-        let oauth_config = std::mem::take(&mut api_config.auth.oauth);
-        let auth_backend = build_auth_backend(
-            &execution_bundle.deployment_database,
-            oauth_config,
-            Arc::clone(&email_port),
-            Some(Arc::clone(&metrics_registry)),
-            keyring.current(),
-            keyring.identity_legacy(),
-        )
-        .await?;
-        let idempotency_store =
-            build_idempotency_store(&api_config, &execution_bundle.deployment_database)?;
-        let tenant_provisioner = execution_bundle.tenant_directory.provisioner();
-        crate::tenant_bootstrap::bootstrap_tenant(
-            tenant_bootstrap,
-            &auth_backend,
-            &tenant_provisioner,
-        )
-        .await
-        .map_err(TransportInitError::from)?;
-        let mut credential_runtime = compose_first_party_runtime(
-            &execution_bundle.deployment_database,
-            keyring.current(),
-            keyring.credential_legacy(),
-            Arc::clone(&metrics_registry),
-        )
-        .await
-        .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
-        let credential_service = credential_runtime.service();
-        let binding_resolver: Arc<dyn nebula_engine::ExecutionBindingResolver> =
-            Arc::new(ServerExecutionBindingResolver::new(
-                Arc::clone(&credential_service),
-                Arc::clone(&execution_bundle.resource_store),
-                Arc::clone(&registry),
-            ));
-        let mut state = default_state(
-            &api_config,
-            Arc::clone(&metrics_registry),
-            execution_bundle,
-            registry,
-            Some(binding_resolver),
-        )?;
-        state = transport.prepare_state(state, bind_address)?;
-        state = state.with_idempotency_store(idempotency_store);
-        // The webhook execution resolver and authenticated command controller
-        // share the same service instance. Only the resolver retains direct
-        // execution-plane access; AppState receives the API-owned gateway.
-        let webhook_secret_resolver = Arc::new(
-            crate::webhook_credential_resolver::CredentialBackedWebhookSecretResolver::new(
-                Arc::clone(&credential_service),
-            ),
-        );
-        state = state
-            .with_credential_schema(Arc::clone(&credential_runtime.catalog))
-            .with_webhook_secret_resolver(webhook_secret_resolver);
-        if state.membership_store.is_some() && state.workspace_resolver.is_some() {
-            let credential_authority: Arc<dyn CredentialTenantAuthority> =
-                Arc::new(ServerCredentialAuthority::new(
-                    state.membership_store.clone(),
-                    state.workspace_resolver.clone(),
-                ));
-            let credential_controller = Arc::new(CredentialController::new(
-                Arc::clone(&credential_service),
-                credential_authority,
-                Arc::clone(&credential_runtime.adjudicator),
-                Some(Arc::clone(&credential_runtime.audit_sink)),
-            ));
-            let credential_gateway = Arc::new(ServerCredentialGateway::new(credential_controller));
-            state = state.with_credential_gateway(credential_gateway);
-        } else {
-            tracing::warn!(
-                "credential management gateway is not mounted because tenant membership \
+        let deployment_database = execution_bundle.deployment_database.clone();
+        // Close the admitted pool on every subsequent startup or serving result.
+        let result = async {
+            // Identity must exist before tenant authority can be granted. The
+            // opt-in bootstrap verifies its stable owner against this backend.
+            let oauth_config = std::mem::take(&mut api_config.auth.oauth);
+            let auth_backend = build_auth_backend(
+                &execution_bundle.deployment_database,
+                oauth_config,
+                Arc::clone(&email_port),
+                Some(Arc::clone(&metrics_registry)),
+                keyring.current(),
+                keyring.identity_legacy(),
+            )
+            .await?;
+            let idempotency_store =
+                build_idempotency_store(&api_config, &execution_bundle.deployment_database)?;
+            let tenant_provisioner = execution_bundle.tenant_directory.provisioner();
+            crate::tenant_bootstrap::bootstrap_tenant(
+                tenant_bootstrap,
+                &auth_backend,
+                &tenant_provisioner,
+            )
+            .await
+            .map_err(TransportInitError::from)?;
+            let mut credential_runtime = compose_first_party_runtime(
+                &execution_bundle.deployment_database,
+                keyring.current(),
+                keyring.credential_legacy(),
+                Arc::clone(&metrics_registry),
+            )
+            .await
+            .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
+            // Credential composition starts background owners. Every fallible stage
+            // below must return through their joined shutdown, including router setup.
+            let result = async {
+                let credential_service = credential_runtime.service();
+                let projection = execution_bundle.worker_projection.clone();
+                let artifact_set_digest = registry.revision().artifact_set_digest();
+                let binding_resolver: Arc<dyn nebula_engine::ExecutionBindingResolver> =
+                    Arc::new(ServerExecutionBindingResolver::new(
+                        Arc::clone(&credential_service),
+                        Arc::clone(&execution_bundle.resource_store),
+                        Arc::clone(&registry),
+                    ));
+                let mut state = default_state(
+                    &api_config,
+                    Arc::clone(&metrics_registry),
+                    execution_bundle,
+                    registry,
+                    Some(binding_resolver),
+                )?;
+                state = transport.prepare_state(state, bind_address)?;
+                state = state.with_idempotency_store(idempotency_store);
+                // The webhook execution resolver and authenticated command controller
+                // share the same service instance. Only the resolver retains direct
+                // execution-plane access; AppState receives the API-owned gateway.
+                let webhook_secret_resolver = Arc::new(
+                    crate::webhook_credential_resolver::CredentialBackedWebhookSecretResolver::new(
+                        Arc::clone(&credential_service),
+                    ),
+                );
+                state = state
+                    .with_credential_schema(Arc::clone(&credential_runtime.catalog))
+                    .with_webhook_secret_resolver(webhook_secret_resolver);
+                if state.membership_store.is_some() && state.workspace_resolver.is_some() {
+                    let credential_authority: Arc<dyn CredentialTenantAuthority> =
+                        Arc::new(ServerCredentialAuthority::new(
+                            state.membership_store.clone(),
+                            state.workspace_resolver.clone(),
+                        ));
+                    let credential_controller = Arc::new(CredentialController::new(
+                        Arc::clone(&credential_service),
+                        credential_authority,
+                        Arc::clone(&credential_runtime.adjudicator),
+                        Some(Arc::clone(&credential_runtime.audit_sink)),
+                    ));
+                    let credential_gateway =
+                        Arc::new(ServerCredentialGateway::new(credential_controller));
+                    state = state.with_credential_gateway(credential_gateway);
+                } else {
+                    tracing::warn!(
+                        "credential management gateway is not mounted because tenant membership \
                  authority is not provisioned"
-            );
-        }
-        state = state
-            .with_auth_backend(auth_backend)
-            .with_email_port(email_port);
-        // Captured before `state` is consumed by the router: the sweep needs
-        // the same store the start path writes reservations through.
-        let reservation_sweep = state.start_reservation_sweeper(
-            Duration::from_secs(api_config.idempotency.ttl_secs),
-            Duration::from_secs(api_config.idempotency.sweep_interval_secs),
-        );
-        let app = transport.build_router(state, &api_config)?;
-        let listener = TcpListener::bind(bind_address).await?;
-        let local_address = listener.local_addr()?;
-        tracing::info!(transport = transport.name(), %local_address, "starting transport");
-        let shutdown = CancellationToken::new();
-        // Expire keyed-start reservations on the same cadence, and with the
-        // same retention, as the idempotency cache: a start key is an
-        // `Idempotency-Key` for the start endpoint, and two different answers
-        // to "how long may this be replayed?" would be a discrepancy no
-        // operator could see. Owned here so it lives and dies with the
-        // process's serving lifecycle rather than running unsupervised.
-        let reservation_sweep = reservation_sweep.map(|sweeper| {
-            let token = shutdown.clone();
-            tokio::spawn(async move { sweeper.run(token).await })
-        });
-        if reservation_sweep.is_none() {
-            tracing::warn!(
-                "start-key reservation sweep disabled (idempotency sweep interval is 0); \
+                    );
+                }
+                state = state
+                    .with_auth_backend(auth_backend)
+                    .with_email_port(email_port);
+                // Captured before `state` is consumed by the router: the sweep needs
+                // the same store the start path writes reservations through.
+                let reservation_sweep = state.start_reservation_sweeper(
+                    Duration::from_secs(api_config.idempotency.ttl_secs),
+                    Duration::from_secs(api_config.idempotency.sweep_interval_secs),
+                );
+                let app = transport.build_router(state, &api_config)?;
+                let worker_runtime = match execution {
+                    crate::execution_runtime::ExecutionTopology::InProcess => {
+                        let (builder, _, _) = nebula_deployment::worker::build_core_flavor_runtime(
+                            projection.execution_stores,
+                            projection.turn_handoff,
+                            projection.turn_recovery,
+                            *uuid::Uuid::new_v4().as_bytes(),
+                            nebula_deployment::worker::CoreFlavorRevisionInputs {
+                                metrics: projection.metrics,
+                                artifact_set_digest,
+                                catalog: projection.revision_catalog,
+                                bundles: projection.bundles,
+                                credential_resolver: credential_service.clone(),
+                            },
+                            projection.resource_fanout,
+                        )
+                        .map_err(|error| ServerRunError::WorkerComposition(Box::new(error)))?;
+                        Some(
+                            builder
+                                .with_control_queue(projection.control_queue)
+                                .build()?,
+                        )
+                    },
+                    crate::execution_runtime::ExecutionTopology::SeparateWorkers => None,
+                };
+                let shutdown = CancellationToken::new();
+                // Expire keyed-start reservations on the same cadence, and with the
+                // same retention, as the idempotency cache: a start key is an
+                // `Idempotency-Key` for the start endpoint, and two different answers
+                // to "how long may this be replayed?" would be a discrepancy no
+                // operator could see. Owned here so it lives and dies with the
+                // process's serving lifecycle rather than running unsupervised.
+                let reservation_sweep = reservation_sweep.map(|sweeper| {
+                    let token = shutdown.clone();
+                    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                        sweeper.run(token).await;
+                    }))
+                });
+                if reservation_sweep.is_none() {
+                    tracing::warn!(
+                        "start-key reservation sweep disabled (idempotency sweep interval is 0); \
                  reservations will accumulate for the life of this deployment"
-            );
-        }
+                    );
+                }
 
-        let serve_result = serve_until_shutdown(
-            app,
-            listener,
-            shutdown.clone(),
-            wait_for_shutdown_signal(),
-            SHUTDOWN_DRAIN_BUDGET,
-        )
-        .await;
-        // Stop background owners even when HTTP draining failed. Their cleanup
-        // is separate from the HTTP drain budget.
-        shutdown.cancel();
-        if let Some(handle) = reservation_sweep
-            && let Err(error) = handle.await
-        {
-            tracing::warn!(%error, "start-key reservation sweep did not stop cleanly");
+                let serve_result = crate::execution_runtime::serve(
+                    app,
+                    listener,
+                    worker_runtime,
+                    shutdown.clone(),
+                    wait_for_shutdown_signal(),
+                    SHUTDOWN_DRAIN_BUDGET,
+                    transport.name(),
+                )
+                .await;
+                // Stop background owners even when HTTP draining failed. Their cleanup
+                // is separate from the HTTP drain budget.
+                shutdown.cancel();
+                if let Some(handle) = reservation_sweep
+                    && let Err(error) = handle.await
+                {
+                    tracing::warn!(%error, "start-key reservation sweep did not stop cleanly");
+                }
+                serve_result
+            }
+            .await;
+            // This also runs when preparation failed after credential composition.
+            credential_runtime.shutdown().await;
+            drop(credential_runtime);
+            result
         }
-        // Stop credential lifecycle tasks through their owner before returning
-        // the serving result. Drop remains the fail-safe path.
-        credential_runtime.shutdown().await;
-        drop(credential_runtime);
-        serve_result?;
+        .await;
+        let close_result = deployment_database.close().await;
+        result?;
+        close_result?;
         Ok(())
     }
 }
 
 /// Serve until an application shutdown request, then drain on the given budget.
 #[tracing::instrument(skip_all)]
-async fn serve_until_shutdown(
+pub(crate) async fn serve_until_shutdown(
     app: Router,
     listener: TcpListener,
     shutdown: CancellationToken,
@@ -525,9 +591,15 @@ async fn serve_until_shutdown(
     let app = shutdown_gate.install(app);
     let serve_future = serve_prebound(app, listener, shutdown.clone().cancelled_owned());
     tokio::pin!(serve_future);
+    let stop = async {
+        tokio::select! {
+            () = signal => {},
+            () = shutdown.cancelled() => {},
+        }
+    };
     tokio::select! {
         result = &mut serve_future => result.map_err(ServerRunError::from),
-        () = signal => {
+        () = stop => {
             let deadline = tokio::time::Instant::now() + drain_budget;
             shutdown.cancel();
             match shutdown_gate.close(drain_budget).await {

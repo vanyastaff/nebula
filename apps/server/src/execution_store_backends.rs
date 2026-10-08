@@ -5,9 +5,10 @@ use std::sync::Arc;
 use nebula_api::ApiConfig;
 use nebula_metrics::MetricsRegistry;
 
-use crate::compose::{ExecutionStoreBundle, TransportInitError};
 #[cfg(feature = "runtime-repair-red")]
-use crate::compose::{ProfileBackendLifecycle, WorkerStoreProjection};
+use crate::compose::ProfileBackendLifecycle;
+use crate::compose::WorkerStoreProjection;
+use crate::compose::{ExecutionStoreBundle, TransportInitError};
 use crate::deployment_database::DeploymentDatabase;
 
 pub(crate) async fn build_execution_stores(
@@ -17,10 +18,7 @@ pub(crate) async fn build_execution_stores(
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     let database = DeploymentDatabase::open(&api_config.execution, explicit_postgres_dsn).await?;
     Ok(match database {
-        DeploymentDatabase::Memory(pool) => {
-            warn_memory_outside_dev();
-            build_memory_execution_stores(pool, metrics)
-        },
+        DeploymentDatabase::Memory(pool) => build_memory_execution_stores(pool, metrics),
         DeploymentDatabase::Sqlite(deployment) => {
             build_sqlite_execution_stores(deployment, metrics)
         },
@@ -31,9 +29,8 @@ pub(crate) async fn build_execution_stores(
 
 fn build_memory_execution_stores(
     deployment_database: sqlx::SqlitePool,
-    _metrics: &MetricsRegistry,
+    metrics: &MetricsRegistry,
 ) -> ExecutionStoreBundle {
-    #[cfg(feature = "runtime-repair-red")]
     use nebula_storage::inmem::{
         InMemoryCheckpointStore, InMemoryIdempotencyGuard, InMemoryOperationLedger,
     };
@@ -64,7 +61,6 @@ fn build_memory_execution_stores(
         nebula_storage::inmem::InMemoryTurnHandoff::new(&execution_store),
     );
 
-    #[cfg(feature = "runtime-repair-red")]
     let worker_projection = {
         let projected_execution: Arc<dyn nebula_storage_port::store::ExecutionStore> =
             Arc::new(execution_store.clone());
@@ -76,7 +72,7 @@ fn build_memory_execution_stores(
             Arc::new(resume_token_store.clone());
         WorkerStoreProjection {
             bundles: Arc::new(InMemoryStartAcceptanceStore::new(&execution_store)),
-            metrics: MetricsRegistry::new(),
+            metrics: metrics.clone(),
             revision_catalog: Arc::new(nebula_storage::InMemoryPlanFlavorCatalog::new(
                 &execution_store,
             )),
@@ -131,25 +127,9 @@ fn build_memory_execution_stores(
         start_reservation_maintenance: start_acceptance,
         resume_token_store: Arc::new(resume_token_store),
         resume_producer: Arc::new(resume_producer),
-        #[cfg(feature = "runtime-repair-red")]
         worker_projection,
         #[cfg(feature = "runtime-repair-red")]
         backend_lifecycle: ProfileBackendLifecycle::Memory,
-    }
-}
-
-fn warn_memory_outside_dev() {
-    let environment = std::env::var("NEBULA_ENV").unwrap_or_default();
-    if !matches!(environment.as_str(), "development" | "dev" | "local") {
-        tracing::warn!(
-            backend = "memory",
-            nebula_env = %environment,
-            component = "execution-stores",
-            "execution-stores: in-memory adapters selected — execution state is lost \
-             on restart and cannot be shared across processes; \
-             set API_EXECUTION_BACKEND=sqlite (single-process durable) or \
-             API_EXECUTION_BACKEND=postgres (multi-process) for production"
-        );
     }
 }
 
@@ -163,7 +143,6 @@ fn build_sqlite_execution_stores(
         SqliteResumeProducer, SqliteResumeTokenStore, SqliteStartAcceptanceStore,
         SqliteTurnHandoff, SqliteWorkflowStore, SqliteWorkflowVersionStore,
     };
-    #[cfg(feature = "runtime-repair-red")]
     use nebula_storage::sqlite::{SqliteIdempotencyGuard, SqliteOperationLedger};
     let pool = deployment.pool().clone();
     tracing::warn!(
@@ -187,9 +166,8 @@ fn build_sqlite_execution_stores(
     let turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff> =
         Arc::new(SqliteTurnHandoff::new(pool.clone()));
 
-    #[cfg(feature = "runtime-repair-red")]
     let worker_projection = {
-        let worker_metrics = MetricsRegistry::new();
+        let worker_metrics = metrics.clone();
         WorkerStoreProjection {
             bundles: Arc::new(SqliteStartAcceptanceStore::new(pool.clone())),
             metrics: worker_metrics.clone(),
@@ -254,7 +232,6 @@ fn build_sqlite_execution_stores(
         start_reservation_maintenance: start_acceptance,
         resume_token_store,
         resume_producer: Arc::new(SqliteResumeProducer::new(pool)),
-        #[cfg(feature = "runtime-repair-red")]
         worker_projection,
         #[cfg(feature = "runtime-repair-red")]
         backend_lifecycle,
@@ -272,7 +249,6 @@ fn build_postgres_execution_stores(
         PgResumeTokenStore, PgStartAcceptanceStore, PgTurnHandoff, PgWorkflowStore,
         PgWorkflowVersionStore,
     };
-    #[cfg(feature = "runtime-repair-red")]
     use nebula_storage::postgres::{PgIdempotencyGuard, PgOperationLedger};
     tracing::warn!(
         "the node-result store is in-memory (not persisted across restarts); \
@@ -296,9 +272,8 @@ fn build_postgres_execution_stores(
     let turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff> =
         Arc::new(PgTurnHandoff::new(pool.clone()));
 
-    #[cfg(feature = "runtime-repair-red")]
     let worker_projection = {
-        let worker_metrics = MetricsRegistry::new();
+        let worker_metrics = metrics.clone();
         WorkerStoreProjection {
             bundles: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
             metrics: worker_metrics.clone(),
@@ -367,7 +342,6 @@ fn build_postgres_execution_stores(
         start_reservation_maintenance: start_acceptance,
         resume_token_store,
         resume_producer: Arc::new(PgResumeProducer::new(pool)),
-        #[cfg(feature = "runtime-repair-red")]
         worker_projection,
         #[cfg(feature = "runtime-repair-red")]
         backend_lifecycle,

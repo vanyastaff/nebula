@@ -292,12 +292,11 @@ pub struct SmtpEmailConfig {
 // be a compile error at the composition root's match, not a runtime
 // `unreachable!` behind a forced wildcard arm.
 pub enum ExecutionBackendKind {
-    /// Process-local in-memory adapters. Dev default; execution state is lost
-    /// on restart and cannot be shared across processes.
-    #[default]
+    /// Internal test/reference adapter; rejected by deployment environment parsing.
     Memory,
     /// File-local SQLite (WAL mode). Survives restarts within a single process;
     /// not shareable across hosts or multiple concurrent writer processes.
+    #[default]
     Sqlite,
     /// PostgreSQL-backed durable store. Survives restarts and is shared across
     /// replicas that point at the same database.
@@ -313,9 +312,8 @@ pub enum ExecutionBackendKind {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ExecutionStoreConfig {
     /// Selected execution-store backend. Defaults to
-    /// [`ExecutionBackendKind::Memory`] so a missing `API_EXECUTION_BACKEND`
-    /// keeps current dev behaviour; the composition root flips this for
-    /// production deployments that need durability.
+    /// [`ExecutionBackendKind::Sqlite`] so a local deployment retains state
+    /// without a separate database service.
     pub backend: ExecutionBackendKind,
 
     /// SQLite-only: path to the database file.
@@ -348,7 +346,7 @@ impl ExecutionStoreConfig {
         }
         let backend = match std::env::var("API_EXECUTION_BACKEND") {
             Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "memory" => ExecutionBackendKind::Memory,
+                "memory" => return Err(super::ApiConfigError::MemoryDeploymentUnsupported),
                 "sqlite" => ExecutionBackendKind::Sqlite,
                 "postgres" => ExecutionBackendKind::Postgres,
                 _ => {
@@ -358,7 +356,13 @@ impl ExecutionStoreConfig {
                     });
                 },
             },
-            Err(_) => ExecutionBackendKind::Memory,
+            Err(std::env::VarError::NotPresent) => ExecutionBackendKind::Sqlite,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(super::ApiConfigError::ParseEnum {
+                    var: "EXECUTION_BACKEND",
+                    raw: "<non-Unicode>".into(),
+                });
+            },
         };
         let db_path =
             std::env::var("API_EXECUTION_DB_PATH").unwrap_or_else(|_| Self::default().db_path);
@@ -378,7 +382,7 @@ impl std::fmt::Debug for ExecutionStoreConfig {
 impl Default for ExecutionStoreConfig {
     fn default() -> Self {
         Self {
-            backend: ExecutionBackendKind::Memory,
+            backend: ExecutionBackendKind::Sqlite,
             db_path: "nebula-server-execution.db".to_string(),
         }
     }
@@ -433,7 +437,7 @@ mod tests {
         env.remove("API_EXECUTION_BACKEND");
         env.remove("API_EXECUTION_DB_PATH");
         let config = ExecutionStoreConfig::from_env().unwrap();
-        assert_eq!(config.backend, ExecutionBackendKind::Memory);
+        assert_eq!(config.backend, ExecutionBackendKind::Sqlite);
         assert_eq!(config.db_path, ExecutionStoreConfig::default().db_path);
 
         env.set("API_EXECUTION_BACKEND", "unsupported");

@@ -13,6 +13,7 @@ mod credential_runtime;
 mod deployment_database;
 mod email;
 mod execution_binding_resolver;
+mod execution_runtime;
 mod execution_store_backends;
 mod oauth_egress;
 mod owner_enrollment;
@@ -68,6 +69,14 @@ struct Cli {
     /// Ingress transport to run in this process.
     #[arg(long, value_enum, env = "NEBULA_TRANSPORT", default_value = "all")]
     transport: Transport,
+    /// Run execution in this server or delegate to separate PostgreSQL workers.
+    #[arg(
+        long,
+        value_enum,
+        env = "NEBULA_EXECUTION",
+        default_value = "in-process"
+    )]
+    execution: execution_runtime::ExecutionTopology,
 }
 
 /// Run the selected operator command or the environment-driven server process.
@@ -91,14 +100,20 @@ pub async fn run_from_env() -> Result<(), ServerRunError> {
         .map_err(compose::ServerRunError::Telemetry)
         .map_err(ServerRunError::from)?;
     match cli.transport {
-        Transport::Api | Transport::All => compose::run_transport(ApiTransport, telemetry_guard)
-            .await
-            .map_err(ServerRunError::from),
-        Transport::Webhook => compose::run_transport(WebhookIngressTransport, telemetry_guard)
-            .await
-            .map_err(ServerRunError::from),
-        Transport::Realtime => compose::run_transport(RealtimeTransport, telemetry_guard)
-            .await
-            .map_err(ServerRunError::from),
+        Transport::Api | Transport::All => {
+            compose::run_transport(ApiTransport, telemetry_guard, cli.execution)
+                .await
+                .map_err(ServerRunError::from)
+        },
+        Transport::Webhook => {
+            compose::run_transport(WebhookIngressTransport, telemetry_guard, cli.execution)
+                .await
+                .map_err(ServerRunError::from)
+        },
+        Transport::Realtime => {
+            compose::run_transport(RealtimeTransport, telemetry_guard, cli.execution)
+                .await
+                .map_err(ServerRunError::from)
+        },
     }
 }

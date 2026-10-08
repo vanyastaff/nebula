@@ -11,6 +11,14 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Ordinary serving consumes accepted executions.** The server now owns an
+  in-process worker by default, using its admitted deployment pool, linked release
+  and credential projection. Startup acknowledges installed worker loops before
+  serving; mandatory worker failure stops HTTP. SQLite is the deployment default;
+  selecting Memory is rejected. `--execution separate-workers` requires PostgreSQL.
+  This does not supply a desktop launcher or eliminate key, artifact identity
+  and initial-owner setup requirements.
+
 - **Identity follows the deployment database.** `API_AUTH_BACKEND`,
   `AuthBackendKind` and `AuthApiConfig.backend` are removed. The server derives
   identity persistence from the admitted `API_EXECUTION_BACKEND` database and
@@ -18,8 +26,7 @@ changes are expected between minor releases — call them out here.
   SQLite or PostgreSQL identity state. Remove `API_AUTH_BACKEND` from existing
   configuration; its presence is rejected with a value-free diagnostic rather
   than ignored or treated as an alias. OAuth configuration remains independent
-  of storage selection. This does not change the current execution-backend
-  default or add an ordinary in-process worker.
+  of storage selection.
 
 - **Worker command admission.** Unknown worker arguments now fail with usage
   and exit code 2 instead of being ignored. Both deployment binaries support

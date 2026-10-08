@@ -2,6 +2,9 @@
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ApiConfigError {
+    /// The internal reference adapter cannot host a deployment.
+    #[error("memory is a test adapter; select sqlite or postgres for deployment storage")]
+    MemoryDeploymentUnsupported,
     /// The removed independent identity-storage selector was supplied.
     /// Its value is neither retained nor included in diagnostics.
     #[error(

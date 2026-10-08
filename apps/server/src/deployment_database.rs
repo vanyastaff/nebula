@@ -7,6 +7,11 @@ use nebula_api::{
 
 use crate::compose::TransportInitError;
 
+/// Connections still borrowed by a timed-out owner prevented pool cleanup.
+#[derive(Debug, thiserror::Error)]
+#[error("deployment database connections did not close within the shutdown budget")]
+pub(crate) struct DatabaseCloseTimedOut;
+
 /// Pool ownership belongs to deployment composition, not any one aggregate.
 /// Clones retain the same pool and its shutdown state.
 #[derive(Clone)]
@@ -21,6 +26,25 @@ pub(crate) enum DeploymentDatabase {
 }
 
 impl DeploymentDatabase {
+    /// Close after owner cleanup without waiting forever for a borrowed connection.
+    #[tracing::instrument(skip_all)]
+    pub(crate) async fn close(&self) -> Result<(), DatabaseCloseTimedOut> {
+        let close = async {
+            match self {
+                Self::Memory(pool) => pool.close().await,
+                Self::Sqlite(deployment) => deployment.pool().close().await,
+                #[cfg(feature = "postgres")]
+                Self::Postgres(pool) => pool.close().await,
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), close)
+            .await
+            .map_err(|_| {
+                tracing::error!("deployment pool cleanup timed out; outstanding owners require process termination");
+                DatabaseCloseTimedOut
+            })
+    }
+
     /// Open and admit the one database used by server-owned persistence.
     /// Operator commands reuse this stage without constructing HTTP or runtime
     /// dependencies. An explicit PostgreSQL DSN takes precedence over the environment.
@@ -152,6 +176,24 @@ pub(crate) fn validate_idempotency_backend(config: &ApiConfig) -> Result<(), Tra
 #[cfg(test)]
 mod tests {
     use super::DeploymentDatabase;
+
+    #[tokio::test]
+    async fn database_cleanup_times_out_when_an_owner_keeps_a_connection() {
+        let pool = nebula_storage::sqlite::open_memory_deployment()
+            .await
+            .unwrap();
+        let connection = pool.acquire().await.unwrap();
+        let database = DeploymentDatabase::Memory(pool.clone());
+        tokio::time::pause();
+        assert!(database.close().await.is_err());
+        assert!(
+            pool.is_closed(),
+            "cleanup closes admission even if a borrower remains"
+        );
+        drop(connection);
+        tokio::time::resume();
+        pool.close().await;
+    }
 
     #[tokio::test]
     async fn database_opener_rejects_foreign_schema_without_disclosing_locator() {

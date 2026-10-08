@@ -145,10 +145,10 @@ pub struct ApiConfig {
 
     /// Execution-store and control-queue backend configuration.
     ///
-    /// Drives the composition root's selection between the dev-only
-    /// in-memory adapters (default), file-local SQLite, and shared
+    /// Drives the composition root's selection between
+    /// file-local SQLite (default) and shared
     /// PostgreSQL. The backend selector is bound to
-    /// `API_EXECUTION_BACKEND` (case-insensitive `memory` / `sqlite` /
+    /// `API_EXECUTION_BACKEND` (case-insensitive `sqlite` /
     /// `postgres`); the SQLite file path is `API_EXECUTION_DB_PATH`.
     #[serde(default)]
     pub execution: ExecutionStoreConfig,
@@ -552,7 +552,10 @@ impl ApiConfig {
             idempotency: IdempotencyApiConfig::default(),
             auth: AuthApiConfig::default(),
             webhook: WebhookApiConfig::default(),
-            execution: ExecutionStoreConfig::default(),
+            execution: ExecutionStoreConfig {
+                backend: ExecutionBackendKind::Memory,
+                ..ExecutionStoreConfig::default()
+            },
             smtp: None,
         }
     }
