@@ -1,15 +1,16 @@
-//! Document editor: revision state, draft commands, server reconciliation, nodes and the parameter inspector.
-use super::{Intent, Intents};
+//! Document editor: revision state, draft commands, server reconciliation, the graph canvas and the
+//! node inspector. Graph and parameter edits are local; only the toolbar starts network work.
+use super::{Intent, Intents, canvas};
 use crate::{
     document::Draft,
     theme,
     widgets::{self, Tone},
-    workbench::{DraftGate, Workbench, draft_gate},
+    workbench::{AddNodeForm, DraftGate, Workbench, draft_gate},
 };
-use eframe::egui::{self, RichText};
+use eframe::egui;
 use serde_json::Value;
 
-/// Everything the editor shows, copied out of the draft so the frame can mutate the workbench.
+/// Everything the header and toolbar show, copied out of the draft so the frame can mutate the workbench.
 struct DraftView {
     id: String,
     name: String,
@@ -18,8 +19,9 @@ struct DraftView {
     uncertain: bool,
     conflict: bool,
     gate: DraftGate,
+    can_undo: bool,
+    can_redo: bool,
     remote: Option<RemoteView>,
-    nodes: Vec<Value>,
 }
 
 struct RemoteView {
@@ -37,14 +39,12 @@ impl DraftView {
             uncertain: draft.uncertain_save,
             conflict: draft.save_conflict,
             gate: draft_gate(draft),
+            can_undo: draft.can_undo(),
+            can_redo: draft.can_redo(),
             remote: draft.remote.as_ref().map(|remote| RemoteView {
                 revision: remote.revision,
                 nodes: remote.definition["nodes"].clone(),
             }),
-            nodes: draft.definition["nodes"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default(),
         }
     }
 }
@@ -54,7 +54,7 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         widgets::empty_state(
             ui,
             "Choose a workflow",
-            "Select a workflow to inspect its nodes and edit parameters, or create a new one.",
+            "Select a workflow to edit its graph and parameters, or create a new one.",
         );
         return;
     };
@@ -79,35 +79,35 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         }
     });
     ui.add_space(theme::SPACE_MD);
-    ui.add_enabled_ui(!workbench.session.busy(), |ui| {
+    ui.add_enabled_ui(!busy, |ui| {
         toolbar(ui, workbench, &view, intents);
         if let Some(remote) = &view.remote {
             reconciliation(ui, workbench, remote);
         }
         ui.add_space(theme::SPACE_LG);
-        widgets::section(ui, "Nodes");
-        if view.nodes.is_empty() {
-            widgets::caption(
-                ui,
-                "This workflow has no nodes yet. Node editing comes in a later release.",
-            );
-        }
-        for node in &view.nodes {
-            node_card(ui, workbench, node);
-        }
-        inspector(ui, workbench);
+        widgets::section(ui, "Graph");
+        canvas::show(ui, workbench);
+        add_node_form(ui, workbench);
+        ui.add_space(theme::SPACE_LG);
+        node_inspector(ui, workbench);
     });
 }
 
 fn toolbar(ui: &mut egui::Ui, workbench: &mut Workbench, view: &DraftView, intents: &mut Intents) {
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Undo").clicked() {
+        if ui
+            .add_enabled(view.can_undo, egui::Button::new("Undo"))
+            .clicked()
+        {
             if let Some(draft) = workbench.session.draft_mut() {
                 let _ = draft.undo();
             }
             workbench.parameter.close();
         }
-        if ui.button("Redo").clicked() {
+        if ui
+            .add_enabled(view.can_redo, egui::Button::new("Redo"))
+            .clicked()
+        {
             if let Some(draft) = workbench.session.draft_mut() {
                 let _ = draft.redo();
             }
@@ -149,10 +149,10 @@ fn reconciliation(ui: &mut egui::Ui, workbench: &mut Workbench, remote: &RemoteV
     });
     widgets::caption(
         ui,
-        "Reapply replays your parameter edits onto the server version. It overwrites only the parameters you edited, including ones changed on the server. Other server changes are kept.",
+        "Reapply replays your graph and parameter edits onto the server version. An edit that no longer applies, such as a removed node, stops the replay and keeps your draft.",
     );
     ui.horizontal_wrapped(|ui| {
-        if ui.button("Reapply my parameter edits").clicked() {
+        if ui.button("Reapply my edits").clicked() {
             let result = workbench.session.draft_mut().map(Draft::reapply);
             workbench.parameter.close();
             match result {
@@ -179,24 +179,182 @@ fn reconciliation(ui: &mut egui::Ui, workbench: &mut Workbench, remote: &RemoteV
     });
 }
 
-fn node_card(ui: &mut egui::Ui, workbench: &mut Workbench, node: &Value) {
-    let node_id = node["id"].as_str().unwrap_or_default();
-    let title = node["name"].as_str().unwrap_or(node_id);
-    let action = node["action_key"].as_str().unwrap_or_default();
-    theme::card_block(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(title).strong().size(16.0));
-            widgets::caption(ui, action);
-        });
-        let Some(parameters) = node["parameters"].as_object() else {
-            widgets::caption(ui, "This node has no configurable parameters.");
-            return;
-        };
-        for (name, value) in parameters {
-            parameter_row(ui, workbench, node_id, name, value);
+fn add_node_form(ui: &mut egui::Ui, workbench: &mut Workbench) {
+    egui::CollapsingHeader::new("Add node").show(ui, |ui| {
+        widgets::labeled_field(
+            ui,
+            "Action key (for example json_transform)",
+            &mut workbench.add_node.action_key,
+            false,
+        );
+        widgets::labeled_field(
+            ui,
+            "Display name (optional)",
+            &mut workbench.add_node.name,
+            false,
+        );
+        widgets::caption(
+            ui,
+            "The new node starts without parameters. The server checks required inputs when you publish.",
+        );
+        let key = workbench.add_node.action_key.trim().to_owned();
+        if ui
+            .add_enabled(!key.is_empty(), widgets::primary_button("Add node"))
+            .clicked()
+        {
+            let typed = workbench.add_node.name.trim().to_owned();
+            let name = if typed.is_empty() { key.clone() } else { typed };
+            let Some(draft) = workbench.session.draft_mut() else {
+                return;
+            };
+            match draft.add_node(&key, &name) {
+                Ok(id) => {
+                    workbench.selected_node = Some(id);
+                    workbench.rename.clone_from(&name);
+                    workbench.parameter.close();
+                    workbench.add_node = AddNodeForm::default();
+                    workbench.feedback.info(format!("Added {name}."));
+                },
+                Err(error) => workbench.feedback.error(error.to_string()),
+            }
         }
     });
-    ui.add_space(theme::SPACE_SM);
+}
+
+/// Inspector for the selected node: rename, connections, parameters and removal.
+fn node_inspector(ui: &mut egui::Ui, workbench: &mut Workbench) {
+    let Some(node_id) = workbench.selected_node.clone() else {
+        widgets::caption(
+            ui,
+            "Select a node on the graph to rename it, edit its parameters or change its connections.",
+        );
+        return;
+    };
+    let Some(draft) = workbench.session.draft() else {
+        return;
+    };
+    let node = draft.definition["nodes"]
+        .as_array()
+        .and_then(|nodes| {
+            nodes
+                .iter()
+                .find(|node| node["id"].as_str() == Some(node_id.as_str()))
+        })
+        .cloned();
+    let links: Vec<(String, String)> = draft
+        .connections()
+        .iter()
+        .filter(|connection| {
+            connection["from_node"].as_str() == Some(node_id.as_str())
+                || connection["to_node"].as_str() == Some(node_id.as_str())
+        })
+        .map(|connection| {
+            (
+                connection["from_node"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                connection["to_node"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        })
+        .collect();
+    let Some(node) = node else {
+        // The node was removed by a replay or a server read; nothing to inspect.
+        workbench.selected_node = None;
+        return;
+    };
+    let action = node["action_key"].as_str().unwrap_or_default().to_owned();
+    let name = node["name"].as_str().unwrap_or(&node_id).to_owned();
+
+    theme::card_block(ui, |ui| {
+        widgets::section(ui, &name);
+        widgets::caption(ui, format!("{action} · id {node_id}"));
+        ui.add_space(theme::SPACE_SM);
+        widgets::labeled_field(ui, "Name", &mut workbench.rename, false);
+        ui.horizontal_wrapped(|ui| {
+            let renamed = workbench.rename.trim().to_owned();
+            let changed = !renamed.is_empty() && renamed != name;
+            if ui
+                .add_enabled(changed, egui::Button::new("Rename"))
+                .clicked()
+            {
+                rename(workbench, &node_id, &renamed);
+            }
+            if ui.add(widgets::danger_button("Remove node")).clicked() {
+                remove(workbench, &node_id, &name);
+            }
+        });
+
+        ui.add_space(theme::SPACE_SM);
+        widgets::section(ui, "Connections");
+        if links.is_empty() {
+            widgets::caption(
+                ui,
+                "Not connected. Drag from an output port to another node's input port.",
+            );
+        }
+        for (from, to) in &links {
+            ui.horizontal_wrapped(|ui| {
+                widgets::caption(ui, format!("{from} → {to}"));
+                if ui.button("Disconnect").clicked() {
+                    disconnect(workbench, from, to);
+                }
+            });
+        }
+
+        ui.add_space(theme::SPACE_SM);
+        widgets::section(ui, "Parameters");
+        match node["parameters"].as_object() {
+            Some(parameters) if !parameters.is_empty() => {
+                for (parameter, value) in parameters {
+                    parameter_row(ui, workbench, &node_id, parameter, value);
+                }
+            },
+            _ => widgets::caption(ui, "This node has no configurable parameters."),
+        }
+        parameter_editor(ui, workbench);
+    });
+}
+
+fn rename(workbench: &mut Workbench, node: &str, name: &str) {
+    let Some(draft) = workbench.session.draft_mut() else {
+        return;
+    };
+    match draft.rename_node(node, name) {
+        Ok(()) => workbench.feedback.info("Node renamed in your draft."),
+        Err(error) => workbench.feedback.error(error.to_string()),
+    }
+}
+
+fn remove(workbench: &mut Workbench, node: &str, name: &str) {
+    let Some(draft) = workbench.session.draft_mut() else {
+        return;
+    };
+    match draft.remove_node(node) {
+        Ok(()) => {
+            workbench.selected_node = None;
+            workbench.parameter.close();
+            workbench
+                .feedback
+                .info(format!("Removed {name} and its connections."));
+        },
+        Err(error) => workbench.feedback.error(error.to_string()),
+    }
+}
+
+fn disconnect(workbench: &mut Workbench, from: &str, to: &str) {
+    let Some(draft) = workbench.session.draft_mut() else {
+        return;
+    };
+    match draft.disconnect(from, to) {
+        Ok(()) => workbench
+            .feedback
+            .info(format!("Disconnected {from} from {to}.")),
+        Err(error) => workbench.feedback.error(error.to_string()),
+    }
 }
 
 fn parameter_row(
@@ -235,39 +393,33 @@ fn parameter_row(
     });
 }
 
-/// The parameter currently open. Applying it changes the draft locally; saving is a separate step.
-fn inspector(ui: &mut egui::Ui, workbench: &mut Workbench) {
-    if !workbench.parameter.is_open() {
+/// The open parameter. Applying it changes the draft locally; saving is a separate step.
+fn parameter_editor(ui: &mut egui::Ui, workbench: &mut Workbench) {
+    let owns_selection =
+        workbench.selected_node.as_deref() == Some(workbench.parameter.node.as_str());
+    if !workbench.parameter.is_open() || !owns_selection {
         return;
     }
-    ui.add_space(theme::SPACE_LG);
-    theme::card_block(ui, |ui| {
-        widgets::section(ui, &workbench.parameter.parameter);
-        widgets::caption(
-            ui,
-            format!(
-                "Node {} · edit the JSON value, then apply it to your draft.",
-                workbench.parameter.node
-            ),
-        );
-        ui.add_space(theme::SPACE_XS);
-        ui.add(
-            egui::TextEdit::multiline(&mut workbench.parameter.text)
-                .code_editor()
-                .desired_rows(8)
-                .desired_width(f32::INFINITY),
-        );
-        ui.horizontal(|ui| {
-            if ui
-                .add(widgets::primary_button("Apply parameter edit"))
-                .clicked()
-            {
-                apply_parameter(workbench);
-            }
-            if ui.button("Close").clicked() {
-                workbench.parameter.close();
-            }
-        });
+    ui.add_space(theme::SPACE_MD);
+    widgets::section(ui, &workbench.parameter.parameter);
+    widgets::caption(ui, "Edit the JSON value, then apply it to your draft.");
+    ui.add_space(theme::SPACE_XS);
+    ui.add(
+        egui::TextEdit::multiline(&mut workbench.parameter.text)
+            .code_editor()
+            .desired_rows(8)
+            .desired_width(f32::INFINITY),
+    );
+    ui.horizontal(|ui| {
+        if ui
+            .add(widgets::primary_button("Apply parameter edit"))
+            .clicked()
+        {
+            apply_parameter(workbench);
+        }
+        if ui.button("Close").clicked() {
+            workbench.parameter.close();
+        }
     });
 }
 

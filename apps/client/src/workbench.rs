@@ -139,6 +139,20 @@ pub(crate) struct Workbench {
     pub(crate) feedback: Feedback,
     /// Lets the user return to the workspace form while a workspace is open.
     pub(crate) workspace_form_open: bool,
+    /// Node shown in the inspector. Cleared with the rest of the selection.
+    pub(crate) selected_node: Option<String>,
+    /// Name being edited for the selected node.
+    pub(crate) rename: String,
+    /// Output port being dragged on the canvas; the drop target decides the connection.
+    pub(crate) link_from: Option<String>,
+    pub(crate) add_node: AddNodeForm,
+}
+
+/// Action and display name for the next node to add.
+#[derive(Default)]
+pub(crate) struct AddNodeForm {
+    pub(crate) action_key: String,
+    pub(crate) name: String,
 }
 
 /// Which draft commands are safe to offer. Views disable the rest.
@@ -175,6 +189,10 @@ impl Workbench {
                 failure: false,
             },
             workspace_form_open: false,
+            selected_node: None,
+            rename: String::new(),
+            link_from: None,
+            add_node: AddNodeForm::default(),
         }
     }
 
@@ -225,6 +243,8 @@ impl Workbench {
 
     pub(crate) fn clear_selection(&mut self) {
         self.parameter.close();
+        self.selected_node = None;
+        self.link_from = None;
         self.status = None;
         self.history = None;
     }

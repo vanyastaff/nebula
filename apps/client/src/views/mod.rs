@@ -1,6 +1,7 @@
 //! Rendering only. Views read the workbench and change purely local UI state directly. Anything
 //! that needs the network becomes an `Intent`, which the app runs after the frame is drawn.
 
+pub(crate) mod canvas;
 pub(crate) mod connection;
 pub(crate) mod editor;
 pub(crate) mod navigator;
