@@ -50,7 +50,7 @@ resolver = "3"
 [workspace.package]
 # All workspace packages move in lockstep; under 0.x, minor releases carry
 # breaking API changes. Migration details belong in CHANGELOG.md.
-version = "0.32.0"
+version = "0.33.0"
 edition = "2024"
 rust-version = "1.97"
 keywords = ["workflow", "integrations", "no-code", "low-code", "automation"]
@@ -224,7 +224,7 @@ proc-macro2 = "1"
 # Nebula internal
 # Publishable lockstep with the SDK, so the exact version travels with the
 # path; bump it together with `workspace.package.version`.
-nebula-api-contract = { path = "crates/api-contract", version = "=0.32.0" }
+nebula-api-contract = { path = "crates/api-contract", version = "=0.33.0" }
 nebula-env = { path = "crates/env" }
 nebula-error = { path = "crates/error" }
 nebula-error-macros = { path = "crates/error/macros" }

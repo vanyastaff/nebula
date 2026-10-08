@@ -19,6 +19,14 @@
 )]
 mod execution_parents;
 
+#[cfg(feature = "postgres")]
+#[path = "support/postgres_schema.rs"]
+#[expect(
+    dead_code,
+    reason = "the cases need only the schema-name helper of this shared module"
+)]
+mod postgres_schema;
+
 use std::{sync::Arc, time::Duration};
 
 use nebula_core::CredentialId;
@@ -813,13 +821,6 @@ mod postgres {
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
     use super::*;
-
-    #[path = "../support/postgres_schema.rs"]
-    #[expect(
-        dead_code,
-        reason = "the cases need only the schema-name helper of this shared module"
-    )]
-    mod postgres_schema;
 
     /// A store and an inspection pool pinned to one private schema; the
     /// schema is dropped with the database handle.

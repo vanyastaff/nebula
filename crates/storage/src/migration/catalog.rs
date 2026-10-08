@@ -625,3 +625,41 @@ pub(crate) mod postgres {
 
 #[cfg(feature = "postgres")]
 pub(crate) use postgres::admit as admit_postgres;
+
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+mod tests {
+    use super::{CatalogRejection, CatalogSetupError, observation_fetch_error};
+
+    #[test]
+    fn observation_fetch_errors_distinguish_schema_evidence_from_unavailability() {
+        let invalid_ledger = CatalogRejection::InvalidMigrationLedger;
+        for error in [
+            sqlx::Error::RowNotFound,
+            sqlx::Error::ColumnNotFound("missing ledger column".into()),
+            sqlx::Error::ColumnIndexOutOfBounds { index: 1, len: 1 },
+            sqlx::Error::Decode("invalid ledger value".into()),
+            sqlx::Error::ColumnDecode {
+                index: "version".into(),
+                source: "invalid ledger value".into(),
+            },
+            sqlx::Error::TypeNotFound {
+                type_name: "ledger type".into(),
+            },
+        ] {
+            assert_eq!(
+                observation_fetch_error(error, invalid_ledger.clone()),
+                CatalogSetupError::Rejected(invalid_ledger.clone()),
+            );
+        }
+        for error in [
+            sqlx::Error::PoolTimedOut,
+            sqlx::Error::PoolClosed,
+            sqlx::Error::Io(std::io::ErrorKind::ConnectionReset.into()),
+        ] {
+            assert_eq!(
+                observation_fetch_error(error, invalid_ledger.clone()),
+                CatalogSetupError::Unavailable,
+            );
+        }
+    }
+}

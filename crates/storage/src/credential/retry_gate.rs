@@ -3,8 +3,12 @@ use chrono::{DateTime, Utc};
 use nebula_storage_port::CredentialMaterialTransition;
 use nebula_storage_port::{
     CredentialPersistenceError, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
-    RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryGate, RefreshRetryKind,
-    RefreshRetryPhase, RefreshRetryProjection, RefreshRetryTransition,
+    RefreshRetryGate, RefreshRetryTransition,
+};
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+use nebula_storage_port::{
+    RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase,
+    RefreshRetryProjection,
 };
 
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]

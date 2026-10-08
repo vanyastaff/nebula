@@ -18,6 +18,10 @@ pub(crate) fn assert_hook_repository_isolation(test_name: &str, exercise: impl F
 
     let parent = tempfile::tempdir().expect("create disposable hook parent");
     parent_git(parent.path(), &["init", "-q", "-b", "main"]);
+    // Background maintenance must not mutate the parent during the isolation
+    // assertion. Keep every byte in the snapshot, including transient files.
+    parent_git(parent.path(), &["config", "maintenance.auto", "false"]);
+    parent_git(parent.path(), &["config", "gc.auto", "0"]);
     parent_git(
         parent.path(),
         &["config", "user.email", "hook-parent@example.invalid"],

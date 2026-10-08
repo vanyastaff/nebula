@@ -11,6 +11,12 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Workspace version advances to 0.33.0.** This minor release records the
+  breaking execution-history and inspection API changes: consumers must replace
+  `RunningExecutionSummary` and `ExecutionOutputsResponse`, and migrate
+  `ListExecutionsResponse` from offset pagination to the cursor-based contract.
+  All workspace packages and external SDK fixture pins move in lockstep.
+
 - **Ordinary serving consumes accepted executions.** The server now owns an
   in-process worker by default, using its admitted deployment pool, linked release
   and credential projection. Startup acknowledges installed worker loops before
