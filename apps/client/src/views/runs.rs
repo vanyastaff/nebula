@@ -104,21 +104,21 @@ fn history(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, 
         .show(ui, |ui| {
             for execution in &runs.items {
                 let selected = current.as_deref() == Some(execution.id.as_str());
-                let label = format!(
-                    "{}   {}",
-                    status_label(execution.status),
-                    readable_time(&execution.created_at)
-                );
                 let (color, _) = status_tone(execution.status).colors();
-                let row = egui::Button::selectable(selected, RichText::new(label).color(color))
-                    .right_text(
-                        RichText::new(&execution.id)
-                            .color(theme::TEXT_MUTED)
-                            .size(12.0),
-                    )
-                    .truncate()
-                    .min_size(egui::vec2(ui.available_width(), 30.0));
-                if ui.add_enabled(!busy, row).clicked() {
+                // Status and time are what a person scans for; the id is in the run's details.
+                let row = egui::Button::selectable(
+                    selected,
+                    RichText::new(status_label(execution.status)).color(color),
+                )
+                .right_text(
+                    RichText::new(readable_time(&execution.created_at)).color(theme::TEXT_MUTED),
+                )
+                .min_size(egui::vec2(ui.available_width(), 30.0));
+                if ui
+                    .add_enabled(!busy, row)
+                    .on_hover_text(&execution.id)
+                    .clicked()
+                {
                     chosen = Some(execution.id.clone());
                 }
             }

@@ -171,8 +171,8 @@ impl eframe::App for ClientApp {
                 });
             if has_draft {
                 egui::Panel::bottom("runs")
-                    .default_size(200.0)
-                    .size_range(120.0..=440.0)
+                    .default_size(240.0)
+                    .size_range(170.0..=480.0)
                     .resizable(true)
                     .frame(theme::panel(theme::SIDEBAR))
                     .show(ui, |ui| {

@@ -109,40 +109,68 @@ fn sign_in_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Inte
         );
         workbench.form.set_mode(mode);
         ui.add_space(theme::SPACE_SM);
-        match workbench.form.mode {
+        let entered = match workbench.form.mode {
             SignInMode::Password => password_fields(ui, workbench),
             SignInMode::Token => {
-                widgets::labeled_field(
+                let token = widgets::labeled_field(
                     ui,
                     "Personal access token",
                     &mut workbench.form.token,
                     true,
                 );
+                focus_once(ui, &token, "sign-in-token", workbench.form.token.is_empty());
+                widgets::submitted(ui, &token)
             },
-        }
+        };
         ui.add_space(theme::SPACE_SM);
         let sign_in =
             widgets::primary_button("Sign in").min_size(egui::vec2(ui.available_width(), 40.0));
-        if ui
-            .add_enabled(workbench.form.can_sign_in(), sign_in)
-            .clicked()
-        {
+        let ready = workbench.form.can_sign_in();
+        if ui.add_enabled(ready, sign_in).clicked() || (entered && ready) {
             intents.push(Intent::SignIn);
         }
     });
 }
 
-/// The code field appears only after the server has asked for a second factor.
-fn password_fields(ui: &mut egui::Ui, workbench: &mut Workbench) {
-    widgets::labeled_field(ui, "Email", &mut workbench.form.email, false);
-    widgets::labeled_field(ui, "Password", &mut workbench.form.password, true);
-    if workbench.form.mfa_required {
-        widgets::labeled_field(ui, "Authenticator code", &mut workbench.form.totp, true);
+/// Puts the cursor in `field` the first time its stage is shown, when it still needs input. Once per
+/// stage, so clicking elsewhere afterwards is not undone.
+fn focus_once(ui: &egui::Ui, field: &egui::Response, stage: &str, needed: bool) {
+    let id = egui::Id::new(("focus-once", stage));
+    let first = ui.ctx().data_mut(|data| {
+        let seen = data.get_temp::<bool>(id).unwrap_or(false);
+        data.insert_temp(id, true);
+        !seen
+    });
+    if first && needed {
+        field.request_focus();
+    }
+}
+
+/// Email and password, then the code field once the server has asked for a second factor. Returns true
+/// when Enter was pressed in one of them.
+fn password_fields(ui: &mut egui::Ui, workbench: &mut Workbench) -> bool {
+    let form = &mut workbench.form;
+    let email = widgets::labeled_field(ui, "Email", &mut form.email, false);
+    focus_once(ui, &email, "sign-in-email", form.email.is_empty());
+    let password = widgets::labeled_field(ui, "Password", &mut form.password, true);
+    // A remembered email leaves the password as the first field to fill.
+    focus_once(
+        ui,
+        &password,
+        "sign-in-password",
+        !form.email.is_empty() && form.password.is_empty(),
+    );
+    let mut entered = widgets::submitted(ui, &email) || widgets::submitted(ui, &password);
+    if form.mfa_required {
+        let code = widgets::labeled_field(ui, "Authenticator code", &mut form.totp, true);
+        focus_once(ui, &code, "sign-in-code", form.totp.is_empty());
+        entered |= widgets::submitted(ui, &code);
         widgets::caption(
             ui,
             "This account requires a code from its authenticator app.",
         );
     }
+    entered
 }
 
 /// Workspaces this app opened before, one click each. The server has no endpoint that lists them.
@@ -184,15 +212,22 @@ fn workspace_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut In
             ui,
             "Enter the organization and workspace slug or ID provided by your server.",
         );
-        widgets::labeled_field(ui, "Organization", &mut workbench.form.organization, false);
-        widgets::labeled_field(ui, "Workspace", &mut workbench.form.workspace, false);
+        let organization =
+            widgets::labeled_field(ui, "Organization", &mut workbench.form.organization, false);
+        focus_once(
+            ui,
+            &organization,
+            "workspace-organization",
+            workbench.recent.is_empty() && workbench.form.organization.is_empty(),
+        );
+        let workspace =
+            widgets::labeled_field(ui, "Workspace", &mut workbench.form.workspace, false);
+        let entered = widgets::submitted(ui, &organization) || widgets::submitted(ui, &workspace);
         ui.add_space(theme::SPACE_SM);
         let open = widgets::primary_button("Open workspace")
             .min_size(egui::vec2(ui.available_width(), 40.0));
-        if ui
-            .add_enabled(workbench.form.can_open_workspace(), open)
-            .clicked()
-        {
+        let ready = workbench.form.can_open_workspace();
+        if ui.add_enabled(ready, open).clicked() || (entered && ready) {
             intents.push(Intent::OpenWorkspace);
         }
         if workbench.workspace_open()

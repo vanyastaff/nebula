@@ -42,9 +42,19 @@ pub(crate) fn field(value: &mut String) -> egui::TextEdit<'_> {
 }
 
 /// A field with its label above it. Password fields hide their contents.
-pub(crate) fn labeled_field(ui: &mut egui::Ui, label: &str, value: &mut String, password: bool) {
+pub(crate) fn labeled_field(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut String,
+    password: bool,
+) -> egui::Response {
     ui.label(RichText::new(label).color(theme::TEXT_MUTED).size(13.0));
-    ui.add(field(value).password(password));
+    ui.add(field(value).password(password))
+}
+
+/// Enter was pressed in this field, which submits its form.
+pub(crate) fn submitted(ui: &egui::Ui, field: &egui::Response) -> bool {
+    field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
 }
 
 /// Picks one of a few options. The chosen option is drawn selected, so a mode switch reads as a control.

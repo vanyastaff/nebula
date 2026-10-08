@@ -542,9 +542,8 @@ impl Workbench {
             Reply::Connected(signed_in) => {
                 self.connection = Some(signed_in.connection);
                 self.profile = Some(signed_in.profile);
+                // The workspace page that follows is the confirmation, so no toast repeats it.
                 self.form.clear_secrets();
-                self.feedback
-                    .info("Signed in. Enter your organization and workspace slug or ID.");
             },
             Reply::Listed(page) => {
                 self.navigator.workflows = page.workflows;
@@ -615,13 +614,14 @@ impl Workbench {
                 );
             } else {
                 draft.saved(document);
-                self.feedback.info("Workflow loaded.");
+                // A reload of an unchanged draft looks the same, so it says that it happened.
+                self.feedback.info("Up to date with the server.");
             }
         } else {
             match Draft::new(document) {
+                // Opening a workflow shows it, which is its own confirmation.
                 Ok(draft) => {
                     self.session.drafts.insert(key, draft);
-                    self.feedback.info("Workflow loaded.");
                 },
                 Err(error) => self.feedback.error(error.to_string()),
             }
