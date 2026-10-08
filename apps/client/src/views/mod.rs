@@ -76,3 +76,6 @@ pub(crate) enum Intent {
 }
 
 pub(crate) type Intents = Vec<Intent>;
+
+#[cfg(test)]
+mod a11y_tests;
