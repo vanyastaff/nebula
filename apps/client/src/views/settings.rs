@@ -213,7 +213,16 @@ fn tokens(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, b
         states::Shown::Waiting => {},
     }
     ui.add_space(theme::SPACE_SM);
-    new_token(ui, workbench, intents, busy);
+    if workbench.token_session {
+        // The server refuses token creation to a session that signed in with a token.
+        widgets::caption(
+            ui,
+            "This session signed in with a personal access token, which cannot create new \
+             tokens. Sign in with your password to create one; listing and revoking still work.",
+        );
+    } else {
+        new_token(ui, workbench, intents, busy);
+    }
 }
 
 fn new_token(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, busy: bool) {

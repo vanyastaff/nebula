@@ -4,9 +4,10 @@
 
 use super::{Intent, Intents, states};
 use crate::{
+    document::catalog_key,
     theme,
     widgets::{self, Tone},
-    workbench::{Page, Workbench},
+    workbench::{Page, TriggersPage, Workbench},
 };
 use eframe::egui::{self, RichText};
 use nebula_api_contract::v1::workflow::WorkflowDocumentResponse;
@@ -14,6 +15,8 @@ use serde_json::{Value, json};
 
 /// The webhook provider every engine build ships.
 pub(crate) const WEBHOOK_PROVIDER: &str = "generic";
+/// The trigger action that receives webhooks.
+const WEBHOOK_ACTION: &str = "core.webhook";
 
 pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
     let busy = workbench.session.busy();
@@ -154,13 +157,22 @@ fn workflow(
         }
         for binding in &bindings {
             ui.add_space(theme::SPACE_XS);
-            binding_row(ui, intents, id, binding, &bindings, busy);
+            binding_row(
+                ui,
+                &mut workbench.triggers,
+                intents,
+                id,
+                binding,
+                &bindings,
+                busy,
+            );
         }
     });
 }
 
 fn binding_row(
     ui: &mut egui::Ui,
+    page: &mut TriggersPage,
     intents: &mut Intents,
     workflow: &str,
     binding: &Value,
@@ -168,12 +180,19 @@ fn binding_row(
     busy: bool,
 ) {
     let trigger = binding["id"].as_str().unwrap_or_default();
-    let action = format!(
-        "{}.{}",
-        binding["plugin_key"].as_str().unwrap_or("core"),
-        binding["action_key"].as_str().unwrap_or_default()
-    );
-    let webhook = binding["action_key"] == "webhook";
+    // Qualified as the workflow compiler qualifies it, so `core.webhook` and `webhook` under the
+    // core plugin are the same action.
+    let action = catalog_key(binding);
+    let webhook = action == WEBHOOK_ACTION;
+    let uncertain = page.uncertain.as_ref() == Some(&(workflow.to_owned(), trigger.to_owned()));
+    if uncertain {
+        widgets::banner(
+            ui,
+            Tone::Warning,
+            "The last registration of this trigger may have gone through; its secret cannot be \
+             shown again. Registering again issues a new address and signing secret.",
+        );
+    }
     widgets::row_with_actions(
         ui,
         |ui| {
@@ -204,16 +223,28 @@ fn binding_row(
                     Value::Array(next),
                 ));
             }
-            if webhook
-                && ui
-                    .add_enabled(!busy, egui::Button::new("Register"))
-                    .on_hover_text("Get the webhook's address and signing secret")
-                    .clicked()
+            if !webhook {
+                return;
+            }
+            let label = match (uncertain, page.confirm_again) {
+                (false, _) => "Register",
+                (true, false) => "Register again",
+                (true, true) => "Confirm: register again",
+            };
+            if ui
+                .add_enabled(!busy, egui::Button::new(label))
+                .on_hover_text("Get the webhook's address and signing secret")
+                .clicked()
             {
-                intents.push(Intent::RegisterWebhook(
-                    workflow.to_owned(),
-                    trigger.to_owned(),
-                ));
+                if uncertain && !page.confirm_again {
+                    page.confirm_again = true;
+                } else {
+                    page.confirm_again = false;
+                    intents.push(Intent::RegisterWebhook(
+                        workflow.to_owned(),
+                        trigger.to_owned(),
+                    ));
+                }
             }
         },
     );

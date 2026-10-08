@@ -101,6 +101,9 @@ pub(crate) enum Target {
     /// is read again; a test or a deletion only rereads the list.
     NewCredential,
     Triggers,
+    /// A webhook registration. The server answers it once, with the signing secret, so a lost
+    /// answer leaves a registration that may exist and asks before registering again.
+    WebhookRegistration,
     Profile,
     Tokens,
     /// A new token, kept apart from revocations for the same reason as [`Target::NewCredential`].
@@ -154,9 +157,8 @@ impl Operation {
             },
             Self::WorkflowChoices => RequestKind::Load(Target::WorkflowChoices),
             Self::Documents => RequestKind::Load(Target::Triggers),
-            Self::SaveTriggers(..) | Self::RegisterWebhook(_) => {
-                RequestKind::Change(Target::Triggers)
-            },
+            Self::SaveTriggers(..) => RequestKind::Change(Target::Triggers),
+            Self::RegisterWebhook(_) => RequestKind::Change(Target::WebhookRegistration),
             Self::Profile => RequestKind::Load(Target::Profile),
             Self::UpdateProfile(_) => RequestKind::Change(Target::Profile),
             Self::Tokens => RequestKind::Load(Target::Tokens),

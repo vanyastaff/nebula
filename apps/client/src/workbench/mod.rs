@@ -13,7 +13,7 @@ use crate::{
     api::Backend,
     demo,
     document::Draft,
-    effects::{Reply, RequestKind},
+    effects::{Reply, RequestKind, Target},
     schema::Form,
     session::{DraftKey, RequestStamp, Session, SessionContext},
     transport::{Failure, PAGE_SIZE, endpoint_url},
@@ -313,6 +313,9 @@ pub(crate) struct Workbench {
     pub(crate) recent: Vec<WorkspaceRef>,
     /// Parameter schemas by action key, for the node form. They belong to the server signed in to.
     pub(crate) schemas: HashMap<String, SchemaState>,
+    /// Actions known not to be workflow graph nodes (triggers, streams, resources), with their
+    /// kind, as their parameters reported it.
+    pub(crate) non_graph: HashMap<String, String>,
     /// The action whose schema is being read, so a failure knows which entry it settles.
     pub(crate) schema_request: Option<String>,
     pub(crate) inspector_tab: InspectorTab,
@@ -325,6 +328,9 @@ pub(crate) struct Workbench {
     pub(crate) team: TeamPage,
     /// The keyboard shortcut sheet is open.
     pub(crate) shortcuts_open: bool,
+    /// The session signed in with a personal access token, which the server lets list and revoke
+    /// tokens but never create new ones.
+    pub(crate) token_session: bool,
     /// An execution whose live status failed; it is not watched again until it is opened again.
     pub(crate) watch_failed: Option<String>,
 }
@@ -436,6 +442,7 @@ impl Workbench {
             catalog: Catalog::NotRequested,
             recent: Vec::new(),
             schemas: HashMap::new(),
+            non_graph: HashMap::new(),
             schema_request: None,
             inspector_tab: InspectorTab::default(),
             page: Page::default(),
@@ -446,6 +453,7 @@ impl Workbench {
             settings: SettingsPage::default(),
             team: TeamPage::default(),
             shortcuts_open: false,
+            token_session: false,
             watch_failed: None,
         }
     }
@@ -488,6 +496,11 @@ impl Workbench {
     }
 
     fn receive_schema(&mut self, action: String, schema: &ActionParametersResponse) {
+        if !schema.is_graph_node()
+            && let Some(kind) = &schema.kind
+        {
+            self.non_graph.insert(action.clone(), kind.clone());
+        }
         self.schemas
             .insert(action, SchemaState::Ready(Form::parse(&schema.parameters)));
         self.schema_request = None;
@@ -595,6 +608,7 @@ impl Workbench {
     fn forget_server(&mut self) {
         self.catalog = Catalog::NotRequested;
         self.schemas.clear();
+        self.non_graph.clear();
         self.schema_request = None;
     }
 
@@ -664,6 +678,7 @@ impl Workbench {
         self.session.switch(None);
         self.backend = None;
         self.profile = None;
+        self.token_session = false;
         self.workspace_form_open = false;
         self.navigator.workflows.clear();
         self.navigator.total = 0;
@@ -720,7 +735,11 @@ impl Workbench {
                 self.receive_uncertain_change(target);
                 return;
             },
-            RequestKind::Change(_) if error != Failure::Unauthorized => {
+            RequestKind::Change(target) if error != Failure::Unauthorized => {
+                if target == Target::WebhookRegistration {
+                    // A definite refusal registered nothing.
+                    self.triggers.registering = None;
+                }
                 self.feedback.error(error.to_string());
                 return;
             },
@@ -772,6 +791,7 @@ impl Workbench {
         match reply {
             Reply::Connected(signed_in) => {
                 let demo = signed_in.backend.is_demo();
+                self.token_session = !demo && self.form.mode == SignInMode::Token;
                 self.backend = Some(signed_in.backend);
                 self.profile = Some(signed_in.profile);
                 // The workspace page that follows is the confirmation, so no toast repeats it.

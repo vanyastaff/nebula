@@ -207,15 +207,44 @@ fn credentials_are_checked_against_their_type_schema() {
             .iter()
             .any(|c| c.id == created.id)
     );
-    // A union holds one of its tags.
+    // A union holds one of its tags, with that tag's own required fields, nested ones included.
     assert!(matches!(
         create("oauth2", json!({})),
         Err(Failure::Invalid(_))
     ));
+    let Err(Failure::Invalid(reason)) = create("oauth2", json!({"authorization_code": {}})) else {
+        panic!("an empty variant is refused");
+    };
+    assert!(
+        reason.contains("data.authorization_code.client: Provide a value."),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("data.authorization_code.redirect_uri"),
+        "{reason}"
+    );
+    let Err(Failure::Invalid(reason)) = create(
+        "oauth2",
+        json!({"client_credentials": {
+            "client": {"client_id": "app"},
+            "token_url": "https://id.example/token",
+            "auth_style": "header"
+        }}),
+    ) else {
+        panic!("a missing nested field is refused");
+    };
+    assert!(
+        reason.contains("data.client_credentials.client.client_secret"),
+        "{reason}"
+    );
     assert!(
         create(
             "oauth2",
-            json!({"client_credentials": {"token_url": "https://id.example/token"}})
+            json!({"client_credentials": {
+                "client": {"client_id": "app", "client_secret": "s3cret"},
+                "token_url": "https://id.example/token",
+                "auth_style": "header"
+            }})
         )
         .is_ok()
     );
@@ -309,14 +338,37 @@ fn tokens_and_members_follow_the_server_s_rules() {
         Err(Failure::Invalid(_))
     ));
     add("usr_01HZ8K7E5F7G9H1J3K5M7N9P1Q", "member").unwrap();
+    // Re-adding a member changes their role, as the server's upsert does.
+    let promoted = add("usr_01HZ8K7E5F7G9H1J3K5M7N9P1Q", "admin").unwrap();
+    assert_eq!(promoted.role.0, "admin");
+    let members = demo.org_members(ORG).unwrap().members;
     assert_eq!(
-        add("usr_01HZ8K7E5F7G9H1J3K5M7N9P1Q", "member").unwrap_err(),
-        Failure::Conflict
+        members
+            .iter()
+            .filter(|member| member.principal_id == "usr_01HZ8K7E5F7G9H1J3K5M7N9P1Q")
+            .count(),
+        1
     );
     assert!(matches!(
         demo.remove_org_member(ORG, seed::ME),
         Err(Failure::Invalid(_))
     ));
+    // Demoting every owner and admin would lock the organization out.
+    for member in &members {
+        if matches!(member.role.0.as_str(), "owner" | "admin") {
+            let demoted = add(&member.principal_id, "member");
+            if let Err(error) = demoted {
+                assert_eq!(error, Failure::Conflict);
+            }
+        }
+    }
+    assert!(
+        demo.org_members(ORG)
+            .unwrap()
+            .members
+            .iter()
+            .any(|member| matches!(member.role.0.as_str(), "owner" | "admin"))
+    );
     assert_eq!(
         demo.org_members("elsewhere").unwrap_err(),
         Failure::Forbidden

@@ -96,6 +96,7 @@ impl ClientApp {
                 }
             },
             Intent::RegisterWebhook(workflow_id, trigger_id) => {
+                let registering = (workflow_id.clone(), trigger_id.clone());
                 let request = RegisterWebhookRequest {
                     workflow_id,
                     trigger_id,
@@ -105,7 +106,9 @@ impl ClientApp {
                     provider_config: None,
                     rate_limit_per_minute: None,
                 };
-                self.dispatch(context, Operation::RegisterWebhook(request));
+                if self.dispatch(context, Operation::RegisterWebhook(request)) {
+                    self.workbench.triggers.registering = Some(registering);
+                }
             },
             Intent::LoadProfile => {
                 if self.dispatch(context, Operation::Profile) {

@@ -378,16 +378,6 @@ impl Demo {
                         key: entry.detail.key.clone(),
                         name: entry.detail.name.clone(),
                         version: entry.detail.version.clone(),
-                        // As `nebula-plugin-core` registers them: the branching actions through its
-                        // control factory, every other one stateless.
-                        kind: Some(
-                            if matches!(entry.detail.key.as_str(), "core.if" | "core.switch") {
-                                "control"
-                            } else {
-                                "stateless"
-                            }
-                            .to_owned(),
-                        ),
                     })
                     .collect(),
             })
@@ -410,6 +400,16 @@ impl Demo {
             Ok(ActionParametersResponse {
                 key: entry.detail.key.clone(),
                 parameters: entry.parameters.clone(),
+                // As `nebula-plugin-core` registers them: the branching actions through its
+                // control factory, every other one stateless.
+                kind: Some(
+                    if matches!(entry.detail.key.as_str(), "core.if" | "core.switch") {
+                        "control"
+                    } else {
+                        "stateless"
+                    }
+                    .to_owned(),
+                ),
             })
         })
     }
@@ -478,12 +478,36 @@ impl Demo {
                 .collect();
             let values = Values::of(&form, &entries);
             let missing: Vec<String> = if form.tagged_union {
-                // A union holds exactly one of its tags.
-                let tags = request.data.as_object().map_or(0, Map::len);
-                if tags == 1 {
-                    Vec::new()
-                } else {
-                    vec!["data: Choose one type and fill it in.".to_owned()]
+                // A union holds exactly one of its tags, and that tag's own required fields.
+                let chosen = request
+                    .data
+                    .as_object()
+                    .filter(|tags| tags.len() == 1)
+                    .and_then(|tags| tags.iter().next());
+                let variant = chosen.and_then(|(tag, payload)| {
+                    let Some(schema::Kind::Mode { variants, .. }) =
+                        form.fields.first().map(|field| &field.kind)
+                    else {
+                        return None;
+                    };
+                    variants
+                        .iter()
+                        .find(|variant| &variant.key == tag)
+                        .map(|variant| (tag, &variant.field, payload))
+                });
+                match variant {
+                    Some((tag, field, payload)) => {
+                        let mut missing = Vec::new();
+                        missing_fields(
+                            field,
+                            payload,
+                            &format!("data.{tag}"),
+                            &values,
+                            &mut missing,
+                        );
+                        missing
+                    },
+                    None => vec!["data: Choose one type and fill it in.".to_owned()],
                 }
             } else {
                 form.fields
@@ -657,18 +681,30 @@ impl Demo {
                     "role: Choose owner, admin, billing or member.".to_owned(),
                 ));
             }
-            if world
-                .org_members
-                .iter()
-                .any(|member| member.principal_id == request.principal_id)
-            {
-                return Err(Failure::Conflict);
-            }
             let member = MemberSummary {
                 principal_id: request.principal_id.clone(),
                 role: OrgRoleDto(request.role.0.clone()),
             };
-            world.org_members.push(member.clone());
+            // As the server's upsert: re-adding a member changes their role, unless that would
+            // leave the organization with no owner or admin (409, organization lockout).
+            let managers = |members: &[MemberSummary]| {
+                members
+                    .iter()
+                    .filter(|member| matches!(member.role.0.as_str(), "owner" | "admin"))
+                    .count()
+            };
+            let mut next = world.org_members.clone();
+            match next
+                .iter_mut()
+                .find(|existing| existing.principal_id == request.principal_id)
+            {
+                Some(existing) => *existing = member.clone(),
+                None => next.push(member.clone()),
+            }
+            if managers(&next) == 0 {
+                return Err(Failure::Conflict);
+            }
+            world.org_members = next;
             Ok(member)
         })
     }
@@ -913,6 +949,30 @@ fn check_org(org: &str) -> Result<(), Failure> {
         Ok(())
     } else {
         Err(Failure::Forbidden)
+    }
+}
+
+/// The required fields of `field` that `value` leaves empty, at any depth of nested objects, as
+/// `path.key: Provide a value.`, the way the credential service rejects them.
+fn missing_fields(
+    field: &schema::Field,
+    value: &Value,
+    path: &str,
+    values: &Values,
+    missing: &mut Vec<String>,
+) {
+    let schema::Kind::Object { fields, .. } = &field.kind else {
+        return;
+    };
+    for inner in fields.iter().filter(|inner| inner.is_visible(values)) {
+        let at = format!("{path}.{}", inner.key);
+        match value.get(&inner.key) {
+            Some(nested) if !schema::is_empty(nested) => {
+                missing_fields(inner, nested, &at, values, missing);
+            },
+            _ if inner.is_required(values) => missing.push(format!("{at}: Provide a value.")),
+            _ => {},
+        }
     }
 }
 

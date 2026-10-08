@@ -210,6 +210,55 @@ fn a_creation_whose_answer_was_lost_closes_its_form_and_waits_for_the_list() {
 }
 
 #[test]
+fn a_lost_registration_answer_marks_the_trigger_until_it_registers_again() {
+    let mut workbench = workspace();
+    let pair = ("wf_invoices".to_owned(), "billing_webhook".to_owned());
+    workbench.triggers.registering = Some(pair.clone());
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(
+        stamp,
+        RequestKind::Change(Target::WebhookRegistration),
+        Err(Failure::OutcomeUnknown),
+    );
+    assert_eq!(workbench.triggers.uncertain.as_ref(), Some(&pair));
+    assert!(workbench.triggers.registering.is_none());
+
+    // A registration that answers clears the mark.
+    let demo = Demo::new().unwrap();
+    let invoices = demo
+        .list(1)
+        .unwrap()
+        .workflows
+        .into_iter()
+        .find(|workflow| workflow.name == "Invoice events")
+        .unwrap();
+    let response = demo
+        .register_webhook(&nebula_api_contract::v1::webhook::RegisterWebhookRequest {
+            workflow_id: invoices.id,
+            trigger_id: pair.1.clone(),
+            provider: "generic".into(),
+            replay_window_secs: None,
+            timestamp_header: None,
+            provider_config: None,
+            rate_limit_per_minute: None,
+        })
+        .unwrap();
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(
+        stamp,
+        RequestKind::Change(Target::WebhookRegistration),
+        Ok(Reply::WebhookRegistered {
+            workflow: pair.0,
+            trigger: pair.1,
+            response,
+        }),
+    );
+    assert!(workbench.triggers.uncertain.is_none());
+    assert!(workbench.triggers.registered.is_some());
+}
+
+#[test]
 fn an_uncertain_test_or_deletion_keeps_the_draft_being_typed() {
     let mut workbench = workspace();
     let demo = Demo::new().unwrap();

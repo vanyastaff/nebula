@@ -182,6 +182,18 @@ fn parameters(
     scope: egui::Id,
     intents: &mut Intents,
 ) {
+    if let Some(kind) = workbench.non_graph.get(&node.catalog) {
+        widgets::banner(
+            ui,
+            Tone::Warning,
+            &format!(
+                "{} is a {kind} action, which a workflow graph cannot run as a node; publishing \
+                 rejects it. Remove the node, or bind the action as a trigger.",
+                node.action
+            ),
+        );
+        ui.add_space(theme::SPACE_SM);
+    }
     let state = workbench.schemas.get(&node.catalog).cloned();
     match state {
         None => {

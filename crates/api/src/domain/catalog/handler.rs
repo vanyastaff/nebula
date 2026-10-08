@@ -50,21 +50,14 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
                 || key.as_str().to_string(),
                 |(meta, _)| meta.base().name().to_owned(),
             );
-            let version = entry.as_ref().map_or_else(
+            let version = entry.map_or_else(
                 || "1.0.0".to_string(),
                 |(meta, _)| meta.base().version().to_string(),
             );
-            // The kind's own serde name, so the wire value follows the enum without a mapping.
-            let kind = entry.and_then(|(meta, _)| {
-                serde_json::to_value(meta.kind())
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_owned))
-            });
             ActionSummary {
                 key: key.as_str().to_string(),
                 name,
                 version,
-                kind,
             }
         })
         .collect();
@@ -153,9 +146,15 @@ pub async fn get_action_parameters(
     let parameters = serde_json::to_value(meta.base().schema())
         .map_err(|_| ApiError::Internal("Action parameter schema could not be encoded".into()))?;
 
+    // The kind's own serde name, so the wire value follows the enum without a mapping.
+    let kind = serde_json::to_value(meta.kind())
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned));
+
     Ok(Json(ActionParametersResponse {
         key: meta.base().key().as_str().to_string(),
         parameters,
+        kind,
     }))
 }
 

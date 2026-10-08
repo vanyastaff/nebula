@@ -230,6 +230,13 @@ pub(crate) struct TriggersPage {
     pub(crate) documents: Remote<Vec<WorkflowDocumentResponse>>,
     /// A just-registered webhook: its address and signing secret, shown once.
     pub(crate) registered: Option<RegisteredWebhook>,
+    /// The workflow and trigger whose registration is on its way.
+    pub(crate) registering: Option<(String, String)>,
+    /// A registration whose answer was lost: it may exist, with a secret that cannot be shown
+    /// again. Registering that trigger again asks for confirmation first.
+    pub(crate) uncertain: Option<(String, String)>,
+    /// The person asked to register the uncertain trigger again and is confirming it.
+    pub(crate) confirm_again: bool,
 }
 
 pub(crate) struct RegisteredWebhook {

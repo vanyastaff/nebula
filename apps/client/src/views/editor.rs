@@ -513,10 +513,11 @@ fn catalog(
                 ui.add(widgets::field(&mut workbench.add_node.filter).hint_text("Search actions"));
             widgets::named(ui, &search, "Search actions to add");
             let filter = workbench.add_node.filter.trim().to_lowercase();
-            // Triggers, streams and resources are not graph nodes, so the palette leaves them out.
+            // Triggers, streams and resources are not graph nodes, so the palette leaves out every
+            // action whose parameters said so.
             let matches: Vec<_> = actions
                 .iter()
-                .filter(|action| action.is_graph_node())
+                .filter(|action| !workbench.non_graph.contains_key(&action.key))
                 .filter(|action| {
                     filter.is_empty()
                         || action.name.to_lowercase().contains(&filter)

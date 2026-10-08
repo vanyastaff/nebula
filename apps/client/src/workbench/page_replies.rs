@@ -123,6 +123,12 @@ impl Workbench {
                 trigger,
                 response,
             } => {
+                let triggers = &mut self.triggers;
+                triggers.registering = None;
+                if triggers.uncertain.as_ref() == Some(&(workflow.clone(), trigger.clone())) {
+                    triggers.uncertain = None;
+                }
+                triggers.confirm_again = false;
                 self.triggers.registered = Some(RegisteredWebhook {
                     workflow,
                     trigger,
@@ -248,7 +254,9 @@ impl Workbench {
             Target::Credentials | Target::NewCredential => {
                 self.credentials.list = Remote::Failed(reason);
             },
-            Target::Triggers => self.triggers.documents = Remote::Failed(reason),
+            Target::Triggers | Target::WebhookRegistration => {
+                self.triggers.documents = Remote::Failed(reason);
+            },
             Target::Profile => self.settings.profile = Remote::Failed(reason),
             Target::Tokens | Target::NewToken => self.settings.tokens = Remote::Failed(reason),
             Target::OrgMembers => self.team.organization = Remote::Failed(reason),
@@ -279,6 +287,12 @@ impl Workbench {
             },
             Target::Tokens => self.settings.tokens.invalidate(),
             Target::Triggers => self.triggers.documents.invalidate(),
+            // The workflow document says nothing about registrations, so rereading it settles
+            // nothing; the trigger is marked instead, and registering it again asks first.
+            Target::WebhookRegistration => {
+                self.triggers.uncertain = self.triggers.registering.take();
+                self.triggers.confirm_again = false;
+            },
             Target::Profile => self.settings.profile.invalidate(),
             Target::OrgMembers => {
                 self.team.organization.invalidate();

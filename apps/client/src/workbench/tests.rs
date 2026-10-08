@@ -592,6 +592,7 @@ fn schema_reply(workbench: &mut Workbench, action: &str, parameters: Value) {
     let detail = ActionParametersResponse {
         key: action.to_owned(),
         parameters,
+        kind: Some("stateless".to_owned()),
     };
     let stamp = workbench.session.begin().unwrap();
     workbench.receive(
