@@ -13,7 +13,8 @@ pub(crate) enum Tone {
 }
 
 impl Tone {
-    fn colors(self) -> (Color32, Color32) {
+    /// Foreground and background of the tone.
+    pub(crate) fn colors(self) -> (Color32, Color32) {
         match self {
             Self::Neutral => (theme::TEXT_MUTED, theme::FIELD),
             Self::Accent => (theme::ACCENT, theme::ACCENT_SOFT),
@@ -135,13 +136,6 @@ pub(crate) fn panel_header(ui: &mut egui::Ui, text: &str) -> bool {
         .inner
     })
     .inner
-}
-
-/// Placeholder for a view that has nothing to show yet.
-pub(crate) fn empty_state(ui: &mut egui::Ui, heading: &str, body: &str) {
-    ui.add_space(theme::SPACE_XL);
-    section(ui, heading);
-    caption(ui, body);
 }
 
 /// Centers a column no wider than `max_width`. Narrower windows use the full width the page offers.

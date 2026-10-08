@@ -113,6 +113,10 @@ pub(crate) struct Navigator {
     pub(crate) workflows: Vec<WorkflowResponse>,
     pub(crate) page: usize,
     pub(crate) total: usize,
+    /// Narrows the listed page by name. It filters what was read; it does not search the server.
+    pub(crate) filter: String,
+    /// The inline form for a new workflow is open.
+    pub(crate) creating: bool,
     pub(crate) new_name: String,
     refresh_pending: bool,
 }
@@ -129,6 +133,15 @@ impl Navigator {
     /// True once after a workflow was created, so the caller re-reads the first page.
     pub(crate) fn take_refresh(&mut self) -> bool {
         std::mem::take(&mut self.refresh_pending)
+    }
+
+    /// Workflows on the current page whose name contains the filter, ignoring case.
+    pub(crate) fn visible(&self) -> Vec<&WorkflowResponse> {
+        let filter = self.filter.trim().to_lowercase();
+        self.workflows
+            .iter()
+            .filter(|workflow| filter.is_empty() || workflow.name.to_lowercase().contains(&filter))
+            .collect()
     }
 }
 
@@ -210,6 +223,9 @@ pub(crate) struct Workbench {
     pub(crate) parameter: ParameterSelection,
     pub(crate) status: Option<Box<ExecutionDetailResponse>>,
     pub(crate) history: Option<ListExecutionsResponse>,
+    /// Recent runs were asked for since the workflow opened or last started a run, so the runs panel
+    /// does not ask again every frame, even when the answer was a failure.
+    pub(crate) history_requested: bool,
     pub(crate) feedback: Feedback,
     /// Lets the user return to the workspace form while a workspace is open.
     pub(crate) workspace_form_open: bool,
@@ -302,6 +318,7 @@ impl Workbench {
             parameter: ParameterSelection::default(),
             status: None,
             history: None,
+            history_requested: false,
             feedback: Feedback::default(),
             workspace_form_open: false,
             sidebar_open: true,
@@ -367,6 +384,17 @@ impl Workbench {
         true
     }
 
+    /// The workflow has a local draft in this workspace with edits the server has not seen.
+    pub(crate) fn has_unsaved(&self, workflow: &str) -> bool {
+        self.session.context.as_ref().is_some_and(|context| {
+            let key = DraftKey {
+                context: context.clone(),
+                workflow: workflow.into(),
+            };
+            self.session.drafts.get(&key).is_some_and(Draft::dirty)
+        })
+    }
+
     pub(crate) fn clear_selection(&mut self) {
         self.parameter.close();
         self.selected_node = None;
@@ -376,6 +404,7 @@ impl Workbench {
         self.add_node.close();
         self.status = None;
         self.history = None;
+        self.history_requested = false;
     }
 
     pub(crate) fn disconnect(&mut self) {
@@ -426,10 +455,8 @@ impl Workbench {
         if kind == RequestKind::Catalog {
             self.catalog = Catalog::Unavailable;
         }
-        if kind == RequestKind::Catalog && error == Failure::Rejected(503) {
-            // The palette asks on its own and shows this state itself, so it is news, not a failure.
-            self.feedback.info(CATALOG_UNAVAILABLE);
-        } else {
+        // A server without a catalog is a state the palette shows itself, so it needs no toast.
+        if kind != RequestKind::Catalog || error != Failure::Rejected(503) {
             self.feedback.error(error.to_string());
         }
         if let Some(draft) = self.session.draft_mut() {
@@ -476,15 +503,9 @@ impl Workbench {
             },
             Reply::Published(document) => self.receive_published(document),
             Reply::Started(receipt) => self.receive_started(receipt),
-            Reply::History(history) => {
-                self.history = Some(history);
-                self.feedback.info("Recent runs read from the server.");
-            },
-            Reply::Status(status) => {
-                self.status = Some(status);
-                self.feedback
-                    .info("Execution snapshot read from persisted server state.");
-            },
+            // Both land in the runs panel, which is their confirmation; a toast would only repeat it.
+            Reply::History(history) => self.history = Some(history),
+            Reply::Status(status) => self.status = Some(status),
             Reply::Actions(list) => {
                 let count = list.actions.len();
                 self.catalog = Catalog::Ready(list.actions);
@@ -510,6 +531,7 @@ impl Workbench {
                 self.session.selected = Some(key);
                 self.clear_selection();
                 self.navigator.new_name.clear();
+                self.navigator.creating = false;
                 self.feedback.info("Workflow created with an empty graph.");
             },
             Err(error) => self.feedback.error(error.to_string()),
@@ -572,6 +594,8 @@ impl Workbench {
             draft.start_key = None;
         }
         self.status = None;
+        // The new run belongs in the list, so the runs panel reads it again.
+        self.history_requested = false;
         self.feedback
             .info("Run accepted. Read persisted status to see whether it has started.");
     }

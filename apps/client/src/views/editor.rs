@@ -78,11 +78,7 @@ pub(crate) fn show(
     stacked: bool,
 ) {
     let Some(draft) = workbench.session.draft() else {
-        widgets::empty_state(
-            ui,
-            "Choose a workflow",
-            "Open a workflow from the list to edit its graph, or create a new one.",
-        );
+        no_workflow(ui, workbench);
         return;
     };
     let busy = workbench.session.busy();
@@ -99,6 +95,21 @@ pub(crate) fn show(
             ui.available_height().max(MIN_CANVAS_HEIGHT)
         };
         graph(ui, workbench, &view, intents, height);
+    });
+}
+
+/// The page before a workflow is open: what to do next, with the shortest way to start.
+fn no_workflow(ui: &mut egui::Ui, workbench: &mut Workbench) {
+    // About a third of the way down a full page; a scrolling page has no height to share, so it caps.
+    ui.add_space((ui.available_height() * 0.3).clamp(theme::SPACE_XL, 240.0));
+    ui.vertical_centered(|ui| {
+        widgets::section(ui, "No workflow open");
+        widgets::caption(ui, "Pick a workflow from the list, or start a new one.");
+        ui.add_space(theme::SPACE_SM);
+        if ui.add(widgets::primary_button("New workflow")).clicked() {
+            workbench.navigator.creating = true;
+            workbench.sidebar_open = true;
+        }
     });
 }
 
@@ -459,7 +470,10 @@ fn catalog(
 
 /// A hand-typed action, for keys the catalog does not list or servers without a catalog.
 fn add_node_fields(ui: &mut egui::Ui, workbench: &mut Workbench) {
-    widgets::caption(ui, "Or add an action by its key.");
+    // With a catalog the typed key is the alternative; without one the catalog message already says so.
+    if matches!(workbench.catalog, Catalog::Ready(_)) {
+        widgets::caption(ui, "Or add an action by its key.");
+    }
     widgets::labeled_field(ui, "Action key", &mut workbench.add_node.action_key, false);
     widgets::labeled_field(
         ui,

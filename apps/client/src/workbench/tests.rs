@@ -189,8 +189,7 @@ fn a_catalog_without_a_registry_is_a_state_and_says_so() {
     workbench.receive(stamp, RequestKind::Catalog, Err(Failure::Rejected(503)));
 
     assert!(matches!(workbench.catalog, Catalog::Unavailable));
-    assert_eq!(workbench.feedback.message, CATALOG_UNAVAILABLE);
-    assert!(!workbench.feedback.failure);
+    assert!(workbench.feedback.message.is_empty());
 }
 
 #[test]
@@ -311,6 +310,80 @@ fn a_completed_sign_in_clears_every_secret() {
     assert!(workbench.form.password.is_empty());
     assert!(workbench.form.totp.is_empty());
     assert!(!workbench.form.mfa_required);
+}
+
+#[test]
+fn a_started_run_asks_for_the_recent_runs_again() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    let context = workbench.session.context.clone().unwrap();
+    let key = DraftKey {
+        context,
+        workflow: "wf_test".into(),
+    };
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    draft.start_key = Some("start-1".into());
+    workbench.session.drafts.insert(key.clone(), draft);
+    workbench.session.selected = Some(key.clone());
+    workbench.history_requested = true;
+    let workflow = workbench.session.drafts[&key].base.workflow.id.clone();
+    let receipt = serde_json::from_value(json!({
+        "id": "exe_1", "workflow_id": workflow, "status": "created", "started_at": 0
+    }))
+    .unwrap();
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(stamp, RequestKind::Run, Ok(Reply::Started(receipt)));
+
+    assert!(!workbench.history_requested);
+    assert_eq!(
+        workbench.session.drafts[&key].execution_id.as_deref(),
+        Some("exe_1")
+    );
+}
+
+#[test]
+fn the_list_filter_matches_names_ignoring_case() {
+    let mut navigator = Navigator {
+        workflows: serde_json::from_value(json!([
+            {"id": "wf_1", "name": "Nightly Report", "created_at": 0, "updated_at": 0},
+            {"id": "wf_2", "name": "Invoice sync", "created_at": 0, "updated_at": 0}
+        ]))
+        .unwrap(),
+        filter: "  report ".into(),
+        ..Navigator::default()
+    };
+
+    let names: Vec<&str> = navigator
+        .visible()
+        .iter()
+        .map(|workflow| workflow.name.as_str())
+        .collect();
+
+    assert_eq!(names, ["Nightly Report"]);
+    navigator.filter.clear();
+    assert_eq!(navigator.visible().len(), 2);
+}
+
+#[test]
+fn only_a_draft_with_local_edits_is_marked_unsaved() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    let context = workbench.session.context.clone().unwrap();
+    let key = DraftKey {
+        context,
+        workflow: "wf_test".into(),
+    };
+    let draft = Draft::new(snapshot(1, 7)).unwrap();
+    workbench.session.drafts.insert(key.clone(), draft);
+    assert!(!workbench.has_unsaved("wf_test"));
+
+    if let Some(draft) = workbench.session.drafts.get_mut(&key) {
+        draft.edit("echo", "message", "9").unwrap();
+    }
+
+    assert!(workbench.has_unsaved("wf_test"));
+    assert!(!workbench.has_unsaved("wf_other"));
 }
 
 #[test]
