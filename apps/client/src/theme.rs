@@ -1,36 +1,39 @@
 //! Design tokens and the global egui style. Views take colors, spacing and type from here only.
 use eframe::egui::{self, Color32, CornerRadius, FontId, Stroke, TextStyle};
 
-// Surfaces: the canvas sits behind white cards; the sidebar and fields are a step away from white.
-pub(crate) const CANVAS: Color32 = Color32::from_rgb(237, 241, 246);
-pub(crate) const SURFACE: Color32 = Color32::WHITE;
-pub(crate) const SIDEBAR: Color32 = Color32::from_rgb(247, 249, 252);
-pub(crate) const FIELD: Color32 = Color32::from_rgb(243, 246, 251);
-pub(crate) const BORDER: Color32 = Color32::from_rgb(215, 223, 234);
+// Dark palette after the z8run flow engine: near-black page, slightly lifted cards, an indigo primary
+// action, and muted text. Every value is a token, so the whole interface changes in one place.
+
+// Surfaces: the page sits behind cards; the sidebar and inputs step between them.
+pub(crate) const CANVAS: Color32 = Color32::from_rgb(13, 14, 18);
+pub(crate) const SURFACE: Color32 = Color32::from_rgb(22, 23, 30);
+pub(crate) const SIDEBAR: Color32 = Color32::from_rgb(17, 18, 24);
+pub(crate) const FIELD: Color32 = Color32::from_rgb(30, 32, 41);
+pub(crate) const BORDER: Color32 = Color32::from_rgb(42, 45, 58);
 
 // Text
-pub(crate) const TEXT: Color32 = Color32::from_rgb(31, 43, 61);
-pub(crate) const TEXT_MUTED: Color32 = Color32::from_rgb(83, 100, 123);
+pub(crate) const TEXT: Color32 = Color32::from_rgb(231, 232, 238);
+pub(crate) const TEXT_MUTED: Color32 = Color32::from_rgb(138, 143, 163);
 
-// Accent and status tones. Each tone has a strong foreground and a soft background for badges and banners.
-pub(crate) const ACCENT: Color32 = Color32::from_rgb(35, 95, 198);
-pub(crate) const ACCENT_SOFT: Color32 = Color32::from_rgb(232, 240, 252);
-pub(crate) const SUCCESS: Color32 = Color32::from_rgb(27, 112, 80);
-pub(crate) const SUCCESS_SOFT: Color32 = Color32::from_rgb(226, 244, 236);
-pub(crate) const WARNING: Color32 = Color32::from_rgb(137, 84, 16);
-pub(crate) const WARNING_SOFT: Color32 = Color32::from_rgb(252, 242, 224);
-pub(crate) const DANGER: Color32 = Color32::from_rgb(161, 42, 38);
-pub(crate) const DANGER_SOFT: Color32 = Color32::from_rgb(251, 232, 231);
+// Accent and status tones. Each tone has a bright foreground and a dim background for badges and banners.
+pub(crate) const ACCENT: Color32 = Color32::from_rgb(99, 102, 241);
+pub(crate) const ACCENT_SOFT: Color32 = Color32::from_rgb(38, 40, 84);
+pub(crate) const SUCCESS: Color32 = Color32::from_rgb(52, 211, 153);
+pub(crate) const SUCCESS_SOFT: Color32 = Color32::from_rgb(16, 44, 36);
+pub(crate) const WARNING: Color32 = Color32::from_rgb(251, 191, 36);
+pub(crate) const WARNING_SOFT: Color32 = Color32::from_rgb(52, 42, 16);
+pub(crate) const DANGER: Color32 = Color32::from_rgb(248, 113, 113);
+pub(crate) const DANGER_SOFT: Color32 = Color32::from_rgb(58, 24, 28);
 
 // Graph: connection lines, and the badge colours that tell action kinds apart.
-pub(crate) const EDGE: Color32 = Color32::from_rgb(150, 162, 180);
+pub(crate) const EDGE: Color32 = Color32::from_rgb(92, 98, 120);
 const NODE_ACCENTS: [Color32; 6] = [
-    Color32::from_rgb(35, 95, 198),
-    Color32::from_rgb(27, 112, 80),
-    Color32::from_rgb(137, 84, 16),
-    Color32::from_rgb(112, 74, 178),
-    Color32::from_rgb(0, 122, 135),
-    Color32::from_rgb(170, 70, 90),
+    Color32::from_rgb(99, 102, 241),
+    Color32::from_rgb(52, 211, 153),
+    Color32::from_rgb(251, 191, 36),
+    Color32::from_rgb(192, 132, 252),
+    Color32::from_rgb(56, 189, 248),
+    Color32::from_rgb(248, 113, 113),
 ];
 
 /// A badge colour that stays the same for the same action key, so related nodes match at a glance.
@@ -105,7 +108,7 @@ fn fonts() -> egui::FontDefinitions {
 
 fn style() -> egui::Style {
     let mut style = egui::Style {
-        visuals: egui::Visuals::light(),
+        visuals: egui::Visuals::dark(),
         ..Default::default()
     };
     style
