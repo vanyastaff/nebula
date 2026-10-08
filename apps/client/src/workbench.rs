@@ -311,13 +311,6 @@ impl Workbench {
                 self.navigator.workflows = page.workflows;
                 self.navigator.total = page.total;
                 self.navigator.page = page.page;
-                let noun = if page.total == 1 {
-                    "workflow"
-                } else {
-                    "workflows"
-                };
-                self.feedback
-                    .info(format!("{} {noun} in this workspace.", page.total));
             },
             Reply::Created(document) => self.receive_created(document),
             Reply::Loaded(document) => self.receive_loaded(document),
@@ -454,6 +447,31 @@ mod tests {
         assert!(workbench.navigator.new_name.is_empty());
         assert!(workbench.navigator.take_refresh());
         assert!(!workbench.navigator.take_refresh());
+    }
+
+    #[test]
+    fn the_list_refresh_after_creation_keeps_the_creation_message() {
+        let mut workbench = Workbench::new(String::new());
+        open_workspace_session(&mut workbench);
+        let stamp = workbench.session.begin().unwrap();
+        workbench.receive(
+            stamp,
+            RequestKind::Create,
+            Ok(Reply::Created(snapshot(1, 7))),
+        );
+        let listed: ListWorkflowsResponse = serde_json::from_value(
+            json!({"workflows": [], "total": 1, "page": 1, "page_size": 25}),
+        )
+        .unwrap();
+        let stamp = workbench.session.begin().unwrap();
+
+        workbench.receive(stamp, RequestKind::Read, Ok(Reply::Listed(listed)));
+
+        assert_eq!(
+            workbench.feedback.message,
+            "Workflow created with an empty graph."
+        );
+        assert!(!workbench.feedback.failure);
     }
 
     #[test]

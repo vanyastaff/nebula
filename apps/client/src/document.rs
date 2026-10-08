@@ -93,6 +93,21 @@ enum Change {
 }
 
 impl Change {
+    /// Whether a replay error only means the remote already holds this change's outcome. Creating
+    /// an existing connection or removing an absent node satisfies the edit; anything else is a
+    /// conflict the user has to review.
+    fn already_in_effect(&self, error: &EditError) -> bool {
+        matches!(
+            (self, error),
+            (Self::ConnectionAdded { .. }, EditError::ConnectionExists)
+                | (
+                    Self::ConnectionRemoved { .. },
+                    EditError::ConnectionNotFound
+                )
+                | (Self::NodeRemoved { .. }, EditError::NodeNotFound)
+        )
+    }
+
     /// The request that reproduces this change on any revision, used when replaying after a conflict.
     fn intent(&self) -> Edit {
         match self {
@@ -635,15 +650,20 @@ impl Draft {
         self.save_conflict = false;
     }
 
-    /// Replays the recorded edits onto a freshly read snapshot. Any edit that no longer applies
-    /// (a removed node, an existing connection) fails and leaves this draft untouched.
+    /// Replays the recorded edits onto a freshly read snapshot. An edit whose outcome the remote
+    /// already has counts as applied. An edit that cannot be honored, such as a connection to a
+    /// removed node, fails and leaves this draft untouched.
     pub(crate) fn reapply(&mut self) -> Result<(), EditError> {
         let Some(remote) = &self.remote else {
             return Ok(());
         };
         let mut next = Self::new(remote.clone())?;
         for change in &self.undo {
-            next.apply(change.intent())?;
+            match next.apply(change.intent()) {
+                Ok(()) => {},
+                Err(error) if change.already_in_effect(&error) => {},
+                Err(error) => return Err(error),
+            }
         }
         next.start_key.clone_from(&self.start_key);
         next.execution_id.clone_from(&self.execution_id);
@@ -772,6 +792,40 @@ pub(crate) mod tests {
         assert_eq!(draft.reapply(), Err(EditError::NodeNotFound));
         assert!(draft.dirty());
         assert_eq!(draft.base.revision, 1);
+    }
+
+    fn two_node_snapshot(revision: u64, connections: Value) -> WorkflowDocumentResponse {
+        let mut document = snapshot(revision, 7);
+        document.definition["nodes"] = json!([
+            {"id": "echo", "name": "Echo", "action_key": "echo", "parameters": {}},
+            {"id": "http_request", "name": "HTTP", "action_key": "http_request", "parameters": {}}
+        ]);
+        document.definition["connections"] = connections;
+        document
+    }
+
+    #[test]
+    fn replay_counts_a_connection_the_remote_already_has_as_applied() {
+        let mut draft = Draft::new(two_node_snapshot(1, json!([]))).unwrap();
+        draft.connect("echo", "http_request").unwrap();
+        draft.remote = Some(two_node_snapshot(
+            2,
+            json!([{"from_node": "echo", "to_node": "http_request", "from_port": "out"}]),
+        ));
+        draft.reapply().unwrap();
+        assert_eq!(draft.base.revision, 2);
+        assert_eq!(draft.connections().len(), 1);
+        assert!(!draft.dirty());
+    }
+
+    #[test]
+    fn replay_counts_a_removal_the_remote_already_made_as_applied() {
+        let mut draft = Draft::new(two_node_snapshot(1, json!([]))).unwrap();
+        draft.remove_node("http_request").unwrap();
+        draft.remote = Some(snapshot(2, 8));
+        draft.reapply().unwrap();
+        assert_eq!(draft.definition["nodes"].as_array().unwrap().len(), 1);
+        assert!(!draft.dirty());
     }
 
     #[test]
