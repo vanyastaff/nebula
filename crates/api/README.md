@@ -117,9 +117,9 @@ persists the execution, exact contract bundle, and Start command, then returns
 202 with its checked persisted receipt. Both routes share the `Idempotency-Key`
 namespace; replay returns the original execution even after workflow republishing.
 Unknown commit outcomes retain the original execution identity in a 503 response.
-The current server root does not install
-the engine `ControlConsumer`, so 202 proves the durable producer write, not deployed
-consumption.
+The ordinary server installs the engine `ControlConsumer` through its supervised
+in-process worker. A 202 still proves durable admission, not completed consumption;
+clients observe progress through execution detail.
 Seam: `crates/api/src/domain/execution/handler.rs` — `start_execution`.
 - **[L2-§13 step 5]** Cancel (`POST /api/v1/executions/:id/cancel`) writes a
 durable signal to the port `ControlQueue` in the same logical operation as the
@@ -128,12 +128,10 @@ returns after this producer commit; it does not wait for a consumer or prove
 that an in-flight handler stopped. Seam:
 `crates/api/src/domain/execution/handler.rs` — `cancel_execution`.
 - **[L2-§12.3]** Local-first transport startup needs no Docker or Redis.
-  With `API_EXECUTION_BACKEND` unset, `apps/server` uses process-local memory.
-  Separately, `apps/worker` defaults to its own `nebula-worker.db` SQLite file.
-  Those defaults do not share execution/control state, and neither root installs
-  the engine `ControlConsumer`. A functional local execution path therefore
-  requires explicit shared-backend configuration and consumer composition;
-  today that full composition exists only in manually assembled tests.
+  With `API_EXECUTION_BACKEND` unset, `apps/server` uses durable SQLite and an
+  in-process worker on the same admitted deployment pool. Key, linked artifact
+  identity and owner setup remain required. Separate worker processes require
+  PostgreSQL in the server's supported `separate-workers` topology.
 - **[L2-§4.5]** Producer behavior and consumer behavior are documented
   separately. The manually composed Start knife test proves a test-installed
   consumer can drive a started execution to completion over shared in-memory
@@ -142,8 +140,9 @@ that an in-flight handler stopped. Seam:
   Because the API writes the terminal row itself and the harness exposes no
   handler-exit signal, that row is not evidence of consumer delivery or handler
   interruption. The `CANCELFX` fault gate remains the required interruption
-  evidence. None of these tests prove the default server and worker binaries as
-  one end-to-end runtime.
+  evidence. Separately, `apps/server/tests/owner_setup_cli.rs` runs the actual
+  server binary to prove local completion, persisted output and recovery after
+  a process crash during a timer wait on both SQLite and PostgreSQL.
 - **[L2-§12.2]** Cancel signals share the outbox transaction — the
 `control_queue_repo` field in `AppState` is the durable outbox (§12.2).
 A second in-memory control channel is forbidden (see §12.2 prohibition on
@@ -566,7 +565,7 @@ protocol; it does not restore provider-specific ceremony routes. When no command
 
 | Aspect | First-party credential storage composition (after membership authority is provisioned) |
 |---|---|
-| Restart-survival | **Yes with a durable execution backend** — credentials live in the deployment database (`API_EXECUTION_BACKEND=sqlite` file or `postgres`), beside the workspace each belongs to; completed credentials and encrypted pending interactions share it. The `memory` backend keeps them in a process-local database. |
+| Restart-survival | **Yes** — credentials live in the deployment database (SQLite by default, or PostgreSQL), beside the workspace each belongs to; completed credentials and encrypted pending interactions share it. Memory is an internal reference adapter, not a deployment option. |
 | Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and select `API_EXECUTION_BACKEND=postgres` with `DATABASE_URL`; credential rows, pending interactions, and the refresh-claim repository share that database. SQLite remains instance-local. |
 | Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
 | Cross-workspace isolation | **Yes** — authority verifies workspace existence/parentage, revalidates membership/role, reproduces the authenticated scope, and every persistence predicate uses the derived `(owner, credential_id)` selector; cross-workspace IDs collapse to a flat 404. The default server shares one backend-bound tenant directory across RBAC and credential authority. |

@@ -267,7 +267,7 @@ last persisted state.
 `CheckpointStore` follows the execution backend (`SqliteCheckpointStore`,
 `PgCheckpointStore`, or the in-memory reference model sharing the in-memory
 execution store): iteration checkpoints of journaled stateful actions are fenced by
-the execution lease, so they live beside the execution row (migration `0062`).
+the execution lease, so they live beside the execution row (`0004_executions.sql`).
 
 ### Example: SQLite single-process production
 

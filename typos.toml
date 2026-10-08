@@ -36,6 +36,8 @@ extend-exclude = [
 check-filename = true
 
 [default.extend-identifiers]
+# SQLite's documented REAL-affinity substring (alongside REAL and FLOA).
+DOUB = "DOUB"
 AIMD = "AIMD"
 RTO = "RTO"
 nd = "nd"
