@@ -2,7 +2,7 @@
 //!
 //! Every case runs against a fresh in-memory database whose schema comes from
 //! the ordered migration catalog, so the adapter is exercised against exactly
-//! the `CHECK` constraints migration 0062 installs.
+//! the `CHECK` constraints the execution baseline installs.
 
 #![cfg(feature = "sqlite")]
 
@@ -10,8 +10,12 @@
 #[path = "support/iteration_checkpoint_oracle.rs"]
 mod oracle;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
 use std::str::FromStr;
 
+use execution_parents::SeedExecutionParents;
 use nebula_storage::sqlite::{SqliteCheckpointStore, SqliteExecutionStore, init_schema};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -34,6 +38,9 @@ async fn fresh_pool() -> SqlitePool {
     init_schema(&pool)
         .await
         .expect("apply the ordered SQLite migration catalog");
+    for scope in [oracle::scope(), oracle::other_scope()] {
+        pool.seed_execution_parents(&scope, oracle::WORKFLOW).await;
+    }
     pool
 }
 
@@ -72,10 +79,10 @@ async fn the_schema_refuses_rows_outside_the_record_bounds() {
             let execution = execution.clone();
             async move {
                 sqlx::query(
-                    "INSERT INTO port_iteration_checkpoints \
+                    "INSERT INTO iteration_checkpoints \
                      (workspace_id, org_id, execution_id, node_key, action_key, action_version, \
                       action_version_digest, iteration, state, state_digest, resume_delay_ms, \
-                      attested_positions, attempt_generation, fencing_generation, written_at_ms) \
+                      attested_positions, attempt_generation, fencing_generation, written_at) \
                      VALUES (?, ?, ?, 'node', 'action', '1.0.0', ?, ?, ?, ?, NULL, 0, 0, 0, 0)",
                 )
                 .bind(&scope.workspace_id)
@@ -152,10 +159,10 @@ async fn a_stored_version_that_differs_from_the_key_fails_closed() {
         .unwrap();
     let key = IterationCheckpointKey::new(&scope, &execution, "node", "action", "1.0.0").unwrap();
     sqlx::query(
-        "INSERT INTO port_iteration_checkpoints \
+        "INSERT INTO iteration_checkpoints \
          (workspace_id, org_id, execution_id, node_key, action_key, action_version, \
           action_version_digest, iteration, state, state_digest, resume_delay_ms, \
-          attested_positions, attempt_generation, fencing_generation, written_at_ms) \
+          attested_positions, attempt_generation, fencing_generation, written_at) \
          VALUES (?, ?, ?, 'node', 'action', '2.0.0', ?, 1, X'7B7D', ?, NULL, 0, 0, 0, 0)",
     )
     .bind(&scope.workspace_id)

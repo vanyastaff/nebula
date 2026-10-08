@@ -11,6 +11,99 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
+- **Workspace version advances to 0.33.0.** This minor release records the
+  breaking execution-history and inspection API changes: consumers must replace
+  `RunningExecutionSummary` and `ExecutionOutputsResponse`, and migrate
+  `ListExecutionsResponse` from offset pagination to the cursor-based contract.
+  All workspace packages and external SDK fixture pins move in lockstep.
+
+- **Ordinary serving consumes accepted executions.** The server now owns an
+  in-process worker by default, using its admitted deployment pool, linked release
+  and credential projection. Startup acknowledges installed worker loops before
+  serving; mandatory worker failure stops HTTP. SQLite is the deployment default;
+  selecting Memory is rejected. `--execution separate-workers` requires PostgreSQL.
+  This does not supply a desktop launcher or eliminate key, artifact identity
+  and initial-owner setup requirements.
+
+- **Identity follows the deployment database.** `API_AUTH_BACKEND`,
+  `AuthBackendKind` and `AuthApiConfig.backend` are removed. The server derives
+  identity persistence from the admitted `API_EXECUTION_BACKEND` database and
+  reuses its pool, so offline owner setup and ordinary login share the same
+  SQLite or PostgreSQL identity state. Remove `API_AUTH_BACKEND` from existing
+  configuration; its presence is rejected with a value-free diagnostic rather
+  than ignored or treated as an alias. OAuth configuration remains independent
+  of storage selection.
+
+- **Worker command admission.** Unknown worker arguments now fail with usage
+  and exit code 2 instead of being ignored. Both deployment binaries support
+  `--help` and `--version` before loading configuration or initializing telemetry
+  and storage.
+  Invalid credential keys also fail before either process opens its database;
+  server artifact identity, bind override and tenant bootstrap configuration
+  are admitted before storage setup. Server startup errors use readable cause
+  messages instead of Rust debug output.
+
+- **Persisted execution inspection.** Execution GET detail now returns typed
+  lifecycle status, RFC3339 timestamps (no synthetic start time), snapshot
+  revision, node states, attempts, safe failure records and recorded outputs.
+  Corrupt snapshots fail rather than returning invented defaults. Command
+  acknowledgements retain their existing response shape. The unused cache-based
+  outputs handler and its transport DTO are removed; node data comes from the
+  committed snapshot. External output metadata never exposes backend blob keys.
+  Attempts are one-based; `recorded_at` denotes record creation, not dispatch
+  timing. Current output preserves reference/binary/collection kinds and refers
+  to the primary output; named output ports are not included yet.
+
+- **Checkpointable inline binary data.** `BinaryStorage::Inline { bytes }`
+  replaces the tuple variant, which could not serialize under its tagged enum.
+  Stored binary references retain their existing representation.
+
+- **One typed resource acquisition interface.** Host-side callers use
+  `Manager::acquire::<R>` or `acquire_for_identity::<R>`; `Provider::Topology`
+  selects the lifecycle policy. The six pooled/resident/bounded acquisition
+  aliases are removed. Action code continues to submit units through
+  `ResourceHandle`; its interface and lifecycle behavior are unchanged.
+
+- **Eight-aggregate database baseline.** The development migration history is
+  replaced by paired `0001_identity.sql` through `0008_platform.sql` catalogs.
+  This supersedes the transition migration numbers recorded below. Databases
+  created with the old catalog are rejected; recreate disposable development
+  databases with `task db:reset`. Future schema changes append immutable paired
+  migrations. Credential reconciliation, retry gates and live revision records
+  now reject incomplete NULL shapes at the database boundary.
+
+- **Resources on the database standard (migration 0071).** `port_resources`,
+  the resource runtime status tables and the shared-resource runtime tables are
+  replaced by `resources`, `resource_status_snapshots`,
+  `resource_status_heartbeats`, `shared_resources`, `resource_subscriptions`,
+  `resource_source_leases`, `resource_events`, `resource_deliveries` and
+  `resource_execution_handoffs`; existing rows are dropped. Stored and shared
+  resources belong to their workspace (`ON DELETE CASCADE`): creating a stored
+  resource or resolving a shared resource in a missing or archived workspace is
+  `NotFound`. Publishing status for a missing or archived stored resource is
+  `NotFound`, and an archived resource reports no live status. Instants are
+  microsecond `TIMESTAMPTZ` / INTEGER columns and fencing generations
+  non-negative integers (a generation past `i64::MAX` is exhausted). Reset
+  local databases.
+
+- **Credentials live in the deployment database (migration 0070).** The
+  credential store, refresh claims, refresh incidents (renamed
+  `credential_refresh_incidents`) and pending interactions move onto the
+  database standard and into the tenancy/execution database, with a
+  `(org_id, workspace_id)` foreign key to `workspaces` (`ON DELETE CASCADE`).
+  Creating a credential or a pending interaction requires a live workspace
+  (otherwise `NotFound`); archived credentials are unusable, and adjudicating
+  one is refused with `RefreshClaimAdjudicationError::AggregateUnavailable`.
+  `NEBULA_CRED_DB`, its `nebula-credentials.db` default and
+  `NEBULA_CRED_DB_MAX_CONNECTIONS` are removed with no fallback: server and
+  worker open credentials on the execution backend's own deployment pool
+  (`API_EXECUTION_BACKEND` / `DATABASE_URL`) — no second pool on the same
+  database. Storage API: `SqliteCredentialPersistence::connect_pool` and
+  `PgCredentialPersistence::connect_pool` take that pool;
+  `PgCredentialPersistence::connect_sized` / `connect_with_sized` and
+  `DEFAULT_CREDENTIAL_POOL_SIZE` are removed; `sqlite::open_memory_deployment`
+  opens the in-memory deployment database. Reset local databases.
+
 - **Journaled agent turns and recorded reads (experimental); development
   packages advance to 0.32.0 in lockstep.** A default-contract
   (`Journaled`) agent action on a durable turn now runs under its node's
@@ -1004,6 +1097,13 @@ let admitted = recorded.readmit_against(fresh)?;
   `SlotDispatchOutcome::Deferred` instead of an error.
 
 ### Fixed
+
+- **Shutdown failures remain failures.** The standalone worker cancels its
+  runtime when signal registration fails and aborts/joins its owned task after
+  a drain timeout. HTTP handlers and streaming connections share one drain
+  deadline; exceeding it produces a server error after owner cleanup rather
+  than a successful exit. These are host lifecycle fixes, not an overall
+  process-termination guarantee or combined API/worker launch.
 
 - **Journaled requests canonicalize without losing or hiding members.** The
   canonical request of an `Operation` was built from `serde_json::to_value`,

@@ -6,7 +6,14 @@
 #[path = "support/resource_fanout_oracle.rs"]
 mod oracle;
 
-use nebula_storage::sqlite::{SqliteResourceRuntime, init_schema};
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "shared resources need their tenant, not a workflow"
+)]
+mod execution_parents;
+
+use nebula_storage::sqlite::{SqliteResourceRuntime, SqliteTenantProvisioningStore, init_schema};
 use nebula_storage_port::dto::{
     AcceptResourceEventOutcome, AcceptResourceEventRequest, AcquireResourceSourceLeaseOutcome,
     AcquireResourceSourceLeaseRequest, ClaimResourceDeliveriesRequest,
@@ -32,7 +39,7 @@ struct SqliteExpiryControl {
 #[async_trait::async_trait]
 impl oracle::ResourceFanoutExpiryControl for SqliteExpiryControl {
     async fn expire_source_for_test(&self, scope: &Scope, resource_id: SharedResourceId) {
-        sqlx::query("UPDATE port_resource_source_leases SET expires_at_ms = CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER) - 1 WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
+        sqlx::query("UPDATE resource_source_leases SET expires_at = CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER) - 1000 WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(resource_id.into_bytes().as_slice())
             .execute(&self.pool)
             .await
@@ -40,7 +47,7 @@ impl oracle::ResourceFanoutExpiryControl for SqliteExpiryControl {
     }
 
     async fn expire_delivery_for_test(&self, scope: &Scope, delivery_id: ResourceDeliveryId) {
-        sqlx::query("UPDATE port_resource_deliveries SET claim_expires_at_ms = CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER) - 1 WHERE workspace_id = ? AND org_id = ? AND id = ?")
+        sqlx::query("UPDATE resource_deliveries SET claim_expires_at = CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER) - 1000 WHERE workspace_id = ? AND org_id = ? AND id = ?")
             .bind(&scope.workspace_id).bind(&scope.org_id).bind(delivery_id.into_bytes().as_slice())
             .execute(&self.pool)
             .await
@@ -48,6 +55,13 @@ impl oracle::ResourceFanoutExpiryControl for SqliteExpiryControl {
     }
 }
 
+/// The scope the raw-SQL migration case writes into.
+fn raw_scope() -> Scope {
+    Scope::new("ws", "org")
+}
+
+/// A fresh database with every scope the cases write into provisioned: a
+/// shared resource belongs to its workspace.
 async fn pool() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -55,6 +69,13 @@ async fn pool() -> SqlitePool {
         .await
         .expect("SQLite pool connects");
     init_schema(&pool).await.expect("schema initializes");
+    let tenants = SqliteTenantProvisioningStore::new(pool.clone());
+    for scope in oracle::tenant_scopes()
+        .into_iter()
+        .chain([test_scope(), raw_scope()])
+    {
+        execution_parents::provision_scope(&tenants, &scope).await;
+    }
     pool
 }
 
@@ -67,6 +88,54 @@ async fn runtime() -> (SqliteResourceRuntime, SqliteExpiryControl) {
 }
 
 resource_fanout_conformance_suite!(runtime());
+
+#[tokio::test]
+async fn resource_error_closed_pool_is_connection_failure_through_resolve() {
+    let pool = pool().await;
+    let store = SqliteResourceRuntime::new(pool.clone());
+    pool.close().await;
+    std::assert_matches!(
+        store
+            .resolve(ResolveSharedResourceRequest::new(
+                test_scope(),
+                test_identity()
+            ))
+            .await,
+        Err(StorageError::Connection(_))
+    );
+}
+
+#[tokio::test]
+async fn resource_error_negative_persisted_sequence_is_corrupt_through_get() {
+    let pool = pool().await;
+    let store = SqliteResourceRuntime::new(pool.clone());
+    let scope = test_scope();
+    let resource_id = match store
+        .resolve(ResolveSharedResourceRequest::new(
+            scope.clone(),
+            test_identity(),
+        ))
+        .await
+        .expect("valid shared resource resolves")
+    {
+        ResolveSharedResourceOutcome::Created(record)
+        | ResolveSharedResourceOutcome::Existing(record) => record.id(),
+    };
+    sqlx::query(
+        "UPDATE shared_resources SET sequence = -1 \
+         WHERE org_id = ? AND workspace_id = ? AND id = ?",
+    )
+    .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(resource_id.into_bytes().as_slice())
+    .execute(&pool)
+    .await
+    .expect("schema permits a negative persisted sequence without disabling constraints");
+
+    let result = SharedResourceStore::get(&store, &scope, resource_id).await;
+    pool.close().await;
+    std::assert_matches!(result, Err(StorageError::Corrupt(_)));
+}
 
 #[tokio::test]
 async fn digest_collision_and_generation_overflow_use_test_owned_pool() {
@@ -91,7 +160,7 @@ async fn digest_collision_and_generation_overflow_use_test_owned_pool() {
             .expect("valid configuration"),
         ResourceSlotIdentity::try_from_vec(b"slot".to_vec()).expect("valid slot"),
     );
-    sqlx::query("UPDATE port_shared_resources SET identity_digest = ? WHERE workspace_id = ? AND org_id = ? AND id = ?")
+    sqlx::query("UPDATE shared_resources SET identity_digest = ? WHERE workspace_id = ? AND org_id = ? AND id = ?")
         .bind(colliding_identity.digest().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id)
         .bind(first_id.into_bytes().as_slice()).execute(&pool).await.expect("digest collision installs");
     let second_id = match store
@@ -152,8 +221,9 @@ async fn digest_collision_and_generation_overflow_use_test_owned_pool() {
         .expect("delivery claims")
         .pop()
         .expect("delivery exists");
-    sqlx::query("UPDATE port_resource_deliveries SET claim_generation = ?, claim_expires_at_ms = 0 WHERE workspace_id = ? AND org_id = ? AND id = ?")
-        .bind(u64::MAX.to_be_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id)
+    // The last generation the stored range holds: the next claim exhausts it.
+    sqlx::query("UPDATE resource_deliveries SET claim_generation = ?, claim_expires_at = 0 WHERE workspace_id = ? AND org_id = ? AND id = ?")
+        .bind(i64::MAX).bind(&scope.workspace_id).bind(&scope.org_id)
         .bind(delivery.id().into_bytes().as_slice()).execute(&pool).await.expect("delivery generation seeds");
     std::assert_matches!(
         store
@@ -166,8 +236,8 @@ async fn digest_collision_and_generation_overflow_use_test_owned_pool() {
             .await,
         Err(StorageError::Internal(_))
     );
-    sqlx::query("UPDATE port_resource_source_leases SET generation = ?, expires_at_ms = 0 WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
-        .bind(u64::MAX.to_be_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id)
+    sqlx::query("UPDATE resource_source_leases SET generation = ?, expires_at = 0 WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
+        .bind(i64::MAX).bind(&scope.workspace_id).bind(&scope.org_id)
         .bind(first_id.into_bytes().as_slice()).execute(&pool).await.expect("generation seeds");
     std::assert_matches!(
         store
@@ -180,10 +250,10 @@ async fn digest_collision_and_generation_overflow_use_test_owned_pool() {
             .await,
         Err(StorageError::Internal(_))
     );
-    let generation: Vec<u8> = sqlx::query_scalar("SELECT generation FROM port_resource_source_leases WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
+    let generation: i64 = sqlx::query_scalar("SELECT generation FROM resource_source_leases WHERE workspace_id = ? AND org_id = ? AND resource_id = ?")
         .bind(&scope.workspace_id).bind(&scope.org_id).bind(first_id.into_bytes().as_slice())
         .fetch_one(&pool).await.expect("generation reads");
-    assert_eq!(generation, u64::MAX.to_be_bytes());
+    assert_eq!(generation, i64::MAX);
     assert_eq!(source.token().generation().get(), 1);
 }
 
@@ -251,7 +321,7 @@ async fn pending_delivery(
         ))
         .await
         .expect("event accepts");
-    let id: Vec<u8> = sqlx::query_scalar("SELECT id FROM port_resource_deliveries WHERE workspace_id = ? AND org_id = ? ORDER BY sequence LIMIT 1").bind(&scope.workspace_id).bind(&scope.org_id).fetch_one(pool).await.expect("delivery id reads");
+    let id: Vec<u8> = sqlx::query_scalar("SELECT id FROM resource_deliveries WHERE workspace_id = ? AND org_id = ? ORDER BY sequence LIMIT 1").bind(&scope.workspace_id).bind(&scope.org_id).fetch_one(pool).await.expect("delivery id reads");
     (
         scope,
         ResourceDeliveryId::from_bytes(id.try_into().expect("16-byte id")),
@@ -263,7 +333,7 @@ async fn claim_failure_rolls_back_and_retries_cleanly() {
     let pool = pool().await;
     let store = SqliteResourceRuntime::new(pool.clone());
     let (scope, delivery_id) = pending_delivery(&pool, &store, b"claim-rollback").await;
-    sqlx::query("CREATE TRIGGER resource_claim_abort BEFORE UPDATE OF claim_id ON port_resource_deliveries WHEN NEW.claim_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END").execute(&pool).await.expect("trigger installs");
+    sqlx::query("CREATE TRIGGER resource_claim_abort BEFORE UPDATE OF claim_id ON resource_deliveries WHEN NEW.claim_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END").execute(&pool).await.expect("trigger installs");
     let request = ClaimResourceDeliveriesRequest::new(
         scope.clone(),
         ResourceLeaseHolder::new("fanout").expect("valid holder"),
@@ -275,7 +345,7 @@ async fn claim_failure_rolls_back_and_retries_cleanly() {
         Err(StorageError::Internal(_))
     );
     let claim_id: Option<Vec<u8>> =
-        sqlx::query_scalar("SELECT claim_id FROM port_resource_deliveries WHERE id = ?")
+        sqlx::query_scalar("SELECT claim_id FROM resource_deliveries WHERE id = ?")
             .bind(delivery_id.into_bytes().as_slice())
             .fetch_one(&pool)
             .await
@@ -311,7 +381,7 @@ async fn handoff_failure_rolls_back_completion_and_retries_cleanly() {
         .expect("delivery claims")
         .pop()
         .expect("delivery exists");
-    sqlx::query("CREATE TRIGGER resource_handoff_abort BEFORE INSERT ON port_resource_execution_handoffs BEGIN SELECT RAISE(ABORT, 'injected handoff failure'); END").execute(&pool).await.expect("trigger installs");
+    sqlx::query("CREATE TRIGGER resource_handoff_abort BEFORE INSERT ON resource_execution_handoffs BEGIN SELECT RAISE(ABORT, 'injected handoff failure'); END").execute(&pool).await.expect("trigger installs");
     let request = CompleteResourceDeliveryRequest::new(
         scope.clone(),
         delivery.id(),
@@ -322,13 +392,12 @@ async fn handoff_failure_rolls_back_completion_and_retries_cleanly() {
         store.complete_delivery(request.clone()).await,
         Err(StorageError::Internal(_))
     );
-    let status: String =
-        sqlx::query_scalar("SELECT status FROM port_resource_deliveries WHERE id = ?")
-            .bind(delivery.id().into_bytes().as_slice())
-            .fetch_one(&pool)
-            .await
-            .expect("status reads");
-    let handoffs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM port_resource_execution_handoffs")
+    let status: String = sqlx::query_scalar("SELECT status FROM resource_deliveries WHERE id = ?")
+        .bind(delivery.id().into_bytes().as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("status reads");
+    let handoffs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM resource_execution_handoffs")
         .fetch_one(&pool)
         .await
         .expect("handoff count reads");
@@ -346,7 +415,7 @@ async fn handoff_failure_rolls_back_completion_and_retries_cleanly() {
             }
         )
     );
-    let handoffs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM port_resource_execution_handoffs")
+    let handoffs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM resource_execution_handoffs")
         .fetch_one(&pool)
         .await
         .expect("handoff count reads");
@@ -403,14 +472,14 @@ async fn delivery_insert_failure_rolls_back_event_and_retries_cleanly() {
         EventEnvelope::try_from_vec(1, b"payload".to_vec()).expect("valid envelope"),
     );
 
-    sqlx::query("CREATE TRIGGER resource_delivery_abort BEFORE INSERT ON port_resource_deliveries BEGIN SELECT RAISE(ABORT, 'injected delivery failure'); END")
+    sqlx::query("CREATE TRIGGER resource_delivery_abort BEFORE INSERT ON resource_deliveries BEGIN SELECT RAISE(ABORT, 'injected delivery failure'); END")
         .execute(&pool).await.expect("failure trigger installs");
     std::assert_matches!(
         store.accept(request.clone()).await,
         Err(StorageError::Internal(_))
     );
     let event_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM port_resource_events WHERE workspace_id = ? AND org_id = ?",
+        "SELECT COUNT(*) FROM resource_events WHERE workspace_id = ? AND org_id = ?",
     )
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
@@ -418,7 +487,7 @@ async fn delivery_insert_failure_rolls_back_event_and_retries_cleanly() {
     .await
     .expect("event count reads");
     let delivery_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM port_resource_deliveries WHERE workspace_id = ? AND org_id = ?",
+        "SELECT COUNT(*) FROM resource_deliveries WHERE workspace_id = ? AND org_id = ?",
     )
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
@@ -468,7 +537,7 @@ async fn subscription_insert_maps_only_foreign_keys_to_not_found() {
         ResolveSharedResourceOutcome::Created(record)
         | ResolveSharedResourceOutcome::Existing(record) => record.id(),
     };
-    sqlx::query("CREATE TRIGGER resource_subscription_abort BEFORE INSERT ON port_resource_subscriptions BEGIN SELECT RAISE(ABORT, 'injected non-FK failure'); END")
+    sqlx::query("CREATE TRIGGER resource_subscription_abort BEFORE INSERT ON resource_subscriptions BEGIN SELECT RAISE(ABORT, 'injected non-FK failure'); END")
         .execute(&pool)
         .await
         .expect("failure trigger installs");
@@ -490,47 +559,56 @@ async fn migration_enforces_resource_bounds_states_and_tenant_foreign_keys() {
     let pool = pool().await;
     let resource_id = [1_u8; 16];
     let digest = [2_u8; 32];
-    sqlx::query("INSERT INTO port_shared_resources (id, workspace_id, org_id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES (?, 'ws', 'org', ?, 1, ?, ?, ?)")
+    sqlx::query("INSERT INTO shared_resources (org_id, workspace_id, id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES ('org', 'ws', ?, ?, 1, ?, ?, ?)")
         .bind(resource_id.as_slice()).bind("k".repeat(128)).bind(vec![3_u8; 65_536])
         .bind(vec![4_u8; 65_536]).bind(digest.as_slice()).execute(&pool).await
         .expect("maximum resource bounds are accepted");
 
     for invalid_insert in [
-        sqlx::query("INSERT INTO port_shared_resources (id, workspace_id, org_id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES (?, 'ws', 'org', '', 1, X'01', X'', ?)")
+        sqlx::query("INSERT INTO shared_resources (org_id, workspace_id, id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES ('org', 'ws', ?, '', 1, X'01', X'', ?)")
             .bind([5_u8; 16].as_slice()).bind(digest.as_slice()).execute(&pool).await,
-        sqlx::query("INSERT INTO port_shared_resources (id, workspace_id, org_id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES (?, 'ws', 'org', 'kind', 1, X'', X'', ?)")
+        sqlx::query("INSERT INTO shared_resources (org_id, workspace_id, id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES ('org', 'ws', ?, 'kind', 1, X'', X'', ?)")
             .bind([6_u8; 16].as_slice()).bind(digest.as_slice()).execute(&pool).await,
+        // A shared resource belongs to a workspace that exists.
+        sqlx::query("INSERT INTO shared_resources (org_id, workspace_id, id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES ('org', 'ws-missing', ?, 'kind', 1, X'01', X'', ?)")
+            .bind([18_u8; 16].as_slice()).bind(digest.as_slice()).execute(&pool).await,
     ] {
         assert!(invalid_insert.is_err());
     }
 
     let missing_resource = [9_u8; 16];
-    let invalid_state = sqlx::query("INSERT INTO port_resource_subscriptions (id, workspace_id, org_id, resource_id, consumer_kind, consumer_identity, state, version) VALUES (?, 'ws', 'org', ?, 'consumer', X'01', 'unknown', ?)")
-        .bind([7_u8; 16].as_slice()).bind(resource_id.as_slice()).bind(1_u64.to_be_bytes().as_slice())
+    let invalid_state = sqlx::query("INSERT INTO resource_subscriptions (org_id, workspace_id, resource_id, id, consumer_kind, consumer_identity, state, version) VALUES ('org', 'ws', ?, ?, 'consumer', X'01', 'unknown', 1)")
+        .bind(resource_id.as_slice()).bind([7_u8; 16].as_slice())
         .execute(&pool).await;
-    let foreign_scope = sqlx::query("INSERT INTO port_resource_subscriptions (id, workspace_id, org_id, resource_id, consumer_kind, consumer_identity, state, version) VALUES (?, 'other-ws', 'org', ?, 'consumer', X'01', 'active', ?)")
-        .bind([8_u8; 16].as_slice()).bind(resource_id.as_slice()).bind(1_u64.to_be_bytes().as_slice())
+    let foreign_scope = sqlx::query("INSERT INTO resource_subscriptions (org_id, workspace_id, resource_id, id, consumer_kind, consumer_identity, state, version) VALUES ('org', 'other-ws', ?, ?, 'consumer', X'01', 'active', 1)")
+        .bind(resource_id.as_slice()).bind([8_u8; 16].as_slice())
         .execute(&pool).await;
-    let missing_parent = sqlx::query("INSERT INTO port_resource_subscriptions (id, workspace_id, org_id, resource_id, consumer_kind, consumer_identity, state, version) VALUES (?, 'ws', 'org', ?, 'consumer', X'01', 'active', ?)")
-        .bind([10_u8; 16].as_slice()).bind(missing_resource.as_slice()).bind(1_u64.to_be_bytes().as_slice())
+    let missing_parent = sqlx::query("INSERT INTO resource_subscriptions (org_id, workspace_id, resource_id, id, consumer_kind, consumer_identity, state, version) VALUES ('org', 'ws', ?, ?, 'consumer', X'01', 'active', 1)")
+        .bind(missing_resource.as_slice()).bind([10_u8; 16].as_slice())
         .execute(&pool).await;
     assert!(invalid_state.is_err());
     assert!(foreign_scope.is_err());
     assert!(missing_parent.is_err());
 
     let second_resource = [11_u8; 16];
-    sqlx::query("INSERT INTO port_shared_resources (id, workspace_id, org_id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES (?, 'ws', 'org', 'other', 1, X'02', X'', ?)")
+    sqlx::query("INSERT INTO shared_resources (org_id, workspace_id, id, kind, compatibility_version, configuration_identity, slot_identity, identity_digest) VALUES ('org', 'ws', ?, 'other', 1, X'02', X'', ?)")
         .bind(second_resource.as_slice()).bind([12_u8; 32].as_slice()).execute(&pool).await.expect("second resource inserts");
-    sqlx::query("INSERT INTO port_resource_subscriptions (id, workspace_id, org_id, resource_id, consumer_kind, consumer_identity, state, version) VALUES (?, 'ws', 'org', ?, 'consumer', X'02', 'active', ?)")
-        .bind([13_u8; 16].as_slice()).bind(second_resource.as_slice()).bind(1_u64.to_be_bytes().as_slice()).execute(&pool).await.expect("second subscription inserts");
-    sqlx::query("INSERT INTO port_resource_events (id, workspace_id, org_id, resource_id, occurrence_namespace, occurrence_key, occurrence_digest, schema_version, canonical_payload, envelope_digest, accepted_at_ms, source_generation, state) VALUES (?, 'ws', 'org', ?, 'event', X'01', ?, 1, X'01', ?, 1, ?, 'pending')")
-        .bind([14_u8; 16].as_slice()).bind(resource_id.as_slice()).bind([15_u8; 32].as_slice()).bind([16_u8; 32].as_slice()).bind(1_u64.to_be_bytes().as_slice()).execute(&pool).await.expect("event inserts");
-    let cross_resource_delivery = sqlx::query("INSERT INTO port_resource_deliveries (id, workspace_id, org_id, resource_id, event_id, subscription_id, status, claim_generation) VALUES (?, 'ws', 'org', ?, ?, ?, 'pending', ?)")
-        .bind([17_u8; 16].as_slice()).bind(resource_id.as_slice()).bind([14_u8; 16].as_slice()).bind([13_u8; 16].as_slice()).bind(0_u64.to_be_bytes().as_slice()).execute(&pool).await;
+    sqlx::query("INSERT INTO resource_subscriptions (org_id, workspace_id, resource_id, id, consumer_kind, consumer_identity, state, version) VALUES ('org', 'ws', ?, ?, 'consumer', X'02', 'active', 1)")
+        .bind(second_resource.as_slice()).bind([13_u8; 16].as_slice()).execute(&pool).await.expect("second subscription inserts");
+    sqlx::query("INSERT INTO resource_events (org_id, workspace_id, resource_id, id, occurrence_namespace, occurrence_key, schema_version, canonical_payload, envelope_digest, accepted_at, source_generation, state) VALUES ('org', 'ws', ?, ?, 'event', X'01', 1, X'01', ?, 1, 1, 'pending')")
+        .bind(resource_id.as_slice()).bind([14_u8; 16].as_slice()).bind([16_u8; 32].as_slice()).execute(&pool).await.expect("event inserts");
+    let duplicate_occurrence = sqlx::query("INSERT INTO resource_events (org_id, workspace_id, resource_id, id, occurrence_namespace, occurrence_key, schema_version, canonical_payload, envelope_digest, accepted_at, source_generation, state) VALUES ('org', 'ws', ?, ?, 'event', X'01', 1, X'02', ?, 1, 1, 'pending')")
+        .bind(resource_id.as_slice()).bind([19_u8; 16].as_slice()).bind([16_u8; 32].as_slice()).execute(&pool).await;
+    assert!(
+        duplicate_occurrence.is_err(),
+        "an occurrence is unique per resource"
+    );
+    let cross_resource_delivery = sqlx::query("INSERT INTO resource_deliveries (org_id, workspace_id, resource_id, id, event_id, subscription_id, status, claim_generation) VALUES ('org', 'ws', ?, ?, ?, ?, 'pending', 0)")
+        .bind(resource_id.as_slice()).bind([17_u8; 16].as_slice()).bind([14_u8; 16].as_slice()).bind([13_u8; 16].as_slice()).execute(&pool).await;
     assert!(cross_resource_delivery.is_err());
-    let claim_index: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'port_resource_deliveries_claimable'").fetch_one(&pool).await.expect("claim index reads");
-    assert!(claim_index.contains("workspace_id, org_id, sequence, claim_expires_at_ms"));
-    let pending_index: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'port_resource_deliveries_event_pending'").fetch_one(&pool).await.expect("event pending index reads");
-    assert!(pending_index.contains("workspace_id, org_id, event_id"));
+    let claim_index: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'ix_resource_deliveries__sequence_claim_expires_at__pending'").fetch_one(&pool).await.expect("claim index reads");
+    assert!(claim_index.contains("org_id, workspace_id, sequence, claim_expires_at"));
+    let pending_index: String = sqlx::query_scalar("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'ix_resource_deliveries__org_id_workspace_id_event_id__pending'").fetch_one(&pool).await.expect("event pending index reads");
+    assert!(pending_index.contains("org_id, workspace_id, event_id"));
     assert!(pending_index.contains("WHERE status = 'pending'"));
 }

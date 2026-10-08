@@ -135,7 +135,7 @@ async fn graceful_shutdown_stops_new_acquires() {
     // Acquire should fail with Cancelled.
     let ctx = test_ctx();
     match manager
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
     {
         Err(e) => assert!(
@@ -413,7 +413,7 @@ async fn acquire_does_not_retry_transient_at_manager_layer() {
 
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
+        .acquire::<FailingResidentResource>(&ctx, &AcquireOptions::default())
         .await;
 
     assert!(result.is_err(), "transient failure must surface (no retry)");
@@ -444,7 +444,7 @@ async fn acquire_does_not_retry_permanent_at_manager_layer() {
 
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<PermanentFailResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PermanentFailResource>(&ctx, &AcquireOptions::default())
         .await;
 
     // Assert both the attempt count AND the typed error kind. The count
@@ -482,7 +482,7 @@ async fn acquire_succeeds_without_resilience() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire without resilience should succeed");
 
@@ -527,7 +527,7 @@ async fn acquire_has_no_manager_layer_timeout() {
     let ctx = test_ctx();
     let outcome = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        manager.acquire_resident::<BlockingResidentResource>(&ctx, &AcquireOptions::default()),
+        manager.acquire::<BlockingResidentResource>(&ctx, &AcquireOptions::default()),
     )
     .await;
 
@@ -618,7 +618,7 @@ async fn acquire_surfaces_underlying_transient_error_kind() {
 
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
+        .acquire::<FailingResidentResource>(&ctx, &AcquireOptions::default())
         .await;
 
     assert_eq!(
@@ -668,7 +668,7 @@ async fn acquire_failure_passively_triggers_recovery_gate() {
 
     // First acquire fails — should trigger the gate.
     let _ = manager
-        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
+        .acquire::<FailingResidentResource>(&ctx, &AcquireOptions::default())
         .await;
 
     // Gate should no longer be Idle.
@@ -707,9 +707,8 @@ async fn recovery_gate_blocks_acquire_when_permanently_failed() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let result: Result<ResourceGuard<ResidentTestResource>, _> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
-        .await;
+    let result: Result<ResourceGuard<ResidentTestResource>, _> =
+        manager.acquire(&ctx, &AcquireOptions::default()).await;
 
     let err = result.expect_err("acquire should fail when gate is permanently failed");
     assert_eq!(
@@ -742,9 +741,8 @@ async fn recovery_gate_blocks_acquire_when_in_progress() {
         .expect("registration should succeed");
 
     let ctx = test_ctx();
-    let result: Result<ResourceGuard<ResidentTestResource>, _> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
-        .await;
+    let result: Result<ResourceGuard<ResidentTestResource>, _> =
+        manager.acquire(&ctx, &AcquireOptions::default()).await;
 
     let err = result.expect_err("acquire should fail when gate is in progress");
     assert_eq!(
@@ -851,7 +849,7 @@ async fn recovery_gate_allows_acquire_when_idle() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed when gate is idle");
     drop(handle);
@@ -886,7 +884,7 @@ async fn recovery_gate_allows_acquire_after_backoff_expires() {
     let ctx = test_ctx();
     // Backoff expired, so acquire should proceed (caller acts as probe).
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed after backoff expires");
     drop(handle);
@@ -912,7 +910,7 @@ async fn recovery_gate_none_does_not_affect_acquire() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed without recovery gate");
     drop(handle);
@@ -948,7 +946,7 @@ async fn graceful_shutdown_abort_on_drain_timeout_preserves_registry() {
     // Hold a handle across the shutdown so drain cannot complete.
     let ctx = test_ctx();
     let _handle = manager
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire must succeed");
 
@@ -1013,7 +1011,7 @@ async fn graceful_shutdown_abort_marks_resources_failed_not_ready() {
     // Hold a handle across the shutdown so drain cannot complete.
     let ctx = test_ctx();
     let _handle = manager
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire must succeed");
 
@@ -1092,7 +1090,7 @@ async fn graceful_shutdown_force_clears_registry_on_timeout() {
 
     let ctx = test_ctx();
     let _handle = manager
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire must succeed");
 
@@ -1191,7 +1189,7 @@ async fn probe_boundary_serializes_callers_under_herd() {
     // First acquire becomes the probe and fails — gate transitions to Failed.
     let ctx = test_ctx();
     let first = manager
-        .acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
+        .acquire::<FailingResidentResource>(&ctx, &AcquireOptions::default())
         .await;
     assert!(first.is_err(), "first acquire must fail");
     assert_eq!(
@@ -1216,7 +1214,7 @@ async fn probe_boundary_serializes_callers_under_herd() {
         let mgr = Arc::clone(&manager);
         handles.push(tokio::spawn(async move {
             let ctx = test_ctx();
-            mgr.acquire_resident::<FailingResidentResource>(&ctx, &AcquireOptions::default())
+            mgr.acquire::<FailingResidentResource>(&ctx, &AcquireOptions::default())
                 .await
         }));
     }

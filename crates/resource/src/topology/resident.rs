@@ -15,7 +15,7 @@ use crate::resource::Provider;
 ///
 /// # Acquire bounds
 ///
-/// [`Manager::acquire_resident`](crate::Manager::acquire_resident) requires:
+/// Using [`Manager::acquire`](crate::Manager::acquire) with `Resident<R>` requires:
 /// - `R: Send + Sync + 'static`
 /// - `R::Instance: Send + Sync + 'static`
 pub trait ResidentProvider: Provider {

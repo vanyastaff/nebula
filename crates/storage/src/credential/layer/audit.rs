@@ -353,7 +353,7 @@ mod tests {
     use crate::credential::test_support::{make_credential, make_preserve_replacement};
 
     fn owner() -> CredentialOwner {
-        CredentialOwner::from_canonical("test-owner")
+        crate::credential::test_owner::owner("test-owner")
     }
 
     fn selector(id: CredentialId) -> CredentialSelector {
@@ -394,7 +394,7 @@ mod tests {
         sink: &Arc<CollectingSink>,
     ) -> Result<AuditLayer<SqliteCredentialPersistence>, CredentialPersistenceError> {
         Ok(AuditLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             Arc::clone(sink) as Arc<dyn AuditSink>,
         ))
     }
@@ -598,7 +598,7 @@ mod tests {
     #[tokio::test]
     async fn outcome_unknown_emits_no_mutation_event() -> Result<(), CredentialPersistenceError> {
         let sink = Arc::new(CollectingSink::new());
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         inner.arm_post_commit_outcome_unknown();
         let store = AuditLayer::new(inner.clone(), Arc::clone(&sink) as Arc<dyn AuditSink>);
         let selector = selector(CredentialId::new());

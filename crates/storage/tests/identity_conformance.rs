@@ -1,9 +1,9 @@
 //! Identity-zoo behavioral conformance matrix (spec-16 §5 / §9, §6.1) on the
 //! in-memory and SQLite adapters.
 //!
-//! One backend-agnostic contract suite for the nine identity aggregates
-//! (`User`, `Org`, `Workspace`, `Membership`, `Resource`, `Trigger`,
-//! `Quota`, `Audit`, `Blob`); the shared assertions encode the abstract contract
+//! One backend-agnostic contract suite for the tenant directory and workspace
+//! objects (`Org`, `Workspace`, `Membership`, tenant provisioning, `Resource`,
+//! `Trigger`); the shared assertions encode the abstract contract
 //! every adapter must satisfy. The PostgreSQL arm lives in
 //! `identity_conformance_postgres` (an evidence binary that needs a live
 //! database).
@@ -34,9 +34,6 @@ impl IdentityBackend for InMemoryBackend {
     fn name(&self) -> &'static str {
         "InMemory"
     }
-    async fn user_store(&self) -> Arc<dyn UserStore> {
-        Arc::new(nebula_storage::inmem::InMemoryUserStore::new())
-    }
     async fn org_store(&self) -> Arc<dyn OrgStore> {
         Arc::new(self.directory.org_store())
     }
@@ -54,15 +51,6 @@ impl IdentityBackend for InMemoryBackend {
     }
     async fn trigger_store(&self) -> Arc<dyn TriggerStore> {
         Arc::new(nebula_storage::inmem::InMemoryTriggerStore::new())
-    }
-    async fn quota_store(&self) -> Arc<dyn QuotaStore> {
-        Arc::new(nebula_storage::inmem::InMemoryQuotaStore::new())
-    }
-    async fn audit_store(&self) -> Arc<dyn AuditStore> {
-        Arc::new(nebula_storage::inmem::InMemoryAuditStore::new())
-    }
-    async fn blob_store(&self) -> Arc<dyn BlobStore> {
-        Arc::new(nebula_storage::inmem::InMemoryBlobStore::new())
     }
 }
 
@@ -108,16 +96,6 @@ impl SqliteBackend {
 impl IdentityBackend for SqliteBackend {
     fn name(&self) -> &'static str {
         "Sqlite(:memory:)"
-    }
-    async fn user_store(&self) -> Arc<dyn UserStore> {
-        #[cfg(feature = "sqlite")]
-        {
-            Arc::new(nebula_storage::sqlite::SqliteUserStore::new(
-                self.pool().await,
-            ))
-        }
-        #[cfg(not(feature = "sqlite"))]
-        unimplemented!("built without the `sqlite` feature")
     }
     async fn org_store(&self) -> Arc<dyn OrgStore> {
         #[cfg(feature = "sqlite")]
@@ -179,37 +157,24 @@ impl IdentityBackend for SqliteBackend {
         #[cfg(not(feature = "sqlite"))]
         unimplemented!("built without the `sqlite` feature")
     }
-    async fn quota_store(&self) -> Arc<dyn QuotaStore> {
-        #[cfg(feature = "sqlite")]
-        {
-            Arc::new(nebula_storage::sqlite::SqliteQuotaStore::new(
-                self.pool().await,
-            ))
-        }
-        #[cfg(not(feature = "sqlite"))]
-        unimplemented!("built without the `sqlite` feature")
+    #[cfg(feature = "sqlite")]
+    async fn seed_trigger_parents(&self, scope: &Scope, workflow_id: &str) {
+        use execution_parents::SeedExecutionParents as _;
+        self.pool()
+            .await
+            .seed_execution_parents(scope, workflow_id)
+            .await;
     }
-    async fn audit_store(&self) -> Arc<dyn AuditStore> {
-        #[cfg(feature = "sqlite")]
-        {
-            Arc::new(nebula_storage::sqlite::SqliteAuditStore::new(
-                self.pool().await,
-            ))
-        }
-        #[cfg(not(feature = "sqlite"))]
-        unimplemented!("built without the `sqlite` feature")
-    }
-    async fn blob_store(&self) -> Arc<dyn BlobStore> {
-        #[cfg(feature = "sqlite")]
-        {
-            Arc::new(nebula_storage::sqlite::SqliteBlobStore::new(
-                self.pool().await,
-            ))
-        }
-        #[cfg(not(feature = "sqlite"))]
-        unimplemented!("built without the `sqlite` feature")
+    #[cfg(feature = "sqlite")]
+    async fn seed_resource_parents(&self, scope: &Scope) {
+        execution_parents::provision_scope(self.tenant_provisioning_store().await.as_ref(), scope)
+            .await;
     }
 }
+
+#[cfg(feature = "sqlite")]
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
 
 fn sqlite_skip() -> Option<&'static str> {
     if cfg!(feature = "sqlite") {
@@ -260,22 +225,17 @@ macro_rules! identity_matrix {
     };
 }
 
-identity_matrix!(user_store_contract, assert_user_contract);
 identity_matrix!(org_store_contract, assert_org_contract);
 identity_matrix!(workspace_store_contract, assert_workspace_contract);
 identity_matrix!(membership_store_contract, assert_membership_contract);
 identity_matrix!(membership_snapshot, assert_membership_snapshot);
 identity_matrix!(
-    membership_live_and_deleted_workspace_aliases,
-    assert_membership_live_and_deleted_workspace_aliases
+    deleted_org_hides_its_memberships,
+    assert_deleted_org_hides_its_memberships
 );
 identity_matrix!(
     workspace_member_listing_and_org_removal_cleanup,
     assert_workspace_member_listing_and_org_removal_cleanup
-);
-identity_matrix!(
-    ambiguous_workspace_blocks_org_removal,
-    assert_ambiguous_workspace_blocks_org_removal
 );
 identity_matrix!(
     workspace_upsert_requires_org_membership_and_serializes_removal,
@@ -283,11 +243,293 @@ identity_matrix!(
 );
 identity_matrix!(membership_lockout, assert_membership_lockout);
 identity_matrix!(tenant_provisioning, assert_tenant_provisioning);
+identity_matrix!(
+    tenant_provisioning_competing_commands,
+    assert_tenant_provisioning_competing_commands
+);
+identity_matrix!(
+    tenant_provisioning_history,
+    assert_tenant_provisioning_history
+);
+identity_matrix!(
+    tenant_provisioning_json_identity,
+    assert_tenant_provisioning_json_identity
+);
 identity_matrix!(resource_store_contract, assert_resource_contract);
 identity_matrix!(trigger_store_contract, assert_trigger_contract);
-identity_matrix!(quota_store_contract, assert_quota_contract);
-identity_matrix!(audit_store_contract, assert_audit_contract);
-identity_matrix!(blob_store_contract, assert_blob_contract);
+
+/// A completed provisioning command must never recreate a purged tenant.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn tenant_provisioning_replay_after_purge_sqlite() {
+    let backend = SqliteBackend::default();
+    let store = backend.tenant_provisioning_store().await;
+    let request = tenant_request("purged_org", "purged", "purged_workspace");
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    // Arrange the result of tenant purge; the assertion uses public ports.
+    sqlx::query("DELETE FROM orgs WHERE id = 'purged_org'")
+        .execute(&backend.pool().await)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Replayed,
+        "replay acknowledges the original acceptance, not a second creation"
+    );
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("purged_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        backend
+            .workspace_store()
+            .await
+            .get("purged_org", "purged_workspace")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        backend
+            .membership_store()
+            .await
+            .get_tenant_membership(
+                "purged_org",
+                Some("purged_workspace"),
+                PrincipalKind::User,
+                "owner"
+            )
+            .await
+            .unwrap(),
+        TenantMembershipSnapshot {
+            org_role: None,
+            workspace_role: None
+        }
+    );
+    assert_eq!(
+        store
+            .provision_tenant(tenant_request("another_org", "another", "purged_workspace"))
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState),
+        "the initial workspace identity also stays reserved after purge"
+    );
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("another_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn tenant_provisioning_receipt_failure_rolls_back_sqlite() {
+    let backend = SqliteBackend::default();
+    let pool = backend.pool().await;
+    let store = backend.tenant_provisioning_store().await;
+    let request = tenant_request("rollback_org", "rollback", "rollback_ws");
+    sqlx::raw_sql(
+        "CREATE TRIGGER reject_receipt BEFORE INSERT ON tenant_provisioning_receipts
+        BEGIN SELECT RAISE(ABORT, 'receipt unavailable'); END;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(store.provision_tenant(request.clone()).await.is_err());
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("rollback_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        backend
+            .workspace_store()
+            .await
+            .get("rollback_org", "rollback_ws")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        backend
+            .membership_store()
+            .await
+            .get_tenant_membership("rollback_org", None, PrincipalKind::User, "owner")
+            .await
+            .unwrap()
+            .org_role,
+        None
+    );
+    sqlx::query("DROP TRIGGER reject_receipt")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn tenant_provisioning_receipt_survives_file_reopen() {
+    use nebula_storage::sqlite::{SqliteOrgStore, SqliteTenantProvisioningStore};
+
+    let directory = tempfile::tempdir().unwrap();
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(directory.path().join("tenant.db"))
+        .create_if_missing(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options.clone())
+        .await
+        .unwrap();
+    nebula_storage::sqlite::init_schema(&pool).await.unwrap();
+    let request = tenant_request("persistent_org", "persistent", "persistent_ws");
+    assert_eq!(
+        SqliteTenantProvisioningStore::new(pool.clone())
+            .provision_tenant(request.clone())
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    pool.close().await;
+
+    let reopened = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options.clone())
+        .await
+        .unwrap();
+    nebula_storage::sqlite::init_schema(&reopened)
+        .await
+        .unwrap();
+    let store = SqliteTenantProvisioningStore::new(reopened.clone());
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    sqlx::query("DELETE FROM orgs WHERE id = 'persistent_org'")
+        .execute(&reopened)
+        .await
+        .unwrap();
+    reopened.close().await;
+
+    let reopened = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    nebula_storage::sqlite::init_schema(&reopened)
+        .await
+        .unwrap();
+    assert_eq!(
+        SqliteTenantProvisioningStore::new(reopened.clone())
+            .provision_tenant(request)
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert!(
+        SqliteOrgStore::new(reopened.clone())
+            .get("persistent_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    reopened.close().await;
+}
+
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn tenant_provisioning_migration_seals_preexisting_sqlite() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations/sqlite")
+        .run_to(8, &pool)
+        .await
+        .unwrap();
+    let orgs = nebula_storage::sqlite::SqliteOrgStore::new(pool.clone());
+    orgs.create(org_row("preexisting", "preexisting"))
+        .await
+        .unwrap();
+    let before = orgs.get("preexisting").await.unwrap();
+    nebula_storage::sqlite::init_schema(&pool).await.unwrap();
+    assert_eq!(orgs.get("preexisting").await.unwrap(), before);
+    let store = nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone());
+    let request = tenant_request("preexisting", "preexisting", "preexisting_ws");
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant)
+    );
+    sqlx::query("DELETE FROM orgs WHERE id = 'preexisting'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant)
+    );
+    assert!(orgs.get("preexisting").await.unwrap().is_none());
+    pool.close().await;
+}
+
+/// A frozen v1 receipt must remain readable even if the current encoder changes.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn tenant_provisioning_reads_historical_v1_sqlite() {
+    let backend = SqliteBackend::default();
+    let pool = backend.pool().await;
+    let digest =
+        hex::decode("4d693d7b7db0e8411c230bc5627d512e133445adc3ba96480274df8c4a916b69").unwrap();
+    sqlx::query(
+        "INSERT INTO tenant_provisioning_receipts
+        (org_id, initial_workspace_id, request_version, request_digest, recorded_at)
+        VALUES ('json_org', 'json_ws', 1, ?1, 0)",
+    )
+    .bind(digest)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        backend
+            .tenant_provisioning_store()
+            .await
+            .provision_tenant(tenant_json_request(
+                serde_json::json!({"a": true, "b": [{"x": 1, "y": 2}]})
+            ))
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("json_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
 
 /// File SQLite exercises real competing connections rather than relying only
 /// on shared-cache memory's lock behavior.
@@ -312,95 +554,48 @@ async fn membership_lockout_file_sqlite() {
     pool.close().await;
 }
 
+/// Roles and principal kinds are closed vocabularies in the schema: a row
+/// outside them cannot be written, whatever the writer.
 #[cfg(feature = "sqlite")]
 #[tokio::test]
-async fn membership_corrupt_roles_fail_closed_sqlite() {
+async fn membership_vocabularies_are_closed_by_the_schema_sqlite() {
     let backend = SqliteBackend::default();
     let pool = backend.pool().await;
     let orgs = backend.org_store().await;
     let workspaces = backend.workspace_store().await;
     let store = backend.membership_store().await;
     orgs.create(org_row("org", "org")).await.unwrap();
-    store
-        .upsert_org_member_guarded(org_member("org", "owner", OrgMembershipRole::Owner))
-        .await
-        .unwrap();
-    for role in ["unknown", "WorkspaceAdmin"] {
-        sqlx::query("UPDATE port_memberships SET role = ? WHERE scope_kind = 'org'")
-            .bind(role)
-            .execute(&pool)
-            .await
-            .unwrap();
-        assert!(matches!(
-            store
-                .get_tenant_membership("org", None, PrincipalKind::User, "owner")
-                .await,
-            Err(nebula_storage_port::StorageError::Serialization(_))
-        ));
-        assert!(matches!(
-            store
-                .list_orgs_for_principal(PrincipalKind::User, "owner")
-                .await,
-            Err(nebula_storage_port::StorageError::Serialization(_))
-        ));
-        assert!(matches!(
-            store
-                .upsert_org_member_guarded(org_member(
-                    "org",
-                    "replacement",
-                    OrgMembershipRole::Admin
-                ))
-                .await,
-            Err(nebula_storage_port::StorageError::Serialization(_))
-        ));
-        assert!(matches!(
-            store
-                .remove_org_member_guarded("org", PrincipalKind::User, "owner")
-                .await,
-            Err(nebula_storage_port::StorageError::Serialization(_))
-        ));
-        assert_eq!(
-            store
-                .list_for_scope(ScopeKind::Org, "org")
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            store
-                .get(ScopeKind::Org, "org", PrincipalKind::User, "owner")
-                .await
-                .unwrap()
-                .unwrap()
-                .role,
-            role
-        );
-    }
-    sqlx::query("UPDATE port_memberships SET role = 'OrgOwner' WHERE scope_kind = 'org'")
-        .execute(&pool)
-        .await
-        .unwrap();
     workspaces
         .create(workspace_row("ws", "org", "ws"))
+        .await
+        .unwrap();
+    store
+        .upsert_org_member_guarded(org_member("org", "owner", OrgMembershipRole::Owner))
         .await
         .unwrap();
     store
         .upsert_workspace_member(workspace_member("org", "ws", "owner"))
         .await
         .unwrap();
-    sqlx::query("UPDATE port_memberships SET role = 'OrgOwner' WHERE scope_kind = 'workspace'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert!(matches!(
+    for statement in [
+        "UPDATE org_memberships SET role = 'unknown'",
+        "UPDATE org_memberships SET role = 'WorkspaceAdmin'",
+        "UPDATE org_memberships SET principal_kind = 'robot'",
+        "UPDATE workspace_memberships SET role = 'OrgOwner'",
+    ] {
+        assert!(
+            sqlx::query(statement).execute(&pool).await.is_err(),
+            "the schema must reject `{statement}`"
+        );
+    }
+    assert_eq!(
         store
             .get_tenant_membership("org", Some("ws"), PrincipalKind::User, "owner")
-            .await,
-        Err(nebula_storage_port::StorageError::Serialization(_))
-    ));
-    assert!(matches!(
-        store.list_workspace_members("org", "ws").await,
-        Err(nebula_storage_port::StorageError::Serialization(_))
-    ));
+            .await
+            .unwrap(),
+        TenantMembershipSnapshot {
+            org_role: Some(OrgMembershipRole::Owner),
+            workspace_role: Some(WorkspaceMembershipRole::Editor),
+        }
+    );
 }

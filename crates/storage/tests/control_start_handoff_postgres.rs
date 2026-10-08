@@ -42,9 +42,13 @@ async fn postgres_control_start_handoff() {
         queue: Arc::new(PgControlQueue::new(pool.clone())),
         handoff: Arc::new(PgTurnHandoff::new(pool.clone())),
         recovery: Arc::new(PgTurnHandoff::new(pool.clone())),
-        starts: Arc::new(PgStartAcceptanceStore::new(pool)),
+        starts: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
         catalog: catalog.clone(),
         admin: catalog,
+        parents: Some((
+            Arc::new(PgTenantProvisioningStore::new(pool.clone())),
+            Arc::new(PgWorkflowStore::new(pool)),
+        )),
     })
     .await;
 }
@@ -73,6 +77,10 @@ async fn postgres_refusals_survive_observation_faults() {
         starts: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
         catalog: catalog.clone(),
         admin: catalog,
+        parents: Some((
+            Arc::new(PgTenantProvisioningStore::new(pool.clone())),
+            Arc::new(PgWorkflowStore::new(pool.clone())),
+        )),
     };
     sqlx::query(
         "CREATE OR REPLACE FUNCTION fault_injected() RETURNS trigger AS $$ \
@@ -85,25 +93,25 @@ async fn postgres_refusals_survive_observation_faults() {
         use control_turn_oracle::ObservationFault;
         let statements: &[&'static str] = match fault {
             ObservationFault::FailReceiptWrite => &[
-                "CREATE TRIGGER fault_fail_receipt BEFORE INSERT ON port_execution_control_observation_receipts FOR EACH ROW EXECUTE FUNCTION fault_injected()",
+                "CREATE TRIGGER fault_fail_receipt BEFORE INSERT ON execution_control_observation_receipts FOR EACH ROW EXECUTE FUNCTION fault_injected()",
             ],
             ObservationFault::FailJournalWrite => &[
-                "CREATE TRIGGER fault_fail_journal BEFORE INSERT ON port_execution_journal FOR EACH ROW EXECUTE FUNCTION fault_injected()",
+                "CREATE TRIGGER fault_fail_journal BEFORE INSERT ON execution_journal FOR EACH ROW EXECUTE FUNCTION fault_injected()",
             ],
             // A deferred constraint trigger fires only at COMMIT, after every
             // statement of the refusal transaction succeeded.
             ObservationFault::LoseCommitAcknowledgement => &[
-                "CREATE CONSTRAINT TRIGGER fault_lose_commit AFTER INSERT ON port_execution_journal DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fault_injected()",
+                "CREATE CONSTRAINT TRIGGER fault_lose_commit AFTER INSERT ON execution_journal DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION fault_injected()",
             ],
             // The snapshot stays present but undecodable once its check is gone.
             ObservationFault::CorruptReceiptSnapshot => &[
-                "ALTER TABLE port_execution_control_observation_receipts DROP CONSTRAINT IF EXISTS port_execution_control_observation_receipts_check",
-                "UPDATE port_execution_control_observation_receipts SET expected_flavor_id = decode('01', 'hex') WHERE outcome = 'flavor-mismatch'",
+                "ALTER TABLE execution_control_observation_receipts DROP CONSTRAINT IF EXISTS ck_execution_control_observation_receipts__flavor_shape",
+                "UPDATE execution_control_observation_receipts SET expected_flavor_id = decode('01', 'hex') WHERE outcome = 'flavor-mismatch'",
             ],
             ObservationFault::Clear => &[
-                "DROP TRIGGER IF EXISTS fault_fail_receipt ON port_execution_control_observation_receipts",
-                "DROP TRIGGER IF EXISTS fault_lose_commit ON port_execution_journal",
-                "DROP TRIGGER IF EXISTS fault_fail_journal ON port_execution_journal",
+                "DROP TRIGGER IF EXISTS fault_fail_receipt ON execution_control_observation_receipts",
+                "DROP TRIGGER IF EXISTS fault_lose_commit ON execution_journal",
+                "DROP TRIGGER IF EXISTS fault_fail_journal ON execution_journal",
             ],
         };
         for statement in statements {

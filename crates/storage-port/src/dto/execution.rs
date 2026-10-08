@@ -1,6 +1,9 @@
 //! Execution row DTO.
-use crate::Scope;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+use super::execution_listing::ExecutionListingStatus;
+use crate::Scope;
 
 /// Parameters for inserting a new execution row inside a compose transaction.
 ///
@@ -49,16 +52,16 @@ pub struct ExecutionRecord {
     pub scope: Scope,
     /// Optimistic-CAS version.
     pub version: u64,
-    /// Execution status (opaque to the port).
-    pub status: String,
+    /// Execution status from the listing projection of the latest snapshot.
+    pub status: ExecutionListingStatus,
     /// Opaque execution state blob.
     pub state: serde_json::Value,
     /// Replica currently holding the lease, if any.
     pub lease_holder: Option<String>,
     /// Lease fencing generation that last wrote the row, if any.
     pub fencing: Option<u64>,
-    /// Creation timestamp (RFC 3339).
-    pub created_at: String,
-    /// Last-update timestamp (RFC 3339).
-    pub updated_at: String,
+    /// Creation instant.
+    pub created_at: DateTime<Utc>,
+    /// Last state change.
+    pub updated_at: DateTime<Utc>,
 }

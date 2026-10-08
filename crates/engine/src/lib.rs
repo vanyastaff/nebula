@@ -116,10 +116,13 @@ pub use daemon::{
     EventSource, EventSourceAdapter, EventSourceRuntime, RestartPolicy, RoutingError,
     RoutingResolver,
 };
+#[cfg(feature = "rotation")]
+pub use engine::ResourceReconciliationStartupError;
+pub use engine::inspect_execution_outputs;
 pub use engine::{
     ClaimedControlTurnOutcome, ClaimedControlTurnRequest, ClaimedStartOutcome, ClaimedStartRequest,
     DEFAULT_EVENT_CHANNEL_CAPACITY, DEFAULT_TIMER_SCAN_INTERVAL, RecoveryTurnOutcome,
-    RecoveryTurnRequest, WorkflowEngine,
+    RecoveryTurnRequest, WorkflowEngine, execution_listing,
 };
 pub use error::EngineError;
 pub use event::{ExecutionEvent, NodeFailedDetails};
@@ -137,8 +140,8 @@ pub use resource::{
 pub use resource_accessor::EngineResourceAccessor;
 pub use resource_fanout::{
     ResourceFanoutCoordinator, ResourceFanoutCoordinatorBuildError, ResourceFanoutCoordinatorError,
-    ResourceFanoutDrainOutcome, WorkflowTriggerConsumerCodec, WorkflowTriggerConsumerCodecError,
-    WorkflowTriggerTarget,
+    ResourceFanoutDrainOutcome, ResourceFanoutFailureKind, WorkflowTriggerConsumerCodec,
+    WorkflowTriggerConsumerCodecError, WorkflowTriggerTarget,
 };
 pub use resource_status::{
     DEFAULT_STATUS_PUBLISH_INTERVAL, EngineResourceStatus, ResourceRuntimeStatus,

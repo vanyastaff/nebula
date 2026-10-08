@@ -288,7 +288,7 @@ async fn credential_install_publishes_a_successor() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<Tenant>(&context, &AcquireOptions::default(), &tenant)
+            .acquire_for_identity::<Tenant>(&context, &AcquireOptions::default(), &tenant)
             .await
             .expect("warm resident"),
     );
@@ -336,7 +336,7 @@ async fn shutdown_retires_every_row() {
 async fn acquire(manager: &Manager, identity: &SlotIdentity) -> ResourceGuard<Tenant> {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     manager
-        .acquire_resident_for_identity::<Tenant>(&context, &AcquireOptions::default(), identity)
+        .acquire_for_identity::<Tenant>(&context, &AcquireOptions::default(), identity)
         .await
         .expect("acquire")
 }
@@ -547,7 +547,7 @@ async fn acquire_result(
 ) -> Result<ResourceGuard<Tenant>, Error> {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     manager
-        .acquire_resident_for_identity::<Tenant>(&context, &AcquireOptions::default(), identity)
+        .acquire_for_identity::<Tenant>(&context, &AcquireOptions::default(), identity)
         .await
 }
 

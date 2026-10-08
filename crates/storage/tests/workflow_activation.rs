@@ -11,7 +11,8 @@ async fn in_memory_publication_is_admitted_and_atomic() {
     let versions = nebula_storage::InMemoryWorkflowVersionStore::new();
     let rows = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions, &execution);
     let catalog = execution.plan_flavor_catalog();
-    publication_contract(&rows, &versions, &catalog, &catalog).await;
+    let tenants = nebula_storage::inmem::InMemoryIdentityDirectory::new();
+    publication_contract(&tenants, &rows, &versions, &catalog, &catalog).await;
 }
 
 #[cfg(feature = "sqlite")]
@@ -33,8 +34,9 @@ async fn sqlite_publication_is_admitted_and_atomic() {
         pool.clone(),
         &nebula_metrics::MetricsRegistry::new(),
     );
+    let tenants = nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone());
     let (scope, workflow_id, activation) =
-        publication_contract(&rows, &versions, &catalog, &catalog).await;
+        publication_contract(&tenants, &rows, &versions, &catalog, &catalog).await;
     pool.close().await;
     let reopened = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -53,37 +55,106 @@ async fn sqlite_publication_is_admitted_and_atomic() {
     );
 }
 
+/// A workflow needs a live workspace: the foreign key proves existence, the
+/// adapter proves liveness.
 #[cfg(feature = "sqlite")]
 #[tokio::test]
-async fn sqlite_upgrade_preserves_legacy_absence_and_rejects_partial_activation() {
-    static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
+async fn sqlite_workflow_needs_a_live_workspace() {
+    use nebula_storage_port::store::WorkspaceStore;
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    MIGRATOR.run_to(46, &pool).await.unwrap();
-    sqlx::query("INSERT INTO port_workflows (id,workspace_id,org_id,version,slug,deleted) VALUES ('legacy','ws','org',1,'legacy',0)").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO port_workflow_versions (workspace_id,org_id,workflow_id,number,published,pinned,definition) VALUES ('ws','org','legacy',1,1,0,'{}')").execute(&pool).await.unwrap();
-    MIGRATOR.run(&pool).await.unwrap();
+    nebula_storage::sqlite::init_schema(&pool).await.unwrap();
+    let scope = Scope::new("gone-workspace", "gone-org");
+    provision(
+        &nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone()),
+        &scope,
+    )
+    .await;
+    nebula_storage::sqlite::SqliteWorkspaceStore::new(pool.clone())
+        .soft_delete(&scope.org_id, &scope.workspace_id)
+        .await
+        .unwrap();
+    let rows = nebula_storage::sqlite::SqliteWorkflowStore::new(pool);
+    let created = rows
+        .create(
+            &scope,
+            WorkflowRecord {
+                id: "in-deleted-workspace".into(),
+                scope: scope.clone(),
+                version: 1,
+                slug: "in-deleted-workspace".into(),
+            },
+        )
+        .await;
+    assert!(matches!(
+        created,
+        Err(nebula_storage_port::StorageError::NotFound {
+            entity: "workspace",
+            ..
+        })
+    ));
+}
+
+/// The activation identity is all three columns or none, and the digests
+/// are exactly 32 bytes, whatever the writer.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_schema_rejects_partial_or_malformed_activation() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    nebula_storage::sqlite::init_schema(&pool).await.unwrap();
+    let scope = Scope::new("schema-workspace", "schema-org");
+    provision(
+        &nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone()),
+        &scope,
+    )
+    .await;
+    let rows = nebula_storage::sqlite::SqliteWorkflowStore::new(pool.clone());
     let versions = nebula_storage::sqlite::SqliteWorkflowVersionStore::new(pool.clone());
+    let row = WorkflowRecord {
+        id: "draft".into(),
+        scope: scope.clone(),
+        version: 1,
+        slug: "draft".into(),
+    };
+    let version = WorkflowVersionRecord {
+        activation: None,
+        workflow_id: "draft".into(),
+        number: 1,
+        published: true,
+        pinned: false,
+        definition: serde_json::json!({}),
+    };
+    rows.save_with_published_version(&scope, row, version, None)
+        .await
+        .unwrap();
     assert_eq!(
         versions
-            .get(&Scope::new("ws", "org"), "legacy", 1)
+            .get(&scope, "draft", 1)
             .await
             .unwrap()
             .unwrap()
             .activation,
         None
     );
-    assert!(
-        sqlx::query(
-            "UPDATE port_workflow_versions SET activation = '{}' WHERE workflow_id = 'legacy'"
-        )
-        .execute(&pool)
-        .await
-        .is_err()
-    );
+    for statement in [
+        "UPDATE workflow_versions SET activation_workflow_version_id = 'only-one'",
+        "UPDATE workflow_versions SET activation_workflow_version_id = 'v', \
+         activation_executable_plan_id = zeroblob(31), activation_worker_flavor_id = zeroblob(32)",
+        "UPDATE workflow_versions SET activation_workflow_version_id = 'v', \
+         activation_executable_plan_id = zeroblob(32), activation_worker_flavor_id = 'text'",
+    ] {
+        assert!(
+            sqlx::query(statement).execute(&pool).await.is_err(),
+            "the schema must reject `{statement}`"
+        );
+    }
 }
 
 #[test]

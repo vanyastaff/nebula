@@ -40,7 +40,7 @@ async fn pool_concurrent_acquire_respects_max_size() {
     let mut handles = Vec::new();
     for _ in 0..max_size {
         let handle = mgr
-            .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+            .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire within max_size should succeed");
         handles.push(handle);
@@ -53,7 +53,7 @@ async fn pool_concurrent_acquire_respects_max_size() {
     // One more acquire should time out (pool full, short timeout via deadline).
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(100));
-    let result = mgr.acquire_pooled::<PoolTestResource>(&ctx, &opts).await;
+    let result = mgr.acquire::<PoolTestResource>(&ctx, &opts).await;
     let err = match result {
         Err(e) => e,
         Ok(_) => panic!("expected backpressure error when pool is full"),
@@ -78,14 +78,14 @@ async fn pool_backpressure_when_full() {
 
     // Acquire the single slot.
     let _held = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
 
     // Short deadline — should get backpressure quickly.
     let opts = AcquireOptions::default()
         .with_deadline(std::time::Instant::now() + std::time::Duration::from_millis(50));
-    let result = mgr.acquire_pooled::<PoolTestResource>(&ctx, &opts).await;
+    let result = mgr.acquire::<PoolTestResource>(&ctx, &opts).await;
 
     let err = match result {
         Err(e) => e,
@@ -131,7 +131,7 @@ async fn manager_scope_exact_match() {
         CancellationToken::new(),
     );
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire with matching scope should succeed");
 
@@ -170,7 +170,7 @@ async fn manager_scope_fallback_to_global() {
         CancellationToken::new(),
     );
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should fall back to Global");
 
@@ -210,7 +210,7 @@ async fn manager_scope_mismatch_not_found() {
         CancellationToken::new(),
     );
     let result = manager
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await;
 
     let err = match result {
@@ -271,12 +271,12 @@ async fn manager_multiple_resources_coexist() {
     // Acquire each independently.
     let ctx = test_ctx();
     let pool_handle: ResourceGuard<PoolTestResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("pool acquire should succeed");
 
     let resident_handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("resident acquire should succeed");
 
@@ -321,12 +321,12 @@ async fn pool_replacement_shares_the_identitys_budget() {
     };
 
     let held = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("the first lease fits the budget");
     for _ in 0..3 {
         register_pool(&mgr, resource.clone(), test_config(), pool(1));
-        let refused = mgr.acquire_pooled::<PoolTestResource>(&ctx, &short()).await;
+        let refused = mgr.acquire::<PoolTestResource>(&ctx, &short()).await;
         assert_eq!(
             *refused.map(drop).expect_err("the budget is spent").kind(),
             ErrorKind::Backpressure,
@@ -338,7 +338,7 @@ async fn pool_replacement_shares_the_identitys_budget() {
     drop(held);
     let admitted = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            if let Ok(guard) = mgr.acquire_pooled::<PoolTestResource>(&ctx, &short()).await {
+            if let Ok(guard) = mgr.acquire::<PoolTestResource>(&ctx, &short()).await {
                 break guard;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -350,10 +350,10 @@ async fn pool_replacement_shares_the_identitys_budget() {
     // Growing on replacement adds the difference; the held lease still counts.
     register_pool(&mgr, resource.clone(), test_config(), pool(2));
     let second = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &short())
+        .acquire::<PoolTestResource>(&ctx, &short())
         .await
         .expect("the grown budget admits one more");
-    let refused = mgr.acquire_pooled::<PoolTestResource>(&ctx, &short()).await;
+    let refused = mgr.acquire::<PoolTestResource>(&ctx, &short()).await;
     assert_eq!(
         *refused
             .map(drop)

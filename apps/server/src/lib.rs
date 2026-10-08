@@ -10,10 +10,13 @@ mod compose;
 mod credential_adapters;
 mod credential_composition;
 mod credential_runtime;
+mod deployment_database;
 mod email;
 mod execution_binding_resolver;
+mod execution_runtime;
 mod execution_store_backends;
 mod oauth_egress;
+mod owner_enrollment;
 mod storage_diagnostics;
 mod tenant_bootstrap;
 mod tenant_directory;
@@ -26,53 +29,91 @@ pub mod runtime_repair_red;
 use clap::Parser;
 use transport::{ApiTransport, RealtimeTransport, Transport, WebhookIngressTransport};
 
-/// Failure from the ordinary server composition or serving path.
-#[derive(Debug)]
-pub struct ServerRunError(compose::ServerRunError);
+/// Failure from serving or an operator setup command.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct ServerRunError(RunFailure);
 
-impl std::fmt::Display for ServerRunError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
+#[derive(Debug, thiserror::Error)]
+enum RunFailure {
+    #[error(transparent)]
+    Serving(#[from] compose::ServerRunError),
+    #[error(transparent)]
+    Setup(#[from] owner_enrollment::SetupError),
+}
+
+impl From<compose::ServerRunError> for ServerRunError {
+    fn from(error: compose::ServerRunError) -> Self {
+        Self(RunFailure::Serving(error))
     }
 }
 
-impl std::error::Error for ServerRunError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.0)
-    }
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Operator-only initial account and organization enrollment.
+    Setup {
+        #[command(subcommand)]
+        command: owner_enrollment::SetupCommand,
+    },
 }
 
 #[derive(Parser)]
-#[command(name = "nebula-server", about = "Nebula workflow engine server")]
+#[command(
+    name = "nebula-server",
+    version,
+    about = "Nebula workflow engine server"
+)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// Ingress transport to run in this process.
     #[arg(long, value_enum, env = "NEBULA_TRANSPORT", default_value = "all")]
     transport: Transport,
+    /// Run execution in this server or delegate to separate PostgreSQL workers.
+    #[arg(
+        long,
+        value_enum,
+        env = "NEBULA_EXECUTION",
+        default_value = "in-process"
+    )]
+    execution: execution_runtime::ExecutionTopology,
 }
 
-/// Run the ordinary environment-driven server process.
+/// Run the selected operator command or the environment-driven server process.
 ///
 /// This is the same entry path used by the `nebula-server` binary. It remains
 /// separate from the evidence-only runtime-repair profile, which never reads
 /// process-global configuration or installs signal handlers.
+/// Operator setup initializes only deployment storage and never starts serving.
 ///
 /// # Errors
 ///
 /// Returns a typed startup or serving error.
 pub async fn run_from_env() -> Result<(), ServerRunError> {
+    let cli = Cli::parse();
+    if let Some(Command::Setup { command }) = cli.command {
+        return owner_enrollment::run(command)
+            .await
+            .map_err(|error| ServerRunError(RunFailure::Setup(error)));
+    }
     let telemetry_guard = nebula_api::init_api_telemetry()
         .map_err(compose::ServerRunError::Telemetry)
-        .map_err(ServerRunError)?;
-    let cli = Cli::parse();
+        .map_err(ServerRunError::from)?;
     match cli.transport {
-        Transport::Api | Transport::All => compose::run_transport(ApiTransport, telemetry_guard)
-            .await
-            .map_err(ServerRunError),
-        Transport::Webhook => compose::run_transport(WebhookIngressTransport, telemetry_guard)
-            .await
-            .map_err(ServerRunError),
-        Transport::Realtime => compose::run_transport(RealtimeTransport, telemetry_guard)
-            .await
-            .map_err(ServerRunError),
+        Transport::Api | Transport::All => {
+            compose::run_transport(ApiTransport, telemetry_guard, cli.execution)
+                .await
+                .map_err(ServerRunError::from)
+        },
+        Transport::Webhook => {
+            compose::run_transport(WebhookIngressTransport, telemetry_guard, cli.execution)
+                .await
+                .map_err(ServerRunError::from)
+        },
+        Transport::Realtime => {
+            compose::run_transport(RealtimeTransport, telemetry_guard, cli.execution)
+                .await
+                .map_err(ServerRunError::from)
+        },
     }
 }

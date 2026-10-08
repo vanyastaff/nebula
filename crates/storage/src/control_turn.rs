@@ -6,7 +6,7 @@ use nebula_storage_port::{
 
 pub(crate) fn validate(commit: &ControlTurnCommit<'_>) -> Result<(), StorageError> {
     let transition = commit.transition();
-    let invalid = || StorageError::Configuration("control turn envelope is invalid".into());
+    let invalid = || StorageError::InvalidInput("control turn envelope is invalid".into());
     i64::try_from(commit.claim().generation().get()).map_err(|_| invalid())?;
     i64::try_from(transition.expected_version()).map_err(|_| invalid())?;
     i64::try_from(transition.fence().generation()).map_err(|_| invalid())?;

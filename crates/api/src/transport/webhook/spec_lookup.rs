@@ -1,4 +1,4 @@
-//! Production [`TriggerSpecLookup`] backed by the `port_triggers` store.
+//! Production [`TriggerSpecLookup`] backed by the `triggers` store.
 //!
 //! [`TriggerStoreSpecLookup`] holds the **undecorated** `Arc<dyn TriggerStore>`
 //! and re-binds it to the caller-supplied [`Scope`] on every call via
@@ -16,13 +16,13 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use nebula_storage::rows::WebhookActivationSpec;
+use nebula_storage::webhook_activation::WebhookActivationSpec;
 use nebula_storage_port::{Scope, store::TriggerStore};
 use nebula_tenancy::ScopedTriggerStore;
 
 use super::bootstrap::TriggerSpecLookup;
 
-/// [`TriggerSpecLookup`] backed by a real `port_triggers` store (ADR-0096).
+/// [`TriggerSpecLookup`] backed by a real `triggers` store (ADR-0096).
 ///
 /// Constructed at the composition root from the same `Arc<dyn TriggerStore>`
 /// as the trigger-CRUD handlers. Wrap this in `Arc` and pass to

@@ -18,14 +18,11 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
+nebula-deployment = { path = "../deployment" }
 # Generic durable worker runtime.
 nebula-worker = { path = "../../crates/worker" }
-# Engine wiring (with_plugin) and ActionRuntime construction.
+# Typed execution-store bundles assembled by the process root.
 nebula-engine = { path = "../../crates/engine" }
-# First-party core plugin (SetFields and other utility actions).
-nebula-plugin-core = { path = "../../crates/plugin-core" }
-# ResolvedPlugin::from wraps the concrete plugin for the engine.
-nebula-plugin = { path = "../../crates/plugin" }
 # SQLite-backed durable stores.
 # The `postgres` feature (below) adds `nebula-storage/postgres` at feature-selection time,
 # which transitively enables `sqlx/postgres` + `sqlx/tls-rustls-ring-native-roots` in the
@@ -53,6 +50,7 @@ uuid = { workspace = true, features = ["v4"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }
 tokio-util = { workspace = true }
 thiserror = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "ansi"] }
 
@@ -66,11 +64,14 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "ansi"
 # Without this feature, setting `NEBULA_WORKER_DATABASE_URL` causes a
 # fail-closed startup error rather than a silent SQLite fallback.
 postgres = ["nebula-storage/postgres"]
-# Private app-to-app composition seam for the server-owned RED evidence
-# profile. This is not a deployment or SDK surface.
-runtime-repair-red = ["dep:nebula-eventbus"]
+# Evidence-only runtime inputs shared with the server-owned RED profile.
+# This is not a deployment or SDK surface.
+runtime-repair-red = ["dep:nebula-eventbus", "nebula-deployment/runtime-repair-red"]
 
 [dev-dependencies]
+# Independently construct the expected release identity in execution smoke tests.
+nebula-plugin-core = { path = "../../crates/plugin-core" }
+nebula-plugin = { path = "../../crates/plugin" }
 # In-memory adapters for the smoke test (avoids SQLite file I/O in tests).
 nebula-storage = { path = "../../crates/storage" }
 nebula-execution = { path = "../../crates/execution" }
@@ -79,7 +80,14 @@ nebula-core = { path = "../../crates/core" }
 nebula-storage-port = { path = "../../crates/storage-port" }
 
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "test-util"] }
+tokio = { workspace = true, features = [
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "time",
+  "test-util",
+  "process",
+] }
 chrono = { workspace = true }
 tempfile = { workspace = true }
 

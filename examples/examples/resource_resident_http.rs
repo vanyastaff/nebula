@@ -412,7 +412,7 @@ async fn main() -> anyhow::Result<()> {
     //    and third reads.
     let ctx = ctx_for_demo();
     let lease = manager
-        .acquire_resident::<GoogleSheets>(&ctx, &AcquireOptions::default())
+        .acquire::<GoogleSheets>(&ctx, &AcquireOptions::default())
         .await?;
     println!("\n[2] Three sequential ReadSheet calls (refresh forced by 50ms token TTL):");
 

@@ -164,7 +164,7 @@ fn fragment(
         (RuntimeAuthorityGate::RequiredPostgresql, None) => {
             return merged_required_postgresql(root);
         },
-        (RuntimeAuthorityGate::OrderedMigrations, Some("clean" | "previous-supported-version")) => {
+        (RuntimeAuthorityGate::OrderedMigrations, Some("clean" | "populated-head")) => {
             format!("ordered-migrations/{backend}.json")
         },
         (RuntimeAuthorityGate::ActivationDiagnostics, None) => {

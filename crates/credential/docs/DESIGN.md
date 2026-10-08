@@ -393,10 +393,12 @@ Each item carries the ADR's own state as of 2026-06-12, then what the tree shows
   The crate carries two impls of it, and the one the engine's execution path reaches is
   `CredentialProjectionRuntime` (`src/runtime/projection/mod.rs`), wired through
   `with_credential_resolver`. Production plan-binding resolution landed in the same commit in
-  `apps/server` (`ServerExecutionBindingResolver`). The resource **reverse-index** producer is still
-  absent: `register_and_bind` has one caller, `WorkflowEngine::register_resource_and_bind`
-  (`crates/engine/src/engine/mod.rs:1017`), which is itself uncalled and compiled only under the
-  non-default `rotation` feature, so no live path reaches it. That half stays a real gap.
+  `apps/server` (`ServerExecutionBindingResolver`). Stored-resource activation calls
+  `ResourceFactory::register_and_bind` while the worker's reconciliation driver is live;
+  bindings are installed before registration is published and removed during retirement.
+  The worker enables rotation and supervises durable credential scans without requiring
+  an event bus. This serves linked plugins with resource factories; CorePlugin still
+  supplies no resource kinds.
 
 ADR-0088 lives in the maintainers' private design vault rather than this repository, so its own
 2026-06-12 status table cannot be amended here. What this section does instead is put the residue

@@ -1,15 +1,143 @@
 //! Shared by `ordered_migration_observations` (SQLite) and
 //! `ordered_migration_observations_postgres`: the retained-observation writer and
-//! the migration-ledger constants both backends record against.
+//! the populated-head fixture both backends record against.
 
 use std::io::Write;
 
 pub(crate) use serde_json::{Value, json};
 
-pub(crate) const PREVIOUS_SUPPORTED: i64 = 45;
-/// Both catalogs end at 0063. PostgreSQL carries a migration SQLite reserves
-/// (0060 rate limits), so the SQLite ledger skips it on the way to the head.
-const CURRENT_HEAD: i64 = 63;
+const CURRENT_HEAD: i64 = nebula_storage::migration_catalog::REVIEWED_HEAD;
+
+pub(crate) fn expected_sentinel(populated: bool) -> Value {
+    if populated {
+        json!({"execution":{"fencing_generation":1,"id":"migration-sentinel",
+            "org_id":"org","state":{"sentinel":true},"status":"running","version":1,
+            "workflow_id":"workflow","workspace_id":"workspace"},
+            "journal":[{"payload":{"event":"preserved"},"seq":1}]})
+    } else {
+        json!({"execution":null,"journal":[]})
+    }
+}
+
+pub(crate) fn assert_snapshot(
+    snapshot: &Value,
+    catalog: &sqlx::migrate::Migrator,
+    populated: bool,
+) {
+    let expected_migrations = Value::Array(
+        catalog
+            .iter()
+            .map(|migration| {
+                json!({
+                    "version": migration.version, "description": migration.description,
+                    "checksum": hex(&migration.checksum), "success": true,
+                })
+            })
+            .collect(),
+    );
+    assert_eq!(
+        snapshot["migrations"], expected_migrations,
+        "exact reviewed catalog survives setup"
+    );
+    assert_eq!(
+        snapshot["sentinel"],
+        expected_sentinel(populated),
+        "execution state and atomic journal survive setup"
+    );
+}
+
+/// Populate through the same scoped ports as production. The journal entry is
+/// committed atomically with the state, rather than inserted through a test-only
+/// writer. The retained snapshots below verify these facts after pool replacement.
+pub(crate) async fn populate_head(
+    tenants: &dyn nebula_storage_port::store::TenantProvisioningStore,
+    workflows: &dyn nebula_storage_port::store::WorkflowStore,
+    executions: &dyn nebula_storage_port::store::ExecutionStore,
+) {
+    use nebula_storage_port::dto::{
+        ExecutionListing, ExecutionListingStatus, JournalEntry, PrincipalKind,
+        TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningOutcome,
+        TenantProvisioningRequest, WorkflowRecord,
+    };
+    use nebula_storage_port::{Scope, TransitionBatch, TransitionOutcome};
+
+    let scope = Scope::new("workspace", "org");
+    let request = TenantProvisioningRequest::new(
+        TenantOrgCreate::new(
+            "org".into(),
+            "org".into(),
+            "Fixture".into(),
+            "fixture".into(),
+            "free".into(),
+            None,
+            json!({}),
+        )
+        .unwrap(),
+        TenantDefaultWorkspaceCreate::new(
+            "workspace".into(),
+            "default".into(),
+            "Default".into(),
+            None,
+            "fixture".into(),
+            json!({}),
+        )
+        .unwrap(),
+        PrincipalKind::User,
+        "fixture-owner".into(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        tenants.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    workflows
+        .create(
+            &scope,
+            WorkflowRecord {
+                id: "workflow".into(),
+                scope: scope.clone(),
+                version: 1,
+                slug: "workflow".into(),
+            },
+        )
+        .await
+        .unwrap();
+    executions
+        .create(&scope, "migration-sentinel", "workflow", json!({}))
+        .await
+        .unwrap();
+    let fencing = executions
+        .acquire_lease(
+            &scope,
+            "migration-sentinel",
+            "migration-observer",
+            std::time::Duration::from_mins(1),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        executions
+            .commit(
+                TransitionBatch::new(
+                    scope,
+                    "migration-sentinel",
+                    0,
+                    fencing,
+                    json!({"sentinel": true}),
+                    ExecutionListing::new(ExecutionListingStatus::Running, None, None),
+                )
+                .with_journal(vec![JournalEntry {
+                    seq: None,
+                    payload: json!({"event": "preserved"})
+                }])
+            )
+            .await
+            .unwrap(),
+        TransitionOutcome::Applied { new_version: 1 }
+    );
+}
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -34,12 +162,11 @@ pub(crate) fn retain(
             std::fs::create_dir_all(parent).unwrap();
         }
         let bytes = serde_json::to_vec_pretty(&json!({
-            "producer_version": 2,
+            "producer_version": 3,
             "contract": "ordered-migrations",
-            "scenario_inventory_version": 1,
+            "scenario_inventory_version": 2,
             "backend": backend,
             "database_version": database_version,
-            "previous_supported_version": PREVIOUS_SUPPORTED,
             "current_head": CURRENT_HEAD,
             "scenarios": scenarios,
         }))

@@ -27,9 +27,9 @@ pub use errors::ApiConfigError;
 pub use jwt::JwtSecret;
 pub use oauth::{OAuthProviderConfig, OAuthProvidersConfig};
 pub use sub::{
-    AuthApiConfig, AuthBackendKind, CorsConfig, ExecutionBackendKind, ExecutionStoreConfig,
-    IdempotencyApiConfig, IdempotencyBackend, PaginationConfig, SmtpEmailConfig, SmtpTlsMode,
-    TlsConfig, VersioningConfig, WebhookApiConfig,
+    AuthApiConfig, CorsConfig, ExecutionBackendKind, ExecutionStoreConfig, IdempotencyApiConfig,
+    IdempotencyBackend, PaginationConfig, SmtpEmailConfig, SmtpTlsMode, TlsConfig,
+    VersioningConfig, WebhookApiConfig,
 };
 
 use std::{net::SocketAddr, sync::OnceLock, time::Duration};
@@ -134,10 +134,8 @@ pub struct ApiConfig {
 
     /// Plane-A authentication subsystem configuration.
     ///
-    /// Drives the composition root's selection between the dev-only
-    /// in-memory `AuthBackend` and the PG-backed `PgAuthBackend`. The
-    /// backend selector is bound to `API_AUTH_BACKEND`
-    /// (case-insensitive `memory` / `postgres`).
+    /// Identity persistence follows the deployment database selected by
+    /// [`ExecutionStoreConfig`]; only authentication policy is configured here.
     #[serde(default)]
     pub auth: AuthApiConfig,
 
@@ -147,10 +145,10 @@ pub struct ApiConfig {
 
     /// Execution-store and control-queue backend configuration.
     ///
-    /// Drives the composition root's selection between the dev-only
-    /// in-memory adapters (default), file-local SQLite, and shared
+    /// Drives the composition root's selection between
+    /// file-local SQLite (default) and shared
     /// PostgreSQL. The backend selector is bound to
-    /// `API_EXECUTION_BACKEND` (case-insensitive `memory` / `sqlite` /
+    /// `API_EXECUTION_BACKEND` (case-insensitive `sqlite` /
     /// `postgres`); the SQLite file path is `API_EXECUTION_DB_PATH`.
     #[serde(default)]
     pub execution: ExecutionStoreConfig,
@@ -318,8 +316,7 @@ impl ApiConfig {
             "idempotency: config loaded"
         );
         let auth = Self::auth_from_env()?;
-        tracing::info!(backend = ?auth.backend, "auth: config loaded");
-        let execution = Self::execution_from_env()?;
+        let execution = ExecutionStoreConfig::from_env()?;
         tracing::info!(backend = ?execution.backend, db_path = %execution.db_path, "execution-stores: config loaded");
         let smtp = Self::smtp_from_env()?;
         if let Some(cfg) = smtp.as_ref() {
@@ -361,26 +358,13 @@ impl ApiConfig {
     }
 
     fn auth_from_env() -> Result<AuthApiConfig, ApiConfigError> {
-        let backend = match std::env::var("API_AUTH_BACKEND") {
-            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "memory" => AuthBackendKind::Memory,
-                "postgres" => AuthBackendKind::Postgres,
-                _ => {
-                    return Err(ApiConfigError::ParseEnum {
-                        var: "AUTH_BACKEND",
-                        raw,
-                    });
-                },
-            },
-            Err(_) => AuthBackendKind::Memory,
-        };
         // OAuth providers config: scan env vars per OAuthProvider
         // variant for `API_AUTH_OAUTH_<PROVIDER>_*` (T2.2). Returns
         // empty when no provider is declared, so existing operators
         // who never set the env vars keep the legacy behavior
         // (start_oauth returns ProviderNotConfigured per ADR-0085 D-6).
         let oauth = OAuthProvidersConfig::from_env()?;
-        Ok(AuthApiConfig { backend, oauth })
+        Ok(AuthApiConfig { oauth })
     }
 
     fn idempotency_from_env() -> Result<IdempotencyApiConfig, ApiConfigError> {
@@ -428,26 +412,6 @@ impl ApiConfig {
         Ok(WebhookApiConfig {
             bootstrap_from_storage,
         })
-    }
-
-    fn execution_from_env() -> Result<ExecutionStoreConfig, ApiConfigError> {
-        let backend = match std::env::var("API_EXECUTION_BACKEND") {
-            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-                "memory" => ExecutionBackendKind::Memory,
-                "sqlite" => ExecutionBackendKind::Sqlite,
-                "postgres" => ExecutionBackendKind::Postgres,
-                _ => {
-                    return Err(ApiConfigError::ParseEnum {
-                        var: "EXECUTION_BACKEND",
-                        raw,
-                    });
-                },
-            },
-            Err(_) => ExecutionBackendKind::Memory,
-        };
-        let db_path = std::env::var("API_EXECUTION_DB_PATH")
-            .unwrap_or_else(|_| "nebula-server-execution.db".to_string());
-        Ok(ExecutionStoreConfig { backend, db_path })
     }
 
     /// Load the optional SMTP transport config.
@@ -588,7 +552,10 @@ impl ApiConfig {
             idempotency: IdempotencyApiConfig::default(),
             auth: AuthApiConfig::default(),
             webhook: WebhookApiConfig::default(),
-            execution: ExecutionStoreConfig::default(),
+            execution: ExecutionStoreConfig {
+                backend: ExecutionBackendKind::Memory,
+                ..ExecutionStoreConfig::default()
+            },
             smtp: None,
         }
     }

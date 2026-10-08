@@ -259,6 +259,7 @@ struct TestStores {
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
     versions: Arc<nebula_storage::InMemoryWorkflowVersionStore>,
+    workflows: Arc<nebula_storage::InMemoryWorkflowStore>,
 }
 
 impl TestStores {
@@ -270,7 +271,11 @@ impl TestStores {
     fn with_execution(execution: Arc<nebula_storage::InMemoryExecutionStore>) -> Self {
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = nebula_storage::InMemoryWorkflowVersionStore::new();
+        let workflows = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
+            &versions, &execution,
+        ));
         Self {
+            workflows,
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new(&execution)),
             execution,
             journal,
@@ -314,6 +319,22 @@ impl TestStores {
     async fn save_workflow_version(&self, wf: &WorkflowDefinition, number: u32, published: bool) {
         let scope = crate::store_seam::single_tenant_scope();
         let definition = serde_json::to_value(wf).unwrap();
+        // A version needs its workflow row; a later version reuses it.
+        match nebula_storage_port::store::WorkflowStore::create(
+            self.workflows.as_ref(),
+            &scope,
+            nebula_storage_port::dto::WorkflowRecord {
+                id: wf.id.to_string(),
+                scope: scope.clone(),
+                version: 0,
+                slug: wf.id.to_string(),
+            },
+        )
+        .await
+        {
+            Ok(()) | Err(StorageError::Duplicate { .. }) => {},
+            Err(error) => panic!("workflow row fixture: {error:?}"),
+        }
         self.versions
             .create(
                 &scope,
@@ -1905,14 +1926,14 @@ impl TestStores {
             .await
             .unwrap()
             .unwrap();
-        let batch = nebula_storage_port::TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(execution_id.clone())
-            .expected_version(record.version)
-            .fencing(fence)
-            .new_state(serde_json::to_value(state).unwrap())
-            .build()
-            .unwrap();
+        let batch = nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            execution_id.clone(),
+            record.version,
+            fence,
+            serde_json::to_value(&state).unwrap(),
+            execution_listing(&state),
+        );
         assert!(matches!(
             self.execution.commit(batch).await.unwrap(),
             nebula_storage_port::TransitionOutcome::Applied { .. }
@@ -2300,10 +2321,11 @@ async fn graph_preflight_rejection_terminalizes_created_execution() {
 
     // The lease taken to perform the transition must be released afterward,
     // not left held.
-    let rows = stores.execution.list_all_running().await.unwrap();
-    let row = rows
-        .iter()
-        .find(|r| r.id == execution_id)
+    let row = stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
         .expect("row must still exist");
     assert!(
         row.lease_holder.is_none(),
@@ -2422,10 +2444,11 @@ async fn graph_preflight_rejection_uses_adopted_fence_and_terminalizes_execution
 
     // The handoff lease must be released after the failure write — nothing
     // else will ever touch this terminal row.
-    let rows = stores.execution.list_all_running().await.unwrap();
-    let row = rows
-        .iter()
-        .find(|r| r.id == execution_id)
+    let row = stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
         .expect("row must still exist");
     assert!(
         row.lease_holder.is_none(),
@@ -2839,18 +2862,12 @@ impl ExecutionStore for FailAtCommitN {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -5064,18 +5081,15 @@ impl ExecutionStore for ExternalMutateBeforeN {
             // current, reusing the live fencing generation so this is
             // a pure CAS race (not a fencing race). Bumps the version
             // beneath the engine's feet.
-            if let Ok(external) = nebula_storage_port::TransitionBatch::builder()
-                .scope(record.scope.clone())
-                .execution_id(record.id.clone())
-                .expected_version(record.version)
-                .fencing(nebula_storage_port::FencingToken::from_generation(
-                    record.fencing.unwrap_or(0),
-                ))
-                .new_state(state)
-                .build()
-            {
-                let _ = self.inner.commit(external).await;
-            }
+            let external = nebula_storage_port::TransitionBatch::new(
+                record.scope.clone(),
+                record.id.clone(),
+                record.version,
+                nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0)),
+                state.clone(),
+                listing_of(&state),
+            );
+            let _ = self.inner.commit(external).await;
         }
         self.inner.commit(batch).await
     }
@@ -5115,18 +5129,12 @@ impl ExecutionStore for ExternalMutateBeforeN {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -5394,16 +5402,14 @@ async fn persist_final_state_retries_once_on_nonterminal_conflict() {
     external_state.updated_at = Utc::now();
     let external_json = serde_json::to_value(&external_state).unwrap();
     let external_outcome = execution
-        .commit(
-            nebula_storage_port::TransitionBatch::builder()
-                .scope(scope.clone())
-                .execution_id(execution_id.to_string())
-                .expected_version(0)
-                .fencing(token)
-                .new_state(external_json)
-                .build()
-                .unwrap(),
-        )
+        .commit(nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            execution_id.to_string(),
+            0,
+            token,
+            external_json.clone(),
+            listing_of(&external_json),
+        ))
         .await
         .expect("external commit should succeed");
     assert!(
@@ -5513,16 +5519,14 @@ async fn persist_final_state_honors_external_terminal_transition() {
         .unwrap();
     let external_json = serde_json::to_value(&external_state).unwrap();
     let external_outcome = execution
-        .commit(
-            nebula_storage_port::TransitionBatch::builder()
-                .scope(scope.clone())
-                .execution_id(execution_id.to_string())
-                .expected_version(0)
-                .fencing(token)
-                .new_state(external_json)
-                .build()
-                .unwrap(),
-        )
+        .commit(nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            execution_id.to_string(),
+            0,
+            token,
+            external_json.clone(),
+            listing_of(&external_json),
+        ))
         .await
         .expect("external commit should succeed");
     assert!(
@@ -6459,8 +6463,8 @@ fn durable_failure_record_keeps_the_actions_own_text_out_of_every_surface() {
 
     let envelope = durable_error_envelope(&error);
 
-    // 1. The record itself. This exact value is what `port_executions.state` and
-    //    `port_execution_journal.payload` persist, since both columns are opaque JSON.
+    // 1. The record itself. This exact value is what `executions.state` and
+    //    `execution_journal.payload` persist, since both columns are opaque JSON.
     let record = serde_json::to_string(&envelope).expect("record is serializable");
     assert!(!record.contains(MARKER), "durable record leaked: {record}");
     assert_eq!(envelope.code().as_str(), "ACTION:FATAL");
@@ -7997,11 +8001,22 @@ async fn status_publisher_writes_changes_only_and_withdraws_retired_rows() {
     );
     assert!(!published.contains_key(&stale));
 
-    // Deleting the definition retires the row on the next tick, with no
-    // execution naming it again: its runtime goes and its status with it.
+    // Publication observes only. The lifecycle owner retires the deleted row,
+    // after which the next status tick withdraws its projection.
     nebula_storage_port::store::ResourceStore::soft_delete(&*store, &scope, &row.to_string())
         .await
         .expect("soft delete");
+    publisher.tick(&engine, &mut published).await;
+    assert_eq!(recorder.take(), vec!["heartbeat".to_owned()]);
+    assert!(
+        !engine
+            .stored_resources
+            .as_ref()
+            .expect("activator configured")
+            .active_rows()
+            .is_empty()
+    );
+    engine.retire_deleted_resources().await;
     publisher.tick(&engine, &mut published).await;
     assert_eq!(
         recorder.take(),
@@ -8282,4 +8297,17 @@ async fn status_publisher_republishes_after_its_lease_lapsed() {
         calls[1].starts_with(&format!("publish {row} ")),
         "{calls:?}"
     );
+}
+
+/// Listing projection of a fixture snapshot read straight from its JSON: some
+/// fixtures store deliberately undecodable states, which list as `created`.
+fn listing_of(state: &serde_json::Value) -> nebula_storage_port::ExecutionListing {
+    fn field<T: serde::de::DeserializeOwned>(state: &serde_json::Value, key: &str) -> Option<T> {
+        serde_json::from_value(state.get(key)?.clone()).ok()
+    }
+    nebula_storage_port::ExecutionListing::new(
+        field(state, "status").unwrap_or(nebula_storage_port::ExecutionListingStatus::Created),
+        field(state, "started_at"),
+        field(state, "completed_at"),
+    )
 }

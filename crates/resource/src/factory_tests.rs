@@ -967,7 +967,7 @@ async fn rotation_authority_is_manager_scoped_and_driver_loss_demotes_ready_rows
         tokio_util::sync::CancellationToken::new(),
     );
     let error = authorized_manager
-        .acquire_resident_for_identity::<BoundTestRes>(
+        .acquire_for_identity::<BoundTestRes>(
             &context,
             &crate::AcquireOptions::default(),
             &outcome.slot_identity,

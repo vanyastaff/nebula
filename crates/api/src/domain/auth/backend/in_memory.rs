@@ -24,8 +24,8 @@ use nebula_metrics::{
         NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL, auth_outcome,
     },
 };
-use nebula_storage::{
-    repos::OAUTH_STATE_CAPACITY,
+use nebula_storage::auth::{
+    OAUTH_STATE_CAPACITY,
     session_token::{SessionTokenDigest, session_token_digest},
 };
 use parking_lot::Mutex;
@@ -166,7 +166,7 @@ pub struct InMemoryAuthBackend {
     /// must keep their own `EchoSink` reference.
     default_echo: Option<Arc<EchoSink>>,
     /// Optional `nebula_api_auth_*` emission seam (mirror of the
-    /// `PgAuthBackend` slot so the trait-level contract stays uniform).
+    /// `DurableAuthBackend` slot so the trait-level contract stays uniform).
     /// `None` skips emission. Production composition root threads in
     /// the shared `Arc<MetricsRegistry>`; the existing in-memory test
     /// surface keeps `None` to preserve the previous no-emission
@@ -228,7 +228,7 @@ impl InMemoryAuthBackend {
     /// Wire an optional [`MetricsRegistry`] so the backend records
     /// `nebula_api_auth_*` counters / histogram on every outcome
     /// branch. Mirrors the `IdempotencyLayer::with_metrics` precedent
-    /// and the constructor injection on `super::pg::PgAuthBackend`
+    /// and the constructor injection on `super::durable::DurableAuthBackend`
     /// (feature-gated under `postgres`); tests that don't care opt
     /// out by passing `None` (the default).
     #[must_use]
@@ -501,17 +501,11 @@ impl AuthBackend for InMemoryAuthBackend {
             NEBULA_API_AUTH_ATTEMPTS_TOTAL,
             None,
             async move {
-                let email = req.email.trim().to_lowercase();
-                if email.is_empty() || !email.contains('@') {
-                    return Err(AuthError::InvalidCredentials);
-                }
-                if req.password.len() < 8 {
-                    return Err(AuthError::InvalidCredentials);
-                }
-                let display_name = req.display_name.trim();
-                if display_name.is_empty() || display_name.len() > 128 {
-                    return Err(AuthError::InvalidCredentials);
-                }
+                let (email, display_name) = password::validate_registration(
+                    &req.email,
+                    req.password.expose(),
+                    &req.display_name,
+                )?;
                 if self.users_by_email.contains_key(&email) {
                     return Err(AuthError::EmailAlreadyRegistered);
                 }

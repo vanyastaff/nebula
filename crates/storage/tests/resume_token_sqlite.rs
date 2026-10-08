@@ -16,11 +16,15 @@
 
 #![cfg(feature = "sqlite")]
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
 use std::str::FromStr;
 use std::time::Duration;
 
+use execution_parents::SeedExecutionParents;
 use nebula_storage::sqlite::{SqliteExecutionStore, SqliteResumeTokenStore, init_schema};
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{ExecutionStore, ResumeTokenStore};
 use nebula_storage_port::{Scope, TransitionBatch, TransitionOutcome};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -46,10 +50,13 @@ async fn fresh_pool() -> sqlx::SqlitePool {
 
     init_schema(&pool)
         .await
-        .expect("install port schema including port_resume_tokens");
+        .expect("install port schema including resume_tokens");
+    pool.seed_execution_parents(&test_scope(), WORKFLOW).await;
 
     pool
 }
+
+const WORKFLOW: &str = "wf-sqlite-1";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -90,7 +97,7 @@ async fn seed_token(
             .create(
                 scope,
                 execution_id,
-                "wf-sqlite-1",
+                WORKFLOW,
                 serde_json::json!({"s": "created"}),
             )
             .await
@@ -103,15 +110,15 @@ async fn seed_token(
         .expect("acquire_lease must not error")
         .expect("fresh row must yield a fencing token");
 
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id)
-        .expected_version(expected_version)
-        .fencing(fencing)
-        .new_state(serde_json::json!({"s": "waiting"}))
-        .resume_tokens(vec![token_row])
-        .build()
-        .expect("well-formed batch must build");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id,
+        expected_version,
+        fencing,
+        serde_json::json!({"s": "waiting"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_resume_tokens(vec![token_row]);
 
     let outcome = exec_store
         .commit(batch)
@@ -137,7 +144,7 @@ async fn seed_token(
 /// Test 1 — SQLite per-backend RED test: `commit` inserts a token that
 /// `consume` can retrieve.
 ///
-/// Falsifiability: remove the `port_resume_tokens` INSERT loop from
+/// Falsifiability: remove the `resume_tokens` INSERT loop from
 /// `SqliteExecutionStore::commit` → `consume` returns `None` → RED.
 ///
 /// This is the W-S3a-lesson guard for the SQLite backend: a dropped INSERT

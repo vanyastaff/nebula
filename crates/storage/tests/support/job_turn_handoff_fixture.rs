@@ -22,6 +22,12 @@ pub(super) const LIVE_FLAVOR: WorkerFlavorRevisionId =
 pub(super) const OTHER_FLAVOR: WorkerFlavorRevisionId =
     WorkerFlavorRevisionId::from_bytes([0x22; 32]);
 
+/// The workflow every materialized fixture execution runs; SQL backends seed
+/// it in the fixture scope first.
+pub(super) fn workflow_id() -> WorkflowId {
+    WorkflowId::from_bytes([0x44; 16])
+}
+
 pub(super) struct TurnHandoffPorts<'a> {
     pub(super) store: &'a dyn ExecutionStore,
     pub(super) queue: &'a dyn JobDispatchQueue,
@@ -40,7 +46,7 @@ pub(super) async fn materialize_execution(
     let execution = execution_id
         .parse::<ExecutionId>()
         .expect("handoff fixture execution id must be typed");
-    let workflow = WorkflowId::new();
+    let workflow = workflow_id();
     let workflow_revision = WorkflowVersionId::new();
     let plan = ExecutablePlanRevisionId::from_bytes(std::array::from_fn(|index| {
         execution.as_bytes()[index % 16]

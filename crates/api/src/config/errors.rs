@@ -2,6 +2,16 @@
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ApiConfigError {
+    /// The internal reference adapter cannot host a deployment.
+    #[error("memory is a test adapter; select sqlite or postgres for deployment storage")]
+    MemoryDeploymentUnsupported,
+    /// The removed independent identity-storage selector was supplied.
+    /// Its value is neither retained nor included in diagnostics.
+    #[error(
+        "API_AUTH_BACKEND has been removed; remove it and select the deployment database with API_EXECUTION_BACKEND"
+    )]
+    IndependentAuthBackendRemoved,
+
     /// `API_JWT_SECRET` unset in a non-dev `NEBULA_ENV`.
     #[error("API_JWT_SECRET is required in non-dev mode (NEBULA_ENV={0})")]
     MissingJwtSecret(String),

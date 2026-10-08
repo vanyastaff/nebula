@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Partial — самый нагруженный, load-bearing крейт (`engine.rs` ~9.8k строк, признан в AGENTS.md «largest, load-bearing») |
+| **Status** | Partial — durable workflow execution, activation and recovery contracts; remaining integration limits are listed below |
 | **Layer** | Composition root / оркестратор исполнения workflow (L2 control-plane) |
-| **Redesign role** | **Затронут с обеих сторон.** Credential: после ADR-0092 runtime (resolver/refresh/lease/rotation-state) уехал в `nebula-credential`; последний остаток credential-модуля — `default_in_memory_coordinator()` — удалён (sole-management-writer), а credential-сторона bind-population (M12.4) закрыта 2026-09-13: `CredentialSlotResolver` подключён через `with_credential_resolver` и вызывается на execution-пути. Resource: из bind-population открыт resource-half (`register_and_bind` живых вызывающих не получил); `rotation.rs` в дереве отсутствует — при возвращении ротации fan-out shim должен жить в `nebula-resource`. |
+| **Redesign role** | **Затронут с обеих сторон.** Credential: после ADR-0092 runtime (resolver/refresh/lease/rotation-state) уехал в `nebula-credential`; последний остаток credential-модуля — `default_in_memory_coordinator()` — удалён (sole-management-writer), а credential-сторона bind-population (M12.4) закрыта 2026-09-13: `CredentialSlotResolver` подключён через `with_credential_resolver` и вызывается на execution-пути. Resource: stored activation вызывает typed factories и, с живым reconciliation driver, `register_and_bind`. Durable credential projection остаётся источником истины; driver принадлежит `nebula-resource`. |
 | **Related** | ADR-0092, ADR-0088, ADR-0008 (control plane), ADR-0016 (cancellation), ADR-0068 (layered retry), ADR-0050, PRODUCT_CANON §10/§11.1/§11.2/§12.2/§12.5 |
 
 ---
@@ -185,8 +185,8 @@ slot/tenant authority; semantic decoupling требует будущей version
 - **bind-population (M12.4): credential-сторона закрыта 2026-09-13.** `CredentialSlotResolver`
   (`nebula_credential::CredentialSlotResolver`) подключён через `with_credential_resolver` и вызывается на
   execution-пути (`engine/frontier.rs:2322`); доходит он до `CredentialProjectionRuntime`
-  (`crates/credential/src/runtime/projection/mod.rs`). Открыт остаётся resource-half: `register_and_bind` живых вызывающих
-  не получил;
+  (`crates/credential/src/runtime/projection/mod.rs`). Stored activation наполняет reverse index через
+  `register_and_bind`, если resolver-backed reconciliation driver работает;
 - `resource/registrar.rs` — seam активации kinds в `nebula_resource::Manager` (stored row → typed);
 - `rotation.rs` — в дереве отсутствует (строка сохранена как историческая пометка; shim fan-out
   при возвращении ротации должен жить в `nebula-resource`, а не здесь);
@@ -215,15 +215,18 @@ slot/tenant authority; semantic decoupling требует будущей version
   с `row_id` в идентичности строки реестра. Одна активация на версию строки (single-flight),
   удалённая строка снимается из `Manager`, ошибка строки логируется и не валит ход. Узел получает
   идентичность своей строки поверх scope-снимка; два ряда одного вида на одном узле — отказ.
-  Не покрыто: topology/rate-limit строки (этап 3), реакция на изменения через outbox и ротация
-  установленных guard'ов (этап 4).
-- **Bind-population producer (M12.4) — остался resource-half.** Credential→slot резолвер в
-  production есть: `CredentialSlotResolver` с impl `CredentialProjectionRuntime`
-  (`nebula_credential::CredentialProjectionRuntime`), подключён `with_credential_resolver`, вызывается из
-  `engine/frontier.rs:2322`. Осталось то же самое для resource reverse index: подключить producer, чтобы
-  `register_and_bind` (`nebula_resource::factory`) получил живой вызывающий путь (quiesce-контракт
-  есть; единственный вызов — `WorkflowEngine::register_resource_and_bind`, под non-default
-  `rotation` и сам никем не вызывается).
+  Operator topology and resilience settings reach typed registration; row/account identities
+  scope rate limits. Credential material is reconciled from durable projection while a live
+  driver is attached. No resource-definition outbox subscription is claimed here.
+- **Stored resource bindings.** The worker wires `StoredResourceActivator`, plugin factories and
+  `CredentialSlotResolver`. Execution activation resolves the row's declared slots and calls
+  `register_and_bind` when the reconciliation driver is live. The driver reads durable credential
+  projection; notifications are optional wake hints. No second credential writer is introduced.
+  The worker starts and supervises this driver before consuming commands, reports typed startup
+  failures, and cancels and joins it before resource-manager teardown. Unexpected completion
+  stops the worker rather than leaving resource rows without reconciliation.
+  The core plugin currently has no resource kinds, so supported wiring does not close end-user
+  resource integration or justify promoting the resource crate to stable.
 - **Схлопнуть двойной store seam — закрыто (ADR-0072).** Двойной seam схлопнут: остался только
   spec-16 storage-port (`ExecutionStore::acquire_lease` / `commit`, CAS на `version` +
   `FencingToken`); legacy `ExecutionRepo`-ветка удалена — без сконфигурированных store'ов движок

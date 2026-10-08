@@ -43,7 +43,11 @@ impl WorkflowActivation {
     }
 }
 
-/// One workflow row as the port exposes it.
+/// One live workflow row as the port exposes it.
+///
+/// Soft-deleted workflows are invisible to every read and write;
+/// [`WorkflowStore::soft_delete`](crate::store::WorkflowStore::soft_delete)
+/// is the only way to delete one.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkflowRecord {
     /// Workflow id (opaque string form).
@@ -54,8 +58,6 @@ pub struct WorkflowRecord {
     pub version: u64,
     /// Author-defined slug (unique per workspace among active rows).
     pub slug: String,
-    /// Soft-delete marker.
-    pub deleted: bool,
 }
 
 /// One workflow-version row.
@@ -69,7 +71,8 @@ pub struct WorkflowRecord {
 #[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkflowVersionRecord {
-    /// Complete activation identity, absent for drafts and legacy versions.
+    /// Complete activation identity, absent for versions saved without
+    /// publication admission.
     #[serde(default)]
     pub activation: Option<WorkflowActivation>,
     /// Owning workflow id (opaque string form).

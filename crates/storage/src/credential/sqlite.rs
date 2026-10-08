@@ -1,22 +1,26 @@
 //! SQLite-backed `CredentialPersistence` impl.
 //!
-//! Persists [`StoredCredential`] rows in the structural `credentials` table at
-//! migration `0040_credential_refresh_retry_gate.sql`.
+//! Persists [`StoredCredential`] rows in the `credentials` table of migration
+//! `0006_credentials.sql`.
 //!
 //! - `data` is an opaque `BLOB` — the [`EncryptionLayer`] above us serialises
 //!   the AES-256-GCM envelope; we never inspect or decrypt it.
-//! - `owner_id` comes only from the mandatory selector, is included in every
-//!   row predicate, and is never inferred from metadata.
+//! - The owner partition comes only from the mandatory selector and is filed
+//!   as its workspace's `(org_id, workspace_id)`, included in every row
+//!   predicate and never inferred from metadata. A partition that names no
+//!   workspace owns no row. A create requires the workspace and its
+//!   organization to be live, checked under the `BEGIN IMMEDIATE` write lock;
+//!   a missing or archived workspace is `NotFound`.
+//! - An archived credential (`deleted_at`) is invisible to every read and
+//!   write, and its claims cannot be taken or cross the provider boundary.
 //! - Every mutation runs under a real `BEGIN IMMEDIATE` transaction, applies
 //!   the frozen collision/CAS precedence, and obtains its secret-free
 //!   [`CredentialCommit`] from the modifying statement's `RETURNING`
 //!   projection. Success is released only after `COMMIT` acknowledgement.
 //! - Tombstoning is structural: it clears all live-only values while retaining
 //!   the immutable credential/state identity needed by physical binding reads.
-//! - Timestamps are stored as `INTEGER` milliseconds-since-epoch (UTC), not
-//!   RFC-3339 text, for the same reasons documented in the `RefreshClaimRepo`
-//!   SQLite impl (`refresh_claim/sqlite.rs`): integer ordering is unambiguous
-//!   for expiry predicates across chrono versions.
+//! - Instants are stored as `INTEGER` microseconds since the Unix epoch
+//!   (UTC), per the database standard.
 //!
 //! # Caller contract
 //!
@@ -30,9 +34,10 @@
 // intentionally remain adjacent so the lifecycle invariant is reviewable.
 
 use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_credential::CredentialDisplay;
+use nebula_storage_port::Scope;
 use nebula_storage_port::{
     CredentialAdmissionEpoch, CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate,
     CredentialIncidentRef, CredentialMaterial, CredentialMaterialEpoch, CredentialOperationKind,
@@ -52,14 +57,15 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::{
     CredentialStoreStartupError, pending::SqlitePendingStateStore,
-    refresh_claim::SqliteRefreshClaimRepo, retry_gate, schema::sqlite as schema,
+    refresh_claim::SqliteRefreshClaimRepo, retry_gate,
 };
 #[cfg(test)]
 use crate::migration::SQLITE_MIGRATOR;
 use crate::migration::{
-    acquire_sqlite_file_setup_guard, acquire_sqlite_memory_setup_guard,
-    complete_sqlite_terminal_section, setup_sqlite_connection_with,
+    CatalogOnly, acquire_sqlite_file_setup_guard, acquire_sqlite_memory_setup_guard,
+    catalog::admit_sqlite, complete_sqlite_terminal_section, setup_sqlite_connection_with,
 };
+use crate::sql_error::is_foreign_key_violation;
 
 #[cfg(test)]
 #[derive(Debug)]
@@ -242,8 +248,8 @@ impl SqliteCredentialPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`CredentialStoreStartupError::UnsupportedSchemaVersion`] for a
-    /// reachable but unsupported schema, or
+    /// Returns [`CredentialStoreStartupError::UnsupportedSchema`] for a
+    /// reachable database whose migration ledger this build does not admit, or
     /// [`CredentialStoreStartupError::Unavailable`] for connection, lock, or
     /// migration failure. Neither error retains the URL or a driver message.
     pub async fn connect(url: &str) -> Result<Self, CredentialStoreStartupError> {
@@ -278,6 +284,23 @@ impl SqliteCredentialPersistence {
         Self::connect("sqlite::memory:").await
     }
 
+    /// Admit and migrate the deployment database behind `pool`, then return a
+    /// ready store over that same pool.
+    ///
+    /// Credentials live in the deployment database, so a
+    /// composition hands the store the pool its execution stores already use;
+    /// no second pool opens on the same database. The pool's schema setup runs
+    /// the same catalog admission as [`Self::connect`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed, secret-free startup error if admission or migration
+    /// fails.
+    pub async fn connect_pool(pool: SqlitePool) -> Result<Self, CredentialStoreStartupError> {
+        crate::migration::setup_sqlite_pool(pool.clone()).await?;
+        Ok(Self::from_ready_pool(pool))
+    }
+
     /// Create the refresh-claim adapter on this store's admitted private pool.
     ///
     /// This is the supported composition seam for pairing owner-bound
@@ -298,6 +321,13 @@ impl SqliteCredentialPersistence {
         legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
     ) -> SqlitePendingStateStore {
         SqlitePendingStateStore::new(self.pool.clone(), key_provider, legacy_keys)
+    }
+
+    /// The tenant provisioning store over this store's pool, for in-crate
+    /// tests that open the store by locator and so hold no pool of their own.
+    #[cfg(test)]
+    pub(crate) fn tenant_provisioning_store(&self) -> crate::sqlite::SqliteTenantProvisioningStore {
+        crate::sqlite::SqliteTenantProvisioningStore::new(self.pool.clone())
     }
 
     /// Create the due-refresh schedule adapter on this store's admitted pool.
@@ -328,7 +358,7 @@ impl SqliteCredentialPersistence {
             if let Some(gate) = terminal_gate {
                 gate.wait(&pool).await;
             }
-            setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
+            setup_sqlite_connection_with::<CatalogOnly>(&mut connection).await?;
             drop(connection);
             Ok(Self::from_ready_pool(pool))
         })
@@ -379,7 +409,10 @@ impl SqliteCredentialPersistence {
             let mut probe = sqlx::SqliteConnection::connect_with(&probe_options)
                 .await
                 .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-            schema::admit(&mut probe).await?;
+            // Admit the ledger read-only before opening the file writable:
+            // opening a foreign database writable can change it (journal
+            // mode, sidecars) before setup rejects it.
+            admit_sqlite(&mut probe).await?;
             probe
                 .close()
                 .await
@@ -404,7 +437,7 @@ impl SqliteCredentialPersistence {
             if let Some(gate) = terminal_gate {
                 gate.wait(&pool).await;
             }
-            setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
+            setup_sqlite_connection_with::<CatalogOnly>(&mut connection).await?;
             drop(connection);
             Ok(Self::from_ready_pool(pool))
         })
@@ -423,13 +456,15 @@ impl super::CredentialPersistenceConformance for SqliteCredentialPersistence {
         if !version.is_live() {
             return Err(CredentialPersistenceError::CorruptRecord);
         }
+        let scope = owner_scope(selector.owner())?;
         let updated = sqlx::query(
             "UPDATE credentials SET version = ?1
-             WHERE id = ?2 AND owner_id = ?3 AND record_state = 'live'",
+             WHERE id = ?2 AND org_id = ?3 AND workspace_id = ?4 AND record_state = 'live'",
         )
         .bind(version.get())
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .execute(&self.pool)
         .await
         .map_err(unavailable)?;
@@ -444,13 +479,15 @@ impl super::CredentialPersistenceConformance for SqliteCredentialPersistence {
         selector: &CredentialSelector,
         material_epoch: CredentialMaterialEpoch,
     ) -> Result<(), CredentialPersistenceError> {
+        let scope = owner_scope(selector.owner())?;
         let updated = sqlx::query(
             "UPDATE credentials SET material_epoch = ?1
-             WHERE id = ?2 AND owner_id = ?3 AND record_state = 'live'",
+             WHERE id = ?2 AND org_id = ?3 AND workspace_id = ?4 AND record_state = 'live'",
         )
         .bind(material_epoch.get())
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .execute(&self.pool)
         .await
         .map_err(unavailable)?;
@@ -465,13 +502,15 @@ impl super::CredentialPersistenceConformance for SqliteCredentialPersistence {
         selector: &CredentialSelector,
         admission_epoch: CredentialAdmissionEpoch,
     ) -> Result<(), CredentialPersistenceError> {
+        let scope = owner_scope(selector.owner())?;
         let updated = sqlx::query(
             "UPDATE credentials SET admission_epoch = ?1
-             WHERE id = ?2 AND owner_id = ?3 AND record_state = 'live'",
+             WHERE id = ?2 AND org_id = ?3 AND workspace_id = ?4 AND record_state = 'live'",
         )
         .bind(admission_epoch.get())
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .execute(&self.pool)
         .await
         .map_err(unavailable)?;
@@ -485,13 +524,15 @@ impl super::CredentialPersistenceConformance for SqliteCredentialPersistence {
         &self,
         selector: &CredentialSelector,
     ) -> Result<(), CredentialPersistenceError> {
+        let scope = owner_scope(selector.owner())?;
         let updated = sqlx::query(
             "UPDATE credentials
              SET name = NULL, metadata = '{\"display\":\"not-an-object\"}'
-             WHERE id = ?1 AND owner_id = ?2 AND record_state = 'live'",
+             WHERE id = ?1 AND org_id = ?2 AND workspace_id = ?3 AND record_state = 'live'",
         )
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .execute(&self.pool)
         .await
         .map_err(unavailable)?;
@@ -523,11 +564,25 @@ fn read_error(error: sqlx::Error) -> CredentialPersistenceError {
     }
 }
 
-/// Convert a millisecond-since-epoch `INTEGER` column back to `DateTime<Utc>`.
-fn millis_to_utc(ms: i64) -> Result<DateTime<Utc>, CredentialPersistenceError> {
-    Utc.timestamp_millis_opt(ms)
-        .single()
-        .ok_or(CredentialPersistenceError::CorruptRecord)
+/// The workspace an owner partition is filed under. A partition that names no
+/// workspace owns no row, which reads as missing.
+fn owner_scope(owner: &CredentialOwner) -> Result<Scope, CredentialPersistenceError> {
+    owner.scope().ok_or(CredentialPersistenceError::NotFound)
+}
+
+/// The owner partition of a row filed under `(org_id, workspace_id)`.
+fn row_owner(org_id: String, workspace_id: String) -> CredentialOwner {
+    CredentialOwner::from_scope(&Scope::new(workspace_id, org_id))
+}
+
+/// Convert a microsecond-since-epoch `INTEGER` column back to `DateTime<Utc>`.
+fn micros_to_utc(us: i64) -> Result<DateTime<Utc>, CredentialPersistenceError> {
+    DateTime::from_timestamp_micros(us).ok_or(CredentialPersistenceError::CorruptRecord)
+}
+
+/// The process clock as stored instants are: microseconds since the epoch.
+fn now_micros() -> i64 {
+    Utc::now().timestamp_micros()
 }
 
 fn stored_version(value: i64) -> Result<CredentialVersion, CredentialPersistenceError> {
@@ -774,9 +829,9 @@ impl CredentialHeadRow {
         let refresh_retry = retry_gate::decode_projection(
             self.refresh_retry_mode,
             self.refresh_retry_not_before
-                .map(millis_to_utc)
+                .map(micros_to_utc)
                 .transpose()?,
-            millis_to_utc(self.backend_now)?,
+            micros_to_utc(self.backend_now)?,
         )?;
         StoredCredentialHead::new_with_refresh_retry(
             stored_credential_id(&self.id)?,
@@ -787,9 +842,9 @@ impl CredentialHeadRow {
                 .map_err(|_| CredentialPersistenceError::CorruptRecord)?,
             stored_version(self.version)?,
             stored_material_epoch(self.material_epoch)?,
-            millis_to_utc(self.created_at)?,
-            millis_to_utc(self.updated_at)?,
-            self.expires_at.map(millis_to_utc).transpose()?,
+            micros_to_utc(self.created_at)?,
+            micros_to_utc(self.updated_at)?,
+            self.expires_at.map(micros_to_utc).transpose()?,
             reauth_required,
             refresh_retry,
             metadata,
@@ -804,12 +859,12 @@ impl CredentialRow {
             .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
         let version = stored_version(self.version)?;
         let material_epoch = stored_material_epoch(self.material_epoch)?;
-        let created_at = millis_to_utc(self.created_at)?;
-        let updated_at = millis_to_utc(self.updated_at)?;
+        let created_at = micros_to_utc(self.created_at)?;
+        let updated_at = micros_to_utc(self.updated_at)?;
         let refresh_retry_gate = retry_gate::decode_gate(
             self.refresh_retry_mode,
             self.refresh_retry_not_before
-                .map(millis_to_utc)
+                .map(micros_to_utc)
                 .transpose()?,
             self.refresh_retry_phase,
             self.refresh_retry_kind,
@@ -839,7 +894,7 @@ impl CredentialRow {
                     material_epoch,
                     created_at,
                     updated_at,
-                    self.expires_at.map(millis_to_utc).transpose()?,
+                    self.expires_at.map(micros_to_utc).transpose()?,
                     reauth_required,
                     metadata,
                     refresh_retry_gate,
@@ -868,7 +923,7 @@ impl CredentialRow {
                         version,
                         created_at,
                         updated_at,
-                        millis_to_utc(tombstoned_at)?,
+                        micros_to_utc(tombstoned_at)?,
                     ),
                 ))
             },
@@ -916,8 +971,8 @@ impl CredentialCommitRow {
     fn into_commit(self) -> Result<CredentialCommit, CredentialPersistenceError> {
         let credential_id = stored_credential_id(&self.id)?;
         let version = stored_version(self.version)?;
-        let created_at = millis_to_utc(self.created_at)?;
-        let updated_at = millis_to_utc(self.updated_at)?;
+        let created_at = micros_to_utc(self.created_at)?;
+        let updated_at = micros_to_utc(self.updated_at)?;
         match self.record_state.as_str() {
             "live" if self.tombstoned_at.is_none() => {
                 CredentialCommit::live(credential_id, version, created_at, updated_at)
@@ -931,7 +986,7 @@ impl CredentialCommitRow {
                     version,
                     created_at,
                     updated_at,
-                    millis_to_utc(tombstoned_at)?,
+                    micros_to_utc(tombstoned_at)?,
                 ))
             },
             _ => Err(CredentialPersistenceError::CorruptRecord),
@@ -986,13 +1041,13 @@ impl RefreshRetrySnapshotRow {
         let gate = retry_gate::decode_gate(
             self.refresh_retry_mode,
             self.refresh_retry_not_before
-                .map(millis_to_utc)
+                .map(micros_to_utc)
                 .transpose()?,
             self.refresh_retry_phase,
             self.refresh_retry_kind,
             self.refresh_retry_diagnostic_code,
         )?;
-        let admission = retry_gate::evaluate_gate(gate.as_ref(), millis_to_utc(self.backend_now)?)?;
+        let admission = retry_gate::evaluate_gate(gate.as_ref(), micros_to_utc(self.backend_now)?)?;
         Ok(RefreshRetrySnapshot::new(
             version,
             material_epoch,
@@ -1013,12 +1068,12 @@ impl CredentialRefreshSchedule for SqliteCredentialRefreshSchedule {
         horizon: CredentialRefreshHorizon,
         limit: CredentialRefreshPageSize,
     ) -> Result<Vec<DueCredentialRefresh>, CredentialRefreshScheduleError> {
-        let horizon_ms = i64::try_from(horizon.get().as_millis())
+        let horizon_us = i64::try_from(horizon.get().as_micros())
             .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
         let (after_expiry, after_id) = after
             .map(|cursor| {
                 (
-                    Some(cursor.expires_at().timestamp_millis()),
+                    Some(cursor.expires_at().timestamp_micros()),
                     Some(cursor.credential_id().to_string()),
                 )
             })
@@ -1027,35 +1082,36 @@ impl CredentialRefreshSchedule for SqliteCredentialRefreshSchedule {
             String,
             String,
             String,
+            String,
             i64,
             Option<String>,
             Option<i64>,
             i64,
-        )> = sqlx::query_as(
-            "WITH backend_clock AS (
-                 SELECT (CAST(strftime('%s', 'now') AS INTEGER) * 1000
-                         + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS now_ms
-             )
-             SELECT c.id, c.owner_id, c.credential_key, c.expires_at,
-                    c.refresh_retry_mode, c.refresh_retry_not_before, clock.now_ms
+        )> = sqlx::query_as(concat!(
+            "WITH backend_clock AS (SELECT ",
+            sqlite_now_us!(),
+            " AS now_us)
+             SELECT c.id, c.org_id, c.workspace_id, c.credential_key, c.expires_at,
+                    c.refresh_retry_mode, c.refresh_retry_not_before, clock.now_us
              FROM credentials AS c CROSS JOIN backend_clock AS clock
              WHERE c.record_state = 'live'
+               AND c.deleted_at IS NULL
                AND c.expires_at IS NOT NULL
                AND c.reauth_required = 0
-               AND c.expires_at <= clock.now_ms + ?1
+               AND c.expires_at <= clock.now_us + ?1
                AND (
                     c.refresh_retry_mode IS NULL
                     OR (c.refresh_retry_mode <> ?3
                         AND (c.refresh_retry_mode <> ?2
                              OR c.refresh_retry_not_before IS NULL
-                             OR c.refresh_retry_not_before <= clock.now_ms))
+                             OR c.refresh_retry_not_before <= clock.now_us))
                )
                AND (?4 IS NULL OR c.expires_at > ?4
                     OR (c.expires_at = ?4 AND c.id > ?5))
              ORDER BY c.expires_at, c.id
-             LIMIT ?6",
-        )
-        .bind(horizon_ms)
+             LIMIT ?6"
+        ))
+        .bind(horizon_us)
         .bind(retry_gate::MODE_NOT_BEFORE)
         .bind(retry_gate::MODE_NEVER)
         .bind(after_expiry)
@@ -1067,22 +1123,28 @@ impl CredentialRefreshSchedule for SqliteCredentialRefreshSchedule {
 
         rows.into_iter()
             .map(
-                |(id, owner, credential_key, expires_at, mode, not_before, observed_at)| {
+                |(
+                    id,
+                    org_id,
+                    workspace_id,
+                    credential_key,
+                    expires_at,
+                    mode,
+                    not_before,
+                    observed_at,
+                )| {
                     match (mode.as_deref(), not_before) {
                         (None, None) | (Some(retry_gate::MODE_NOT_BEFORE), Some(_)) => {},
                         _ => return Err(CredentialRefreshScheduleError::CorruptRecord),
                     }
                     let credential_id = stored_credential_id(&id)
                         .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
-                    let expires_at = millis_to_utc(expires_at)
+                    let expires_at = micros_to_utc(expires_at)
                         .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
-                    let observed_at = millis_to_utc(observed_at)
+                    let observed_at = micros_to_utc(observed_at)
                         .map_err(|_| CredentialRefreshScheduleError::CorruptRecord)?;
                     Ok(DueCredentialRefresh::new(
-                        CredentialSelector::new(
-                            CredentialOwner::from_canonical(owner),
-                            credential_id,
-                        ),
+                        CredentialSelector::new(row_owner(org_id, workspace_id), credential_id),
                         credential_key,
                         expires_at,
                         observed_at,
@@ -1114,16 +1176,19 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         &self,
         selector: &CredentialSelector,
     ) -> Result<StoredCredential, CredentialPersistenceError> {
+        let scope = owner_scope(selector.owner())?;
         let row: Option<CredentialRow> = sqlx::query_as(
             "SELECT id, name, credential_key, data, state_kind, state_version, version, material_epoch, \
              created_at, updated_at, expires_at, reauth_required, metadata, \
              record_state, tombstoned_at, refresh_retry_mode, \
              refresh_retry_not_before, refresh_retry_phase, refresh_retry_kind, \
              refresh_retry_diagnostic_code \
-             FROM credentials WHERE id = ?1 AND owner_id = ?2",
+             FROM credentials \
+             WHERE id = ?1 AND org_id = ?2 AND workspace_id = ?3 AND deleted_at IS NULL",
         )
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(read_error)?;
@@ -1139,6 +1204,7 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         &self,
         selector: &CredentialSelector,
     ) -> Result<CredentialOperationStatus, CredentialPersistenceError> {
+        let scope = owner_scope(selector.owner())?;
         let row: Option<(
             i64,
             i64,
@@ -1149,19 +1215,20 @@ impl CredentialPersistence for SqliteCredentialPersistence {
             Option<i64>,
             Option<String>,
             i64,
-        )> = sqlx::query_as(
+        )> = sqlx::query_as(concat!(
             "SELECT c.version, c.material_epoch, c.admission_epoch, c.reauth_required, \
-                        claim.operation_kind, \
-                        claim.sentinel, claim.expires_at, claim.claim_id, \
-                        (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
-                         + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) \
-                 FROM credentials AS c \
-                 LEFT JOIN credential_refresh_claims AS claim \
-                   ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
-                 WHERE c.id = ?1 AND c.owner_id = ?2 AND c.record_state = 'live'",
-        )
+                    claim.operation_kind, claim.sentinel, claim.expires_at, claim.claim_id, ",
+            sqlite_now_us!(),
+            " FROM credentials AS c \
+             LEFT JOIN credential_refresh_claims AS claim \
+               ON claim.org_id = c.org_id AND claim.workspace_id = c.workspace_id \
+              AND claim.credential_id = c.id \
+             WHERE c.id = ?1 AND c.org_id = ?2 AND c.workspace_id = ?3 \
+               AND c.record_state = 'live' AND c.deleted_at IS NULL"
+        ))
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(read_error)?;
@@ -1198,11 +1265,26 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         selector: &CredentialSelector,
     ) -> Result<(StoredCredential, Option<CredentialOperationStatus>), CredentialPersistenceError>
     {
-        let row: Option<CredentialWithStatusRow> = sqlx::query_as(
-            "SELECT c.id, c.name, c.credential_key, c.data, c.state_kind, c.state_version, \n             c.version, c.material_epoch, c.created_at, c.updated_at, c.expires_at, \n             c.reauth_required, c.metadata, c.record_state, c.tombstoned_at, \n             c.refresh_retry_mode, c.refresh_retry_not_before, c.refresh_retry_phase, \n             c.refresh_retry_kind, c.refresh_retry_diagnostic_code, \n             claim.operation_kind, claim.sentinel AS operation_sentinel, \n             claim.expires_at AS operation_expires_at, claim.claim_id AS operation_claim_id, \n             (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \n              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, \n             c.admission_epoch \n             FROM credentials AS c \n             LEFT JOIN credential_refresh_claims AS claim \n               ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \n             WHERE c.id = ?1 AND c.owner_id = ?2",
-        )
+        let scope = owner_scope(selector.owner())?;
+        let row: Option<CredentialWithStatusRow> = sqlx::query_as(concat!(
+            "SELECT c.id, c.name, c.credential_key, c.data, c.state_kind, c.state_version, \
+                    c.version, c.material_epoch, c.created_at, c.updated_at, c.expires_at, \
+                    c.reauth_required, c.metadata, c.record_state, c.tombstoned_at, \
+                    c.refresh_retry_mode, c.refresh_retry_not_before, c.refresh_retry_phase, \
+                    c.refresh_retry_kind, c.refresh_retry_diagnostic_code, \
+                    claim.operation_kind, claim.sentinel AS operation_sentinel, \
+                    claim.expires_at AS operation_expires_at, claim.claim_id AS operation_claim_id, ",
+            sqlite_now_us!(),
+            " AS backend_now, c.admission_epoch \
+             FROM credentials AS c \
+             LEFT JOIN credential_refresh_claims AS claim \
+               ON claim.org_id = c.org_id AND claim.workspace_id = c.workspace_id \
+              AND claim.credential_id = c.id \
+             WHERE c.id = ?1 AND c.org_id = ?2 AND c.workspace_id = ?3 AND c.deleted_at IS NULL"
+        ))
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(read_error)?;
@@ -1232,16 +1314,19 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         &self,
         selector: &CredentialSelector,
     ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
-        let row: Option<RefreshRetrySnapshotRow> = sqlx::query_as(
+        let scope = owner_scope(selector.owner())?;
+        let row: Option<RefreshRetrySnapshotRow> = sqlx::query_as(concat!(
             "SELECT version, material_epoch, reauth_required, record_state, refresh_retry_mode, \
                     refresh_retry_not_before, refresh_retry_phase, \
-                    refresh_retry_kind, refresh_retry_diagnostic_code, \
-                    (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
-                     + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now \
-             FROM credentials WHERE id = ?1 AND owner_id = ?2",
-        )
+                    refresh_retry_kind, refresh_retry_diagnostic_code, ",
+            sqlite_now_us!(),
+            " AS backend_now \
+             FROM credentials \
+             WHERE id = ?1 AND org_id = ?2 AND workspace_id = ?3 AND deleted_at IS NULL"
+        ))
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(read_error)?;
@@ -1255,18 +1340,21 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         &self,
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
-        let row: Option<CredentialHeadRow> = sqlx::query_as(
+        let scope = owner_scope(selector.owner())?;
+        let row: Option<CredentialHeadRow> = sqlx::query_as(concat!(
             "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
              admission_epoch, created_at, updated_at, expires_at, reauth_required, \
-             refresh_retry_mode, refresh_retry_not_before, \
-             (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
-              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, metadata, NULL AS operation_kind, \
+             refresh_retry_mode, refresh_retry_not_before, ",
+            sqlite_now_us!(),
+            " AS backend_now, metadata, NULL AS operation_kind, \
              NULL AS operation_sentinel, NULL AS operation_expires_at, NULL AS operation_claim_id \
              FROM credentials \
-             WHERE id = ?1 AND owner_id = ?2 AND record_state = 'live'",
-        )
+             WHERE id = ?1 AND org_id = ?2 AND workspace_id = ?3 \
+               AND record_state = 'live' AND deleted_at IS NULL"
+        ))
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(read_error)?;
@@ -1282,20 +1370,24 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         &self,
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialOperationalHead, CredentialPersistenceError> {
-        let row: Option<CredentialHeadRow> = sqlx::query_as(
+        let scope = owner_scope(selector.owner())?;
+        let row: Option<CredentialHeadRow> = sqlx::query_as(concat!(
             "SELECT c.id, c.name, c.credential_key, c.state_kind, c.state_version, \
              c.version, c.material_epoch, c.admission_epoch, c.created_at, c.updated_at, \
-             c.expires_at, c.reauth_required, c.refresh_retry_mode, c.refresh_retry_not_before, \
-             (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
-              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, \
+             c.expires_at, c.reauth_required, c.refresh_retry_mode, c.refresh_retry_not_before, ",
+            sqlite_now_us!(),
+            " AS backend_now, \
              c.metadata, claim.operation_kind, claim.sentinel AS operation_sentinel, \
              claim.expires_at AS operation_expires_at, claim.claim_id AS operation_claim_id \
              FROM credentials AS c LEFT JOIN credential_refresh_claims AS claim \
-               ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
-             WHERE c.id = ?1 AND c.owner_id = ?2 AND c.record_state = 'live'",
-        )
+               ON claim.org_id = c.org_id AND claim.workspace_id = c.workspace_id \
+              AND claim.credential_id = c.id \
+             WHERE c.id = ?1 AND c.org_id = ?2 AND c.workspace_id = ?3 \
+               AND c.record_state = 'live' AND c.deleted_at IS NULL"
+        ))
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(read_error)?;
@@ -1309,20 +1401,26 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         owner: &CredentialOwner,
         state_kind: Option<&str>,
     ) -> Result<Vec<StoredCredentialOperationalHead>, CredentialPersistenceError> {
-        let rows: Vec<CredentialHeadRow> = sqlx::query_as(
+        let Some(scope) = owner.scope() else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<CredentialHeadRow> = sqlx::query_as(concat!(
             "SELECT c.id, c.name, c.credential_key, c.state_kind, c.state_version, \
              c.version, c.material_epoch, c.admission_epoch, c.created_at, c.updated_at, \
-             c.expires_at, c.reauth_required, c.refresh_retry_mode, c.refresh_retry_not_before, \
-             (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
-              + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, \
+             c.expires_at, c.reauth_required, c.refresh_retry_mode, c.refresh_retry_not_before, ",
+            sqlite_now_us!(),
+            " AS backend_now, \
              c.metadata, claim.operation_kind, claim.sentinel AS operation_sentinel, \
              claim.expires_at AS operation_expires_at, claim.claim_id AS operation_claim_id \
              FROM credentials AS c LEFT JOIN credential_refresh_claims AS claim \
-               ON claim.owner_id = c.owner_id AND claim.credential_id = c.id \
-             WHERE c.owner_id = ?1 AND c.record_state = 'live' \
-               AND (?2 IS NULL OR c.state_kind = ?2) ORDER BY c.id",
-        )
-        .bind(owner.as_str())
+               ON claim.org_id = c.org_id AND claim.workspace_id = c.workspace_id \
+              AND claim.credential_id = c.id \
+             WHERE c.org_id = ?1 AND c.workspace_id = ?2 \
+               AND c.record_state = 'live' AND c.deleted_at IS NULL \
+               AND (?3 IS NULL OR c.state_kind = ?3) ORDER BY c.id"
+        ))
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(state_kind)
         .fetch_all(&self.pool)
         .await
@@ -1391,6 +1489,7 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         selector: &CredentialSelector,
         expected_material_epoch: CredentialMaterialEpoch,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let scope = owner_scope(selector.owner())?;
         let mut transaction = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
@@ -1400,9 +1499,10 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         let claim: Option<(String, Option<i64>, i64)> = sqlx::query_as(
             "SELECT operation_kind, observed_material_epoch, sentinel
              FROM credential_refresh_claims
-             WHERE owner_id = ?1 AND credential_id = ?2",
+             WHERE org_id = ?1 AND workspace_id = ?2 AND credential_id = ?3",
         )
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(&credential_id)
         .fetch_optional(&mut *transaction)
         .await
@@ -1425,9 +1525,11 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         }
         let row: Option<RevokedMaterialRow> = sqlx::query_as(
             "SELECT id, version, material_epoch, record_state, created_at, updated_at, tombstoned_at
-             FROM credentials WHERE owner_id = ?1 AND id = ?2",
+             FROM credentials
+             WHERE org_id = ?1 AND workspace_id = ?2 AND id = ?3 AND deleted_at IS NULL",
         )
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(&credential_id)
         .fetch_optional(&mut *transaction)
         .await
@@ -1458,22 +1560,22 @@ impl CredentialPersistence for SqliteCredentialPersistence {
                 .await;
         }
         let next_version = stored_version(row.version)?.next_tombstone()?;
-        let now_ms = Utc::now().timestamp_millis();
         let result = sqlx::query_as::<_, CredentialCommitRow>(
-            "UPDATE credentials SET name = NULL, data = zeroblob(0), version = ?3,
-                 updated_at = ?4, expires_at = NULL, reauth_required = 0, metadata = '{}',
-                 record_state = 'tombstoned', tombstoned_at = ?4,
+            "UPDATE credentials SET name = NULL, data = zeroblob(0), version = ?4,
+                 updated_at = ?5, expires_at = NULL, reauth_required = 0, metadata = '{}',
+                 record_state = 'tombstoned', tombstoned_at = ?5,
                  refresh_retry_mode = NULL, refresh_retry_not_before = NULL,
                  refresh_retry_phase = NULL, refresh_retry_kind = NULL,
                  refresh_retry_diagnostic_code = NULL
-             WHERE owner_id = ?1 AND id = ?2 AND record_state = 'live'
-               AND material_epoch = ?5
+             WHERE org_id = ?1 AND workspace_id = ?2 AND id = ?3 AND record_state = 'live'
+               AND deleted_at IS NULL AND material_epoch = ?6
              RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
         )
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(&credential_id)
         .bind(next_version.get())
-        .bind(now_ms)
+        .bind(now_micros())
         .bind(expected_material_epoch.get())
         .fetch_optional(&mut *transaction)
         .await
@@ -1489,26 +1591,21 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         owner: &CredentialOwner,
         state_kind: Option<&str>,
     ) -> Result<Vec<CredentialId>, CredentialPersistenceError> {
-        let ids: Vec<(String,)> = match state_kind {
-            Some(kind) => sqlx::query_as(
-                "SELECT id FROM credentials \
-                 WHERE owner_id = ?1 AND state_kind = ?2 AND record_state = 'live' \
-                 ORDER BY id",
-            )
-            .bind(owner.as_str())
-            .bind(kind)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(read_error)?,
-            None => sqlx::query_as(
-                "SELECT id FROM credentials \
-                 WHERE owner_id = ?1 AND record_state = 'live' ORDER BY id",
-            )
-            .bind(owner.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(read_error)?,
+        let Some(scope) = owner.scope() else {
+            return Ok(Vec::new());
         };
+        let ids: Vec<(String,)> = sqlx::query_as(
+            "SELECT id FROM credentials \
+             WHERE org_id = ?1 AND workspace_id = ?2 AND (?3 IS NULL OR state_kind = ?3) \
+               AND record_state = 'live' AND deleted_at IS NULL \
+             ORDER BY id",
+        )
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .bind(state_kind)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(read_error)?;
         ids.into_iter()
             .map(|(id,)| stored_credential_id(&id))
             .collect()
@@ -1520,38 +1617,27 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         owner: &CredentialOwner,
         state_kind: Option<&str>,
     ) -> Result<Vec<StoredCredentialHead>, CredentialPersistenceError> {
-        let rows: Vec<CredentialHeadRow> = match state_kind {
-            Some(kind) => sqlx::query_as(
-                "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
-                 admission_epoch, created_at, updated_at, expires_at, reauth_required, \
-                 refresh_retry_mode, refresh_retry_not_before, \
-                 (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
-                  + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, metadata, NULL AS operation_kind, \
-                 NULL AS operation_sentinel, NULL AS operation_expires_at, NULL AS operation_claim_id \
-                 FROM credentials \
-                 WHERE owner_id = ?1 AND state_kind = ?2 AND record_state = 'live' \
-                 ORDER BY id",
-            )
-            .bind(owner.as_str())
-            .bind(kind)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(read_error)?,
-            None => sqlx::query_as(
-                "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
-                 admission_epoch, created_at, updated_at, expires_at, reauth_required, \
-                 refresh_retry_mode, refresh_retry_not_before, \
-                 (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
-                  + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now, metadata, NULL AS operation_kind, \
-                 NULL AS operation_sentinel, NULL AS operation_expires_at, NULL AS operation_claim_id \
-                 FROM credentials \
-                 WHERE owner_id = ?1 AND record_state = 'live' ORDER BY id",
-            )
-            .bind(owner.as_str())
-            .fetch_all(&self.pool)
-            .await
-            .map_err(read_error)?,
+        let Some(scope) = owner.scope() else {
+            return Ok(Vec::new());
         };
+        let rows: Vec<CredentialHeadRow> = sqlx::query_as(concat!(
+            "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
+             admission_epoch, created_at, updated_at, expires_at, reauth_required, \
+             refresh_retry_mode, refresh_retry_not_before, ",
+            sqlite_now_us!(),
+            " AS backend_now, metadata, NULL AS operation_kind, \
+             NULL AS operation_sentinel, NULL AS operation_expires_at, NULL AS operation_claim_id \
+             FROM credentials \
+             WHERE org_id = ?1 AND workspace_id = ?2 AND (?3 IS NULL OR state_kind = ?3) \
+               AND record_state = 'live' AND deleted_at IS NULL \
+             ORDER BY id"
+        ))
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .bind(state_kind)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(read_error)?;
         rows.into_iter()
             .map(CredentialHeadRow::into_stored_head)
             .collect()
@@ -1562,12 +1648,17 @@ impl CredentialPersistence for SqliteCredentialPersistence {
         &self,
         selector: &CredentialSelector,
     ) -> Result<bool, CredentialPersistenceError> {
+        let Some(scope) = selector.owner().scope() else {
+            return Ok(false);
+        };
         let row: Option<(i64,)> = sqlx::query_as(
             "SELECT 1 FROM credentials \
-             WHERE id = ?1 AND owner_id = ?2 AND record_state = 'live' LIMIT 1",
+             WHERE id = ?1 AND org_id = ?2 AND workspace_id = ?3 \
+               AND record_state = 'live' AND deleted_at IS NULL LIMIT 1",
         )
         .bind(selector.credential_id().to_string())
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(read_error)?;
@@ -1583,15 +1674,18 @@ impl SqliteCredentialPersistence {
         selector: &CredentialSelector,
         create: &CredentialCreate,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let scope = owner_scope(selector.owner())?;
         let credential_id = selector.credential_id().to_string();
-        let existing_owner: Option<(String,)> =
-            sqlx::query_as("SELECT owner_id FROM credentials WHERE id = ?1")
+        // Ids are unique across tenants: a taken id is a collision for its
+        // owner and indistinguishable from missing for everyone else.
+        let existing_owner: Option<(String, String)> =
+            sqlx::query_as("SELECT org_id, workspace_id FROM credentials WHERE id = ?1")
                 .bind(&credential_id)
                 .fetch_optional(&mut **transaction)
                 .await
                 .map_err(read_error)?;
-        if let Some((existing_owner,)) = existing_owner {
-            return if existing_owner == selector.owner().as_str() {
+        if let Some((org_id, workspace_id)) = existing_owner {
+            return if org_id == scope.org_id && workspace_id == scope.workspace_id {
                 Err(CredentialPersistenceError::AlreadyExists {
                     key: CredentialAlreadyExistsKey::Id,
                 })
@@ -1600,12 +1694,30 @@ impl SqliteCredentialPersistence {
             };
         }
 
+        // The foreign key proves the workspace exists, not that it is live;
+        // `BEGIN IMMEDIATE` serializes this check with a concurrent archive.
+        let workspace: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM workspaces w JOIN orgs o ON o.id = w.org_id \
+             WHERE w.org_id = ?1 AND w.id = ?2 \
+               AND w.deleted_at IS NULL AND o.deleted_at IS NULL",
+        )
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(read_error)?;
+        if workspace.is_none() {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+
         if let Some(name) = create.name() {
             let name_exists: Option<(i64,)> = sqlx::query_as(
                 "SELECT 1 FROM credentials \
-                 WHERE owner_id = ?1 AND name = ?2 AND record_state = 'live' LIMIT 1",
+                 WHERE org_id = ?1 AND workspace_id = ?2 AND name = ?3 \
+                   AND record_state = 'live' AND deleted_at IS NULL LIMIT 1",
             )
-            .bind(selector.owner().as_str())
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
             .bind(name)
             .fetch_optional(&mut **transaction)
             .await
@@ -1617,29 +1729,35 @@ impl SqliteCredentialPersistence {
             }
         }
 
-        let now_ms = Utc::now().timestamp_millis();
         let row: CredentialCommitRow = sqlx::query_as(
             "INSERT INTO credentials \
-             (id, name, owner_id, credential_key, state_kind, state_version, \
+             (org_id, workspace_id, id, name, credential_key, state_kind, state_version, \
               data, version, material_epoch, admission_epoch, created_at, updated_at, \
               expires_at, reauth_required, metadata, record_state, tombstoned_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 1, 1, ?8, ?8, ?9, ?10, ?11, 'live', NULL) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, 1, ?9, ?9, ?10, ?11, ?12, 'live', NULL) \
              RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
         )
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
         .bind(&credential_id)
         .bind(create.name())
-        .bind(selector.owner().as_str())
         .bind(create.credential_key())
         .bind(create.state_kind())
         .bind(i64::from(create.state_version()))
         .bind(create.data().as_ref())
-        .bind(now_ms)
-        .bind(create.expires_at().map(|value| value.timestamp_millis()))
+        .bind(now_micros())
+        .bind(create.expires_at().map(|value| value.timestamp_micros()))
         .bind(i64::from(create.reauth_required()))
         .bind(meta_to_json(create.metadata())?)
         .fetch_one(&mut **transaction)
         .await
-        .map_err(read_error)?;
+        .map_err(|error| {
+            if is_foreign_key_violation(&error) {
+                CredentialPersistenceError::NotFound
+            } else {
+                read_error(error)
+            }
+        })?;
 
         row.into_commit()
     }
@@ -1649,27 +1767,9 @@ impl SqliteCredentialPersistence {
         selector: &CredentialSelector,
         replacement: &CredentialReplacement,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let scope = owner_scope(selector.owner())?;
         let credential_id = selector.credential_id().to_string();
-        let lifecycle: Option<CredentialLifecycleRow> = sqlx::query_as(
-            "SELECT version, material_epoch, admission_epoch, credential_key, record_state, \
-             reauth_required FROM credentials \
-             WHERE id = ?1 AND owner_id = ?2",
-        )
-        .bind(&credential_id)
-        .bind(selector.owner().as_str())
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(read_error)?;
-        let Some(lifecycle) = lifecycle else {
-            return Err(CredentialPersistenceError::NotFound);
-        };
-        if lifecycle.record_state != "live" {
-            return if lifecycle.record_state == "tombstoned" {
-                Err(CredentialPersistenceError::NotFound)
-            } else {
-                Err(CredentialPersistenceError::CorruptRecord)
-            };
-        }
+        let lifecycle = Self::live_lifecycle(transaction, &scope, &credential_id).await?;
         let current_reauth = match lifecycle.reauth_required {
             0 => false,
             1 => true,
@@ -1680,9 +1780,11 @@ impl SqliteCredentialPersistence {
         {
             let blocked: Option<(String,)> = sqlx::query_as(
                 "SELECT operation_kind FROM credential_refresh_claims \
-                 WHERE owner_id = ?1 AND credential_id = ?2 AND operation_kind = 'revoke'",
+                 WHERE org_id = ?1 AND workspace_id = ?2 AND credential_id = ?3 \
+                   AND operation_kind = 'revoke'",
             )
-            .bind(selector.owner().as_str())
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
             .bind(&credential_id)
             .fetch_optional(&mut **transaction)
             .await
@@ -1731,10 +1833,11 @@ impl SqliteCredentialPersistence {
         if let Some(name) = replacement.name() {
             let name_exists: Option<(i64,)> = sqlx::query_as(
                 "SELECT 1 FROM credentials \
-                 WHERE owner_id = ?1 AND name = ?2 AND id <> ?3 \
-                   AND record_state = 'live' LIMIT 1",
+                 WHERE org_id = ?1 AND workspace_id = ?2 AND name = ?3 AND id <> ?4 \
+                   AND record_state = 'live' AND deleted_at IS NULL LIMIT 1",
             )
-            .bind(selector.owner().as_str())
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
             .bind(name)
             .bind(&credential_id)
             .fetch_optional(&mut **transaction)
@@ -1747,13 +1850,12 @@ impl SqliteCredentialPersistence {
             }
         }
 
-        let now_ms = Utc::now().timestamp_millis();
         let retry_transition =
             retry_gate::encode_material_transition(replacement.material_transition())?;
         // Material columns are written only for `Advance { Replace }`; every
         // other transition leaves them byte-identical (`?19 = 0`).
         let material = replacement.material_transition().material();
-        let row: Option<CredentialCommitRow> = sqlx::query_as(
+        let row: Option<CredentialCommitRow> = sqlx::query_as(concat!(
             "UPDATE credentials SET \
                name            = ?3, \
                data            = CASE ?19 WHEN 1 THEN ?4 ELSE data END, \
@@ -1774,9 +1876,9 @@ impl SqliteCredentialPersistence {
                END, \
                refresh_retry_not_before = CASE ?13 \
                    WHEN 0 THEN refresh_retry_not_before \
-                   WHEN 3 THEN (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
-                       + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) \
-                       + (?14 * 1000) \
+                   WHEN 3 THEN ",
+            sqlite_now_us!(),
+            " + (?14 * 1000000) \
                    ELSE NULL \
                END, \
                refresh_retry_phase = CASE ?13 \
@@ -1794,23 +1896,23 @@ impl SqliteCredentialPersistence {
                    WHEN 1 THEN NULL \
                    ELSE ?17 \
                END \
-             WHERE id = ?1 AND owner_id = ?2 \
-               AND record_state = 'live' AND version = ?18 \
-             RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
-        )
+             WHERE id = ?1 AND org_id = ?2 AND workspace_id = ?21 \
+               AND record_state = 'live' AND deleted_at IS NULL AND version = ?18 \
+             RETURNING id, version, record_state, created_at, updated_at, tombstoned_at"
+        ))
         .bind(&credential_id)
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
         .bind(replacement.name())
         .bind(material.map(|material| material.data().as_ref()))
         .bind(material.map(CredentialMaterial::state_kind))
         .bind(material.map(|material| i64::from(material.state_version())))
         .bind(next_version.get())
         .bind(next_material_epoch.get())
-        .bind(now_ms)
+        .bind(now_micros())
         .bind(
             material
                 .and_then(CredentialMaterial::expires_at)
-                .map(|value| value.timestamp_millis()),
+                .map(|value| value.timestamp_micros()),
         )
         .bind(i64::from(replacement.reauth_required()))
         .bind(meta_to_json(replacement.metadata())?)
@@ -1822,6 +1924,7 @@ impl SqliteCredentialPersistence {
         .bind(replacement.expected_version().get())
         .bind(i64::from(material.is_some()))
         .bind(next_admission_epoch.get())
+        .bind(&scope.workspace_id)
         .fetch_optional(&mut **transaction)
         .await
         .map_err(read_error)?;
@@ -1835,27 +1938,9 @@ impl SqliteCredentialPersistence {
         selector: &CredentialSelector,
         tombstone: CredentialTombstone,
     ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let scope = owner_scope(selector.owner())?;
         let credential_id = selector.credential_id().to_string();
-        let lifecycle: Option<CredentialLifecycleRow> = sqlx::query_as(
-            "SELECT version, material_epoch, admission_epoch, credential_key, record_state, \
-             reauth_required FROM credentials \
-             WHERE id = ?1 AND owner_id = ?2",
-        )
-        .bind(&credential_id)
-        .bind(selector.owner().as_str())
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(read_error)?;
-        let Some(lifecycle) = lifecycle else {
-            return Err(CredentialPersistenceError::NotFound);
-        };
-        if lifecycle.record_state != "live" {
-            return if lifecycle.record_state == "tombstoned" {
-                Err(CredentialPersistenceError::NotFound)
-            } else {
-                Err(CredentialPersistenceError::CorruptRecord)
-            };
-        }
+        let lifecycle = Self::live_lifecycle(transaction, &scope, &credential_id).await?;
         let actual_version = stored_version(lifecycle.version)?;
         if actual_version != tombstone.expected_version() {
             return Err(CredentialPersistenceError::VersionConflict {
@@ -1864,7 +1949,6 @@ impl SqliteCredentialPersistence {
             });
         }
         let next_version = actual_version.next_tombstone()?;
-        let now_ms = Utc::now().timestamp_millis();
 
         let row: Option<CredentialCommitRow> = sqlx::query_as(
             "UPDATE credentials SET \
@@ -1882,20 +1966,49 @@ impl SqliteCredentialPersistence {
                refresh_retry_phase = NULL, \
                refresh_retry_kind = NULL, \
                refresh_retry_diagnostic_code = NULL \
-             WHERE id = ?1 AND owner_id = ?2 \
-               AND record_state = 'live' AND version = ?5 \
+             WHERE id = ?1 AND org_id = ?2 AND workspace_id = ?6 \
+               AND record_state = 'live' AND deleted_at IS NULL AND version = ?5 \
              RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
         )
         .bind(&credential_id)
-        .bind(selector.owner().as_str())
+        .bind(&scope.org_id)
         .bind(next_version.get())
-        .bind(now_ms)
+        .bind(now_micros())
         .bind(tombstone.expected_version().get())
+        .bind(&scope.workspace_id)
         .fetch_optional(&mut **transaction)
         .await
         .map_err(read_error)?;
 
         row.ok_or(CredentialPersistenceError::CorruptRecord)?
             .into_commit()
+    }
+
+    /// The lifecycle columns of the live, unarchived credential a mutation
+    /// targets: missing, archived, foreign and tombstoned are all `NotFound`.
+    async fn live_lifecycle(
+        transaction: &mut Transaction<'_, Sqlite>,
+        scope: &Scope,
+        credential_id: &str,
+    ) -> Result<CredentialLifecycleRow, CredentialPersistenceError> {
+        let lifecycle: Option<CredentialLifecycleRow> = sqlx::query_as(
+            "SELECT version, material_epoch, admission_epoch, credential_key, record_state, \
+             reauth_required FROM credentials \
+             WHERE id = ?1 AND org_id = ?2 AND workspace_id = ?3 AND deleted_at IS NULL",
+        )
+        .bind(credential_id)
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(read_error)?;
+        let Some(lifecycle) = lifecycle else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        match lifecycle.record_state.as_str() {
+            "live" => Ok(lifecycle),
+            "tombstoned" => Err(CredentialPersistenceError::NotFound),
+            _ => Err(CredentialPersistenceError::CorruptRecord),
+        }
     }
 }

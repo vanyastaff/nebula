@@ -276,7 +276,7 @@ async fn resident_create_during_rotation_delivers_hook_not_false_success() {
     let acquire_task = {
         let mgr = Arc::clone(&mgr);
         tokio::spawn(async move {
-            mgr.acquire_resident::<RaceResource>(&ctx(), &AcquireOptions::default())
+            mgr.acquire::<RaceResource>(&ctx(), &AcquireOptions::default())
                 .await
         })
     };
@@ -391,7 +391,7 @@ async fn refresh_slot_lock_wait_does_not_consume_the_hook_ceiling() {
     let acquire_task = {
         let mgr = Arc::clone(&mgr);
         tokio::spawn(async move {
-            mgr.acquire_resident::<RaceResource>(&ctx(), &AcquireOptions::default())
+            mgr.acquire::<RaceResource>(&ctx(), &AcquireOptions::default())
                 .await
         })
     };
@@ -464,7 +464,7 @@ async fn resident_revoke_during_first_acquire_does_not_serve_revoked_credential(
     let acquire_task = {
         let mgr = Arc::clone(&mgr);
         tokio::spawn(async move {
-            mgr.acquire_resident::<RaceResource>(&ctx(), &AcquireOptions::default())
+            mgr.acquire::<RaceResource>(&ctx(), &AcquireOptions::default())
                 .await
         })
     };
@@ -577,7 +577,7 @@ async fn never_activated_resident_refresh_is_legitimate_noop() {
     // And the first acquire *after* the rotation builds against the NEW
     // credential (it reads the current slot), needing no hook delivery.
     let guard = mgr
-        .acquire_resident::<RaceResource>(&ctx(), &AcquireOptions::default())
+        .acquire::<RaceResource>(&ctx(), &AcquireOptions::default())
         .await
         .expect("first acquire after rotation must succeed");
     assert_eq!(
@@ -602,7 +602,7 @@ async fn warm_resident_no_rotation_refresh_delivers_once_not_stale() {
     let (mgr, key, resource) = build(false);
 
     let guard = mgr
-        .acquire_resident::<RaceResource>(&ctx(), &AcquireOptions::default())
+        .acquire::<RaceResource>(&ctx(), &AcquireOptions::default())
         .await
         .expect("warm acquire must succeed");
     assert_eq!(guard.bound_cred.load(Ordering::SeqCst), CRED_OLD);

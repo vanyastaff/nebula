@@ -1,4 +1,4 @@
-//! SQLite exact plan/flavor catalog over ordered migration 0041.
+//! SQLite exact plan/flavor catalog in the execution baseline.
 //!
 //! Every operation runs inside one `BEGIN IMMEDIATE` transaction, so the
 //! plan row, the flavor row, and the authoritative reference rows are read and
@@ -104,7 +104,7 @@ async fn load_plan_row(
 ) -> Result<Option<StoredExecutablePlan>, RevisionCatalogError> {
     let row = sqlx::query(
         "SELECT worker_flavor_id, record_format, lifecycle, record_bytes \
-         FROM port_executable_plan_revisions \
+         FROM executable_plan_revisions \
          WHERE executable_plan_id = ?",
     )
     .bind(plan_id.as_bytes().as_slice())
@@ -146,7 +146,7 @@ async fn load_flavor_row(
 ) -> Result<Option<StoredWorkerFlavor>, RevisionCatalogError> {
     let row = sqlx::query(
         "SELECT record_format, lifecycle, record_bytes \
-         FROM port_worker_flavor_revisions \
+         FROM worker_flavor_revisions \
          WHERE worker_flavor_id = ?",
     )
     .bind(worker_flavor_id.as_bytes().as_slice())
@@ -175,33 +175,33 @@ async fn load_flavor_row(
 ///
 /// Counts are always derived from reference rows; the schema carries no
 /// mutable counter that could drift from them. A rollback window whose
-/// deadline has arrived no longer blocks, so equality with `now_ms` is
+/// deadline has arrived no longer blocks, so equality with `now_us` is
 /// expired.
 async fn reference_counts(
     tx: &mut Transaction<'_, Sqlite>,
     target: PlanFlavorRevisionTarget,
-    now_ms: i64,
+    now_us: i64,
 ) -> Result<RevisionReferenceCounts, RevisionCatalogError> {
     let query = match target {
         PlanFlavorRevisionTarget::ExecutablePlan(plan_id) => sqlx::query(
             "SELECT \
              COALESCE(SUM(CASE WHEN reference_state = 'live' THEN 1 ELSE 0 END), 0) \
                  AS live_executions, \
-             COALESCE(SUM(CASE WHEN reference_state = 'rollback' AND retain_until_ms > ? \
+             COALESCE(SUM(CASE WHEN reference_state = 'rollback' AND retain_until > ? \
                                THEN 1 ELSE 0 END), 0) AS rollback_windows \
-             FROM port_execution_revision_refs WHERE executable_plan_id = ?",
+             FROM execution_revision_references WHERE executable_plan_id = ?",
         )
-        .bind(now_ms)
+        .bind(now_us)
         .bind(plan_id.as_bytes().as_slice()),
         PlanFlavorRevisionTarget::WorkerFlavor(worker_flavor_id) => sqlx::query(
             "SELECT \
              COALESCE(SUM(CASE WHEN reference_state = 'live' THEN 1 ELSE 0 END), 0) \
                  AS live_executions, \
-             COALESCE(SUM(CASE WHEN reference_state = 'rollback' AND retain_until_ms > ? \
+             COALESCE(SUM(CASE WHEN reference_state = 'rollback' AND retain_until > ? \
                                THEN 1 ELSE 0 END), 0) AS rollback_windows \
-             FROM port_execution_revision_refs WHERE worker_flavor_id = ?",
+             FROM execution_revision_references WHERE worker_flavor_id = ?",
         )
-        .bind(now_ms)
+        .bind(now_us)
         .bind(worker_flavor_id.as_bytes().as_slice()),
     };
 
@@ -229,13 +229,13 @@ async fn lifecycle_of(
 ) -> Result<Option<ArtifactLifecycle>, RevisionCatalogError> {
     let query = match target {
         PlanFlavorRevisionTarget::ExecutablePlan(plan_id) => sqlx::query(
-            "SELECT lifecycle FROM port_executable_plan_revisions WHERE executable_plan_id = ?",
+            "SELECT lifecycle FROM executable_plan_revisions WHERE executable_plan_id = ?",
         )
         .bind(plan_id.as_bytes().as_slice()),
-        PlanFlavorRevisionTarget::WorkerFlavor(worker_flavor_id) => sqlx::query(
-            "SELECT lifecycle FROM port_worker_flavor_revisions WHERE worker_flavor_id = ?",
-        )
-        .bind(worker_flavor_id.as_bytes().as_slice()),
+        PlanFlavorRevisionTarget::WorkerFlavor(worker_flavor_id) => {
+            sqlx::query("SELECT lifecycle FROM worker_flavor_revisions WHERE worker_flavor_id = ?")
+                .bind(worker_flavor_id.as_bytes().as_slice())
+        },
     };
 
     let Some(row) = query
@@ -260,12 +260,12 @@ async fn payload_is_cleared(
 ) -> Result<bool, RevisionCatalogError> {
     let query = match target {
         PlanFlavorRevisionTarget::ExecutablePlan(plan_id) => sqlx::query(
-            "SELECT record_bytes IS NULL AS cleared FROM port_executable_plan_revisions \
+            "SELECT record_bytes IS NULL AS cleared FROM executable_plan_revisions \
              WHERE executable_plan_id = ?",
         )
         .bind(plan_id.as_bytes().as_slice()),
         PlanFlavorRevisionTarget::WorkerFlavor(worker_flavor_id) => sqlx::query(
-            "SELECT record_bytes IS NULL AS cleared FROM port_worker_flavor_revisions \
+            "SELECT record_bytes IS NULL AS cleared FROM worker_flavor_revisions \
              WHERE worker_flavor_id = ?",
         )
         .bind(worker_flavor_id.as_bytes().as_slice()),
@@ -378,7 +378,7 @@ async fn insert_locked(
     // The plan row's foreign key requires its flavor row to exist first.
     if !existing_flavor_matches {
         sqlx::query(
-            "INSERT INTO port_worker_flavor_revisions \
+            "INSERT INTO worker_flavor_revisions \
              (worker_flavor_id, record_format, lifecycle, record_bytes) \
              VALUES (?, ?, ?, ?)",
         )
@@ -392,7 +392,7 @@ async fn insert_locked(
     }
     if !existing_plan_matches {
         sqlx::query(
-            "INSERT INTO port_executable_plan_revisions \
+            "INSERT INTO executable_plan_revisions \
              (executable_plan_id, worker_flavor_id, record_format, lifecycle, record_bytes) \
              VALUES (?, ?, ?, ?, ?)",
         )
@@ -442,7 +442,7 @@ async fn load_exact_locked(
 async fn begin_drain_locked(
     tx: &mut Transaction<'_, Sqlite>,
     target: PlanFlavorRevisionTarget,
-    now_ms: i64,
+    now_us: i64,
 ) -> Result<BeginDrainOutcome, RevisionCatalogError> {
     let lifecycle = lifecycle_of(tx, target)
         .await?
@@ -452,12 +452,12 @@ async fn begin_drain_locked(
         ArtifactLifecycle::Active => {
             let updated = match target {
                 PlanFlavorRevisionTarget::ExecutablePlan(plan_id) => sqlx::query(
-                    "UPDATE port_executable_plan_revisions SET lifecycle = 'draining' \
+                    "UPDATE executable_plan_revisions SET lifecycle = 'draining' \
                      WHERE executable_plan_id = ? AND lifecycle = 'active'",
                 )
                 .bind(plan_id.as_bytes().as_slice()),
                 PlanFlavorRevisionTarget::WorkerFlavor(worker_flavor_id) => sqlx::query(
-                    "UPDATE port_worker_flavor_revisions SET lifecycle = 'draining' \
+                    "UPDATE worker_flavor_revisions SET lifecycle = 'draining' \
                      WHERE worker_flavor_id = ? AND lifecycle = 'active'",
                 )
                 .bind(worker_flavor_id.as_bytes().as_slice()),
@@ -472,11 +472,11 @@ async fn begin_drain_locked(
                 return Err(RevisionCatalogError::CorruptRecord { target });
             }
             Ok(BeginDrainOutcome::Started(
-                reference_counts(tx, target, now_ms).await?,
+                reference_counts(tx, target, now_us).await?,
             ))
         },
         ArtifactLifecycle::Draining => Ok(BeginDrainOutcome::AlreadyDraining(
-            reference_counts(tx, target, now_ms).await?,
+            reference_counts(tx, target, now_us).await?,
         )),
         ArtifactLifecycle::Deleted => Err(deleted_for(target)),
     }
@@ -485,7 +485,7 @@ async fn begin_drain_locked(
 async fn delete_drained_locked(
     tx: &mut Transaction<'_, Sqlite>,
     target: PlanFlavorRevisionTarget,
-    now_ms: i64,
+    now_us: i64,
 ) -> Result<(), RevisionCatalogError> {
     let lifecycle = lifecycle_of(tx, target)
         .await?
@@ -505,7 +505,7 @@ async fn delete_drained_locked(
         ArtifactLifecycle::Draining => {},
     }
 
-    let references = reference_counts(tx, target, now_ms).await?;
+    let references = reference_counts(tx, target, now_us).await?;
     if !references.is_empty() {
         return Err(RevisionCatalogError::Referenced { target, references });
     }
@@ -513,7 +513,7 @@ async fn delete_drained_locked(
     match target {
         PlanFlavorRevisionTarget::ExecutablePlan(plan_id) => {
             sqlx::query(
-                "UPDATE port_executable_plan_revisions \
+                "UPDATE executable_plan_revisions \
                  SET lifecycle = 'deleted', record_bytes = NULL \
                  WHERE executable_plan_id = ?",
             )
@@ -524,7 +524,7 @@ async fn delete_drained_locked(
         },
         PlanFlavorRevisionTarget::WorkerFlavor(worker_flavor_id) => {
             let dependent_plans: i64 = sqlx::query(
-                "SELECT COUNT(*) AS dependent_plans FROM port_executable_plan_revisions \
+                "SELECT COUNT(*) AS dependent_plans FROM executable_plan_revisions \
                  WHERE worker_flavor_id = ? AND lifecycle <> 'deleted'",
             )
             .bind(worker_flavor_id.as_bytes().as_slice())
@@ -540,7 +540,7 @@ async fn delete_drained_locked(
                 });
             }
             sqlx::query(
-                "UPDATE port_worker_flavor_revisions \
+                "UPDATE worker_flavor_revisions \
                  SET lifecycle = 'deleted', record_bytes = NULL \
                  WHERE worker_flavor_id = ?",
             )
@@ -657,10 +657,10 @@ impl PlanFlavorCatalogAdmin for SqlitePlanFlavorCatalog {
         &self,
         target: PlanFlavorRevisionTarget,
     ) -> Result<BeginDrainOutcome, RevisionCatalogError> {
-        let now_ms = Utc::now().timestamp_millis();
+        let now_us = Utc::now().timestamp_micros();
         let result = async {
             let mut tx = self.begin_write().await?;
-            match begin_drain_locked(&mut tx, target, now_ms).await {
+            match begin_drain_locked(&mut tx, target, now_us).await {
                 Ok(outcome) => tx
                     .commit()
                     .await
@@ -696,10 +696,10 @@ impl PlanFlavorCatalogAdmin for SqlitePlanFlavorCatalog {
         &self,
         target: PlanFlavorRevisionTarget,
     ) -> Result<(), RevisionCatalogError> {
-        let now_ms = Utc::now().timestamp_millis();
+        let now_us = Utc::now().timestamp_micros();
         let result = async {
             let mut tx = self.begin_write().await?;
-            match delete_drained_locked(&mut tx, target, now_ms).await {
+            match delete_drained_locked(&mut tx, target, now_us).await {
                 Ok(()) => tx.commit().await.map_err(commit_outcome_unknown),
                 Err(rejection) => {
                     drop(tx.rollback().await);
@@ -728,20 +728,20 @@ impl PlanFlavorCatalogAdmin for SqlitePlanFlavorCatalog {
         fields(backend = "sqlite", outcome = tracing::field::Empty)
     )]
     async fn release_expired_rollbacks(&self, limit: u64) -> Result<u64, RevisionCatalogError> {
-        let now_ms = Utc::now().timestamp_millis();
+        let now_us = Utc::now().timestamp_micros();
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let result = async {
             let mut tx = self.begin_write().await?;
             let released = sqlx::query(
-                "UPDATE port_execution_revision_refs \
+                "UPDATE execution_revision_references \
                  SET reference_state = 'released' \
                  WHERE execution_id IN ( \
-                     SELECT execution_id FROM port_execution_revision_refs \
-                     WHERE reference_state = 'rollback' AND retain_until_ms <= ? \
+                     SELECT execution_id FROM execution_revision_references \
+                     WHERE reference_state = 'rollback' AND retain_until <= ? \
                      LIMIT ? \
                  )",
             )
-            .bind(now_ms)
+            .bind(now_us)
             .bind(limit)
             .execute(&mut *tx)
             .await

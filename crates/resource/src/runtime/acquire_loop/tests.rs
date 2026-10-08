@@ -1136,7 +1136,7 @@ async fn refill_min_idle_does_not_overshoot_when_pool_is_fully_leased() {
     };
 
     // Simulate both `max_size` leases already checked out and in flight
-    // — the state `Manager::acquire_pooled`'s `InFlightCounter` puts
+    // — the state `Manager::acquire`'s `InFlightCounter` puts
     // `ManagedResource::in_flight` in for the duration of a lease.
     // `run_acquire_loop` alone (used directly by this module's unit
     // tests) never touches that counter, so it is set directly here to

@@ -310,14 +310,25 @@ fn test_encryption_key_zeroized() {
 /// ciphertext — nonce and key id included — byte-identical, and only an
 /// `Advance { Replace }` re-seals.
 #[cfg(feature = "sqlite")]
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "credentials need only their tenant, not a workflow"
+)]
+mod execution_parents;
+
+#[cfg(feature = "sqlite")]
+#[path = "support/credential_deployment.rs"]
+#[expect(dead_code, reason = "this case needs only the in-memory deployment")]
+mod credential_deployment;
+
+#[cfg(feature = "sqlite")]
 mod material_free_writes {
     use std::sync::Arc;
 
     use nebula_core::CredentialId;
     use nebula_crypto::EncryptionKey;
-    use nebula_storage::credential::{
-        EncryptionLayer, KeyProvider, KeySnapshot, ProviderError, SqliteCredentialPersistence,
-    };
+    use nebula_storage::credential::{EncryptionLayer, KeyProvider, KeySnapshot, ProviderError};
     use nebula_storage_port::{
         CredentialCreate, CredentialMaterial, CredentialMaterialTransition, CredentialOwner,
         CredentialPersistence, CredentialReplacement, CredentialSelector, MaterialUpdate,
@@ -341,14 +352,14 @@ mod material_free_writes {
 
     #[tokio::test]
     async fn preserve_and_advance_unchanged_never_rewrite_the_ciphertext() {
-        let inner = SqliteCredentialPersistence::connect_memory()
-            .await
-            .expect("in-memory store");
+        let (inner, tenants) = super::credential_deployment::memory_deployment().await;
+        // The credential baseline requires a live owning workspace.
+        let scope =
+            nebula_storage_port::Scope::new("ws-encryption-invariant", "org-encryption-invariant");
+        super::execution_parents::provision_scope(&tenants, &scope).await;
         let store = EncryptionLayer::new(inner.clone(), Arc::new(FixedKey));
-        let selector = CredentialSelector::new(
-            CredentialOwner::from_canonical("encryption-invariant-owner"),
-            CredentialId::new(),
-        );
+        let selector =
+            CredentialSelector::new(CredentialOwner::from_scope(&scope), CredentialId::new());
         let created = store
             .create(
                 &selector,

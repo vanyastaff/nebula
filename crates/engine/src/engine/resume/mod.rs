@@ -1047,17 +1047,14 @@ impl WorkflowEngine {
                     node_key: final_state_node_key(),
                     reason: format!("cold-start preflight rejection: serialise failed state: {e}"),
                 })?;
-            let batch = nebula_storage_port::TransitionBatch::builder()
-                .scope(scope.clone())
-                .execution_id(&id)
-                .expected_version(repo_version)
-                .fencing(lease_token)
-                .new_state(state_json)
-                .build()
-                .map_err(|e| EngineError::CheckpointFailed {
-                    node_key: final_state_node_key(),
-                    reason: format!("cold-start preflight rejection: build batch: {e}"),
-                })?;
+            let batch = nebula_storage_port::TransitionBatch::new(
+                scope.clone(),
+                &id,
+                repo_version,
+                lease_token,
+                state_json,
+                execution_listing(&exec_state),
+            );
             stores
                 .execution
                 .commit(batch)
@@ -1492,17 +1489,14 @@ impl WorkflowEngine {
                 reason: format!("satisfy_signal_waits: serialise updated state: {e}"),
             })?;
 
-        let batch = nebula_storage_port::TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(id)
-            .expected_version(repo_version)
-            .fencing(lease_token)
-            .new_state(state_json)
-            .build()
-            .map_err(|e| EngineError::CheckpointFailed {
-                node_key: final_state_node_key(),
-                reason: format!("satisfy_signal_waits: build batch: {e}"),
-            })?;
+        let batch = nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            id,
+            repo_version,
+            lease_token,
+            state_json,
+            execution_listing(&exec_state),
+        );
 
         match stores.execution.commit(batch).await {
             Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {
@@ -1750,17 +1744,14 @@ impl WorkflowEngine {
                 node_key: final_state_node_key(),
                 reason: format!("cancel_dangling_nodes: serialise updated state: {e}"),
             })?;
-        let batch = nebula_storage_port::TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(id)
-            .expected_version(repo_version)
-            .fencing(lease_token)
-            .new_state(state_json)
-            .build()
-            .map_err(|e| EngineError::CheckpointFailed {
-                node_key: final_state_node_key(),
-                reason: format!("cancel_dangling_nodes: build batch: {e}"),
-            })?;
+        let batch = nebula_storage_port::TransitionBatch::new(
+            scope.clone(),
+            id,
+            repo_version,
+            lease_token,
+            state_json,
+            execution_listing(&exec_state),
+        );
 
         match stores.execution.commit(batch).await {
             Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {

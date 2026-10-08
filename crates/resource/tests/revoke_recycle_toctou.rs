@@ -257,7 +257,7 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
 
     // 1. Acquire an instance and capture its creation id.
     let g = mgr
-        .acquire_pooled::<PoolResource>(&ctx(), &AcquireOptions::default())
+        .acquire::<PoolResource>(&ctx(), &AcquireOptions::default())
         .await
         .expect("first acquire must succeed");
     let escaped_seq = g.seq;
@@ -313,7 +313,7 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
     //    leases), so there is no path — idle reuse or fresh create — that
     //    hands a caller a runtime authenticated with the revoked credential.
     let err = mgr
-        .acquire_pooled::<PoolResource>(&ctx(), &AcquireOptions::default())
+        .acquire::<PoolResource>(&ctx(), &AcquireOptions::default())
         .await
         .expect_err("post-revoke acquire on the tainted resource must be rejected");
     assert_eq!(
@@ -351,7 +351,7 @@ async fn in_flight_create_completing_after_revoke_is_destroyed() {
     let acquire_task = {
         let mgr = Arc::clone(&mgr);
         tokio::spawn(async move {
-            mgr.acquire_pooled::<PoolResource>(&ctx(), &AcquireOptions::default())
+            mgr.acquire::<PoolResource>(&ctx(), &AcquireOptions::default())
                 .await
         })
     };
@@ -435,7 +435,7 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
     //    drop so a fully-recycled instance sits in idle (recycle is NOT
     //    parked here — park flag defaults false).
     let g = mgr
-        .acquire_pooled::<PoolResource>(&ctx(), &AcquireOptions::default())
+        .acquire::<PoolResource>(&ctx(), &AcquireOptions::default())
         .await
         .expect("warm acquire must succeed");
     let idle_seq = g.seq;
@@ -499,7 +499,7 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
     //    Manager-reachable path to that still-idle revoked instance
     //    (idle_seq={idle_seq}) is closed — it can never be served.
     let err = mgr
-        .acquire_pooled::<PoolResource>(&ctx(), &AcquireOptions::default())
+        .acquire::<PoolResource>(&ctx(), &AcquireOptions::default())
         .await
         .expect_err("post-revoke acquire on the tainted resource must be rejected");
     assert!(
@@ -597,7 +597,7 @@ async fn warmup_after_revoke_does_not_admit_revoked_instance() {
 
     // And the revoked credential stays unreachable for a fresh acquire.
     let err = mgr
-        .acquire_pooled::<PoolResource>(&ctx(), &AcquireOptions::default())
+        .acquire::<PoolResource>(&ctx(), &AcquireOptions::default())
         .await
         .expect_err("post-revoke acquire on the tainted resource must be rejected");
     assert_eq!(

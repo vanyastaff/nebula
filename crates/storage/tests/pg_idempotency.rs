@@ -1,4 +1,4 @@
-//! Postgres integration tests for [`PgIdempotencyStore`] (durable idempotent-replay cache).
+//! Postgres integration tests for [`PgHttpIdempotencyStore`] (durable idempotent-replay cache).
 //!
 //! Mirrors the existing storage test convention: fail loudly naming the
 //! unreachable backend when `DATABASE_URL` is absent, fail loudly when it is
@@ -15,9 +15,8 @@
 
 use std::time::Duration;
 
-use nebula_storage::{
-    pg::PgIdempotencyStore,
-    repos::{CachedRecord, IdempotencyStoreRepo},
+use nebula_storage::http_idempotency::{
+    CachedRecord, IdempotencyStoreRepo, PgHttpIdempotencyStore,
 };
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use tokio::sync::OnceCell;
@@ -87,7 +86,7 @@ async fn round_trip_put_get_returns_equal_record() {
              DATABASE_URL for postgres) or run without this feature"
         );
     };
-    let repo = PgIdempotencyStore::new(pool);
+    let repo = PgHttpIdempotencyStore::new(pool);
     let key = random_cache_key("rt");
 
     repo.put(key.clone(), record(b"hello", 0xab), Duration::from_mins(1))
@@ -119,7 +118,7 @@ async fn concurrent_first_writer_wins() {
              postgres) or run without this feature"
         );
     };
-    let repo = PgIdempotencyStore::new(pool);
+    let repo = PgHttpIdempotencyStore::new(pool);
     let key = random_cache_key("cfww");
 
     // Both writers race on the same key; first to commit wins.
@@ -158,7 +157,7 @@ async fn body_mismatch_race_keeps_first_record() {
              DATABASE_URL for postgres) or run without this feature"
         );
     };
-    let repo = PgIdempotencyStore::new(pool);
+    let repo = PgHttpIdempotencyStore::new(pool);
     let key = random_cache_key("bmr");
 
     repo.put(key.clone(), record(b"alpha", 0xa1), Duration::from_mins(1))
@@ -188,7 +187,7 @@ async fn ttl_expiry_drops_row_after_evict_expired() {
              DATABASE_URL for postgres) or run without this feature"
         );
     };
-    let repo = PgIdempotencyStore::new(pool.clone());
+    let repo = PgHttpIdempotencyStore::new(pool.clone());
     let key = random_cache_key("ttl");
 
     repo.put(

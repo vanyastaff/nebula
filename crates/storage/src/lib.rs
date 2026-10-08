@@ -1,161 +1,115 @@
-//! # nebula-storage — Storage adapters
+//! # nebula-storage — storage adapters
 //!
-//! Concrete persistence **adapters** for the Nebula execution engine. The
-//! production persistence *contract* is the spec-16 port
-//! (`nebula-storage-port`); this crate provides the in-memory, SQLite, and
-//! PostgreSQL implementations of it.
+//! The sole implementation of the `nebula-storage-port` contract, plus the
+//! Plane-A account persistence that is not part of that contract.
 //!
-//! ## Port adapters (use these today)
+//! ## Modules
 //!
-//! - [`inmem`] — in-memory adapter (tests / local / single-process).
-//!   Top-level re-exports: `InMemoryExecutionStore`,
-//!   `InMemoryWorkflowStore`, `InMemoryWorkflowVersionStore`,
-//!   `InMemoryCheckpointStore`, `InMemoryJournalReader`,
-//!   `InMemoryNodeResultStore`, `InMemoryIdempotencyGuard`,
-//!   `InMemoryIdempotencyStore`, `InMemoryControlQueue`,
-//!   `InMemoryWebhookActivationStore`, `InMemoryPlanFlavorCatalog`.
-//! - `sqlite` — SQLite adapter behind the `sqlite` feature
-//!   (dev / edge single-writer; spec §5 SQLite parity boundary).
-//! - `postgres` — PostgreSQL adapter behind the `postgres` feature
-//!   (production multi-process; real tx + `FOR UPDATE SKIP LOCKED`).
+//! | Module | Holds | Feature |
+//! |---|---|---|
+//! | [`inmem`] | port adapters over one mutex — the reference / conformance model, not a deployment backend | always |
+//! | `sqlite` | port adapters for single-writer deployments | `sqlite` |
+//! | `postgres` | port adapters for multi-process deployments (real transactions, `FOR UPDATE SKIP LOCKED`) | `postgres` |
+//! | [`credential`] | owner-bound credential persistence and its decorators (encryption, audit, cache) | always; SQL stores with the backend features |
+//! | [`auth`] | Plane-A accounts and initial enrollment outside the port (users, sessions, PATs, OAuth, MFA, identity secrets) | `sqlite` / `postgres` |
+//! | [`http_idempotency`] | the API's idempotent-replay response cache | `PgHttpIdempotencyStore`: `postgres` |
+//! | [`webhook_activation`] | the webhook activation spec persisted with a trigger | always |
 //!
-//! ## Exact plan/flavor revision catalog
+//! Private modules hold the backend-neutral decision cores every adapter
+//! shares (execution fence, operation-ledger rules, checkpoint rules,
+//! revision catalog, start materialization, resource status), so a rule is
+//! written once and cannot drift between backends, and the SQL plumbing both
+//! SQL backends share (`sql_error`, `execution_listing`). Every backend is
+//! held to the same conformance suites in `tests/`.
 //!
-//! `InMemoryPlanFlavorCatalog` is the reference/conformance model;
-//! `sqlite::SqlitePlanFlavorCatalog` and `postgres::PgPlanFlavorCatalog` are
-//! the deployment backends. All three implement the same three port roles over
-//! ordered migration 0041 and are held to one shared acceptance oracle
-//! (`tests/support/revision_catalog_oracle.rs`), so a behaviour only one
-//! backend gets right fails the suite rather than diverging silently.
+//! ## Durability
 //!
-//! This is the layer the knife scenario (`docs/PRODUCT_CANON.md` §13)
-//! exercises end-to-end.
+//! - State, outbox, journal and resume tokens of one execution transition
+//!   commit atomically through `ExecutionStore::commit(TransitionBatch)`,
+//!   gated by the version CAS and the lease fencing token.
+//! - Per-attempt idempotency through the port `IdempotencyGuard`.
 //!
-//! ## `repos` module — residual non-port surface
-//!
-//! The persistence concerns that have **not** moved onto the port
-//! contract: the durable control-command outbox
-//! (`repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo`,
-//! `pg::PgControlQueueRepo` behind the `postgres` feature), the
-//! idempotency-cache store (`repos::IdempotencyStoreRepo`, consumed by
-//! the API idempotency middleware), the webhook-activation store, and the
-//! identity-row repository surface implemented by the Postgres glue in
-//! `pg`. `pg::PgControlQueueRepo` is the multi-process /
-//! restart-tolerant control-queue backing (`FOR UPDATE SKIP LOCKED`); no
-//! composition root selects it by default yet — the server binary wires it in.
-//!
-//! ## Durability surfaces (port)
-//!
-//! - CAS transitions via the port `ExecutionStore` commit path.
-//! - Per-attempt idempotency via the port `IdempotencyGuard`.
-//! - Journal rows appended in the same commit as state (`TransitionBatch::journal`,
-//!   persisted to `port_execution_journal`) and checkpoint
-//!   (`save_stateful_checkpoint`).
-//! - Outbox atomicity: `execution_control_queue` writes share the same operation as state
-//!   transitions.
-//! - Local path: SQLite is the default; `test_support` provides `sqlite_memory_*` helpers for
-//!   in-process tests.
-//! - Resume persistence: `set_workflow_input` / `get_workflow_input` and
-//!   `save_node_result` / `load_node_result` / `load_all_results` expose the seam for engine
-//!   resume wiring.
-//!
-//! See `crates/storage/README.md` for the full durability matrix and
-//! backend status table.
+//! See `crates/storage/README.md` for the durability matrix and backend
+//! status.
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-mod control_turn;
-/// Credential persistence (encryption, audit, refresh claims, pending state).
-pub mod credential;
-mod error;
-/// Backend-independent execution-lease fence, shared by every adapter that
-/// writes under a turn's lease so the fence cannot drift between ports.
-mod execution_fence;
-mod execution_state;
-/// Serialization format abstraction (JSON / MessagePack).
-pub mod format;
-/// Plane-A identity-secret envelopes and rotation-aware decryption.
-pub mod identity_secret;
+// ── Port adapters ───────────────────────────────────────────────────────────
+
 /// In-memory adapter implementing the `nebula-storage-port` contract.
 pub mod inmem;
-/// Backend-independent iteration-checkpoint decisions, shared by every
-/// checkpoint adapter so monotone upsert, exact recommit, conflict and
-/// regress cannot drift between backends.
-mod iteration_checkpoint;
-/// Row-to-domain type conversion utilities.
-pub mod mapping;
-#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
-mod migration;
-/// Backend-independent operation-ledger decisions, shared by every ledger
-/// adapter so state vocabulary, fence comparison, and outcome write-once rules
-/// cannot drift between backends.
-mod operation_ledger;
-/// Postgres implementations of [`repos`] traits.
-#[cfg(feature = "postgres")]
-pub mod pg;
-/// Connection pool configuration.
-pub mod pool;
 /// Postgres adapter implementing the `nebula-storage-port` contract
 /// (production multi-process; real tx + `FOR UPDATE SKIP LOCKED`).
 #[cfg(feature = "postgres")]
 pub mod postgres;
-/// Backend repository traits for the persistence concerns that have not
-/// yet moved onto the `nebula-storage-port` contract.
-///
-/// Execution and workflow persistence are served by the spec-16 port
-/// adapters (`inmem` / `sqlite` / `postgres`); this module is what
-/// remains: the durable control-command outbox
-/// (`repos::ControlQueueRepo` + `repos::InMemoryControlQueueRepo`,
-/// `pg::PgControlQueueRepo` behind the `postgres` feature), the
-/// idempotency-cache store (`repos::IdempotencyStoreRepo`, consumed by
-/// the API idempotency middleware), the webhook-activation store, and
-/// the identity-row repository surface implemented by the Postgres glue
-/// in `pg`.
-///
-/// `pg::PgControlQueueRepo` is only present under the `postgres` feature,
-/// so it is referenced with plain backticks (not an intra-doc link) to
-/// keep default-feature rustdoc clean.
-pub mod repos;
-/// Backend-independent resource-status decisions (TTL clipping, prune horizon,
-/// persisted-value conversions), shared by every status adapter so liveness
-/// cannot drift between backends.
-mod resource_status;
-/// Backend-independent exact plan/flavor catalog decisions, shared by every
-/// catalog adapter so record identity, recorded-form validity, and lifecycle
-/// vocabulary cannot drift between backends.
-mod revision_catalog;
-/// Database row types.
-pub mod rows;
-/// Domain-separated lookup digests for opaque browser-session tokens.
-pub mod session_token;
 /// SQLite adapter implementing the `nebula-storage-port` contract
 /// (dev / edge single-writer; spec §5 SQLite parity boundary).
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+
+// ── Persistence outside the port contract ──────────────────────────────────
+
+pub mod auth;
+/// Credential persistence (encryption, audit, refresh claims, pending state).
+pub mod credential;
+pub mod http_idempotency;
+pub mod webhook_activation;
+
+// ── Backend-neutral decision cores (one rule, every backend) ───────────────
+
+mod control_turn;
+/// Execution-lease fence, shared by every adapter that writes under a turn's
+/// lease so the fence cannot drift between ports.
+mod execution_fence;
+mod execution_state;
+/// Iteration-checkpoint decisions: monotone upsert, exact recommit, conflict
+/// and regress.
+mod iteration_checkpoint;
+/// Operation-ledger decisions: state vocabulary, fence comparison, and
+/// outcome write-once rules.
+mod operation_ledger;
+/// Resource-status decisions: TTL clipping, prune horizon, persisted-value
+/// conversions.
+mod resource_status;
+/// Exact plan/flavor catalog decisions: record identity, recorded-form
+/// validity, lifecycle vocabulary.
+mod revision_catalog;
 mod start_materialization;
-#[cfg(test)]
-pub mod test_support;
+mod tenant_provisioning;
 mod workflow_activation;
 
-pub use error::StorageError;
-pub use format::StorageFormat;
+// ── SQL plumbing shared by the SQL backends ─────────────────────────────────
+
+/// Column codec of the execution listing projection.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod execution_listing;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod migration;
+pub mod migration_catalog;
+/// Why schema setup refused a database's migration ledger.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub use migration::catalog::CatalogRejection as SchemaRejection;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod resource_runtime_error;
+/// The one `sqlx` error → `StorageError` mapping of the SQL backends.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod sql_error;
+
+#[cfg(test)]
+pub mod test_support;
+
 pub use inmem::{
     InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
-    InMemoryIdempotencyGuard, InMemoryIdempotencyStore, InMemoryJournalReader,
-    InMemoryNodeResultStore, InMemoryPlanFlavorCatalog, InMemoryResourceRuntime,
-    InMemoryResourceStatusStore, InMemoryResumeProducer, InMemoryResumeTokenStore,
-    InMemoryWebhookActivationStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    InMemoryIdempotencyGuard, InMemoryJournalReader, InMemoryNodeResultStore,
+    InMemoryPlanFlavorCatalog, InMemoryResourceRuntime, InMemoryResourceStatusStore,
+    InMemoryResumeProducer, InMemoryResumeTokenStore, InMemoryWebhookActivationStore,
+    InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
 };
+/// The one storage error of the crate: the port's.
+pub use nebula_storage_port::StorageError;
 #[cfg(feature = "postgres")]
 pub use postgres::{PgResourceRuntime, PgResourceStatusStore};
 #[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteResourceRuntime, SqliteResourceStatusStore};
-// Mirrors the gating on `migration::adopt`: with no backend feature there is no
-// migration catalog to adopt a database into, and `sqlx` — which adoption is
-// written entirely against — is not even a dependency. `mod migration` also
-// builds under bare `test` for its catalog cases; adoption cannot, so this gate
-// is narrower than that one on purpose.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub use migration::adopt::{LedgerAdoptionError, LedgerAdoptionOutcome};

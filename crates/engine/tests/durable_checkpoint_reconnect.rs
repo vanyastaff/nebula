@@ -33,6 +33,12 @@ use nebula_storage_port::{
 };
 use nebula_workflow::{Connection, NodeDefinition, WorkflowDefinition};
 
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "admission seeds through store handles, not through a raw pool"
+)]
+mod execution_parents;
 #[path = "support/postgres_schema.rs"]
 mod postgres_schema;
 #[path = "durable_checkpoint_reconnect/recovery.rs"]
@@ -176,6 +182,12 @@ struct Ports {
     queue: Arc<dyn ControlQueue>,
     catalog: Arc<dyn PlanFlavorCatalog>,
     writer: Arc<dyn PlanFlavorCatalogWriter>,
+    /// The tenant and workflow stores a SQL backend's executions reference;
+    /// `None` in memory, which does not check them.
+    parents: Option<(
+        Arc<dyn nebula_storage_port::store::TenantProvisioningStore>,
+        Arc<dyn nebula_storage_port::store::WorkflowStore>,
+    )>,
 }
 fn in_memory(core: &Arc<nebula_storage::InMemoryExecutionStore>) -> Ports {
     let catalog = Arc::new(core.plan_flavor_catalog());
@@ -198,6 +210,7 @@ fn in_memory(core: &Arc<nebula_storage::InMemoryExecutionStore>) -> Ports {
         queue: Arc::new(nebula_storage::InMemoryControlQueue::new(core)),
         catalog: catalog.clone(),
         writer: catalog,
+        parents: None,
     }
 }
 fn sqlite(pool: sqlx::SqlitePool) -> Ports {
@@ -220,9 +233,13 @@ fn sqlite(pool: sqlx::SqlitePool) -> Ports {
             operation_ledger: Arc::new(SqliteOperationLedger::new(pool.clone())),
         },
         bundles: Arc::new(SqliteStartAcceptanceStore::new(pool.clone())),
-        queue: Arc::new(SqliteControlQueue::new(pool)),
+        queue: Arc::new(SqliteControlQueue::new(pool.clone())),
         catalog: catalog.clone(),
         writer: catalog,
+        parents: Some((
+            Arc::new(SqliteTenantProvisioningStore::new(pool.clone())),
+            Arc::new(SqliteWorkflowStore::new(pool)),
+        )),
     }
 }
 fn postgres(pool: sqlx::PgPool) -> Ports {
@@ -245,9 +262,13 @@ fn postgres(pool: sqlx::PgPool) -> Ports {
             operation_ledger: Arc::new(PgOperationLedger::new(pool.clone())),
         },
         bundles: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
-        queue: Arc::new(PgControlQueue::new(pool)),
+        queue: Arc::new(PgControlQueue::new(pool.clone())),
         catalog: catalog.clone(),
         writer: catalog,
+        parents: Some((
+            Arc::new(PgTenantProvisioningStore::new(pool.clone())),
+            Arc::new(PgWorkflowStore::new(pool)),
+        )),
     }
 }
 
@@ -296,6 +317,15 @@ async fn admit(ports: Ports, count: &Arc<AtomicU32>) -> Admitted {
         nebula_core::WorkspaceId::new().to_string(),
         nebula_core::OrgId::new().to_string(),
     );
+    if let Some((tenants, workflows)) = &ports.parents {
+        execution_parents::seed_execution_parents(
+            tenants.as_ref(),
+            workflows.as_ref(),
+            &scope,
+            &workflow.id.to_string(),
+        )
+        .await;
+    }
     let id = ExecutionId::new();
     let input =
         serde_json::json!({"payload": "persisted predecessor output", "identity": id.to_string()});

@@ -1,4 +1,4 @@
-//! PostgreSQL iteration-checkpoint store over ordered migration 0062.
+//! PostgreSQL iteration-checkpoint store in the execution baseline.
 //!
 //! A save locks the execution row (`SELECT … FOR UPDATE`, the fence the
 //! operation ledger shares) before it reads the stored checkpoint, so every
@@ -55,8 +55,8 @@ async fn load(
     let row = sqlx::query(
         "SELECT action_version, iteration::bigint AS iteration, state, state_digest, \
                 resume_delay_ms, attested_positions::bigint AS attested_positions, \
-                attempt_generation, fencing_generation, written_at_ms \
-         FROM port_iteration_checkpoints \
+                attempt_generation, fencing_generation, written_at \
+         FROM iteration_checkpoints \
          WHERE workspace_id = $1 AND org_id = $2 AND execution_id = $3 \
            AND node_key = $4 AND action_key = $5 AND action_version_digest = $6",
     )
@@ -86,7 +86,10 @@ async fn load(
         row.try_get("attested_positions").map_err(corrupt)?,
         row.try_get("attempt_generation").map_err(corrupt)?,
         row.try_get("fencing_generation").map_err(corrupt)?,
-        row.try_get("written_at_ms").map_err(corrupt)?,
+        // The port carries the write instant in milliseconds.
+        row.try_get::<chrono::DateTime<chrono::Utc>, _>("written_at")
+            .map_err(corrupt)?
+            .timestamp_millis(),
     )
     .map(Some)
 }
@@ -97,7 +100,7 @@ async fn stored_identity(
 ) -> Result<Option<(u32, [u8; 32])>, IterationCheckpointError> {
     let row = sqlx::query(
         "SELECT action_version, iteration::bigint AS iteration, state_digest \
-         FROM port_iteration_checkpoints \
+         FROM iteration_checkpoints \
          WHERE workspace_id = $1 AND org_id = $2 AND execution_id = $3 \
            AND node_key = $4 AND action_key = $5 AND action_version_digest = $6 \
          FOR UPDATE",
@@ -151,20 +154,20 @@ async fn save(
         .map(durable_integer)
         .transpose()?;
     sqlx::query(
-        "INSERT INTO port_iteration_checkpoints \
+        "INSERT INTO iteration_checkpoints \
          (workspace_id, org_id, execution_id, node_key, action_key, action_version, \
           action_version_digest, iteration, state, state_digest, resume_delay_ms, \
-          attested_positions, attempt_generation, fencing_generation, written_at_ms) \
+          attested_positions, attempt_generation, fencing_generation, written_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
-                 (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint) \
-         ON CONFLICT (workspace_id, org_id, execution_id, node_key, action_key, \
+                 clock_timestamp()) \
+         ON CONFLICT (org_id, workspace_id, execution_id, node_key, action_key, \
                       action_version_digest) \
          DO UPDATE SET iteration = excluded.iteration, state = excluded.state, \
            state_digest = excluded.state_digest, resume_delay_ms = excluded.resume_delay_ms, \
            attested_positions = excluded.attested_positions, \
            attempt_generation = excluded.attempt_generation, \
            fencing_generation = excluded.fencing_generation, \
-           written_at_ms = excluded.written_at_ms",
+           written_at = excluded.written_at",
     )
     .bind(key.scope().workspace_id.as_str())
     .bind(key.scope().org_id.as_str())

@@ -189,7 +189,7 @@ async fn rejected_projection_hook_retries_once_but_accepted_failure_does_not() {
             .expect("register");
         let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let lease = manager
-            .acquire_resident_for_identity::<ProjectionResource>(
+            .acquire_for_identity::<ProjectionResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -353,7 +353,7 @@ async fn unqualified_slot_write_fences_refresh_hook_admission() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ProjectionResource>(
+            .acquire_for_identity::<ProjectionResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -448,7 +448,7 @@ async fn terminal_revoke_cannot_split_projection_install_and_hook_admission() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ProjectionResource>(
+            .acquire_for_identity::<ProjectionResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,

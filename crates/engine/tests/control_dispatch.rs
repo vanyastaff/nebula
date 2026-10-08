@@ -8,6 +8,9 @@
 //! Running → Cancelled) and the idempotency contract
 //! (re-delivery does not re-run or double-signal).
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::HashMap,
     sync::{
@@ -94,20 +97,20 @@ impl DispatchStores {
 
     /// Persist a workflow definition as published version 0.
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    activation: None,
-                    definition: serde_json::to_value(wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                activation: None,
+                definition: serde_json::to_value(wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -407,14 +410,14 @@ impl Harness {
             .as_object_mut()
             .expect("a pinned execution state is a JSON object")
             .insert("status".to_owned(), value);
-        let batch = TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(record.version)
-            .fencing(fencing)
-            .new_state(state)
-            .build()
-            .unwrap();
+        let batch = TransitionBatch::new(
+            scope.clone(),
+            &id,
+            record.version,
+            fencing,
+            state.clone(),
+            listing_of(&state),
+        );
         assert!(matches!(
             self.stores.execution.commit(batch).await.unwrap(),
             TransitionOutcome::Applied { .. }
@@ -1138,4 +1141,17 @@ async fn undecodable_persisted_status_never_reaches_the_durable_queue_row() {
         "a decode failure must not re-publish the stored value into the durable queue row: \
          {persisted_error}"
     );
+}
+
+/// Listing projection of a fixture snapshot read straight from its JSON: some
+/// fixtures store deliberately undecodable states, which list as `created`.
+fn listing_of(state: &serde_json::Value) -> nebula_storage_port::ExecutionListing {
+    fn field<T: serde::de::DeserializeOwned>(state: &serde_json::Value, key: &str) -> Option<T> {
+        serde_json::from_value(state.get(key)?.clone()).ok()
+    }
+    nebula_storage_port::ExecutionListing::new(
+        field(state, "status").unwrap_or(nebula_storage_port::ExecutionListingStatus::Created),
+        field(state, "started_at"),
+        field(state, "completed_at"),
+    )
 }

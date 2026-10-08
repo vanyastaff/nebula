@@ -1,146 +1,83 @@
-# PostgreSQL Migrations
+# PostgreSQL migrations
 
-Spec-16 compliant schema for Nebula's PostgreSQL backend.
+This catalog creates the PostgreSQL deployment schema. Production startup, the
+admitted database operator, and fresh test databases use these same numbered SQL
+files. There is no separate schema snapshot.
 
-## Dialect notes
+## Catalog inventory
 
-- IDs: `BYTEA` (16-byte ULID, prefixed on wire)
-- JSON: `JSONB`
-- Timestamps: `TIMESTAMPTZ`
-- IP addresses: `INET`
-- Arrays: native `BYTEA[]`
-- Booleans: `BOOLEAN`
-- CAS: `BIGINT` version column on all mutable entities
+The eight baseline migrations follow aggregate dependency order. Runtime control
+belongs to the executions and dispatch aggregates; it has no separate empty migration.
 
-## Migration order
+| File | Aggregate and relations |
+|---|---|
+| `0001_identity.sql` | Users, sessions, personal access tokens, verification tokens, OAuth states, external identities, MFA enrollment candidates |
+| `0002_tenancy.sql` | Organizations, workspaces, organization memberships, workspace memberships |
+| `0003_workflows.sql` | Workflows and immutable workflow versions |
+| `0004_executions.sql` | Execution state, journal, revision catalogs and references, contract bundles, accepted turns, observation receipts, iteration checkpoints, resume tokens, start reservations, idempotency marks, operation ledger and protocol records |
+| `0005_dispatch.sql` | Execution control queue, job dispatch queue, triggers, trigger start reservations, webhook activations |
+| `0006_credentials.sql` | Credentials, refresh claims, refresh incidents, pending authorization states |
+| `0007_resources.sql` | Resources, status heartbeats and snapshots, shared resources, subscriptions, source leases, events, deliveries, execution handoffs |
+| `0008_platform.sql` | HTTP response replay cache and PostgreSQL shared GCRA rate-limit state |
+| `0009_tenant_provisioning_receipts.sql` | Permanent provisioning request receipts and identity seals for existing organizations |
+| `0010_initial_owner_enrollment.sql` | Permanent initial-account eligibility and frozen owner enrollment command; ordinary account insertion seals eligibility |
 
-| # | File | Layer | Tables |
-|---|------|-------|--------|
-| 0001 | `users` | Identity | `users` |
-| 0002 | `user_auth` | Identity | `oauth_links`, `sessions`, `personal_access_tokens`, `verification_tokens` |
-| 0003 | `orgs` | Tenancy | `orgs` |
-| 0004 | `workspaces` | Tenancy | `workspaces` |
-| 0005 | `memberships` | Tenancy | `org_members`, `workspace_members`, `service_accounts` |
-| 0006 | `workflows` | Workflow | `workflows` |
-| 0007 | `workflow_versions` | Workflow | `workflow_versions` + FK on `workflows` |
-| 0008 | `credentials` | Credentials | `credentials` |
-| 0009 | `resources` | Resources | `resources` |
-| 0010 | `triggers` | Triggers | `triggers`, `trigger_events`, `cron_fire_slots` |
-| 0011 | `executions` | Execution | `executions` |
-| 0012 | `execution_nodes` | Execution | `execution_nodes`, `pending_signals` |
-| 0013 | `execution_lifecycle` | Execution | `execution_journal`, `execution_control_queue` |
-| 0014 | `quotas` | Quotas | `org_quotas`, `org_quota_usage`, `workspace_quota_usage`, `workspace_dispatch_state` |
-| 0015 | `audit` | Audit | `slug_history`, `audit_log` |
-| 0016 | `executions_observability` | Execution | `executions` — adds trace correlation and takeover count |
-| 0017 | `credentials_v3` | Credentials | legacy credential envelope/lifecycle, pending-flow, and audit extensions |
-| 0018 | `webhook_paths` | Triggers | `triggers` — adds indexed active webhook path |
-| 0019 | `blobs` | Storage | `blobs` — out-of-row binary payloads and retention indexes |
-| 0020 | `add_resume_result_persistence` | Execution | `execution_nodes` — adds `result_schema_version`, `result_kind`, `result` (ADR-0009) |
-| 0021 | `add_control_queue_reclaim_count` | Execution | `execution_control_queue` — adds `reclaim_count` (ADR-0017 / ADR-0008 B1) |
-| 0022 | `credential_refresh_claims` | Credentials | `credential_refresh_claims` — cross-replica refresh ownership |
-| 0023 | `credential_sentinel_events` | Credentials | `credential_sentinel_events` — durable refresh-crash evidence |
-| 0024 | `add_idempotency_dedup` | API | `api_idempotency_dedup` — bounded response-replay records |
-| 0025 | `triggers_config_namespace_comment` | Triggers | documents the kind-namespaced `triggers.config` contract |
-| 0026 | `execution_control_queue_w3c_trace_context` | Execution | `execution_control_queue` — nullable `w3c_trace_context` (M3.5 W3C carrier) |
-| 0027 | `port_adapter_schema` | Storage port | the `port_*` tables — execution / journal / control-queue / idempotency / webhook-activation / workflow / workflow-version, and the identity zoo (`port_users` … `port_blobs`) |
-| 0028 | `plane_a_oauth_state` | Identity | `plane_a_oauth_states` — single-use PKCE callback authority |
-| 0029 | `external_identities` | Identity | `external_identities` — authoritative provider-subject links |
-| 0030 | `credentials_store` | Credentials | replaces the unused legacy model with the durable credential store |
-| 0031 | `job_dispatch_and_trigger_dedup` | Execution | `port_job_dispatch_queue`, `port_trigger_dedup_inbox` |
-| 0032 | `webhook_activation_fields` | Storage port | activation workflow, mode, and token-digest fields |
-| 0033 | `webhook_activation_spec_link` | Storage port | activation-to-trigger-spec link |
-| 0034 | `port_control_queue_resume_target` | Execution | durable resume target on `port_control_queue` |
-| 0035 | `port_resume_tokens` | Execution | one-way-digested, mint-on-park resume authorities |
-| 0036 | `plane_a_oauth_state_cleanup_index` | Identity | complete expiry-cleanup index for consumed and live state |
-| 0037 | `mfa_enrollment_candidates` | Identity | expiring, single-use MFA replacement candidates, separate from the active user factor |
-| 0038 | `identity_secret_authority` | Identity | digest-only sessions and authenticated-encryption envelopes for active/pending TOTP |
-| 0039 | `credentials_owner_and_record_state` | Credentials | owner-bound structural live/tombstone lifecycle |
-| 0040 | `credential_refresh_retry_gate` | Credentials | durable structural refresh-retry admission gate |
-| 0041 | `port_plan_flavor_revision_catalog` | Runtime control | dormant immutable plan/flavor records and exact execution revision references |
+`credential_migration_catalog` checks this inventory against the SQL files, including
+future additions. The baseline is a fixed named prefix, not the maximum catalog size.
 
-Migration `0054_owner_qualified_refresh_incidents.sql` derives the owner of
-every refresh claim and sentinel incident from the credential aggregate. It
-fails closed on orphaned rows and makes both claim CAS and threshold windows
-owner-qualified.
+Migration 0009 retains historical provisioning acceptance independently of tenant
+purge. Stop older server/worker versions before applying it; older writers do not
+participate in the receipt protocol. Existing organizations are sealed without
+fabricating an original request; remove their `NEBULA_BOOTSTRAP_*` configuration
+before starting the upgraded server.
+Ordinary startup and existing tenant data remain unchanged. New accepted requests
+replay from receipts and never restore revoked grants or deleted tenants.
 
-Migration `0057_typed_credential_operation_incidents.sql` records an immutable
-operation kind and a revoke-only observed material epoch on claims and durable
-incidents. Historical rows become `legacy_unclassified`; the required kind has
-no default so mixed old writers fail closed.
+## Dialect and ownership
 
-Migration `0060_rate_limits.sql` adds `port_rate_limits` and
-`port_rate_limit_reservations`, the state of cluster-wide GCRA rate limits
-(`PgLimitStore`). It is PostgreSQL-only: a SQLite deployment is one process
-and keeps its limits in memory.
+Migration 0010 seals initial enrollment on existing accounts, organizations or
+provisioning receipts. A fresh deployment retains eligibility until operator
+enrollment or ordinary account creation. The identity-owned user-insert trigger
+locks eligibility before inserting the account, matching operator enrollment's
+lock order. The singleton deliberately survives account and tenant purge.
 
-Migration `0061_credential_admission_epoch.sql` adds the credential admission
-epoch (the use revision) with a named range check. Every existing row starts
-at 1 — history is not guessed, so no pre-cutover binding matches a later
-observation. The backfill default is dropped in the same migration, so an old
-writer's insert fails closed; old credential writers do not advance the epoch
-and must be stopped before it applies.
+The [database standard](../../docs/database-standard.md) defines names, constraints,
+ownership, and deletion rules. PostgreSQL uses `TIMESTAMPTZ` for microsecond instants,
+`JSONB` for documents, `BOOLEAN` for flags, and `BYTEA` for opaque binary identities.
+Tenant entity identifiers use the types their adapters expose; they are not all binary.
+Foreign keys enforce ownership and cascade on permanent purge. Soft-deletable parent
+liveness is checked by the adapter in its transaction.
 
-Migration `0062_port_iteration_checkpoints.sql` creates the empty
-`port_iteration_checkpoints` relation: one fenced iteration checkpoint per
-(tenant, execution, node, action key, action version) of a journaled stateful
-action — the key indexes the version's SHA-256 (`action_version_digest`), since
-an admitted version has no length bound and an index entry does; the text is
-stored beside it and a mismatch reads as an invalid record — its bounds as `CHECK`s (iteration `1..=10000`, state at most 1 MiB, a
-32-byte digest, non-negative delay and counters), and a cascading foreign key
-to the execution row. Nothing is backfilled; a missing row means "replay from
-iteration 0". Aggregate-neutral: the general catalog floor stays at `0040`.
+Shared GCRA state is deliberately PostgreSQL-only: `rate_limits` and
+`rate_limit_reservations` allow limits across workers. Their nanosecond scheduling
+coordinates and wrapping mutation identity retain the algorithm's exact representation.
+These tables are defined in the shared platform migration version; they create no gaps
+in the SQLite catalog. SQLite deployments use process-local rate limits.
 
-## Storage-port adapter schema (0027)
+## Applying and extending the catalog
 
-`0027_port_adapter_schema.sql` is the historical migration that introduced
-the spec-16 port tables. `nebula_storage::postgres::init_schema`, credential
-readiness, clean database setup, and upgrades all run this exact ordered
-migration tree; no separate embedded schema snapshot exists. General
-`init_schema` validates catalog facts only; credential readiness adds
-credential relation/row admission under the same advisory lock and session.
-The spec-16 port
-(`PgExecutionStore` + the atomic
-`TransitionBatch`, the durable control-queue outbox, idempotency,
-webhook activations, workflows/versions, and the identity stores)
-persists through these `port_*` tables. Applied migration files are immutable;
-schema changes always append a new numbered migration.
+Use `task db:migrate` for the admitted PostgreSQL operator. It checks that
+`_sqlx_migrations` is a canonical catalog prefix before applying pending migrations,
+under the setup lock, and verifies the resulting head. Unknown versions, edited
+checksums, failed migrations, and foreign unledgered schemas fail closed.
 
-Migration `0041` is deliberately dormant DDL. It enforces byte lengths,
-closed lifecycle/reference sums, restrictive foreign keys, and blocker
-indexes, but provides no SQL adapter, activation path, payload-hash proof, or
-exactly-once guarantee.
+After this baseline, append immutable `NNNN_description.sql` files to both backend
+catalogs with the same version and slug. Review admission safety and record the review
+before raising `migration_catalog::REVIEWED_HEAD`. Update both README inventories.
+Backend-specific objects live inside their shared numbered migration; do not reserve
+version gaps. Never edit an applied migration to change the schema.
 
-## Adopting a database created before the ledger
+## Disposable development databases
 
-`init_schema` admits a database only when its `_sqlx_migrations` ledger is a
-canonical prefix, so a database provisioned by the *previous* idempotent
-`init_schema` — `port_*` tables, no ledger — is rejected as
-`UnledgeredDatabase` and its process refuses to start.
+The pre-baseline development catalog is incompatible and is rejected; there is no
+automatic ledger adoption or migration-floor exception. `task db:reset` drops and
+recreates the local PostgreSQL database and applies the current catalog, destroying
+its data. Use it only for disposable development databases. A database containing
+valuable data requires a separately designed migration plan.
 
-Adopt it once, stating the migration level the live schema already satisfies:
+## Backend parity
 
-```
-DATABASE_URL=… task db:migrate:adopt THROUGH_VERSION=40
-```
-
-The stamp uses sqlx's own checksums, runs in one transaction, re-admits the
-result before committing, and refuses when a ledger already exists or the
-database is empty. It is deliberately not automatic: it asserts the live schema
-is what those migrations produce, which only an operator can confirm. See the
-SQLite README for the full contract.
-
-## Rebuilding the local dev database
-
-`task db:reset` **drops and recreates the database** (then uses raw SQLx to run
-every migration in this directory, `0027` included). It destroys all local dev
-data. `task db:migrate` is the non-destructive path and uses the server-owned
-admitted operator: catalog-only setup first, credential-owner deep admission
-only after a typed configuration rejection. Numbered history is immutable and
-forward-only; no revert task is supported.
-
-## Schema parity
-
-This directory and `../sqlite/` must define logically identical tables.
-Types differ by dialect; table/column names and constraints must match.
-
-See the maintainers' private design vault for the authoritative spec.
+The paired SQLite catalog defines the same shared logical relations and foreign-key
+actions. `schema_parity_postgres` compares their physical schemas with explicit
+dialect exceptions, including the PostgreSQL-only GCRA tables. Authentication and
+initial-enrollment conformance test the corresponding behavior on both backends.

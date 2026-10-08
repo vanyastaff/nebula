@@ -10,7 +10,10 @@ use std::time::Duration;
 
 use nebula_storage_port::dto::ExecutionRecord;
 use nebula_storage_port::store::ExecutionStore;
-use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
+use nebula_storage_port::{
+    ExecutionHistoryPage, ExecutionHistoryQuery, ExecutionListing, ExecutionListingStatus,
+    FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
+};
 
 /// A reference store: every `commit` is fenced out, and `get` only returns a
 /// row when the scope matches the one it was constructed for.
@@ -53,12 +56,12 @@ impl ExecutionStore for StubExecutionStore {
             workflow_id: "wf".into(),
             scope: self.owner_scope.clone(),
             version: 0,
-            status: "Running".into(),
+            status: ExecutionListingStatus::Running,
             state: serde_json::json!({}),
             lease_holder: None,
             fencing: None,
-            created_at: "2026-05-15T00:00:00Z".into(),
-            updated_at: "2026-05-15T00:00:00Z".into(),
+            created_at: "2026-05-15T00:00:00Z".parse().unwrap(),
+            updated_at: "2026-05-15T00:00:00Z".parse().unwrap(),
         }))
     }
 
@@ -99,16 +102,12 @@ impl ExecutionStore for StubExecutionStore {
         Ok(vec![])
     }
 
-    async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         _scope: &Scope,
-        _workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
+        _query: &ExecutionHistoryQuery,
+    ) -> Result<ExecutionHistoryPage, StorageError> {
+        Ok(ExecutionHistoryPage::empty())
     }
 
     async fn count(&self, _scope: &Scope, _workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -121,14 +120,14 @@ async fn stale_fencing_token_commit_is_fenced_out() {
     let store = StubExecutionStore {
         owner_scope: Scope::new("ws_a", "org_a"),
     };
-    let batch = TransitionBatch::builder()
-        .scope(Scope::new("ws_a", "org_a"))
-        .execution_id("exe_1")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(1))
-        .new_state(serde_json::json!({"s": "running"}))
-        .build()
-        .expect("valid batch");
+    let batch = TransitionBatch::new(
+        Scope::new("ws_a", "org_a"),
+        "exe_1",
+        0,
+        FencingToken::from_generation(1),
+        serde_json::json!({"s": "running"}),
+        ExecutionListing::CREATED,
+    );
     let outcome = store.commit(batch).await.expect("commit returns");
     assert_eq!(outcome, TransitionOutcome::FencedOut);
 }

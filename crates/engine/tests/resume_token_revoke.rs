@@ -31,6 +31,8 @@
 mod exact_fixture;
 #[path = "exact_fixture/qualified_runtime.rs"]
 mod qualified_runtime;
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
 
 macro_rules! pure_action_metadata {
     ($key:expr, $name:expr, $description:expr $(,)?) => {
@@ -69,8 +71,8 @@ use nebula_storage::{
 };
 use nebula_storage_port::{
     FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
-    dto::{ExecutionRecord, WorkflowVersionRecord, resume_token::ResumeTokenRow},
-    store::{ExecutionStore, ResumeTokenStore, WorkflowVersionStore},
+    dto::{ExecutionRecord, ResumeTokenRow, WorkflowVersionRecord},
+    store::{ExecutionStore, ResumeTokenStore},
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
@@ -279,18 +281,12 @@ impl ExecutionStore for ArmableConflictStore {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -391,7 +387,7 @@ struct FailingRevokeStore;
 impl ResumeTokenStore for FailingRevokeStore {
     async fn consume(
         &self,
-        _token_hash: &nebula_storage_port::dto::resume_token::TokenHash,
+        _token_hash: &nebula_storage_port::dto::TokenHash,
     ) -> Result<Option<ResumeTokenRow>, StorageError> {
         Ok(None)
     }
@@ -625,20 +621,20 @@ impl RevokeHarness {
             ui_metadata: None,
             schema_version: CURRENT_SCHEMA_VERSION,
         };
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: workflow_id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(&wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: workflow_id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(&wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
         workflow_id
     }
 

@@ -19,8 +19,7 @@ use nebula_storage_port::store::{
 };
 use nebula_tenancy::{
     ScopedExecutionJournalReader, ScopedExecutionStore, ScopedExecutionTurnHandoff,
-    ScopedNodeResultStore, ScopedStartAcceptanceStore, ScopedWorkflowStore,
-    ScopedWorkflowVersionStore,
+    ScopedStartAcceptanceStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 use tokio::sync::RwLock;
 
@@ -370,21 +369,21 @@ pub struct AppState {
     ///
     /// See idempotency backend for the backend selection contract; the composition root
     /// chooses between [`crate::middleware::InMemoryIdempotencyStore`] and a
-    /// PG-backed bridge (`StorageBackedIdempotencyStore<PgIdempotencyStore>`)
+    /// PG-backed bridge (`StorageBackedIdempotencyStore<PgHttpIdempotencyStore>`)
     /// based on `ApiConfig.idempotency.backend`.
     pub idempotency_store: Option<Arc<dyn IdempotencyStore>>,
 
-    /// Optional trigger config store (ADR-0096 — spec-16 `port_triggers`).
+    /// Optional trigger config store (ADR-0096 — spec-16 `triggers`).
     ///
     /// The **undecorated** base store. Per-request / per-tenant code wraps it
     /// in `nebula_tenancy::ScopedTriggerStore::new(store, scope)` at the call
     /// site; the bootstrap pathway calls through it via `TriggerStoreSpecLookup`
     /// which always supplies the activation row's own `scope`.
     ///
-    /// Required for the webhook-bootstrap READ path: each `port_webhook_activations`
+    /// Required for the webhook-bootstrap READ path: each `webhook_activations`
     /// row carries only routing/token/scope/workflow/mode data; the handler-build
     /// inputs (`provider`, `secret_id`, replay knobs) live in
-    /// `port_triggers.config.webhook_activation`. Wire this alongside
+    /// `triggers.config.webhook_activation`. Wire this alongside
     /// `webhook_activation_store` so `bootstrap_webhook_activations` can
     /// reconstruct a handler after a restart.
     ///
@@ -798,7 +797,6 @@ impl AppState {
                 scope: scope.clone(),
                 version: row_version,
                 slug: id_str.clone(),
-                deleted: false,
             },
             WorkflowVersionRecord {
                 activation: None,
@@ -812,6 +810,12 @@ impl AppState {
         )
         .await
         .map_err(|e| match e {
+            // The tenant resolved by the middleware vanished before the
+            // write: the workspace is gone, not concurrently modified.
+            nebula_storage_port::StorageError::NotFound {
+                entity: "workspace",
+                ..
+            } => ApiError::NotFound("workspace not found".to_string()),
             // A row/version conflict, a missing row on CAS, or a
             // duplicate (create raced, or the version slot is taken)
             // all mean "modified by another request" — the exact
@@ -920,47 +924,18 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to count workflows: {e}")))
     }
 
-    /// List running execution ids for the caller's tenant — read
-    /// through a freshly bound `ScopedExecutionStore`, so the listing is
-    /// that tenant only.
-    pub(crate) async fn list_running_executions_scoped(
+    /// One page of the caller's execution history — read through a freshly
+    /// bound `ScopedExecutionStore`, so the page is that tenant only.
+    pub(crate) async fn execution_history_scoped(
         &self,
         scope: &Scope,
-    ) -> Result<Vec<ExecutionId>, ApiError> {
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, ApiError> {
         let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
-        let ids = store
-            .list_running(scope)
+        store
+            .list_history(scope, query)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
-        ids.iter()
-            .map(|s| {
-                ExecutionId::parse(s).map_err(|e| {
-                    ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
-                })
-            })
-            .collect()
-    }
-
-    /// List running execution ids for one workflow within the caller's
-    /// tenant (same per-request-scoped `ExecutionStore` as
-    /// [`Self::list_running_executions_scoped`]).
-    pub(crate) async fn list_running_executions_for_workflow_scoped(
-        &self,
-        scope: &Scope,
-        workflow_id: nebula_core::id::WorkflowId,
-    ) -> Result<Vec<ExecutionId>, ApiError> {
-        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
-        let ids = store
-            .list_running_for_workflow(scope, &workflow_id.to_string())
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))?;
-        ids.iter()
-            .map(|s| {
-                ExecutionId::parse(s).map_err(|e| {
-                    ApiError::Internal(format!("stored execution id {s:?} invalid: {e}"))
-                })
-            })
-            .collect()
+            .map_err(|e| ApiError::Internal(format!("Failed to list executions: {e}")))
     }
 
     /// Read an execution's persisted `(version, state-json)` for the
@@ -997,28 +972,17 @@ impl AppState {
         }
     }
 
-    /// Load all persisted per-node *outputs* for an execution within the
-    /// caller's tenant — read through a freshly bound
-    /// `ScopedNodeResultStore`, so a cross-tenant id yields nothing.
-    pub(crate) async fn execution_node_outputs_scoped(
+    /// Read one authoritative snapshot through the caller's tenant decorator.
+    pub(crate) async fn execution_record_scoped(
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
-    ) -> Result<Vec<(nebula_core::NodeKey, serde_json::Value)>, ApiError> {
-        let store = ScopedNodeResultStore::new(Arc::clone(&self.node_result_store), scope.clone());
-        let rows = store
-            .load_all_node_outputs(scope, &execution_id.to_string())
+    ) -> Result<Option<nebula_storage_port::dto::ExecutionRecord>, ApiError> {
+        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
+        store
+            .get(scope, &execution_id.to_string())
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to load outputs: {e}")))?;
-        rows.into_iter()
-            .map(|(node_id, rec)| {
-                nebula_core::NodeKey::new(&node_id)
-                    .map(|k| (k, rec.json))
-                    .map_err(|e| {
-                        ApiError::Internal(format!("stored node id {node_id:?} invalid: {e}"))
-                    })
-            })
-            .collect()
+            .map_err(|_| ApiError::Internal("Failed to read execution snapshot".into()))
     }
 
     /// Load an execution's journal entries for the caller's tenant —
@@ -1204,7 +1168,7 @@ impl AppState {
         self
     }
 
-    /// Attach the trigger config store (ADR-0096 — `port_triggers`).
+    /// Attach the trigger config store (ADR-0096 — `triggers`).
     ///
     /// The **undecorated** base store. The bootstrap pathway wraps it in a
     /// `TriggerStoreSpecLookup` (see

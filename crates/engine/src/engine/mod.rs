@@ -51,7 +51,7 @@ use tokio_util::sync::CancellationToken;
 
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::ResumeTarget;
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 
 // Resume-token minting stores only SHA-256 hashes and zeroizes plaintext bearers.
 use base64::Engine as _;
@@ -77,6 +77,21 @@ use crate::{
 /// the capacity below keeps roughly one in-flight workflow's worth of events
 /// buffered per subscriber before the bus starts dropping.
 type EventBus = nebula_eventbus::EventBus<ExecutionEvent>;
+
+/// Resource reconciliation could not be started for this engine configuration.
+#[cfg(feature = "rotation")]
+#[derive(Debug, thiserror::Error)]
+pub enum ResourceReconciliationStartupError {
+    /// A stored-resource source was configured without its lifecycle manager.
+    #[error("stored resources require a resource manager for reconciliation")]
+    MissingManager,
+    /// The engine already holds a live reconciliation generation.
+    #[error("resource reconciliation is already running")]
+    AlreadyRunning,
+    /// The resource driver rejected its inputs or manager affinity.
+    #[error("resource reconciliation driver could not start: {0}")]
+    Driver(#[from] nebula_resource::ResourceFanoutSpawnError),
+}
 
 /// Stored-resource registry rows a durable execution binds, per node.
 type NodeResourceRows = HashMap<NodeKey, HashMap<ResourceKey, nebula_resource::SlotIdentity>>;
@@ -337,8 +352,8 @@ pub struct WorkflowEngine {
     /// fire 2×, `RotationOutcome` metrics inflated). The composition root
     /// owns the single spawn, but a defensive structural guard (not a
     /// "remember to call it once" convention) makes a second call a
-    /// no-op `None` rather than a silent double-subscribe. An
-    /// The generation-qualified claim makes the `&self` method idempotent
+    /// typed `AlreadyRunning` error rather than a silent double-subscribe.
+    /// The generation-qualified claim makes the `&self` method single-driver
     /// under a concurrent double-call while allowing a stopped driver to be
     /// replaced. Qualification prevents a late drop of an old handle from
     /// releasing a newer driver's claim.
@@ -616,12 +631,15 @@ impl Drop for RunningRegistration {
 }
 
 mod checkpoint;
+pub use checkpoint::inspect_execution_outputs;
 mod frontier;
 mod input_ports;
+mod listing;
 mod outcome;
 mod persistence;
 mod resume;
 mod timer_scan;
+pub use listing::execution_listing;
 use outcome::*;
 pub use resume::{
     ClaimedStartOutcome, ClaimedStartRequest, RecoveryTurnOutcome, RecoveryTurnRequest,
@@ -973,11 +991,11 @@ impl WorkflowEngine {
         live.then_some(&self.resource_fanout_index)
     }
 
-    /// Spawn the production rotation fan-out driver wiring the engine's
+    /// Start resource reconciliation against the engine's
     /// [`resource_fanout_index`](Self::resource_fanout_index) +
     /// [`resource_manager`](Self::with_resource_manager) to the
-    /// credential-rotation / lease-revoke event streams the
-    /// credential-runtime composition root publishes.
+    /// credential resolver. Optional rotation and revoke streams accelerate
+    /// durable reconciliation; closing a hint bus does not stop a resolver-backed driver.
     ///
     /// `credential_bus` / `lease_bus` are the buses the credential-runtime
     /// composition root publishes on after a refresh CAS-persists fresh
@@ -991,24 +1009,20 @@ impl WorkflowEngine {
     /// it** for as long as fan-out should run — dropping it aborts the
     /// driver task.
     ///
-    /// Returns `None` (spawning nothing) when either:
+    /// Returns `Ok(None)` only for a pure-action engine with neither a manager
+    /// nor a stored-resource source. An incomplete resource configuration fails
+    /// explicitly; a second live driver returns `AlreadyRunning` and subscribes
+    /// nothing. The generation is claimed atomically, and is released only after
+    /// the driver and its children stop. Join the stopped driver with
+    /// [`ResourceFanoutDriver::wait`](nebula_resource::ResourceFanoutDriver::wait)
+    /// before starting a replacement or shutting down the resource manager.
+    /// Failed startup rolls back only the generation it claimed.
     ///
-    /// - no resource manager was wired via
-    ///   [`with_resource_manager`](Self::with_resource_manager) (there is
-    ///   nothing to fan rotations *to*); or
-    /// - a driver handle from a prior call is still live. This method is
-    ///   **live-handle idempotent**: each spawn subscribes the
-    ///   credential + lease buses, so spawning twice would subscribe
-    ///   twice and double-dispatch every refresh/revoke to the resource
-    ///   fan-out. The first call that has a manager spawns and returns
-    ///   `Some(driver)`; calls while that handle remains live are a no-op
-    ///   `None` and do **not** subscribe again (the generation is claimed
-    ///   atomically, so a concurrent double-call still yields exactly one
-    ///   driver). Once that handle is aborted or dropped, a later call may
-    ///   start a replacement. A
-    ///   no-manager call spawns nothing and does **not** consume the
-    ///   single-shot — a later call once a manager is wired can still
-    ///   spawn.
+    /// # Errors
+    ///
+    /// Returns [`ResourceReconciliationStartupError`] for a stored-resource source
+    /// without a manager, an already-running driver, missing driver inputs, or
+    /// conflicting manager affinity. Failures are never suppressed as absence.
     ///
     /// No `nebula-resource → nebula-engine` edge: the index is now owned
     /// by `nebula-resource` and rotation signals arrive via
@@ -1017,18 +1031,26 @@ impl WorkflowEngine {
     #[must_use = "the returned driver handle must be held; dropping it aborts the fan-out"]
     pub fn spawn_resource_rotation_fanout(
         &self,
-        credential_bus: Arc<nebula_eventbus::EventBus<nebula_credential::CredentialEvent>>,
+        credential_bus: Option<Arc<nebula_eventbus::EventBus<nebula_credential::CredentialEvent>>>,
         lease_bus: Option<Arc<nebula_eventbus::EventBus<nebula_credential::LeaseEvent>>>,
-    ) -> Option<nebula_resource::ResourceFanoutDriver> {
+    ) -> Result<Option<nebula_resource::ResourceFanoutDriver>, ResourceReconciliationStartupError>
+    {
         // Only a deployment with a resource manager has anything to fan
         // rotations to. Resolve it *before* claiming the single-shot so a
         // no-manager call does not burn the guard.
-        let manager = Arc::clone(self.resource_manager.as_ref()?);
+        let Some(manager) = self.resource_manager.as_ref() else {
+            if self.stored_resources.is_some() {
+                tracing::error!(target: "nebula_engine", "stored-resource reconciliation has no manager");
+                return Err(ResourceReconciliationStartupError::MissingManager);
+            }
+            return Ok(None);
+        };
+        let manager = Arc::clone(manager);
 
         // Claim the live-driver slot. If it was already set, the driver is
         // already running on its own subscriber pair —
         // spawning again would double-subscribe and double-dispatch every
-        // event, so return `None` and subscribe nothing.
+        // event, so reject the duplicate without subscribing.
         let generation = loop {
             let generation = NEXT_RESOURCE_FANOUT_GENERATION.fetch_add(1, Ordering::Relaxed);
             if generation != 0 {
@@ -1043,9 +1065,9 @@ impl WorkflowEngine {
             tracing::debug!(
                 target: "nebula_engine",
                 "spawn_resource_rotation_fanout called again; fan-out driver \
-                 already running — no second subscriber spawned (idempotent)"
+                 already running — no second subscriber spawned"
             );
-            return None;
+            return Err(ResourceReconciliationStartupError::AlreadyRunning);
         }
 
         let generation_state = Arc::clone(&self.resource_fanout_generation);
@@ -1058,27 +1080,26 @@ impl WorkflowEngine {
             );
         });
         let rollback = scopeguard::guard(Arc::clone(&release_generation), |release| release());
-        let driver =
-            match nebula_resource::ResourceFanoutDriver::try_spawn_with_resolver_and_lifecycle(
-                Arc::clone(&self.resource_fanout_index),
-                manager,
-                self.credential_resolver.clone(),
-                credential_bus,
-                lease_bus,
-                release_generation,
-            ) {
-                Ok(driver) => driver,
-                Err(error) => {
-                    tracing::error!(
-                        target: "nebula_engine",
-                        %error,
-                        "resource rotation fan-out rejected manager affinity conflict"
-                    );
-                    return None;
-                },
-            };
+        let driver = match nebula_resource::ResourceFanoutDriver::try_spawn(
+            Arc::clone(&self.resource_fanout_index),
+            manager,
+            self.credential_resolver.clone(),
+            credential_bus,
+            lease_bus,
+            release_generation,
+        ) {
+            Ok(driver) => driver,
+            Err(error) => {
+                tracing::error!(
+                    target: "nebula_engine",
+                    %error,
+                    "resource reconciliation rejected startup configuration"
+                );
+                return Err(ResourceReconciliationStartupError::Driver(error));
+            },
+        };
         let _ = scopeguard::ScopeGuard::into_inner(rollback);
-        Some(driver)
+        Ok(Some(driver))
     }
 
     /// Gracefully stop the attached resource manager within `budget`.
@@ -1409,7 +1430,8 @@ impl WorkflowEngine {
     /// Activation retires a deleted row only when an execution names it
     /// again, which after a deletion usually never happens; without this
     /// sweep the row's runtime, connections and credential bindings would
-    /// live until the process ends. The worker runs it on its status tick.
+    /// live until the process ends. The worker runs this independently of status
+    /// publication, so diagnostic storage cannot block lifecycle maintenance.
     /// A row an activation holds right now is left to that activation.
     pub async fn retire_deleted_resources(&self) {
         let (Some(activator), Some(manager)) = (&self.stored_resources, &self.resource_manager)
@@ -4661,7 +4683,7 @@ fn final_state_node_key() -> NodeKey {
 /// deliberately NOT atomic with the terminal transition: mint-on-park rides the
 /// `TransitionBatch` so state and token can't diverge on a crash, but the
 /// terminal-side cleanup is a separate call. A crash in the window leaves only
-/// un-reachable dead token rows, backstopped by the `port_resume_tokens`
+/// un-reachable dead token rows, backstopped by the `resume_tokens`
 /// `ON DELETE CASCADE` FK and the no-op of a resume targeting a terminal
 /// execution (see the `nebula_storage_port::store::resume_token` module docs).
 ///
@@ -4843,19 +4865,21 @@ fn map_termination_reason(
 
 /// Extract the primary output value from an ActionResult for downstream input resolution.
 fn extract_primary_output(result: &ActionResult<serde_json::Value>) -> Option<serde_json::Value> {
+    primary_output(result).and_then(|output| output.as_value().cloned())
+}
+
+fn primary_output(
+    result: &ActionResult<serde_json::Value>,
+) -> Option<&nebula_action::ActionOutput<serde_json::Value>> {
     match result {
-        ActionResult::Success { output } => output.as_value().cloned(),
-        ActionResult::Skip { output, .. } => output.as_ref().and_then(|o| o.as_value().cloned()),
-        ActionResult::Continue { output, .. } => output.as_value().cloned(),
-        ActionResult::Break { output, .. } => output.as_value().cloned(),
-        ActionResult::Branch { output, .. } => output.as_value().cloned(),
-        ActionResult::Route { data, .. } => data.as_value().cloned(),
-        ActionResult::MultiOutput { main_output, .. } => {
-            main_output.as_ref().and_then(|o| o.as_value().cloned())
-        },
-        ActionResult::Wait { partial_output, .. } => {
-            partial_output.as_ref().and_then(|o| o.as_value().cloned())
-        },
+        ActionResult::Success { output }
+        | ActionResult::Continue { output, .. }
+        | ActionResult::Break { output, .. }
+        | ActionResult::Branch { output, .. } => Some(output),
+        ActionResult::Skip { output, .. } => output.as_ref(),
+        ActionResult::Route { data, .. } => Some(data),
+        ActionResult::MultiOutput { main_output, .. } => main_output.as_ref(),
+        ActionResult::Wait { partial_output, .. } => partial_output.as_ref(),
         _ => None,
     }
 }

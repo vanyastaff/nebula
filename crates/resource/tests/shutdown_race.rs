@@ -165,7 +165,7 @@ async fn graceful_shutdown_blocks_in_flight_acquire() {
     let acquire_handle = tokio::spawn(async move {
         let ctx = test_ctx();
         let result = mgr
-            .acquire_resident::<SlowCreateResource>(&ctx, &AcquireOptions::default())
+            .acquire::<SlowCreateResource>(&ctx, &AcquireOptions::default())
             .await;
         // Drop the guard inline so the in-flight slot is released — otherwise
         // `wait_for_drain` would block until `drain_timeout` because the guard
@@ -280,7 +280,7 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
     // cancel token has fired).
     let ctx = test_ctx();
     let result = manager
-        .acquire_resident::<SlowCreateResource>(&ctx, &AcquireOptions::default())
+        .acquire::<SlowCreateResource>(&ctx, &AcquireOptions::default())
         .await;
 
     match result {
@@ -403,7 +403,7 @@ async fn reaper_skips_refill_when_shutdown_lands_mid_sweep() {
     // Seed one idle instance (matches min_size) via acquire + release.
     let ctx = test_ctx();
     let handle = manager
-        .acquire_pooled::<PausableEvictResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PausableEvictResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("seed acquire succeeds");
     assert_eq!(

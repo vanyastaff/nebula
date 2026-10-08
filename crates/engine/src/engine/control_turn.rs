@@ -137,14 +137,14 @@ impl WorkflowEngine {
             .map(|candidate| {
                 let state = serde_json::to_value(candidate)
                     .map_err(|_| EngineError::InvalidRecordedExecution)?;
-                nebula_storage_port::TransitionBatch::builder()
-                    .scope(scope.clone())
-                    .execution_id(&id)
-                    .expected_version(*repo_version)
-                    .fencing(fence)
-                    .new_state(state)
-                    .build()
-                    .map_err(|_| EngineError::InvalidRecordedExecution)
+                Ok::<_, EngineError>(nebula_storage_port::TransitionBatch::new(
+                    scope.clone(),
+                    &id,
+                    *repo_version,
+                    fence,
+                    state,
+                    execution_listing(candidate),
+                ))
             })
             .transpose()?;
         let transition = match &batch {

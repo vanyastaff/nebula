@@ -1117,7 +1117,7 @@ mod fanout_dispatch {
                 CancellationToken::new(),
             );
             let _g = mgr
-                .acquire_resident_for_identity::<CtlResource>(&ctx, &AcquireOptions::default(), id)
+                .acquire_for_identity::<CtlResource>(&ctx, &AcquireOptions::default(), id)
                 .await
                 .expect("warm tenant runtime");
 
@@ -1496,22 +1496,14 @@ mod fanout_dispatch {
             CancellationToken::new(),
         );
         let error = manager
-            .acquire_resident_for_identity::<CtlResource>(
-                &ctx,
-                &AcquireOptions::default(),
-                &identity,
-            )
+            .acquire_for_identity::<CtlResource>(&ctx, &AcquireOptions::default(), &identity)
             .await
             .expect_err("initializing credential projection must reject acquire");
         assert_eq!(error.kind(), &crate::ErrorKind::Backpressure);
         index.complete_material_context(&credential_id, sequence, &manager);
         assert_eq!(managed.phase(), crate::state::ResourcePhase::Ready);
         let _guard = manager
-            .acquire_resident_for_identity::<CtlResource>(
-                &ctx,
-                &AcquireOptions::default(),
-                &identity,
-            )
+            .acquire_for_identity::<CtlResource>(&ctx, &AcquireOptions::default(), &identity)
             .await
             .expect("reconciled row accepts acquire");
 
@@ -1573,12 +1565,15 @@ mod fanout_dispatch {
 
         let index = Arc::new(index);
         let bus = Arc::new(EventBus::new(16));
-        let driver = crate::ResourceFanoutDriver::spawn(
+        let mut driver = crate::ResourceFanoutDriver::try_spawn(
             Arc::clone(&index),
             Arc::clone(&manager),
-            Arc::clone(&bus),
             None,
-        );
+            Some(Arc::clone(&bus)),
+            None,
+            Arc::new(|| {}),
+        )
+        .expect("valid signal-only driver");
         bus.emit(CredentialEvent::Revoked {
             credential_id: first_credential,
         });
@@ -1613,6 +1608,13 @@ mod fanout_dispatch {
 
         ledger.revoke_release.add_permits(1);
         driver.abort();
+        assert!(
+            driver
+                .wait()
+                .await
+                .expect_err("abort cancels parent")
+                .is_cancelled()
+        );
     }
 
     #[tokio::test]
@@ -1689,11 +1691,7 @@ mod fanout_dispatch {
             CancellationToken::new(),
         );
         let held = manager
-            .acquire_resident_for_identity::<CtlResource>(
-                &context,
-                &AcquireOptions::default(),
-                &identity,
-            )
+            .acquire_for_identity::<CtlResource>(&context, &AcquireOptions::default(), &identity)
             .await
             .expect("hold row in flight");
         let managed = manager
@@ -1776,11 +1774,7 @@ mod fanout_dispatch {
             CancellationToken::new(),
         );
         let held = manager
-            .acquire_resident_for_identity::<CtlResource>(
-                &context,
-                &AcquireOptions::default(),
-                &identity,
-            )
+            .acquire_for_identity::<CtlResource>(&context, &AcquireOptions::default(), &identity)
             .await
             .expect("hold row in flight");
         let managed = manager
@@ -2181,7 +2175,7 @@ mod fanout_dispatch {
             setup(std::slice::from_ref(&identity)).await;
         ledger.set(identity.clone(), Behaviour::FastOk);
         let in_flight = manager
-            .acquire_resident_for_identity::<CtlResource>(
+            .acquire_for_identity::<CtlResource>(
                 &ctx_for(org),
                 &AcquireOptions::default(),
                 &identity,
@@ -2210,7 +2204,7 @@ mod fanout_dispatch {
             setup(std::slice::from_ref(&identity)).await;
         ledger.set(identity.clone(), Behaviour::FastErr);
         let in_flight = manager
-            .acquire_resident_for_identity::<CtlResource>(
+            .acquire_for_identity::<CtlResource>(
                 &ctx_for(org),
                 &AcquireOptions::default(),
                 &identity,
@@ -2241,7 +2235,7 @@ mod fanout_dispatch {
             setup(std::slice::from_ref(&identity)).await;
         ledger.set(identity.clone(), Behaviour::Hang);
         let in_flight = manager
-            .acquire_resident_for_identity::<CtlResource>(
+            .acquire_for_identity::<CtlResource>(
                 &ctx_for(org),
                 &AcquireOptions::default(),
                 &identity,
@@ -2276,7 +2270,7 @@ mod fanout_dispatch {
             setup_with_config(std::slice::from_ref(&identity), manager_config).await;
         ledger.set(identity.clone(), Behaviour::FastOk);
         let in_flight = manager
-            .acquire_resident_for_identity::<CtlResource>(
+            .acquire_for_identity::<CtlResource>(
                 &ctx_for(org),
                 &AcquireOptions::default(),
                 &identity,
@@ -2445,7 +2439,7 @@ mod fanout_dispatch {
         // exact resolved row stay rejected.
         let ctx = ctx_for(org);
         let acquired = mgr
-            .acquire_resident_for_identity::<CtlResource>(&ctx, &AcquireOptions::default(), &hung)
+            .acquire_for_identity::<CtlResource>(&ctx, &AcquireOptions::default(), &hung)
             .await;
         let err = match acquired {
             Err(e) => e,
@@ -2493,11 +2487,7 @@ mod fanout_dispatch {
         // of completing on its first poll, making the subsequent drop a
         // true mid-flight cancellation.
         let in_flight = match mgr
-            .acquire_resident_for_identity::<CtlResource>(
-                &ctx_for(org),
-                &AcquireOptions::default(),
-                &id,
-            )
+            .acquire_for_identity::<CtlResource>(&ctx_for(org), &AcquireOptions::default(), &id)
             .await
         {
             Ok(g) => g,
@@ -2549,7 +2539,7 @@ mod fanout_dispatch {
         drop(in_flight);
         let ctx = ctx_for(org);
         let acquired = mgr
-            .acquire_resident_for_identity::<CtlResource>(&ctx, &AcquireOptions::default(), &id)
+            .acquire_for_identity::<CtlResource>(&ctx, &AcquireOptions::default(), &id)
             .await;
         let err = match acquired {
             Err(e) => e,

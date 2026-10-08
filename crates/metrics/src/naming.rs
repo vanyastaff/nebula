@@ -1172,7 +1172,7 @@ pub mod refresh_coord_coalesced_tier {
 /// closed labels:
 ///
 /// - `recorded` — sweep atomically accounted an expired `RefreshInFlight` row in
-///   `credential_sentinel_events`, retained it as poison, and returned
+///   `credential_refresh_incidents`, retained it as poison, and returned
 ///   `SentinelDecision::BelowThreshold`.
 /// - `reauth_triggered` — same as above, but the database-clock rolling-window count of distinct
 ///   claim UUID incidents crossed `sentinel_threshold`, so the sweep emitted a lossy

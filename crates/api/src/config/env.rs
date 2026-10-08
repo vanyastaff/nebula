@@ -77,6 +77,8 @@ pub(crate) mod tests {
         "API_IDEMPOTENCY_MAX_RESPONSE_BODY_BYTES",
         "API_IDEMPOTENCY_SWEEP_INTERVAL_SECS",
         "API_AUTH_BACKEND",
+        "API_EXECUTION_BACKEND",
+        "API_EXECUTION_DB_PATH",
         "API_SMTP_HOST",
         "API_SMTP_PORT",
         "API_SMTP_USERNAME",

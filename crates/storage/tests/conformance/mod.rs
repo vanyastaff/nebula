@@ -26,14 +26,14 @@ use nebula_core::{
     PluginSetId, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId, WorkspaceId,
 };
 use nebula_storage_port::dto::{
-    CachedRecord, ContractBundleRecord, ControlCommand, ControlMsg, JobDispatchMsg, JournalEntry,
+    ContractBundleRecord, ControlCommand, ControlMsg, JobDispatchMsg, JournalEntry,
     MaterializedStart, NewExecution, ResumeTarget, WebhookActivationRecord, WebhookMode,
     WorkflowRecord, WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionStore,
-    IdempotencyGuard, IdempotencyStore, JobClaimToken, JobDispatchQueue, StartAcceptanceStore,
-    StartContractIdentity, StartMaterialization, WebhookActivationStore, WorkflowStore,
+    IdempotencyGuard, JobClaimToken, JobDispatchQueue, StartAcceptanceStore, StartContractIdentity,
+    StartMaterialization, TriggerStore, WebhookActivationStore, WorkflowStore,
     WorkflowVersionStore,
 };
 use nebula_storage_port::{
@@ -42,6 +42,20 @@ use nebula_storage_port::{
     RevisionInsertOutcome, RevisionRecordBytes, Scope, StorageError, TransitionBatch,
     TransitionOutcome, WorkerFlavorRevisionRecord,
 };
+
+#[path = "../support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "the harness reaches each backend through its stores, not through a raw pool"
+)]
+mod execution_parents;
+
+/// Create the live workflow `workflow_id` names in `scope`: an execution
+/// references its workflow, which the SQL backends enforce.
+async fn seed_workflow(backend: &dyn Backend, scope: &Scope, workflow_id: &str) {
+    execution_parents::seed_workflow(backend.workflow_store().await.as_ref(), scope, workflow_id)
+        .await;
+}
 
 /// A storage backend under conformance test. Returns port handles built on
 /// that backend's concrete adapter.
@@ -61,8 +75,6 @@ pub(crate) trait Backend: Send + Sync {
     /// [`Backend::execution_store`] so a `commit`'s journal entries are
     /// observable.
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader>;
-    /// A durable idempotent-replay cache backed by this backend.
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore>;
     /// A webhook-activation store backed by this backend.
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore>;
     /// A workflow-row store backed by this backend (spec-16 split).
@@ -83,6 +95,76 @@ pub(crate) trait Backend: Send + Sync {
     /// The exact plan/flavor catalog lifecycle admin backed by this backend,
     /// used to prove a drain causes materialized starts to fail closed.
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin>;
+    /// The tenant provisioning store of a backend that enforces that a
+    /// workspace-owned row has its workspace; `None` for the in-memory one.
+    async fn tenant_provisioning_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
+        None
+    }
+    /// The trigger store of a backend that checks a trigger's workflow;
+    /// `None` for the in-memory one.
+    async fn trigger_store(&self) -> Option<Arc<dyn TriggerStore>> {
+        None
+    }
+    /// Hard-delete the row `id` of `table` (`executions`, `workflows` or
+    /// `resources`) in `scope`, as purge will (issue 1159), so a relational
+    /// case observes what cascades with it. Whether a row was deleted; `false`
+    /// for the in-memory backend, which has no purge.
+    async fn purge(&self, _table: &'static str, _scope: &Scope, _id: &str) -> bool {
+        false
+    }
+    /// Archive (`purge == false`) or hard-delete `scope`'s workspace, as the
+    /// tenant lifecycle will (issue 1159). Whether a row changed; `false` for
+    /// the in-memory backend.
+    async fn retire_workspace(&self, _scope: &Scope, _purge: bool) -> bool {
+        false
+    }
+    /// The stored-resource store of a backend that checks a resource's
+    /// workspace; `None` for the in-memory one.
+    async fn resource_store(&self) -> Option<Arc<dyn nebula_storage_port::store::ResourceStore>> {
+        None
+    }
+    /// The resource status store of a backend that checks a snapshot's
+    /// resource; `None` for the in-memory one.
+    async fn resource_status_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::ResourceStatusStore>> {
+        None
+    }
+    /// The shared-resource runtime of a backend that checks a shared
+    /// resource's workspace; `None` for the in-memory one.
+    async fn resource_runtime(&self) -> Option<Arc<dyn resources::SharedResourceRuntime>> {
+        None
+    }
+}
+
+/// Provision `scope` (when the backend checks tenants) and the live workflow
+/// an execution in it names.
+async fn seed_scope_and_workflow(backend: &dyn Backend, scope: &Scope, workflow_id: &str) {
+    if let Some(tenants) = backend.tenant_provisioning_store().await {
+        execution_parents::provision_scope(tenants.as_ref(), scope).await;
+    }
+    seed_workflow(backend, scope, workflow_id).await;
+}
+
+/// Create the execution `execution_id` in `scope`, with its tenant and
+/// workflow: a queue row belongs to its execution, which the SQL backends
+/// enforce. Idempotent.
+async fn seed_execution(backend: &dyn Backend, scope: &Scope, execution_id: &str) {
+    seed_scope_and_workflow(backend, scope, "wf_queued").await;
+    let store = backend.execution_store().await;
+    if store
+        .get(scope, execution_id)
+        .await
+        .expect("read the fixture execution")
+        .is_none()
+    {
+        store
+            .create(scope, execution_id, "wf_queued", serde_json::json!({}))
+            .await
+            .expect("create the fixture execution");
+    }
 }
 
 /// Test-only clock control for SQL job-dispatch retention assertions.
@@ -105,7 +187,6 @@ pub(crate) trait SqlJobTimestampFixture: Backend {
 pub(crate) struct InMemoryBackend {
     store: nebula_storage::inmem::InMemoryExecutionStore,
     guard: nebula_storage::inmem::InMemoryIdempotencyGuard,
-    idem_store: nebula_storage::inmem::InMemoryIdempotencyStore,
     webhook: nebula_storage::inmem::InMemoryWebhookActivationStore,
     workflow: nebula_storage::inmem::InMemoryWorkflowStore,
     workflow_version: nebula_storage::inmem::InMemoryWorkflowVersionStore,
@@ -126,7 +207,6 @@ impl Default for InMemoryBackend {
         Self {
             store,
             guard: nebula_storage::inmem::InMemoryIdempotencyGuard::new(),
-            idem_store: nebula_storage::inmem::InMemoryIdempotencyStore::new(),
             webhook: nebula_storage::inmem::InMemoryWebhookActivationStore::new(),
             workflow,
             workflow_version,
@@ -154,9 +234,6 @@ impl Backend for InMemoryBackend {
         Arc::new(nebula_storage::inmem::InMemoryJournalReader::new(
             &self.store,
         ))
-    }
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
-        Arc::new(self.idem_store.clone())
     }
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
         Arc::new(self.webhook.clone())
@@ -220,6 +297,10 @@ impl SqliteBackend {
                 nebula_storage::sqlite::init_schema(&pool)
                     .await
                     .expect("install port schema");
+                provision_fixed_scopes(
+                    &nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone()),
+                )
+                .await;
                 pool
             })
             .await
@@ -235,16 +316,17 @@ impl SqlJobTimestampFixture for SqliteBackend {
         job_id: &[u8; 16],
         age: std::time::Duration,
     ) -> Result<(), StorageError> {
-        let age_ms = i64::try_from(age.as_millis()).unwrap_or(i64::MAX);
-        let timestamp_ms = chrono::Utc::now().timestamp_millis().saturating_sub(age_ms);
-        let rows_updated =
-            sqlx::query("UPDATE port_job_dispatch_queue SET processed_at_ms = ? WHERE id = ?")
-                .bind(timestamp_ms)
-                .bind(job_id.as_slice())
-                .execute(&self.pool().await)
-                .await
-                .map_err(|error| StorageError::Connection(error.to_string()))?
-                .rows_affected();
+        let age_micros = i64::try_from(age.as_micros()).unwrap_or(i64::MAX);
+        let rows_updated = sqlx::query(
+            "UPDATE job_dispatch_queue SET processed_at = \
+             CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER) - ? WHERE id = ?",
+        )
+        .bind(age_micros)
+        .bind(job_id.as_slice())
+        .execute(&self.pool().await)
+        .await
+        .map_err(|error| StorageError::Connection(error.to_string()))?
+        .rows_affected();
         if rows_updated != 1 {
             return Err(StorageError::NotFound {
                 entity: "job_dispatch",
@@ -298,16 +380,6 @@ impl Backend for SqliteBackend {
     }
     #[cfg(not(feature = "sqlite"))]
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
-        unimplemented!("build with --features sqlite to exercise the SQLite backend")
-    }
-    #[cfg(feature = "sqlite")]
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
-        Arc::new(nebula_storage::sqlite::SqliteIdempotencyStore::new(
-            self.pool().await,
-        ))
-    }
-    #[cfg(not(feature = "sqlite"))]
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
     #[cfg(feature = "sqlite")]
@@ -378,6 +450,69 @@ impl Backend for SqliteBackend {
             &nebula_metrics::MetricsRegistry::new(),
         ))
     }
+    #[cfg(feature = "sqlite")]
+    async fn tenant_provisioning_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
+        Some(Arc::new(
+            nebula_storage::sqlite::SqliteTenantProvisioningStore::new(self.pool().await),
+        ))
+    }
+    #[cfg(feature = "sqlite")]
+    async fn trigger_store(&self) -> Option<Arc<dyn TriggerStore>> {
+        Some(Arc::new(nebula_storage::sqlite::SqliteTriggerStore::new(
+            self.pool().await,
+        )))
+    }
+    #[cfg(feature = "sqlite")]
+    async fn purge(&self, table: &'static str, scope: &Scope, id: &str) -> bool {
+        let sql = format!("DELETE FROM {table} WHERE org_id = ? AND workspace_id = ? AND id = ?");
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(id)
+            .execute(&self.pool().await)
+            .await
+            .expect("purge the row")
+            .rows_affected()
+            == 1
+    }
+    #[cfg(feature = "sqlite")]
+    async fn retire_workspace(&self, scope: &Scope, purge: bool) -> bool {
+        let sql = if purge {
+            "DELETE FROM workspaces WHERE org_id = ? AND id = ?"
+        } else {
+            "UPDATE workspaces SET deleted_at = 1 WHERE org_id = ? AND id = ?"
+        };
+        sqlx::query(sql)
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .execute(&self.pool().await)
+            .await
+            .expect("retire the workspace")
+            .rows_affected()
+            == 1
+    }
+    #[cfg(feature = "sqlite")]
+    async fn resource_store(&self) -> Option<Arc<dyn nebula_storage_port::store::ResourceStore>> {
+        Some(Arc::new(nebula_storage::sqlite::SqliteResourceStore::new(
+            self.pool().await,
+        )))
+    }
+    #[cfg(feature = "sqlite")]
+    async fn resource_status_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::ResourceStatusStore>> {
+        Some(Arc::new(
+            nebula_storage::sqlite::SqliteResourceStatusStore::new(self.pool().await),
+        ))
+    }
+    #[cfg(feature = "sqlite")]
+    async fn resource_runtime(&self) -> Option<Arc<dyn resources::SharedResourceRuntime>> {
+        Some(Arc::new(
+            nebula_storage::sqlite::SqliteResourceRuntime::new(self.pool().await),
+        ))
+    }
     #[cfg(not(feature = "sqlite"))]
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
@@ -427,6 +562,10 @@ impl PostgresBackend {
                 nebula_storage::postgres::init_schema(&pool)
                     .await
                     .expect("install port schema");
+                provision_fixed_scopes(&nebula_storage::postgres::PgTenantProvisioningStore::new(
+                    pool.clone(),
+                ))
+                .await;
                 pool
             })
             .await
@@ -442,16 +581,17 @@ impl SqlJobTimestampFixture for PostgresBackend {
         job_id: &[u8; 16],
         age: std::time::Duration,
     ) -> Result<(), StorageError> {
-        let age_ms = i64::try_from(age.as_millis()).unwrap_or(i64::MAX);
-        let timestamp_ms = chrono::Utc::now().timestamp_millis().saturating_sub(age_ms);
-        let rows_updated =
-            sqlx::query("UPDATE port_job_dispatch_queue SET processed_at_ms = $1 WHERE id = $2")
-                .bind(timestamp_ms)
-                .bind(job_id.as_slice())
-                .execute(&self.pool().await)
-                .await
-                .map_err(|error| StorageError::Connection(error.to_string()))?
-                .rows_affected();
+        let age_micros = i64::try_from(age.as_micros()).unwrap_or(i64::MAX);
+        let rows_updated = sqlx::query(
+            "UPDATE job_dispatch_queue \
+             SET processed_at = clock_timestamp() - $1 * INTERVAL '1 microsecond' WHERE id = $2",
+        )
+        .bind(age_micros)
+        .bind(job_id.as_slice())
+        .execute(&self.pool().await)
+        .await
+        .map_err(|error| StorageError::Connection(error.to_string()))?
+        .rows_affected();
         if rows_updated != 1 {
             return Err(StorageError::NotFound {
                 entity: "job_dispatch",
@@ -505,16 +645,6 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn journal_reader(&self) -> Arc<dyn ExecutionJournalReader> {
-        unimplemented!("build with --features postgres to exercise the Postgres backend")
-    }
-    #[cfg(feature = "postgres")]
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
-        Arc::new(nebula_storage::postgres::PgIdempotencyStore::new(
-            self.pool().await,
-        ))
-    }
-    #[cfg(not(feature = "postgres"))]
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
     #[cfg(feature = "postgres")]
@@ -585,13 +715,89 @@ impl Backend for PostgresBackend {
             &nebula_metrics::MetricsRegistry::new(),
         ))
     }
+    #[cfg(feature = "postgres")]
+    async fn tenant_provisioning_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
+        Some(Arc::new(
+            nebula_storage::postgres::PgTenantProvisioningStore::new(self.pool().await),
+        ))
+    }
+    #[cfg(feature = "postgres")]
+    async fn trigger_store(&self) -> Option<Arc<dyn TriggerStore>> {
+        Some(Arc::new(nebula_storage::postgres::PgTriggerStore::new(
+            self.pool().await,
+        )))
+    }
+    #[cfg(feature = "postgres")]
+    async fn purge(&self, table: &'static str, scope: &Scope, id: &str) -> bool {
+        let sql =
+            format!("DELETE FROM {table} WHERE org_id = $1 AND workspace_id = $2 AND id = $3");
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .bind(id)
+            .execute(&self.pool().await)
+            .await
+            .expect("purge the row")
+            .rows_affected()
+            == 1
+    }
+    #[cfg(feature = "postgres")]
+    async fn retire_workspace(&self, scope: &Scope, purge: bool) -> bool {
+        let sql = if purge {
+            "DELETE FROM workspaces WHERE org_id = $1 AND id = $2"
+        } else {
+            "UPDATE workspaces SET deleted_at = now() WHERE org_id = $1 AND id = $2"
+        };
+        sqlx::query(sql)
+            .bind(&scope.org_id)
+            .bind(&scope.workspace_id)
+            .execute(&self.pool().await)
+            .await
+            .expect("retire the workspace")
+            .rows_affected()
+            == 1
+    }
+    #[cfg(feature = "postgres")]
+    async fn resource_store(&self) -> Option<Arc<dyn nebula_storage_port::store::ResourceStore>> {
+        Some(Arc::new(nebula_storage::postgres::PgResourceStore::new(
+            self.pool().await,
+        )))
+    }
+    #[cfg(feature = "postgres")]
+    async fn resource_status_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::ResourceStatusStore>> {
+        Some(Arc::new(
+            nebula_storage::postgres::PgResourceStatusStore::new(self.pool().await),
+        ))
+    }
+    #[cfg(feature = "postgres")]
+    async fn resource_runtime(&self) -> Option<Arc<dyn resources::SharedResourceRuntime>> {
+        Some(Arc::new(nebula_storage::postgres::PgResourceRuntime::new(
+            self.pool().await,
+        )))
+    }
     #[cfg(not(feature = "postgres"))]
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
 }
 
+mod dispatch;
+mod history;
 mod requirements;
+pub(crate) mod resources;
+
+pub(crate) use dispatch::{
+    assert_dispatch_writes_require_live_parents, assert_queue_rows_cascade_with_their_execution,
+    assert_queue_rows_require_their_execution, assert_triggers_cascade_with_their_workflow,
+};
+pub(crate) use history::{
+    assert_history_is_scope_isolated, assert_history_orders_filters_and_pages,
+    assert_status_projection_follows_commit,
+};
 
 /// Postgres skip decision, resolved by feature flag so there is exactly
 /// one match arm for the `"Postgres"` literal (avoids overlapping-pattern
@@ -659,12 +865,22 @@ fn scope_b() -> Scope {
     Scope::new("ws_b", "org_b")
 }
 
+/// Provision the tenants behind the fixed scopes, so workspace-owned rows
+/// satisfy their foreign keys on the SQL backends. Replays are no-ops.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+async fn provision_fixed_scopes(store: &dyn nebula_storage_port::store::TenantProvisioningStore) {
+    for scope in [scope_a(), scope_b()] {
+        execution_parents::provision_scope(store, &scope).await;
+    }
+}
+
 // ── shared contract assertions ────────────────────────────────────────────
 
 /// create → get returns the row within the same scope.
 pub(crate) async fn assert_create_get_roundtrip(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_1", "wf_1", serde_json::json!({"k": 1}))
         .await
@@ -680,6 +896,7 @@ pub(crate) async fn assert_create_get_roundtrip(backend: &dyn Backend) {
 pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_cas", "wf_1", serde_json::json!({}))
         .await
@@ -689,14 +906,14 @@ pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease must be acquirable", backend.name()));
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_cas")
-        .expected_version(999) // deliberately wrong
-        .fencing(token)
-        .new_state(serde_json::json!({"s": "running"}))
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_cas",
+        999, // deliberately wrong
+        token,
+        serde_json::json!({"s": "running"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    );
     let outcome = store.commit(batch).await.expect("commit");
     assert!(
         matches!(outcome, TransitionOutcome::VersionConflict { .. }),
@@ -709,6 +926,7 @@ pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
 pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) -> serde_json::Value {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_fence", "wf_1", serde_json::json!({}))
         .await
@@ -730,14 +948,14 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) ->
         .unwrap();
     // A token from an older generation than whatever the store now holds.
     let stale = FencingToken::from_generation(0);
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_fence")
-        .expected_version(0)
-        .fencing(stale)
-        .new_state(serde_json::json!({"s": "running"}))
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_fence",
+        0,
+        stale,
+        serde_json::json!({"s": "running"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    );
     let outcome = store.commit(batch).await.expect("commit");
     assert!(
         matches!(
@@ -775,6 +993,7 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) ->
 pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) -> serde_json::Value {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_lease", "wf_1", serde_json::json!({}))
         .await
@@ -875,6 +1094,7 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) -> s
 pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) -> serde_json::Value {
     let store = backend.execution_store().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_triple", "wf_1", serde_json::json!({}))
         .await
@@ -902,16 +1122,16 @@ pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) -> serde_json::V
         seq: None,
         payload: serde_json::json!({"event": "transition"}),
     };
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_triple")
-        .expected_version(0)
-        .fencing(token)
-        .new_state(serde_json::json!({"s": "running"}))
-        .outbox(vec![msg])
-        .journal(vec![je])
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_triple",
+        0,
+        token,
+        serde_json::json!({"s": "running"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![msg])
+    .with_journal(vec![je]);
     let outcome = store.commit(batch).await.expect("commit");
     assert!(
         matches!(outcome, TransitionOutcome::Applied { .. }),
@@ -971,6 +1191,14 @@ pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) -> serde_json::V
 pub(crate) async fn assert_idempotency_first_writer_wins(backend: &dyn Backend) {
     let guard = backend.idempotency_guard().await;
     let s = scope_a();
+    // A mark belongs to its execution, which the SQL backends enforce.
+    seed_workflow(backend, &s, "wf_1").await;
+    backend
+        .execution_store()
+        .await
+        .create(&s, "exe_1", "wf_1", serde_json::json!({}))
+        .await
+        .expect("create the marked execution");
     let first = guard
         .check_and_mark(&s, "exe_1", "node_1", 1)
         .await
@@ -991,6 +1219,7 @@ pub(crate) async fn assert_idempotency_first_writer_wins(backend: &dyn Backend) 
 /// tenant's row, never an error that leaks existence.
 pub(crate) async fn assert_cross_scope_get_is_none(backend: &dyn Backend) {
     let store = backend.execution_store().await;
+    seed_workflow(backend, &scope_a(), "wf_1").await;
     store
         .create(&scope_a(), "exe_x", "wf_1", serde_json::json!({}))
         .await
@@ -1007,18 +1236,19 @@ pub(crate) async fn assert_cross_scope_get_is_none(backend: &dyn Backend) {
 /// must not Apply (the row is invisible cross-tenant).
 pub(crate) async fn assert_cross_scope_commit_is_rejected(backend: &dyn Backend) {
     let store = backend.execution_store().await;
+    seed_workflow(backend, &scope_a(), "wf_1").await;
     store
         .create(&scope_a(), "exe_y", "wf_1", serde_json::json!({}))
         .await
         .expect("create in scope A");
-    let batch = TransitionBatch::builder()
-        .scope(scope_b()) // attacker's scope
-        .execution_id("exe_y")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(0))
-        .new_state(serde_json::json!({"s": "hijacked"}))
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        scope_b(), // attacker's scope
+        "exe_y",
+        0,
+        FencingToken::from_generation(0),
+        serde_json::json!({"s": "hijacked"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    );
     let outcome = store.commit(batch).await;
     // Any of VersionConflict / FencedOut / NotFound (Err) is an acceptable
     // rejection; the only forbidden outcome is a successful cross-tenant
@@ -1061,7 +1291,6 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
         scope: s.clone(),
         version: 0,
         slug: "billing".into(),
-        deleted: false,
     };
     wf.create(&s, rec.clone()).await.expect("create");
 
@@ -1174,7 +1403,6 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
             &s,
             WorkflowRecord {
                 id: "wf_c".into(),
-                deleted: false,
                 version: 2,
                 ..by_id.clone()
             },
@@ -1199,6 +1427,54 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
     assert!(
         matches!(del_missing, Err(StorageError::NotFound { .. })),
         "[{}] soft-delete of a missing row must be NotFound, got {del_missing:?}",
+        backend.name()
+    );
+
+    // A version needs its workflow row.
+    let orphan = ver
+        .create(
+            &s,
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: "wf_v".into(),
+                number: 1,
+                published: false,
+                pinned: false,
+                definition: serde_json::json!({}),
+            },
+        )
+        .await;
+    assert!(
+        matches!(orphan, Err(StorageError::NotFound { .. })),
+        "[{}] a version of a missing workflow must be NotFound, got {orphan:?}",
+        backend.name()
+    );
+    // Two live workflows never share a slug in one scope.
+    wf.create(
+        &s,
+        WorkflowRecord {
+            id: "wf_v".into(),
+            scope: s.clone(),
+            version: 0,
+            slug: "versions".into(),
+        },
+    )
+    .await
+    .expect("create wf_v");
+    let slug_taken = wf
+        .create(
+            &s,
+            WorkflowRecord {
+                id: "wf_slug_twin".into(),
+                scope: s.clone(),
+                version: 0,
+                slug: "versions".into(),
+            },
+        )
+        .await;
+    assert!(
+        matches!(slug_taken, Err(StorageError::Duplicate { .. })),
+        "[{}] a taken active slug must be Duplicate, got {slug_taken:?}",
         backend.name()
     );
 
@@ -1257,6 +1533,112 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
     );
 }
 
+/// A soft-deleted workflow takes its versions with it: every version read
+/// misses, and no version can be appended to it.
+pub(crate) async fn assert_deleted_workflow_hides_its_versions(backend: &dyn Backend) {
+    let wf = backend.workflow_store().await;
+    let ver = backend.workflow_version_store().await;
+    let s = scope_a();
+    let version = |number: u32| WorkflowVersionRecord {
+        activation: None,
+        workflow_id: "wf_deleted".into(),
+        number,
+        published: true,
+        pinned: false,
+        definition: serde_json::json!({ "v": number }),
+    };
+    wf.save_with_published_version(
+        &s,
+        WorkflowRecord {
+            id: "wf_deleted".into(),
+            scope: s.clone(),
+            version: 1,
+            slug: "wf_deleted".into(),
+        },
+        version(1),
+        None,
+    )
+    .await
+    .expect("save");
+    wf.soft_delete(&s, "wf_deleted").await.expect("soft_delete");
+
+    assert!(
+        ver.get(&s, "wf_deleted", 1).await.expect("get").is_none(),
+        "[{}] a deleted workflow's version must be a read miss",
+        backend.name()
+    );
+    assert!(
+        ver.get_published(&s, "wf_deleted")
+            .await
+            .expect("get_published")
+            .is_none(),
+        "[{}] a deleted workflow must have no published version",
+        backend.name()
+    );
+    assert!(
+        ver.list(&s, "wf_deleted").await.expect("list").is_empty(),
+        "[{}] a deleted workflow must list no versions",
+        backend.name()
+    );
+    let appended = ver.create(&s, version(2)).await;
+    assert!(
+        matches!(
+            appended,
+            Err(StorageError::NotFound {
+                entity: "workflow",
+                ..
+            })
+        ),
+        "[{}] appending to a deleted workflow must be NotFound, got {appended:?}",
+        backend.name()
+    );
+}
+
+/// A workflow belongs to an existing workspace (`fk_workflows__workspaces`):
+/// writing one under a scope with no workspace is `NotFound` and leaves
+/// nothing behind, through every write path.
+pub(crate) async fn assert_workspace_owned_rows_require_their_workspace(backend: &dyn Backend) {
+    let wf = backend.workflow_store().await;
+    let unprovisioned = Scope::new("ws_unprovisioned", "org_unprovisioned");
+    let row = WorkflowRecord {
+        id: "wf_orphan".into(),
+        scope: unprovisioned.clone(),
+        version: 1,
+        slug: "orphan".into(),
+    };
+    let created = wf.create(&unprovisioned, row.clone()).await;
+    assert!(
+        matches!(created, Err(StorageError::NotFound { .. })),
+        "[{}] a workflow in a missing workspace must be NotFound, got {created:?}",
+        backend.name()
+    );
+    let saved = wf
+        .save_with_published_version(
+            &unprovisioned,
+            row,
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: "wf_orphan".into(),
+                number: 1,
+                published: true,
+                pinned: false,
+                definition: serde_json::json!({}),
+            },
+            None,
+        )
+        .await;
+    assert!(
+        matches!(saved, Err(StorageError::NotFound { .. })),
+        "[{}] an atomic save in a missing workspace must be NotFound, got {saved:?}",
+        backend.name()
+    );
+    assert!(
+        wf.list(&unprovisioned).await.expect("list").is_empty(),
+        "[{}] a rejected write must leave no row",
+        backend.name()
+    );
+}
+
 /// `WorkflowStore::save_with_published_version` is a real all-or-nothing
 /// unit of work on every backend: the row write and the published-version
 /// write either both land or neither does. This locks the spec-16
@@ -1278,7 +1660,6 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(
             scope: s.clone(),
             version: 1,
             slug: "wf_atomic".into(),
-            deleted: false,
         },
         WorkflowVersionRecord {
             activation: None,
@@ -1319,7 +1700,6 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(
                 scope: s.clone(),
                 version: 2,
                 slug: "wf_atomic".into(),
-                deleted: false,
             },
             WorkflowVersionRecord {
                 activation: None,
@@ -1368,7 +1748,6 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(
                 scope: s.clone(),
                 version: 1,
                 slug: "wf_atomic2".into(),
-                deleted: false,
             },
             WorkflowVersionRecord {
                 activation: None,
@@ -1410,8 +1789,20 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(
 /// `HashMap`-order row; this locks the deterministic
 /// `ORDER BY number DESC LIMIT 1` contract across every backend.
 pub(crate) async fn assert_get_published_is_highest_numbered(backend: &dyn Backend) {
+    let wf = backend.workflow_store().await;
     let ver = backend.workflow_version_store().await;
     let s = scope_a();
+    wf.create(
+        &s,
+        WorkflowRecord {
+            id: "wf_pub".into(),
+            scope: s.clone(),
+            version: 0,
+            slug: "wf_pub".into(),
+        },
+    )
+    .await
+    .expect("create wf_pub");
     // Two published versions for the same workflow (1 and 3) plus an
     // unpublished one (2) — `get_published` must return version 3.
     for (n, published) in [(1u32, true), (2, false), (3, true)] {
@@ -1453,6 +1844,7 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
     let store = backend.execution_store().await;
     let queue = backend.control_queue().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_cq", "wf_1", serde_json::json!({}))
         .await
@@ -1471,15 +1863,15 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
         reclaim_count: 0,
         resume_target: None,
     };
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_cq")
-        .expected_version(0)
-        .fencing(token)
-        .new_state(serde_json::json!({"s": "cancelling"}))
-        .outbox(vec![msg])
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_cq",
+        0,
+        token,
+        serde_json::json!({"s": "cancelling"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![msg]);
     let outcome = store.commit(batch).await.expect("commit");
     assert!(
         matches!(outcome, TransitionOutcome::Applied { .. }),
@@ -1561,13 +1953,14 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
 /// claim. A `None` target also round-trips correctly (backward compatibility
 /// with legacy rows).
 ///
-/// **Falsifiability**: before the `resume_target TEXT` column was added to
-/// `port_control_queue`, `claim_pending` hardcoded `resume_target: None` and
+/// **Falsifiability**: without the `resume_target` column on
+/// `execution_control_queue`, `claim_pending` hardcoded `resume_target: None` and
 /// the `Some(target)` assertion failed → RED.
 pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let queue = backend.control_queue().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_rt").await;
     store
         .create(&s, "exe_rt", "wf_rt", serde_json::json!({}))
         .await
@@ -1590,15 +1983,15 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         reclaim_count: 0,
         resume_target: Some(webhook_target.clone()),
     };
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_rt")
-        .expected_version(0)
-        .fencing(token)
-        .new_state(serde_json::json!({"s": "waiting"}))
-        .outbox(vec![resume_msg])
-        .build()
-        .expect("batch for resume-target round-trip");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_rt",
+        0,
+        token,
+        serde_json::json!({"s": "waiting"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![resume_msg]);
     store
         .commit(batch)
         .await
@@ -1643,15 +2036,15 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         reclaim_count: 0,
         resume_target: None,
     };
-    let batch2 = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_rt2")
-        .expected_version(0)
-        .fencing(token2)
-        .new_state(serde_json::json!({"s": "cancelling"}))
-        .outbox(vec![null_msg])
-        .build()
-        .expect("batch 2");
+    let batch2 = TransitionBatch::new(
+        s.clone(),
+        "exe_rt2",
+        0,
+        token2,
+        serde_json::json!({"s": "cancelling"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![null_msg]);
     store.commit(batch2).await.expect("commit 2");
     // First, drain the already-claimed row above to avoid re-claiming it.
     queue
@@ -1721,6 +2114,7 @@ async fn enqueue_and_climb_reclaim_count(
         reclaim_count: 0,
         resume_target: None,
     };
+    seed_execution(backend, &s, "exe_reclaim").await;
     queue.enqueue(&msg).await.expect("enqueue reclaim row");
 
     let runner = [0xCC_u8; 16];
@@ -1870,6 +2264,7 @@ pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
     let store = backend.execution_store().await;
     let reader = backend.journal_reader().await;
     let s = scope_a();
+    seed_workflow(backend, &s, "wf_1").await;
     store
         .create(&s, "exe_j", "wf_1", serde_json::json!({}))
         .await
@@ -1879,24 +2274,24 @@ pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease", backend.name()));
-    let batch = TransitionBatch::builder()
-        .scope(s.clone())
-        .execution_id("exe_j")
-        .expected_version(0)
-        .fencing(token)
-        .new_state(serde_json::json!({"s": "running"}))
-        .journal(vec![
-            JournalEntry {
-                seq: None,
-                payload: serde_json::json!({"e": "a"}),
-            },
-            JournalEntry {
-                seq: None,
-                payload: serde_json::json!({"e": "b"}),
-            },
-        ])
-        .build()
-        .expect("batch");
+    let batch = TransitionBatch::new(
+        s.clone(),
+        "exe_j",
+        0,
+        token,
+        serde_json::json!({"s": "running"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_journal(vec![
+        JournalEntry {
+            seq: None,
+            payload: serde_json::json!({"e": "a"}),
+        },
+        JournalEntry {
+            seq: None,
+            payload: serde_json::json!({"e": "b"}),
+        },
+    ]);
     store.commit(batch).await.expect("commit");
 
     let entries = reader.get_journal(&s, "exe_j").await.expect("get_journal");
@@ -1921,108 +2316,6 @@ pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
     assert!(
         cross.is_empty(),
         "[{}] a cross-tenant journal read must be empty",
-        backend.name()
-    );
-}
-
-/// The durable idempotent-replay cache is first-writer-wins: a second
-/// `put` on the same key keeps the original record + fingerprint (replay
-/// race). Purely within `scope_a`, so it is decorator-transparent and runs
-/// in both the raw and scoped matrices.
-pub(crate) async fn assert_idempotency_store_first_writer(backend: &dyn Backend) {
-    let store = backend.idempotency_store().await;
-    let raw_key = "POST /x:idem-1".to_string();
-    let first = CachedRecord {
-        status: 200,
-        headers: b"h1".to_vec(),
-        body: b"first".to_vec(),
-        fingerprint: b"fp-first".to_vec(),
-        expires_at: "2999-01-01T00:00:00Z".into(),
-    };
-    let second = CachedRecord {
-        status: 500,
-        headers: b"h2".to_vec(),
-        body: b"second".to_vec(),
-        fingerprint: b"fp-second".to_vec(),
-        expires_at: "2999-01-01T00:00:00Z".into(),
-    };
-    store
-        .put(
-            &scope_a(),
-            raw_key.clone(),
-            first.clone(),
-            std::time::Duration::from_mins(1),
-        )
-        .await
-        .expect("put #1");
-    store
-        .put(
-            &scope_a(),
-            raw_key.clone(),
-            second,
-            std::time::Duration::from_mins(1),
-        )
-        .await
-        .expect("put #2 (must be a no-op)");
-    let got = store
-        .get(&scope_a(), &raw_key)
-        .await
-        .expect("get")
-        .unwrap_or_else(|| panic!("[{}] cached record must be present", backend.name()));
-    assert_eq!(
-        got.body,
-        b"first",
-        "[{}] first-writer-wins: the original body must survive a replay race",
-        backend.name()
-    );
-    assert_eq!(
-        got.fingerprint,
-        b"fp-first",
-        "[{}] the original fingerprint must survive (replay-mismatch detection)",
-        backend.name()
-    );
-}
-
-/// Tenant isolation of the durable replay cache: the store folds the scope
-/// into the stored key, so the *same raw key* under a different scope is a
-/// clean miss — tenant A can neither read nor poison tenant B's entry
-/// (replay-oracle mitigation, §6.1).
-///
-/// This passes an explicit foreign scope to probe the adapter's raw
-/// scope-fold, so — like the other `cross_scope_*` assertions — it runs
-/// only in the raw matrix. The decorator substitutes the per-call scope
-/// away by design, so decorator-level cross-tenant denial is proven in
-/// `cross_tenant_denial.rs` instead.
-pub(crate) async fn assert_idempotency_store_cross_scope_isolated(backend: &dyn Backend) {
-    let store = backend.idempotency_store().await;
-    let raw_key = "POST /x:idem-1".to_string();
-    let record = CachedRecord {
-        status: 200,
-        headers: b"h1".to_vec(),
-        body: b"a-only".to_vec(),
-        fingerprint: b"fp-a".to_vec(),
-        expires_at: "2999-01-01T00:00:00Z".into(),
-    };
-    store
-        .put(
-            &scope_a(),
-            raw_key.clone(),
-            record,
-            std::time::Duration::from_mins(1),
-        )
-        .await
-        .expect("put under scope A");
-
-    // A different tenant probing the *same raw key* is a clean miss — the
-    // store-side scope fold makes it a different stored key, never tenant
-    // A's record.
-    let cross = store
-        .get(&scope_b(), &raw_key)
-        .await
-        .expect("get cross-scope key");
-    assert!(
-        cross.is_none(),
-        "[{}] a cross-tenant cache key must not resolve to another tenant's record",
         backend.name()
     );
 }
@@ -2096,6 +2389,7 @@ pub(crate) async fn assert_webhook_activation_and_scope(backend: &dyn Backend) {
     // Upsert a record with all three ADR-0096 fields set to non-default
     // values and verify exact round-trip (no tautological `is_some()`).
     let token = [0xde_u8; 32];
+    seed_scope_and_workflow(backend, &s, "wf_abc").await;
     let mut extended = WebhookActivationRecord::new("trg_2", s.clone(), "prod-hook", true);
     extended.workflow_id = Some("wf_abc".to_string());
     extended.mode = WebhookMode::Prod;
@@ -2160,6 +2454,8 @@ pub(crate) async fn assert_webhook_system_surface(backend: &dyn Backend) {
     // and workflow_id so exact-value asserts are meaningful.
     let hash_a: [u8; 32] = [0xa1; 32];
     let hash_b: [u8; 32] = [0xb2; 32];
+    seed_scope_and_workflow(backend, &sa, "wf_a").await;
+    seed_scope_and_workflow(backend, &sb, "wf_b").await;
 
     let mut row_a = WebhookActivationRecord::new("trg_sys_a", sa.clone(), "sys-hook-a", true);
     row_a.workflow_id = Some("wf_a".to_string());
@@ -2367,13 +2663,6 @@ impl<B: Backend> Backend for ScopedBackend<B> {
         ))
     }
 
-    async fn idempotency_store(&self) -> Arc<dyn IdempotencyStore> {
-        Arc::new(nebula_tenancy::ScopedIdempotencyStore::new(
-            self.inner.idempotency_store().await,
-            scope_a(),
-        ))
-    }
-
     async fn webhook_store(&self) -> Arc<dyn WebhookActivationStore> {
         Arc::new(nebula_tenancy::ScopedWebhookActivationStore::new(
             self.inner.webhook_store().await,
@@ -2416,6 +2705,20 @@ impl<B: Backend> Backend for ScopedBackend<B> {
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         self.inner.plan_flavor_catalog_admin().await
     }
+
+    async fn tenant_provisioning_store(
+        &self,
+    ) -> Option<Arc<dyn nebula_storage_port::store::TenantProvisioningStore>> {
+        self.inner.tenant_provisioning_store().await
+    }
+
+    async fn trigger_store(&self) -> Option<Arc<dyn TriggerStore>> {
+        self.inner.trigger_store().await
+    }
+
+    async fn purge(&self, table: &'static str, scope: &Scope, id: &str) -> bool {
+        self.inner.purge(table, scope, id).await
+    }
 }
 
 /// A stable processor identity cannot acknowledge a control command whose
@@ -2437,6 +2740,7 @@ pub(crate) async fn assert_control_queue_same_processor_aba_is_fenced(
     let processor = [11u8; 16];
 
     let execution_id = "exe_control_aba";
+    seed_workflow(backend, &scope, "wf_control_aba").await;
     store
         .create(
             &scope,
@@ -2655,6 +2959,7 @@ async fn materialize_execution_reference(
         resume_target: None,
     };
     let workflow_id = workflow_id.to_string();
+    seed_scope_and_workflow(backend, scope, &workflow_id).await;
     backend
         .start_acceptance_store()
         .await
@@ -2728,15 +3033,15 @@ pub(crate) async fn assert_terminal_commit_releases_live_reference(backend: &dyn
         .expect("acquire lease")
         .expect("lease must be available for a fresh execution");
 
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(0)
-        .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed"}))
-        .reference_transition(ExecutionReferenceTransition::ReleaseLive)
-        .build()
-        .expect("terminal release batch");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        0,
+        token,
+        serde_json::json!({"status": "Completed"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::ReleaseLive);
     let outcome = executions
         .commit(batch)
         .await
@@ -2771,18 +3076,18 @@ pub(crate) async fn assert_terminal_commit_retains_rollback_window(backend: &dyn
         .expect("acquire lease")
         .expect("lease must be available for a fresh execution");
 
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(0)
-        .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed"}))
-        .reference_transition(ExecutionReferenceTransition::RetainRollback {
-            window_id: [0x71; 16],
-            retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
-        })
-        .build()
-        .expect("terminal rollback batch");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        0,
+        token,
+        serde_json::json!({"status": "Completed"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::RetainRollback {
+        window_id: [0x71; 16],
+        retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
+    });
     let outcome = executions
         .commit(batch)
         .await
@@ -2819,18 +3124,18 @@ pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transi
         .expect("acquire lease")
         .expect("lease must be available for a fresh execution");
 
-    let first = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(0)
-        .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed"}))
-        .reference_transition(ExecutionReferenceTransition::RetainRollback {
-            window_id: [0x72; 16],
-            retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
-        })
-        .build()
-        .expect("rollback batch");
+    let first = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        0,
+        token,
+        serde_json::json!({"status": "Completed"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::RetainRollback {
+        window_id: [0x72; 16],
+        retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
+    });
     let first_outcome = executions
         .commit(first)
         .await
@@ -2839,15 +3144,15 @@ pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transi
 
     // The same lease token is still current; only the reference transition is
     // incompatible now.
-    let second = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(1)
-        .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed", "second": true}))
-        .reference_transition(ExecutionReferenceTransition::ReleaseLive)
-        .build()
-        .expect("incompatible release batch");
+    let second = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        1,
+        token,
+        serde_json::json!({"status": "Completed", "second": true}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::ReleaseLive);
     let second_outcome = executions.commit(second).await;
     assert!(
         matches!(second_outcome, Err(StorageError::Internal(_))),
@@ -2896,18 +3201,18 @@ pub(crate) async fn assert_expired_rollbacks_are_released(backend: &dyn Backend)
         .expect("acquire lease")
         .expect("lease must be available for a fresh execution");
 
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id.clone())
-        .expected_version(0)
-        .fencing(token)
-        .new_state(serde_json::json!({"status": "Completed"}))
-        .reference_transition(ExecutionReferenceTransition::RetainRollback {
-            window_id: [0x73; 16],
-            retain_until: chrono::Utc::now() - chrono::TimeDelta::minutes(1),
-        })
-        .build()
-        .expect("expired rollback batch");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id.clone(),
+        0,
+        token,
+        serde_json::json!({"status": "Completed"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_reference_transition(ExecutionReferenceTransition::RetainRollback {
+        window_id: [0x73; 16],
+        retain_until: chrono::Utc::now() - chrono::TimeDelta::minutes(1),
+    });
     let outcome = executions
         .commit(batch)
         .await
@@ -2967,6 +3272,13 @@ fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg 
     )
 }
 
+/// Enqueue `job` after creating the execution it names (a job belongs to its
+/// execution, which the SQL backends enforce).
+async fn enqueue_job(backend: &dyn Backend, queue: &dyn JobDispatchQueue, job: &JobDispatchMsg) {
+    seed_execution(backend, &job.scope, &job.execution_id).await;
+    queue.enqueue(job).await.expect("enqueue job");
+}
+
 /// `claim_pending` only delivers rows whose required plugin is in the worker's
 /// `available_plugins`; a row requiring an unavailable plugin is not delivered.
 pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) {
@@ -2974,8 +3286,8 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) 
 
     let job_a = make_job(0x10, "plugin.alpha", &["plugin.alpha"]);
     let job_b = make_job(0x11, "plugin.beta", &["plugin.beta"]);
-    q.enqueue(&job_a).await.expect("enqueue alpha");
-    q.enqueue(&job_b).await.expect("enqueue beta");
+    enqueue_job(backend, q.as_ref(), &job_a).await;
+    enqueue_job(backend, q.as_ref(), &job_b).await;
 
     let proc = [9u8; 16];
     // Advertise only alpha — must NOT receive beta.
@@ -3040,7 +3352,7 @@ pub(crate) async fn assert_job_dispatch_requires_primary_plugin(backend: &dyn Ba
             .parse::<PluginKey>()
             .expect("conformance test plugin key must be valid"),
     ];
-    queue.enqueue(&job).await.expect("enqueue malformed job");
+    enqueue_job(backend, queue.as_ref(), &job).await;
 
     let claims = queue
         .claim_pending(
@@ -3070,7 +3382,7 @@ pub(crate) async fn assert_sql_job_cleanup_uses_terminal_transition(
 ) {
     let queue = backend.job_dispatch_queue().await;
     let job = make_job(0x13, "plugin.alpha", &["plugin.alpha"]);
-    queue.enqueue(&job).await.expect("enqueue cleanup job");
+    enqueue_job(backend, queue.as_ref(), &job).await;
     let claim = queue
         .claim_pending(
             &[9; 16],
@@ -3128,7 +3440,7 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 
     // ── mark_dispatched fencing ───────────────────────────────────────────────
     let job_d = make_job(0x20, "plugin.x", &["plugin.x"]);
-    q.enqueue(&job_d).await.expect("enqueue job_d");
+    enqueue_job(backend, q.as_ref(), &job_d).await;
 
     let claimed = q
         .claim_pending(
@@ -3197,7 +3509,7 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 
     // ── mark_failed fencing ───────────────────────────────────────────────────
     let job_f = make_job(0x21, "plugin.x", &["plugin.x"]);
-    q.enqueue(&job_f).await.expect("enqueue job_f");
+    enqueue_job(backend, q.as_ref(), &job_f).await;
 
     let claimed_f = q
         .claim_pending(
@@ -3248,7 +3560,7 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 
 /// How long a claim must age before `reclaim_stuck` will take it back.
 ///
-/// The SQL backends compare wall-clock epoch-millis while the in-memory
+/// The SQL backends compare wall-clock microsecond instants while the in-memory
 /// backend compares `tokio::time::Instant`s; a real sleep advances both, so
 /// one shared assertion can drive all three. The margin is generous because
 /// the assertion is about ordering, not about a deadline.
@@ -3273,7 +3585,7 @@ pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(
     let processor = [7u8; 16];
 
     let job = make_job(0x22, "plugin.aba", &["plugin.aba"]);
-    q.enqueue(&job).await.expect("enqueue aba job");
+    enqueue_job(backend, q.as_ref(), &job).await;
 
     let first = q
         .claim_pending(
@@ -3386,7 +3698,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
 
     // Job requires alpha AND beta (required_plugins covers both; invariant upheld).
     let job = make_job(0x60, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
-    q.enqueue(&job).await.expect("enqueue superset job");
+    enqueue_job(backend, q.as_ref(), &job).await;
 
     let proc = [0xAAu8; 16];
 
@@ -3454,7 +3766,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
 
     // 4. Strict-superset worker (re-enqueue to get a fresh Pending row).
     let job2 = make_job(0x61, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
-    q.enqueue(&job2).await.expect("enqueue superset job 2");
+    enqueue_job(backend, q.as_ref(), &job2).await;
     let claimed_by_superset = q
         .claim_pending(
             &proc,
@@ -3492,9 +3804,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
     //    conforming job (required_plugins ⊇ {required_plugin_key}) to confirm
     //    it stays Pending.
     let job3 = make_job(0x62, "plugin.alpha", &["plugin.alpha", "plugin.beta"]);
-    q.enqueue(&job3)
-        .await
-        .expect("enqueue job for empty-advertised check");
+    enqueue_job(backend, q.as_ref(), &job3).await;
     let claimed_empty_adv = q
         .claim_pending(
             &proc,
@@ -3527,6 +3837,7 @@ pub(crate) async fn assert_control_queue_release_returns_row_for_redelivery(back
     let processor = [21u8; 16];
 
     let execution_id = "exe_control_release";
+    seed_workflow(backend, &scope, "wf_control_release").await;
     store
         .create(
             &scope,
@@ -3622,8 +3933,8 @@ pub(crate) async fn assert_job_dispatch_exact_flavor(backend: &dyn Backend) {
     wrong.required_worker_flavor_id = other_flavor;
     let mut matching = make_job(0x62, "exact.flavor", &["exact.flavor"]);
     matching.required_worker_flavor_id = matching_flavor;
-    queue.enqueue(&wrong).await.unwrap();
-    queue.enqueue(&matching).await.unwrap();
+    enqueue_job(backend, queue.as_ref(), &wrong).await;
+    enqueue_job(backend, queue.as_ref(), &matching).await;
 
     let claims = queue
         .claim_pending(&processor, 1, &plugins, matching_flavor)

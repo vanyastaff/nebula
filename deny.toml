@@ -75,15 +75,23 @@ deny = [
   ], reason = "API is top layer; lower-level crates must not depend on it directly" },
 
   # ---- Layer enforcement: Exec ----
+  # Deployment assembly is app-owned, never an upward product dependency.
+  { crate = "nebula-deployment", wrappers = [
+    "nebula-server",
+    "nebula-worker-bin",
+  ], reason = "First-party deployment assembly is consumed only by application roots" },
   # nebula-worker is reusable exec-layer claim-loop assembly, not a deployment
-  # composition root. Only its first-party wrapper binary (`nebula-worker-bin`,
-  # `apps/worker`) may depend on it. The ban entry was deferred until this
-  # binary existed (a wrappers-only entry with no real dependent fails cargo-deny).
+  # composition root. First-party app assembly and the standalone worker may
+  # depend on it; product crates cannot choose deployment policy.
   { crate = "nebula-worker", wrappers = [
+    # The server owns the optional in-process execution runtime.
+    "nebula-server",
     # The core-flavor first-party worker binary wraps the reusable runtime.
     "nebula-worker-bin",
-  ], reason = "Worker is reusable exec-layer assembly; only the first-party per-flavor wrapper binary may depend on it (ADR-0095 D1)" },
+    "nebula-deployment",
+  ], reason = "Worker is reusable exec-layer assembly; only first-party application assembly may depend on it" },
   { crate = "nebula-engine", wrappers = [
+    "nebula-deployment",
     "nebula-cli",
     # The first-party server is a deployment composition root. It wires the
     # credential resolver/refresh coordinator together with concrete storage
@@ -102,8 +110,7 @@ deny = [
     # Dev-only: `crates/plugin-core/tests/plugin_wiring_e2e.rs` exercises the
     # plugin→engine action-wiring bridge end-to-end.
     "nebula-plugin-core",
-    # The core-flavor worker binary wires the engine directly via compose.rs
-    # (WorkflowEngine::new + with_plugin + ExecutionStores/WorkflowStores).
+    # The worker process root supplies typed engine store bundles to shared assembly.
     "nebula-worker-bin",
     # examples/ member hosts the workflow_data_pipeline demo, which wires the
     # engine + CorePlugin to run a multi-node workflow end-to-end (same
@@ -145,6 +152,7 @@ deny = [
   # exec/api consumers may depend on it downward. It has no sqlx and no
   # upward deps.
   { crate = "nebula-storage-port", wrappers = [
+    "nebula-deployment",
     "nebula-storage",
     "nebula-storage-loom-probe",
     "nebula-tenancy",
@@ -203,12 +211,15 @@ deny = [
     "nebula-examples",
     "nebula-plugin",
     "nebula-sdk",
+    # Worker integration tests exercise physical provider retirement.
+    "nebula-worker",
   ], reason = "Resource framework is Business-tier; only the listed business/exec/surface consumers may depend on it; examples demonstrate Resource impls" },
 
   # nebula-plugin owns trusted plugin registration, frozen registries, and
   # executable-plan compilation. Only the declared runtime, composition, SDK,
   # and first-party plugin crates may depend on that business capability.
   { crate = "nebula-plugin", wrappers = [
+    "nebula-deployment",
     "nebula-api",
     "nebula-engine",
     "nebula-orchestrator",
@@ -228,6 +239,7 @@ deny = [
   # current consumer set so a future PR cannot introduce an unreviewed
   # upward dependency from core/*.
   { crate = "nebula-credential", wrappers = [
+    "nebula-deployment",
     "nebula-action",
     "nebula-api",
     "nebula-engine",
@@ -246,6 +258,8 @@ deny = [
     # The core-flavor worker binary wires credential runtime alongside the
     # engine/resource composition root so slot guards can be resolved at run time.
     "nebula-worker-bin",
+    # Dev-only: worker lifecycle tests supply a read-only projection resolver.
+    "nebula-worker",
   ], reason = "Credential contracts and credential-owned resolver/refresh/lease runtime are shared infra; the listed Business/Exec/API consumers, first-party backends, test/composition harnesses, and server composition root may depend on them (no upward deps from core/*)" },
 
   # nebula-expression is a Core-tier expression evaluator. The wrapper

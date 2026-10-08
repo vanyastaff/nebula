@@ -7,19 +7,63 @@ use nebula_storage_port::dto::{PlanFlavorRevisionIds, WorkflowActivation, Workfl
 use nebula_storage_port::dto::{
     PlanFlavorRevisionRecord, RevisionRecordBytes, WorkerFlavorRevisionRecord, WorkflowRecord,
 };
-use nebula_storage_port::store::{WorkflowPublicationError, WorkflowStore, WorkflowVersionStore};
+use nebula_storage_port::store::{
+    TenantProvisioningStore, WorkflowPublicationError, WorkflowStore, WorkflowVersionStore,
+};
 use nebula_storage_port::{
     PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, PlanFlavorRevisionTarget, Scope,
 };
 
+/// Provision the tenant that owns `scope`, so its workflows satisfy their
+/// foreign keys.
+async fn provision(tenants: &dyn TenantProvisioningStore, scope: &Scope) {
+    use nebula_storage_port::dto::{
+        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningRequest,
+    };
+    let org = TenantOrgCreate::new(
+        scope.org_id.clone(),
+        scope.org_id.clone(),
+        "Activation".into(),
+        "activation".into(),
+        "free".into(),
+        None,
+        serde_json::json!({}),
+    )
+    .unwrap();
+    let workspace = TenantDefaultWorkspaceCreate::new(
+        scope.workspace_id.clone(),
+        "default".into(),
+        "Default".into(),
+        None,
+        "activation".into(),
+        serde_json::json!({}),
+    )
+    .unwrap();
+    tenants
+        .provision_tenant(
+            TenantProvisioningRequest::new(
+                org,
+                workspace,
+                PrincipalKind::User,
+                "activation-owner".into(),
+                None,
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+}
+
 async fn publication_contract(
+    tenants: &dyn TenantProvisioningStore,
     rows: &dyn WorkflowStore,
     versions: &dyn WorkflowVersionStore,
     writer: &dyn PlanFlavorCatalogWriter,
     admin: &dyn PlanFlavorCatalogAdmin,
 ) -> (Scope, String, WorkflowActivation) {
-    draft_collision_contract(rows, versions, writer).await;
+    draft_collision_contract(tenants, rows, versions, writer).await;
     let scope = Scope::new("activation-workspace", "activation-org");
+    provision(tenants, &scope).await;
     let workflow_id = nebula_core::WorkflowId::new();
     let workflow_revision = WorkflowVersionId::new();
     let activation = WorkflowActivation::new(
@@ -34,7 +78,6 @@ async fn publication_contract(
         scope: scope.clone(),
         version: 1,
         slug: workflow_id.to_string(),
-        deleted: false,
     };
     let mut version = WorkflowVersionRecord {
         activation: None,
@@ -140,6 +183,62 @@ async fn publication_contract(
             .await,
         Err(WorkflowPublicationError::InvalidPublication)
     ));
+    // The activation identity is unique across workflows: another workflow
+    // presenting the same revision through its own admitted plan is a
+    // disagreeing publication, not a storage collision.
+    let other_id = nebula_core::WorkflowId::new();
+    let mut other_row = WorkflowRecord {
+        id: other_id.to_string(),
+        scope: scope.clone(),
+        version: 1,
+        slug: other_id.to_string(),
+    };
+    let mut other_version = WorkflowVersionRecord {
+        activation: None,
+        workflow_id: other_row.id.clone(),
+        number: 1,
+        published: true,
+        pinned: false,
+        definition: serde_json::json!({}),
+    };
+    rows.save_with_published_version(&scope, other_row.clone(), other_version.clone(), None)
+        .await
+        .unwrap();
+    let other_revisions = PlanFlavorRevisionIds::new(
+        ExecutablePlanRevisionId::from_bytes([11; 32]),
+        WorkerFlavorRevisionId::from_bytes([12; 32]),
+    );
+    writer
+        .insert(&PlanFlavorRevisionRecord::graph_v1_json(
+            other_revisions.plan(),
+            RevisionRecordBytes::try_from_vec(
+                serde_json::to_vec(&serde_json::json!({
+                    "workflow_version_id": workflow_revision,
+                    "manifest": {"workflow_id": other_id}
+                }))
+                .unwrap(),
+            )
+            .unwrap(),
+            WorkerFlavorRevisionRecord::v1_json(
+                other_revisions.worker_flavor(),
+                RevisionRecordBytes::try_from_vec(b"{}".to_vec()).unwrap(),
+            ),
+        ))
+        .await
+        .unwrap();
+    other_row.version = 2;
+    other_version.number = 2;
+    other_version.activation = Some(WorkflowActivation::new(workflow_revision, other_revisions));
+    assert!(matches!(
+        rows.publish_activated_version(&scope, other_row.clone(), other_version, 1)
+            .await,
+        Err(WorkflowPublicationError::InvalidPublication)
+    ));
+    assert_eq!(
+        rows.get(&scope, &other_row.id).await.unwrap().unwrap().version,
+        1
+    );
+
     admin
         .begin_drain(PlanFlavorRevisionTarget::ExecutablePlan(
             activation.revisions().plan(),
@@ -159,11 +258,13 @@ async fn publication_contract(
 }
 
 async fn draft_collision_contract(
+    tenants: &dyn TenantProvisioningStore,
     rows: &dyn WorkflowStore,
     versions: &dyn WorkflowVersionStore,
     writer: &dyn PlanFlavorCatalogWriter,
 ) {
     let scope = Scope::new("draft-workspace", "draft-org");
+    provision(tenants, &scope).await;
     let workflow_id = nebula_core::WorkflowId::new();
     let revision = WorkflowVersionId::new();
     let activation = WorkflowActivation::new(
@@ -178,7 +279,6 @@ async fn draft_collision_contract(
         scope: scope.clone(),
         version: 1,
         slug: workflow_id.to_string(),
-        deleted: false,
     };
     rows.create(&scope, original.clone()).await.unwrap();
     let draft = WorkflowVersionRecord {

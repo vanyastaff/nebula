@@ -415,6 +415,7 @@ impl Fixture {
             .build()
             .unwrap();
         let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
+        ports.provision(&scope).await;
         ports
             .workflows
             .workflow
@@ -425,7 +426,6 @@ impl Fixture {
                     scope: scope.clone(),
                     version: 1,
                     slug: "provider-effect".into(),
-                    deleted: false,
                 },
             )
             .await

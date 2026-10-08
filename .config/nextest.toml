@@ -43,7 +43,26 @@ fail-fast = false
 # `default-filter` and are not affected by this list; when a new
 # postgres-only evidence binary is added, add it here and to the CI allowlist
 # in `.github/workflows/test-matrix.yml` in the same change.
-default-filter = 'not binary(=runtime_repair_red_scenarios) & not binary(/(refresh_claim|turn_handoff|revision_catalog|operation_ledger|iteration_checkpoint|credential_lifecycle|credential_migration|credential_schema_admission|rate_limit|resource_fanout|resource_status|schema_setup)_(postgres|conformance_postgres|migration_postgres)/) & not binary(=pg_idempotency) & not binary(=execution_state_bounds_postgres) & not binary(=exact_dispatch_flavor_migration_postgres) & not binary(=ordered_migration_observations_postgres) & not binary(=workflow_activation_postgres) & not binary(=auth_pg_e2e) & not binary(=identity_conformance_postgres) & not binary(=control_start_handoff_postgres) & not binary(=start_materialization_postgres) & not binary(=postgres_control_queue_atomicity)'
+default-filter = '''
+not (
+    binary(=runtime_repair_red_scenarios)
+    | binary(/(refresh_claim|turn_handoff|revision_catalog|operation_ledger|iteration_checkpoint|credential_lifecycle|rate_limit|resource_fanout|resource_status|schema_setup)_(postgres|conformance_postgres|migration_postgres)/)
+    | binary(=pg_idempotency)
+    | binary(=execution_state_bounds_postgres)
+    | binary(=ordered_migration_observations_postgres)
+    | binary(=workflow_activation_postgres)
+    | binary(=auth_pg_e2e)
+    | binary(=account_lifecycle_postgres)
+    | binary(=identity_conformance_postgres)
+    | binary(=control_start_handoff_postgres)
+    | binary(=start_materialization_postgres)
+    | binary(=postgres_control_queue_atomicity)
+    | binary(=schema_parity_postgres)
+    | binary(=platform_constraints)
+    | (binary(=revision_record_constraints) & test(/^postgres_/))
+    | (binary(=credential_incident_constraints) & test(/^postgres_/))
+)
+'''
 
 # Assign the trybuild binaries to the serialized group for EVERY profile
 # (default / ci / agent inherit default-profile overrides). Filter mirrors the
@@ -53,7 +72,7 @@ filter = 'binary(/compile_fail/) | binary(=seam_action_schema_method_removed) | 
 test-group = 'trybuild'
 
 [[profile.default.overrides]]
-filter = 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
+filter = 'package(=nebula-storage) & binary(=nebula_storage) & test(/auth::postgres::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
 test-group = 'postgres-authority'
 
 [[profile.default.overrides]]

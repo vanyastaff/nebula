@@ -1,5 +1,5 @@
 //! Acquire dispatch surface: registration-time erased hooks, scope/identity
-//! lookup + taint helpers, the per-topology dispatch closures, the shared
+//! lookup + taint helpers, the generic topology dispatch, the shared
 //! `run_acquire` pipeline, and pool diagnostics/warmup.
 
 use std::{any::Any, future::Future, sync::Arc, time::Instant};
@@ -14,7 +14,7 @@ use crate::{
     options::AcquireOptions,
     resource::Provider,
     runtime::managed::ManagedResource,
-    topology::{BoundedProvider, PoolProvider, ResidentProvider, Topology},
+    topology::{PoolProvider, Topology},
 };
 
 impl Manager {
@@ -168,8 +168,9 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// Same as the typed `acquire_*_for_identity` family: not found,
-    /// ambiguous, shutdown, taint, topology, and acquire-time failures.
+    /// As [`acquire_for_identity`](Self::acquire_for_identity): not found,
+    /// shutdown, taint and acquire-time failures; an ambiguous erased lookup
+    /// also returns [`ErrorKind::Ambiguous`](crate::ErrorKind::Ambiguous).
     ///
     /// # Cancel safety
     ///
@@ -245,9 +246,8 @@ impl Manager {
     /// `R::Topology` fixes the topology at compile time, so the caller does
     /// not name it: this works the same for [`Pooled`](crate::Pooled),
     /// [`Resident`](crate::Resident), [`Bounded`](crate::Bounded) and custom
-    /// [`Topology`] implementations, and switching a resource's topology does
-    /// not break its callers. The `acquire_{pooled,resident,bounded}` methods
-    /// are equivalent spellings that additionally assert the topology.
+    /// [`Topology`] implementations. Acquisition dispatch follows the provider's
+    /// topology without a topology-specific method name at each call site.
     ///
     /// # Errors
     ///
@@ -534,101 +534,6 @@ impl Manager {
         .with_resource_key(key.clone())
     }
 
-    /// Acquires a handle to a pooled resource.
-    ///
-    /// Performs typed lookup, then dispatches to the pool runtime's acquire.
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
-    ///   registered.
-    /// - [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled) if the manager is shutting
-    ///   down.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
-    ///   pool topology.
-    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
-    ///   permanent (non-retryable) caller-conflict deny — if more than one
-    ///   resolved-credential registration exists for `(R, scope)`
-    ///   (multi-tenant). Acquire through the slot-identity-pinned
-    ///   [`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity)
-    ///   when the resolved slot identity is known; this identity-agnostic
-    ///   path stays fail-closed for the no-identity caller.
-    /// - Propagates pool-specific acquire errors.
-    ///
-    /// # Cancel safety
-    ///
-    /// This method is cancel safe. Dropping the future at any await point
-    /// releases the topology permit, settles the drain accounting, and
-    /// auto-fails a held recovery-gate probe ticket (its backoff applies).
-    /// An instance in flight between checkout/create and the returned guard
-    /// is destroyed asynchronously via the release queue, never leaked. The
-    /// only effect of cancellation is that no guard is returned.
-    ///
-    /// # Examples
-    ///
-    /// See the doctest on [`register`](Self::register) for the full
-    /// derive → `impl Provider` → register → acquire → deref → drop flow
-    /// this method sits in the middle of.
-    pub async fn acquire_pooled<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: PoolProvider
-            + Provider<Topology = crate::topology::Pooled<R>>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-    {
-        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.run_acquire_dispatch(managed, ctx, options).await
-    }
-
-    /// [`acquire_pooled`](Self::acquire_pooled) pinned to the
-    /// **collision-free structural** resolved per-slot credential identity.
-    ///
-    /// Resolves the registry row whose `slot_identity` matches, so a caller
-    /// that resolved tenant A's credential reaches tenant A's runtime and
-    /// never tenant B's. This is the unambiguous acquire path the engine
-    /// resolution layer uses once it has resolved a node's slot bindings;
-    /// it is also how callers reach a resource registered with a non-default
-    /// [`RegisterOptions::with_slot_bindings`](crate::RegisterOptions::with_slot_bindings). Equality is exact (no
-    /// digest), so a forced digest collision cannot merge two tenants here.
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
-    ///   `(scope, slot_identity)`.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
-    ///   pool topology.
-    /// - Propagates pool-specific acquire errors.
-    ///
-    /// # Cancel safety
-    ///
-    /// Cancel safe — same contract as
-    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
-    /// and gate ticket all settle on drop; an in-flight instance is destroyed
-    /// asynchronously via the release queue.
-    pub async fn acquire_pooled_for_identity<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-        slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: PoolProvider
-            + Provider<Topology = crate::topology::Pooled<R>>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
-    {
-        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
-        self.run_acquire_dispatch(managed, ctx, options).await
-    }
-
     /// Single generic topology dispatch into the shared
     /// [`run_acquire`](Self::run_acquire) pipeline.
     ///
@@ -675,17 +580,9 @@ impl Manager {
         .await
     }
 
-    /// Single generic acquire pipeline (resilience + gate + drain
-    /// bookkeeping) over an already-resolved [`ManagedResource`], replacing
-    /// the five byte-identical per-topology acquire wrappers. The only thing
-    /// that differed between them was the one-arm topology dispatch, which
-    /// each caller now supplies as `dispatch` (recomputed per resilience
-    /// retry, exactly as the inline closures did). Every public `acquire_*` /
-    /// `acquire_*_for` / `acquire_*_at_scope` entry point differs only in
-    /// how it resolves the row (identity-agnostic vs. slot-identity-pinned
-    /// vs. scope-pinned) and which topology runtime its closure calls; the
-    /// pipeline — including the `InFlightCounter` → post-taint re-check
-    /// ordering this method owns — is identical.
+    /// Acquire pipeline over an already-resolved [`ManagedResource`]: rate-limit
+    /// wait, strict credential read, then admission, recovery gate and drain
+    /// accounting. The topology dispatch is recomputed on each resilience retry.
     pub(crate) async fn run_acquire<R, F, Fut>(
         &self,
         managed: Arc<ManagedResource<R>>,
@@ -719,173 +616,6 @@ impl Manager {
             .acquire_admitted(managed, ctx, options, strict.as_ref(), started, dispatch)
             .await
     } // visible cross-module after impl split
-
-    /// Acquires a handle to a resident resource.
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
-    ///   registered.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
-    ///   resident topology.
-    /// - Propagates resident-specific acquire errors.
-    ///
-    /// # Cancel safety
-    ///
-    /// Cancel safe — same contract as
-    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
-    /// and gate ticket all settle on drop; an in-flight instance is destroyed
-    /// asynchronously via the release queue.
-    pub async fn acquire_resident<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: ResidentProvider
-            + Provider<Topology = crate::topology::Resident<R>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.run_acquire_dispatch(managed, ctx, options).await
-    }
-
-    /// [`acquire_resident`](Self::acquire_resident) pinned to the
-    /// **collision-free structural** resolved per-slot credential identity.
-    ///
-    /// Resolves the registry row whose `slot_identity` matches, so a caller
-    /// that resolved tenant A's credential reaches tenant A's runtime and
-    /// never tenant B's. This is the unambiguous acquire path the engine
-    /// resolution layer uses once it has resolved a node's slot bindings;
-    /// it is also how callers reach a resource registered with a non-default
-    /// [`RegisterOptions::with_slot_bindings`](crate::RegisterOptions::with_slot_bindings). Two registrations whose
-    /// resolved `(slot, credential)` bindings differ are distinct rows with
-    /// distinct runtimes; equality is exact (no digest), so a forced digest
-    /// collision cannot merge two tenants here.
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
-    ///   `(scope, slot_identity)`.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
-    ///   resident topology.
-    /// - Propagates resident-specific acquire errors.
-    ///
-    /// # Cancel safety
-    ///
-    /// Cancel safe — same contract as
-    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
-    /// and gate ticket all settle on drop; an in-flight instance is destroyed
-    /// asynchronously via the release queue.
-    pub async fn acquire_resident_for_identity<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-        slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: ResidentProvider
-            + Provider<Topology = crate::topology::Resident<R>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
-        self.run_acquire_dispatch(managed, ctx, options).await
-    }
-
-    /// Acquires a handle to a bounded resource.
-    ///
-    /// Bounded holds no owned `R`-typed instance in the topology itself — it
-    /// gates concurrency (unbounded / capped / exclusive) over a resource
-    /// that either builds fresh per lease (`Capped`/`Unbounded`) or reuses a
-    /// single reset-between-leases instance (`Exclusive`); see
-    /// [`Bounded`](crate::topology::Bounded) and [`BoundedMode`](crate::topology::BoundedMode).
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no resource of type `R` is
-    ///   registered.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
-    ///   bounded topology.
-    /// - [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) — a
-    ///   permanent (non-retryable) caller-conflict deny — if more than one
-    ///   resolved-credential registration exists for `(R, scope)`
-    ///   (multi-tenant). Acquire through the slot-identity-pinned
-    ///   [`acquire_bounded_for_identity`](Self::acquire_bounded_for_identity)
-    ///   when the resolved slot identity is known; this identity-agnostic
-    ///   path stays fail-closed for the no-identity caller.
-    /// - Propagates bounded-specific acquire errors (e.g. `Saturated` when
-    ///   the concurrency cap is exhausted).
-    ///
-    /// # Cancel safety
-    ///
-    /// Cancel safe — same contract as
-    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
-    /// and gate ticket all settle on drop; an in-flight instance is destroyed
-    /// asynchronously via the release queue.
-    pub async fn acquire_bounded<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: BoundedProvider
-            + Provider<Topology = crate::topology::Bounded<R>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
-        self.run_acquire_dispatch(managed, ctx, options).await
-    }
-
-    /// [`acquire_bounded`](Self::acquire_bounded) pinned to the
-    /// **collision-free structural** resolved per-slot credential identity.
-    ///
-    /// Resolves the registry row whose `slot_identity` matches, so a caller
-    /// that resolved tenant A's credential reaches tenant A's runtime and
-    /// never tenant B's. This is the unambiguous acquire path the engine
-    /// resolution layer uses once it has resolved a node's slot bindings;
-    /// it is also how callers reach a resource registered with a non-default
-    /// [`RegisterOptions::with_slot_bindings`](crate::RegisterOptions::with_slot_bindings). Two registrations whose
-    /// resolved `(slot, credential)` bindings differ are distinct rows with
-    /// distinct runtimes; equality is exact (no digest), so a forced digest
-    /// collision cannot merge two tenants here.
-    ///
-    /// # Errors
-    ///
-    /// - [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if no row of type `R` matches
-    ///   `(scope, slot_identity)`.
-    /// - [`ErrorKind::Permanent`](crate::error::ErrorKind::Permanent) if the resource is not using
-    ///   bounded topology.
-    /// - Propagates bounded-specific acquire errors (e.g. `Saturated` when
-    ///   the concurrency cap is exhausted).
-    ///
-    /// # Cancel safety
-    ///
-    /// Cancel safe — same contract as
-    /// [`acquire_pooled`](Self::acquire_pooled): permit, drain accounting,
-    /// and gate ticket all settle on drop; an in-flight instance is destroyed
-    /// asynchronously via the release queue.
-    pub async fn acquire_bounded_for_identity<R>(
-        &self,
-        ctx: &ResourceContext,
-        options: &AcquireOptions,
-        slot_identity: &crate::dedup::SlotIdentity,
-    ) -> Result<crate::guard::ResourceGuard<R>, Error>
-    where
-        R: BoundedProvider
-            + Provider<Topology = crate::topology::Bounded<R>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
-        self.run_acquire_dispatch(managed, ctx, options).await
-    }
 
     /// Returns a snapshot of current pool utilization for a registered Pool resource.
     ///
@@ -926,7 +656,7 @@ impl Manager {
     ///   (multi-tenant). Warmup is identity-agnostic and stays fail-closed;
     ///   a multi-tenant pool is warmed per resolved row through the
     ///   slot-identity-pinned acquire path
-    ///   ([`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity)).
+    ///   ([`acquire_for_identity`](Self::acquire_for_identity)).
     ///
     /// # Cancel safety
     ///

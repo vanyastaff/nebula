@@ -36,25 +36,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::credential_adapters::{RegistryCredentialSchema, ReqwestOAuthTransport};
+use crate::deployment_database::DeploymentDatabase;
 
-const DEFAULT_CREDENTIAL_DB: &str = "sqlite://nebula-credentials.db?mode=rwc";
 const DEVELOPMENT_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 const CREDENTIAL_EVENT_BUFFER: usize = 256;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CredentialDatabaseBackend {
-    Sqlite,
-    Postgres,
-}
-
-impl CredentialDatabaseBackend {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Sqlite => "sqlite",
-            Self::Postgres => "postgres",
-        }
-    }
-}
 
 /// Fully composed first-party credential runtime parts.
 pub(crate) struct CredentialRuntime {
@@ -100,19 +85,6 @@ pub(crate) enum CredentialCompositionError {
     InvalidLegacyKeyring(#[source] CredentialKeyringError),
     #[error("credential store initialization failed")]
     Store(#[source] CredentialStoreStartupError),
-    #[error(
-        "NEBULA_CRED_DB has an unsupported scheme; use sqlite://, postgres://, or postgresql://"
-    )]
-    UnsupportedStoreScheme,
-    #[error(
-        "NEBULA_CRED_DB requests PostgreSQL, but nebula-server was built without the `postgres` feature"
-    )]
-    #[cfg(not(feature = "postgres"))]
-    PostgresStoreUnavailable,
-    /// `NEBULA_CRED_DB_MAX_CONNECTIONS` is set but not a positive integer.
-    #[cfg(feature = "postgres")]
-    #[error("NEBULA_CRED_DB_MAX_CONNECTIONS must be a positive integer")]
-    InvalidStorePoolSize,
     #[error("credential refresh transport initialization failed: {0}")]
     RefreshTransport(String),
     #[error("credential refresh coordinator initialization failed: {0}")]
@@ -151,32 +123,34 @@ pub(crate) fn resolve_first_party_keyring() -> Result<CredentialKeyring, Credent
     })
 }
 
-/// Compose the durable first-party runtime and its shared catalog projection.
+/// Compose the durable first-party runtime and its shared catalog projection
+/// on the deployment database the execution backend selected.
 pub(crate) async fn compose_first_party_runtime(
+    database: &DeploymentDatabase,
     key_provider: Arc<dyn KeyProvider>,
     legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
     metrics_registry: Arc<MetricsRegistry>,
 ) -> Result<CredentialRuntime, CredentialCompositionError> {
-    let database_url =
-        std::env::var("NEBULA_CRED_DB").unwrap_or_else(|_| DEFAULT_CREDENTIAL_DB.to_owned());
-    compose_first_party_runtime_for_database(
-        &database_url,
-        key_provider,
-        legacy_keys,
-        metrics_registry,
-    )
-    .await
+    compose_first_party_runtime_for_database(database, key_provider, legacy_keys, metrics_registry)
+        .await
 }
 
 #[cfg(test)]
 pub(crate) async fn compose_memory_service(
     key_provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<CredentialService>, CredentialCompositionError> {
-    let store = SqliteCredentialPersistence::connect_memory()
+    // The isolated database holds no tenants: the fixture store provisions
+    // the workspace each create names, and pending flows stay in memory.
+    let store = nebula_api::ports::credential_service_factory::TenantProvisionedStore::memory()
         .await
-        .map_err(CredentialCompositionError::Store)?;
-    let refresh_ports = refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
-    let pending = sqlite_pending_store(&store, Arc::clone(&key_provider), Vec::new());
+        .map_err(|_| CredentialCompositionError::Store(CredentialStoreStartupError::Unavailable))?;
+    let refresh_ports = refresh_runtime_ports(
+        store.inner().refresh_schedule(),
+        store.inner().refresh_claim_repo(),
+    );
+    let pending = ErasedPendingStore::new(Arc::new(
+        nebula_storage::credential::InMemoryPendingStore::new(),
+    ));
     let runtime = compose_runtime(
         store,
         refresh_ports,
@@ -193,96 +167,65 @@ pub(crate) async fn compose_memory_service(
 }
 
 async fn compose_first_party_runtime_for_database(
-    database_url: &str,
+    database: &DeploymentDatabase,
     key_provider: Arc<dyn KeyProvider>,
     legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
     metrics_registry: Arc<MetricsRegistry>,
 ) -> Result<CredentialRuntime, CredentialCompositionError> {
-    let backend = classify_credential_database(database_url)?;
-
-    match backend {
-        CredentialDatabaseBackend::Sqlite => {
-            let store = SqliteCredentialPersistence::connect(database_url)
-                .await
-                .map_err(CredentialCompositionError::Store)?;
-            let refresh_ports =
-                refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
-            let pending =
-                sqlite_pending_store(&store, Arc::clone(&key_provider), legacy_keys.clone());
-            // Database URLs can carry credentials or tenant-specific
-            // filesystem paths. Record only the closed backend class.
-            tracing::info!(
-                backend = backend.as_str(),
-                "credential durable store opened"
-            );
-            compose_runtime(
-                store,
-                refresh_ports,
-                pending,
-                key_provider,
-                legacy_keys,
-                metrics_registry,
-            )
+    let pool = match database {
+        DeploymentDatabase::Memory(pool) => pool,
+        DeploymentDatabase::Sqlite(deployment) => deployment.pool(),
+        #[cfg(feature = "postgres")]
+        DeploymentDatabase::Postgres(pool) => {
+            return compose_postgres_runtime(pool, key_provider, legacy_keys, metrics_registry)
+                .await;
         },
-        CredentialDatabaseBackend::Postgres => {
-            #[cfg(feature = "postgres")]
-            {
-                let store =
-                    PgCredentialPersistence::connect_sized(database_url, credential_pool_size()?)
-                        .await
-                        .map_err(CredentialCompositionError::Store)?;
-                let refresh_ports =
-                    refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
-                let pending =
-                    postgres_pending_store(&store, Arc::clone(&key_provider), legacy_keys.clone());
-                tracing::info!(
-                    backend = backend.as_str(),
-                    "credential durable store opened"
-                );
-                compose_runtime(
-                    store,
-                    refresh_ports,
-                    pending,
-                    key_provider,
-                    legacy_keys,
-                    metrics_registry,
-                )
-            }
-            #[cfg(not(feature = "postgres"))]
-            {
-                let _ = (key_provider, legacy_keys, metrics_registry);
-                Err(CredentialCompositionError::PostgresStoreUnavailable)
-            }
-        },
-    }
+    };
+    let store = SqliteCredentialPersistence::connect_pool(pool.clone())
+        .await
+        .map_err(CredentialCompositionError::Store)?;
+    let refresh_ports = refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
+    let pending = sqlite_pending_store(&store, Arc::clone(&key_provider), legacy_keys.clone());
+    // Database locators can carry credentials or tenant-specific filesystem
+    // paths. Record only the closed backend class.
+    tracing::info!(
+        backend = database.backend(),
+        "credential store opened on the deployment database"
+    );
+    compose_runtime(
+        store,
+        refresh_ports,
+        pending,
+        key_provider,
+        legacy_keys,
+        metrics_registry,
+    )
 }
 
-fn classify_credential_database(
-    database_url: &str,
-) -> Result<CredentialDatabaseBackend, CredentialCompositionError> {
-    let Some((scheme, _)) = database_url.split_once("://") else {
-        if database_url.split_once(':').is_some_and(|(prefix, _)| {
-            prefix.eq_ignore_ascii_case("postgres") || prefix.eq_ignore_ascii_case("postgresql")
-        }) {
-            // A malformed PostgreSQL locator must not fall through to SQLite
-            // path handling. Otherwise an operator typo such as
-            // `postgres:...` can silently open a local file instead of the
-            // intended durable backend.
-            return Err(CredentialCompositionError::UnsupportedStoreScheme);
-        }
-        // Preserve SqliteCredentialPersistence's documented path-friendly
-        // surface: relative, absolute, and Windows paths plus
-        // `sqlite::memory:` are all SQLite. Only an explicit URL authority
-        // scheme is allowed to select another backend.
-        return Ok(CredentialDatabaseBackend::Sqlite);
-    };
-    if scheme.eq_ignore_ascii_case("sqlite") {
-        Ok(CredentialDatabaseBackend::Sqlite)
-    } else if scheme.eq_ignore_ascii_case("postgres") || scheme.eq_ignore_ascii_case("postgresql") {
-        Ok(CredentialDatabaseBackend::Postgres)
-    } else {
-        Err(CredentialCompositionError::UnsupportedStoreScheme)
-    }
+#[cfg(feature = "postgres")]
+async fn compose_postgres_runtime(
+    pool: &sqlx::PgPool,
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<EncryptionKey>)>,
+    metrics_registry: Arc<MetricsRegistry>,
+) -> Result<CredentialRuntime, CredentialCompositionError> {
+    let store = PgCredentialPersistence::connect_pool(pool.clone())
+        .await
+        .map_err(CredentialCompositionError::Store)?;
+    let refresh_ports = refresh_runtime_ports(store.refresh_schedule(), store.refresh_claim_repo());
+    let pending = postgres_pending_store(&store, Arc::clone(&key_provider), legacy_keys.clone());
+    tracing::info!(
+        backend = "postgres",
+        "credential store opened on the deployment database"
+    );
+    compose_runtime(
+        store,
+        refresh_ports,
+        pending,
+        key_provider,
+        legacy_keys,
+        metrics_registry,
+    )
 }
 
 fn compose_runtime<P>(
@@ -509,12 +452,12 @@ fn postgres_pending_store(
 /// `refresh_claim_repo()` clones a pool handle, so two calls are two handles
 /// onto one store rather than two stores. All three trait objects below are
 /// unsizing coercions of one `Arc`, which guarantees reclaim and adjudication
-/// operate on the very row `try_claim` reads. Every backend supplies its own repo here: sqlite
-/// and postgres from their admitted pool, and the in-memory composition case —
-/// `compose_memory_service` and the composition test fixtures — from
-/// `SqliteCredentialPersistence::connect_memory`, a SQLite **in-memory
-/// database** whose repo is `SqliteRefreshClaimRepo`. `InMemoryRefreshClaimRepo`
-/// exists, but this path does not build it.
+/// operate on the very row `try_claim` reads. Every backend supplies its own repo
+/// here from the deployment pool: sqlite and postgres from the execution
+/// backend's pool, and the `memory` execution backend from its process-local
+/// SQLite **in-memory database** (`SqliteRefreshClaimRepo`). The test-only
+/// `compose_memory_service` uses an isolated in-memory deployment database.
+/// `InMemoryRefreshClaimRepo` exists, but this path does not build it.
 struct CredentialRefreshRuntimePorts {
     schedule: Arc<dyn CredentialRefreshSchedule>,
     claims: Arc<dyn RefreshClaimStore>,
@@ -610,22 +553,6 @@ impl AuditSink for TracingAuditSink {
             "credential audit event"
         );
         Ok(())
-    }
-}
-
-/// Connections the PostgreSQL credential store may pool, from
-/// `NEBULA_CRED_DB_MAX_CONNECTIONS`; the store default when unset.
-///
-/// Every credential admission reads through this pool, so it bounds how many
-/// run against PostgreSQL at once in this process.
-#[cfg(feature = "postgres")]
-fn credential_pool_size() -> Result<std::num::NonZeroU32, CredentialCompositionError> {
-    match std::env::var("NEBULA_CRED_DB_MAX_CONNECTIONS") {
-        Err(_) => Ok(nebula_storage::credential::DEFAULT_CREDENTIAL_POOL_SIZE),
-        Ok(raw) => raw
-            .trim()
-            .parse()
-            .map_err(|_| CredentialCompositionError::InvalidStorePoolSize),
     }
 }
 
@@ -745,7 +672,10 @@ mod tests {
 
     #[tokio::test]
     async fn composed_runtime_retains_reclaim_sweep_until_shutdown() {
-        let store = SqliteCredentialPersistence::connect_memory()
+        let pool = nebula_storage::sqlite::open_memory_deployment()
+            .await
+            .expect("in-memory deployment database");
+        let store = SqliteCredentialPersistence::connect_pool(pool)
             .await
             .expect("ready in-memory credential store");
         let refresh_ports =
@@ -797,8 +727,14 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_composition_preserves_oauth_pending_state_across_restart() {
-        const OWNER: &str = "owner-restart";
+        // Pending state is filed under the workspace its owner key names:
+        // the canonical key of `ws-restart` in `org-restart`.
+        const OWNER: &str = "11\u{1e}org-restart\u{1e}ws-restart";
         const SESSION: &str = "session-restart";
+        assert_eq!(
+            nebula_storage_port::Scope::new("ws-restart", "org-restart").credential_owner_id(),
+            OWNER
+        );
         let directory = tempfile::tempdir().expect("temporary credential database directory");
         let database_path = directory.path().join("credentials.db");
         let database_url = database_path
@@ -808,6 +744,14 @@ mod tests {
         let first_store = SqliteCredentialPersistence::connect(database_url)
             .await
             .expect("first admitted credential store");
+        provision_file_owner(
+            database_url,
+            &nebula_storage_port::CredentialOwner::from_scope(&nebula_storage_port::Scope::new(
+                "ws-restart",
+                "org-restart",
+            )),
+        )
+        .await;
         let first_key = test_provider(19);
         let first_pending = sqlite_pending_store(&first_store, Arc::clone(&first_key), Vec::new());
         let first_refresh_ports = refresh_runtime_ports(
@@ -874,88 +818,36 @@ mod tests {
 
         second_runtime.shutdown().await;
     }
+}
 
-    #[test]
-    fn database_backend_classification_is_explicit() {
-        assert!(matches!(
-            classify_credential_database("sqlite://credentials.db"),
-            Ok(CredentialDatabaseBackend::Sqlite)
-        ));
-        assert!(matches!(
-            classify_credential_database("sqlite::memory:"),
-            Ok(CredentialDatabaseBackend::Sqlite)
-        ));
-        assert!(matches!(
-            classify_credential_database("var/lib/nebula/credentials.db"),
-            Ok(CredentialDatabaseBackend::Sqlite)
-        ));
-        assert!(matches!(
-            classify_credential_database("/var/lib/nebula/credentials.db"),
-            Ok(CredentialDatabaseBackend::Sqlite)
-        ));
-        assert!(matches!(
-            classify_credential_database(r"C:\nebula\credentials.db"),
-            Ok(CredentialDatabaseBackend::Sqlite)
-        ));
-        assert!(matches!(
-            classify_credential_database("postgres://db/nebula"),
-            Ok(CredentialDatabaseBackend::Postgres)
-        ));
-        assert!(matches!(
-            classify_credential_database("postgresql://db/nebula"),
-            Ok(CredentialDatabaseBackend::Postgres)
-        ));
-        for malformed in [
-            "postgres:operator-secret@example.invalid/nebula",
-            "POSTGRESQL:operator-secret@example.invalid/nebula",
-        ] {
-            assert!(matches!(
-                classify_credential_database(malformed),
-                Err(CredentialCompositionError::UnsupportedStoreScheme)
-            ));
-        }
-    }
+/// Test fixture: provision the tenant `owner` names on the deployment `pool`.
+#[cfg(test)]
+pub(crate) async fn provision_owner_on_pool(
+    pool: &sqlx::SqlitePool,
+    owner: &nebula_storage_port::CredentialOwner,
+) {
+    nebula_api::ports::credential_service_factory::provision_owner(
+        &nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone()),
+        owner,
+    )
+    .await
+    .expect("provision the owner's workspace");
+}
 
-    #[test]
-    fn unsupported_database_scheme_diagnostic_never_echoes_url() {
-        let database_url = "mysql://operator:super-secret@example.invalid/tenant-private";
-        let error = classify_credential_database(database_url)
-            .expect_err("unsupported credential backend must fail closed");
-        let diagnostic = format!("{error:?}: {error}");
-
-        assert!(!diagnostic.contains(database_url));
-        assert!(!diagnostic.contains("super-secret"));
-        assert!(!diagnostic.contains("tenant-private"));
-    }
-
-    #[cfg(not(feature = "postgres"))]
-    #[tokio::test]
-    async fn postgres_request_without_feature_fails_closed_and_redacts_url() {
-        let database_url =
-            "postgres://operator:super-secret@example.invalid/tenant-private?sslmode=require";
-        let key_provider: Arc<dyn KeyProvider> =
-            Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
-        let result = compose_first_party_runtime_for_database(
-            database_url,
-            key_provider,
-            Vec::new(),
-            Arc::new(MetricsRegistry::new()),
-        )
-        .await;
-        let error = match result {
-            Err(error) => error,
-            Ok(_) => panic!("PostgreSQL must not fall back without the feature"),
-        };
-        let diagnostic = format!("{error:?}: {error}");
-
-        assert!(matches!(
-            error,
-            CredentialCompositionError::PostgresStoreUnavailable
-        ));
-        assert!(!diagnostic.contains(database_url));
-        assert!(!diagnostic.contains("super-secret"));
-        assert!(!diagnostic.contains("tenant-private"));
-    }
+/// Test fixture: provision the tenant `owner` names in the admitted SQLite
+/// deployment database at `path`, through a tenancy pool onto that file.
+#[cfg(test)]
+pub(crate) async fn provision_file_owner(path: &str, owner: &nebula_storage_port::CredentialOwner) {
+    let options = <sqlx::sqlite::SqliteConnectOptions as std::str::FromStr>::from_str(path)
+        .expect("SQLite database path")
+        .busy_timeout(std::time::Duration::from_secs(5));
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("a tenancy pool on the deployment database");
+    provision_owner_on_pool(&pool, owner).await;
+    pool.close().await;
 }
 
 #[cfg(test)]

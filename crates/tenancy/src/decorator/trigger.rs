@@ -8,7 +8,7 @@ use nebula_storage_port::{Scope, StorageError};
 
 /// Wraps a [`TriggerStore`] and forces every call into a single bound
 /// [`Scope`]. The caller-supplied `scope` argument is *ignored* — the
-/// adapter partitions `port_triggers` solely by the `scope` argument's
+/// adapter partitions `triggers` solely by the `scope` argument's
 /// `(workspace_id, org_id)` (it never reads `row.workspace_id` for the
 /// `WHERE`/key), so substituting the bound scope here makes a forged
 /// scope a clean miss: a cross-tenant `get`/`list` returns

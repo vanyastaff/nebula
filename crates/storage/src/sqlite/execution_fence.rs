@@ -23,26 +23,27 @@ pub(crate) async fn lock_execution(
     fencing: Option<FencingToken>,
 ) -> Result<(), FenceRefusal> {
     let row = sqlx::query(
-        "SELECT fencing_generation, lease_holder, lease_expires_at_ms FROM port_executions \
-         WHERE id = ? AND workspace_id = ? AND org_id = ?",
+        "SELECT fencing_generation, lease_holder, lease_expires_at FROM executions \
+         WHERE org_id = ? AND workspace_id = ? AND id = ?",
     )
-    .bind(execution_id)
-    .bind(&scope.workspace_id)
     .bind(&scope.org_id)
+    .bind(&scope.workspace_id)
+    .bind(execution_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(unavailable)?
     .ok_or(FenceRefusal::LeaseRejected)?;
     if let Some(fencing) = fencing {
+        // Microseconds since the Unix epoch, as `lease_expires_at` is stored.
         let now: i64 = sqlx::query_scalar(
-            "SELECT CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)",
+            "SELECT CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER)",
         )
         .fetch_one(&mut **tx)
         .await
         .map_err(unavailable)?;
         let generation: i64 = row.try_get("fencing_generation").map_err(unavailable)?;
         let holder: Option<String> = row.try_get("lease_holder").map_err(unavailable)?;
-        let expires: Option<i64> = row.try_get("lease_expires_at_ms").map_err(unavailable)?;
+        let expires: Option<i64> = row.try_get("lease_expires_at").map_err(unavailable)?;
         require_live_lease(
             fencing,
             u64::try_from(generation).map_err(|_| FenceRefusal::LeaseRejected)?,

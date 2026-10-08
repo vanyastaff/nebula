@@ -41,10 +41,9 @@ pub use credential_refresh_schedule::{
     CredentialRefreshScheduleError, DueCredentialRefresh, MAX_CREDENTIAL_REFRESH_HORIZON_SECS,
 };
 pub use execution::ExecutionStore;
-pub use idempotency::{IdempotencyGuard, IdempotencyStore};
+pub use idempotency::IdempotencyGuard;
 pub use identity::{
-    AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore,
-    TenantProvisioningStore, TriggerStore, UserStore, WorkspaceStore,
+    MembershipStore, OrgStore, ResourceStore, TenantProvisioningStore, TriggerStore, WorkspaceStore,
 };
 pub use job_dispatch::{ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue};
 pub use journal::ExecutionJournalReader;

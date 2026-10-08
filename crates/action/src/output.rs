@@ -638,7 +638,7 @@ impl BinaryData {
     #[must_use]
     pub fn effective_size(&self) -> u64 {
         match &self.data {
-            BinaryStorage::Inline(bytes) => bytes.len() as u64,
+            BinaryStorage::Inline { bytes } => bytes.len() as u64,
             BinaryStorage::Stored { .. } => self.size,
         }
     }
@@ -650,7 +650,10 @@ impl BinaryData {
 #[non_exhaustive]
 pub enum BinaryStorage {
     /// Bytes carried inline (small payloads).
-    Inline(Vec<u8>),
+    Inline {
+        /// Inline content, encoded alongside the storage-kind tag.
+        bytes: Vec<u8>,
+    },
     /// Bytes stored externally.
     Stored {
         /// Backend identifier (e.g. `"s3"`, `"local"`).

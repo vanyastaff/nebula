@@ -23,6 +23,10 @@ pub enum WorkflowPublicationError {
 }
 
 /// Workflow aggregate (the workflow row, not its versions).
+///
+/// A workflow lives in a live workspace: a write under a missing or deleted
+/// workspace is `NotFound { entity: "workspace" }`. A soft-deleted workflow is
+/// invisible to every read and write, its versions included.
 #[async_trait::async_trait]
 pub trait WorkflowStore: Send + Sync + std::fmt::Debug {
     /// CAS-publish a new immutable version and its complete activation identity.
@@ -119,10 +123,15 @@ pub trait WorkflowStore: Send + Sync + std::fmt::Debug {
     async fn is_reachable(&self) -> Result<(), StorageError>;
 }
 
-/// Workflow-version aggregate.
+/// Versions of the workflow aggregate.
+///
+/// A version belongs to a live workflow: appending to a missing or deleted
+/// workflow is `NotFound { entity: "workflow" }`, and every read sees only the
+/// versions of live workflows.
 #[async_trait::async_trait]
 pub trait WorkflowVersionStore: Send + Sync + std::fmt::Debug {
-    /// Create a new workflow version.
+    /// Create a new, unactivated workflow version (an activation identity is
+    /// `InvalidInput`: only publication admission installs one).
     async fn create(
         &self,
         scope: &Scope,

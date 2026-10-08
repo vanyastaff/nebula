@@ -22,7 +22,7 @@ use nebula_storage_port::{
     StorageError,
     dto::{
         OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembershipRole,
-        PrincipalKind, ScopeKind, WorkspaceMemberUpsert, WorkspaceMembershipRole,
+        PrincipalKind, WorkspaceMemberUpsert, WorkspaceMembershipRole,
     },
     store::{MembershipStore, OrgStore, TenantProvisioningStore, WorkspaceStore},
 };
@@ -39,6 +39,7 @@ pub(crate) struct TenantDirectoryStores {
 }
 
 impl TenantDirectoryStores {
+    #[cfg(test)]
     pub(crate) fn memory(directory: &nebula_storage::inmem::InMemoryIdentityDirectory) -> Self {
         Self {
             memberships: Arc::new(directory.membership_store()),
@@ -285,23 +286,22 @@ impl ApiMembershipStore for ServerTenantDirectory {
     }
 
     async fn list_members(&self, org_id: OrgId) -> Result<Vec<OrgMember>, ApiError> {
-        let rows = self
-            .memberships
-            .list_for_scope(ScopeKind::Org, &org_id.to_string())
+        self.memberships
+            .list_org_members(&org_id.to_string())
             .await
-            .map_err(|error| unavailable("list_members", &error))?;
-        rows.into_iter()
-            .map(|row| {
-                let role = OrgMembershipRole::parse(&row.role)
-                    .map(org_role_from_storage)
-                    .map_err(|_| corrupt("list_members"))?;
+            .map_err(|error| match error {
+                StorageError::NotFound { .. } => ApiError::NotFound("org not found".to_owned()),
+                other => unavailable("list_members", &other),
+            })?
+            .into_iter()
+            .map(|member| {
                 Ok(OrgMember {
                     principal: stored_principal(
                         "list_members",
-                        row.principal_kind,
-                        &row.principal_id,
+                        member.principal_kind,
+                        &member.principal_id,
                     )?,
-                    role,
+                    role: org_role_from_storage(member.role),
                 })
             })
             .collect()
@@ -448,7 +448,7 @@ mod tests {
                 id: org_id.to_string(),
                 slug: "acme".to_owned(),
                 display_name: "Acme".to_owned(),
-                created_at: "2026-09-22T00:00:00Z".to_owned(),
+                created_at: Default::default(),
                 created_by: owner.to_string(),
                 plan: "team".to_owned(),
                 billing_email: None,
@@ -466,7 +466,7 @@ mod tests {
                 slug: "main".to_owned(),
                 display_name: "Main".to_owned(),
                 description: None,
-                created_at: "2026-09-22T00:00:00Z".to_owned(),
+                created_at: Default::default(),
                 created_by: owner.to_string(),
                 is_default: true,
                 settings: serde_json::json!({}),

@@ -188,11 +188,11 @@ async fn distinct_resolved_slot_identity_yields_distinct_runtimes() {
     // to its OWN runtime (distinct `create`), never a shared one.
     let ctx = ctx_for_org(org);
     let lease_a = manager
-        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect("acquire tenant A must succeed");
     let lease_b = manager
-        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_b)
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_b)
         .await
         .expect("acquire tenant B must succeed");
 
@@ -207,7 +207,7 @@ async fn distinct_resolved_slot_identity_yields_distinct_runtimes() {
     // Each binding is stable: re-acquiring tenant A returns A's runtime, never
     // B's (no cross-aliasing on repeat acquire).
     let lease_a2 = manager
-        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect("re-acquire tenant A must succeed");
     assert_eq!(
@@ -251,19 +251,11 @@ async fn identical_slot_identity_still_dedupes_to_one_runtime() {
 
     let ctx = ctx_for_org(org);
     let l1 = manager
-        .acquire_resident_for_identity::<CountingResource>(
-            &ctx,
-            &AcquireOptions::default(),
-            &same_identity,
-        )
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &same_identity)
         .await
         .expect("acquire #1");
     let l2 = manager
-        .acquire_resident_for_identity::<CountingResource>(
-            &ctx,
-            &AcquireOptions::default(),
-            &same_identity,
-        )
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &same_identity)
         .await
         .expect("acquire #2");
 
@@ -346,11 +338,11 @@ async fn forced_slot_identity_collision_must_not_bleed_across_tenants() {
     let id_b = SlotIdentity::from_bindings(bindings_b.iter().copied());
 
     let lease_a = manager
-        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect("tenant A acquire must succeed");
     let lease_b = manager
-        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_b)
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_b)
         .await
         .expect("tenant B acquire must succeed");
 
@@ -365,7 +357,7 @@ async fn forced_slot_identity_collision_must_not_bleed_across_tenants() {
     // Re-acquiring tenant A by its structural identity stays A's runtime —
     // no cross-aliasing to B on repeat acquire.
     let lease_a2 = manager
-        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect("re-acquire tenant A must succeed");
     assert_eq!(
@@ -478,7 +470,7 @@ impl ResidentProvider for SiblingResidentResource {
 
 /// End-to-end guard for the concrete-type filter on the **agnostic** typed
 /// acquire path (`Registry::get_typed_for_acquire_scope::<R>`, reached via
-/// `Manager::acquire_resident::<R>` → `lookup_for_acquire_scope`).
+/// `Manager::acquire::<R>` → `lookup_for_acquire_scope`).
 ///
 /// `SiblingResidentResource` and `CountingResource` share one `ResourceKey`,
 /// so the registry's per-key entry list holds a sibling-typed row. The
@@ -530,7 +522,7 @@ async fn agnostic_typed_acquire_skips_sibling_type_and_falls_through_to_global()
     // sibling and resolve the Global `CountingResource` row.
     let ctx = ctx_for_org(org);
     let lease = manager
-        .acquire_resident::<CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect(
             "agnostic typed acquire must skip the org-scope sibling-typed \
@@ -658,7 +650,7 @@ async fn remove_for_removes_one_tenant_row_and_keeps_siblings() {
 
     // Tenant A's row is gone: acquiring it now fails.
     let err = manager
-        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect_err("tenant A's row must no longer resolve after remove_for");
     assert!(
@@ -669,7 +661,7 @@ async fn remove_for_removes_one_tenant_row_and_keeps_siblings() {
     // Tenant B's sibling row — same key, same scope, different resolved
     // identity — must be completely untouched.
     let _sibling_guard = manager
-        .acquire_resident_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_b)
+        .acquire_for_identity::<CountingResource>(&ctx, &AcquireOptions::default(), &id_b)
         .await
         .expect(
             "tenant B's sibling row must survive remove_for targeting only \

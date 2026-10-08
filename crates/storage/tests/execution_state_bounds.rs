@@ -3,6 +3,10 @@
 
 #![cfg(feature = "sqlite")]
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
 use nebula_storage_port::store::ExecutionStore;
 use nebula_storage_port::{Scope, StorageError};
 
@@ -18,6 +22,7 @@ async fn sqlite_accepts_the_limit_and_rejects_an_oversized_raw_row_on_read() {
     nebula_storage::sqlite::init_schema(&pool).await.unwrap();
     let store = nebula_storage::sqlite::SqliteExecutionStore::new(pool.clone());
     let scope = Scope::new("state-bound-workspace", "state-bound-organization");
+    pool.seed_execution_parents(&scope, "workflow").await;
 
     let exact = serde_json::Value::String("x".repeat(MAX_EXECUTION_STATE_BYTES - 2));
     store
@@ -27,19 +32,19 @@ async fn sqlite_accepts_the_limit_and_rejects_an_oversized_raw_row_on_read() {
     assert!(store.get(&scope, "exact").await.unwrap().is_some());
 
     let oversized = format!("\"{}\"", "x".repeat(MAX_EXECUTION_STATE_BYTES - 1));
-    let timestamp = chrono::Utc::now().to_rfc3339();
+    let timestamp = chrono::Utc::now().timestamp_micros();
     sqlx::query(
-        "INSERT INTO port_executions \
+        "INSERT INTO executions \
          (id, workspace_id, org_id, workflow_id, status, state, version, \
           fencing_generation, created_at, updated_at) \
-         VALUES (?, ?, ?, 'workflow', 'Created', ?, 0, 0, ?, ?)",
+         VALUES (?, ?, ?, 'workflow', 'created', ?, 0, 0, ?, ?)",
     )
     .bind("oversized")
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
     .bind(oversized)
-    .bind(&timestamp)
-    .bind(&timestamp)
+    .bind(timestamp)
+    .bind(timestamp)
     .execute(&pool)
     .await
     .unwrap();

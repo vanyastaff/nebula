@@ -529,7 +529,6 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
                     scope: scope.clone(),
                     version: 1,
                     slug: id_str.clone(),
-                    deleted: false,
                 },
             )
             .await
@@ -716,6 +715,36 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
         ExecutionStatus::Completed,
         "manual Start composition: the test-installed consumer must transition \
          the execution to Completed; this is not first-party-root evidence"
+    );
+
+    // Inspection must read the owner's snapshot even when the HTTP process has
+    // a different, empty node-result cache from the worker.
+    let mut reader = state;
+    reader.node_result_store = Arc::new(nebula_storage::inmem::InMemoryNodeResultStore::new());
+    let response = app::build_app(reader, &api_config)
+        .oneshot(http_helpers::auth_get(
+            &ws_path(&format!("/executions/{execution_id}")),
+            &token,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let detail = http_helpers::body_json(response).await;
+    assert_eq!(detail["nodes"]["step"]["status"], "completed");
+    assert_eq!(detail["nodes"]["step"]["attempts"][0]["attempt_number"], 1);
+    assert!(detail["nodes"]["step"]["attempts"][0]["recorded_at"].is_string());
+    assert!(
+        detail["nodes"]["step"]["attempts"][0]
+            .get("started_at")
+            .is_none()
+    );
+    assert_eq!(
+        detail["nodes"]["step"]["output"]["value"],
+        start_request["input"]
+    );
+    assert_eq!(
+        detail["nodes"]["step"]["attempts"][0]["output"]["value"],
+        start_request["input"]
     );
 
     // Graceful shutdown so the spawned task doesn't leak across tests.

@@ -21,12 +21,12 @@ fn execution_record_roundtrips() {
         workflow_id: "wf_1".into(),
         scope: Scope::new("ws_1", "org_1"),
         version: 3,
-        status: "Running".into(),
+        status: nebula_storage_port::ExecutionListingStatus::Running,
         state: serde_json::json!({"s":"running"}),
         lease_holder: Some("nbl_1".into()),
         fencing: Some(7),
-        created_at: "2026-05-15T00:00:00Z".into(),
-        updated_at: "2026-05-15T00:00:01Z".into(),
+        created_at: "2026-05-15T00:00:00Z".parse().unwrap(),
+        updated_at: "2026-05-15T00:00:01Z".parse().unwrap(),
     };
     let s = serde_json::to_string(&rec).expect("serialize");
     let back: ExecutionRecord = serde_json::from_str(&s).expect("deserialize");
@@ -162,7 +162,7 @@ mod iteration_checkpoint {
             Err(IterationCheckpointError::InvalidRecord)
         );
         // The scope is taken as the execution was admitted under it: neither
-        // `Scope` nor `port_executions` bounds it, so neither does the key.
+        // `Scope` nor `executions` bounds it, so neither does the key.
         let empty_scope = Scope::new("", "org");
         assert!(IterationCheckpointKey::new(&empty_scope, "exe", "node", "a.b", "1.0.0").is_ok());
     }
@@ -203,6 +203,21 @@ mod iteration_checkpoint {
             assert!(!definitive.is_deferred(), "{definitive:?}");
         }
     }
+}
+
+/// The stored wait-kind name is the serde name, so rows written through
+/// either path decode through the other.
+#[test]
+fn resume_token_wait_kind_names_match_serde() {
+    use nebula_storage_port::dto::ResumeTokenWaitKind;
+    for kind in [ResumeTokenWaitKind::Webhook, ResumeTokenWaitKind::Approval] {
+        assert_eq!(
+            serde_json::to_value(&kind).unwrap(),
+            serde_json::json!(kind.as_str())
+        );
+        assert_eq!(kind.as_str().parse::<ResumeTokenWaitKind>(), Ok(kind));
+    }
+    assert!("Webhook".parse::<ResumeTokenWaitKind>().is_err());
 }
 
 // Compile-time guard: a fresh FencingToken generation is comparable, proving

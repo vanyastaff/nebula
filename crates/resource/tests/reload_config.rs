@@ -119,7 +119,7 @@ async fn reload_config_rebuilds_resident_master_with_new_config() {
 
     let ctx = test_ctx();
     let first = manager
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire");
     let first_id = first.load(Ordering::Relaxed);
@@ -136,7 +136,7 @@ async fn reload_config_rebuilds_resident_master_with_new_config() {
         .expect("reload");
 
     let second = manager
-        .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire");
     let second_id = second.load(Ordering::Relaxed);
@@ -570,7 +570,7 @@ async fn reload_config_evicts_stale_pool_instances() {
 
     // Acquire and release to populate idle queue with fingerprint=1.
     let handle: ResourceGuard<ReloadPoolResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -604,7 +604,7 @@ async fn reload_config_evicts_stale_pool_instances() {
 
     // Next acquire should create a fresh instance (stale one evicted).
     let handle2: ResourceGuard<ReloadPoolResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
     assert_eq!(
@@ -644,7 +644,7 @@ async fn stale_pool_destroy_does_not_block_fresh_acquire_under_topology_permit()
         .expect("register should succeed");
 
     let first = manager
-        .acquire_pooled::<ReloadPoolResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<ReloadPoolResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .expect("seed acquire should succeed");
     assert_eq!(
@@ -658,7 +658,7 @@ async fn stale_pool_destroy_does_not_block_fresh_acquire_under_topology_permit()
     let acquire_manager = Arc::clone(&manager);
     let mut acquire_task = tokio::spawn(async move {
         acquire_manager
-            .acquire_pooled::<ReloadPoolResource>(&test_ctx(), &AcquireOptions::default())
+            .acquire::<ReloadPoolResource>(&test_ctx(), &AcquireOptions::default())
             .await
     });
     resource.destroy_started.notified().await;
@@ -771,7 +771,7 @@ async fn resident_reloads_under_held_leases_are_bounded() {
             .expect("reload");
         held.push(
             manager
-                .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+                .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
                 .await
                 .expect("a live master keeps serving"),
         );
@@ -790,7 +790,7 @@ async fn resident_reloads_under_held_leases_are_bounded() {
     let after = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             let guard = manager
-                .acquire_resident::<ResidentTestResource>(&ctx, &AcquireOptions::default())
+                .acquire::<ResidentTestResource>(&ctx, &AcquireOptions::default())
                 .await
                 .expect("the current master keeps serving");
             let id = guard.load(Ordering::Relaxed);

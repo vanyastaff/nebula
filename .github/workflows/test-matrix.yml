@@ -297,15 +297,13 @@ jobs:
           # predate the credential lifecycle suites and remain part of the
           # required storage contract.
           #
-          # `pg::control_queue::tests` is required here because the claim
-          # statement is assembled at runtime (`AssertSqlSafe`) and is never
-          # type-checked at compile time: issue #756 shipped an ambiguous
-          # `RETURNING` projection that failed every claim, and no compile-only
-          # or SQLite test could observe it. Those tests hold a PostgreSQL
-          # advisory lock, so they serialise correctly against each other even
-          # though nextest runs each in its own process.
+          # The legacy `pg::control_queue` repo (issue #756's runtime-assembled
+          # claim statement) was deleted; the port queue's PostgreSQL claim
+          # path is exercised by `conformance` and
+          # `postgres_control_queue_atomicity` below. The `.config/nextest.toml`
+          # `postgres-authority` group serialises these tests across processes.
           cargo nextest run "${common[@]}" \
-            -E 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests|control_queue::tests)::/)'
+            -E 'package(=nebula-storage) & binary(=nebula_storage) & test(/auth::postgres::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
 
           # `conformance` and `identity_conformance_postgres` are the shared semantic
           # oracles: the same assertions run against InMemory, SQLite, and
@@ -317,11 +315,9 @@ jobs:
           for suite in \
             conformance \
             identity_conformance_postgres \
+            account_lifecycle_postgres \
             credential_lifecycle_postgres \
-            credential_migration_postgres \
-            credential_schema_admission_postgres \
             control_start_handoff_postgres \
-            exact_dispatch_flavor_migration_postgres \
             execution_state_bounds_postgres \
             iteration_checkpoint_conformance_postgres \
             operation_ledger_conformance_postgres \
@@ -333,11 +329,18 @@ jobs:
             revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \
             schema_setup_postgres \
+            revision_record_constraints \
             turn_handoff_conformance_postgres \
             workflow_activation_postgres
           do
             cargo nextest run "${common[@]}" --test "$suite"
           done
+
+          # These suites compare both deployment backends in one test body.
+          cargo nextest run "${common[@]}" --features sqlite \
+            --test schema_parity_postgres \
+            --test platform_constraints \
+            --test credential_incident_constraints
 
           cargo nextest run -p nebula-storage --no-default-features \
             --features sqlite,postgres,credential-in-memory --test credential_operation_runtime \

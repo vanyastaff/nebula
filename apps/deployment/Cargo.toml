@@ -1,0 +1,31 @@
+[package]
+name = "nebula-deployment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Shared first-party plugin release and runtime assembly"
+
+[dependencies]
+nebula-core = { path = "../../crates/core" }
+nebula-credential = { path = "../../crates/credential" }
+nebula-engine = { path = "../../crates/engine" }
+nebula-metrics = { path = "../../crates/metrics" }
+nebula-plugin = { path = "../../crates/plugin" }
+nebula-plugin-core = { path = "../../crates/plugin-core" }
+nebula-storage-port = { path = "../../crates/storage-port" }
+nebula-worker = { path = "../../crates/worker" }
+nebula-eventbus = { path = "../../crates/eventbus", optional = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+runtime-repair-red = ["dep:nebula-eventbus"]
+
+[dev-dependencies]
+tokio-util = { workspace = true }
+
+[lints]
+workspace = true

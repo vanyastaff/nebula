@@ -223,10 +223,10 @@ expected = "failure"
 
 [[gates]]
 id = "NS09"
-statement = "Clean and previous-supported-version migration fixtures pass from ordered migrations."
+statement = "Fresh creation and populated-head reconnect fixtures pass from ordered migrations."
 owner = "tooling-lead"
 state = "partial"
-state_reason = "Clean and previous-supported ordered migration observations are retained for SQLite and PostgreSQL; schema v1 records partial state and does not promote it from artifacts."
+state_reason = "Fresh creation and populated-head reconnect observations are retained for SQLite and PostgreSQL; schema v1 records partial state and does not promote it from artifacts."
 activation_checkpoint = "CP2"
 backends = ["sqlite", "postgresql"]
 required_ci = [
@@ -244,7 +244,7 @@ artifact_name = "ordered-migrations"
 [gates.threshold]
 kind = "all"
 metric = "ordered_migration_fixture_pass"
-required_cases = ["clean", "previous-supported-version"]
+required_cases = ["clean", "populated-head"]
 
 [[gates]]
 id = "NS10"

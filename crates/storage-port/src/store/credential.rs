@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use nebula_core::CredentialId;
 
 use crate::dto::RefreshRetrySnapshot;
-use crate::dto::credential::{
+use crate::dto::{
     CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialOwner,
     CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
     StoredCredential, StoredCredentialHead,

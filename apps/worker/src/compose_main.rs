@@ -18,13 +18,12 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt};
 
+use nebula_deployment::worker::{ComposeError, ResourceFanoutInputs, build_core_flavor_runtime};
 use nebula_engine::ExecutionStores;
 use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecovery};
-use nebula_worker_bin::compose::{
-    ComposeError, ResourceFanoutInputs, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
-};
+use nebula_worker_bin::config::{WorkerConfig, WorkerConfigError};
 use nebula_worker_bin::credential_projection::{
-    CredentialProjectionCompositionError, compose_first_party_projection,
+    CredentialProjectionCompositionError, CredentialProjectionConfig, DeploymentDatabase,
 };
 
 /// Top-level error union for the worker binary startup.
@@ -63,7 +62,7 @@ pub(crate) enum WorkerRunError {
     /// takes.
     #[error(
         "worker runtime did not exit within {budget_secs}s of shutdown; \
-         abandoning the drain (accepted work recovers via lease expiry)"
+         runtime task aborted (accepted work recovers via lease expiry)"
     )]
     ShutdownTimedOut {
         /// The elapsed shutdown budget in seconds.
@@ -125,6 +124,19 @@ pub(crate) enum WorkerRunError {
     Signal(#[from] std::io::Error),
 }
 
+/// The durable store bundle, plus the deployment pool the credential
+/// projection shares with it.
+type WorkerStores = (
+    ExecutionStores,
+    Arc<dyn ControlQueue>,
+    Arc<dyn ExecutionTurnHandoff>,
+    Arc<dyn TurnRecovery>,
+    Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
+    Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+    ResourceFanoutInputs,
+    DeploymentDatabase,
+);
+
 /// Build the durable store bundle for the configured backend.
 ///
 /// When `config.database_url` is `None`, the SQLite path is used (WAL +
@@ -142,18 +154,7 @@ pub(crate) enum WorkerRunError {
 async fn build_stores(
     config: &WorkerConfig,
     metrics: &nebula_metrics::MetricsRegistry,
-) -> Result<
-    (
-        ExecutionStores,
-        Arc<dyn ControlQueue>,
-        Arc<dyn ExecutionTurnHandoff>,
-        Arc<dyn TurnRecovery>,
-        Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
-        Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
-        ResourceFanoutInputs,
-    ),
-    WorkerRunError,
-> {
+) -> Result<WorkerStores, WorkerRunError> {
     if let Some(dsn) = config.database_url.as_deref() {
         return build_pg_stores(dsn, metrics).await;
     }
@@ -223,6 +224,7 @@ async fn build_stores(
         catalog,
         bundles,
         resource_fanout,
+        DeploymentDatabase::Sqlite(pool),
     ))
 }
 
@@ -240,18 +242,7 @@ async fn build_stores(
 async fn build_pg_stores(
     dsn: &str,
     metrics: &nebula_metrics::MetricsRegistry,
-) -> Result<
-    (
-        ExecutionStores,
-        Arc<dyn ControlQueue>,
-        Arc<dyn ExecutionTurnHandoff>,
-        Arc<dyn TurnRecovery>,
-        Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
-        Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
-        ResourceFanoutInputs,
-    ),
-    WorkerRunError,
-> {
+) -> Result<WorkerStores, WorkerRunError> {
     use nebula_storage::postgres::{
         PgCheckpointStore, PgControlQueue, PgExecutionStore, PgIdempotencyGuard, PgJournalReader,
         PgOperationLedger, PgResourceRuntime, PgResumeTokenStore, PgTurnHandoff, PgWorkflowStore,
@@ -334,6 +325,7 @@ async fn build_pg_stores(
         catalog,
         bundles,
         resource_fanout,
+        DeploymentDatabase::Postgres(pool),
     ))
 }
 
@@ -348,18 +340,7 @@ async fn build_pg_stores(
 async fn build_pg_stores(
     _dsn: &str,
     _metrics: &nebula_metrics::MetricsRegistry,
-) -> Result<
-    (
-        ExecutionStores,
-        Arc<dyn ControlQueue>,
-        Arc<dyn ExecutionTurnHandoff>,
-        Arc<dyn TurnRecovery>,
-        Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
-        Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
-        ResourceFanoutInputs,
-    ),
-    WorkerRunError,
-> {
+) -> Result<WorkerStores, WorkerRunError> {
     Err(WorkerRunError::PostgresFeatureNotEnabled)
 }
 
@@ -380,7 +361,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     tracing::info!("nebula-worker (core flavor) starting");
 
     let config = WorkerConfig::from_env()?;
-    let credential_resolver = compose_first_party_projection().await?;
+    let credential_config = CredentialProjectionConfig::from_env()?;
 
     // Log the active backend. Only emit `db_path` on the SQLite path — on the
     // Postgres path it is the ignored default "nebula-worker.db" and emitting
@@ -405,7 +386,11 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
         catalog,
         bundles,
         resource_fanout,
+        deployment_database,
     ) = build_stores(&config, &metrics).await?;
+    // Credentials live in the deployment database beside executions and
+    // share its pool.
+    let credential_resolver = credential_config.compose(&deployment_database).await?;
 
     // Assemble the core-flavor builder (boots CorePlugin + wires into engine).
     let (builder, _metrics, plugin_key) = build_core_flavor_runtime(
@@ -413,7 +398,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
         turn_handoff,
         turn_recovery,
         config.processor_id,
-        nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+        nebula_deployment::worker::CoreFlavorRevisionInputs {
             metrics,
             artifact_set_digest: config.artifact_set_digest,
             catalog,
@@ -432,43 +417,71 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
 
     // Wire graceful shutdown: SIGINT (Ctrl-C) and SIGTERM on Unix.
     let cancel = CancellationToken::new();
-    let mut handle = runtime.spawn(cancel.clone());
-
-    tokio::select! {
-        signal = wait_for_shutdown_signal() => {
-            signal?;
-            cancel.cancel();
-            tracing::info!(
-                "shutdown signal received; waiting for the worker runtime to exit"
-            );
-            match tokio::time::timeout(SHUTDOWN_DRAIN_BUDGET, &mut handle).await {
-                Ok(runtime_result) => {
-                    runtime_result.map_err(WorkerRunError::RuntimeTask)??;
-                },
-                Err(_elapsed) => {
-                    // Dropping the handle detaches the runtime task; the
-                    // process exits below. Accepted work is not lost: its
-                    // execution lease expires and a successor replica
-                    // reclaims it, exactly as after a crash.
-                    return Err(WorkerRunError::ShutdownTimedOut {
-                        budget_secs: SHUTDOWN_DRAIN_BUDGET.as_secs(),
-                    });
-                },
-            }
-        },
-        runtime_result = &mut handle => {
-            cancel.cancel();
-            runtime_result.map_err(WorkerRunError::RuntimeTask)??;
-            return Err(WorkerRunError::RuntimeExited);
-        },
-    }
+    let handle = runtime.spawn(cancel.clone());
+    supervise_runtime(
+        handle,
+        cancel,
+        wait_for_shutdown_signal(),
+        SHUTDOWN_DRAIN_BUDGET,
+    )
+    .await?;
     tracing::info!("nebula-worker (core flavor) stopped cleanly");
 
     Ok(())
 }
 
+/// Own the runtime until it stops or the process receives a shutdown request.
+/// Dropping this supervisor cancels and aborts as a fail-safe; normal returns
+/// always join the owned task, including after a drain timeout.
+#[tracing::instrument(skip_all)]
+async fn supervise_runtime(
+    handle: tokio::task::JoinHandle<Result<(), nebula_worker::WorkerRuntimeError>>,
+    cancel: CancellationToken,
+    signal: impl Future<Output = Result<(), std::io::Error>>,
+    drain_budget: Duration,
+) -> Result<(), WorkerRunError> {
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    let mut handle = tokio_util::task::AbortOnDropHandle::new(handle);
+    let signal_result = tokio::select! {
+        signal = signal => signal,
+        runtime_result = &mut handle => {
+            cancel.cancel();
+            runtime_result.map_err(WorkerRunError::RuntimeTask)??;
+            return Err(WorkerRunError::RuntimeExited);
+        },
+    };
+    cancel.cancel();
+    if signal_result.is_err() {
+        tracing::error!("shutdown signal listener failed; stopping the worker runtime");
+    } else {
+        tracing::info!("shutdown signal received; waiting for the worker runtime to exit");
+    }
+    match tokio::time::timeout(drain_budget, &mut handle).await {
+        Ok(runtime_result) => {
+            runtime_result.map_err(WorkerRunError::RuntimeTask)??;
+        },
+        Err(_elapsed) => {
+            tracing::error!(
+                budget_secs = drain_budget.as_secs(),
+                "worker drain timed out; aborting and joining its runtime task"
+            );
+            handle.abort();
+            // Abort is a request. Awaiting the handle observes task destruction
+            // before returning ownership to the application caller.
+            let _joined = handle.await;
+            return Err(WorkerRunError::ShutdownTimedOut {
+                budget_secs: drain_budget.as_secs(),
+            });
+        },
+    }
+    signal_result?;
+    Ok(())
+}
+
 /// How long the worker waits for its supervised components to drain after a
-/// shutdown signal before abandoning the drain and exiting non-zero.
+/// shutdown signal before aborting and joining the runtime task, then exiting
+/// non-zero. Async cancellation cannot preempt blocking or non-yielding code;
+/// the process supervisor still owns its final termination deadline.
 ///
 /// Longer than the server's HTTP drain budget because worker components finish
 /// in-flight node turns rather than whole requests, and shorter than the
@@ -476,7 +489,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
 /// recovery path for work that cannot finish.
 const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(20);
 
-/// Wait for SIGINT (Ctrl-C) or SIGTERM, then cancel `token`.
+/// Wait for SIGINT (Ctrl-C) or SIGTERM.
 async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
     #[cfg(unix)]
     {
@@ -499,6 +512,165 @@ async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
 #[cfg(test)]
 mod tests {
     const TEST_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_timeout_releases_the_owned_runtime_before_returning() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (released, mut release_observed) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let _owned = released;
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        let cleanup = handle.abort_handle();
+        let result = super::supervise_runtime(
+            handle,
+            cancel.clone(),
+            std::future::ready(Ok(())),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+        let released = matches!(
+            release_observed.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+        cleanup.abort();
+        assert!(matches!(
+            result,
+            Err(super::WorkerRunError::ShutdownTimedOut { .. })
+        ));
+        assert!(cancel.is_cancelled());
+        assert!(
+            released,
+            "shutdown returned while its owned runtime was still alive"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn signal_failure_stops_the_owned_runtime_before_returning() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let runtime_cancel = cancel.clone();
+        let (released, mut release_observed) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let _owned = released;
+            runtime_cancel.cancelled().await;
+            Ok(())
+        });
+        let cleanup = handle.abort_handle();
+        let result = super::supervise_runtime(
+            handle,
+            cancel.clone(),
+            std::future::ready(Err(std::io::Error::other("signal unavailable"))),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+        let released = matches!(
+            release_observed.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+        cleanup.abort();
+        assert!(matches!(result, Err(super::WorkerRunError::Signal(_))));
+        assert!(
+            cancel.is_cancelled(),
+            "signal failure left the runtime uncancelled"
+        );
+        assert!(
+            released,
+            "signal failure returned while its owned runtime was still alive"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_joins_a_cooperative_runtime() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let runtime_cancel = cancel.clone();
+        let (released, mut release_observed) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let _owned = released;
+            runtime_cancel.cancelled().await;
+            Ok(())
+        });
+        super::supervise_runtime(
+            handle,
+            cancel,
+            std::future::ready(Ok(())),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect("graceful shutdown");
+        assert!(matches!(
+            release_observed.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn premature_runtime_exit_is_a_failure_and_cancels_its_siblings() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let handle = tokio::spawn(async { Ok(()) });
+        let result = super::supervise_runtime(
+            handle,
+            cancel.clone(),
+            std::future::pending(),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+        assert!(matches!(result, Err(super::WorkerRunError::RuntimeExited)));
+        assert!(cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn runtime_panic_is_a_failure_and_cancels_its_siblings() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let handle = tokio::spawn(async { panic!("runtime panic fixture") });
+        let result = super::supervise_runtime(
+            handle,
+            cancel.clone(),
+            std::future::pending(),
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(super::WorkerRunError::RuntimeTask(error)) if error.is_panic())
+        );
+        assert!(cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn dropping_supervisor_cancels_and_aborts_its_runtime() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (released, release_observed) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let _owned = released;
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        let (polling, polled) = tokio::sync::oneshot::channel();
+        let supervisor = tokio::spawn(super::supervise_runtime(
+            handle,
+            cancel.clone(),
+            async {
+                polling.send(()).expect("supervisor polled");
+                std::future::pending().await
+            },
+            std::time::Duration::from_secs(1),
+        ));
+        polled.await.expect("supervisor owns the runtime");
+        supervisor.abort();
+        assert!(
+            supervisor
+                .await
+                .expect_err("cancelled supervisor")
+                .is_cancelled()
+        );
+        assert!(cancel.is_cancelled());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), release_observed)
+                .await
+                .expect("runtime aborted")
+                .is_err()
+        );
+    }
 
     // ── Fail-closed routing test ──────────────────────────────────────────────
     //
@@ -559,24 +731,38 @@ mod tests {
             catalog,
             bundles,
             resource_fanout,
+            deployment_database,
         ) = build_stores(&config, &metrics)
             .await
             .expect("SQLite backend bootstrap must succeed");
-        let (builder, _, _) = nebula_worker_bin::compose::build_core_flavor_runtime(
+        // The SQLite backend hands its own pool to the credential projection.
+        #[cfg_attr(
+            not(feature = "postgres"),
+            expect(
+                clippy::infallible_destructuring_match,
+                reason = "without postgres the deployment database has only the SQLite variant"
+            )
+        )]
+        let pool = match deployment_database {
+            nebula_worker_bin::credential_projection::DeploymentDatabase::Sqlite(pool) => pool,
+            #[cfg(feature = "postgres")]
+            other => panic!("expected the SQLite deployment pool, got {other:?}"),
+        };
+        let (builder, _, _) = nebula_deployment::worker::build_core_flavor_runtime(
             execution_stores,
             turn_handoff,
             turn_recovery,
             config.processor_id,
-            nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+            nebula_deployment::worker::CoreFlavorRevisionInputs {
                 metrics,
                 artifact_set_digest: config.artifact_set_digest,
                 catalog,
                 bundles,
                 credential_resolver: {
                     let store =
-                        nebula_storage::credential::SqliteCredentialPersistence::connect_memory()
+                        nebula_storage::credential::SqliteCredentialPersistence::connect_pool(pool)
                             .await
-                            .expect("ready in-memory credential store");
+                            .expect("credential store on the deployment pool");
                     let key_provider: std::sync::Arc<dyn nebula_storage::credential::KeyProvider> =
                         std::sync::Arc::new(
                             nebula_storage::credential::EnvKeyProvider::from_base64(

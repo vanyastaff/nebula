@@ -572,22 +572,17 @@ pub struct ResourceHealthSnapshot {
 /// abandonment instead of enqueueing work into workers that are about to be
 /// aborted.
 ///
-/// Slot-identity-pinned acquire (the `*_for_identity` entry points —
-/// [`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity),
-/// [`acquire_resident_for_identity`](Self::acquire_resident_for_identity),
-/// [`acquire_bounded_for_identity`](Self::acquire_bounded_for_identity))
-/// exists for every built-in topology: it resolves the registry row whose
+/// Slot-identity-pinned [`acquire_for_identity`](Self::acquire_for_identity)
+/// works with built-in and custom topologies: it resolves the registry row whose
 /// resolved `slot_identity` matches, so a caller that resolved tenant A's
 /// credential reaches tenant A's runtime and never tenant B's. The
-/// identity-agnostic [`acquire_pooled`](Self::acquire_pooled) /
-/// [`acquire_resident`](Self::acquire_resident) /
-/// [`acquire_bounded`](Self::acquire_bounded) /
+/// identity-agnostic [`acquire`](Self::acquire) /
 /// [`acquire_any`](Self::acquire_any) methods stay fail-closed for the
 /// no-identity caller: under a
 /// multi-tenant `(key, scope)` (more than one resolved-credential
 /// registration) they return
 /// [`ErrorKind::Ambiguous`](crate::error::ErrorKind::Ambiguous) rather than
-/// aliasing one tenant's runtime to another. Use the `*_for` variant
+/// aliasing one tenant's runtime to another. Use `acquire_for_identity`
 /// whenever the resolved slot identity is known.
 pub struct Manager {
     pub(super) registry: Registry,

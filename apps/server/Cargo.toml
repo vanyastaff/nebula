@@ -43,14 +43,13 @@ nebula-credential = { path = "../../crates/credential" }
 nebula-engine = { path = "../../crates/engine" }
 nebula-execution = { path = "../../crates/execution" }
 nebula-plugin = { path = "../../crates/plugin" }
-nebula-plugin-core = { path = "../../crates/plugin-core" }
 nebula-tenancy = { path = "../../crates/tenancy" }
 nebula-core = { path = "../../crates/core" }
 nebula-metadata = { path = "../../crates/metadata" }
 nebula-schema = { path = "../../crates/schema", features = ["schemars"] }
-# Reused only by the evidence-only runtime-repair profile. The ordinary server
-# does not link the worker composition root.
-nebula-worker-bin = { path = "../worker", optional = true }
+# Linked release selection and first-party runtime assembly shared with worker.
+nebula-deployment = { path = "../deployment" }
+nebula-worker = { path = "../../crates/worker" }
 # Ephemeral execution observations used only by the runtime-repair evidence
 # profile. Durable state remains authoritative.
 nebula-eventbus = { path = "../../crates/eventbus", optional = true }
@@ -93,13 +92,11 @@ sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 postgres = [
   "nebula-api/postgres",
   "nebula-storage/postgres",
-  "nebula-worker-bin?/postgres",
   "sqlx/postgres",
   "sqlx/tls-rustls-ring-native-roots",
 ]
 runtime-repair-red = [
-  "dep:nebula-worker-bin",
-  "nebula-worker-bin/runtime-repair-red",
+  "nebula-deployment/runtime-repair-red",
   "dep:nebula-eventbus",
   "dep:chrono",
   "nebula-api/test-util",
@@ -107,7 +104,7 @@ runtime-repair-red = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "process"] }
 nebula-action = { path = "../../crates/action" }
 # Activate the `test-util` feature of nebula-api for tests — exposes
 # `ApiConfig::for_test()`. Cargo unions features from [dependencies] and

@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use nebula_storage::inmem::InMemoryControlQueue;
 use nebula_storage::{InMemoryExecutionStore, InMemoryResumeProducer};
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, ResumeTarget};
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{ExecutionStore, ResumeProducer};
 use nebula_storage_port::{Scope, TransitionBatch, TransitionOutcome};
 
@@ -83,15 +83,15 @@ async fn seed_token(
         .expect("acquire_lease must not error")
         .expect("fresh row must yield a fencing token");
 
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id)
-        .expected_version(0)
-        .fencing(fencing_token)
-        .new_state(serde_json::json!({"s": "waiting"}))
-        .resume_tokens(vec![token_row])
-        .build()
-        .expect("well-formed batch must build");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id,
+        0,
+        fencing_token,
+        serde_json::json!({"s": "waiting"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_resume_tokens(vec![token_row]);
 
     let outcome = exec_store
         .commit(batch)

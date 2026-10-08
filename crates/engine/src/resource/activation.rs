@@ -282,7 +282,7 @@ pub struct StoredResourceActivator {
     timeout: Duration,
     rows: DashMap<(Scope, ResourceId), RowSlot>,
     limit_key_secret: Arc<[u8; 32]>,
-    /// Where the next [`retire_deleted`](Self::retire_deleted) sweep starts.
+    /// Next row to attempt, advanced before each retirement read.
     sweep_cursor: std::sync::atomic::AtomicUsize,
     /// Registry rows this activator stopped tracking but the manager has not
     /// removed yet (its retirement queue pushed back); every sweep retries.
@@ -418,8 +418,9 @@ impl StoredResourceActivator {
         self
     }
 
-    /// Bounds one row activation. A slow backend or credential source then
-    /// fails that row instead of stalling the turn indefinitely.
+    /// Bounds one row activation and the asynchronous work of one deletion sweep.
+    /// A slow backend or credential source fails activation; a timed-out sweep
+    /// keeps unverified rows and resumes from the next row on its next call.
     #[must_use]
     pub fn with_activation_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
@@ -547,6 +548,10 @@ impl StoredResourceActivator {
     /// row's recorded failure is forgotten too, and tracking entries left
     /// empty (a retired row, or an activation that failed before reading
     /// its row) are dropped, so they do not accumulate.
+    ///
+    /// The activation timeout bounds the whole sweep, not each read. A timed-out
+    /// or cancelled read leaves its row unchanged and releases its lock. The
+    /// cursor advances before the read so subsequent sweeps can reach other rows.
     pub async fn retire_deleted(&self, context: &ActivationContext<'_>) {
         use std::sync::atomic::Ordering;
 
@@ -556,18 +561,24 @@ impl StoredResourceActivator {
         if keys.is_empty() {
             return;
         }
-        let start = self
-            .sweep_cursor
-            .fetch_add(RETIRE_SWEEP_BATCH, Ordering::Relaxed)
-            % keys.len();
-        let batch = keys
-            .iter()
-            .cycle()
-            .skip(start)
-            .take(RETIRE_SWEEP_BATCH.min(keys.len()));
-        for key in batch {
-            self.retire_if_deleted(context, key).await;
-            self.reap_if_empty(key);
+        let mut visited = 0;
+        let sweep = async {
+            for _ in 0..RETIRE_SWEEP_BATCH.min(keys.len()) {
+                let next = self.sweep_cursor.fetch_add(1, Ordering::Relaxed) % keys.len();
+                let key = &keys[next];
+                visited += 1;
+                self.retire_if_deleted(context, key).await;
+                self.reap_if_empty(key);
+            }
+        };
+        if tokio::time::timeout(self.timeout, sweep).await.is_err() {
+            tracing::warn!(
+                target: "nebula_engine::resource_activation",
+                error_kind = "timeout",
+                rows_visited = visited,
+                budget_ms = self.timeout.as_millis(),
+                "stored resource retirement sweep timed out; unverified rows kept for later sweeps"
+            );
         }
     }
 

@@ -1,4 +1,4 @@
-//! SQLite iteration-checkpoint store over ordered migration 0062.
+//! SQLite iteration-checkpoint store in the execution baseline.
 //!
 //! A save runs under `BEGIN IMMEDIATE`: the execution fence, the read that
 //! decides and the write that follows are one linearized operation against
@@ -54,8 +54,8 @@ async fn load(
 ) -> Result<Option<IterationCheckpoint>, IterationCheckpointError> {
     let row = sqlx::query(
         "SELECT action_version, iteration, state, state_digest, resume_delay_ms, \
-                attested_positions, attempt_generation, fencing_generation, written_at_ms \
-         FROM port_iteration_checkpoints \
+                attested_positions, attempt_generation, fencing_generation, written_at \
+         FROM iteration_checkpoints \
          WHERE workspace_id = ? AND org_id = ? AND execution_id = ? \
            AND node_key = ? AND action_key = ? AND action_version_digest = ?",
     )
@@ -85,7 +85,10 @@ async fn load(
         row.try_get("attested_positions").map_err(corrupt)?,
         row.try_get("attempt_generation").map_err(corrupt)?,
         row.try_get("fencing_generation").map_err(corrupt)?,
-        row.try_get("written_at_ms").map_err(corrupt)?,
+        // Stored in microseconds; the port carries milliseconds.
+        row.try_get::<i64, _>("written_at")
+            .map_err(corrupt)?
+            .div_euclid(1000),
     )
     .map(Some)
 }
@@ -95,7 +98,7 @@ async fn stored_identity(
     key: &IterationCheckpointKey<'_>,
 ) -> Result<Option<(u32, [u8; 32])>, IterationCheckpointError> {
     let row = sqlx::query(
-        "SELECT action_version, iteration, state_digest FROM port_iteration_checkpoints \
+        "SELECT action_version, iteration, state_digest FROM iteration_checkpoints \
          WHERE workspace_id = ? AND org_id = ? AND execution_id = ? \
            AND node_key = ? AND action_key = ? AND action_version_digest = ?",
     )
@@ -146,29 +149,25 @@ async fn save(
         drop(tx.commit().await);
         return Ok(decision.saved());
     }
-    let now_ms: i64 =
-        sqlx::query_scalar("SELECT CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)")
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(unavailable)?;
     let delay = checkpoint
         .resume_delay_ms()
         .map(durable_integer)
         .transpose()?;
     sqlx::query(
-        "INSERT INTO port_iteration_checkpoints \
+        "INSERT INTO iteration_checkpoints \
          (workspace_id, org_id, execution_id, node_key, action_key, action_version, \
           action_version_digest, iteration, state, state_digest, resume_delay_ms, \
-          attested_positions, attempt_generation, fencing_generation, written_at_ms) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-         ON CONFLICT (workspace_id, org_id, execution_id, node_key, action_key, \
+          attested_positions, attempt_generation, fencing_generation, written_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+                 CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER)) \
+         ON CONFLICT (org_id, workspace_id, execution_id, node_key, action_key, \
                       action_version_digest) \
          DO UPDATE SET iteration = excluded.iteration, state = excluded.state, \
            state_digest = excluded.state_digest, resume_delay_ms = excluded.resume_delay_ms, \
            attested_positions = excluded.attested_positions, \
            attempt_generation = excluded.attempt_generation, \
            fencing_generation = excluded.fencing_generation, \
-           written_at_ms = excluded.written_at_ms",
+           written_at = excluded.written_at",
     )
     .bind(key.scope().workspace_id.as_str())
     .bind(key.scope().org_id.as_str())
@@ -184,7 +183,6 @@ async fn save(
     .bind(i64::from(checkpoint.attested_positions()))
     .bind(durable_integer(checkpoint.attempt_generation())?)
     .bind(durable_integer(fencing.generation())?)
-    .bind(now_ms)
     .execute(&mut *tx)
     .await
     .map_err(unavailable)?;

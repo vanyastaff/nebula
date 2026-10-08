@@ -150,7 +150,7 @@ The Rust patterns that make this invariant easy to uphold: sealed traits, typest
 
 **[L1]** Durable is not enough — runs must be explainable. Execution state, append-only journal, structured errors, and metrics let an operator answer what happened and why a run failed without reading Rust source.
 
-**[L1]** Observability is a first-class contract, not polish. SLIs, SLOs, structured event schema for `port_execution_journal` (the legacy `execution_journal` table has no writer), and the core analysis loop live in `docs/OBSERVABILITY.md`.
+**[L1]** Observability is a first-class contract, not polish. SLIs, SLOs, structured event schema for `execution_journal`, and the core analysis loop live in `docs/OBSERVABILITY.md`.
 
 **[L2]** Where a feature is still thin (e.g. lease enforcement at §11.6), say so — do not imply full auditability from partial signals.
 
@@ -172,6 +172,45 @@ The Rust patterns that make this invariant easy to uphold: sealed traits, typest
 > **Local storage truth:** the supported local deployment path is **SQLite**, usable against a file or `sqlite::memory:`. `nebula-storage` also contains an InMemory implementation, but it is an internal test/reference/conformance adapter and is not a supported deployment backend. Product onboarding must not present it as an operator choice equivalent to SQLite or Postgres.
 
 > **Intended deployment path:** Nebula is not production-ready yet. Once the release and conformance gates pass, **SQLite local/edge** and **Postgres self-hosted** are the only intended supported deployment paths. Additional storage backends or cloud multi-tenant modes are additive and must be explicitly marked **experimental** or **planned** until this canon says otherwise. Alternative plugin execution models are governed by §12.6 and are not additive roadmap items.
+
+### 5.1 Client and deployment model
+
+**[L1] Product target:** one shared user interface for **desktop and web**, with
+switchable connections to local, self-hosted and managed-cloud servers. These
+client applications and the managed-cloud offering are **planned**, not shipped
+deployment capabilities. The release gates above still apply.
+
+| Target | Server ownership | Execution and persistence |
+|--------|------------------|---------------------------|
+| Local | Desktop can manage a native server process or a local Docker deployment, or connect to an operator-managed instance | Server owns API and execution runtime; the simple local profile uses durable file-backed SQLite |
+| Self-hosted | Operator manages a Nebula deployment, on the same machine or remotely | Server and workers own runtime state in PostgreSQL |
+| Cloud | Nebula operates the remote deployment | Same product API and durability contracts; hosted operations and isolation require their own release evidence |
+
+The client connects through the versioned product API in every mode. It never
+opens the server's database or acquires aggregate write authority. A local
+deployment must execute accepted workflows through its owning runtime; starting
+an API listener alone is not a working local workflow application.
+
+Server location, launch mechanism and lifecycle ownership are separate choices.
+Docker is an optional launch mechanism, not a storage backend or a requirement
+for local use. An operator may run the PostgreSQL self-hosted topology locally.
+Stopping an owned process or container must preserve its durable data; deleting
+a local profile or its volume is a separate explicit operation. Container support
+for the application is part of this planned target, not a claim about the current
+development infrastructure Compose files.
+
+**[L1] Connection isolation:** saved connection metadata is separate from server
+deployment configuration and authentication secrets. Sessions, tenant selection,
+cached data and in-flight responses belong to one connection. Switching servers
+must not send the previous connection's credentials to the new endpoint, display
+late responses in its workspace, or replay an uncertain mutation there. Workflows already accepted by
+the old server remain under that server's ownership; switching is not cancellation
+or transfer. A connection failure must not silently select another server.
+
+Desktop owns lifecycle controls only for the local server it manages. A browser
+client connects to an already running server; browser connectivity and origin
+policy must be verified for each supported hosting arrangement. Remote servers
+retain control of authentication, tenant authorization and capability admission.
 
 ---
 
@@ -418,7 +457,7 @@ individually durable merely because the enclosing node will be checkpointed.
 | Artifact                           | Status                                                               | Operator-visible truth                                                                                                                                                           |
 | ---------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `executions` row + state JSON      | **Durable** (CAS + fencing via `ExecutionStore::commit`)             | Source of truth                                                                                                                                                                  |
-| `port_execution_journal` (append-only)  | **Durable when appended in the same `TransitionBatch`**              | Replayable history coupled to the state it describes                                                                                                                            |
+| `execution_journal` (append-only)       | **Durable when appended in the same `TransitionBatch`**              | Replayable history coupled to the state it describes                                                                                                                            |
 | `execution_control_queue` (outbox) | **Durable when appended in the same `TransitionBatch`**              | At-least-once dispatch + cancel signals (§12.2); a separately enqueued start is a migration gap until reconciled                                                                 |
 | stateful-action checkpoint         | **Durable when written (fenced) on SQLite/PostgreSQL; an optimization, never the source of truth** | Journaled stateful actions write an iteration checkpoint after each passed barrier, under the execution lease fence, through the SQLite/PostgreSQL `CheckpointStore` adapters (in-memory for dev/tests); a resume verifies it against the operation ledger. A missing or failed checkpoint falls back to replaying from iteration 0; non-journaled stateful actions are not checkpointed |
 | execution lease                    | **Port methods exist; enforcement status must be demonstrated**      | Do not imply lease safety unless runtime acquisition, renewal, release, and fencing tests are green                                                                              |

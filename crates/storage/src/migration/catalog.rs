@@ -1,14 +1,6 @@
 //! Backend-neutral migration-catalog admission and physical ledger probes.
 
-use std::collections::{BTreeSet, HashSet};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BackendKind {
-    #[cfg(any(test, feature = "sqlite"))]
-    Sqlite,
-    #[cfg(any(test, feature = "postgres"))]
-    Postgres,
-}
+use std::collections::HashSet;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct MigrationSpec {
@@ -21,7 +13,6 @@ pub(crate) struct MigrationSpec {
 pub(crate) struct CatalogPolicy {
     pub(crate) current_version: i64,
     pub(crate) canonical: Vec<MigrationSpec>,
-    pub(crate) reserved_other_backend_versions: BTreeSet<i64>,
 }
 
 #[derive(Clone)]
@@ -49,44 +40,82 @@ pub(crate) enum CatalogAdmission {
     CanonicalPrefix { latest: i64 },
 }
 
+/// Why a reachable database's migration ledger is not a canonical prefix of
+/// this build's catalog — the database was created by another build, edited
+/// by hand, or holds foreign tables. Value-free: it names migration numbers
+/// only.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CatalogRejection {
+pub enum CatalogRejection {
+    /// The ledger relation exists but holds no rows.
     EmptyLedger,
+    /// User tables exist without a migration ledger.
     UnledgeredDatabase,
-    #[cfg_attr(
-        not(any(feature = "sqlite", feature = "postgres")),
-        expect(
-            dead_code,
-            reason = "physical ledger probes are compiled only with a database backend"
-        )
-    )]
+    /// The ledger relation does not have the SQLx ledger shape.
     InvalidMigrationLedger,
-    BelowSupportedFloor {
-        latest: i64,
-    },
+    /// A recorded migration did not complete.
     FailedMigration {
+        /// The migration number.
         migration: i64,
     },
+    /// A migration number is recorded twice.
     DuplicateMigration {
+        /// The migration number.
         migration: i64,
     },
+    /// The recorded order differs from the catalog's.
     NonCanonicalOrder {
+        /// The catalog's migration at this position.
         expected: i64,
+        /// The recorded migration at this position.
         actual: i64,
     },
-    ReservedForOtherBackend {
-        migration: i64,
-    },
+    /// The ledger records a migration this build does not know.
     UnknownMigration {
+        /// The migration number.
         migration: i64,
     },
+    /// A recorded migration's description differs from this build's.
     DescriptionMismatch {
+        /// The migration number.
         migration: i64,
     },
+    /// A recorded migration's checksum differs from this build's.
     ChecksumMismatch {
+        /// The migration number.
         migration: i64,
     },
 }
+
+impl std::fmt::Display for CatalogRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyLedger => f.write_str("the migration ledger is empty"),
+            Self::UnledgeredDatabase => f.write_str("tables exist without a migration ledger"),
+            Self::InvalidMigrationLedger => f.write_str("the migration ledger shape is invalid"),
+            Self::FailedMigration { migration } => {
+                write!(f, "migration {migration:04} did not complete")
+            },
+            Self::DuplicateMigration { migration } => {
+                write!(f, "migration {migration:04} is recorded twice")
+            },
+            Self::NonCanonicalOrder { expected, actual } => write!(
+                f,
+                "migration {actual:04} is recorded where {expected:04} belongs"
+            ),
+            Self::UnknownMigration { migration } => {
+                write!(f, "migration {migration:04} is unknown to this build")
+            },
+            Self::DescriptionMismatch { migration } => {
+                write!(f, "migration {migration:04} has a different description")
+            },
+            Self::ChecksumMismatch { migration } => {
+                write!(f, "migration {migration:04} has a different checksum")
+            },
+        }
+    }
+}
+
+impl std::error::Error for CatalogRejection {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -105,7 +134,6 @@ impl From<CatalogRejection> for CatalogSetupError {
 pub(crate) fn classify(
     policy: &CatalogPolicy,
     observation: &CatalogObservation,
-    supported_floor: i64,
 ) -> Result<CatalogAdmission, CatalogRejection> {
     let rows = match &observation.migration_ledger {
         MigrationLedger::Absent => {
@@ -125,9 +153,6 @@ pub(crate) fn classify(
         .last()
         .map(|row| row.version)
         .ok_or(CatalogRejection::EmptyLedger)?;
-    if latest < supported_floor {
-        return rejected(CatalogRejection::BelowSupportedFloor { latest });
-    }
     Ok(CatalogAdmission::CanonicalPrefix { latest })
 }
 
@@ -147,14 +172,6 @@ fn validate_ledger(
     for row in rows {
         if !row.success {
             return rejected(CatalogRejection::FailedMigration {
-                migration: row.version,
-            });
-        }
-        if policy
-            .reserved_other_backend_versions
-            .contains(&row.version)
-        {
-            return rejected(CatalogRejection::ReservedForOtherBackend {
                 migration: row.version,
             });
         }
@@ -214,7 +231,7 @@ pub(crate) fn catalog_head(migrator: &sqlx::migrate::Migrator) -> i64 {
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-fn policy_from_migrator(backend: BackendKind, migrator: &sqlx::migrate::Migrator) -> CatalogPolicy {
+fn policy_from_migrator(migrator: &sqlx::migrate::Migrator) -> CatalogPolicy {
     let canonical = migrator
         .iter()
         .map(|migration| MigrationSpec {
@@ -223,28 +240,20 @@ fn policy_from_migrator(backend: BackendKind, migrator: &sqlx::migrate::Migrator
             checksum: migration.checksum.to_vec(),
         })
         .collect();
-    let reserved_other_backend_versions = match backend {
-        #[cfg(any(test, feature = "sqlite"))]
-        BackendKind::Sqlite => BTreeSet::from([29, 36, 37, 38, 60]),
-        #[cfg(any(test, feature = "postgres"))]
-        BackendKind::Postgres => BTreeSet::new(),
-    };
-
     CatalogPolicy {
         current_version: catalog_head(migrator),
         canonical,
-        reserved_other_backend_versions,
     }
 }
 
 #[cfg(feature = "sqlite")]
 pub(crate) fn sqlite_policy() -> CatalogPolicy {
-    policy_from_migrator(BackendKind::Sqlite, &super::SQLITE_MIGRATOR)
+    policy_from_migrator(&super::SQLITE_MIGRATOR)
 }
 
 #[cfg(feature = "postgres")]
 pub(crate) fn postgres_policy() -> CatalogPolicy {
-    policy_from_migrator(BackendKind::Postgres, &super::POSTGRES_MIGRATOR)
+    policy_from_migrator(&super::POSTGRES_MIGRATOR)
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -334,11 +343,10 @@ pub(crate) mod sqlite {
 
     pub(crate) async fn admit(
         connection: &mut SqliteConnection,
-        supported_floor: i64,
     ) -> Result<CatalogAdmission, CatalogSetupError> {
         let policy = sqlite_policy();
         let observation = observe(connection).await?;
-        classify(&policy, &observation, supported_floor).map_err(Into::into)
+        classify(&policy, &observation).map_err(Into::into)
     }
 
     pub(crate) async fn observe(
@@ -457,7 +465,7 @@ pub(crate) mod sqlite {
 }
 
 #[cfg(feature = "sqlite")]
-pub(crate) use sqlite::{admit as admit_sqlite, observe as observe_sqlite};
+pub(crate) use sqlite::admit as admit_sqlite;
 
 #[cfg(feature = "postgres")]
 pub(crate) mod postgres {
@@ -494,11 +502,10 @@ pub(crate) mod postgres {
 
     pub(crate) async fn admit(
         connection: &mut PgConnection,
-        supported_floor: i64,
     ) -> Result<CatalogAdmission, CatalogSetupError> {
         let policy = postgres_policy();
         let observation = observe(connection).await?;
-        classify(&policy, &observation, supported_floor).map_err(Into::into)
+        classify(&policy, &observation).map_err(Into::into)
     }
 
     pub(crate) async fn observe(
@@ -617,4 +624,42 @@ pub(crate) mod postgres {
 }
 
 #[cfg(feature = "postgres")]
-pub(crate) use postgres::{admit as admit_postgres, observe as observe_postgres};
+pub(crate) use postgres::admit as admit_postgres;
+
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+mod tests {
+    use super::{CatalogRejection, CatalogSetupError, observation_fetch_error};
+
+    #[test]
+    fn observation_fetch_errors_distinguish_schema_evidence_from_unavailability() {
+        let invalid_ledger = CatalogRejection::InvalidMigrationLedger;
+        for error in [
+            sqlx::Error::RowNotFound,
+            sqlx::Error::ColumnNotFound("missing ledger column".into()),
+            sqlx::Error::ColumnIndexOutOfBounds { index: 1, len: 1 },
+            sqlx::Error::Decode("invalid ledger value".into()),
+            sqlx::Error::ColumnDecode {
+                index: "version".into(),
+                source: "invalid ledger value".into(),
+            },
+            sqlx::Error::TypeNotFound {
+                type_name: "ledger type".into(),
+            },
+        ] {
+            assert_eq!(
+                observation_fetch_error(error, invalid_ledger.clone()),
+                CatalogSetupError::Rejected(invalid_ledger.clone()),
+            );
+        }
+        for error in [
+            sqlx::Error::PoolTimedOut,
+            sqlx::Error::PoolClosed,
+            sqlx::Error::Io(std::io::ErrorKind::ConnectionReset.into()),
+        ] {
+            assert_eq!(
+                observation_fetch_error(error, invalid_ledger.clone()),
+                CatalogSetupError::Unavailable,
+            );
+        }
+    }
+}

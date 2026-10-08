@@ -14,9 +14,9 @@
 
 mod control_queue;
 mod control_turn;
+mod deployment_pool;
 mod execution;
 mod execution_fence;
-mod idempotency_store;
 mod identity;
 mod iteration_checkpoint;
 mod job_dispatch;
@@ -29,15 +29,15 @@ mod resume_token;
 mod start_acceptance;
 mod turn_handoff;
 mod turn_recovery;
+mod webhook_activation;
 mod workflow;
 
 pub use control_queue::{SqliteControlQueue, SqliteJournalReader};
+pub use deployment_pool::DeploymentPool;
 pub use execution::{SqliteExecutionStore, SqliteIdempotencyGuard};
-pub use idempotency_store::{SqliteIdempotencyStore, SqliteWebhookActivationStore};
 pub use identity::{
-    SqliteAuditStore, SqliteBlobStore, SqliteMembershipStore, SqliteOrgStore, SqliteQuotaStore,
-    SqliteResourceStore, SqliteTenantProvisioningStore, SqliteTriggerStore, SqliteUserStore,
-    SqliteWorkspaceStore,
+    SqliteMembershipStore, SqliteOrgStore, SqliteResourceStore, SqliteTenantProvisioningStore,
+    SqliteTriggerStore, SqliteWorkspaceStore,
 };
 pub use iteration_checkpoint::SqliteCheckpointStore;
 pub use job_dispatch::SqliteJobDispatchQueue;
@@ -49,41 +49,47 @@ pub use resume_producer::SqliteResumeProducer;
 pub use resume_token::SqliteResumeTokenStore;
 pub use start_acceptance::SqliteStartAcceptanceStore;
 pub use turn_handoff::SqliteTurnHandoff;
+pub use webhook_activation::SqliteWebhookActivationStore;
 pub use workflow::{SqliteWorkflowStore, SqliteWorkflowVersionStore};
 
 /// Admit a canonical schema and apply every pending ordered migration under
 /// the serialized Nebula SQLite setup guard.
 ///
 /// # Errors
-/// Returns a closed, redacted connection or configuration error if setup
-/// cannot prove that the database has a supported canonical migration history
-/// at the catalog-only upgrade floor and enabled foreign-key enforcement.
+/// Returns a closed, redacted connection error if the database or its setup
+/// lock is unavailable, and a configuration error naming the rejection if the
+/// migration ledger is not a canonical prefix of this build's catalog (a
+/// database created by another build or edited by hand; reset it).
 pub async fn init_schema(pool: &sqlx::SqlitePool) -> Result<(), nebula_storage_port::StorageError> {
     crate::migration::setup_sqlite_pool(pool.clone())
         .await
         .map_err(crate::migration::storage_setup_error)
 }
 
-/// Adopt a database provisioned before the ordered migration ledger existed.
+/// Open a process-local `sqlite::memory:` deployment database with the
+/// schema applied: the one pool every store of an in-memory deployment
+/// (tenancy, credentials) shares.
 ///
-/// Databases created by the previous idempotent `init_schema` carry the
-/// `port_*` schema with no `_sqlx_migrations` ledger, so [`init_schema`] now
-/// refuses them and the owning process cannot start. This stamps a ledger
-/// recording migrations `1..=through_version` as already applied, which is an
-/// operator assertion that the live schema is what those migrations produce —
-/// it is deliberately never performed automatically at startup.
-///
-/// The stamp runs in one transaction and the resulting ledger is re-admitted
-/// before commit, so a database that would still be rejected is left exactly
-/// as it was rather than carrying a half-written ledger.
+/// One connection that never expires: a second connection, or a recycled
+/// one, would open a different, empty database.
 ///
 /// # Errors
-/// Returns [`crate::LedgerAdoptionError`] if the database cannot be read or written,
-/// if `through_version` names no canonical migration, or if the stamped ledger
-/// would still be rejected by schema setup.
-pub async fn adopt_ledger(
-    pool: &sqlx::SqlitePool,
-    through_version: i64,
-) -> Result<crate::LedgerAdoptionOutcome, crate::LedgerAdoptionError> {
-    crate::migration::adopt_sqlite_ledger(pool, through_version).await
+/// Returns a closed, redacted connection error if the database cannot open,
+/// and [`init_schema`]'s errors if setup fails.
+pub async fn open_memory_deployment() -> Result<sqlx::SqlitePool, nebula_storage_port::StorageError>
+{
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect("sqlite::memory:")
+        .await
+        .map_err(|_| {
+            nebula_storage_port::StorageError::Connection(
+                "in-memory deployment database unavailable".to_owned(),
+            )
+        })?;
+    init_schema(&pool).await?;
+    Ok(pool)
 }

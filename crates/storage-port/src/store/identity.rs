@@ -1,35 +1,17 @@
-//! Identity-zoo store traits.
+//! Tenant directory and workspace-object store traits.
 //!
-//! These declare the contract; adapter implementations for InMemory/SQLite/
-//! Postgres land later. Every tenant-scoped query is keyed by `Scope` (or a
-//! parent id) so cross-tenant reads return `None`, never another tenant's
-//! row.
-use std::sync::Arc;
+//! Every tenant-scoped query is keyed by `Scope` (or a parent id) so
+//! cross-tenant reads return `None`, never another tenant's row. User accounts
+//! are not here: they are Plane-A persistence (`nebula_storage::auth`).
 
 use crate::dto::{
-    AuditLogRow, BlobRow, MembershipRow, OrgMemberRemoveOutcome, OrgMemberUpsert,
-    OrgMemberUpsertOutcome, OrgRow, PrincipalKind, PrincipalOrgMembership, QuotaRow, ResourceRow,
-    ScopeKind, TenantMembershipSnapshot, TenantProvisioningOutcome, TenantProvisioningRequest,
-    TriggerRow, UserRow, WorkspaceMemberUpsert, WorkspaceMembership, WorkspaceRow,
+    OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome, OrgMembership, OrgRow,
+    PrincipalKind, PrincipalOrgMembership, ResourceRow, TenantMembershipSnapshot,
+    TenantProvisioningOutcome, TenantProvisioningRequest, TriggerRow, WorkspaceMemberUpsert,
+    WorkspaceMembership, WorkspaceRow,
 };
 use crate::error::StorageError;
 use crate::scope::Scope;
-
-/// `users` aggregate. Users are global (not workspace-scoped) but lookups
-/// stay first-writer-wins on email among active rows.
-#[async_trait::async_trait]
-pub trait UserStore: Send + Sync + std::fmt::Debug {
-    /// Insert a new user (duplicate active email ⇒ `Duplicate`).
-    async fn create(&self, row: UserRow) -> Result<(), StorageError>;
-    /// Read a user by id.
-    async fn get(&self, id: &str) -> Result<Option<Arc<UserRow>>, StorageError>;
-    /// Resolve an active user by (case-insensitive) email.
-    async fn get_by_email(&self, email: &str) -> Result<Option<Arc<UserRow>>, StorageError>;
-    /// CAS-update a user row; `expected_version` must match.
-    async fn update(&self, row: UserRow, expected_version: u64) -> Result<(), StorageError>;
-    /// Soft-delete a user.
-    async fn soft_delete(&self, id: &str) -> Result<(), StorageError>;
-}
 
 /// `orgs` aggregate.
 #[async_trait::async_trait]
@@ -49,7 +31,9 @@ pub trait OrgStore: Send + Sync + std::fmt::Debug {
 /// `workspaces` aggregate (scoped by parent org).
 #[async_trait::async_trait]
 pub trait WorkspaceStore: Send + Sync + std::fmt::Debug {
-    /// Insert a new workspace (duplicate active slug per org ⇒ `Duplicate`).
+    /// Insert a new workspace. Workspace ids are unique across organizations;
+    /// a taken id, a duplicate active slug per org or a second active default
+    /// ⇒ `Duplicate`, a missing or deleted parent org ⇒ `NotFound`.
     async fn create(&self, row: WorkspaceRow) -> Result<(), StorageError>;
     /// Read a workspace by id; `org_id` scopes the lookup.
     async fn get(&self, org_id: &str, id: &str) -> Result<Option<WorkspaceRow>, StorageError>;
@@ -74,29 +58,33 @@ pub trait WorkspaceStore: Send + Sync + std::fmt::Debug {
 /// permits ownerless or workspace-less tenants after a partial failure.
 #[async_trait::async_trait]
 pub trait TenantProvisioningStore: Send + Sync + std::fmt::Debug {
-    /// Create all initial tenant records in one transaction or critical section.
+    /// Create all initial tenant records and their receipt in one atomic operation.
     ///
     /// An exact retry returns [`TenantProvisioningOutcome::Replayed`] without
-    /// rewriting any record or refreshing the owner grant. Any partial state,
-    /// semantic mismatch, id collision, or active-slug collision returns a
-    /// conflict outcome and leaves all existing state unchanged.
+    /// rewriting any record or refreshing the owner grant, even after archive
+    /// or purge. The receipt reserves the organization and initial workspace IDs
+    /// permanently. Replay reports historical acceptance, not current authority.
+    /// A different command for that organization, preexisting tenant without
+    /// request evidence, partial state or occupied identity/active slug conflicts.
+    /// Errors, including uncertain commit outcomes, can be retried with the same
+    /// command; they never authorize reconstructing a missing owner grant.
     async fn provision_tenant(
         &self,
         request: TenantProvisioningRequest,
     ) -> Result<TenantProvisioningOutcome, StorageError>;
 }
 
-/// `org_members` + `workspace_members` aggregate.
+/// Organization and workspace memberships.
 #[async_trait::async_trait]
 pub trait MembershipStore: Send + Sync + std::fmt::Debug {
     /// Read explicit organization and optional workspace roles for one principal
     /// from one logical snapshot. Two independent reads are not sufficient.
     /// The adapter must reject unknown persisted roles, never treat them as absent.
-    /// A workspace role may be returned only for a live workspace belonging to
-    /// `org_id`, verified in the same snapshot. A missing/deleted/wrong-parent
-    /// workspace yields no workspace role. Because the legacy membership key
-    /// omits the parent organization, an id present under any second organization
-    /// is ambiguous (including a deleted alias) and must also yield no role.
+    /// Roles are returned only beneath a live organization: a deleted
+    /// organization yields neither role. A workspace role may be returned only
+    /// for a live workspace belonging to `org_id`, verified in the same
+    /// snapshot; a missing, deleted or wrong-parent workspace yields no
+    /// workspace role.
     /// This operation reads membership evidence and does not grant authority.
     async fn get_tenant_membership(
         &self,
@@ -106,19 +94,25 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
         principal_id: &str,
     ) -> Result<TenantMembershipSnapshot, StorageError>;
 
-    /// Enumerate explicit organization memberships for exactly this principal.
-    /// Unknown persisted organization roles fail the whole read closed.
+    /// Enumerate explicit memberships of live organizations for exactly this
+    /// principal, ordered by organization id. Unknown persisted organization
+    /// roles fail the whole read closed.
     async fn list_orgs_for_principal(
         &self,
         principal_kind: PrincipalKind,
         principal_id: &str,
     ) -> Result<Vec<PrincipalOrgMembership>, StorageError>;
 
+    /// List explicit grants of one live organization, ordered by principal
+    /// kind then id (bytewise). A missing or deleted organization fails
+    /// closed as `StorageError::NotFound`; unknown persisted roles fail the
+    /// whole read closed.
+    async fn list_org_members(&self, org_id: &str) -> Result<Vec<OrgMembership>, StorageError>;
+
     /// List explicit grants for one live, parent-qualified workspace.
     ///
     /// Results use the closed workspace-role vocabulary and deterministic
-    /// principal ordering. A missing/deleted/wrong-parent workspace or an id
-    /// reused under any other organization (including a deleted alias) fails
+    /// principal ordering. A missing, deleted or wrong-parent workspace fails
     /// closed as `StorageError::NotFound`.
     async fn list_workspace_members(
         &self,
@@ -145,9 +139,7 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
     /// a count-then-delete sequence nor a process-local lock suffices for SQL.
     /// Unknown roles encountered by the invariant check fail closed with no write.
     /// A successful removal also deletes every explicit workspace grant for
-    /// the principal beneath this organization in the same transaction. If a
-    /// legacy workspace id is reused by another organization, ownership of its
-    /// grants is ambiguous and the entire operation fails closed with no write.
+    /// the principal beneath this organization in the same transaction.
     async fn remove_org_member_guarded(
         &self,
         org_id: &str,
@@ -157,34 +149,21 @@ pub trait MembershipStore: Send + Sync + std::fmt::Debug {
 
     /// Replace explicit workspace membership after verifying a live workspace
     /// under the requested organization and a current organization membership
-    /// for the same principal. Missing membership, wrong/missing parent, or an
-    /// ambiguous workspace id returns `StorageError::NotFound`; this cannot
-    /// mutate organization roles. The organization-membership check and write
-    /// serialize with guarded organization-member removal so a concurrent
-    /// removal either rejects this write or atomically deletes its result.
+    /// for the same principal. Missing membership or a wrong/missing parent
+    /// returns `StorageError::NotFound`; this cannot mutate organization roles.
+    /// The organization-membership check and write serialize with guarded
+    /// organization-member removal and with a workspace soft delete, so a
+    /// concurrent removal or delete either rejects this write or atomically
+    /// deletes its result.
     /// The adapter records `added_at` using its own clock inside the atomic write.
     async fn upsert_workspace_member(
         &self,
         request: WorkspaceMemberUpsert,
     ) -> Result<(), StorageError>;
-    /// Read one membership by (scope_kind, scope_id, principal).
-    async fn get(
-        &self,
-        scope_kind: ScopeKind,
-        scope_id: &str,
-        principal_kind: PrincipalKind,
-        principal_id: &str,
-    ) -> Result<Option<MembershipRow>, StorageError>;
-    /// List all members of a scope (org or workspace).
-    async fn list_for_scope(
-        &self,
-        scope_kind: ScopeKind,
-        scope_id: &str,
-    ) -> Result<Vec<MembershipRow>, StorageError>;
     /// Remove explicit workspace membership, scoped through a live workspace's
-    /// organization. Returns false for absent membership, wrong/missing parent,
-    /// or a workspace id that is ambiguous across organizations.
-    /// Organization memberships are writable only through the guarded methods.
+    /// organization. Returns false for absent membership or a wrong/missing
+    /// parent. Organization memberships are writable only through the guarded
+    /// methods.
     async fn remove_workspace_member(
         &self,
         org_id: &str,
@@ -233,42 +212,4 @@ pub trait TriggerStore: Send + Sync + std::fmt::Debug {
     ) -> Result<(), StorageError>;
     /// Soft-delete a trigger.
     async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError>;
-}
-
-/// `org_quotas` + `org_quota_usage` aggregate (org-scoped, CAS counters).
-#[async_trait::async_trait]
-pub trait QuotaStore: Send + Sync + std::fmt::Debug {
-    /// Read the quota row for an org.
-    async fn get(&self, org_id: &str) -> Result<Option<QuotaRow>, StorageError>;
-    /// Upsert the quota limits + usage row.
-    async fn upsert(&self, row: QuotaRow) -> Result<(), StorageError>;
-    /// Atomically adjust the concurrent-execution counter by `delta`,
-    /// returning the new value. Rejects going below zero.
-    async fn adjust_concurrent(&self, org_id: &str, delta: i32) -> Result<i32, StorageError>;
-}
-
-/// `audit_log` aggregate (append-only, org/workspace-scoped).
-#[async_trait::async_trait]
-pub trait AuditStore: Send + Sync + std::fmt::Debug {
-    /// Append one audit-log row.
-    async fn append(&self, row: AuditLogRow) -> Result<(), StorageError>;
-    /// List recent audit rows for an org, newest first, capped by `limit`.
-    async fn list_for_org(
-        &self,
-        org_id: &str,
-        limit: u32,
-    ) -> Result<Vec<AuditLogRow>, StorageError>;
-}
-
-/// `blobs` aggregate (workspace-scoped).
-#[async_trait::async_trait]
-pub trait BlobStore: Send + Sync + std::fmt::Debug {
-    /// Persist a blob row.
-    async fn put(&self, row: BlobRow) -> Result<(), StorageError>;
-    /// Read a blob row by id within a workspace.
-    async fn get(&self, workspace_id: &str, id: &str) -> Result<Option<BlobRow>, StorageError>;
-    /// Delete a blob row.
-    async fn delete(&self, workspace_id: &str, id: &str) -> Result<(), StorageError>;
-    /// Delete expired temp blobs; returns the count deleted.
-    async fn evict_expired(&self) -> Result<u64, StorageError>;
 }

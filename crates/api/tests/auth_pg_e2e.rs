@@ -1,10 +1,10 @@
-//! `PgAuthBackend` end-to-end lifecycle.
+//! PostgreSQL-backed `DurableAuthBackend` end-to-end lifecycle.
 //!
 //! PostgreSQL evidence binary: every test needs a live database and fails loudly
 //! without `DATABASE_URL`, so a green run always means the lifecycle ran. It is
 //! excluded from the default nextest profile and collected by the CI
 //! `postgres-conformance` job. Each test drives a complete identity lifecycle
-//! through the production [`PgAuthBackend`] against a real Postgres:
+//! through the production [`DurableAuthBackend`] against a real Postgres:
 //!
 //! 1. `register_user` → durable user + verification email queued on a
 //!    caller-owned `Arc<EchoSink>`.
@@ -22,7 +22,7 @@
 //! 9. `complete_password_reset` (consume reset token, change password,
 //!    revoke sibling reset tokens, bump version).
 //! 10. `authenticate_password` with the new password succeeds.
-//! 11. `start_oauth` persists a `plane_a_oauth_states` row.
+//! 11. `start_oauth` persists an `oauth_states` row.
 //! 12. `complete_oauth` consumes the state atomically; a redirect mismatch
 //!     fails before egress and a second callback surfaces `InvalidToken`
 //!     (replay defence).
@@ -44,25 +44,25 @@ use nebula_api::{
     OAuthIdentityRuntime,
     config::{OAuthProviderConfig, OAuthProvidersConfig},
     domain::auth::backend::{
-        AuthBackend, CreatePatParams, OAuthProvider, PasswordOutcome, PgAuthBackend, SignupRequest,
-        dto::SecretString, error::AuthError, mfa,
+        AuthBackend, CreatePatParams, DurableAuthBackend, OAuthProvider, PasswordOutcome,
+        SignupRequest, dto::SecretString, error::AuthError, mfa,
     },
     ports::email::{EchoSink, EmailKind, EmailPort},
 };
 use nebula_core::UserId;
 use nebula_storage::{
+    auth::identity_secret::IdentitySecretCodec,
     credential::{EnvKeyProvider, KeyProvider},
-    identity_secret::IdentitySecretCodec,
 };
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 
-/// Mirrors `nebula_storage::pg::user::LOCKOUT_THRESHOLD` (the module is
+/// Mirrors `nebula_storage::auth::postgres::user::LOCKOUT_THRESHOLD` (the module is
 /// `pub(crate)` so the constant is not re-exported from
 /// `nebula-storage`). If the storage-side value changes from 5, this
 /// constant must change with it; the lockout assertions below will
 /// otherwise fail loudly (off-by-one between the test loop bound and
 /// the storage-side CASE check) — which is the desired regression
-/// signal. Source: `crates/storage/src/pg/user.rs:34`.
+/// signal. Source: `crates/storage/src/auth/postgres/user.rs`.
 const LOCKOUT_THRESHOLD_LOCAL: u32 = 5;
 const TEST_IDENTITY_KEY_B64: &str = "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=";
 
@@ -103,7 +103,7 @@ async fn pool() -> Pool<Postgres> {
 }
 
 /// Generate a unique-per-run email so re-runs against a persistent
-/// Postgres do not collide on the `idx_users_email_active` unique index.
+/// Postgres do not collide on the `uq_users__email__live` unique index.
 fn unique_email(label: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
@@ -120,7 +120,7 @@ fn unique_email(label: &str) -> String {
 /// `nebula_api_auth_*` emission seam; the dedicated
 /// `auth_metrics.rs` test exercises the metrics path against the same
 /// constructor.
-fn build_backend(pool: Pool<Postgres>) -> (Arc<PgAuthBackend>, Arc<EchoSink>) {
+fn build_backend(pool: Pool<Postgres>) -> (Arc<DurableAuthBackend>, Arc<EchoSink>) {
     use std::collections::HashMap;
 
     let sink = Arc::new(EchoSink::default());
@@ -143,8 +143,12 @@ fn build_backend(pool: Pool<Postgres>) -> (Arc<PgAuthBackend>, Arc<EchoSink>) {
     .expect("PG test provider config must enable OAuth");
     (
         Arc::new(
-            PgAuthBackend::new(pool, port, None, identity_secret_codec())
-                .with_oauth_runtime(Arc::new(oauth_runtime)),
+            DurableAuthBackend::new(
+                nebula_storage::auth::AuthPersistence::postgres(pool, identity_secret_codec()),
+                port,
+                None,
+            )
+            .with_oauth_runtime(Arc::new(oauth_runtime)),
         ),
         sink,
     )
@@ -769,7 +773,7 @@ async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
 // Storage-layer logic in `crates/storage/src/pg/user.rs`
 // (`record_login_failure` arms `locked_until` once
 // `failed_login_count + 1 >= LOCKOUT_THRESHOLD`) and
-// `PgAuthBackend::authenticate_password` returns `AuthError::AccountLocked`
+// `DurableAuthBackend::authenticate_password` returns `AuthError::AccountLocked`
 // when `users.locked_until > NOW()`. Both surfaces have unit-test
 // coverage in their owning crates; the three tests below drive the
 // end-to-end flow through the backend trait so a future refactor that
@@ -793,7 +797,7 @@ fn user_id_bytes(user_id: &str) -> [u8; 16] {
 /// Run an authenticated `register_user` + `verify_email` flow so the
 /// account is in the same state every lockout test starts from.
 async fn verified_user(
-    backend: &Arc<PgAuthBackend>,
+    backend: &Arc<DurableAuthBackend>,
     sink: &Arc<EchoSink>,
     email: &str,
 ) -> nebula_api::domain::auth::backend::UserProfile {

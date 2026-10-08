@@ -1,21 +1,19 @@
-//! Slot-identity-pinned acquire (`acquire_*_for_identity`) + slot-rotation
+//! Slot-identity-pinned acquire (`acquire_for_identity`) + slot-rotation
 //! (`refresh_slot_for_identity` / `revoke_slot_for_identity`) must resolve
 //! the *specific* resolved registry row under a multi-tenant `(key,
 //! scope)`.
 //!
 //! Companion to `dedup_slot_identity.rs` (which proves
-//! `acquire_resident_for_identity`) and `manager_refresh_slot.rs`
+//! `acquire_for_identity`) and `manager_refresh_slot.rs`
 //! (identity-agnostic rotation). Here two registrations of the same
 //! resource type at the same `ScopeLevel` differ only in resolved per-slot
 //! credential identity. The identity-pinned `_for_identity` paths must each
 //! route to their own row (no cross-tenant runtime bleed); the
 //! identity-agnostic path stays fail-closed (`Ambiguous`).
 //!
-//! Pooled is covered end-to-end (the most common topology); the folded
-//! `Bounded` `_for_identity` methods are line-identical refactors of the
-//! resident pattern proven in `dedup_slot_identity.rs` (same
-//! `lookup_for_acquire_with` → shared `run_acquire`), so they are not
-//! re-mocked here. `refresh_slot_for_identity` / `revoke_slot_for_identity`
+//! Pooled is covered end-to-end; resident identity routing is covered in
+//! `dedup_slot_identity.rs`. Both use the generic acquire path.
+//! `refresh_slot_for_identity` / `revoke_slot_for_identity`
 //! (the ports the engine rotation fan-out drives) are covered directly.
 
 use std::{
@@ -60,7 +58,7 @@ impl ResourceConfig for CountingConfig {
 
 /// Each `create` mints a unique runtime id from a shared counter so a
 /// distinct `Resource::create` yields a distinguishable runtime — the
-/// witness that `acquire_pooled_for_identity` resolved a *distinct* row per
+/// witness that `acquire_for_identity` resolved a *distinct* row per
 /// tenant.
 #[derive(Clone)]
 struct PoolRes {
@@ -354,7 +352,7 @@ async fn two_tenant_resident(
         let ctx = ctx_for_org(org);
         let id = SlotIdentity::from_bindings(bindings.iter().copied());
         let _g = manager
-            .acquire_resident_for_identity::<ResRes>(&ctx, &AcquireOptions::default(), &id)
+            .acquire_for_identity::<ResRes>(&ctx, &AcquireOptions::default(), &id)
             .await
             .expect("warm resident tenant runtime");
     }
@@ -362,11 +360,11 @@ async fn two_tenant_resident(
     (manager, refresh_saw, revoke_saw, refresh_total)
 }
 
-/// `acquire_pooled_for_identity` must resolve the row pinned by the
+/// `acquire_for_identity` must resolve the row pinned by the
 /// resolved slot identity — tenant A's binding never aliases tenant B's
 /// runtime.
 #[tokio::test]
-async fn acquire_pooled_for_resolves_the_pinned_row() {
+async fn acquire_for_identity_resolves_the_pinned_pool_row() {
     let org = OrgId::new();
     let (manager, _create_counter) = two_tenant(org, POOL_A, POOL_B);
     let ctx = ctx_for_org(org);
@@ -374,11 +372,11 @@ async fn acquire_pooled_for_resolves_the_pinned_row() {
     let b = pool_b_id();
 
     let la = manager
-        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &a)
+        .acquire_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &a)
         .await
         .expect("acquire tenant A");
     let lb = manager
-        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &b)
+        .acquire_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &b)
         .await
         .expect("acquire tenant B");
 
@@ -391,7 +389,7 @@ async fn acquire_pooled_for_resolves_the_pinned_row() {
     // Re-acquiring A returns A's pool, never B's (binding is stable).
     drop(la);
     let la2 = manager
-        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &a)
+        .acquire_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &a)
         .await
         .expect("re-acquire tenant A");
     let lb_id = *lb;
@@ -401,10 +399,10 @@ async fn acquire_pooled_for_resolves_the_pinned_row() {
     );
 }
 
-/// The identity-agnostic `acquire_pooled` stays fail-closed under a
+/// The identity-agnostic `acquire` stays fail-closed under a
 /// multi-tenant `(key, scope)` (the no-identity caller must not pick a row).
 #[tokio::test]
-async fn acquire_pooled_identity_agnostic_fails_closed_when_multi_tenant() {
+async fn pool_acquire_identity_agnostic_fails_closed_when_multi_tenant() {
     use nebula_error::{Classify, ErrorCategory};
 
     let org = OrgId::new();
@@ -412,7 +410,7 @@ async fn acquire_pooled_identity_agnostic_fails_closed_when_multi_tenant() {
     let ctx = ctx_for_org(org);
 
     let err = manager
-        .acquire_pooled::<PoolRes>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolRes>(&ctx, &AcquireOptions::default())
         .await
         .expect_err("identity-agnostic acquire under multi-tenant must fail closed");
     assert_eq!(
@@ -429,7 +427,7 @@ async fn acquire_pooled_identity_agnostic_fails_closed_when_multi_tenant() {
 /// A single-tenant `(key, scope)` is unaffected: the identity-agnostic path
 /// still resolves the one row.
 #[tokio::test]
-async fn acquire_pooled_identity_agnostic_single_tenant_ok() {
+async fn pool_acquire_identity_agnostic_single_tenant_ok() {
     let org = OrgId::new();
     let scope = ScopeLevel::Organization(org);
     let manager = Manager::new();
@@ -446,7 +444,7 @@ async fn acquire_pooled_identity_agnostic_single_tenant_ok() {
 
     let ctx = ctx_for_org(org);
     let _guard = manager
-        .acquire_pooled::<PoolRes>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolRes>(&ctx, &AcquireOptions::default())
         .await
         .expect("single-tenant identity-agnostic acquire must still succeed");
 }
@@ -588,7 +586,7 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
     // (mirrors `manager_refresh_slot.rs`'s post-revoke assertion).
     use nebula_error::{Classify, ErrorCategory};
     let a_after = manager
-        .acquire_resident_for_identity::<ResRes>(&ctx, &AcquireOptions::default(), &res_a_id())
+        .acquire_for_identity::<ResRes>(&ctx, &AcquireOptions::default(), &res_a_id())
         .await
         .expect_err("tenant A must NOT be acquirable after its pinned row is revoked");
     assert_eq!(
@@ -600,7 +598,7 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
     // Tenant B's row is a distinct registry row (distinct slot_identity):
     // A's revoke taints A's row only, so B remains acquirable.
     let _guard = manager
-        .acquire_resident_for_identity::<ResRes>(&ctx, &AcquireOptions::default(), &res_b_id())
+        .acquire_for_identity::<ResRes>(&ctx, &AcquireOptions::default(), &res_b_id())
         .await
         .expect("tenant B must remain acquirable after tenant A's revoke");
 }
@@ -694,7 +692,7 @@ async fn tainted_pinned_acquire_rejected_after_run_acquire_collapse() {
 
     let ctx = ctx_for_org(org);
     let err = manager
-        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &slot_id)
+        .acquire_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &slot_id)
         .await
         .expect_err("acquire on a revoke-tainted pinned row must be rejected");
     assert_eq!(
@@ -714,14 +712,14 @@ async fn tainted_pinned_acquire_rejected_after_run_acquire_collapse() {
 // ───────────────────────────────────────────────────────────────────────
 // Pool two-tenant routing consistency check.
 //
-// Verifies `acquire_pooled_for_identity` routes to the correct row under
+// Verifies `acquire_for_identity` routes to the correct row under
 // multi-tenant registration, and that `revoke_slot_for_identity` taints
 // only the pinned row without affecting the sibling tenant.  Mirrors the
 // structural shape of the resident two-tenant net but exercises the Pool
 // acquire path.
 // ───────────────────────────────────────────────────────────────────────
 
-/// `acquire_pooled_for_identity` routes each pinned acquire to its own row
+/// `acquire_for_identity` routes each pinned acquire to its own row
 /// under multi-tenant registration: distinct slot identities at the same
 /// `(key, scope)` must never share a pooled runtime.  The lease is the
 /// u64 minted by `create_counter.fetch_add`, so distinct values prove
@@ -760,11 +758,11 @@ async fn pool_two_tenant_pinned_acquires_route_independently() {
 
     // Each identity-pinned acquire resolves its own row → distinct runtime ids.
     let la = manager
-        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &id_a)
+        .acquire_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect("acquire tenant A must succeed");
     let lb = manager
-        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &id_b)
+        .acquire_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &id_b)
         .await
         .expect("acquire tenant B must succeed");
 
@@ -784,7 +782,7 @@ async fn pool_two_tenant_pinned_acquires_route_independently() {
 
     // Identity-agnostic acquire under multi-tenant stays fail-closed.
     let amb = manager
-        .acquire_pooled::<PoolRes>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolRes>(&ctx, &AcquireOptions::default())
         .await
         .expect_err("identity-agnostic pooled acquire under multi-tenant must fail closed");
     assert_eq!(
@@ -806,7 +804,7 @@ async fn pool_two_tenant_pinned_acquires_route_independently() {
 
     // Tenant A is now tainted: its row must reject subsequent acquires.
     let a_after = manager
-        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &id_a)
+        .acquire_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &id_a)
         .await
         .expect_err("tenant A must NOT be acquirable after its pinned row is revoked");
     assert_eq!(
@@ -818,7 +816,7 @@ async fn pool_two_tenant_pinned_acquires_route_independently() {
     // Tenant B is a distinct row (distinct slot_identity): A's revoke must
     // not taint it.
     let lb2 = manager
-        .acquire_pooled_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &id_b)
+        .acquire_for_identity::<PoolRes>(&ctx, &AcquireOptions::default(), &id_b)
         .await
         .expect("tenant B must remain acquirable after tenant A's revoke");
     assert_ne!(

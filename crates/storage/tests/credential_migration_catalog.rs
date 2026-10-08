@@ -1,32 +1,38 @@
-//! Executable contract for the backend migration catalogs.
+//! Executable contract for the baseline and append-only backend catalogs.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
-    fmt::Write as _,
     path::Path,
 };
 
-use sha2::{Digest, Sha384};
+use nebula_storage::migration_catalog::REVIEWED_HEAD;
 
-const PRE_0042_SHA384: &str = "fdd6413d8d014c945d1facf0595f91aefa8b605359e6890476df239720a47463615f2afee6c0edbc04c047aa5cd35182";
+const BASELINE: [&str; 8] = [
+    "0001_identity.sql",
+    "0002_tenancy.sql",
+    "0003_workflows.sql",
+    "0004_executions.sql",
+    "0005_dispatch.sql",
+    "0006_credentials.sql",
+    "0007_resources.sql",
+    "0008_platform.sql",
+];
 
 #[derive(Debug)]
 struct MigrationFile {
     version: u16,
     slug: String,
     file_name: String,
-    bytes: Vec<u8>,
 }
 
 impl MigrationFile {
-    fn parse(file_name: &str, bytes: Vec<u8>) -> Result<Self, String> {
+    fn parse(file_name: &str) -> Result<Self, String> {
         let (version, slug) = parse_filename(file_name)?;
         Ok(Self {
             version,
             slug: slug.to_owned(),
             file_name: file_name.to_owned(),
-            bytes,
         })
     }
 }
@@ -45,7 +51,6 @@ impl Catalog {
         let entries = std::fs::read_dir(&root)
             .map_err(|error| format!("read {}: {error}", root.display()))?;
         let mut migrations = Vec::new();
-
         for entry in entries {
             let entry = entry.map_err(|error| format!("read {} entry: {error}", root.display()))?;
             let path = entry.path();
@@ -57,23 +62,19 @@ impl Catalog {
             {
                 continue;
             }
-
             let file_name = entry
                 .file_name()
                 .into_string()
                 .map_err(|_| "non-UTF-8 migration filename".to_owned())?;
-            let bytes = std::fs::read(&path)
-                .map_err(|error| format!("read {}: {error}", path.display()))?;
-            migrations.push(MigrationFile::parse(&file_name, bytes)?);
+            migrations.push(MigrationFile::parse(&file_name)?);
         }
-
         Self::from_migrations(backend, migrations)
     }
 
     fn from_names(backend: &'static str, names: &[&str]) -> Result<Self, String> {
         let migrations = names
             .iter()
-            .map(|name| MigrationFile::parse(name, Vec::new()))
+            .map(|name| MigrationFile::parse(name))
             .collect::<Result<Vec<_>, _>>()?;
         Self::from_migrations(backend, migrations)
     }
@@ -127,7 +128,6 @@ fn parse_filename(file_name: &str) -> Result<(u16, &str), String> {
     let (digits, slug) = stem
         .split_once('_')
         .ok_or_else(|| format!("migration filename must be `NNNN_slug.sql`: {file_name}"))?;
-
     if digits.len() != 4 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(format!(
             "migration version must be exactly four decimal digits: {file_name}"
@@ -136,6 +136,7 @@ fn parse_filename(file_name: &str) -> Result<(u16, &str), String> {
     if slug.is_empty()
         || slug.starts_with('_')
         || slug.ends_with('_')
+        || slug.contains("__")
         || !slug
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
@@ -144,7 +145,6 @@ fn parse_filename(file_name: &str) -> Result<(u16, &str), String> {
             "migration slug must be lowercase snake case: {file_name}"
         ));
     }
-
     let version = digits
         .parse::<u16>()
         .map_err(|error| format!("invalid migration version in {file_name}: {error}"))?;
@@ -155,9 +155,8 @@ fn parse_filename(file_name: &str) -> Result<(u16, &str), String> {
 }
 
 fn validate_shared_slugs(postgres: &Catalog, sqlite: &Catalog) -> Result<(), String> {
-    let postgres_by_version = postgres.by_version();
     let sqlite_by_version = sqlite.by_version();
-    for (version, postgres_migration) in postgres_by_version {
+    for (version, postgres_migration) in postgres.by_version() {
         let Some(sqlite_migration) = sqlite_by_version.get(&version) else {
             continue;
         };
@@ -171,213 +170,100 @@ fn validate_shared_slugs(postgres: &Catalog, sqlite: &Catalog) -> Result<(), Str
     Ok(())
 }
 
-fn historical_digest(catalogs: &[&Catalog]) -> String {
-    let mut records = catalogs
-        .iter()
-        .flat_map(|catalog| {
-            catalog
-                .migrations
-                .iter()
-                .filter(|migration| migration.version <= 41)
-                .map(move |migration| {
-                    (
-                        format!("{}/{}", catalog.backend, migration.file_name),
-                        migration.bytes.as_slice(),
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
-    records.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let mut digest = Sha384::new();
-    for (path, bytes) in records {
-        digest.update(path.as_bytes());
-        digest.update([0]);
-        digest.update(bytes);
-        digest.update([0]);
-    }
-    let bytes = digest.finalize();
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    encoded
-}
-
 #[test]
-fn repository_catalog_matches_k2_contract() {
+fn repository_catalog_has_baseline_and_reviewed_append_only_sequence() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
-
-    let expected_postgres = (1_u16..=63).collect::<Vec<_>>();
-    let expected_sqlite = (1_u16..=28)
-        .chain(30..=35)
-        .chain([
-            39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 61,
-            62, 63,
-        ])
-        .collect::<Vec<_>>();
-    assert_eq!(
-        postgres.versions(),
-        expected_postgres,
-        "Postgres must reserve every logical migration through version 0063"
+    let head = u16::try_from(REVIEWED_HEAD).expect("reviewed head fits u16");
+    assert!(
+        usize::from(head) >= BASELINE.len(),
+        "reviewed head must include the whole baseline"
     );
-    assert_eq!(
-        sqlite.versions(),
-        expected_sqlite,
-        "SQLite must contain the shared history and leave PostgreSQL-only versions reserved"
-    );
-
-    for reserved in [29, 36, 37, 38, 60] {
-        assert!(
-            !sqlite.by_version().contains_key(&reserved),
-            "PostgreSQL-only migration {reserved:04} must remain absent from SQLite"
+    let expected_versions = (1_u16..=head).collect::<Vec<_>>();
+    for catalog in [&postgres, &sqlite] {
+        assert_eq!(
+            catalog.versions(),
+            expected_versions,
+            "{} catalog must be contiguous through the reviewed head",
+            catalog.backend
+        );
+        let names = catalog
+            .migrations
+            .iter()
+            .take(BASELINE.len())
+            .map(|migration| migration.file_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names, BASELINE,
+            "{} must retain the named baseline prefix",
+            catalog.backend
         );
     }
     validate_shared_slugs(&postgres, &sqlite).expect("shared migration slugs must match");
-
-    for catalog in [&postgres, &sqlite] {
-        let lifecycle = catalog
-            .by_version()
-            .get(&39)
-            .copied()
-            .expect("K2 migration 0039 must exist in both backends");
-        assert_eq!(
-            lifecycle.file_name, "0039_credentials_owner_and_record_state.sql",
-            "K2 migration filename is part of the catalog contract"
-        );
-        let retry_gate = catalog
-            .by_version()
-            .get(&40)
-            .copied()
-            .expect("refresh-retry migration 0040 must exist in both backends");
-        assert_eq!(
-            retry_gate.file_name, "0040_credential_refresh_retry_gate.sql",
-            "refresh-retry migration filename is part of the catalog contract"
-        );
-        let plan_flavor_catalog = catalog
-            .by_version()
-            .get(&41)
-            .copied()
-            .expect("plan/flavor catalog migration 0041 must exist in both backends");
-        assert_eq!(
-            plan_flavor_catalog.file_name, "0041_port_plan_flavor_revision_catalog.sql",
-            "plan/flavor catalog migration filename is part of the catalog contract"
-        );
-        let claim_generation = catalog
-            .by_version()
-            .get(&42)
-            .copied()
-            .expect("claim-generation migration 0042 must exist in both backends");
-        assert_eq!(
-            claim_generation.file_name, "0042_job_dispatch_claim_generation.sql",
-            "claim-generation migration filename is part of the catalog contract"
-        );
-        let start_reservations = catalog
-            .by_version()
-            .get(&43)
-            .copied()
-            .expect("start-key reservation migration 0043 must exist in both backends");
-        assert_eq!(
-            start_reservations.file_name, "0043_port_start_key_reservations.sql",
-            "start-key reservation migration filename is part of the catalog contract"
-        );
-        let control_generation =
-            catalog.by_version().get(&44).copied().expect(
-                "control-queue claim-generation migration 0044 must exist in both backends",
-            );
-        assert_eq!(
-            control_generation.file_name, "0044_control_queue_claim_generation.sql",
-            "control-queue claim-generation migration filename is part of the catalog contract"
-        );
-        let resource_runtime = catalog
-            .by_version()
-            .get(&51)
-            .copied()
-            .expect("resource-runtime migration 0051 must exist in both backends");
-        assert_eq!(
-            resource_runtime.file_name, "0051_resource_runtime.sql",
-            "resource-runtime migration filename is part of the catalog contract"
-        );
-        let resource_bindings = catalog
-            .by_version()
-            .get(&52)
-            .copied()
-            .expect("resource credential-bindings migration 0052 must exist in both backends");
-        assert_eq!(
-            resource_bindings.file_name, "0052_resource_credential_bindings.sql",
-            "resource credential-bindings migration filename is part of the catalog contract"
-        );
-        let admission_epoch = catalog
-            .by_version()
-            .get(&61)
-            .copied()
-            .expect("credential admission-epoch migration 0061 must exist in both backends");
-        assert_eq!(
-            admission_epoch.file_name, "0061_credential_admission_epoch.sql",
-            "credential admission-epoch migration filename is part of the catalog contract"
-        );
-        let iteration_checkpoints = catalog
-            .by_version()
-            .get(&62)
-            .copied()
-            .expect("iteration-checkpoint migration 0062 must exist in both backends");
-        assert_eq!(
-            iteration_checkpoints.file_name, "0062_port_iteration_checkpoints.sql",
-            "iteration-checkpoint migration filename is part of the catalog contract"
-        );
-        let control_observations = catalog
-            .by_version()
-            .get(&63)
-            .copied()
-            .expect("execution-control observation migration 0063 must exist in both backends");
-        assert_eq!(
-            control_observations.file_name, "0063_execution_control_observation_receipts.sql",
-            "execution-control observation migration filename is part of the catalog contract"
-        );
-    }
 }
 
 #[test]
-fn pre_0042_migration_bytes_are_immutable() {
-    let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
-    let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
-
-    assert_eq!(
-        historical_digest(&[&postgres, &sqlite]),
-        PRE_0042_SHA384,
-        "migrations 0001..0041 are immutable; add a new migration instead of editing history"
-    );
+fn readme_inventory_matches_every_migration_file() {
+    for backend in ["postgres", "sqlite"] {
+        let catalog = Catalog::load(backend).expect("catalog must be valid");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("migrations")
+            .join(backend)
+            .join("README.md");
+        let readme = std::fs::read_to_string(path).expect("migration README must exist");
+        let documented = readme
+            .lines()
+            .filter_map(|line| {
+                let row = line.strip_prefix("| `")?;
+                let (name, _) = row.split_once("` |")?;
+                Path::new(name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("sql"))
+                    .then_some(name.to_owned())
+            })
+            .collect::<Vec<_>>();
+        let actual = catalog
+            .migrations
+            .iter()
+            .map(|migration| migration.file_name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            documented, actual,
+            "{backend} README must document each migration exactly once in catalog order"
+        );
+    }
 }
 
 #[test]
 fn catalog_parser_rejects_ambiguous_inputs() {
     for malformed in [
-        "39_short.sql",
-        "0039-Missing-Separator.sql",
-        "0039_MixedCase.sql",
-        "0039_.sql",
+        "1_short.sql",
+        "0001-Missing-Separator.sql",
+        "0001_MixedCase.sql",
+        "0001_.sql",
+        "0001_two__words.sql",
         "0000_zero.sql",
+        "0001_missing_extension",
     ] {
         assert!(
-            MigrationFile::parse(malformed, Vec::new()).is_err(),
+            MigrationFile::parse(malformed).is_err(),
             "accepted malformed migration filename `{malformed}`"
         );
     }
-
-    let duplicate_version =
-        Catalog::from_names("synthetic", &["0001_first.sql", "0001_second.sql"]);
-    assert!(duplicate_version.is_err(), "accepted a duplicate version");
-
-    let duplicate_slug = Catalog::from_names("synthetic", &["0001_same.sql", "0002_same.sql"]);
-    assert!(duplicate_slug.is_err(), "accepted a duplicate slug");
-
-    let postgres = Catalog::from_names("postgres", &["0001_shared.sql"])
-        .expect("synthetic Postgres catalog must be valid");
-    let sqlite = Catalog::from_names("sqlite", &["0001_conflicting.sql"])
-        .expect("synthetic SQLite catalog must be valid");
+    assert!(
+        Catalog::from_names("synthetic", &["0001_first.sql", "0001_second.sql"]).is_err(),
+        "accepted a duplicate version"
+    );
+    assert!(
+        Catalog::from_names("synthetic", &["0001_same.sql", "0002_same.sql"]).is_err(),
+        "accepted a duplicate slug"
+    );
+    let postgres =
+        Catalog::from_names("postgres", &["0001_shared.sql"]).expect("synthetic catalog valid");
+    let sqlite =
+        Catalog::from_names("sqlite", &["0001_conflicting.sql"]).expect("synthetic catalog valid");
     assert!(
         validate_shared_slugs(&postgres, &sqlite).is_err(),
-        "accepted conflicting slugs for a shared logical version"
+        "accepted conflicting shared slugs"
     );
 }

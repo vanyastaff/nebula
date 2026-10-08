@@ -543,7 +543,6 @@ impl PortHandles {
                 scope: scope.clone(),
                 version: 1,
                 slug: id_str.clone(),
-                deleted: false,
             },
         )
         .await
@@ -577,14 +576,35 @@ impl PortHandles {
             .map(|r| (r.version, r.state))
     }
 
-    /// List running execution ids as opaque strings (port equivalent of
-    /// the old `state.execution_repo.list_running()`; the port id form is
-    /// the canonical string, not a typed `ExecutionId`).
-    pub(crate) async fn running_executions(&self) -> Vec<String> {
-        use nebula_storage_port::store::ExecutionStore;
-        ExecutionStore::list_running(&self.exec_store, &port_scope())
+    /// Ids of every execution in the placeholder scope, any status (the port
+    /// id form is the canonical string, not a typed `ExecutionId`). Fixtures
+    /// stay far below one history page.
+    pub(crate) async fn executions_in_scope(&self) -> Vec<String> {
+        self.executions_with(nebula_storage_port::ExecutionHistoryQuery::new())
             .await
-            .expect("running_executions: port list_running must not error")
+    }
+
+    /// Ids of the non-terminal executions in the placeholder scope, through
+    /// the storage status filter.
+    pub(crate) async fn active_executions(&self) -> Vec<String> {
+        self.executions_with(
+            nebula_storage_port::ExecutionHistoryQuery::new()
+                .with_statuses(nebula_storage_port::ExecutionStatusSet::ACTIVE),
+        )
+        .await
+    }
+
+    async fn executions_with(
+        &self,
+        query: nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Vec<String> {
+        use nebula_storage_port::store::ExecutionStore;
+        let query = query.with_page_size(nebula_storage_port::ExecutionHistoryPageSize::MAX);
+        let page = ExecutionStore::list_history(&self.exec_store, &port_scope(), &query)
+            .await
+            .expect("executions_in_scope: port list_history must not error");
+        assert!(page.next_cursor.is_none(), "fixture exceeds one page");
+        page.items.into_iter().map(|summary| summary.id).collect()
     }
 }
 
@@ -756,6 +776,56 @@ pub(crate) async fn create_test_state_with_queue() -> (AppState, InMemoryControl
 /// `state.workflow_repo` direct access).
 pub(crate) async fn create_state_with_port_handles() -> (AppState, PortHandles) {
     build_port_state().await
+}
+
+/// Persist a canonical snapshot and its matching listing projection under a lease.
+pub(crate) async fn persist_execution_snapshot(
+    store: &dyn nebula_storage_port::store::ExecutionStore,
+    snapshot: &nebula_execution::ExecutionState,
+) {
+    use nebula_storage_port::{ExecutionListing, TransitionBatch, TransitionOutcome};
+    let scope = port_scope();
+    let id = snapshot.execution_id.to_string();
+    let initial =
+        nebula_execution::ExecutionState::new(snapshot.execution_id, snapshot.workflow_id, &[]);
+    store
+        .create(
+            &scope,
+            &id,
+            &snapshot.workflow_id.to_string(),
+            serde_json::to_value(initial).unwrap(),
+        )
+        .await
+        .unwrap();
+    let record = store.get(&scope, &id).await.unwrap().unwrap();
+    let token = store
+        .acquire_lease(
+            &scope,
+            &id,
+            "inspection-test",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let listing = ExecutionListing::new(
+        snapshot.status.to_string().parse().unwrap(),
+        snapshot.started_at,
+        snapshot.completed_at,
+    );
+    let outcome = store
+        .commit(TransitionBatch::new(
+            scope.clone(),
+            &id,
+            record.version,
+            token,
+            serde_json::to_value(snapshot).unwrap(),
+            listing,
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(outcome, TransitionOutcome::Applied { .. }));
+    assert!(store.release_lease(&scope, &id, token).await.unwrap());
 }
 
 /// Create an `AppState` wired through the scoped storage port, returning
@@ -1261,7 +1331,6 @@ pub(crate) mod engine_seam {
                     scope: scope.clone(),
                     version: 1,
                     slug: id_str.clone(),
-                    deleted: false,
                 },
             )
             .await

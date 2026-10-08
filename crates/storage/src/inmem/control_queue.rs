@@ -165,11 +165,10 @@ impl InMemoryControlQueue {
     /// Non-consuming snapshot of every enqueued row as
     /// `(msg, status)` pairs, ordered by id for determinism.
     ///
-    /// This is the port-side structural equivalent of the legacy
-    /// `InMemoryControlQueueRepo::snapshot` (test assertions need to see
-    /// pending rows *without* the status flip `claim_pending` performs —
-    /// e.g. the §13 knife asserts both the `Start` and `Cancel` rows are
-    /// still `Pending`). Inspection only; never used on a hot path.
+    /// Test assertions need to see pending rows *without* the status flip
+    /// `claim_pending` performs — e.g. the §13 knife asserts both the
+    /// `Start` and `Cancel` rows are still `Pending`. Inspection only; never
+    /// used on a hot path.
     #[must_use]
     pub fn snapshot(&self) -> Vec<(ControlMsg, String)> {
         let st = self.inner.lock();
@@ -210,9 +209,8 @@ impl InMemoryControlQueue {
     /// Test-only seed of an already-`Processing` row owned by a (dead)
     /// `processor`, claimed `stale_for` ago, with a given prior
     /// `reclaim_count`. Reproduces a crashed-runner orphan for reclaim
-    /// tests — the legacy `InMemoryControlQueueRepo` allowed enqueuing a
-    /// pre-built `Processing` entry; the port queue's `enqueue` is always
-    /// `Pending`, so this restores that test affordance structurally.
+    /// tests: the port queue's `enqueue` is always `Pending`, so a
+    /// pre-claimed row can only be seeded here.
     #[doc(hidden)]
     pub fn seed_processing(
         &self,

@@ -101,11 +101,11 @@ fn nested_cleanup_manager() -> (Manager, NestedCleanupResource) {
 async fn nested_release_on_one_worker_completes_parent_and_child() {
     let (manager, resource) = nested_cleanup_manager();
     let parent = manager
-        .acquire_bounded::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     let child = manager
-        .acquire_bounded::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     resource.children.lock().unwrap().insert(*parent, child);
@@ -124,7 +124,7 @@ async fn nested_release_on_one_worker_completes_parent_and_child() {
 
 async fn nested_lease(manager: &Manager) -> ResourceGuard<NestedCleanupResource> {
     manager
-        .acquire_bounded::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap()
 }
@@ -349,7 +349,7 @@ async fn graceful_shutdown_reports_terminal_failure_and_finishes_sibling_rows() 
         })
         .unwrap();
     let first_outcome = manager
-        .acquire_resident_for_identity::<ResidentLifecycleResource>(
+        .acquire_for_identity::<ResidentLifecycleResource>(
             &test_ctx(),
             &AcquireOptions::default(),
             &SlotIdentity::Unbound,
@@ -361,7 +361,7 @@ async fn graceful_shutdown_reports_terminal_failure_and_finishes_sibling_rows() 
         .unwrap();
     assert_eq!(first_outcome, ReleaseOutcome::Completed);
     let sibling_outcome = manager
-        .acquire_resident_for_identity::<ResidentLifecycleResource>(
+        .acquire_for_identity::<ResidentLifecycleResource>(
             &test_ctx(),
             &AcquireOptions::default(),
             &identity,
@@ -396,11 +396,11 @@ async fn graceful_shutdown_reports_terminal_failure_and_finishes_sibling_rows() 
 async fn resident_lease_release_does_not_destroy_retained_master() {
     let (manager, resource) = resident_lifecycle_manager();
     let first = manager
-        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     let second = manager
-        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(first.0, second.0);
@@ -418,12 +418,12 @@ async fn resident_lease_release_does_not_destroy_retained_master() {
 async fn resident_replacement_destroys_old_master_only_after_last_lease() {
     let (manager, resource) = resident_lifecycle_manager();
     let old = manager
-        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     resource.alive.store(false, Ordering::SeqCst);
     let new = manager
-        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(old.0, 0);
@@ -444,7 +444,7 @@ async fn resident_replacement_destroys_old_master_only_after_last_lease() {
 async fn resident_predecessor_teardown_failure_does_not_cancel_healthy_replacement() {
     let (manager, resource) = resident_lifecycle_manager();
     let old = manager
-        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(old.0, 0);
@@ -453,7 +453,7 @@ async fn resident_predecessor_teardown_failure_does_not_cancel_healthy_replaceme
     resource.alive.store(false, Ordering::SeqCst);
     resource.fail_destroy.store(true, Ordering::SeqCst);
     let replacement = manager
-        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .expect("predecessor teardown failure must not cancel its healthy replacement");
 
@@ -485,14 +485,14 @@ async fn resident_predecessor_teardown_failure_does_not_cancel_healthy_replaceme
 async fn resident_failed_recreation_preserves_master_for_terminal_teardown() {
     let (manager, resource) = resident_lifecycle_manager();
     let old = manager
-        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     resource.alive.store(false, Ordering::SeqCst);
     resource.fail_create.store(true, Ordering::SeqCst);
     assert!(
         manager
-            .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+            .acquire::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
             .await
             .is_err()
     );
@@ -522,7 +522,7 @@ async fn tainted_handle_not_recycled() {
     let ctx = test_ctx();
 
     let mut handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .unwrap();
 
@@ -549,7 +549,7 @@ async fn explicit_discard_destroys_instead_of_returning_to_pool() {
         Pooled::new(Default::default(), 1),
     );
     let mut guard = manager
-        .acquire_pooled::<PoolTestResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     guard.taint();
@@ -569,7 +569,7 @@ async fn panic_in_drop_cleanup_does_not_abort_or_leak_drain_reservation() {
         Pooled::new(Default::default(), 1),
     );
     let mut guard = manager
-        .acquire_pooled::<PanickingDestroyPoolResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<PanickingDestroyPoolResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     guard.taint();
@@ -596,7 +596,7 @@ async fn release_guarded_handle_runs_teardown_and_returns_ok() {
         Pooled::new(Default::default(), 1),
     );
     let guard = manager
-        .acquire_pooled::<DropOnRecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<DropOnRecycleResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(guard.release().await.unwrap(), ReleaseOutcome::Completed);
@@ -693,7 +693,7 @@ async fn release_teardown_survives_caller_cancellation() {
 
     let ctx = test_ctx();
     let mut handle: ResourceGuard<SlowDestroyPoolResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
     // Taint so release() forces a destroy (the slow teardown path).
@@ -857,7 +857,7 @@ async fn release_bounds_a_hanging_author_teardown() {
 
     let ctx = test_ctx();
     let mut handle: ResourceGuard<HangingDestroyPoolResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
     // Taint so release() forces the (hanging) destroy path, not a recycle.
@@ -895,7 +895,7 @@ async fn release_isolates_a_panicking_author_teardown() {
 
     let ctx = test_ctx();
     let mut handle: ResourceGuard<PanickingDestroyPoolResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
     // Taint so release() forces the (panicking) destroy path, not a recycle.
@@ -1128,7 +1128,7 @@ async fn warmup_stops_at_the_pool_cap_counting_leases() {
     );
     register_pool(&manager, resource.clone(), test_config(), pool);
     let lease = manager
-        .acquire_pooled::<PoolTestResource>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&test_ctx(), &AcquireOptions::default())
         .await
         .expect("lease");
     let warmed = manager
@@ -1158,7 +1158,7 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
 
     // Acquire + release to populate idle.
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -1180,7 +1180,7 @@ async fn pool_stale_fingerprint_evicts_idle_entry() {
 
     // Next acquire should destroy stale entry and create fresh.
     let handle2 = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed after fingerprint change");
 
@@ -1212,7 +1212,7 @@ async fn pool_max_lifetime_evicts_expired_entry() {
 
     // Acquire + release to populate idle.
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -1227,7 +1227,7 @@ async fn pool_max_lifetime_evicts_expired_entry() {
 
     // Next acquire should destroy expired entry and create fresh.
     let handle2 = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed after max_lifetime expiry");
 
@@ -1327,7 +1327,7 @@ async fn pool_recycle_drop_destroys_entry() {
     // Acquire + release. Entry should NOT return to idle because recycle
     // returns Drop.
     let handle = mgr
-        .acquire_pooled::<DropOnRecycleResource>(&ctx, &AcquireOptions::default())
+        .acquire::<DropOnRecycleResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -1509,7 +1509,7 @@ async fn credentialed_pool_default_recycle_discards() {
     let ctx = test_ctx();
 
     let handle = mgr
-        .acquire_pooled::<CredentialedDefaultPoolResource>(&ctx, &AcquireOptions::default())
+        .acquire::<CredentialedDefaultPoolResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -1540,7 +1540,7 @@ async fn credentialed_pool_default_recycle_discards() {
 
     // A subsequent acquire creates a fresh instance — nothing was reused.
     let handle2 = mgr
-        .acquire_pooled::<CredentialedDefaultPoolResource>(&ctx, &AcquireOptions::default())
+        .acquire::<CredentialedDefaultPoolResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
     assert_eq!(
@@ -1567,7 +1567,7 @@ async fn non_credentialed_pool_default_recycle_keeps() {
     let ctx = test_ctx();
 
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -1577,7 +1577,7 @@ async fn non_credentialed_pool_default_recycle_keeps() {
     wait_idle_count::<PoolTestResource>(&mgr, 1).await;
 
     let handle2 = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
     assert_eq!(
@@ -1604,7 +1604,7 @@ async fn credentialed_pool_recycle_keep_override_reuses() {
     let ctx = test_ctx();
 
     let handle = mgr
-        .acquire_pooled::<CredentialedKeepPoolResource>(&ctx, &AcquireOptions::default())
+        .acquire::<CredentialedKeepPoolResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -1614,7 +1614,7 @@ async fn credentialed_pool_recycle_keep_override_reuses() {
     wait_idle_count::<CredentialedKeepPoolResource>(&mgr, 1).await;
 
     let handle2 = mgr
-        .acquire_pooled::<CredentialedKeepPoolResource>(&ctx, &AcquireOptions::default())
+        .acquire::<CredentialedKeepPoolResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
     assert_eq!(
@@ -1637,7 +1637,7 @@ async fn graceful_shutdown_executes_guard_dropped_after_signal() {
     register_pool(&manager, resource.clone(), test_config(), pool);
     let ctx = test_ctx();
     let mut guard = manager
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire succeeds");
     guard.taint();
@@ -1679,7 +1679,7 @@ async fn graceful_shutdown_destroys_idle_pool_instances() {
     );
     let ctx = test_ctx();
     let guard = manager
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire succeeds");
     let outcome = guard
@@ -1712,7 +1712,7 @@ async fn aborted_or_cancelled_drain_keeps_late_cleanup_available() {
         );
         let ctx = test_ctx();
         let mut guard = manager
-            .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+            .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire succeeds");
         guard.taint();
@@ -1758,7 +1758,7 @@ async fn forced_shutdown_reports_outstanding_guard_without_claiming_cleanup() {
     );
     let ctx = test_ctx();
     let mut guard = manager
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire succeeds");
     guard.taint();
@@ -1808,7 +1808,7 @@ async fn release_pooled_guard_recycles_and_returns_ok() {
     let ctx = test_ctx();
 
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("first acquire should succeed");
     assert_eq!(resource.create_counter.load(Ordering::Relaxed), 1);
@@ -1832,7 +1832,7 @@ async fn release_pooled_guard_recycles_and_returns_ok() {
 
     // Reacquire reuses the recycled instance: no new creation.
     let handle2 = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("second acquire should succeed");
     assert_eq!(
@@ -1866,7 +1866,7 @@ async fn release_owned_resident_guard_returns_ok() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -1909,7 +1909,7 @@ async fn release_then_drop_emits_exactly_one_released_event() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -1966,7 +1966,7 @@ async fn rejected_release_never_emits_released() {
 
     let mut events = manager.subscribe_events();
     let guard: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&test_ctx(), &AcquireOptions::default())
+        .acquire(&test_ctx(), &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
     drop(manager);
@@ -2010,7 +2010,7 @@ async fn refresh_and_taint_slot_reject_any_name_on_a_no_slot_resource() {
     // Seed one idle entry so "the pool still serves" is an observable fact,
     // not just an absence of a panic.
     let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("initial acquire must succeed");
     drop(handle);
@@ -2044,7 +2044,7 @@ async fn refresh_and_taint_slot_reject_any_name_on_a_no_slot_resource() {
         "a rejected slot-name call must not taint or otherwise disturb the pool"
     );
     let final_handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .acquire::<PoolTestResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("the pool must still serve acquires after the rejected slot-name calls");
     drop(final_handle);

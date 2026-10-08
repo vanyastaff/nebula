@@ -6,21 +6,11 @@ use std::future::Future;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use tracing::{Instrument as _, Span};
 
-// Adoption is entirely `sqlx::migrate` ledger manipulation, so it exists only
-// where a backend does. Without this gate the module's `use sqlx::migrate::..`
-// fails to resolve under `--no-default-features`, which an `--all-features`
-// clippy pass cannot see.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) mod adopt;
 pub(crate) mod catalog;
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use catalog::{CatalogAdmission, CatalogSetupError};
-
-// Prefixes below 0040 require aggregate-owner validation before destructive
-// transforms. General schema bootstrap accepts only Fresh or 0040+ catalogs.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-const GENERAL_CATALOG_SUPPORTED_FLOOR: i64 = 40;
 
 #[cfg(feature = "sqlite")]
 pub(crate) static SQLITE_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
@@ -80,9 +70,11 @@ pub(crate) trait AdmissionPolicy<Connection> {
     ) -> impl Future<Output = Result<CatalogAdmission, Self::Error>> + Send + '_;
 }
 
+/// The setup admission every store uses: the database's migration ledger must
+/// be absent (fresh) or a canonical prefix of this build's catalog.
 #[derive(Clone, Copy)]
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-struct CatalogOnly;
+pub(crate) struct CatalogOnly;
 
 #[cfg(feature = "sqlite")]
 impl AdmissionPolicy<sqlx::SqliteConnection> for CatalogOnly {
@@ -93,7 +85,7 @@ impl AdmissionPolicy<sqlx::SqliteConnection> for CatalogOnly {
     fn admit(
         connection: &mut sqlx::SqliteConnection,
     ) -> impl Future<Output = Result<CatalogAdmission, Self::Error>> + Send + '_ {
-        catalog::admit_sqlite(connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
+        catalog::admit_sqlite(connection)
     }
 }
 
@@ -106,7 +98,7 @@ impl AdmissionPolicy<sqlx::PgConnection> for CatalogOnly {
     fn admit(
         connection: &mut sqlx::PgConnection,
     ) -> impl Future<Output = Result<CatalogAdmission, Self::Error>> + Send + '_ {
-        catalog::admit_postgres(connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
+        catalog::admit_postgres(connection)
     }
 }
 
@@ -155,6 +147,32 @@ fn record_setup_failure(error: &impl SchemaSetupFailure) {
     }
 }
 
+/// Log why the migrator stopped, so an `Unavailable` setup is explainable.
+///
+/// Record the failing version, SQLSTATE and database-reported schema-object
+/// labels. These labels describe the operator-controlled schema, not row data.
+/// Never format the driver error at any log level: its message can quote stored
+/// values even when the failure arose while recording the migration receipt.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn record_migration_failure(backend: &'static str, error: &sqlx::migrate::MigrateError) {
+    let (version, database) = match error {
+        sqlx::migrate::MigrateError::ExecuteMigration(source, version) => {
+            (Some(*version), source.as_database_error())
+        },
+        _ => (None, None),
+    };
+    tracing::error!(
+        target: "nebula_storage::migration",
+        backend,
+        stage = "migrate",
+        version = ?version,
+        sqlstate = ?database.and_then(sqlx::error::DatabaseError::code),
+        table = ?database.and_then(sqlx::error::DatabaseError::table),
+        constraint = ?database.and_then(sqlx::error::DatabaseError::constraint),
+        "schema migration failed"
+    );
+}
+
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn require_current_head<E>(admission: CatalogAdmission, expected_head: i64) -> Result<(), E>
 where
@@ -171,9 +189,12 @@ where
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn storage_setup_error(error: CatalogSetupError) -> nebula_storage_port::StorageError {
     match error {
-        CatalogSetupError::Rejected(_) => nebula_storage_port::StorageError::Configuration(
-            "database schema is not a supported canonical migration prefix".to_owned(),
-        ),
+        CatalogSetupError::Rejected(rejection) => {
+            nebula_storage_port::StorageError::Configuration(format!(
+                "database schema rejected: {rejection}; recreate the database \
+                 (`task db:reset`) or run the build that created it"
+            ))
+        },
         CatalogSetupError::Unavailable => nebula_storage_port::StorageError::Connection(
             "database schema setup unavailable".to_owned(),
         ),
@@ -403,7 +424,10 @@ where
     unlocked_sqlite_migrator()
         .run_direct(None, &mut *connection, false)
         .await
-        .map_err(|_| P::Error::from(CatalogSetupError::Unavailable))?;
+        .map_err(|error| {
+            record_migration_failure("sqlite", &error);
+            P::Error::from(CatalogSetupError::Unavailable)
+        })?;
     let postflight = P::admit(connection).await?;
     require_current_head::<P::Error>(postflight, catalog::catalog_head(&SQLITE_MIGRATOR))?;
     sqlite_foreign_keys_enabled::<P::Error>(connection).await
@@ -1030,126 +1054,6 @@ pub(crate) async fn setup_sqlite_pool(pool: sqlx::SqlitePool) -> Result<(), Cata
     .await
 }
 
-/// Adopt an unledgered SQLite database by stamping a canonical ledger.
-///
-/// Runs inside one transaction and re-admits the stamped ledger before
-/// committing, so a database that would still be rejected is left exactly as
-/// it was rather than carrying a half-written ledger.
-#[cfg(feature = "sqlite")]
-pub(crate) async fn adopt_sqlite_ledger(
-    pool: &sqlx::SqlitePool,
-    through_version: i64,
-) -> Result<adopt::LedgerAdoptionOutcome, adopt::LedgerAdoptionError> {
-    use adopt::{AdoptionPlan, LedgerAdoptionError};
-
-    let mut connection = pool
-        .acquire()
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-
-    let observation = catalog::sqlite::observe(&mut connection)
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-    let through_version =
-        match adopt::plan_adoption(&unlocked_sqlite_migrator(), &observation, through_version)? {
-            AdoptionPlan::Skip(outcome) => return Ok(outcome),
-            AdoptionPlan::Stamp { through_version } => through_version,
-        };
-
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *connection)
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-
-    let stamped = adopt::stamp_ledger(
-        &mut *connection,
-        &unlocked_sqlite_migrator(),
-        through_version,
-    )
-    .await;
-    let verified = match stamped {
-        Ok(()) => catalog::sqlite::admit(&mut connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
-            .await
-            .map(|_| ())
-            .map_err(|_| LedgerAdoptionError::RejectedAfterStamp),
-        Err(error) => Err(error),
-    };
-
-    match verified {
-        Ok(()) => {
-            sqlx::query("COMMIT")
-                .execute(&mut *connection)
-                .await
-                .map_err(|_| LedgerAdoptionError::Unavailable)?;
-            Ok(adopt::LedgerAdoptionOutcome::Adopted { through_version })
-        },
-        Err(error) => {
-            // The caller already has a failure to report; a rollback that
-            // itself fails must not mask it.
-            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
-            Err(error)
-        },
-    }
-}
-
-/// Adopt an unledgered PostgreSQL database by stamping a canonical ledger.
-///
-/// Same contract as [`adopt_sqlite_ledger`].
-#[cfg(feature = "postgres")]
-pub(crate) async fn adopt_postgres_ledger(
-    pool: &sqlx::PgPool,
-    through_version: i64,
-) -> Result<adopt::LedgerAdoptionOutcome, adopt::LedgerAdoptionError> {
-    use adopt::{AdoptionPlan, LedgerAdoptionError};
-
-    let mut connection = pool
-        .acquire()
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-
-    let observation = catalog::postgres::observe(&mut connection)
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-    let through_version =
-        match adopt::plan_adoption(&unlocked_postgres_migrator(), &observation, through_version)? {
-            AdoptionPlan::Skip(outcome) => return Ok(outcome),
-            AdoptionPlan::Stamp { through_version } => through_version,
-        };
-
-    sqlx::query("BEGIN")
-        .execute(&mut *connection)
-        .await
-        .map_err(|_| LedgerAdoptionError::Unavailable)?;
-
-    let stamped = adopt::stamp_ledger(
-        &mut *connection,
-        &unlocked_postgres_migrator(),
-        through_version,
-    )
-    .await;
-    let verified = match stamped {
-        Ok(()) => catalog::postgres::admit(&mut connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
-            .await
-            .map(|_| ())
-            .map_err(|_| LedgerAdoptionError::RejectedAfterStamp),
-        Err(error) => Err(error),
-    };
-
-    match verified {
-        Ok(()) => {
-            sqlx::query("COMMIT")
-                .execute(&mut *connection)
-                .await
-                .map_err(|_| LedgerAdoptionError::Unavailable)?;
-            Ok(adopt::LedgerAdoptionOutcome::Adopted { through_version })
-        },
-        Err(error) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
-            Err(error)
-        },
-    }
-}
-
 #[cfg(feature = "postgres")]
 async fn postgres_lock_key<E>(connection: &mut sqlx::PgConnection) -> Result<i64, E>
 where
@@ -1204,7 +1108,10 @@ where
     unlocked_postgres_migrator()
         .run_direct(None, &mut *connection, false)
         .await
-        .map_err(|_| P::Error::from(CatalogSetupError::Unavailable))?;
+        .map_err(|error| {
+            record_migration_failure("postgres", &error);
+            P::Error::from(CatalogSetupError::Unavailable)
+        })?;
     let postflight = postgres_read_only_admission::<P>(connection).await?;
     require_current_head::<P::Error>(postflight, catalog::catalog_head(&POSTGRES_MIGRATOR))
 }
@@ -1269,29 +1176,8 @@ mod sqlite_lock_tests;
 
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 mod tests {
-    use super::{GENERAL_CATALOG_SUPPORTED_FLOOR, catalog};
+    use super::catalog;
 
-    /// Deliberately spelled with literals: this is the tripwire that makes a
-    /// new catalog head a decision rather than a side effect. Deriving either
-    /// value from the migrator would make it pass automatically and prove
-    /// nothing.
-    ///
-    /// Head 0045 (`port_operation_ledger`) reviewed against the floor: it
-    /// creates one new table and touches no existing relation, so it needs no
-    /// aggregate-owner validation and the floor stays at 0040. Its `CHECK`
-    /// constraints bind only rows the migration itself introduces, so no
-    /// database admitted at 0040 or later can hold a row they would reject.
-    /// The same review covered 0044 (`control_queue_claim_generation`), which
-    /// adds one defaulted column to `port_control_queue` and performs
-    /// no destructive transform, so it needs no aggregate-owner validation and
-    /// the floor stays at 0040. The same review covered 0043
-    /// (`port_start_key_reservations`), which creates one new table:
-    /// it creates one new table and touches no existing relation, so it needs
-    /// no aggregate-owner validation and the floor stays at 0040. The same
-    /// review covered 0042 (`job_dispatch_claim_generation`), which adds one
-    /// defaulted column and performs no destructive transform. A database
-    /// admitted at 0040 or later still reaches this head by ordinary forward
-    /// migration.
     /// The lock classifier decides whether setup waits or fails.
     ///
     /// Both directions are load-bearing: treating a real failure as transient
@@ -1323,109 +1209,43 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
-    /// Head 0063, on both backends, creates only the empty
-    /// `port_execution_control_observation_receipts` relation, its
-    /// constraints, and a cascading foreign key to the execution row. No
-    /// historical control outcome or source authority is inferred or
-    /// backfilled: receipts are written only by the execution owner together
-    /// with their journal row, and an absent receipt means no refusal was
-    /// observed yet. It is aggregate-neutral and the floor remains at 0040.
+    /// The reviewed baseline has eight paired groups in dependency order:
+    /// identity, tenancy, workflows, executions, dispatch, credentials,
+    /// resources and platform. Runtime control belongs to execution/dispatch;
+    /// it does not require a separate empty migration.
     ///
-    /// Head 0062, on both backends, creates only the empty
-    /// `port_iteration_checkpoints` relation (fenced iteration checkpoints of
-    /// journaled stateful actions), its constraints, and a cascading foreign
-    /// key to the execution row. Nothing is inspected, inferred, or
-    /// backfilled: a missing row means "replay from iteration 0", which is how
-    /// every stateful node ran before. It is aggregate-neutral and the floor
-    /// remains at 0040.
+    /// `docs/database-standard.md` defines schema invariants. Admission accepts
+    /// fresh databases and exact successful checksummed catalog prefixes,
+    /// applies pending migrations under the setup guard, then verifies head.
+    /// Discarded development catalogs fail closed and require recreation.
+    /// Before acknowledging a future head, review both backend SQL, affected
+    /// aggregate invariants and admission from each supported prefix. Add the
+    /// migration to `migration_catalog::REVIEWED_HEAD` only after that review.
     ///
-    /// Head 0061, on both backends, adds the credential admission epoch (the
-    /// use revision) with the constant 1 on every existing row and a named
-    /// range check. Nothing is inspected or inferred: the constant claims no
-    /// history, and because no binding carried an admission epoch before the
-    /// cutover, none can match a later observation — bindings are invalidated
-    /// conservatively rather than guessed. Material, version, and every other
-    /// aggregate column are untouched. It is aggregate-neutral and the floor
-    /// remains at 0040. Old credential writers do not advance the epoch, so
-    /// they must be stopped before it applies; PostgreSQL drops the backfill
-    /// default so an old writer's insert fails closed. SQLite keeps its
-    /// PostgreSQL-only gap at 0060.
+    /// 0009 adds permanent tenant-provisioning receipts. Every older prefix
+    /// reaches the same baseline before existing org IDs are sealed without
+    /// inventing an original request. No rows are deleted or authority granted;
+    /// configured bootstrap on a sealed tenant must be removed explicitly.
     ///
-    /// PostgreSQL 0060 creates only the empty rate-limit and
-    /// rate-limit-reservation relations, their constraints, and two time
-    /// indexes. They reference no aggregate and nothing is inspected,
-    /// inferred, or backfilled; a missing row behaves exactly like an idle
-    /// limit, which is how every key starts. It is aggregate-neutral and the
-    /// floor remains at 0040. SQLite reserves 0060 (one process keeps its
-    /// limits in memory).
-    ///
-    /// Head 0059 creates only the empty worker-heartbeat and resource-status
-    /// relations, their constraints, and a worker index. They reference no
-    /// aggregate and nothing is inspected, inferred, or backfilled; published
-    /// status is liveness-bounded runtime state that workers rewrite on their
-    /// own. It is aggregate-neutral and the floor remains at 0040.
-    ///
-    /// Head 0058 adds nullable operator topology and resilience-override
-    /// documents to resource definitions. NULL is the kind-default / unlimited
-    /// behaviour every existing row already had, so nothing is inferred or
-    /// rewritten; it is aggregate-neutral and the floor remains at 0040.
-    ///
-    /// Head 0057 types credential provider-operation claims and incidents.
-    ///
-    /// Head 0056 widens the pending-state expiry constraint to admit equality.
-    /// PostgreSQL replaces only the constraint. SQLite rebuilds the relation
-    /// because it cannot alter a CHECK in place, copying every column without
-    /// changing row values; every 0055 row already satisfies the wider check.
-    /// The transform preserves aggregate state, so the general floor remains
-    /// at 0040.
-    ///
-    /// Head 0055 adds an empty encrypted pending-state relation for interactive
-    /// credentials. It neither infers prior pending flows nor rewrites an
-    /// aggregate, so the general floor remains at 0040.
-    /// Head 0054 owner-qualifies refresh claims and sentinel incidents by
-    /// backfilling the canonical owner from the credential aggregate. It is an
-    /// aggregate transform: an orphan makes the migration fail closed, and
-    /// credential readiness remains the owner preflight before catalog setup.
-    /// The general floor remains at 0040 because every database admitted there
-    /// has owner-qualified credentials and the migration derives no authority
-    /// from caller-controlled metadata.
-    ///
-    /// Head 0053 adds the operator reconciliation record to credential sentinel
-    /// incidents. Every column is nullable and NULL for incidents recorded
-    /// earlier, which stays the fail-closed "no provider outcome is known"
-    /// state, so the migration neither resolves a legacy incident nor changes
-    /// the sentinel-event count; the floor remains at 0040.
-    ///
-    /// Head 0052 adds a default-empty credential-binding document to resource
-    /// definitions. Existing rows could not persist bindings before this
-    /// migration, so the empty backfill does not infer or fabricate credential
-    /// authority; it is aggregate-neutral and the floor remains at 0040.
-    /// Head 0051 creates only empty resource-runtime relations, indexes, and
-    /// constraints. It does not inspect, infer, backfill, or rewrite any
-    /// aggregate state, so catalog-only admission remains valid and the general
-    /// floor stays at 0040. Head 0050 creates accepted-turn markers with the complete set of command
-    /// sources used by the runtime owner. It neither infers historical acceptance
-    /// nor rewrites aggregate state. Recovery guarantees start with marker-writing
-    /// acceptors; deployments must quiesce older acceptors or reconcile their work
-    /// through its runtime owner. Head 0049 adds an empty protocol child table and a redundant unique owner
-    /// index; it neither upgrades legacy ledger rows nor grants effect authority.
-    /// Head 0048 adds an empty immutable bundle table and tenant parent index,
-    /// without fabricating contracts for existing executions. Head 0047 adds
-    /// nullable activation metadata without rewriting legacy workflow identities.
-    /// The preceding 0046 is aggregate-neutral only when
-    /// the dispatch queue is empty.
-    /// Its SQL preflight rejects every legacy row before any schema change;
-    /// successful setup introduces no aggregate mutation or invented identity.
-    /// Nonempty deployments must remain at their prior schema until runtime
-    /// owners have drained and retired the legacy rows through their own ports.
-    /// The rejection is terminal and atomic; it is never classified as a lock.
+    /// 0010 adds identity-owned initial enrollment. Each admitted older prefix
+    /// reaches 0009 first; any existing account, organization or tenant receipt
+    /// permanently seals the singleton. Fresh deployments remain available until
+    /// enrollment or an ordinary identity insertion closes it. The insert trigger
+    /// changes only identity admission in the same transaction; account and tenant
+    /// rows are never deleted, rewritten or granted authority by this migration.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
-        assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
+        use crate::migration_catalog::REVIEWED_HEAD;
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 63);
+        assert_eq!(
+            catalog::catalog_head(&super::SQLITE_MIGRATOR),
+            REVIEWED_HEAD
+        );
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 63);
+        assert_eq!(
+            catalog::catalog_head(&super::POSTGRES_MIGRATOR),
+            REVIEWED_HEAD
+        );
     }
 
     /// The setup guard must never hold a descriptor on the database file.

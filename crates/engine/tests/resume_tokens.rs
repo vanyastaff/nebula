@@ -22,6 +22,8 @@
 mod exact_fixture;
 #[path = "exact_fixture/qualified_runtime.rs"]
 mod qualified_runtime;
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
 
 macro_rules! pure_action_metadata {
     ($key:expr, $name:expr, $description:expr $(,)?) => {
@@ -52,10 +54,7 @@ use nebula_execution::ExecutionState;
 use nebula_metrics::MetricsRegistry;
 use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
-use nebula_storage_port::{
-    dto::WorkflowVersionRecord,
-    store::{ResumeTokenStore, WorkflowVersionStore},
-};
+use nebula_storage_port::{dto::WorkflowVersionRecord, store::ResumeTokenStore};
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
@@ -205,20 +204,20 @@ impl MintHarness {
             ui_metadata: None,
             schema_version: CURRENT_SCHEMA_VERSION,
         };
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: workflow_id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(&wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: workflow_id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(&wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
         workflow_id
     }
 

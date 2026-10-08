@@ -30,7 +30,8 @@ use std::time::Duration;
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialEvent, CredentialId, LeaseEvent};
 use nebula_engine::{
-    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+    ResourceReconciliationStartupError, WorkflowEngine,
 };
 use nebula_eventbus::EventBus;
 use nebula_metrics::MetricsRegistry;
@@ -118,7 +119,7 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
         .expect("replacement resource registers");
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let warm = manager
-        .acquire_resident_for_identity::<ReplacementResource>(
+        .acquire_for_identity::<ReplacementResource>(
             &context,
             &AcquireOptions::default(),
             &identity,
@@ -136,13 +137,15 @@ async fn material_replacement_installs_projected_guard_before_refresh_hook() {
             epoch: None,
         });
     let bus = Arc::new(EventBus::new(8));
-    let _driver = ResourceFanoutDriver::spawn_with_resolver(
+    let _driver = ResourceFanoutDriver::try_spawn(
         index,
         manager,
         Some(resolver),
-        Arc::clone(&bus),
+        Some(Arc::clone(&bus)),
         None,
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
 
     for _ in 0..100 {
         if calls.load(Ordering::SeqCst) == 1 {
@@ -211,7 +214,7 @@ async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -231,16 +234,18 @@ async fn lost_material_event_is_recovered_on_startup_and_periodic_scan() {
     );
     // No event: the published rotation binding makes the live guard eligible
     // for startup and periodic durable reconciliation.
-    let driver = ResourceFanoutDriver::spawn_with_resolver(
+    let driver = ResourceFanoutDriver::try_spawn(
         index,
         Arc::clone(&manager),
         Some(Arc::new(ReplacementResolver {
             calls: Arc::clone(&calls),
             epoch: None,
         })),
-        Arc::clone(&bus),
+        Some(Arc::clone(&bus)),
         None,
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
     for _ in 0..100 {
         tokio::task::yield_now().await;
     }
@@ -270,16 +275,18 @@ async fn rotation_opt_out_is_not_reconciled_from_projection_metadata() {
     let resource = register_replacement(&manager, credential_id);
     let calls = Arc::new(AtomicUsize::new(0));
     let bus = Arc::new(EventBus::new(8));
-    let driver = ResourceFanoutDriver::spawn_with_resolver(
+    let driver = ResourceFanoutDriver::try_spawn(
         Arc::new(ResourceFanoutIndex::new()),
         manager,
         Some(Arc::new(ReplacementResolver {
             calls: Arc::clone(&calls),
             epoch: None,
         })),
-        Arc::clone(&bus),
+        Some(Arc::clone(&bus)),
         None,
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
 
     tokio::time::advance(Duration::from_secs(31)).await;
     for _ in 0..100 {
@@ -316,7 +323,7 @@ async fn material_replacement_hook_timeout_is_not_counted_as_success() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -360,7 +367,7 @@ async fn refreshed_events_and_scans_install_once_per_epoch_in_either_order() {
         let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         drop(
             manager
-                .acquire_resident_for_identity::<ReplacementResource>(
+                .acquire_for_identity::<ReplacementResource>(
                     &context,
                     &AcquireOptions::default(),
                     &identity,
@@ -379,16 +386,18 @@ async fn refreshed_events_and_scans_install_once_per_epoch_in_either_order() {
             "db",
             identity.clone(),
         );
-        let driver = ResourceFanoutDriver::spawn_with_resolver(
+        let driver = ResourceFanoutDriver::try_spawn(
             index,
             manager,
             Some(Arc::new(ReplacementResolver {
                 calls: Arc::clone(&calls),
                 epoch: Some(Arc::clone(&epoch)),
             })),
-            Arc::clone(&bus),
+            Some(Arc::clone(&bus)),
             None,
-        );
+            Arc::new(|| {}),
+        )
+        .expect("fan-out starts");
         for _ in 0..100 {
             tokio::task::yield_now().await;
         }
@@ -452,13 +461,15 @@ async fn stalled_refresh_scan_does_not_delay_credential_or_lease_revoke() {
             let bus = Arc::new(EventBus::new(8));
             let leases = Arc::new(EventBus::new(8));
             let mut observations = manager.subscribe_events();
-            let driver = ResourceFanoutDriver::spawn_with_resolver(
+            let driver = ResourceFanoutDriver::try_spawn(
                 index,
                 Arc::clone(&manager),
                 Some(Arc::new(resolver)),
-                Arc::clone(&bus),
+                Some(Arc::clone(&bus)),
                 Some(Arc::clone(&leases)),
-            );
+                Arc::new(|| {}),
+            )
+            .expect("fan-out starts");
             tokio::time::timeout(Duration::from_secs(1), entered.acquire())
                 .await
                 .expect("scan started")
@@ -515,7 +526,7 @@ async fn stalled_refresh_scan_does_not_delay_credential_or_lease_revoke() {
             let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
             assert!(
                 manager
-                    .acquire_resident_for_identity::<ReplacementResource>(
+                    .acquire_for_identity::<ReplacementResource>(
                         &context,
                         &AcquireOptions::default(),
                         &identity
@@ -758,7 +769,7 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -776,15 +787,17 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
         "db",
         identity.clone(),
     );
-    let driver = ResourceFanoutDriver::spawn_with_resolver(
+    let driver = ResourceFanoutDriver::try_spawn(
         index,
         Arc::clone(&manager),
         Some(Arc::new(RevokedProjection {
             calls: Arc::clone(&calls),
         })),
-        Arc::clone(&bus),
+        Some(Arc::clone(&bus)),
         None,
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
 
     tokio::time::advance(Duration::from_millis(1)).await;
     for _ in 0..100 {
@@ -797,7 +810,7 @@ async fn durable_tombstone_reconciliation_terminally_revokes_resource() {
     );
     assert!(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -835,7 +848,7 @@ async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
     let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     drop(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -853,15 +866,17 @@ async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
     );
     let calls = Arc::new(AtomicUsize::new(0));
     let bus = Arc::new(EventBus::new(8));
-    let driver = ResourceFanoutDriver::spawn_with_resolver(
+    let driver = ResourceFanoutDriver::try_spawn(
         index,
         Arc::clone(&manager),
         Some(Arc::new(RevokedProjection {
             calls: Arc::clone(&calls),
         })),
-        Arc::clone(&bus),
+        Some(Arc::clone(&bus)),
         None,
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
 
     tokio::time::advance(Duration::from_millis(1)).await;
     for _ in 0..100 {
@@ -870,7 +885,7 @@ async fn empty_bound_slot_reconciles_a_lost_durable_tombstone() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -892,7 +907,7 @@ async fn authoritative_tombstone_wins_a_concurrent_unqualified_slot_write() {
         let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         drop(
             manager
-                .acquire_resident_for_identity::<ReplacementResource>(
+                .acquire_for_identity::<ReplacementResource>(
                     &context,
                     &AcquireOptions::default(),
                     &identity,
@@ -911,16 +926,18 @@ async fn authoritative_tombstone_wins_a_concurrent_unqualified_slot_write() {
             "db",
             identity.clone(),
         );
-        let driver = ResourceFanoutDriver::spawn_with_resolver(
+        let driver = ResourceFanoutDriver::try_spawn(
             index,
             Arc::clone(&manager),
             Some(Arc::new(GatedRevokedProjection {
                 entered: Arc::clone(&entered),
                 release: Arc::clone(&release),
             })),
-            Arc::clone(&bus),
+            Some(Arc::clone(&bus)),
             None,
-        );
+            Arc::new(|| {}),
+        )
+        .expect("fan-out starts");
         entered.acquire().await.expect("projection starts").forget();
         if replace_with_value {
             resource
@@ -940,7 +957,7 @@ async fn authoritative_tombstone_wins_a_concurrent_unqualified_slot_write() {
             "authoritative tombstone must clear an intervening slot write"
         );
         manager
-            .acquire_resident_for_identity::<ReplacementResource>(
+            .acquire_for_identity::<ReplacementResource>(
                 &context,
                 &AcquireOptions::default(),
                 &identity,
@@ -1249,7 +1266,7 @@ async fn delayed_projection_cannot_install_into_rebound_registration() {
         let context = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         drop(
             manager
-                .acquire_resident_for_identity::<ReplacementResource>(
+                .acquire_for_identity::<ReplacementResource>(
                     &context,
                     &AcquireOptions::default(),
                     &SlotIdentity::from_bindings([("db", "oauth")]),
@@ -1345,16 +1362,18 @@ async fn revoked_slots_are_not_reprojected_on_startup_or_periodic_scans() {
         }
         let calls = Arc::new(AtomicUsize::new(0));
         let bus = Arc::new(EventBus::new(8));
-        let driver = ResourceFanoutDriver::spawn_with_resolver(
+        let driver = ResourceFanoutDriver::try_spawn(
             Arc::new(ResourceFanoutIndex::new()),
             manager,
             Some(Arc::new(ReplacementResolver {
                 epoch: None,
                 calls: Arc::clone(&calls),
             })),
-            Arc::clone(&bus),
+            Some(Arc::clone(&bus)),
             None,
-        );
+            Arc::new(|| {}),
+        )
+        .expect("fan-out starts");
         for _ in 0..3 {
             for _ in 0..100 {
                 tokio::task::yield_now().await;
@@ -1407,13 +1426,17 @@ async fn unqualified_writes_fence_in_flight_scans_and_material_events() {
                         .await
                 }));
             } else {
-                driver = Some(ResourceFanoutDriver::spawn_with_resolver(
-                    index,
-                    Arc::clone(&manager),
-                    Some(resolver),
-                    Arc::clone(&bus),
-                    None,
-                ));
+                driver = Some(
+                    ResourceFanoutDriver::try_spawn(
+                        index,
+                        Arc::clone(&manager),
+                        Some(resolver),
+                        Some(Arc::clone(&bus)),
+                        None,
+                        Arc::new(|| {}),
+                    )
+                    .expect("fan-out starts"),
+                );
             }
             tokio::time::timeout(Duration::from_secs(2), entered.acquire())
                 .await
@@ -1770,7 +1793,7 @@ async fn refreshed_event_scans_only_the_observed_credential() {
     let first_calls = Arc::new(AtomicUsize::new(0));
     let second_calls = Arc::new(AtomicUsize::new(0));
     let bus = Arc::new(EventBus::new(8));
-    let driver = ResourceFanoutDriver::spawn_with_resolver(
+    let driver = ResourceFanoutDriver::try_spawn(
         index,
         manager,
         Some(Arc::new(TwoCredentialProjection {
@@ -1778,9 +1801,11 @@ async fn refreshed_event_scans_only_the_observed_credential() {
             first_calls: Arc::clone(&first_calls),
             second_calls: Arc::clone(&second_calls),
         })),
-        Arc::clone(&bus),
+        Some(Arc::clone(&bus)),
         None,
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
     for _ in 0..100 {
         if first_resource.observed.load(Ordering::SeqCst) == 22
             && second_resource.observed.load(Ordering::SeqCst) == 22
@@ -1975,11 +2000,7 @@ async fn wire(behaviour: Behaviour) -> Wired {
         CancellationToken::new(),
     );
     let _g = mgr
-        .acquire_resident_for_identity::<Recording>(
-            &ctx,
-            &AcquireOptions::default(),
-            &slot_identity,
-        )
+        .acquire_for_identity::<Recording>(&ctx, &AcquireOptions::default(), &slot_identity)
         .await
         .expect("warm resident runtime");
     drop(_g);
@@ -1999,12 +2020,15 @@ async fn wire(behaviour: Behaviour) -> Wired {
 
     let cred_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let lease_bus = Arc::new(EventBus::<LeaseEvent>::new(16));
-    let driver = ResourceFanoutDriver::spawn(
+    let driver = ResourceFanoutDriver::try_spawn(
         Arc::clone(&index),
         Arc::clone(&mgr),
-        Arc::clone(&cred_bus),
+        None,
+        Some(Arc::clone(&cred_bus)),
         Some(Arc::clone(&lease_bus)),
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
 
     Wired {
         cred_bus,
@@ -2107,11 +2131,7 @@ async fn lease_revoked_event_taints_row_and_delivers_revoke_hook() {
     );
     let acquired = w
         .mgr
-        .acquire_resident_for_identity::<Recording>(
-            &ctx,
-            &AcquireOptions::default(),
-            &w.slot_identity,
-        )
+        .acquire_for_identity::<Recording>(&ctx, &AcquireOptions::default(), &w.slot_identity)
         .await;
     let err = match acquired {
         Err(e) => e,
@@ -2169,11 +2189,8 @@ async fn lease_revoked_with_hung_hook_still_taints_row() {
     );
     let acquired = tokio::time::timeout(
         Duration::from_secs(2),
-        w.mgr.acquire_resident_for_identity::<Recording>(
-            &ctx,
-            &AcquireOptions::default(),
-            &w.slot_identity,
-        ),
+        w.mgr
+            .acquire_for_identity::<Recording>(&ctx, &AcquireOptions::default(), &w.slot_identity),
     )
     .await
     .expect("acquire on a tainted row must resolve immediately (rejected), not hang");
@@ -2367,6 +2384,10 @@ async fn lease_revoked_for_never_bound_credential_is_zero_binds_noop() {
 /// No-op action executor — the engine under test never dispatches a
 /// workflow; it only exercises `spawn_resource_rotation_fanout`.
 fn noop_engine_with_manager(manager: Arc<Manager>) -> WorkflowEngine {
+    noop_engine().with_resource_manager(manager)
+}
+
+fn noop_engine() -> WorkflowEngine {
     let registry = Arc::new(ActionRegistry::new());
     let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
@@ -2379,19 +2400,108 @@ fn noop_engine_with_manager(manager: Arc<Manager>) -> WorkflowEngine {
         )
         .expect("ActionRuntime::try_new"),
     );
-    WorkflowEngine::new(runtime, metrics)
-        .expect("WorkflowEngine::new")
-        .with_resource_manager(manager)
+    WorkflowEngine::new(runtime, metrics).expect("WorkflowEngine::new")
+}
+
+#[tokio::test]
+async fn pure_action_engine_has_no_resource_reconciliation_driver() {
+    assert!(
+        noop_engine()
+            .spawn_resource_rotation_fanout(None, None)
+            .expect("pure action engine has no resource subsystem")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn stored_resource_source_requires_a_manager_for_reconciliation() {
+    let activator = nebula_engine::StoredResourceActivator::new(Arc::new(
+        nebula_storage::inmem::InMemoryResourceStore::new(),
+    ));
+    let engine = noop_engine().with_stored_resources(activator);
+    assert!(matches!(
+        engine.spawn_resource_rotation_fanout(None, None),
+        Err(ResourceReconciliationStartupError::MissingManager)
+    ));
+}
+
+#[tokio::test]
+async fn resource_reconciliation_rejects_missing_inputs_without_consuming_generation() {
+    let engine = noop_engine_with_manager(Arc::new(Manager::new()));
+    assert!(matches!(
+        engine.spawn_resource_rotation_fanout(None, None),
+        Err(ResourceReconciliationStartupError::Driver(
+            nebula_resource::ResourceFanoutSpawnError::MissingInputs
+        ))
+    ));
+    let bus = Arc::new(EventBus::<CredentialEvent>::new(8));
+    let mut driver = engine
+        .spawn_resource_rotation_fanout(Some(bus), None)
+        .expect("failed startup rolled back generation")
+        .expect("manager has resource reconciliation");
+    driver.abort();
+    let _ = driver.wait().await;
+}
+
+#[tokio::test]
+async fn resource_reconciliation_starts_without_hint_buses_when_resolver_is_available() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let engine = noop_engine_with_manager(Arc::new(Manager::new()))
+        .with_credential_resolver(Arc::new(ReplacementResolver { calls, epoch: None }));
+    let mut driver = engine
+        .spawn_resource_rotation_fanout(None, None)
+        .expect("durable resolver is sufficient")
+        .expect("resource subsystem starts reconciliation");
+    assert!(matches!(
+        engine.spawn_resource_rotation_fanout(None, None),
+        Err(ResourceReconciliationStartupError::AlreadyRunning)
+    ));
+    driver.abort();
+    let _ = driver.wait().await;
+    let mut replacement = engine
+        .spawn_resource_rotation_fanout(None, None)
+        .expect("joined shutdown releases generation")
+        .expect("replacement driver starts");
+    replacement.abort();
+    let _ = replacement.wait().await;
+}
+
+#[tokio::test]
+async fn resource_reconciliation_surfaces_affinity_failure_and_rolls_back_generation() {
+    let manager = Arc::new(Manager::new());
+    let engine = noop_engine_with_manager(Arc::clone(&manager));
+    let bus = Arc::new(EventBus::<CredentialEvent>::new(8));
+    let mut first = engine
+        .spawn_resource_rotation_fanout(Some(Arc::clone(&bus)), None)
+        .expect("first manager claims affinity")
+        .expect("resource driver starts");
+    first.abort();
+    let _ = first.wait().await;
+
+    let engine = engine.with_resource_manager(Arc::new(Manager::new()));
+    assert!(matches!(
+        engine.spawn_resource_rotation_fanout(Some(Arc::clone(&bus)), None),
+        Err(ResourceReconciliationStartupError::Driver(
+            nebula_resource::ResourceFanoutSpawnError::ManagerAffinity
+        ))
+    ));
+    let engine = engine.with_resource_manager(manager);
+    let mut replacement = engine
+        .spawn_resource_rotation_fanout(Some(bus), None)
+        .expect("affinity failure rolled back only its generation")
+        .expect("original manager can restart");
+    replacement.abort();
+    let _ = replacement.wait().await;
 }
 
 /// #690 review (Major, comment 3255607651) —
 /// `WorkflowEngine::spawn_resource_rotation_fanout` must be **single-shot**:
 /// a second call must NOT spawn a second subscriber pair (which would
-/// double-dispatch every refresh/revoke). The second call returns `None`,
+/// double-dispatch every refresh/revoke). The second call returns a typed error,
 /// and a single emitted refresh is delivered to the bound resource hook
 /// **exactly once** (a second subscriber would deliver it twice).
 #[tokio::test]
-async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
+async fn engine_spawn_resource_rotation_fanout_rejects_duplicate_driver() {
     let rec = Recorder::default();
     let org = OrgId::new();
     let scope = ScopeLevel::Organization(org);
@@ -2421,11 +2531,7 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
         CancellationToken::new(),
     );
     let _g = mgr
-        .acquire_resident_for_identity::<Recording>(
-            &ctx,
-            &AcquireOptions::default(),
-            &slot_identity,
-        )
+        .acquire_for_identity::<Recording>(&ctx, &AcquireOptions::default(), &slot_identity)
         .await
         .expect("warm resident runtime");
     drop(_g);
@@ -2446,16 +2552,19 @@ async fn engine_spawn_resource_rotation_fanout_is_idempotent() {
 
     // First spawn: succeeds.
     let _driver = engine
-        .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
+        .spawn_resource_rotation_fanout(Some(Arc::clone(&cred_bus)), Some(Arc::clone(&lease_bus)))
+        .expect("first spawn succeeds")
         .expect("first spawn must return a driver");
 
     // Second spawn: idempotent — must NOT spawn a second subscriber.
-    let second =
-        engine.spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)));
+    let second = engine
+        .spawn_resource_rotation_fanout(Some(Arc::clone(&cred_bus)), Some(Arc::clone(&lease_bus)));
     assert!(
-        second.is_none(),
-        "a second spawn_resource_rotation_fanout must return None (driver \
-         already running) — no second subscriber"
+        matches!(
+            second,
+            Err(ResourceReconciliationStartupError::AlreadyRunning)
+        ),
+        "a duplicate spawn is rejected without subscribing again"
     );
 
     // One refresh emitted. With a single subscriber the bound resource
@@ -2493,16 +2602,20 @@ async fn engine_can_replace_stopped_resource_rotation_fanout() {
     let lease_bus = Arc::new(EventBus::<LeaseEvent>::new(16));
 
     let first = engine
-        .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
+        .spawn_resource_rotation_fanout(Some(Arc::clone(&cred_bus)), Some(Arc::clone(&lease_bus)))
+        .expect("first spawn succeeds")
         .expect("first spawn must return a driver");
     first.abort();
 
     let replacement = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let Some(driver) = engine
-                .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
-            {
-                break driver;
+            match engine.spawn_resource_rotation_fanout(
+                Some(Arc::clone(&cred_bus)),
+                Some(Arc::clone(&lease_bus)),
+            ) {
+                Ok(Some(driver)) => break driver,
+                Err(ResourceReconciliationStartupError::AlreadyRunning) => {},
+                other => panic!("unexpected replacement startup: {other:?}"),
             }
             tokio::task::yield_now().await;
         }
@@ -2514,19 +2627,26 @@ async fn engine_can_replace_stopped_resource_rotation_fanout() {
     // must not clear the replacement's generation (the ABA regression).
     drop(first);
     assert!(
-        engine
-            .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)),)
-            .is_none(),
+        matches!(
+            engine.spawn_resource_rotation_fanout(
+                Some(Arc::clone(&cred_bus)),
+                Some(Arc::clone(&lease_bus))
+            ),
+            Err(ResourceReconciliationStartupError::AlreadyRunning)
+        ),
         "a late drop of the old handle must not release the live replacement"
     );
 
     drop(replacement);
     let _third = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let Some(driver) = engine
-                .spawn_resource_rotation_fanout(Arc::clone(&cred_bus), Some(Arc::clone(&lease_bus)))
-            {
-                break driver;
+            match engine.spawn_resource_rotation_fanout(
+                Some(Arc::clone(&cred_bus)),
+                Some(Arc::clone(&lease_bus)),
+            ) {
+                Ok(Some(driver)) => break driver,
+                Err(ResourceReconciliationStartupError::AlreadyRunning) => {},
+                other => panic!("unexpected replacement startup: {other:?}"),
             }
             tokio::task::yield_now().await;
         }
@@ -2540,7 +2660,8 @@ async fn engine_can_replace_resource_rotation_fanout_after_credential_bus_closes
     let engine = noop_engine_with_manager(Arc::new(Manager::new()));
     let closing_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let old_driver = engine
-        .spawn_resource_rotation_fanout(Arc::clone(&closing_bus), None)
+        .spawn_resource_rotation_fanout(Some(Arc::clone(&closing_bus)), None)
+        .expect("first spawn succeeds")
         .expect("first spawn must return a driver");
 
     // The driver owns a subscriber, not a sender. Dropping the final bus Arc
@@ -2550,10 +2671,10 @@ async fn engine_can_replace_resource_rotation_fanout_after_credential_bus_closes
     let replacement_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let replacement = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let Some(driver) =
-                engine.spawn_resource_rotation_fanout(Arc::clone(&replacement_bus), None)
-            {
-                break driver;
+            match engine.spawn_resource_rotation_fanout(Some(Arc::clone(&replacement_bus)), None) {
+                Ok(Some(driver)) => break driver,
+                Err(ResourceReconciliationStartupError::AlreadyRunning) => {},
+                other => panic!("unexpected replacement startup: {other:?}"),
             }
             tokio::task::yield_now().await;
         }
@@ -2565,9 +2686,10 @@ async fn engine_can_replace_resource_rotation_fanout_after_credential_bus_closes
     // must not release the replacement generation.
     drop(old_driver);
     assert!(
-        engine
-            .spawn_resource_rotation_fanout(Arc::clone(&replacement_bus), None)
-            .is_none(),
+        matches!(
+            engine.spawn_resource_rotation_fanout(Some(Arc::clone(&replacement_bus)), None),
+            Err(ResourceReconciliationStartupError::AlreadyRunning)
+        ),
         "dropping a naturally completed old handle must preserve the replacement claim"
     );
     drop(replacement);
@@ -2732,17 +2854,18 @@ async fn reauth_required_denies_until_reauthentication_then_serves() {
     let resolver = Arc::new(ReauthScriptedResolver::new(1));
     let bus = Arc::new(EventBus::new(8));
     let mut events = manager.subscribe_events();
-    let driver = ResourceFanoutDriver::spawn_with_resolver(
+    let driver = ResourceFanoutDriver::try_spawn(
         Arc::clone(&index),
         Arc::clone(&manager),
         Some(Arc::clone(&resolver) as Arc<dyn nebula_credential::CredentialSlotResolver>),
-        Arc::clone(&bus),
+        Some(Arc::clone(&bus)),
         None,
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let options = AcquireOptions::default();
-    let acquire =
-        || manager.acquire_resident_for_identity::<ReplacementResource>(&ctx, &options, &identity);
+    let acquire = || manager.acquire_for_identity::<ReplacementResource>(&ctx, &options, &identity);
     let lease = acquire().await.expect("the row serves material 1");
 
     // The provider rejects the refresh: the credential needs reauthentication.
@@ -2814,17 +2937,19 @@ async fn an_abandoned_revoke_between_scans_readmits_without_closing() {
     );
     let resolver = Arc::new(ReauthScriptedResolver::new(1));
     let bus = Arc::new(EventBus::new(8));
-    let driver = ResourceFanoutDriver::spawn_with_resolver(
+    let driver = ResourceFanoutDriver::try_spawn(
         Arc::clone(&index),
         Arc::clone(&manager),
         Some(Arc::clone(&resolver) as Arc<dyn nebula_credential::CredentialSlotResolver>),
-        Arc::clone(&bus),
+        Some(Arc::clone(&bus)),
         None,
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let options = AcquireOptions::default();
     let lease = manager
-        .acquire_resident_for_identity::<ReplacementResource>(&ctx, &options, &identity)
+        .acquire_for_identity::<ReplacementResource>(&ctx, &options, &identity)
         .await
         .expect("the row serves");
     // The driver's first scan runs at once.
@@ -2869,7 +2994,7 @@ async fn an_abandoned_revoke_between_scans_readmits_without_closing() {
         "a readmission decrypts nothing"
     );
     let fresh = manager
-        .acquire_resident_for_identity::<ReplacementResource>(&ctx, &options, &identity)
+        .acquire_for_identity::<ReplacementResource>(&ctx, &options, &identity)
         .await
         .expect("the readmitted row serves");
     assert!(!fresh.is_closing());

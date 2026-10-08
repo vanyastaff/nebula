@@ -22,36 +22,55 @@ async fn postgres_publication_is_admitted_and_atomic() {
     let pool = postgres_schema::connect_with_private_schema(&url, "workflow_activation")
         .await
         .unwrap();
-    static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
-    MIGRATOR.run_to(46, &pool).await.unwrap();
-    sqlx::query("INSERT INTO port_workflows (id,workspace_id,org_id,version,slug,deleted) VALUES ('legacy','ws','org',1,'legacy',FALSE)").execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO port_workflow_versions (workspace_id,org_id,workflow_id,number,published,pinned,definition) VALUES ('ws','org','legacy',1,TRUE,FALSE,'{}')").execute(&pool).await.unwrap();
     nebula_storage::postgres::init_schema(&pool).await.unwrap();
+    let tenants = nebula_storage::postgres::PgTenantProvisioningStore::new(pool.clone());
     let rows = nebula_storage::postgres::PgWorkflowStore::new(pool.clone());
     let versions = nebula_storage::postgres::PgWorkflowVersionStore::new(pool.clone());
-    assert_eq!(
-        versions
-            .get(&Scope::new("ws", "org"), "legacy", 1)
-            .await
-            .unwrap()
-            .unwrap()
-            .activation,
-        None
-    );
-    assert!(
-        sqlx::query(
-            "UPDATE port_workflow_versions SET activation = '{}' WHERE workflow_id = 'legacy'"
-        )
-        .execute(&pool)
-        .await
-        .is_err()
-    );
     let catalog = nebula_storage::postgres::PgPlanFlavorCatalog::new(
         pool.clone(),
         &nebula_metrics::MetricsRegistry::new(),
     );
     let (scope, workflow_id, activation) =
-        publication_contract(&rows, &versions, &catalog, &catalog).await;
+        publication_contract(&tenants, &rows, &versions, &catalog, &catalog).await;
+    // A workflow needs a live workspace: the foreign key proves existence,
+    // the adapter proves liveness.
+    let gone = Scope::new("gone-workspace", "gone-org");
+    provision(&tenants, &gone).await;
+    nebula_storage_port::store::WorkspaceStore::soft_delete(
+        &nebula_storage::postgres::PgWorkspaceStore::new(pool.clone()),
+        &gone.org_id,
+        &gone.workspace_id,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        rows.create(
+            &gone,
+            WorkflowRecord {
+                id: "in-deleted-workspace".into(),
+                scope: gone.clone(),
+                version: 1,
+                slug: "in-deleted-workspace".into(),
+            },
+        )
+        .await,
+        Err(nebula_storage_port::StorageError::NotFound {
+            entity: "workspace",
+            ..
+        })
+    ));
+    // The activation identity is all three columns or none, and the digests
+    // are exactly 32 bytes, whatever the writer.
+    for statement in [
+        "UPDATE workflow_versions SET activation_workflow_version_id = NULL",
+        "UPDATE workflow_versions SET activation_executable_plan_id = '\\x00'::bytea \
+         WHERE activation_executable_plan_id IS NOT NULL",
+    ] {
+        assert!(
+            sqlx::query(statement).execute(&pool).await.is_err(),
+            "the schema must reject `{statement}`"
+        );
+    }
     let schema: String = sqlx::query_scalar("SELECT current_schema()")
         .fetch_one(&pool)
         .await

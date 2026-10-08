@@ -1,6 +1,16 @@
 #![cfg(feature = "sqlite")]
-
 //! Cross-crate acceptance for a provider revoke whose local tombstone fails.
+
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "credentials need only their tenant, not a workflow"
+)]
+mod execution_parents;
+
+#[path = "support/credential_deployment.rs"]
+#[expect(dead_code, reason = "these cases use file-backed databases only")]
+mod credential_deployment;
 
 use std::{
     future::Future,
@@ -557,6 +567,12 @@ impl Fixture {
         let raw = SqliteCredentialPersistence::connect(&db)
             .await
             .expect("sqlite credential store");
+        // The credential baseline requires a live owning workspace.
+        execution_parents::provision_scope(
+            &credential_deployment::file_tenants(&db).await,
+            &Scope::new("workspace", "organization"),
+        )
+        .await;
         let options = SqliteConnectOptions::from_str(&db)
             .expect("sqlite path")
             .create_if_missing(true);
@@ -671,19 +687,20 @@ impl Fixture {
     }
 
     async fn seed_resolved_refresh_history(&self, id: CredentialId) {
-        let selector = self.selector(id);
         sqlx::query(
-            "INSERT INTO credential_sentinel_events \
-             (owner_id, credential_id, detected_at, crashed_holder, generation, claim_id, \
-              adjudicated_at, adjudication_decision, adjudication_evidence, \
+            "INSERT INTO credential_refresh_incidents \
+             (org_id, workspace_id, credential_id, detected_at, crashed_holder, generation, \
+              claim_id, adjudicated_at, adjudication_decision, adjudication_evidence, \
               adjudication_evidence_digest, operation_kind, observed_material_epoch) \
-             VALUES (?1, ?2, unixepoch('now') * 1000, 'historical-refresh-holder', 0, NULL, \
-                     unixepoch('now') * 1000, \
+             VALUES (?1, ?2, ?3, unixepoch('now') * 1000000, 'historical-refresh-holder', 0, ?4, \
+                     unixepoch('now') * 1000000, \
                      'provider_not_applied', 'historical refresh resolution', zeroblob(32), \
                      'refresh', NULL)",
         )
-        .bind(selector.owner().as_str())
+        .bind(&self.scope.org_id)
+        .bind(&self.scope.workspace_id)
         .bind(id.to_string())
+        .bind(uuid::Uuid::new_v4().to_string())
         .execute(&self.sql_pool)
         .await
         .expect("seed resolved refresh incident history");
@@ -968,6 +985,8 @@ async fn refresh_winner_makes_waiting_revoke_report_version_conflict_without_pro
     let (refresh_controller, _, _, _) = compose_runtime(raw.clone(), claims);
     revoke_fault.disarm();
     let scope = Scope::new("cached-revoke-race", "nebula-storage-test");
+    execution_parents::provision_scope(&credential_deployment::file_tenants(&db).await, &scope)
+        .await;
     let actor = CredentialActor::user(UserId::new());
     let created = revoke_controller
         .execute(
@@ -1315,9 +1334,8 @@ async fn legacy_unclassified_poison_refuses_inference_but_allows_terminal_recove
         "UPDATE credential_refresh_claims \
          SET operation_kind = 'legacy_unclassified', observed_material_epoch = NULL, \
              expires_at = 0 \
-         WHERE owner_id = ?1 AND credential_id = ?2",
+         WHERE credential_id = ?1",
     )
-    .bind(selector.owner().as_str())
     .bind(id.to_string())
     .execute(&fixture.sql_pool)
     .await
@@ -1381,15 +1399,12 @@ async fn legacy_unclassified_poison_refuses_inference_but_allows_terminal_recove
             .expect("physical terminal record"),
         StoredCredential::Tombstoned(_)
     ));
-    let (retained_claims,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM credential_refresh_claims \
-         WHERE owner_id = ?1 AND credential_id = ?2",
-    )
-    .bind(selector.owner().as_str())
-    .bind(id.to_string())
-    .fetch_one(&fixture.sql_pool)
-    .await
-    .expect("retained legacy claim count");
+    let (retained_claims,): (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM credential_refresh_claims WHERE credential_id = ?1")
+            .bind(id.to_string())
+            .fetch_one(&fixture.sql_pool)
+            .await
+            .expect("retained legacy claim count");
     assert_eq!(
         retained_claims, 1,
         "delete does not invent a provider outcome"
@@ -1433,19 +1448,26 @@ async fn postgres_revoke_incidents_adjudicate_without_provider_replay() {
     REVOKE_CALLS.store(0, Ordering::SeqCst);
     REFRESH_CALLS.store(0, Ordering::SeqCst);
     TEST_CALLS.store(0, Ordering::SeqCst);
-    let raw = PgCredentialPersistence::connect(&url)
+    // One deployment pool: credentials, tenancy, and inspection share it.
+    let pool = PgPool::connect(&url)
+        .await
+        .expect("postgres deployment pool");
+    let raw = PgCredentialPersistence::connect_pool(pool.clone())
         .await
         .expect("postgres credential store");
     let claims = Arc::new(raw.refresh_claim_repo());
-    let pool = PgPool::connect(&url)
-        .await
-        .expect("postgres inspection pool");
     let (controller, _resolver, _projection, fault) =
         compose_runtime(raw.clone(), Arc::clone(&claims));
+    let run = uuid::Uuid::new_v4();
     let scope = Scope::new(
-        format!("operation-incidents-{}", uuid::Uuid::new_v4()),
-        "nebula-storage-test",
+        format!("operation-incidents-{run}"),
+        format!("nebula-storage-test-{run}"),
     );
+    execution_parents::provision_scope(
+        &nebula_storage::postgres::PgTenantProvisioningStore::new(pool.clone()),
+        &scope,
+    )
+    .await;
     let actor = CredentialActor::user(UserId::new());
 
     async fn execute(
@@ -1486,9 +1508,8 @@ async fn postgres_revoke_incidents_adjudicate_without_provider_replay() {
         let affected = sqlx::query(
             "UPDATE credential_refresh_claims \
              SET expires_at = clock_timestamp() - interval '1 second' \
-             WHERE owner_id = $1 AND credential_id = $2",
+             WHERE credential_id = $1",
         )
-        .bind(selector.owner().as_str())
         .bind(selector.credential_id().to_string())
         .execute(pool)
         .await

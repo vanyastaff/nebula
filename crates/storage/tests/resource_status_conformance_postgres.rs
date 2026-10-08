@@ -6,10 +6,19 @@
 #[path = "support/resource_status_oracle.rs"]
 mod oracle;
 
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "status snapshots need their tenant, not a workflow"
+)]
+mod execution_parents;
+
 use std::str::FromStr as _;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use nebula_storage::postgres::{PgResourceStatusStore, init_schema};
+use nebula_storage::postgres::{
+    PgResourceStatusStore, PgResourceStore, PgTenantProvisioningStore, init_schema,
+};
 use nebula_storage_port::dto::StatusWorkerId;
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -25,7 +34,7 @@ impl oracle::ResourceStatusTimeControl for PgTimeControl {
     }
 
     async fn expire_long_ago(&self, worker: &StatusWorkerId) {
-        sqlx::query("UPDATE port_worker_heartbeats SET expires_at_ms = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT - 7200000 WHERE worker_id = $1")
+        sqlx::query("UPDATE resource_status_heartbeats SET expires_at = clock_timestamp() - INTERVAL '2 hours' WHERE worker_id = $1")
             .bind(worker.as_str())
             .execute(&self.pool)
             .await
@@ -75,6 +84,13 @@ async fn store() -> Option<(PgResourceStatusStore, PgTimeControl)> {
     init_schema(&pool)
         .await
         .expect("initialize isolated schema");
+    // A snapshot belongs to its stored resource.
+    execution_parents::provision_scope(
+        &PgTenantProvisioningStore::new(pool.clone()),
+        &oracle::published_scope(),
+    )
+    .await;
+    oracle::seed_published_resources(&PgResourceStore::new(pool.clone())).await;
     Some((
         PgResourceStatusStore::new(pool.clone()),
         PgTimeControl { pool },

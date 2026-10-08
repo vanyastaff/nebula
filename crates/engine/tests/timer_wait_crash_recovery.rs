@@ -30,6 +30,9 @@
 //! ensure the deadline is overdue before the re-drive. This mirrors the pattern
 //! from `wait_timeout.rs` (`crash_mid_wait_with_timeout_recovers_and_can_still_timeout`).
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::HashMap,
     io::{self, Write},
@@ -195,20 +198,20 @@ impl CrashRecoveryStores {
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 
     async fn persist_created_execution(&self, workflow_id: nebula_core::WorkflowId) -> ExecutionId {

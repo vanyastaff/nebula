@@ -1,9 +1,10 @@
 //! Read/project-only credential composition for execution workers.
 //!
-//! This module selects the credential database and key policy, secures the
-//! concrete persistence adapter, and constructs the credential-owned
-//! projection runtime. It deliberately has no management command gateway,
-//! refresh coordinator, lease lifecycle, or reclaim sweep.
+//! This module opens the credential store on the worker's deployment database
+//! (credentials live beside tenancy and executions), applies the key policy,
+//! secures the concrete persistence adapter, and constructs the
+//! credential-owned projection runtime. It deliberately has no management
+//! command gateway, refresh coordinator, lease lifecycle, or reclaim sweep.
 
 use std::sync::Arc;
 
@@ -22,20 +23,33 @@ use nebula_storage::credential::{
 };
 use nebula_storage_port::{CredentialPersistence, CredentialPersistenceError};
 
-const DEFAULT_CREDENTIAL_DB: &str = "sqlite://nebula-credentials.db?mode=rwc";
 const DEVELOPMENT_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CredentialDatabaseBackend {
-    Sqlite,
-    Postgres,
+/// The pool onto the worker's deployment database, which holds its
+/// credentials beside executions. The credential store shares this pool; no
+/// second pool opens on the same database.
+#[derive(Clone)]
+pub enum DeploymentDatabase {
+    /// The single-process SQLite database (`NEBULA_WORKER_DB_PATH`).
+    Sqlite(sqlx::SqlitePool),
+    /// The shared PostgreSQL database (`NEBULA_WORKER_DATABASE_URL`).
+    #[cfg(feature = "postgres")]
+    Postgres(sqlx::PgPool),
 }
 
-impl CredentialDatabaseBackend {
-    const fn as_str(self) -> &'static str {
+impl std::fmt::Debug for DeploymentDatabase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Pools carry their connect options; name only the backend.
+        formatter.write_str(self.backend())
+    }
+}
+
+impl DeploymentDatabase {
+    const fn backend(&self) -> &'static str {
         match self {
-            Self::Sqlite => "sqlite",
-            Self::Postgres => "postgres",
+            Self::Sqlite(_) => "sqlite",
+            #[cfg(feature = "postgres")]
+            Self::Postgres(_) => "postgres",
         }
     }
 }
@@ -56,52 +70,73 @@ pub enum CredentialProjectionCompositionError {
     /// The bounded decrypt-only keyring configuration was rejected.
     #[error("credential legacy master-key configuration is invalid")]
     Keyring(#[source] CredentialKeyringError),
-    /// The selected durable credential store could not be opened or migrated.
+    /// The deployment database could not open or migrate the credential store.
     #[error("credential store initialization failed")]
     Store(#[source] CredentialStoreStartupError),
-    /// The credential database URL selected an unsupported backend.
-    #[error(
-        "NEBULA_CRED_DB has an unsupported scheme; use sqlite://, postgres://, or postgresql://"
-    )]
-    UnsupportedStoreScheme,
-    /// PostgreSQL was explicitly requested from a binary without its driver.
-    #[cfg(not(feature = "postgres"))]
-    #[error(
-        "NEBULA_CRED_DB requests PostgreSQL, but nebula-worker was built without the `postgres` feature"
-    )]
-    PostgresStoreUnavailable,
-    /// `NEBULA_CRED_DB_MAX_CONNECTIONS` is set but not a positive integer.
-    #[cfg(feature = "postgres")]
-    #[error("NEBULA_CRED_DB_MAX_CONNECTIONS must be a positive integer")]
-    InvalidStorePoolSize,
     /// The credential-owned projection runtime rejected incomplete parts.
     #[error("credential projection runtime construction failed")]
     Projection(#[from] CredentialProjectionRuntimeBuildError),
 }
 
-/// Compose the worker's first-party credential projection from environment policy.
+/// Validated key configuration for the worker's first-party projection.
 ///
-/// `NEBULA_CRED_DB` defaults to the same SQLite URL as the server. Key loading
-/// uses `NEBULA_CRED_MASTER_KEY`, except when `NEBULA_CRED_DEV_KEY=1`
-/// explicitly opts into the shared fixed development key. The same bounded
-/// decrypt-only legacy keyring as the server is installed for projection.
-///
-/// # Errors
-///
-/// Returns a typed error when key loading, backend selection, store startup,
-/// first-party registration, or projection construction fails.
-pub async fn compose_first_party_projection()
--> Result<Arc<dyn CredentialSlotResolver>, CredentialProjectionCompositionError> {
-    let keyring = resolve_first_party_keyring()?;
-    let database_url =
-        std::env::var("NEBULA_CRED_DB").unwrap_or_else(|_| DEFAULT_CREDENTIAL_DB.to_owned());
-    compose_first_party_projection_for_database(&database_url, keyring).await
+/// Prepare this before opening the deployment database. Key loading uses
+/// `NEBULA_CRED_MASTER_KEY`, except when `NEBULA_CRED_DEV_KEY=1` explicitly
+/// opts into the shared fixed development key. The same bounded decrypt-only
+/// legacy keyring as the server is installed for projection.
+pub struct CredentialProjectionConfig {
+    keyring: CredentialKeyring,
+}
+
+impl CredentialProjectionConfig {
+    /// Validate and retain the process key configuration without database I/O.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error when current or decrypt-only keys are invalid.
+    pub fn from_env() -> Result<Self, CredentialProjectionCompositionError> {
+        Ok(Self {
+            keyring: resolve_first_party_keyring()?,
+        })
+    }
+
+    /// Compose the projection on the admitted deployment pool, consuming the
+    /// validated key configuration without rereading the environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed store, registration or projection-construction failure.
+    pub async fn compose(
+        self,
+        database: &DeploymentDatabase,
+    ) -> Result<Arc<dyn CredentialSlotResolver>, CredentialProjectionCompositionError> {
+        let projection = match database {
+            DeploymentDatabase::Sqlite(pool) => {
+                let store = SqliteCredentialPersistence::connect_pool(pool.clone())
+                    .await
+                    .map_err(CredentialProjectionCompositionError::Store)?;
+                build_first_party_projection_with_keyring(store, self.keyring)?
+            },
+            #[cfg(feature = "postgres")]
+            DeploymentDatabase::Postgres(pool) => {
+                let store = PgCredentialPersistence::connect_pool(pool.clone())
+                    .await
+                    .map_err(CredentialProjectionCompositionError::Store)?;
+                build_first_party_projection_with_keyring(store, self.keyring)?
+            },
+        };
+        tracing::info!(
+            backend = database.backend(),
+            "credential projection store opened on the deployment database"
+        );
+        Ok(projection)
+    }
 }
 
 /// Build the first-party projection runtime around one raw credential store.
 ///
 /// This testable composition seam installs the same encryption, trace-audit,
-/// registry, and operation layers used by [`compose_first_party_projection`].
+/// registry, and operation layers used by [`CredentialProjectionConfig::compose`].
 /// It returns only the object-safe read/project capability.
 ///
 /// # Errors
@@ -176,64 +211,6 @@ fn resolve_first_party_keyring() -> Result<CredentialKeyring, CredentialProjecti
     })
 }
 
-async fn compose_first_party_projection_for_database(
-    database_url: &str,
-    keyring: CredentialKeyring,
-) -> Result<Arc<dyn CredentialSlotResolver>, CredentialProjectionCompositionError> {
-    let backend = classify_credential_database(database_url)?;
-    match backend {
-        CredentialDatabaseBackend::Sqlite => {
-            let store = SqliteCredentialPersistence::connect(database_url)
-                .await
-                .map_err(CredentialProjectionCompositionError::Store)?;
-            tracing::info!(
-                backend = backend.as_str(),
-                "credential projection store opened"
-            );
-            build_first_party_projection_with_keyring(store, keyring)
-        },
-        CredentialDatabaseBackend::Postgres => {
-            #[cfg(feature = "postgres")]
-            {
-                let store =
-                    PgCredentialPersistence::connect_sized(database_url, credential_pool_size()?)
-                        .await
-                        .map_err(CredentialProjectionCompositionError::Store)?;
-                tracing::info!(
-                    backend = backend.as_str(),
-                    "credential projection store opened"
-                );
-                build_first_party_projection_with_keyring(store, keyring)
-            }
-            #[cfg(not(feature = "postgres"))]
-            {
-                let _ = keyring;
-                Err(CredentialProjectionCompositionError::PostgresStoreUnavailable)
-            }
-        },
-    }
-}
-
-fn classify_credential_database(
-    database_url: &str,
-) -> Result<CredentialDatabaseBackend, CredentialProjectionCompositionError> {
-    let Some((scheme, _)) = database_url.split_once("://") else {
-        if database_url.split_once(':').is_some_and(|(prefix, _)| {
-            prefix.eq_ignore_ascii_case("postgres") || prefix.eq_ignore_ascii_case("postgresql")
-        }) {
-            return Err(CredentialProjectionCompositionError::UnsupportedStoreScheme);
-        }
-        return Ok(CredentialDatabaseBackend::Sqlite);
-    };
-    if scheme.eq_ignore_ascii_case("sqlite") {
-        Ok(CredentialDatabaseBackend::Sqlite)
-    } else if scheme.eq_ignore_ascii_case("postgres") || scheme.eq_ignore_ascii_case("postgresql") {
-        Ok(CredentialDatabaseBackend::Postgres)
-    } else {
-        Err(CredentialProjectionCompositionError::UnsupportedStoreScheme)
-    }
-}
-
 fn first_party_registry() -> Result<CredentialRegistry, nebula_credential::RegisterError> {
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "nebula-credential")?;
@@ -269,25 +246,8 @@ impl AuditSink for TracingAuditSink {
     }
 }
 
-/// Connections the PostgreSQL credential store may pool, from
-/// `NEBULA_CRED_DB_MAX_CONNECTIONS`; the store default when unset.
-///
-/// Every credential admission reads through this pool, so it bounds how many
-/// run against PostgreSQL at once in this process.
-#[cfg(feature = "postgres")]
-fn credential_pool_size() -> Result<std::num::NonZeroU32, CredentialProjectionCompositionError> {
-    match std::env::var("NEBULA_CRED_DB_MAX_CONNECTIONS") {
-        Err(_) => Ok(nebula_storage::credential::DEFAULT_CREDENTIAL_POOL_SIZE),
-        Ok(raw) => raw
-            .trim()
-            .parse()
-            .map_err(|_| CredentialProjectionCompositionError::InvalidStorePoolSize),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
     use std::sync::Arc;
 
     use nebula_core::{CredentialId, credential_key};
@@ -305,14 +265,62 @@ mod tests {
     };
     use tokio_util::sync::CancellationToken;
 
-    #[cfg(not(feature = "postgres"))]
-    use super::compose_first_party_projection_for_database;
     use super::{
-        CredentialDatabaseBackend, CredentialProjectionCompositionError,
-        build_first_party_projection, build_first_party_projection_with_keyring,
-        classify_credential_database, compose_first_party_projection,
+        CredentialProjectionConfig, DeploymentDatabase, build_first_party_projection,
+        build_first_party_projection_with_keyring,
     };
     use nebula_storage::credential::CredentialKeyring;
+
+    /// A credential store on a fresh in-memory deployment database, and that
+    /// database's pool.
+    async fn memory_store() -> (SqliteCredentialPersistence, sqlx::SqlitePool) {
+        let pool = nebula_storage::sqlite::open_memory_deployment()
+            .await
+            .expect("in-memory deployment database");
+        let store = SqliteCredentialPersistence::connect_pool(pool.clone())
+            .await
+            .expect("ready in-memory credential store");
+        (store, pool)
+    }
+
+    /// Provision `scope`'s tenant on the deployment `pool`: a credential
+    /// belongs to a live workspace in the deployment database (migration 0070).
+    async fn provision(pool: &sqlx::SqlitePool, scope: &Scope) {
+        use nebula_storage_port::dto::{
+            PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningRequest,
+        };
+        use nebula_storage_port::store::TenantProvisioningStore as _;
+
+        let request = TenantProvisioningRequest::new(
+            TenantOrgCreate::new(
+                scope.org_id.clone(),
+                scope.org_id.clone(),
+                "Fixture".into(),
+                "fixture".into(),
+                "free".into(),
+                None,
+                serde_json::json!({}),
+            )
+            .expect("org values"),
+            TenantDefaultWorkspaceCreate::new(
+                scope.workspace_id.clone(),
+                "default".into(),
+                "Default".into(),
+                None,
+                "fixture".into(),
+                serde_json::json!({}),
+            )
+            .expect("workspace values"),
+            PrincipalKind::User,
+            "fixture-owner".into(),
+            None,
+        )
+        .expect("provisioning request");
+        nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone())
+            .provision_tenant(request)
+            .await
+            .expect("provision the fixture tenant");
+    }
 
     const TEST_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
     const OLD_KEY_BASE64: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=";
@@ -358,13 +366,11 @@ mod tests {
 
     #[tokio::test]
     async fn rolling_keyring_projects_legacy_server_rows_and_current_only_fails_closed() {
-        let raw_store = Arc::new(
-            SqliteCredentialPersistence::connect_memory()
-                .await
-                .expect("ready in-memory credential store"),
-        );
+        let (raw_store, pool) = memory_store().await;
+        let raw_store = Arc::new(raw_store);
         let scope = TenantScope::new("org-rotation", "workspace-rotation");
         let credential_id = CredentialId::new();
+        provision(&pool, &Scope::new("workspace-rotation", "org-rotation")).await;
         let owner = CredentialOwner::from_scope(&Scope::new("workspace-rotation", "org-rotation"));
         let selector = CredentialSelector::new(owner, credential_id);
 
@@ -512,14 +518,28 @@ mod tests {
     #[tokio::test]
     async fn production_composition_carries_env_legacy_key_to_projection() {
         let temp = tempfile::tempdir().expect("temporary credential directory");
-        let database_path = temp.path().join("worker-credentials.db");
-        let database_url = format!("sqlite://{}?mode=rwc", database_path.display());
+        let database_path = temp.path().join("worker.db");
+        // The worker's deployment pool, as `build_stores` opens it.
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&database_path)
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("worker deployment pool");
         let raw_store = Arc::new(
-            SqliteCredentialPersistence::connect(&database_url)
+            SqliteCredentialPersistence::connect_pool(pool.clone())
                 .await
                 .expect("ready file-backed credential store"),
         );
         let scope = TenantScope::new("org-env-rotation", "workspace-env-rotation");
+        provision(
+            &pool,
+            &Scope::new("workspace-env-rotation", "org-env-rotation"),
+        )
+        .await;
         let credential_id = CredentialId::new();
         let owner =
             CredentialOwner::from_scope(&Scope::new("workspace-env-rotation", "org-env-rotation"));
@@ -533,13 +553,17 @@ mod tests {
         drop(raw_store);
 
         let mut env = EnvGuard::acquire();
-        env.set("NEBULA_CRED_DB", &database_url);
         env.set("NEBULA_CRED_MASTER_KEY", TEST_KEY_BASE64);
         env.set("NEBULA_CRED_LEGACY_MASTER_KEYS", OLD_KEY_BASE64);
         env.remove("NEBULA_CRED_LEGACY_EMPTY_ID_MASTER_KEY");
         env.remove("NEBULA_CRED_DEV_KEY");
 
-        let projection = compose_first_party_projection()
+        let config = CredentialProjectionConfig::from_env()
+            .expect("production configuration accepts the legacy key");
+        env.remove("NEBULA_CRED_MASTER_KEY");
+        env.remove("NEBULA_CRED_LEGACY_MASTER_KEYS");
+        let projection = config
+            .compose(&DeploymentDatabase::Sqlite(pool))
             .await
             .expect("production composition accepts the configured legacy key");
         let guard = projection
@@ -560,11 +584,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn projection_composition_spawns_no_lifecycle_owner_tasks() {
-        let raw_store = Arc::new(
-            SqliteCredentialPersistence::connect_memory()
-                .await
-                .expect("ready in-memory credential store"),
-        );
+        let raw_store = Arc::new(memory_store().await.0);
         let key_provider: Arc<dyn KeyProvider> =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
         // Keep both snapshots in one uninterrupted current-thread poll so SQLite
@@ -588,11 +608,7 @@ mod tests {
 
     #[tokio::test]
     async fn projection_drop_releases_store_and_key_without_detached_owners() {
-        let raw_store = Arc::new(
-            SqliteCredentialPersistence::connect_memory()
-                .await
-                .expect("ready in-memory credential store"),
-        );
+        let raw_store = Arc::new(memory_store().await.0);
         let raw_store_lifecycle = Arc::downgrade(&raw_store);
         let key_provider =
             Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
@@ -617,72 +633,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn database_backend_classification_matches_server_policy() {
-        assert_eq!(
-            classify_credential_database("sqlite://credentials.db")
-                .expect("SQLite URL must classify"),
-            CredentialDatabaseBackend::Sqlite
-        );
-        assert_eq!(
-            classify_credential_database("sqlite::memory:")
-                .expect("SQLite memory locator must classify"),
-            CredentialDatabaseBackend::Sqlite
-        );
-        assert_eq!(
-            classify_credential_database("var/lib/nebula/credentials.db")
-                .expect("SQLite path must classify"),
-            CredentialDatabaseBackend::Sqlite
-        );
-        assert_eq!(
-            classify_credential_database("postgres://db/nebula")
-                .expect("PostgreSQL URL must classify"),
-            CredentialDatabaseBackend::Postgres
-        );
-        assert_eq!(
-            classify_credential_database("postgresql://db/nebula")
-                .expect("PostgreSQL alias URL must classify"),
-            CredentialDatabaseBackend::Postgres
-        );
-    }
-
-    #[test]
-    fn unsupported_database_scheme_diagnostic_never_echoes_url() {
-        let database_url = "mysql://operator:super-secret@example.invalid/tenant-private";
-        let error = classify_credential_database(database_url)
-            .expect_err("unsupported credential backend must fail closed");
-        let diagnostic = format!("{error:?}: {error}");
-
-        assert_matches!(
-            error,
-            CredentialProjectionCompositionError::UnsupportedStoreScheme
-        );
-        assert!(!diagnostic.contains(database_url));
-        assert!(!diagnostic.contains("super-secret"));
-        assert!(!diagnostic.contains("tenant-private"));
-    }
-
-    #[cfg(not(feature = "postgres"))]
     #[tokio::test]
-    async fn postgres_request_without_feature_fails_closed_and_redacts_url() {
-        let database_url =
-            "postgres://operator:super-secret@example.invalid/tenant-private?sslmode=require";
-        let key_provider: Arc<dyn KeyProvider> =
-            Arc::new(EnvKeyProvider::from_base64(TEST_KEY_BASE64).expect("valid fixed test key"));
-        let keyring = CredentialKeyring::from_config(key_provider, None, None)
-            .expect("empty legacy keyring composes");
-        let error = match compose_first_party_projection_for_database(database_url, keyring).await {
-            Err(error) => error,
-            Ok(_) => panic!("PostgreSQL must not fall back without the feature"),
-        };
-        let diagnostic = format!("{error:?}: {error}");
-
-        assert_matches!(
-            error,
-            CredentialProjectionCompositionError::PostgresStoreUnavailable
-        );
-        assert!(!diagnostic.contains(database_url));
-        assert!(!diagnostic.contains("super-secret"));
-        assert!(!diagnostic.contains("tenant-private"));
+    async fn deployment_database_debug_never_echoes_its_locator() {
+        let pool = sqlx::SqlitePool::connect_lazy("sqlite://var/lib/tenant-private/worker.db")
+            .expect("lazy SQLite pool");
+        assert_eq!(format!("{:?}", DeploymentDatabase::Sqlite(pool)), "sqlite");
+        #[cfg(feature = "postgres")]
+        {
+            let dsn = "postgres://operator:super-secret@example.invalid/tenant-private";
+            let pool = sqlx::PgPool::connect_lazy(dsn).expect("lazy PostgreSQL pool");
+            assert_eq!(
+                format!("{:?}", DeploymentDatabase::Postgres(pool)),
+                "postgres"
+            );
+        }
     }
 }

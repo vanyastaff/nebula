@@ -346,7 +346,7 @@ async fn refresh_slot_invokes_hook_with_runtime() {
     {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let _g = mgr
-            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire must succeed");
     }
@@ -401,7 +401,7 @@ async fn revoke_slot_taints_then_drains_then_hooks() {
     //    must actually block (it does not early-return on `active == 0`).
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let in_flight_guard = mgr
-        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("initial acquire must succeed");
 
@@ -430,7 +430,7 @@ async fn revoke_slot_taints_then_drains_then_hooks() {
 
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let rejected = mgr
-        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect_err("acquire while revoke in-flight must be rejected (resource tainted)");
     assert_eq!(
@@ -482,7 +482,7 @@ async fn revoke_slot_taints_then_drains_then_hooks() {
     // rejected with the exact `Unavailable` category.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let post = mgr
-        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect_err("acquire after revoke must still be rejected (resource tainted)");
     assert_eq!(
@@ -635,7 +635,7 @@ async fn revoke_drain_timeout_records_exactly_one_outcome() {
     // (drain counter stays at 1) and the 30 s bounded wait actually expires.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let in_flight_guard = mgr
-        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("initial acquire must succeed");
 
@@ -712,7 +712,7 @@ async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
     {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let _g = mgr
-            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire must succeed");
     }
@@ -775,7 +775,7 @@ async fn revoke_hook_panic_is_isolated_and_emits_revoke_failed() {
     {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let _g = mgr
-            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire must succeed");
     }
@@ -833,7 +833,7 @@ async fn refresh_hook_panic_is_isolated_and_emits_refresh_failed() {
     {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let _g = mgr
-            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire must succeed");
     }
@@ -902,7 +902,7 @@ async fn revoke_vs_acquire_post_taint_recheck_rejects_late_acquire() {
     // revoke *after* it has tainted but *before* it returns.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let held = mgr
-        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("initial acquire must succeed");
 
@@ -931,7 +931,7 @@ async fn revoke_vs_acquire_post_taint_recheck_rejects_late_acquire() {
     for i in 0..64 {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let outcome = mgr
-            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
             .await;
         let err = outcome.expect_err(&format!(
             "acquire #{i} during in-flight revoke must be rejected, not return a guard"
@@ -957,7 +957,7 @@ async fn revoke_vs_acquire_post_taint_recheck_rejects_late_acquire() {
     // And it stays revoked.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let post = mgr
-        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect_err("acquire after revoke must still be rejected");
     assert_eq!(post.category(), ErrorCategory::Unavailable);
@@ -1000,7 +1000,7 @@ async fn revoke_vs_acquire_multithread_no_guard_after_revoke() {
     {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let g = mgr
-            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
             .await
             .expect("acquire on the unrevoked resource must succeed (precondition)");
         drop(g);
@@ -1029,10 +1029,7 @@ async fn revoke_vs_acquire_multithread_no_guard_after_revoke() {
                 let after = revoke_done.load(Ordering::Acquire);
                 let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
                 let outcome = mgr
-                    .acquire_resident::<counting::CountingResource>(
-                        &ctx,
-                        &AcquireOptions::default(),
-                    )
+                    .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
                     .await;
                 if after {
                     attempts_after_revoke.fetch_add(1, Ordering::AcqRel);
@@ -1131,7 +1128,7 @@ async fn revoke_on_one_resource_does_not_block_on_unrelated_resource() {
     // the manager-wide tracker, this would wedge A's revoke for the full 30 s.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let b_guard = mgr
-        .acquire_resident_for_identity::<counting::CountingResource>(
+        .acquire_for_identity::<counting::CountingResource>(
             &ctx,
             &AcquireOptions::default(),
             &counting::slot_b_id(),
@@ -1164,7 +1161,7 @@ async fn revoke_on_one_resource_does_not_block_on_unrelated_resource() {
     drop(b_guard);
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let _b_again = mgr
-        .acquire_resident_for_identity::<counting::CountingResource>(
+        .acquire_for_identity::<counting::CountingResource>(
             &ctx,
             &AcquireOptions::default(),
             &counting::slot_b_id(),
@@ -1195,7 +1192,7 @@ async fn taint_slot_applies_taint_synchronously_before_any_await() {
     {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let g = mgr
-            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
             .await
             .expect("warm the resident runtime");
         drop(g);
@@ -1210,7 +1207,7 @@ async fn taint_slot_applies_taint_synchronously_before_any_await() {
     // `drain_and_revoke` is even built, let alone awaited — must be rejected.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let err = mgr
-        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect_err("acquire after synchronous taint_slot must be rejected");
     assert_eq!(
@@ -1271,7 +1268,7 @@ async fn dropping_drain_and_revoke_future_keeps_row_tainted() {
     // mid-flight cancellation.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let in_flight = mgr
-        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("initial acquire must succeed");
 
@@ -1312,7 +1309,7 @@ async fn dropping_drain_and_revoke_future_keeps_row_tainted() {
     for i in 0..16 {
         let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
         let err = mgr
-            .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+            .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
             .await
             .expect_err(&format!(
                 "acquire #{i} after a dropped drain future must still be rejected (#681)"
@@ -1355,7 +1352,7 @@ async fn drain_timeout_still_runs_revoke_hook_single_budget_owner() {
     // genuinely times out.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
     let in_flight = mgr
-        .acquire_resident::<counting::CountingResource>(&ctx, &AcquireOptions::default())
+        .acquire::<counting::CountingResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("initial acquire must succeed");
 
@@ -1564,7 +1561,7 @@ mod u9_gate {
 
         // Warm the resident: runtime built; built_epoch == slot generation (1).
         let _g = mgr
-            .acquire_resident::<GateResource>(&ctx(), &AcquireOptions::default())
+            .acquire::<GateResource>(&ctx(), &AcquireOptions::default())
             .await
             .expect("warm acquire must succeed");
 

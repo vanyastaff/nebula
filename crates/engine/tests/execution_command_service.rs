@@ -21,6 +21,18 @@ use nebula_storage_port::{
 };
 use serde_json::json;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
+
+/// The workflow every fixture execution runs.
+const WORKFLOW: &str = "wf_1";
+
+fn fixture_scope() -> Scope {
+    Scope::new("ws_a", "org_a")
+}
+
 struct Fixture {
     service: ExecutionCommandService,
     producer: Arc<dyn nebula_storage_port::store::ResumeProducer>,
@@ -46,6 +58,8 @@ impl Fixture {
         nebula_storage::sqlite::init_schema(&pool)
             .await
             .expect("port schema installs");
+        pool.seed_execution_parents(&fixture_scope(), WORKFLOW)
+            .await;
         Self::compose(
             Arc::new(nebula_storage::sqlite::SqliteExecutionStore::new(
                 pool.clone(),
@@ -71,6 +85,8 @@ impl Fixture {
         nebula_storage::postgres::init_schema(&pool)
             .await
             .expect("port schema installs");
+        pool.seed_execution_parents(&fixture_scope(), WORKFLOW)
+            .await;
         Some(Self::compose(
             Arc::new(nebula_storage::postgres::PgExecutionStore::new(
                 pool.clone(),
@@ -90,7 +106,7 @@ impl Fixture {
             store,
             queue,
             producer,
-            scope: Scope::new("ws_a", "org_a"),
+            scope: fixture_scope(),
         }
     }
 
@@ -100,8 +116,8 @@ impl Fixture {
             .create(
                 &self.scope,
                 &id.to_string(),
-                "wf_1",
-                json!({ "status": status, "workflow_id": "wf_1" }),
+                WORKFLOW,
+                json!({ "status": status, "workflow_id": WORKFLOW }),
             )
             .await
             .expect("seed execution");
@@ -111,7 +127,7 @@ impl Fixture {
     async fn park_with_resume_tokens(
         &self,
         id: ExecutionId,
-        rows: Vec<nebula_storage_port::dto::resume_token::ResumeTokenRow>,
+        rows: Vec<nebula_storage_port::dto::ResumeTokenRow>,
     ) {
         use nebula_storage_port::{TransitionBatch, TransitionOutcome};
         let fencing = self
@@ -125,15 +141,19 @@ impl Fixture {
             .await
             .unwrap()
             .unwrap();
-        let batch = TransitionBatch::builder()
-            .scope(self.scope.clone())
-            .execution_id(id.to_string())
-            .expected_version(0)
-            .fencing(fencing)
-            .new_state(json!({"status":"paused", "workflow_id":"wf_1"}))
-            .resume_tokens(rows)
-            .build()
-            .unwrap();
+        let batch = TransitionBatch::new(
+            self.scope.clone(),
+            id.to_string(),
+            0,
+            fencing,
+            json!({"status":"paused", "workflow_id":"wf_1"}),
+            nebula_storage_port::ExecutionListing::new(
+                nebula_storage_port::ExecutionListingStatus::Paused,
+                None,
+                None,
+            ),
+        )
+        .with_resume_tokens(rows);
         assert!(matches!(
             self.store.commit(batch).await.unwrap(),
             TransitionOutcome::Applied { .. }
@@ -473,7 +493,7 @@ both_backends!(
 );
 
 async fn webhook_resume_consumes_only_valid_tokens_and_enqueues_once(f: Fixture) {
-    use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+    use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
     let id = f.execution("paused").await;
     let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000);
     let hashes = (1..=4)
@@ -617,15 +637,15 @@ both_backends!(
 /// fails otherwise; the atomic consume always fails with a connection error.
 #[derive(Debug)]
 struct UnreachableProducer {
-    row: Option<nebula_storage_port::dto::resume_token::ResumeTokenRow>,
+    row: Option<nebula_storage_port::dto::ResumeTokenRow>,
 }
 
 #[async_trait::async_trait]
 impl nebula_storage_port::store::ResumeProducer for UnreachableProducer {
     async fn peek(
         &self,
-        _hash: &nebula_storage_port::dto::resume_token::TokenHash,
-    ) -> Result<Option<nebula_storage_port::dto::resume_token::ResumeTokenRow>, StorageError> {
+        _hash: &nebula_storage_port::dto::TokenHash,
+    ) -> Result<Option<nebula_storage_port::dto::ResumeTokenRow>, StorageError> {
         match &self.row {
             Some(row) => Ok(Some(row.clone())),
             None => Err(StorageError::Connection("peek: backend down".to_owned())),
@@ -634,7 +654,7 @@ impl nebula_storage_port::store::ResumeProducer for UnreachableProducer {
 
     async fn consume_and_enqueue_resume(
         &self,
-        _hash: &nebula_storage_port::dto::resume_token::TokenHash,
+        _hash: &nebula_storage_port::dto::TokenHash,
         _resume_msg: &nebula_storage_port::dto::ControlMsg,
     ) -> Result<bool, StorageError> {
         Err(StorageError::Connection("consume: backend down".to_owned()))
@@ -645,7 +665,7 @@ impl nebula_storage_port::store::ResumeProducer for UnreachableProducer {
 /// typed `source()`, and each failure is counted under its own outcome.
 #[tokio::test]
 async fn webhook_resume_failures_keep_the_storage_cause() {
-    use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
+    use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
     use std::error::Error as _;
 
     let f = Fixture::in_memory();

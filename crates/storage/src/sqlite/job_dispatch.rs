@@ -1,4 +1,4 @@
-//! SQLite [`JobDispatchQueue`] over the port-scoped schema.
+//! SQLite [`JobDispatchQueue`] over `job_dispatch_queue`.
 //!
 //! Single-consumer status flip (no `FOR UPDATE SKIP LOCKED` equivalent —
 //! spec §5 SQLite boundary, documented not hidden).  Ids are the raw 16-byte
@@ -11,7 +11,9 @@
 //! invariant), then the exact superset test is applied in the same SELECT via
 //! `NOT EXISTS (SELECT 1 FROM json_each(required_plugins) je WHERE je.value NOT
 //! IN (<available>))`.  Both clauses bind the same available list, eliminating
-//! any TOCTOU window between pre-filter and claim.
+//! any TOCTOU window between pre-filter and claim. Claim, terminal and sweep
+//! instants are integer microseconds from SQLite's clock, as in
+//! `execution_control_queue`.
 
 use std::time::Duration;
 
@@ -23,7 +25,8 @@ use nebula_storage_port::store::{
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
 
-use crate::sqlite::execution::conn_err;
+use super::control_queue::{NOW_MICROS, age_micros, decode_reclaim_count};
+use crate::sql_error::{foreign_key_not_found, storage_error};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -53,10 +56,15 @@ fn decode_command(s: &str) -> Result<nebula_storage_port::dto::ControlCommand, S
         "Terminate" => Ok(C::Terminate),
         "Resume" => Ok(C::Resume),
         "Restart" => Ok(C::Restart),
-        other => Err(StorageError::Serialization(format!(
-            "unknown control command: {other}"
-        ))),
+        _ => Err(StorageError::Serialization(
+            "column `command` holds an unknown control command".into(),
+        )),
     }
+}
+
+/// A stored plugin key that does not parse — named by column, never quoted.
+fn invalid_plugin_key(column: &str) -> StorageError {
+    StorageError::Serialization(format!("column `{column}` holds an invalid plugin key"))
 }
 
 fn plugins_to_json(plugins: &[PluginKey]) -> String {
@@ -65,43 +73,44 @@ fn plugins_to_json(plugins: &[PluginKey]) -> String {
 }
 
 fn row_to_msg(row: &sqlx::sqlite::SqliteRow) -> Result<JobDispatchMsg, StorageError> {
-    let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
-    let plugins_json: String = row.try_get("required_plugins").map_err(conn_err)?;
-    let plugin_strs: Vec<String> = serde_json::from_str(&plugins_json)
-        .map_err(|e| StorageError::Serialization(e.to_string()))?;
+    let id_bytes: Vec<u8> = row.try_get("id").map_err(storage_error)?;
+    let plugins_json: String = row.try_get("required_plugins").map_err(storage_error)?;
+    let plugin_strs: Vec<String> =
+        serde_json::from_str(&plugins_json).map_err(StorageError::from)?;
     let required_plugins: Vec<PluginKey> = plugin_strs
         .iter()
         .map(|s| {
             s.parse::<PluginKey>()
-                .map_err(|e| StorageError::Serialization(e.to_string()))
+                .map_err(|_| invalid_plugin_key("required_plugins"))
         })
         .collect::<Result<_, _>>()?;
     let required_plugin_key: PluginKey = row
         .try_get::<String, _>("required_plugin_key")
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .parse::<PluginKey>()
-        .map_err(|e| StorageError::Serialization(e.to_string()))?;
-    let payload_json: String = row.try_get("payload").map_err(conn_err)?;
+        .map_err(|_| invalid_plugin_key("required_plugin_key"))?;
+    let payload_json: String = row.try_get("payload").map_err(storage_error)?;
     Ok(JobDispatchMsg::new(
         decode_id(&id_bytes)?,
-        row.try_get::<String, _>("execution_id").map_err(conn_err)?,
-        decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
+        row.try_get::<String, _>("execution_id")
+            .map_err(storage_error)?,
+        decode_command(&row.try_get::<String, _>("command").map_err(storage_error)?)?,
         Scope::new(
-            row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-            row.try_get::<String, _>("org_id").map_err(conn_err)?,
+            row.try_get::<String, _>("workspace_id")
+                .map_err(storage_error)?,
+            row.try_get::<String, _>("org_id").map_err(storage_error)?,
         ),
-        serde_json::from_str(&payload_json)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?,
+        serde_json::from_str(&payload_json).map_err(StorageError::from)?,
         row.try_get::<Option<String>, _>("event_id")
-            .map_err(conn_err)?,
+            .map_err(storage_error)?,
         required_plugin_key,
         required_plugins,
         row.try_get::<Option<String>, _>("w3c_traceparent")
-            .map_err(conn_err)?,
-        row.try_get::<i64, _>("reclaim_count").map_err(conn_err)? as u32,
+            .map_err(storage_error)?,
+        decode_reclaim_count(row.try_get("reclaim_count").map_err(storage_error)?)?,
         WorkerFlavorRevisionId::from_bytes(
             row.try_get::<Vec<u8>, _>("required_worker_flavor_id")
-                .map_err(conn_err)?
+                .map_err(storage_error)?
                 .try_into()
                 .map_err(|_| {
                     StorageError::Serialization(
@@ -136,7 +145,7 @@ impl SqliteJobDispatchQueue {
     /// path stays a single statement.
     async fn unacknowledgeable(&self, claim: &JobClaimToken) -> Result<StorageError, StorageError> {
         let exists: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM port_job_dispatch_queue \
+            "SELECT 1 FROM job_dispatch_queue \
                  WHERE id = ? AND workspace_id = ? AND org_id = ?",
         )
         .bind(claim.row_id().as_slice())
@@ -144,7 +153,7 @@ impl SqliteJobDispatchQueue {
         .bind(&claim.scope().org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "job_dispatch",
@@ -193,31 +202,40 @@ fn generation_bind(claim: &JobClaimToken) -> Result<i64, StorageError> {
 impl JobDispatchQueue for SqliteJobDispatchQueue {
     #[tracing::instrument(level = "debug", skip(self, msg), fields(id = ?msg.id, command = msg.command.as_str()))]
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError> {
-        let payload = serde_json::to_string(&msg.payload)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        let payload = serde_json::to_string(&msg.payload).map_err(StorageError::from)?;
         let plugins = plugins_to_json(&msg.required_plugins);
+        // A job for an execution absent from its tenant is `NotFound`; a
+        // taken id is `Duplicate { entity: "job_dispatch" }`.
         sqlx::query(
-            "INSERT INTO port_job_dispatch_queue \
-             (id, execution_id, workspace_id, org_id, command, status, \
-              payload, event_id, required_plugin_key, \
-              required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id) \
+            "INSERT INTO job_dispatch_queue \
+             (org_id, workspace_id, execution_id, id, command, status, \
+              payload, event_id, required_worker_flavor_id, required_plugin_key, \
+              required_plugins, w3c_traceparent, reclaim_count) \
              VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(msg.id.as_slice())
-        .bind(&msg.execution_id)
-        .bind(&msg.scope.workspace_id)
         .bind(&msg.scope.org_id)
+        .bind(&msg.scope.workspace_id)
+        .bind(&msg.execution_id)
+        .bind(msg.id.as_slice())
         .bind(msg.command.as_str())
         .bind(&payload)
         .bind(msg.event_id.as_deref())
+        .bind(msg.required_worker_flavor_id.as_bytes().as_slice())
         .bind(msg.required_plugin_key.as_str())
         .bind(&plugins)
         .bind(msg.w3c_traceparent.as_deref())
         .bind(i64::from(msg.reclaim_count))
-        .bind(msg.required_worker_flavor_id.as_bytes().as_slice())
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(|error| {
+            match foreign_key_not_found(error, "execution", &msg.execution_id) {
+                StorageError::Duplicate { detail, .. } => StorageError::Duplicate {
+                    entity: "job_dispatch",
+                    detail,
+                },
+                other => other,
+            }
+        })?;
         tracing::debug!(target: "nebula_storage::sqlite", "job_dispatch: enqueued");
         Ok(())
     }
@@ -233,7 +251,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         if available_plugins.is_empty() {
             return Ok(Vec::new());
         }
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
 
         // Superset predicate: a job is claimable when `required_plugins ⊆
         // available_plugins`.  The available set is bound ONCE as a JSON array
@@ -259,7 +277,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
              SELECT id, execution_id, workspace_id, org_id, command, \
                     payload, event_id, required_plugin_key, \
                     required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id \
-             FROM port_job_dispatch_queue \
+             FROM job_dispatch_queue \
              WHERE status = 'Pending' AND required_worker_flavor_id = ?3 \
                AND required_plugin_key IN (SELECT plugin FROM available) \
                AND NOT EXISTS ( \
@@ -273,12 +291,19 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(worker_flavor_id.as_bytes().as_slice())
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
 
         let mut claimed = Vec::with_capacity(rows.len());
-        let now_ms = chrono::Utc::now().timestamp_millis();
+        let claim = format!(
+            "UPDATE job_dispatch_queue \
+             SET status = 'Processing', processed_by = ?, \
+                 processed_at = {NOW_MICROS}, \
+                 claim_generation = claim_generation + 1 \
+             WHERE id = ? AND status = 'Pending' \
+             RETURNING claim_generation"
+        );
         for row in &rows {
-            let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err(storage_error)?;
             // Conditional claim — AND status = 'Pending' guard prevents
             // double-claim if a concurrent actor flipped the row between the
             // SELECT above and this UPDATE (single-consumer SQLite boundary).
@@ -287,20 +312,12 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
             // makes the row `Processing`, and `RETURNING` hands back the value
             // this claim minted — no separate read that a concurrent claim
             // could interleave with.
-            let minted: Option<i64> = sqlx::query_scalar(
-                "UPDATE port_job_dispatch_queue \
-                 SET status = 'Processing', processed_by = ?, \
-                     processed_at_ms = ?, \
-                     claim_generation = claim_generation + 1 \
-                 WHERE id = ? AND status = 'Pending' \
-                 RETURNING claim_generation",
-            )
-            .bind(processor.as_slice())
-            .bind(now_ms)
-            .bind(id_bytes.as_slice())
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(conn_err)?;
+            let minted: Option<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(claim.clone()))
+                .bind(processor.as_slice())
+                .bind(id_bytes.as_slice())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage_error)?;
             if let Some(generation) = minted {
                 let id = decode_id(&id_bytes)?;
                 let msg = row_to_msg(row)?;
@@ -309,7 +326,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
                 claimed.push(JobClaim { msg, token });
             }
         }
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         tracing::debug!(
             target: "nebula_storage::sqlite",
             claimed = claimed.len(),
@@ -319,22 +336,21 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
     }
 
     async fn mark_dispatched(&self, claim: &JobClaimToken) -> Result<(), StorageError> {
-        let terminal_at_ms = chrono::Utc::now().timestamp_millis();
-        let rows_updated = sqlx::query(
-            "UPDATE port_job_dispatch_queue \
-             SET status = 'Dispatched', processed_at_ms = ? \
+        let dispatched = format!(
+            "UPDATE job_dispatch_queue \
+             SET status = 'Dispatched', processed_at = {NOW_MICROS} \
              WHERE id = ? AND workspace_id = ? AND org_id = ? \
-               AND status = 'Processing' AND claim_generation = ?",
-        )
-        .bind(terminal_at_ms)
-        .bind(claim.row_id().as_slice())
-        .bind(&claim.scope().workspace_id)
-        .bind(&claim.scope().org_id)
-        .bind(generation_bind(claim)?)
-        .execute(&self.pool)
-        .await
-        .map_err(conn_err)?
-        .rows_affected();
+               AND status = 'Processing' AND claim_generation = ?"
+        );
+        let rows_updated = sqlx::query(sqlx::AssertSqlSafe(dispatched))
+            .bind(claim.row_id().as_slice())
+            .bind(&claim.scope().workspace_id)
+            .bind(&claim.scope().org_id)
+            .bind(generation_bind(claim)?)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
         }
@@ -342,23 +358,22 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
     }
 
     async fn mark_failed(&self, claim: &JobClaimToken, error: &str) -> Result<(), StorageError> {
-        let terminal_at_ms = chrono::Utc::now().timestamp_millis();
-        let rows_updated = sqlx::query(
-            "UPDATE port_job_dispatch_queue \
-             SET status = 'Failed', error_message = ?, processed_at_ms = ? \
+        let failed = format!(
+            "UPDATE job_dispatch_queue \
+             SET status = 'Failed', error_message = ?, processed_at = {NOW_MICROS} \
              WHERE id = ? AND workspace_id = ? AND org_id = ? \
-               AND status = 'Processing' AND claim_generation = ?",
-        )
-        .bind(error)
-        .bind(terminal_at_ms)
-        .bind(claim.row_id().as_slice())
-        .bind(&claim.scope().workspace_id)
-        .bind(&claim.scope().org_id)
-        .bind(generation_bind(claim)?)
-        .execute(&self.pool)
-        .await
-        .map_err(conn_err)?
-        .rows_affected();
+               AND status = 'Processing' AND claim_generation = ?"
+        );
+        let rows_updated = sqlx::query(sqlx::AssertSqlSafe(failed))
+            .bind(error)
+            .bind(claim.row_id().as_slice())
+            .bind(&claim.scope().workspace_id)
+            .bind(&claim.scope().org_id)
+            .bind(generation_bind(claim)?)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
         }
@@ -370,44 +385,43 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         reclaim_after: Duration,
         max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError> {
-        // `processed_at_ms` is epoch-millis (INTEGER) — same representation
-        // as `port_control_queue`, so reclaim cutoff arithmetic is identical.
-        let terminal_at_ms = chrono::Utc::now().timestamp_millis();
-        let cutoff = terminal_at_ms - i64::try_from(reclaim_after.as_millis()).unwrap_or(i64::MAX);
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
-        let exhausted = sqlx::query(
-            "UPDATE port_job_dispatch_queue \
+        // Same clock and cutoff arithmetic as `execution_control_queue`.
+        let reclaim_after = age_micros(reclaim_after);
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        let exhaust = format!(
+            "UPDATE job_dispatch_queue \
              SET status = 'Failed', \
                  error_message = 'reclaim exhausted: presumed dead', \
-                 processed_at_ms = ? \
-             WHERE status = 'Processing' AND processed_at_ms < ? \
-               AND reclaim_count >= ?",
-        )
-        .bind(terminal_at_ms)
-        .bind(cutoff)
-        .bind(i64::from(max_reclaim_count))
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?
-        .rows_affected();
+                 processed_at = {NOW_MICROS} \
+             WHERE status = 'Processing' AND processed_at < {NOW_MICROS} - ? \
+               AND reclaim_count >= ?"
+        );
+        let exhausted = sqlx::query(sqlx::AssertSqlSafe(exhaust))
+            .bind(reclaim_after)
+            .bind(i64::from(max_reclaim_count))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
         // `claim_generation` is deliberately untouched here: ownership is
         // cleared, but the counter only ever moves forward, so the next claim
         // mints a value strictly greater than the token this reclaim just
         // invalidated. Resetting it would let a stale token match again.
-        let reclaimed = sqlx::query(
-            "UPDATE port_job_dispatch_queue \
+        let reclaim = format!(
+            "UPDATE job_dispatch_queue \
              SET status = 'Pending', reclaim_count = reclaim_count + 1, \
-                 processed_by = NULL, processed_at_ms = NULL \
-             WHERE status = 'Processing' AND processed_at_ms < ? \
-               AND reclaim_count < ?",
-        )
-        .bind(cutoff)
-        .bind(i64::from(max_reclaim_count))
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?
-        .rows_affected();
-        tx.commit().await.map_err(conn_err)?;
+                 processed_by = NULL, processed_at = NULL \
+             WHERE status = 'Processing' AND processed_at < {NOW_MICROS} - ? \
+               AND reclaim_count < ?"
+        );
+        let reclaimed = sqlx::query(sqlx::AssertSqlSafe(reclaim))
+            .bind(reclaim_after)
+            .bind(i64::from(max_reclaim_count))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
+        tx.commit().await.map_err(storage_error)?;
         Ok(ReclaimOutcome {
             reclaimed,
             exhausted,
@@ -415,17 +429,16 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
     }
 
     async fn cleanup(&self, retention: Duration) -> Result<u64, StorageError> {
-        let cutoff = chrono::Utc::now().timestamp_millis()
-            - i64::try_from(retention.as_millis()).unwrap_or(i64::MAX);
-        let deleted = sqlx::query(
-            "DELETE FROM port_job_dispatch_queue \
-             WHERE status IN ('Dispatched', 'Failed') AND processed_at_ms < ?",
-        )
-        .bind(cutoff)
-        .execute(&self.pool)
-        .await
-        .map_err(conn_err)?
-        .rows_affected();
+        let prune = format!(
+            "DELETE FROM job_dispatch_queue \
+             WHERE status IN ('Dispatched', 'Failed') AND processed_at < {NOW_MICROS} - ?"
+        );
+        let deleted = sqlx::query(sqlx::AssertSqlSafe(prune))
+            .bind(age_micros(retention))
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
         Ok(deleted)
     }
 }

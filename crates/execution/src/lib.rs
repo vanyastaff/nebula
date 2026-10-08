@@ -23,7 +23,7 @@
 //!   optional [`W3cTraceContext`] for M3.5 trace propagation).
 //! - [`ExecutionResult`] — post-execution summary.
 //! - [`JournalEntry`] — audit log entry shape. It has no production writer yet: the
-//!   `port_execution_journal` rows are persisted through `nebula_storage_port::dto::JournalEntry`
+//!   `execution_journal` rows are persisted through `nebula_storage_port::dto::JournalEntry`
 //!   as an opaque `payload`, so this type's shape is a contract no live path constructs
 //!   (DESIGN §6.10). Its `error` field is a typed [`ErrorEnvelope`], not free text.
 //! - [`NodeOutput`], [`ExecutionOutput`] — node output data with metadata.

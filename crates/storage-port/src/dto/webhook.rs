@@ -38,7 +38,7 @@ pub enum WebhookMode {
 pub struct WebhookActivationRecord {
     /// The workflow trigger-binding NodeKey — the dispatch routing key
     /// (`do_emit_prod` parses it as a NodeKey to resolve the binding).
-    /// NOT the `port_triggers` PK (that is `spec_trigger_id`).
+    /// NOT the `triggers` PK (that is `spec_trigger_id`).
     pub trigger_id: String,
     /// Tenant scope this activation belongs to.
     pub scope: Scope,
@@ -60,17 +60,18 @@ pub struct WebhookActivationRecord {
     /// SHA-256 hash of the capability token for this activation.
     ///
     /// Stored as a fixed 32-byte array.  The all-zeros sentinel
-    /// (`[0u8; 32]`) means "no token assigned yet" — the partial unique
-    /// index on the `port_webhook_activations` table excludes the sentinel
-    /// so existing rows do not collide.
+    /// (`[0u8; 32]`) means "no token assigned yet" — the SQL backends store
+    /// it as a NULL token hash, outside the unique constraint, so rows
+    /// without a token do not collide.
     pub token_hash: [u8; 32],
-    /// The `port_triggers` spec-row PK (`TriggerId`, `trg_` prefix) this
+    /// The `triggers` spec-row PK (`TriggerId`, `trg_` prefix) this
     /// activation was built from — the ADR-0101 L1 spec link, used by
     /// bootstrap reconstruct to re-resolve the webhook spec via the API
     /// crate's `TriggerSpecLookup` (the trait lives in `nebula-api`, so this
     /// is a plain reference, not an intra-doc link).
     ///
-    /// `None` on legacy rows written before this field existed.
+    /// `None` when the activation was not built from a stored trigger; the
+    /// SQL backends then hold no foreign key to one.
     pub spec_trigger_id: Option<String>,
 }
 

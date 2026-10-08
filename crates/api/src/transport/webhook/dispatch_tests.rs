@@ -267,7 +267,6 @@ impl RuntimeFixture {
                     scope: scope.clone(),
                     version: 1,
                     slug: definition.id.to_string(),
-                    deleted: false,
                 },
             )
             .await

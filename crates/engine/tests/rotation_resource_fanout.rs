@@ -196,7 +196,7 @@ async fn engine_fanout_reports_terminal_timeout_for_wedged_resource() {
             CancellationToken::new(),
         );
         let _g = mgr
-            .acquire_resident_for_identity::<Ctl>(&ctx, &AcquireOptions::default(), &id)
+            .acquire_for_identity::<Ctl>(&ctx, &AcquireOptions::default(), &id)
             .await
             .expect("warm tenant runtime");
 

@@ -163,21 +163,30 @@ pub(crate) trait LedgerAssertions: OperationLedger + OperationLedgerAdjudicator 
 }
 impl<T: OperationLedger + OperationLedgerAdjudicator> LedgerAssertions for T {}
 
-/// Per-process namespace folded into every execution identity.
+/// Per-process namespace for tenant and execution identities.
 ///
 /// A backend whose durable store outlives the test run would otherwise meet the
-/// previous run's slots on the second run, so a `Prepared` case would report
-/// `Replayed`.
+/// previous run's slots or tenant provisioning history on the second run.
+/// A fixture must neither reuse unrelated tenants nor adopt pre-receipt rows.
 static NAMESPACE: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| uuid::Uuid::new_v4().simple().to_string());
 
 pub(crate) fn scope() -> Scope {
-    Scope::new("ws-ledger", "org-ledger")
+    Scope::new(
+        format!("ws-ledger-{}", *NAMESPACE),
+        format!("org-ledger-{}", *NAMESPACE),
+    )
 }
+
+/// The workflow every case's executions run; SQL backends seed it first.
+pub(crate) const WORKFLOW: &str = "workflow";
 
 /// A second tenant, used to prove one tenant cannot reach another's slots.
 pub(crate) fn other_scope() -> Scope {
-    Scope::new("ws-ledger-other", "org-ledger-other")
+    Scope::new(
+        format!("ws-ledger-other-{}", *NAMESPACE),
+        format!("org-ledger-other-{}", *NAMESPACE),
+    )
 }
 
 fn execution_id(seed: u8) -> String {
@@ -1244,7 +1253,7 @@ async fn create_leased_execution(
         .create(
             scope,
             execution,
-            "workflow",
+            WORKFLOW,
             serde_json::json!({"status":"Created"}),
         )
         .await

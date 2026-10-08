@@ -247,7 +247,7 @@ tasks:
       - docker compose -f {{.COMPOSE_LOCAL}} down
 
   db:migrate:
-    desc: Run pending migrations through catalog and aggregate admission (requires DATABASE_URL)
+    desc: Apply pending migrations through schema admission (requires DATABASE_URL)
     cmds:
       - cargo run -p nebula-server --bin nebula-db-migrate --features postgres
 
@@ -255,18 +255,6 @@ tasks:
     desc: Show migration status
     cmds:
       - sqlx migrate info --source crates/storage/migrations/postgres
-
-  db:migrate:adopt:
-    desc: >-
-      Stamp a migration ledger onto a database provisioned before ordered
-      migrations existed (requires DATABASE_URL and THROUGH_VERSION). This
-      asserts the live schema is what migrations 1..THROUGH_VERSION produce —
-      confirm that before running it. Refuses if a ledger already exists or the
-      database is empty, and rolls back if the result would still be rejected.
-    cmds:
-      - cargo run -p nebula-server --bin nebula-db-migrate --features postgres -- adopt {{.THROUGH_VERSION}}
-    requires:
-      vars: [THROUGH_VERSION]
 
   db:prepare:
     desc: Generate sqlx offline query data (sqlx prepare)

@@ -4,18 +4,16 @@
 //! Per spec §5: `commit` uses a real transaction so the §12.2 triple
 //! (CAS + fencing check + state + outbox + journal) is atomic and
 //! serializable across processes; the control-queue claim uses
-//! `FOR UPDATE SKIP LOCKED` (multi-consumer queue claim) — wired by the
-//! control-queue store in a later task.
+//! `FOR UPDATE SKIP LOCKED` (multi-consumer queue claim).
 //!
 //! The adapter schema is installed exclusively by the ordered PostgreSQL
-//! migration catalog. The `port_*` execution core remains independent of
-//! identity seeding.
+//! migration catalog. Execution rows belong to a live workflow within their
+//! tenant; schema constraints enforce ownership and purge cascades.
 
 mod control_queue;
 mod control_turn;
 mod execution;
 mod execution_fence;
-mod idempotency_store;
 mod identity;
 mod iteration_checkpoint;
 mod job_dispatch;
@@ -29,14 +27,14 @@ mod resume_token;
 mod start_acceptance;
 mod turn_handoff;
 mod turn_recovery;
+mod webhook_activation;
 mod workflow;
 
 pub use control_queue::{PgControlQueue, PgJournalReader};
 pub use execution::{PgExecutionStore, PgIdempotencyGuard};
-pub use idempotency_store::{PgIdempotencyStore, PgWebhookActivationStore};
 pub use identity::{
-    PgAuditStore, PgBlobStore, PgMembershipStore, PgOrgStore, PgQuotaStore, PgResourceStore,
-    PgTenantProvisioningStore, PgTriggerStore, PgUserStore, PgWorkspaceStore,
+    PgMembershipStore, PgOrgStore, PgResourceStore, PgTenantProvisioningStore, PgTriggerStore,
+    PgWorkspaceStore,
 };
 pub use iteration_checkpoint::PgCheckpointStore;
 pub use job_dispatch::PgJobDispatchQueue;
@@ -49,35 +47,21 @@ pub use resume_producer::PgResumeProducer;
 pub use resume_token::PgResumeTokenStore;
 pub use start_acceptance::PgStartAcceptanceStore;
 pub use turn_handoff::PgTurnHandoff;
+pub use webhook_activation::PgWebhookActivationStore;
 pub use workflow::{PgWorkflowStore, PgWorkflowVersionStore};
 
 /// Admit a canonical schema and apply every pending ordered migration under
 /// the PostgreSQL setup lock with bounded acquisition and release.
 ///
 /// # Errors
-/// Returns a closed, redacted connection or configuration error if setup
-/// cannot prove that the database has a canonical migration history at the
-/// catalog-only upgrade floor.
+/// Returns a closed, redacted connection error if the database or its setup
+/// lock is unavailable, and a configuration error naming the rejection if the
+/// migration ledger is not a canonical prefix of this build's catalog (a
+/// database created by another build or edited by hand; reset it).
 /// Migration duration follows the caller lifecycle and the operator's database
 /// `statement_timeout`.
 pub async fn init_schema(pool: &sqlx::PgPool) -> Result<(), nebula_storage_port::StorageError> {
     crate::migration::setup_postgres_pool(pool.clone())
         .await
         .map_err(crate::migration::storage_setup_error)
-}
-
-/// Adopt a database provisioned before the ordered migration ledger existed.
-///
-/// See [`crate::sqlite::adopt_ledger`] for the full contract; this is the
-/// PostgreSQL entry point and behaves identically.
-///
-/// # Errors
-/// Returns [`crate::LedgerAdoptionError`] if the database cannot be read or written,
-/// if `through_version` names no canonical migration, or if the stamped ledger
-/// would still be rejected by schema setup.
-pub async fn adopt_ledger(
-    pool: &sqlx::PgPool,
-    through_version: i64,
-) -> Result<crate::LedgerAdoptionOutcome, crate::LedgerAdoptionError> {
-    crate::migration::adopt_postgres_ledger(pool, through_version).await
 }

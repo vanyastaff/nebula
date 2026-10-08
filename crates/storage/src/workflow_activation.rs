@@ -1,7 +1,13 @@
 //! Identity checks shared by workflow-owner publication transactions.
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+use nebula_core::{ExecutablePlanRevisionId, WorkerFlavorRevisionId};
 use nebula_core::{WorkflowId, WorkflowVersionId};
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+use nebula_storage_port::PlanFlavorRevisionIds;
 use nebula_storage_port::Scope;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::{WorkflowActivation, WorkflowRecord, WorkflowVersionRecord};
 use nebula_storage_port::store::WorkflowPublicationError;
 use serde::Deserialize;
@@ -20,7 +26,6 @@ pub(crate) fn validate_publication(
         .ok_or(WorkflowPublicationError::InvalidPublication)?;
     if row.scope != *scope
         || row.id != version.workflow_id
-        || row.deleted
         || !version.published
         || row.version != next
         || u64::from(version.number) != next
@@ -28,6 +33,64 @@ pub(crate) fn validate_publication(
         return Err(WorkflowPublicationError::InvalidPublication);
     }
     Ok(activation)
+}
+
+/// An activation identity as its three `workflow_versions` columns.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) struct ActivationColumns {
+    pub(crate) workflow_version: Option<String>,
+    pub(crate) executable_plan: Option<Vec<u8>>,
+    pub(crate) worker_flavor: Option<Vec<u8>>,
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+impl ActivationColumns {
+    pub(crate) fn encode(activation: Option<WorkflowActivation>) -> Self {
+        let Some(activation) = activation else {
+            return Self {
+                workflow_version: None,
+                executable_plan: None,
+                worker_flavor: None,
+            };
+        };
+        let revisions = activation.revisions();
+        Self {
+            workflow_version: Some(activation.workflow_version_id().to_string()),
+            executable_plan: Some(revisions.plan().as_bytes().to_vec()),
+            worker_flavor: Some(revisions.worker_flavor().as_bytes().to_vec()),
+        }
+    }
+
+    /// The activation, or `None` for a version saved without one. A partial
+    /// or malformed identity is corrupt.
+    pub(crate) fn decode(self) -> Result<Option<WorkflowActivation>, StorageError> {
+        let (workflow_version_id, plan, flavor) = match (
+            self.workflow_version,
+            self.executable_plan,
+            self.worker_flavor,
+        ) {
+            (None, None, None) => return Ok(None),
+            (Some(version), Some(plan), Some(flavor)) => (version, plan, flavor),
+            _ => return Err(corrupt_activation()),
+        };
+        let workflow_version_id: WorkflowVersionId = workflow_version_id
+            .parse()
+            .map_err(|_| corrupt_activation())?;
+        let plan = <[u8; 32]>::try_from(plan.as_slice()).map_err(|_| corrupt_activation())?;
+        let flavor = <[u8; 32]>::try_from(flavor.as_slice()).map_err(|_| corrupt_activation())?;
+        Ok(Some(WorkflowActivation::new(
+            workflow_version_id,
+            PlanFlavorRevisionIds::new(
+                ExecutablePlanRevisionId::from_bytes(plan),
+                WorkerFlavorRevisionId::from_bytes(flavor),
+            ),
+        )))
+    }
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn corrupt_activation() -> StorageError {
+    StorageError::Corrupt("workflow version activation columns do not decode".into())
 }
 
 /// Decode only the relational header. Full hash/contract checks belong to the installer.
@@ -61,8 +124,6 @@ pub(crate) fn validate_plan_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_core::{ExecutablePlanRevisionId, WorkerFlavorRevisionId};
-    use nebula_storage_port::PlanFlavorRevisionIds;
 
     #[test]
     fn duplicate_identity_headers_and_wrong_workflow_fail_without_payload_diagnostics() {

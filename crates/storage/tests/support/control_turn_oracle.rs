@@ -69,15 +69,15 @@ pub(super) async fn run(ports: &Ports) {
         w3c_traceparent: None,
         reclaim_count: 0,
     };
-    let batch = TransitionBatch::builder()
-        .scope(seed.scope.clone())
-        .execution_id(&seed.execution)
-        .expected_version(original.version)
-        .fencing(fence)
-        .new_state(state.clone())
-        .outbox(vec![outbox.clone()])
-        .build()
-        .unwrap();
+    let batch = TransitionBatch::new(
+        seed.scope.clone(),
+        &seed.execution,
+        original.version,
+        fence,
+        state.clone(),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![outbox.clone()]);
     let mut request = ControlTurnCommit::new(
         claim.clone(),
         seed.flavor,
@@ -337,15 +337,15 @@ pub(super) async fn run(ports: &Ports) {
     request = request.with_transition(ControlTurnTransition::Checkpoint(&batch));
     let mut collision = outbox.clone();
     collision.id = *seed.claim.row_id();
-    let rejected_batch = TransitionBatch::builder()
-        .scope(seed.scope.clone())
-        .execution_id(&seed.execution)
-        .expected_version(original.version)
-        .fencing(fence)
-        .new_state(state.clone())
-        .outbox(vec![collision])
-        .build()
-        .unwrap();
+    let rejected_batch = TransitionBatch::new(
+        seed.scope.clone(),
+        &seed.execution,
+        original.version,
+        fence,
+        state.clone(),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_outbox(vec![collision]);
     request = request.with_transition(ControlTurnTransition::Checkpoint(&rejected_batch));
     assert!(ports.handoff.commit_control_turn(&request).await.is_err());
     assert_eq!(
@@ -440,14 +440,14 @@ pub(super) async fn run(ports: &Ports) {
     // A sibling checkpoint advances the aggregate version between the throttle
     // and its observation. The refusal never changes the aggregate, so the
     // newer version must not stop it from being recorded.
-    let sibling = TransitionBatch::builder()
-        .scope(seed.scope.clone())
-        .execution_id(&seed.execution)
-        .expected_version(persisted.version)
-        .fencing(fence)
-        .new_state(persisted.state.clone())
-        .build()
-        .unwrap();
+    let sibling = TransitionBatch::new(
+        seed.scope.clone(),
+        &seed.execution,
+        persisted.version,
+        fence,
+        persisted.state.clone(),
+        nebula_storage_port::ExecutionListing::CREATED,
+    );
     assert!(matches!(
         ports.execution.commit(sibling).await.unwrap(),
         nebula_storage_port::TransitionOutcome::Applied { .. }

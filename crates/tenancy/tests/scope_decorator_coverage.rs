@@ -26,21 +26,20 @@ use std::sync::Arc;
 use nebula_storage_port::Scope;
 use nebula_storage_port::store::{
     CheckpointStore, ControlQueue, ExecutionJournalReader, ExecutionStore, ExecutionTurnHandoff,
-    IdempotencyGuard, IdempotencyStore, NodeResultStore, OperationLedger,
-    OperationLedgerAdjudicator, ResourceEventFanoutStore, ResourceExecutionHandoffStore,
-    ResourceSourceLeaseStore, ResourceStatusStore, ResourceStore, ResourceSubscriptionStore,
-    ResumeTokenStore, SharedResourceStore, StartAcceptanceStore, TriggerStore,
-    WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    IdempotencyGuard, NodeResultStore, OperationLedger, OperationLedgerAdjudicator,
+    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceSourceLeaseStore,
+    ResourceStatusStore, ResourceStore, ResourceSubscriptionStore, ResumeTokenStore,
+    SharedResourceStore, StartAcceptanceStore, TriggerStore, WebhookActivationStore, WorkflowStore,
+    WorkflowVersionStore,
 };
 use nebula_tenancy::{
     ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-    ScopedExecutionTurnHandoff, ScopedIdempotencyGuard, ScopedIdempotencyStore,
-    ScopedNodeResultStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
-    ScopedResourceEventFanoutStore, ScopedResourceExecutionHandoffStore,
-    ScopedResourceSourceLeaseStore, ScopedResourceStatusStore, ScopedResourceStore,
-    ScopedResourceSubscriptionStore, ScopedResumeTokenStore, ScopedSharedResourceStore,
-    ScopedStartAcceptanceStore, ScopedTriggerStore, ScopedWebhookActivationStore,
-    ScopedWorkflowStore, ScopedWorkflowVersionStore,
+    ScopedExecutionTurnHandoff, ScopedIdempotencyGuard, ScopedNodeResultStore,
+    ScopedOperationLedger, ScopedOperationLedgerAdjudicator, ScopedResourceEventFanoutStore,
+    ScopedResourceExecutionHandoffStore, ScopedResourceSourceLeaseStore, ScopedResourceStatusStore,
+    ScopedResourceStore, ScopedResourceSubscriptionStore, ScopedResumeTokenStore,
+    ScopedSharedResourceStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
+    ScopedWebhookActivationStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 use syn::{FnArg, GenericArgument, Item, PathArguments, TraitItem, Type, UseTree};
 
@@ -95,7 +94,6 @@ scope_decorator!(ScopedCheckpointStore, CheckpointStore);
 scope_decorator!(ScopedWorkflowStore, WorkflowStore);
 scope_decorator!(ScopedWorkflowVersionStore, WorkflowVersionStore);
 scope_decorator!(ScopedNodeResultStore, NodeResultStore);
-scope_decorator!(ScopedIdempotencyStore, IdempotencyStore);
 scope_decorator!(ScopedIdempotencyGuard, IdempotencyGuard);
 scope_decorator!(ScopedControlQueue, ControlQueue);
 scope_decorator!(ScopedExecutionJournalReader, ExecutionJournalReader);
@@ -121,7 +119,6 @@ const DIRECT_SCOPE_PORTS: &[&str] = &[
     "ExecutionJournalReader",
     "ExecutionStore",
     "IdempotencyGuard",
-    "IdempotencyStore",
     "NodeResultStore",
     "OperationLedger",
     "OperationLedgerAdjudicator",
@@ -149,8 +146,6 @@ const EMBEDDED_SCOPE_PORTS: &[&str] = &[
 ];
 
 const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
-    "AuditStore",
-    "BlobStore",
     "CredentialPersistence",
     // Due-refresh discovery is a deployment-wide scheduler read. It returns
     // owner-qualified selectors from persisted rows and never accepts a
@@ -163,7 +158,6 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     "PlanFlavorCatalog",
     "PlanFlavorCatalogAdmin",
     "PlanFlavorCatalogWriter",
-    "QuotaStore",
     // Adjudication is a privileged operator decision over one credential, keyed
     // by a ULID credential id and authorized at the composition root. It has no
     // caller-supplied `&Scope` to substitute, and substituting one would let a
@@ -186,7 +180,6 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     // tenant-facing arbitrary-scope storage capability.
     "TenantProvisioningStore",
     "TurnRecovery",
-    "UserStore",
     "WorkspaceStore",
 ];
 
@@ -398,7 +391,6 @@ fn every_port_has_an_explicit_tenancy_classification() {
     assert_scoped::<ScopedNodeResultStore, dyn NodeResultStore>();
     // Idempotency dedup: `&Scope` namespaces the key (no replay oracle).
     assert_scoped::<ScopedIdempotencyGuard, dyn IdempotencyGuard>();
-    assert_scoped::<ScopedIdempotencyStore, dyn IdempotencyStore>();
     // Control queue: enqueued msg carries a `Scope` (rebound).
     assert_scoped::<ScopedControlQueue, dyn ControlQueue>();
     // Execution journal read path: `&Scope`-keyed.

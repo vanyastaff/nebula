@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn inline_binary_round_trips_through_action_result_checkpoint() {
+    let result = crate::ActionResult::<serde_json::Value>::success_binary(BinaryData {
+        content_type: "application/octet-stream".into(),
+        data: BinaryStorage::Inline {
+            bytes: vec![0, 1, 255],
+        },
+        size: 3,
+        metadata: None,
+    });
+    let encoded = serde_json::to_value(&result).expect("binary result must be checkpointable");
+    assert_eq!(
+        encoded["output"]["data"]["data"],
+        serde_json::json!({"type":"inline","bytes":[0,1,255]})
+    );
+    let decoded: crate::ActionResult<serde_json::Value> = serde_json::from_value(encoded).unwrap();
+    assert_eq!(
+        serde_json::to_value(decoded).unwrap(),
+        serde_json::to_value(result).unwrap()
+    );
+}
+
+#[test]
 fn action_output_value() {
     let out = ActionOutput::Value(42);
     assert!(out.is_value());
@@ -16,7 +38,9 @@ fn action_output_value() {
 fn action_output_binary() {
     let out: ActionOutput<i32> = ActionOutput::Binary(BinaryData {
         content_type: "image/png".into(),
-        data: BinaryStorage::Inline(vec![0x89, 0x50, 0x4e, 0x47]),
+        data: BinaryStorage::Inline {
+            bytes: vec![0x89, 0x50, 0x4e, 0x47],
+        },
         size: 4,
         metadata: None,
     });
@@ -111,7 +135,7 @@ fn action_output_map() {
 fn action_output_map_preserves_binary() {
     let out: ActionOutput<i32> = ActionOutput::Binary(BinaryData {
         content_type: "text/plain".into(),
-        data: BinaryStorage::Inline(vec![]),
+        data: BinaryStorage::Inline { bytes: vec![] },
         size: 0,
         metadata: None,
     });
@@ -198,7 +222,7 @@ fn needs_resolution_value() {
 fn needs_resolution_binary() {
     let out: ActionOutput<i32> = ActionOutput::Binary(BinaryData {
         content_type: "x".into(),
-        data: BinaryStorage::Inline(vec![]),
+        data: BinaryStorage::Inline { bytes: vec![] },
         size: 0,
         metadata: None,
     });

@@ -423,13 +423,10 @@ mod tests {
     };
     use nebula_crypto::encrypt_with_key_id;
 
-    use super::{
-        super::super::{key_provider::StaticKeyProvider, sqlite::SqliteCredentialPersistence},
-        *,
-    };
+    use super::{super::super::key_provider::StaticKeyProvider, *};
 
     fn owner() -> CredentialOwner {
-        CredentialOwner::from_canonical("test-owner")
+        crate::credential::test_owner::owner("test-owner")
     }
 
     fn selector(id: CredentialId) -> CredentialSelector {
@@ -470,7 +467,7 @@ mod tests {
     #[tokio::test]
     async fn round_trip_encrypts_and_decrypts() -> Result<(), CredentialPersistenceError> {
         let store = EncryptionLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             default_provider(),
         );
         let selector = selector(CredentialId::new());
@@ -487,7 +484,7 @@ mod tests {
     async fn refresh_retry_state_survives_encryption_rewrites_and_reads()
     -> Result<(), CredentialPersistenceError> {
         let store = EncryptionLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             default_provider(),
         );
         let selector = selector(CredentialId::new());
@@ -542,7 +539,7 @@ mod tests {
     #[tokio::test]
     async fn preserve_leaves_inner_ciphertext_byte_identical()
     -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
         let selector = selector(CredentialId::new());
         let created = store.create(&selector, make_credential(b"v1")).await?;
@@ -583,7 +580,7 @@ mod tests {
     #[tokio::test]
     async fn advance_unchanged_keeps_ciphertext_and_advances_the_material_epoch()
     -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let key1_bytes = [0x01; 32];
         let store_old = EncryptionLayer::new(
             inner.clone(),
@@ -632,7 +629,7 @@ mod tests {
 
     #[tokio::test]
     async fn data_is_encrypted_at_rest() -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
         let selector = selector(CredentialId::new());
@@ -650,7 +647,7 @@ mod tests {
     async fn replacement_fence_survives_encryption_decorator()
     -> Result<(), CredentialPersistenceError> {
         let store = EncryptionLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             default_provider(),
         );
         let selector = selector(CredentialId::new());
@@ -682,7 +679,7 @@ mod tests {
     #[tokio::test]
     async fn management_heads_do_not_read_or_decrypt_material()
     -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let credential_id = CredentialId::new();
         let selector = selector(credential_id);
         inner
@@ -712,7 +709,7 @@ mod tests {
         const PLAINTEXT_ACCESS: &str = "nebula-integration-plaintext-access-token-zz";
         const PLAINTEXT_REFRESH: &str = "nebula-integration-plaintext-refresh-zz";
 
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
         let state = OAuth2State {
@@ -751,7 +748,7 @@ mod tests {
     #[tokio::test]
     async fn passthrough_operations() -> Result<(), CredentialPersistenceError> {
         let store = EncryptionLayer::new(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             default_provider(),
         );
 
@@ -783,7 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn aad_prevents_record_swapping() -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
         let first = selector(CredentialId::new());
@@ -807,7 +804,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_data_without_aad() -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let key = EncryptionKey::from_bytes([0x42; 32]);
 
         // Construct a legacy-shaped envelope: encrypted with the *current*
@@ -843,7 +840,7 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_key_fails_decryption() -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let provider1 = static_provider_with_version([0x01; 32], "default");
         let provider2 = static_provider_with_version([0x02; 32], "default");
 
@@ -863,7 +860,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_key_mode_stores_key_id() -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
         let selector = selector(CredentialId::new());
@@ -884,7 +881,7 @@ mod tests {
             "key-2",
         )) as Arc<dyn KeyProvider>;
         let store = EncryptionLayer::with_legacy_keys(
-            SqliteCredentialPersistence::connect_memory().await?,
+            crate::credential::test_owner::sqlite_store().await?,
             provider,
             vec![("key-1".to_string(), key1)],
         );
@@ -901,7 +898,7 @@ mod tests {
 
     #[tokio::test]
     async fn decrypt_with_old_key_succeeds() -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let key1_bytes = [0x01; 32];
         let key2_bytes = [0x02; 32];
 
@@ -935,7 +932,7 @@ mod tests {
     #[tokio::test]
     async fn legacy_key_read_preserves_version_and_envelope()
     -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let key1_bytes = [0x01; 32];
         let key2_bytes = [0x02; 32];
 
@@ -982,7 +979,7 @@ mod tests {
     #[tokio::test]
     async fn real_update_after_legacy_read_rotates_exactly_once()
     -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let key1_bytes = [0x01; 32];
         let key2_bytes = [0x02; 32];
 
@@ -1038,7 +1035,7 @@ mod tests {
     #[tokio::test]
     async fn new_does_not_silently_decrypt_empty_key_id_envelopes()
     -> Result<(), CredentialPersistenceError> {
-        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let inner = crate::credential::test_owner::sqlite_store().await?;
         let key_bytes = [0x42; 32];
         let key = Arc::new(EncryptionKey::from_bytes(key_bytes));
 

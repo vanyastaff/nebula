@@ -137,7 +137,7 @@ async fn pool_saturated_phase_and_load() {
 
     // Acquire the single permit — pool is now saturated.
     let _guard = manager
-        .acquire_pooled::<TinyPool>(&ctx(), &AcquireOptions::default())
+        .acquire::<TinyPool>(&ctx(), &AcquireOptions::default())
         .await
         .expect("first acquire succeeds");
 
@@ -160,7 +160,7 @@ async fn pool_saturated_phase_and_load() {
     );
 
     let gate_err = manager
-        .acquire_pooled::<TinyPool>(&ctx(), &AcquireOptions::default())
+        .acquire::<TinyPool>(&ctx(), &AcquireOptions::default())
         .await
         .expect_err("saturated pool must deny a second acquire");
     assert_eq!(*gate_err.kind(), ErrorKind::Backpressure);
@@ -194,7 +194,7 @@ async fn admission_status_reports_saturated_snapshot_and_none_for_unknown() {
 
     // Acquire the single permit — pool is now saturated.
     let _guard = manager
-        .acquire_pooled::<TinyPool>(&ctx(), &AcquireOptions::default())
+        .acquire::<TinyPool>(&ctx(), &AcquireOptions::default())
         .await
         .expect("first acquire succeeds");
 
@@ -251,7 +251,7 @@ async fn acquire_any_saturated_returns_backpressure() {
 
     // Hold the single permit.
     let _guard = manager
-        .acquire_pooled::<TinyPool>(&ctx(), &AcquireOptions::default())
+        .acquire::<TinyPool>(&ctx(), &AcquireOptions::default())
         .await
         .expect("first acquire succeeds");
 
@@ -306,7 +306,7 @@ async fn resident_always_ready_no_load() {
         "resident always reports None load"
     );
     let guard = manager
-        .acquire_resident::<SimpleResident>(&ctx(), &AcquireOptions::default())
+        .acquire::<SimpleResident>(&ctx(), &AcquireOptions::default())
         .await
         .expect("resident manager gate must admit a lease");
     drop(guard);

@@ -1,7 +1,7 @@
 //! Resume-token DTO for the W-S3c mint-on-park token store.
 //!
 //! [`TokenHash`] is the 32-byte SHA-256 of the plaintext bearer token
-//! (hashed-at-rest; the hash is the primary key in `port_resume_tokens`).
+//! (hashed-at-rest; the hash is the primary key in `resume_tokens`).
 //! [`ResumeTokenRow`] is the full persisted record; it carries the mint
 //! scope, the execution and node that parked, and the wait kind — but
 //! NEVER the plaintext token.  The plaintext lives only in the engine's
@@ -15,7 +15,7 @@ use crate::Scope;
 
 /// 32-byte SHA-256 digest of a plaintext resume token.
 ///
-/// Stored as the primary key in `port_resume_tokens` (BYTEA / BLOB).
+/// Stored as the primary key in `resume_tokens` (BYTEA / BLOB).
 /// The bytes are the raw hash output — not hex, not base64 — so
 /// case-folding collations cannot break exact-match lookups.
 ///
@@ -68,7 +68,41 @@ pub enum ResumeTokenWaitKind {
     Approval,
 }
 
-/// One row in `port_resume_tokens`.
+impl ResumeTokenWaitKind {
+    /// The stored and wire name (identical to the serde form).
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Webhook => "webhook",
+            Self::Approval => "approval",
+        }
+    }
+}
+
+impl std::fmt::Display for ResumeTokenWaitKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A name outside the closed [`ResumeTokenWaitKind`] set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("unknown resume-token wait kind")]
+pub struct UnknownResumeTokenWaitKind;
+
+impl std::str::FromStr for ResumeTokenWaitKind {
+    type Err = UnknownResumeTokenWaitKind;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "webhook" => Ok(Self::Webhook),
+            "approval" => Ok(Self::Approval),
+            _ => Err(UnknownResumeTokenWaitKind),
+        }
+    }
+}
+
+/// One row in `resume_tokens`.
 ///
 /// Produced by the engine at signal-park time and inserted in the
 /// same [`crate::TransitionBatch`] transaction as the `Waiting` state

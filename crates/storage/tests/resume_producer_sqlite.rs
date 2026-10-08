@@ -4,7 +4,7 @@
 //! prove the atomic consume+enqueue seam at the storage level:
 //!  1. `peek` returns a committed token WITHOUT burning it.
 //!  2. `consume_and_enqueue_resume` burns the token AND inserts the Resume into
-//!     `port_control_queue` in one transaction.
+//!     `execution_control_queue` in one transaction.
 //!  3. A replay returns `Ok(false)` and inserts no second Resume.
 //!  4. **Atomicity gate**: when the control INSERT fails inside the tx, the token
 //!     DELETE is rolled back — the token survives and no Resume is written.
@@ -13,12 +13,16 @@
 
 #![cfg(feature = "sqlite")]
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
 use std::str::FromStr;
 use std::time::Duration;
 
+use execution_parents::SeedExecutionParents;
 use nebula_storage::sqlite::{SqliteExecutionStore, SqliteResumeProducer, init_schema};
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, ResumeTarget};
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{ExecutionStore, ResumeProducer};
 use nebula_storage_port::{Scope, TransitionBatch, TransitionOutcome};
 use sqlx::Row;
@@ -39,9 +43,12 @@ async fn fresh_pool() -> sqlx::SqlitePool {
         .expect("connect sqlite memory");
     init_schema(&pool)
         .await
-        .expect("install port schema including port_resume_tokens");
+        .expect("install port schema including resume_tokens");
+    pool.seed_execution_parents(&test_scope(), WORKFLOW).await;
     pool
 }
+
+const WORKFLOW: &str = "wf-sqlite-1";
 
 fn test_scope() -> Scope {
     Scope::new("ws-sqlite-rp", "org-sqlite-rp")
@@ -90,7 +97,7 @@ async fn seed_token(
         .create(
             scope,
             execution_id,
-            "wf-sqlite-1",
+            WORKFLOW,
             serde_json::json!({"s": "created"}),
         )
         .await
@@ -100,15 +107,15 @@ async fn seed_token(
         .await
         .expect("acquire_lease must not error")
         .expect("fresh row must yield a fencing token");
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(execution_id)
-        .expected_version(0)
-        .fencing(fencing)
-        .new_state(serde_json::json!({"s": "waiting"}))
-        .resume_tokens(vec![token_row])
-        .build()
-        .expect("well-formed batch must build");
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        execution_id,
+        0,
+        fencing,
+        serde_json::json!({"s": "waiting"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_resume_tokens(vec![token_row]);
     let outcome = exec_store
         .commit(batch)
         .await
@@ -124,7 +131,7 @@ async fn seed_token(
 }
 
 async fn resume_count(pool: &sqlx::SqlitePool) -> i64 {
-    sqlx::query("SELECT COUNT(*) AS n FROM port_control_queue WHERE command = 'Resume'")
+    sqlx::query("SELECT COUNT(*) AS n FROM execution_control_queue WHERE command = 'Resume'")
         .fetch_one(pool)
         .await
         .expect("count query must succeed")
@@ -241,7 +248,7 @@ async fn sqlite_replay_returns_false_and_writes_nothing() {
 /// token survives and no Resume is written.
 ///
 /// We force the INSERT to fail with a temporary aborting trigger on
-/// `port_control_queue`.
+/// `execution_control_queue`.
 /// Falsifiability: a non-atomic `commit`-the-delete-then-insert producer would
 /// burn the token and return `Err` with the token gone → `peek` returns `None`
 /// → the `is_some()` assertion fails → this is exactly the P1 bug.
@@ -263,8 +270,8 @@ async fn sqlite_failed_enqueue_rolls_back_the_burn() {
     // Make the in-tx control INSERT fail without corrupting the canonical
     // migration-owned schema.
     sqlx::query(
-        "CREATE TRIGGER fail_port_control_queue_insert
-         BEFORE INSERT ON port_control_queue
+        "CREATE TRIGGER fail_control_queue_insert
+         BEFORE INSERT ON execution_control_queue
          BEGIN
              SELECT RAISE(ABORT, 'injected control enqueue failure');
          END",
@@ -292,7 +299,7 @@ async fn sqlite_failed_enqueue_rolls_back_the_burn() {
     );
 
     // Clear the fault and prove the retry now succeeds + writes exactly one Resume.
-    sqlx::query("DROP TRIGGER fail_port_control_queue_insert")
+    sqlx::query("DROP TRIGGER fail_control_queue_insert")
         .execute(&pool)
         .await
         .expect("fault trigger must be removed");

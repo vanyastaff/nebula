@@ -24,6 +24,9 @@
 //! The redelivery invariant (Cancel reaches runner B, row ends
 //! `Completed`, `reclaim_count >= 1`) is asserted unchanged.
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::HashMap,
     sync::{
@@ -47,7 +50,7 @@ use nebula_metrics::MetricsRegistry;
 use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, WorkflowVersionRecord};
-use nebula_storage_port::store::{ControlQueue, ExecutionStore, WorkflowVersionStore};
+use nebula_storage_port::store::{ControlQueue, ExecutionStore};
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
@@ -145,20 +148,20 @@ impl LeaseStores {
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
         let scope = nebula_engine::store_seam::single_tenant_scope();
         let definition = serde_json::to_value(wf).unwrap();
-        self.versions
-            .create(
-                &scope,
-                WorkflowVersionRecord {
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    activation: None,
-                    definition,
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &scope,
+            WorkflowVersionRecord {
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                activation: None,
+                definition,
+            },
+        )
+        .await
+        .unwrap();
     }
 
     /// Whether a stranger holder is blocked from acquiring the lease

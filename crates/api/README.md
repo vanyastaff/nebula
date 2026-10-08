@@ -22,6 +22,17 @@ delivery and per-endpoint lifecycle management.
 
 Versioned HTTP request/response types and RFC 9457 bodies live in `nebula-api-contract::v1`. This crate consumes its `openapi` feature for the served schemas and retains server-owned conversions and compatibility imports. The contract contains no server framework, persistence adapter or runtime authority.
 
+Execution GET detail projects one canonical persisted snapshot through
+`domain/execution/inspection.rs`: typed status, RFC3339 times, storage revision,
+node states, attempts, framework failure records and outputs. It does not read
+the process-local node-result cache. Creation has no start time; corrupt state
+returns a payload-free problem. External output records expose size/MIME only,
+not backend keys or downloaded content. Replay checkpoints and command identities
+are not transport fields. Start/cancel acknowledgements remain separate receipts.
+Current output means primary output; named output ports are not included.
+Attempts are one-based and expose `recorded_at`, since their records are created
+after dispatch resolves. Use tracing for per-attempt dispatch duration.
+
 All routes are tenant-scoped under `/api/v1/orgs/{org}/workspaces/{ws}/…`
 (per spec 05-api-routing). Slugs and ULIDs are accepted interchangeably
 via `nebula-core::Slug`.
@@ -106,23 +117,21 @@ persists the execution, exact contract bundle, and Start command, then returns
 202 with its checked persisted receipt. Both routes share the `Idempotency-Key`
 namespace; replay returns the original execution even after workflow republishing.
 Unknown commit outcomes retain the original execution identity in a 503 response.
-The current server root does not install
-the engine `ControlConsumer`, so 202 proves the durable producer write, not deployed
-consumption.
+The ordinary server installs the engine `ControlConsumer` through its supervised
+in-process worker. A 202 still proves durable admission, not completed consumption;
+clients observe progress through execution detail.
 Seam: `crates/api/src/domain/execution/handler.rs` — `start_execution`.
 - **[L2-§13 step 5]** Cancel (`POST /api/v1/executions/:id/cancel`) writes a
-durable signal to `ControlQueueRepo` in the same logical operation as the
+durable signal to the port `ControlQueue` in the same logical operation as the
 terminal cancellation state transition — not only a DB-row flip. The API
 returns after this producer commit; it does not wait for a consumer or prove
 that an in-flight handler stopped. Seam:
 `crates/api/src/domain/execution/handler.rs` — `cancel_execution`.
 - **[L2-§12.3]** Local-first transport startup needs no Docker or Redis.
-  With `API_EXECUTION_BACKEND` unset, `apps/server` uses process-local memory.
-  Separately, `apps/worker` defaults to its own `nebula-worker.db` SQLite file.
-  Those defaults do not share execution/control state, and neither root installs
-  the engine `ControlConsumer`. A functional local execution path therefore
-  requires explicit shared-backend configuration and consumer composition;
-  today that full composition exists only in manually assembled tests.
+  With `API_EXECUTION_BACKEND` unset, `apps/server` uses durable SQLite and an
+  in-process worker on the same admitted deployment pool. Key, linked artifact
+  identity and owner setup remain required. Separate worker processes require
+  PostgreSQL in the server's supported `separate-workers` topology.
 - **[L2-§4.5]** Producer behavior and consumer behavior are documented
   separately. The manually composed Start knife test proves a test-installed
   consumer can drive a started execution to completion over shared in-memory
@@ -131,8 +140,9 @@ that an in-flight handler stopped. Seam:
   Because the API writes the terminal row itself and the harness exposes no
   handler-exit signal, that row is not evidence of consumer delivery or handler
   interruption. The `CANCELFX` fault gate remains the required interruption
-  evidence. None of these tests prove the default server and worker binaries as
-  one end-to-end runtime.
+  evidence. Separately, `apps/server/tests/owner_setup_cli.rs` runs the actual
+  server binary to prove local completion, persisted output and recovery after
+  a process crash during a timer wait on both SQLite and PostgreSQL.
 - **[L2-§12.2]** Cancel signals share the outbox transaction — the
 `control_queue_repo` field in `AppState` is the durable outbox (§12.2).
 A second in-memory control channel is forbidden (see §12.2 prohibition on
@@ -327,7 +337,7 @@ site. Independent flows use independent cookie names and may complete in any
 order.
 
 Separately, OAuth-state admission has a hard global bound of 10,000 live rows
-per process (Memory) or shared PostgreSQL deployment. Capacity check and insert
+per process (Memory) or shared SQLite/PostgreSQL deployment. Capacity check and insert
 are one fail-closed admission operation: a full or contended gate returns 429
 without issuing state, PKCE material, or a transaction cookie.
 
@@ -366,7 +376,7 @@ without issuing state, PKCE material, or a transaction cookie.
   backend outcome. A request carrying eight recognized cookie names cannot
   create another flow; concurrent responses may temporarily exceed that
   request-local browser bound. The separate global state-admission gate is hard:
-  at most 10,000 live rows per Memory process or shared PostgreSQL deployment,
+  at most 10,000 live rows per Memory process or shared SQLite/PostgreSQL deployment,
   with full/contended admission returning 429 before state creation.
 - **Bounded secret lifetime**: every discovery, token, userinfo, and verified-
   email response is read into a preallocated, zeroizing buffer capped at 256
@@ -489,24 +499,33 @@ silently-shipped endpoint cannot pass review.
 
 ### `me/*` and Plane-A auth durability (canon §11.6 / §11.5)
 
-The profile, PAT, password, MFA, session, and Plane-A OAuth paths are implemented
-for both selectable identity backends. `API_AUTH_BACKEND` defaults to `memory`;
-`postgres` is available when `nebula-server` is built with the `postgres` feature
-and `DATABASE_URL` is reachable. An explicitly requested Postgres backend fails
-closed instead of silently falling back to memory.
+The profile, PAT, password, MFA, session, and Plane-A OAuth paths use the identity
+adapter selected by the first-party deployment database. `API_EXECUTION_BACKEND`
+is the shared selection: `sqlite` persists identity in the execution deployment
+file and pool; `postgres` is available when `nebula-server` is built with the
+`postgres` feature and `DATABASE_URL` is reachable. An unavailable durable backend
+fails closed instead of falling back to memory. `API_AUTH_BACKEND` has been removed;
+setting it rejects configuration with value-free removal guidance. There is no
+independent identity backend to coordinate with execution storage.
 
 | Backend | Restart-survival | Multi-replica share | Intended use |
 |---|---|---|---|
 | `memory` | **No** | **No** | Local development and tests |
+| `sqlite` | **Yes** | SQLite serializes writers on the same database file | Durable single-host identity |
 | `postgres` | **Yes** | **Yes**, for replicas using the same database | Durable production identity |
 
 The Postgres implementation persists users, sessions, PATs, verification tokens,
 OAuth state, and external identity links. OAuth state is consumed atomically
 with provider and expiry predicates; an expired-state cleanup is also attempted
 when a new flow starts. This identity
-backend is separate from tenant-directory policy. The server composes both against the selected
-execution backend and validates a configured bootstrap owner through this identity backend before
-atomically provisioning the organization, default workspace, and owner membership.
+backend is separate from tenant-directory policy. The server composes both against
+the admitted deployment database. Offline `nebula-server setup begin/resume/status`
+enrolls the first unverified account without mail and uses a persisted command to
+provision its organization, default workspace and owner grant. Ordinary password
+login uses that same database. The older environment-driven tenant bootstrap is
+separate: it validates an existing verified owner before atomically provisioning
+the tenant. Neither path starts an execution worker; ordinary API/worker lifecycle
+composition remains unfinished.
 
 ### Credential CRUD durability (canon §11.6 / §12.5)
 
@@ -546,16 +565,16 @@ protocol; it does not restore provider-specific ceremony routes. When no command
 
 | Aspect | First-party credential storage composition (after membership authority is provisioned) |
 |---|---|
-| Restart-survival | **Yes** — `NEBULA_CRED_DB` selects the default file-backed SQLite store or PostgreSQL; completed credentials and encrypted pending interactions share the admitted backend. |
-| Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and set `NEBULA_CRED_DB=postgres://…`; credential rows, pending interactions, and the refresh-claim repository share one admitted credential-owned pool. SQLite remains instance-local. |
+| Restart-survival | **Yes** — credentials live in the deployment database (SQLite by default, or PostgreSQL), beside the workspace each belongs to; completed credentials and encrypted pending interactions share it. Memory is an internal reference adapter, not a deployment option. |
+| Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and select `API_EXECUTION_BACKEND=postgres` with `DATABASE_URL`; credential rows, pending interactions, and the refresh-claim repository share that database. SQLite remains instance-local. |
 | Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
 | Cross-workspace isolation | **Yes** — authority verifies workspace existence/parentage, revalidates membership/role, reproduces the authenticated scope, and every persistence predicate uses the derived `(owner, credential_id)` selector; cross-workspace IDs collapse to a flat 404. The default server shares one backend-bound tenant directory across RBAC and credential authority. |
 | Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success. Provider rejection requiring an integration reconnect is the typed 409 `API:CREDENTIAL_REAUTH_REQUIRED`, not Plane-A 401. The test response is a tagged `status` union: success has no code; failure requires a frozen v1, payload-free code, and future core codes map to `other`. |
 
-> **Operator warning:** completed credentials survive a normal process restart.
-> The default SQLite database is not shared across replicas; use the explicit
-> PostgreSQL `NEBULA_CRED_DB` profile for multi-replica credential and refresh
-> coordination. Pending acquisition state shares the selected credential backend,
+> **Operator warning:** completed credentials survive a normal process restart
+> on a durable execution backend. A SQLite database is not shared across
+> replicas; use the PostgreSQL execution backend for multi-replica credential and
+> refresh coordination. Pending acquisition state shares the deployment database,
 > remains encrypted at rest, and expires after at most ten minutes.
 >
 > The tenancy path resolver special-cases the literal `resolve`
@@ -588,9 +607,8 @@ the **single shared store** `rbac_middleware` also consults, so a
 guarded membership addition is immediately visible to the next RBAC check (no
 propagation window). `nebula-storage-port` provides consistent membership snapshots
 and parent-qualified mutations, implemented by its storage backends and wired by
-`apps/server`. The in-memory
-implementation is the §4.5-honest reference backing, with the same
-restart/replica limits as `API_AUTH_BACKEND=memory`.
+`apps/server`. The in-memory implementation is an internal test/reference
+adapter. Deployment startup accepts SQLite or PostgreSQL only.
 
 The technical API `MembershipStore` exposes guarded organization mutations and
 parent-qualified workspace grant list/upsert/remove operations.
@@ -601,16 +619,17 @@ an organization-bound `get_tenant_membership` snapshot. Tests may populate the c
 not part of the production policy trait.
 
 The default server wires one backend-bound tenant directory shared by RBAC, member handlers,
-and credential authority. It does not create a privileged identity implicitly: optional operator
-bootstrap requires explicit stable tenant IDs and an owner already accepted by the configured
-`AuthBackend`.
+and credential authority. It does not create a privileged identity implicitly.
+Offline first-owner setup explicitly creates the account and tenant; optional
+environment-driven bootstrap instead requires stable tenant IDs and an existing
+verified owner in the same deployment database.
 
 | Aspect | First-party tenant membership composition |
 |---|---|
-| Default binary | Wired to the selected memory, SQLite, or PostgreSQL execution backend |
-| Restart-survival | SQLite/PostgreSQL: **yes**; memory: **no** |
-| Multi-replica share | PostgreSQL: **yes**; SQLite/memory: **no** |
-| Provisioning | Explicit operator bootstrap validates the owner identity, then atomically creates the org, default workspace, and owner grant; exact replay is idempotent and mismatches fail closed |
+| Default binary | Wired to SQLite by default, or explicitly selected PostgreSQL |
+| Restart-survival | SQLite/PostgreSQL: **yes** |
+| Multi-replica share | PostgreSQL: **yes**; SQLite: **no** |
+| Provisioning | Offline first-owner setup persists an unverified account and a resumable tenant command; environment-driven bootstrap accepts an existing verified owner. Tenant acceptance atomically creates the org, default workspace, owner grant and receipt; exact replay acknowledges history without restoring removed authority |
 
 > RBAC applies role enforcement on every
 > `/orgs/{org}/...` and `/orgs/{org}/workspaces/{ws}/...` route — a
@@ -1053,9 +1072,9 @@ above for the enforcement guarantee.
 | `DELETE` | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}`                       | Delete workflow                                                            |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate`              | Compile, install exact revisions, and publish by CAS (§13 step 2)           |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute`               | Trigger workflow execution — 202 Accepted (§13 step 3)                     |
-| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | List executions for a workflow                                             |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | Execution history of a workflow (cursor, status/time filters)              |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | Start execution — 202 Accepted (§13 step 3)                                |
-| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/executions`                           | List all executions in workspace                                           |
+| `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/executions`                           | Execution history, newest first (cursor, status/workflow/time filters)    |
 | `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}`                    | Get execution status                                                       |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/cancel`             | Cancel execution — durable signal (§13 step 5)                             |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate`          | Terminate execution — durable signal (§12.2)                               |

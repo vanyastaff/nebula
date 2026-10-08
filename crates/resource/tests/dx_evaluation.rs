@@ -161,7 +161,7 @@ async fn use_case_1_pooled_http_client() {
     let opts = AcquireOptions::default();
 
     let handle = manager
-        .acquire_pooled::<HttpResource>(&ctx, &opts)
+        .acquire::<HttpResource>(&ctx, &opts)
         .await
         .expect("acquire should succeed");
     // but doesn't say what Lease looks like in the pooled case.
@@ -304,7 +304,7 @@ async fn use_case_2_resident_config_store() {
     let opts = AcquireOptions::default();
 
     let handle = manager
-        .acquire_resident::<ConfigStoreResource>(&ctx, &opts)
+        .acquire::<ConfigStoreResource>(&ctx, &opts)
         .await
         .expect("acquire should succeed");
 
@@ -317,7 +317,7 @@ async fn use_case_2_resident_config_store() {
 
     // Second acquire returns a clone of the same instance
     let handle2 = manager
-        .acquire_resident::<ConfigStoreResource>(&ctx, &opts)
+        .acquire::<ConfigStoreResource>(&ctx, &opts)
         .await
         .expect("second acquire should succeed");
 
@@ -447,7 +447,7 @@ async fn use_case_3_db_with_recovery_and_shutdown() {
             CancellationToken::new(),
         );
         let opts = AcquireOptions::default();
-        let h = m1.acquire_pooled::<DbResource>(&ctx, &opts).await.unwrap();
+        let h = m1.acquire::<DbResource>(&ctx, &opts).await.unwrap();
         assert!(h.id < 100); // just a sanity check
     });
 
@@ -460,7 +460,7 @@ async fn use_case_3_db_with_recovery_and_shutdown() {
             CancellationToken::new(),
         );
         let opts = AcquireOptions::default();
-        let h = m2.acquire_pooled::<DbResource>(&ctx, &opts).await.unwrap();
+        let h = m2.acquire::<DbResource>(&ctx, &opts).await.unwrap();
         assert!(h.id < 100);
     });
 
@@ -499,7 +499,7 @@ async fn error_not_found_on_missing_resource() {
     let opts = AcquireOptions::default();
 
     let err = manager
-        .acquire_pooled::<HttpResource>(&ctx, &opts)
+        .acquire::<HttpResource>(&ctx, &opts)
         .await
         .unwrap_err();
 
@@ -538,7 +538,7 @@ async fn error_cancelled_after_shutdown() {
     let opts = AcquireOptions::default();
 
     let err = manager
-        .acquire_pooled::<HttpResource>(&ctx, &opts)
+        .acquire::<HttpResource>(&ctx, &opts)
         .await
         .unwrap_err();
     // returns false for Cancelled, which is correct. The API is clean here.

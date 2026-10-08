@@ -952,7 +952,9 @@ async fn binary_inline_respects_reject_limit() {
             Ok(AR::Success {
                 output: ActionOutput::Binary(BinaryData {
                     content_type: "application/octet-stream".to_owned(),
-                    data: BinaryStorage::Inline(vec![0_u8; 64]),
+                    data: BinaryStorage::Inline {
+                        bytes: vec![0_u8; 64],
+                    },
                     size: 1, // intentionally wrong; effective_size() must win
                     metadata: None,
                 }),

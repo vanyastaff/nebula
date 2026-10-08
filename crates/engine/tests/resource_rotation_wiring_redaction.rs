@@ -299,11 +299,7 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
         CancellationToken::new(),
     );
     let g = mgr
-        .acquire_resident_for_identity::<SecretRes>(
-            &ctx,
-            &AcquireOptions::default(),
-            &slot_identity,
-        )
+        .acquire_for_identity::<SecretRes>(&ctx, &AcquireOptions::default(), &slot_identity)
         .await
         .expect("warm secret-bearing runtime");
     drop(g);
@@ -318,12 +314,15 @@ async fn wired_rotation_fanout_observability_is_redaction_clean() {
 
     let cred_bus = Arc::new(EventBus::<CredentialEvent>::new(16));
     let lease_bus = Arc::new(EventBus::<LeaseEvent>::new(16));
-    let _driver = ResourceFanoutDriver::spawn(
+    let _driver = ResourceFanoutDriver::try_spawn(
         Arc::clone(&index),
         Arc::clone(&mgr),
-        Arc::clone(&cred_bus),
+        None,
+        Some(Arc::clone(&cred_bus)),
         Some(Arc::clone(&lease_bus)),
-    );
+        Arc::new(|| {}),
+    )
+    .expect("fan-out starts");
 
     // The buses have no cross-bus ordering guarantee. Observe the refresh
     // hook before emitting revoke: once revoke fences the row, a later

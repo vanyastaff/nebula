@@ -26,9 +26,8 @@ does **not** implement any backend.
   administrator inside the backend's cross-replica critical section, while
   workspace mutations require the exact live parent organization. Authorization
   reads return both roles from one logical snapshot and reject malformed roles.
-  Legacy workspace ids that occur under more than one organization are treated
-  as ambiguous, including deleted aliases, because the historical membership
-  key did not persist the parent organization.
+  Workspace ids are unique across organizations, and every workspace grant
+  names its organization and depends on the principal's organization grant.
 - **Durable shared-resource fanout.** Exact scoped resource identities resolve
   independently of author-facing rows. Bounded subscription reconciliation,
   source fencing, exact event replay, delivery claims, and delivery-keyed

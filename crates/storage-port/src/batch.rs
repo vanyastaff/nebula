@@ -1,10 +1,10 @@
 //! Atomic state-transition unit-of-work.
 //!
 //! [`TransitionBatch`] is the *only* way to apply a state transition. Its
-//! fields are private and it has no public constructor other than
-//! [`TransitionBatch::builder`], so a caller structurally cannot transition
-//! without declaring the scope, the expected CAS version, and the lease
-//! [`FencingToken`]. `commit` writes `new_state` + `outbox` + `journal` +
+//! fields are private and its one constructor, [`TransitionBatch::new`],
+//! takes every required part — scope, execution id, expected CAS version,
+//! lease [`FencingToken`], and the snapshot with its listing — so a batch
+//! missing one does not compile. `commit` writes `new_state` + `outbox` + `journal` +
 //! `resume_tokens` in one transaction (or one mutex-guarded mutation for
 //! InMemory), gated by the version CAS *and* the fencing token. This makes
 //! a split between durable state and outbox/journal/resume-tokens impossible
@@ -17,9 +17,8 @@
 //! ADR-0099 W-S3c.
 use chrono::{DateTime, Utc};
 
-use crate::dto::resume_token::ResumeTokenRow;
-use crate::dto::{ControlMsg, JournalEntry};
-use crate::error::StorageError;
+use crate::dto::ResumeTokenRow;
+use crate::dto::{ControlMsg, ExecutionListing, JournalEntry};
 use crate::ids::FencingToken;
 use crate::scope::Scope;
 
@@ -51,6 +50,8 @@ pub struct TransitionBatch {
     expected_version: u64,
     fencing: FencingToken,
     new_state: serde_json::Value,
+    /// Queryable projection of `new_state`, written in the same statement.
+    listing: ExecutionListing,
     outbox: Vec<ControlMsg>,
     journal: Vec<JournalEntry>,
     /// Resume-token rows to INSERT in the same transaction as the state
@@ -64,12 +65,69 @@ pub struct TransitionBatch {
 }
 
 impl TransitionBatch {
-    /// Start building a batch. Required: `scope`, `execution_id`,
-    /// `expected_version`, `fencing`, `new_state`. `outbox`/`journal`
-    /// default empty.
+    /// A transition of `execution_id` in `scope` from `expected_version`,
+    /// under the lease `fencing`, to `state` with its `listing` projection.
+    ///
+    /// The snapshot and its projection are one argument pair so neither can be
+    /// committed without the other. Outbox, journal, resume tokens and the
+    /// reference transition start empty; add them with the `with_*` methods.
     #[must_use]
-    pub fn builder() -> TransitionBatchBuilder {
-        TransitionBatchBuilder::default()
+    pub fn new(
+        scope: Scope,
+        execution_id: impl Into<String>,
+        expected_version: u64,
+        fencing: FencingToken,
+        state: serde_json::Value,
+        listing: ExecutionListing,
+    ) -> Self {
+        Self {
+            scope,
+            execution_id: execution_id.into(),
+            expected_version,
+            fencing,
+            new_state: state,
+            listing,
+            outbox: Vec::new(),
+            journal: Vec::new(),
+            resume_tokens: Vec::new(),
+            reference_transition: None,
+        }
+    }
+
+    /// Control-queue rows to append in the same transaction.
+    #[must_use]
+    pub fn with_outbox(mut self, outbox: Vec<ControlMsg>) -> Self {
+        self.outbox = outbox;
+        self
+    }
+
+    /// Journal rows to append in the same transaction.
+    #[must_use]
+    pub fn with_journal(mut self, journal: Vec<JournalEntry>) -> Self {
+        self.journal = journal;
+        self
+    }
+
+    /// Resume-token rows to INSERT in the same transaction (W-S3c).
+    ///
+    /// The engine sets one row on a signal-park commit. Backends insert with
+    /// `ON CONFLICT(execution_id, node_key) DO NOTHING`, so a crash re-drive
+    /// does not produce a duplicate live token.
+    #[must_use]
+    pub fn with_resume_tokens(mut self, tokens: Vec<ResumeTokenRow>) -> Self {
+        self.resume_tokens = tokens;
+        self
+    }
+
+    /// An execution-owned revision-reference mutation applied atomically with
+    /// the transition (terminal commits only).
+    #[must_use]
+    pub const fn with_reference_transition(
+        mut self,
+        transition: ExecutionReferenceTransition,
+    ) -> Self {
+        self.reference_transition = Some(transition);
+        self
     }
 
     /// Tenant scope this transition applies within.
@@ -103,6 +161,43 @@ impl TransitionBatch {
         &self.new_state
     }
 
+    /// Listing projection of [`Self::new_state`]; backends write it in the
+    /// same statement as the state.
+    #[must_use]
+    pub const fn listing(&self) -> ExecutionListing {
+        self.listing
+    }
+
+    /// The same batch retargeted at `scope`: the batch itself, every outbox
+    /// row, and every resume-token row.
+    ///
+    /// This is how a tenancy decorator binds a batch to its tenant. Every
+    /// other field is carried over unchanged, so adding a field to the batch
+    /// can never be silently dropped by a hand-written rebuild.
+    #[must_use]
+    pub fn rebound_to(&self, scope: &Scope) -> Self {
+        let mut batch = self.clone();
+        batch.scope = scope.clone();
+        for message in &mut batch.outbox {
+            message.scope = scope.clone();
+        }
+        for token in &mut batch.resume_tokens {
+            token.scope = scope.clone();
+        }
+        batch
+    }
+
+    /// The same batch with `entries` appended to its journal rows.
+    ///
+    /// Used by backends that add an owner-written observation to a verified
+    /// batch inside their own lock.
+    #[must_use]
+    pub fn with_appended_journal(&self, entries: impl IntoIterator<Item = JournalEntry>) -> Self {
+        let mut batch = self.clone();
+        batch.journal.extend(entries);
+        batch
+    }
+
     /// Control-queue rows to append in the same transaction.
     #[must_use]
     pub fn outbox(&self) -> &[ControlMsg] {
@@ -132,123 +227,6 @@ impl TransitionBatch {
     #[must_use]
     pub const fn reference_transition(&self) -> Option<ExecutionReferenceTransition> {
         self.reference_transition
-    }
-}
-
-/// Typed builder for [`TransitionBatch`]. A missing required field makes
-/// [`TransitionBatchBuilder::build`] fail closed with
-/// [`StorageError::Configuration`] rather than panicking.
-#[derive(Debug, Default)]
-pub struct TransitionBatchBuilder {
-    scope: Option<Scope>,
-    execution_id: Option<String>,
-    expected_version: Option<u64>,
-    fencing: Option<FencingToken>,
-    new_state: Option<serde_json::Value>,
-    outbox: Vec<ControlMsg>,
-    journal: Vec<JournalEntry>,
-    resume_tokens: Vec<ResumeTokenRow>,
-    reference_transition: Option<ExecutionReferenceTransition>,
-}
-
-impl TransitionBatchBuilder {
-    /// Set the tenant scope (required).
-    #[must_use]
-    pub fn scope(mut self, scope: Scope) -> Self {
-        self.scope = Some(scope);
-        self
-    }
-
-    /// Set the target execution id (required).
-    #[must_use]
-    pub fn execution_id(mut self, id: impl Into<String>) -> Self {
-        self.execution_id = Some(id.into());
-        self
-    }
-
-    /// Set the expected CAS version (required).
-    #[must_use]
-    pub fn expected_version(mut self, v: u64) -> Self {
-        self.expected_version = Some(v);
-        self
-    }
-
-    /// Set the lease fencing token (required).
-    #[must_use]
-    pub fn fencing(mut self, token: FencingToken) -> Self {
-        self.fencing = Some(token);
-        self
-    }
-
-    /// Set the opaque new execution state (required).
-    #[must_use]
-    pub fn new_state(mut self, state: serde_json::Value) -> Self {
-        self.new_state = Some(state);
-        self
-    }
-
-    /// Set the outbox rows to append atomically (optional, default empty).
-    #[must_use]
-    pub fn outbox(mut self, outbox: Vec<ControlMsg>) -> Self {
-        self.outbox = outbox;
-        self
-    }
-
-    /// Set the journal rows to append atomically (optional, default empty).
-    #[must_use]
-    pub fn journal(mut self, journal: Vec<JournalEntry>) -> Self {
-        self.journal = journal;
-        self
-    }
-
-    /// Set the resume-token rows to INSERT atomically (W-S3c).
-    ///
-    /// Optional — default is empty.  The engine sets this to a
-    /// single-element vec on signal-park commits.  Backends must use
-    /// `ON CONFLICT(execution_id, node_key) DO NOTHING` so a crash
-    /// re-drive does not produce a duplicate live token.
-    #[must_use]
-    pub fn resume_tokens(mut self, tokens: Vec<ResumeTokenRow>) -> Self {
-        self.resume_tokens = tokens;
-        self
-    }
-
-    /// Set an execution-owned revision-reference mutation to apply atomically
-    /// with the transition (optional, default `None`).
-    #[must_use]
-    pub fn reference_transition(mut self, transition: ExecutionReferenceTransition) -> Self {
-        self.reference_transition = Some(transition);
-        self
-    }
-
-    /// Finalize the batch. Fails closed if any required field is missing.
-    pub fn build(self) -> Result<TransitionBatch, StorageError> {
-        let scope = self
-            .scope
-            .ok_or_else(|| StorageError::Configuration("TransitionBatch.scope missing".into()))?;
-        let execution_id = self.execution_id.ok_or_else(|| {
-            StorageError::Configuration("TransitionBatch.execution_id missing".into())
-        })?;
-        let expected_version = self.expected_version.ok_or_else(|| {
-            StorageError::Configuration("TransitionBatch.expected_version missing".into())
-        })?;
-        let fencing = self
-            .fencing
-            .ok_or_else(|| StorageError::Configuration("TransitionBatch.fencing missing".into()))?;
-        let new_state = self.new_state.ok_or_else(|| {
-            StorageError::Configuration("TransitionBatch.new_state missing".into())
-        })?;
-        Ok(TransitionBatch {
-            scope,
-            execution_id,
-            expected_version,
-            fencing,
-            new_state,
-            outbox: self.outbox,
-            journal: self.journal,
-            resume_tokens: self.resume_tokens,
-            reference_transition: self.reference_transition,
-        })
     }
 }
 

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use nebula_storage_port::Scope;
 use nebula_storage_port::StorageError;
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, TokenHash};
+use nebula_storage_port::dto::{ResumeTokenRow, TokenHash};
 use nebula_storage_port::store::ResumeTokenStore;
 
 /// Wraps a [`ResumeTokenStore`] and forces `revoke_on_terminal` into a

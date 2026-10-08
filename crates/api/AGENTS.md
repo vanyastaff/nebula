@@ -18,7 +18,7 @@
 ## Commands
 
 - OpenAPI/spec guards: `cargo nextest run -p nebula-api --test openapi_spec --test openapi_canon_compliance --test openapi_secret_redaction` (inspect the generated router/spec contract; no static spec regeneration step).
-- Feature flags: `postgres` (PG idempotency + `PgAuthBackend`), `test-util` (`ApiConfig::for_test`, bypasses JWT configuration validation — never in prod), `first-party-composition` (technical composition hooks).
+- Feature flags: `postgres` (PG persistence adapters), `test-util` (`ApiConfig::for_test`, bypasses JWT configuration validation — never in prod), `first-party-composition` (technical composition hooks).
 - PostgreSQL auth tests require `DATABASE_URL`; an absent variable makes suites such as `auth_pg_e2e` return early. A feature-enabled build or green skipped test is not backend runtime evidence.
 
 ## Key files
@@ -38,6 +38,7 @@
 
 - Pure library — ships NO binary/composition root; wiring lives in `apps/server`. Do not add a `main`.
 - No SQL driver / storage-schema knowledge here — inject spec-16 storage ports via `AppState::new` (`nebula-storage` owns adapters).
+- Durable auth uses storage's `AuthPersistence` and one `DurableAuthBackend` policy implementation. Deployment composition admits the database and converges identity secrets before exposing auth; the persistence set binds every repository and MFA codec to that deployment.
 - Versioned wire DTOs live in `nebula-api-contract::v1`; API DTO modules retain compatibility imports, server mappings and tests. Enable its `openapi` feature for the served schemas.
 - DTOs MUST NOT embed `nebula-core`/`-storage`/`-engine`/`-credential` types (ADR-0047 §3); wrap cross-layer types (`OrgRoleDto`/`WorkspaceRoleDto`). DTOs carry only `serde_json::Value`/wrappers.
 - All errors are RFC 9457 `application/problem+json` via a typed `ApiError` variant — never a new ad-hoc 500 for business failures.
@@ -60,11 +61,11 @@
   egress, Google discovery state, concurrency, and deadline policy. The router config retains an
   empty map; backends never receive raw clients, duplicate secrets, or independent config.
 - OAuth-state admission is globally capped at 10,000 live entries per Memory process or shared
-  PostgreSQL deployment. Capacity check plus insert is atomic/fail-closed; full or contended
+  SQLite or PostgreSQL deployment. Capacity check plus insert is atomic/fail-closed; full or contended
   admission returns 429 before issuing state, PKCE material, or a browser cookie.
 - OAuth completion has separate boundaries: consume live state atomically; run provider egress
   without database locks under one original callback-network deadline; finalize local state in a
-  short Memory critical section or PostgreSQL transaction. Never describe the whole callback as
+  short Memory critical section or SQL transaction. Never describe the whole callback as
   one transaction or run provider I/O inside the finalizer.
 - Existing `(provider, subject)` links are authoritative. Email collision without such a link is
   `AccountLinkRequired` (409), performs no writes, and never auto-links. For an MFA-enabled linked

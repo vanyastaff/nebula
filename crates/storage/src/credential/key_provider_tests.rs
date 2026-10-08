@@ -5,15 +5,13 @@ use base64::Engine;
 #[cfg(feature = "sqlite")]
 use nebula_core::CredentialId;
 #[cfg(feature = "sqlite")]
-use nebula_storage_port::{
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
-};
+use nebula_storage_port::{CredentialPersistence, CredentialPersistenceError, CredentialSelector};
 
 use super::*;
 
 #[cfg(feature = "sqlite")]
 fn selector(id: CredentialId) -> CredentialSelector {
-    CredentialSelector::new(CredentialOwner::from_canonical("test-owner"), id)
+    CredentialSelector::new(crate::credential::test_owner::owner("test-owner"), id)
 }
 
 // ------------------------------------------------------------------------
@@ -378,12 +376,12 @@ impl KeyProvider for CountingKeyProvider {
 async fn layer_refetches_provider_on_create_and_get() -> Result<(), CredentialPersistenceError> {
     use crate::credential::test_support::make_credential;
 
-    use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialPersistence};
+    use super::super::layer::EncryptionLayer;
 
     let key = Arc::new(EncryptionKey::from_bytes([0x33; 32]));
     let provider = Arc::new(CountingKeyProvider::new(Arc::clone(&key)));
     let store = EncryptionLayer::new(
-        SqliteCredentialPersistence::connect_memory().await?,
+        crate::credential::test_owner::sqlite_store().await?,
         Arc::clone(&provider) as _,
     );
 
@@ -426,10 +424,10 @@ impl KeyProvider for FailingKeyProvider {
 async fn provider_failure_surfaces_as_unavailable() -> Result<(), CredentialPersistenceError> {
     use crate::credential::test_support::make_credential;
 
-    use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialPersistence};
+    use super::super::layer::EncryptionLayer;
 
     let store = EncryptionLayer::new(
-        SqliteCredentialPersistence::connect_memory().await?,
+        crate::credential::test_owner::sqlite_store().await?,
         Arc::new(FailingKeyProvider) as Arc<dyn KeyProvider>,
     );
 

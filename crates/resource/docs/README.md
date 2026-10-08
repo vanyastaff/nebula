@@ -28,7 +28,7 @@ read `src/lib.rs`'s module doc directly) and the doctest on
 | `Provider` | Central trait — `Config`/`Instance`/`Topology` associated types + lifecycle methods (`create`, `check`, consuming `destroy`) + per-slot credential-rotation hooks (`on_credential_refresh`, `on_credential_revoke`) |
 | `Resource` (derive) | Emits credential-slot plumbing (`HasCredentialSlots`, `<field>_slot()` accessors) for a hand-written `impl Provider` |
 | `Pooled` / `Resident` / `Bounded` | The three built-in topologies — see below |
-| `Manager` | Central registry — single `register(RegistrationSpec { … })` funnel, typed acquire dispatch (`acquire_any`, `acquire_pooled[_for_identity]`, `acquire_resident[_for_identity]`, `acquire_bounded[_for_identity]`), slot rotation, graceful shutdown |
+| `Manager` | Central registry — single `register(RegistrationSpec { … })` funnel, typed acquire (`acquire`, `acquire_for_identity`) and erased dispatch (`acquire_any`), slot rotation, graceful shutdown |
 | `ResourceHandle` | The action-facing row facade: units check out an instance per attempt |
 | `ResourceGuard` | Host-only RAII guard (never an action route); derefs to `R::Instance`, releases on drop, tainting supported |
 | `ResourceContext` | Execution context — scope, cancellation, capability traits |

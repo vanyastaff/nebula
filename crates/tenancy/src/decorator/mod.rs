@@ -44,7 +44,7 @@ mod workflow;
 pub use checkpoint::ScopedCheckpointStore;
 pub use control_queue::ScopedControlQueue;
 pub use execution::ScopedExecutionStore;
-pub use idempotency::{ScopedIdempotencyGuard, ScopedIdempotencyStore};
+pub use idempotency::ScopedIdempotencyGuard;
 pub use journal::ScopedExecutionJournalReader;
 pub use node_result::ScopedNodeResultStore;
 pub use operation_ledger::{ScopedOperationLedger, ScopedOperationLedgerAdjudicator};

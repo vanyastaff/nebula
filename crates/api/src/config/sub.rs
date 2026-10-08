@@ -138,48 +138,14 @@ impl Default for IdempotencyApiConfig {
     }
 }
 
-/// Authentication backend selection.
-///
-/// Drives composition-root selection between the dev-only
-/// [`InMemoryAuthBackend`] (the production-quality default with Argon2id
-/// passwords, RFC 6238 TOTP, and SHA-256 PAT lookup but per-process
-/// `DashMap` state that is lost on restart) and the durable PG-backed
-/// `PgAuthBackend`.
-///
-/// The composition root MUST fail closed when [`AuthBackendKind::Postgres`]
-/// is selected without a configured `DATABASE_URL`, mirroring the
-/// idempotency backend selector — a publicly-known auth bypass via a
-/// missing identity store is exactly what this knob exists to prevent.
-///
-/// [`InMemoryAuthBackend`]: crate::domain::auth::backend::InMemoryAuthBackend
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum AuthBackendKind {
-    /// Process-local `DashMap` backend. Correct for dev / tests /
-    /// `simple_server`; loses identity state on restart and cannot be
-    /// shared across replicas.
-    #[default]
-    Memory,
-    /// Durable PostgreSQL-backed identity backend. Survives restart
-    /// and is shared across replicas that point at the same database.
-    Postgres,
-}
-
 /// Plane-A authentication subsystem configuration.
 ///
-/// Parallel to [`IdempotencyApiConfig`]: just the [`AuthBackendKind`]
-/// selector for now. Future PRs (lockout knobs, session TTL overrides,
-/// MFA enforcement) extend this struct without changing the env-binding
-/// shape (`API_AUTH_*` prefix, matching the existing `API_IDEMPOTENCY_*`
-/// convention).
+/// Identity persistence belongs to the deployment database and cannot be
+/// selected independently. Unknown fields are rejected so removed storage
+/// selectors cannot silently change authentication behavior.
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuthApiConfig {
-    /// Selected identity backend. Defaults to [`AuthBackendKind::Memory`]
-    /// so a missing `API_AUTH_BACKEND` keeps current dev behaviour; the
-    /// composition root flips this for production deployments via
-    /// `API_AUTH_BACKEND=postgres`.
-    pub backend: AuthBackendKind,
-
     /// Operator-supplied OAuth identity-provider configuration (Plane A).
     ///
     /// Empty by default — no OAuth providers declared, the
@@ -326,12 +292,11 @@ pub struct SmtpEmailConfig {
 // be a compile error at the composition root's match, not a runtime
 // `unreachable!` behind a forced wildcard arm.
 pub enum ExecutionBackendKind {
-    /// Process-local in-memory adapters. Dev default; execution state is lost
-    /// on restart and cannot be shared across processes.
-    #[default]
+    /// Internal test/reference adapter; rejected by deployment environment parsing.
     Memory,
     /// File-local SQLite (WAL mode). Survives restarts within a single process;
     /// not shareable across hosts or multiple concurrent writer processes.
+    #[default]
     Sqlite,
     /// PostgreSQL-backed durable store. Survives restarts and is shared across
     /// replicas that point at the same database.
@@ -344,12 +309,11 @@ pub enum ExecutionBackendKind {
 /// `db_path` field consumed by the SQLite arm. Future PRs (pool size, schema
 /// namespace) extend this struct under the `API_EXECUTION_*` prefix without
 /// changing the overall shape.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ExecutionStoreConfig {
     /// Selected execution-store backend. Defaults to
-    /// [`ExecutionBackendKind::Memory`] so a missing `API_EXECUTION_BACKEND`
-    /// keeps current dev behaviour; the composition root flips this for
-    /// production deployments that need durability.
+    /// [`ExecutionBackendKind::Sqlite`] so a local deployment retains state
+    /// without a separate database service.
     pub backend: ExecutionBackendKind,
 
     /// SQLite-only: path to the database file.
@@ -360,10 +324,65 @@ pub struct ExecutionStoreConfig {
     pub db_path: String,
 }
 
+impl ExecutionStoreConfig {
+    /// Read only deployment storage selection from the environment.
+    ///
+    /// Operator commands share this parser with [`super::ApiConfig`] without
+    /// requiring HTTP, JWT, email or OAuth configuration. PostgreSQL connection
+    /// credentials are resolved by deployment composition when opening its pool.
+    ///
+    /// # Errors
+    /// Returns [`super::ApiConfigError::ParseEnum`] for an unsupported backend.
+    /// Returns [`super::ApiConfigError::IndependentAuthBackendRemoved`] when
+    /// the removed `API_AUTH_BACKEND` variable is present, regardless of value.
+    #[tracing::instrument(name = "deployment_configuration", skip_all)]
+    pub fn from_env() -> Result<Self, super::ApiConfigError> {
+        if std::env::var_os("API_AUTH_BACKEND").is_some() {
+            tracing::warn!(
+                variable = "API_AUTH_BACKEND",
+                "independent identity storage selection rejected"
+            );
+            return Err(super::ApiConfigError::IndependentAuthBackendRemoved);
+        }
+        let backend = match std::env::var("API_EXECUTION_BACKEND") {
+            Ok(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "memory" => return Err(super::ApiConfigError::MemoryDeploymentUnsupported),
+                "sqlite" => ExecutionBackendKind::Sqlite,
+                "postgres" => ExecutionBackendKind::Postgres,
+                _ => {
+                    return Err(super::ApiConfigError::ParseEnum {
+                        var: "EXECUTION_BACKEND",
+                        raw,
+                    });
+                },
+            },
+            Err(std::env::VarError::NotPresent) => ExecutionBackendKind::Sqlite,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(super::ApiConfigError::ParseEnum {
+                    var: "EXECUTION_BACKEND",
+                    raw: "<non-Unicode>".into(),
+                });
+            },
+        };
+        let db_path =
+            std::env::var("API_EXECUTION_DB_PATH").unwrap_or_else(|_| Self::default().db_path);
+        Ok(Self { backend, db_path })
+    }
+}
+
+impl std::fmt::Debug for ExecutionStoreConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExecutionStoreConfig")
+            .field("backend", &self.backend)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for ExecutionStoreConfig {
     fn default() -> Self {
         Self {
-            backend: ExecutionBackendKind::Memory,
+            backend: ExecutionBackendKind::Sqlite,
             db_path: "nebula-server-execution.db".to_string(),
         }
     }
@@ -395,6 +414,41 @@ mod tests {
 
     static_assertions::assert_not_impl_any!(AuthApiConfig: Clone);
     static_assertions::assert_not_impl_any!(SmtpEmailConfig: Clone);
+
+    #[test]
+    fn execution_config_does_not_require_http_configuration() {
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_EXECUTION_BACKEND", "SQLite");
+        env.set("API_EXECUTION_DB_PATH", "private-deployment.db");
+        env.set("API_SMTP_HOST", "mail.example.test");
+        env.set("API_SMTP_PORT", "invalid-port");
+
+        let config = ExecutionStoreConfig::from_env().unwrap();
+        assert_eq!(config.backend, ExecutionBackendKind::Sqlite);
+        assert_eq!(config.db_path, "private-deployment.db");
+        assert!(!format!("{config:?}").contains("private-deployment"));
+        assert!(ApiConfig::from_env().is_err());
+    }
+
+    #[test]
+    fn execution_config_preserves_default_and_rejects_unknown_backend() {
+        let mut env = env_guard();
+        env.remove("API_EXECUTION_BACKEND");
+        env.remove("API_EXECUTION_DB_PATH");
+        let config = ExecutionStoreConfig::from_env().unwrap();
+        assert_eq!(config.backend, ExecutionBackendKind::Sqlite);
+        assert_eq!(config.db_path, ExecutionStoreConfig::default().db_path);
+
+        env.set("API_EXECUTION_BACKEND", "unsupported");
+        assert!(matches!(
+            ExecutionStoreConfig::from_env(),
+            Err(crate::config::ApiConfigError::ParseEnum {
+                var: "EXECUTION_BACKEND",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn from_env_idempotency_defaults_to_memory() {
@@ -495,58 +549,66 @@ mod tests {
     }
 
     #[test]
-    fn from_env_auth_backend_defaults_to_memory() {
+    fn authentication_config_has_no_independent_storage_selector() {
         let mut env = env_guard();
         env.set("NEBULA_ENV", "production");
         env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
 
         let cfg = ApiConfig::from_env().expect("config must load");
-        assert_eq!(cfg.auth.backend, AuthBackendKind::Memory);
+        let serialized = serde_json::to_value(&cfg.auth).unwrap();
+        assert!(serialized.get("backend").is_none());
+        assert!(serialized.get("oauth").is_some());
     }
 
     #[test]
-    fn from_env_auth_backend_accepts_postgres() {
+    fn removed_auth_selector_is_rejected_by_both_environment_parsers() {
         let mut env = env_guard();
         env.set("NEBULA_ENV", "production");
         env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-        env.set("API_AUTH_BACKEND", "postgres");
+        env.set("API_EXECUTION_BACKEND", "sqlite");
 
-        let cfg = ApiConfig::from_env().expect("config must load");
-        assert_eq!(cfg.auth.backend, AuthBackendKind::Postgres);
-    }
-
-    #[test]
-    fn from_env_auth_backend_is_case_insensitive() {
-        let mut env = env_guard();
-        env.set("NEBULA_ENV", "production");
-        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-        env.set("API_AUTH_BACKEND", "PostGres");
-
-        let cfg = ApiConfig::from_env().expect("config must load");
-        assert_eq!(cfg.auth.backend, AuthBackendKind::Postgres);
-    }
-
-    #[test]
-    fn from_env_auth_backend_rejects_unknown() {
-        let mut env = env_guard();
-        env.set("NEBULA_ENV", "production");
-        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
-        env.set("API_AUTH_BACKEND", "ldap");
-
-        let err = ApiConfig::from_env().expect_err("unknown backend must error");
-        match err {
-            crate::config::ApiConfigError::ParseEnum { var, raw } => {
-                assert_eq!(var, "AUTH_BACKEND");
-                assert_eq!(raw, "ldap");
-            },
-            other => panic!("wrong variant: {other:?}"),
+        for value in [
+            "",
+            "sqlite",
+            "postgres",
+            "memory",
+            "invalid-private-canary",
+            "秘密",
+        ] {
+            env.set("API_AUTH_BACKEND", value);
+            let storage_error = ExecutionStoreConfig::from_env().unwrap_err();
+            let api_error = ApiConfig::from_env().unwrap_err();
+            for error in [storage_error, api_error] {
+                assert!(matches!(
+                    error,
+                    crate::config::ApiConfigError::IndependentAuthBackendRemoved
+                ));
+                assert_eq!(
+                    error.to_string(),
+                    "API_AUTH_BACKEND has been removed; remove it and select the deployment database with API_EXECUTION_BACKEND"
+                );
+                assert_eq!(format!("{error:?}"), "IndependentAuthBackendRemoved");
+            }
         }
     }
 
     #[test]
-    fn for_test_auth_backend_defaults_to_memory() {
-        let cfg = ApiConfig::for_test();
-        assert_eq!(cfg.auth.backend, AuthBackendKind::Memory);
+    fn serialized_auth_config_rejects_the_removed_selector() {
+        let mut valid_config = serde_json::to_value(ApiConfig::for_test()).unwrap();
+        valid_config["jwt_secret"] = serde_json::json!("this-is-a-32-byte-minimum-secret!!");
+        assert!(serde_json::from_value::<ApiConfig>(valid_config.clone()).is_ok());
+        for value in ["memory", "sqlite", "postgres", "", "invalid-private-canary"] {
+            let auth = serde_json::json!({ "backend": value });
+            let error = serde_json::from_value::<AuthApiConfig>(auth.clone()).unwrap_err();
+            assert!(error.to_string().contains("unknown field `backend`"));
+            assert!(!error.to_string().contains("invalid-private-canary"));
+
+            let mut config = valid_config.clone();
+            config["auth"] = auth;
+            let error = serde_json::from_value::<ApiConfig>(config).unwrap_err();
+            assert!(error.to_string().contains("unknown field `backend`"));
+        }
+        assert!(serde_json::from_value::<AuthApiConfig>(serde_json::json!({})).is_ok());
     }
 
     // ---- SMTP env binding (`API_SMTP_*`) ---------------------------------

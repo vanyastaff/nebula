@@ -6,10 +6,11 @@
 //! Adapters map their backend rows to/from these DTOs at the port edge.
 
 mod control;
-pub mod credential;
+mod credential;
 mod credential_refresh_retry;
 mod execution;
-mod idempotency;
+mod execution_history;
+mod execution_listing;
 mod identity;
 mod iteration_checkpoint;
 mod job_dispatch;
@@ -24,7 +25,7 @@ mod resource_lease;
 mod resource_recovery;
 mod resource_status;
 mod resource_subscription;
-pub mod resume_token;
+mod resume_token;
 mod revision_catalog;
 mod shared_resource;
 mod start_materialization;
@@ -48,11 +49,15 @@ pub use credential_refresh_retry::{
     RefreshRetrySnapshot, RefreshRetryTransition,
 };
 pub use execution::{ExecutionRecord, NewExecution};
-pub use idempotency::CachedRecord;
-pub use identity::{
-    AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
-    TriggerRow, UserRow, WorkspaceRow,
+pub use execution_history::{
+    ExecutionHistoryCursor, ExecutionHistoryPage, ExecutionHistoryPageSize,
+    ExecutionHistoryPageSizeError, ExecutionHistoryQuery, ExecutionSummary,
 };
+pub use execution_listing::{
+    ExecutionListing, ExecutionListingStatus, ExecutionStatusSet, MicrosInstant,
+    UnknownExecutionStatus,
+};
+pub use identity::{OrgRow, PrincipalKind, ResourceRow, TriggerRow, WorkspaceRow};
 pub use iteration_checkpoint::{
     CheckpointSaved, IterationCheckpoint, IterationCheckpointError, IterationCheckpointKey,
     MAX_CHECKPOINT_ITERATION, MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES,
@@ -62,8 +67,8 @@ pub use job_dispatch::JobDispatchMsg;
 pub use journal::JournalEntry;
 pub use membership::{
     MembershipRoleParseError, OrgMemberRemoveOutcome, OrgMemberUpsert, OrgMemberUpsertOutcome,
-    OrgMembershipRole, PrincipalOrgMembership, TenantMembershipSnapshot, WorkspaceMemberUpsert,
-    WorkspaceMembership, WorkspaceMembershipRole,
+    OrgMembership, OrgMembershipRole, PrincipalOrgMembership, TenantMembershipSnapshot,
+    WorkspaceMemberUpsert, WorkspaceMembership, WorkspaceMembershipRole,
 };
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
 pub use operation_ledger::{
@@ -113,7 +118,10 @@ pub use resource_subscription::{
     ResourceSubscriptionValueError, ResourceSubscriptionVersion,
     TransitionResourceSubscriptionRequest,
 };
-pub use resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
+pub use resume_token::{
+    ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError,
+    UnknownResumeTokenWaitKind,
+};
 pub use revision_catalog::{
     BeginDrainOutcome, ExecutablePlanRecordFormat, PlanFlavorRevisionIds, PlanFlavorRevisionRecord,
     PlanFlavorRevisionTarget, RevisionCatalogError, RevisionInsertOutcome, RevisionRecordBytes,

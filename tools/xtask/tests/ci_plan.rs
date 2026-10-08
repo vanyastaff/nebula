@@ -724,8 +724,9 @@ fn workflow_requires_digest_pinned_postgres_credential_conformance() {
         "observation_fetch_errors_distinguish_schema_evidence_from_unavailability",
         "semantic_oracle",
         "credential_lifecycle_postgres",
-        "credential_migration_postgres",
-        "credential_schema_admission_postgres",
+        "schema_setup_postgres",
+        "schema_parity_postgres",
+        "credential_incident_constraints",
         "refresh_claim_conformance_postgres",
     ] {
         assert!(

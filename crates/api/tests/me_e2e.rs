@@ -4,9 +4,8 @@
 //! drive the full middleware → handler → `AuthBackend` path against a
 //! **real** `InMemoryAuthBackend` (Argon2id / RFC 6238 TOTP / SHA-256 PAT
 //! lookup — the honest capability-honest production-quality default; `nebula_storage`
-//! ships no `UserRepo`/`PatRepo`/`SessionRepo` impl, so this in-memory
-//! backend *is* the real backing, exactly as `InMemoryControlQueueRepo`
-//! is for the durable control plane in Phase 1).
+//! ships no in-memory `UserRepo`/`PatRepo`/`SessionRepo` impl, so this
+//! in-memory backend *is* the real backing).
 //!
 //! `GET /me/orgs` graduated in **Phase 3**: it is now real end-to-end
 //! against the shared `InMemoryMembershipStore` (the same store

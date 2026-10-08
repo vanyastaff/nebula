@@ -43,8 +43,9 @@ impl Scope {
     /// `org_id.len()` pins exactly where `org_id` ends, so the mapping from
     /// `(org_id, workspace_id)` to key is injective for arbitrary id bytes.
     /// The `\u{1e}` (ASCII Record Separator) delimiters keep it readable in
-    /// logs; the key is an opaque internal match value, never wire-exposed and
-    /// never parsed back.
+    /// logs; the key is an opaque internal match value, never wire-exposed.
+    /// Only [`Self::from_credential_owner_id`] reads it back, so storage can
+    /// file a credential under the workspace that owns it.
     #[must_use]
     pub fn credential_owner_id(&self) -> String {
         format!(
@@ -53,6 +54,20 @@ impl Scope {
             self.org_id,
             self.workspace_id
         )
+    }
+
+    /// The scope a [`Self::credential_owner_id`] key was derived from.
+    ///
+    /// `None` for any string that is not exactly the canonical key of some
+    /// scope: the mapping is injective, so a key names at most one scope.
+    #[must_use]
+    pub fn from_credential_owner_id(owner_id: &str) -> Option<Self> {
+        let (length, rest) = owner_id.split_once('\u{1e}')?;
+        let length: usize = length.parse().ok()?;
+        let org_id = rest.get(..length)?;
+        let workspace_id = rest.get(length..)?.strip_prefix('\u{1e}')?;
+        let scope = Self::new(workspace_id, org_id);
+        (scope.credential_owner_id() == owner_id).then_some(scope)
     }
 }
 
@@ -76,6 +91,34 @@ mod tests {
         let plain = Scope::new("y", "x").credential_owner_id();
         let org_with_rs = Scope::new("y", "x\u{1e}").credential_owner_id();
         assert_ne!(plain, org_with_rs);
+    }
+
+    #[test]
+    fn owner_id_reads_back_to_its_scope() {
+        for scope in [
+            Scope::new("ws", "org"),
+            Scope::new("b:c", "a"),
+            Scope::new("y", "x\u{1e}"),
+            Scope::new("\u{1e}", "\u{1e}\u{1e}"),
+            Scope::new("", ""),
+            Scope::new("ворк", "орг"),
+        ] {
+            assert_eq!(
+                Scope::from_credential_owner_id(&scope.credential_owner_id()),
+                Some(scope)
+            );
+        }
+        for key in [
+            "",
+            "owner-a",
+            "3\u{1e}org",
+            "4\u{1e}org\u{1e}ws",
+            "03\u{1e}org\u{1e}ws",
+            "+3\u{1e}org\u{1e}ws",
+            "1\u{1e}\u{444}\u{1e}ws",
+        ] {
+            assert_eq!(Scope::from_credential_owner_id(key), None, "{key:?}");
+        }
     }
 
     #[test]

@@ -84,7 +84,7 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
         .filter(|path| {
             fs::read_to_string(path)
                 .expect("Rust source must be UTF-8")
-                .contains("INSERT INTO port_execution_revision_refs")
+                .contains("INSERT INTO execution_revision_references")
         })
         .collect::<Vec<_>>();
     reference_insert_sites.sort();
@@ -97,7 +97,7 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
     assert_eq!(
         reference_insert_sites, expected_insert_sites,
         "only the execution-owner start-materialization adapters may insert \
-         `port_execution_revision_refs`"
+         `execution_revision_references`"
     );
 
     // Terminal dereference and rollback retention are storage-owned reference
@@ -110,7 +110,7 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
         .filter(|path| {
             fs::read_to_string(path)
                 .expect("Rust source must be UTF-8")
-                .contains("UPDATE port_execution_revision_refs")
+                .contains("UPDATE execution_revision_references")
         })
         .collect::<Vec<_>>();
     reference_update_sites.sort();
@@ -124,11 +124,11 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
     expected_update_sites.sort();
     assert_eq!(
         reference_update_sites, expected_update_sites,
-        "only the execution-owner terminal and rollback-cleanup adapters may update `port_execution_revision_refs`"
+        "only the execution-owner terminal and rollback-cleanup adapters may update `execution_revision_references`"
     );
 
     for reference_mutation in [
-        "DELETE FROM port_execution_revision_refs",
+        "DELETE FROM execution_revision_references",
         "activate_execution_revision",
         "persist_execution_revision_ref",
     ] {
@@ -148,31 +148,27 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
         .into_iter()
         .map(|path| fs::read_to_string(path).expect("migration source must be UTF-8"))
         .collect::<String>();
-    for forbidden_dependency in [
-        "crate::credential",
-        "CredentialStoreStartupError",
-        "CredentialSchemaAdmissionReason",
-        "schema::sqlite::admit",
-        "schema::postgres::admit",
-        "AdmissionScope::Credential",
-    ] {
+    for forbidden_dependency in ["crate::credential", "CredentialStoreStartupError"] {
         assert!(
             !migration_sources.contains(forbidden_dependency),
-            "migration coordination must not depend on aggregate-specific admission: \
-             `{forbidden_dependency}`"
+            "migration coordination must not depend on an aggregate: `{forbidden_dependency}`"
         );
     }
 
-    for aggregate_probe in [
-        source_root.join("credential/schema/sqlite.rs"),
-        source_root.join("credential/schema/postgres.rs"),
-    ] {
-        let source =
-            fs::read_to_string(&aggregate_probe).expect("aggregate probe source must be UTF-8");
+    // The migration ledger has one production observer: `migration::catalog`.
+    for source_path in files_below(&source_root) {
+        let is_test = source_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.ends_with("tests"));
+        if source_path.starts_with(&migration_module_root) || is_test {
+            continue;
+        }
+        let source = fs::read_to_string(&source_path).expect("source must be UTF-8");
         assert!(
             !source.contains("_sqlx_migrations"),
             "physical migration-ledger observation has one owner; found a second observer in \
-             {aggregate_probe:?}"
+             {source_path:?}"
         );
     }
 

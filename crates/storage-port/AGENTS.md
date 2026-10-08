@@ -7,11 +7,31 @@
 
 ## Key files
 
-- `src/lib.rs` — crate root; re-exports `Scope`, `StorageError`, `FencingToken`, `TransitionBatch{,Builder,Outcome}`
-- `src/batch.rs` — `TransitionBatch`: private fields, builder-only construction; `commit` writes state+outbox+journal in one CAS+fencing-gated transaction
+- `src/lib.rs` — crate root; re-exports `Scope`, `StorageError`, `FencingToken`, `TransitionBatch{,Outcome}`
+- `src/batch.rs` — `TransitionBatch`: private fields, one constructor `TransitionBatch::new` taking every required part (scope, id, expected version, fence, state + listing) plus `with_*` for outbox/journal/resume tokens/reference transition; `commit` writes state+outbox+journal in one CAS+fencing-gated transaction
+- `src/dto/execution_listing.rs` / `src/dto/execution_history.rs` — the listing projection value types (`ExecutionListingStatus`, `ExecutionStatusSet`, `MicrosInstant`, `ExecutionListing`) and the history query/cursor/page
 - `src/store/mod.rs` — ISP-segregated object-safe role traits, including `CredentialPersistence`
 - `src/dto/` — private-field lifecycle DTOs, typed `CredentialSelector`, bounded `CredentialVersion`, structural live/tombstoned records, and opaque exact plan/flavor records
 - `src/scope.rs` — plain-data `Scope { workspace_id, org_id }`; `src/ids.rs` — re-exported core ULIDs + lease `FencingToken`
+
+## Layout rules (new and touched code)
+
+- `store/<aggregate>.rs` holds a role trait plus the command, commit and outcome types only
+  that trait uses (often borrowed, `<'a>`) — the trait's vocabulary stays beside it.
+  `dto/<aggregate>.rs` holds records shared by several stores or consumers. File size alone
+  is not a reason to split a cohesive trait module.
+- One import path per type: `dto::X` / `store::X`. Submodules of `dto` and `store` are
+  private and re-exported; the crate root re-exports only the cross-cutting core (`Scope`,
+  `StorageError`, ids, `TransitionBatch`, `TransitionOutcome`) plus existing compatibility
+  exports — do not add new root re-exports.
+- Rows read back from storage are plain data (pub fields). A value with an invariant is a
+  newtype or a private-field struct with a validating constructor and `FromStr`/`Display`
+  where it has a text form (`ExecutionListingStatus`, `MicrosInstant`, `CredentialVersion`).
+  Timestamps are `DateTime<Utc>` or `MicrosInstant`, never strings, in new DTOs.
+- `StorageError` variants are chosen by what failed; the table on the type is the contract
+  every adapter follows. Messages never carry stored or submitted values.
+- Traits stay object-safe: no generic methods and no GATs; borrowed command structs carry
+  lifetimes instead.
 
 ## Conventions & never-do
 
@@ -21,7 +41,7 @@
 - Credential persistence exposes only explicit `create`, version-fenced `replace`, and version-fenced `tombstone`; never restore generic overwrite or physical delete. Its refresh-retry gate and material epoch are structural aggregate state (never metadata or claim TTL). The backend authors epochs: create/migration starts at `CredentialMaterialEpoch::MIN`; `CredentialMaterialTransition::Preserve { refresh_retry }` retains the epoch and applies the explicit gate transition; `Advance` increments the epoch and unconditionally clears the gate; overflow fails closed. Admission is evaluated against the backend clock.
 - Material travels only in `CredentialMaterialTransition::Advance { material: MaterialUpdate::Replace(CredentialMaterial) }`; `Preserve` and `Advance { Unchanged }` carry no bytes and leave stored material byte-identical. Never put material back on `CredentialReplacement`.
 - `CredentialAdmissionEpoch` (the use revision, reported only by `CredentialOperationStatus::Open`) advances in the same transaction as every write that closes use — every `Advance`, any `reauth_required` change, a won revoke claim, `mark_sentinel`, threshold escalation — and never moves row `version` or `updated_at`. Keep invariant I-A (documented on the type) true for every new write; overflow fails closed. Do not add it to heads or live records, which the cache layer serves stale.
-- Every repository trait stays `#[async_trait]` + `dyn`-compatible (consumed as `Arc<dyn …>`); keep `TransitionBatch` fields private and builder-only so a transition can't skip scope/CAS/fencing.
+- Every repository trait stays `#[async_trait]` + `dyn`-compatible (consumed as `Arc<dyn …>`); keep `TransitionBatch` fields private and `new` the only constructor, so a transition missing scope/CAS/fencing/snapshot does not compile. Decorators retarget batches with `TransitionBatch::rebound_to`, never a hand-written rebuild.
 - A port change must include its adapters, applicable tenancy decorators, and consumers. Object-safety tests prove the contract compiles; storage conformance proves its backend behavior. Neither substitutes for the other.
 - `PlanFlavorCatalog` loads only an exact typed pair; `PlanFlavorCatalogWriter` inserts only; `PlanFlavorCatalogAdmin` owns drain/delete only. Never merge installer and destructive lifecycle authority, and never add public retain/release/reference mutation: execution-owned references must compose inside their owning backend transaction.
 

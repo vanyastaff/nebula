@@ -10,11 +10,13 @@
 use std::sync::Arc;
 
 use nebula_api::ports::credential_command::test_controller_from_service;
-use nebula_api::ports::credential_service_factory::{with_memory_store, with_store};
+use nebula_api::ports::credential_service_factory::{
+    TenantProvisionedStore, with_memory_store, with_store,
+};
 use nebula_credential::{
     CredentialActor, CredentialCommand, CredentialCommandResult, CredentialDisplay, TenantScope,
 };
-use nebula_storage::credential::{EnvKeyProvider, SqliteCredentialPersistence};
+use nebula_storage::credential::EnvKeyProvider;
 use serde_json::json;
 
 /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
@@ -72,7 +74,7 @@ async fn factory_composes_over_durable_sqlite_store_and_round_trips() {
     // `with_store` wires `SqliteCredentialPersistence` behind the full layer stack and
     // a create/get round-trips through the durable backend.
     let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key"));
-    let store = SqliteCredentialPersistence::connect("sqlite::memory:")
+    let store = TenantProvisionedStore::memory()
         .await
         .expect("open + migrate in-memory SQLite");
     let svc = with_store(store, key).expect("service composes over SQLite backend");

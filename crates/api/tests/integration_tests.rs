@@ -1056,10 +1056,9 @@ async fn test_execution_list_all_empty() {
         .unwrap();
     let response_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response_data["executions"].as_array().unwrap().len(), 0);
-    assert_eq!(response_data["total"], 0);
-    assert_eq!(response_data["page"], 1);
-    assert_eq!(response_data["page_size"], 10);
+    assert_eq!(response_data["items"].as_array().unwrap().len(), 0);
+    assert_eq!(response_data["has_more"], false);
+    assert!(response_data.get("next_cursor").is_none());
 }
 
 #[tokio::test]
@@ -1135,8 +1134,8 @@ async fn test_execution_list_for_workflow_empty() {
         .unwrap();
     let response_data: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(response_data["executions"].as_array().unwrap().len(), 0);
-    assert_eq!(response_data["total"], 0);
+    assert_eq!(response_data["items"].as_array().unwrap().len(), 0);
+    assert_eq!(response_data["has_more"], false);
 }
 
 #[tokio::test]
@@ -1148,28 +1147,19 @@ async fn test_execution_get_by_id() {
     use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
-    let (state, handles) = create_state_with_port_handles().await;
+    let (state, _) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Seed an execution directly through the port store
     let execution_id = ExecutionId::new();
     let workflow_id = WorkflowId::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-
-    let execution_state = serde_json::json!({
-        "workflow_id": workflow_id.to_string(),
-        "status": "running",
-        "started_at": now,
-        "input": {"key": "value"}
-    });
-
-    handles
-        .seed_execution(execution_id, workflow_id, execution_state.clone())
-        .await;
+    let now = chrono::Utc::now();
+    let mut execution_state = nebula_execution::ExecutionState::new(execution_id, workflow_id, &[]);
+    execution_state.status = nebula_execution::ExecutionStatus::Running;
+    execution_state.started_at = Some(now);
+    execution_state.workflow_input = Some(serde_json::json!({"key": "value"}));
+    persist_execution_snapshot(state.execution_store.as_ref(), &execution_state).await;
 
     // Get the execution by ID
     let app = app::build_app(state, &api_config);
@@ -1199,7 +1189,10 @@ async fn test_execution_get_by_id() {
     assert_eq!(execution["id"], execution_id.to_string());
     assert_eq!(execution["workflow_id"], workflow_id.to_string());
     assert_eq!(execution["status"], "running");
-    assert_eq!(execution["started_at"], now);
+    assert_eq!(
+        execution["started_at"],
+        now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
+    );
     assert_eq!(execution["input"]["key"], "value");
 }
 
@@ -1336,28 +1329,18 @@ async fn test_execution_cancel() {
     use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
-    let (state, handles) = create_state_with_port_handles().await;
+    let (state, _) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // Seed an execution directly through the port store
     let execution_id = ExecutionId::new();
     let workflow_id = WorkflowId::new();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64;
-
-    let execution_state = serde_json::json!({
-        "workflow_id": workflow_id.to_string(),
-        "status": "running",
-        "started_at": now,
-        "input": {"key": "value"}
-    });
-
-    handles
-        .seed_execution(execution_id, workflow_id, execution_state.clone())
-        .await;
+    let mut execution_state = nebula_execution::ExecutionState::new(execution_id, workflow_id, &[]);
+    execution_state.status = nebula_execution::ExecutionStatus::Running;
+    execution_state.started_at = Some(chrono::Utc::now());
+    execution_state.workflow_input = Some(serde_json::json!({"key": "value"}));
+    persist_execution_snapshot(state.execution_store.as_ref(), &execution_state).await;
 
     // Cancel the execution
     let app = app::build_app(state.clone(), &api_config);
@@ -1395,7 +1378,7 @@ async fn test_execution_cancel() {
         cancelled_execution["finished_at"]
     );
 
-    // Verify the execution was actually cancelled in the repo
+    // Verify the API did not perform the runtime's cancellation transition.
     let app = app::build_app(state, &api_config);
     let response = app
         .oneshot(
@@ -2501,28 +2484,18 @@ async fn get_execution_parses_rfc3339_timestamps() {
     use nebula_core::{ExecutionId, WorkflowId};
     use tower::ServiceExt;
 
-    let (state, handles) = create_state_with_port_handles().await;
+    let (state, _) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     let execution_id = ExecutionId::new();
     let workflow_id = WorkflowId::new();
 
-    // Seed with canonical engine-shape state: RFC3339 string timestamps
-    // under the canonical field names (`completed_at`, not `finished_at`).
-    handles
-        .seed_execution(
-            execution_id,
-            workflow_id,
-            serde_json::json!({
-                "workflow_id": workflow_id.to_string(),
-                "status": "completed",
-                "started_at": "2024-01-15T12:34:56Z",
-                "completed_at": "2024-02-20T08:00:00Z",
-                "input": {}
-            }),
-        )
-        .await;
+    let mut snapshot = nebula_execution::ExecutionState::new(execution_id, workflow_id, &[]);
+    snapshot.status = nebula_execution::ExecutionStatus::Completed;
+    snapshot.started_at = Some("2024-01-15T12:34:56Z".parse().unwrap());
+    snapshot.completed_at = Some("2024-02-20T08:00:00Z".parse().unwrap());
+    persist_execution_snapshot(state.execution_store.as_ref(), &snapshot).await;
 
     let app = app::build_app(state, &api_config);
     let response = app
@@ -2546,8 +2519,8 @@ async fn get_execution_parses_rfc3339_timestamps() {
         .await
         .unwrap();
     let execution: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(execution["started_at"].as_i64(), Some(1_705_322_096));
-    assert_eq!(execution["finished_at"].as_i64(), Some(1_708_416_000));
+    assert_eq!(execution["started_at"], "2024-01-15T12:34:56.000000Z");
+    assert_eq!(execution["finished_at"], "2024-02-20T08:00:00.000000Z");
 }
 
 /// Regression for #331: `cancel_execution` must reject cancellation of an
@@ -2622,7 +2595,7 @@ async fn cancel_timed_out_execution_rejected() {
 // honest capability contract: a public surface exists iff the engine honors it end-to-end.
 // The API's `start_execution` previously persisted a hand-rolled JSON with
 // `status: "pending"` — a string that is not in `ExecutionStatus` and that
-// neither `list_running` (storage filter) nor `ExecutionState::deserialize`
+// neither the storage status filter nor `ExecutionState::deserialize`
 // (engine resume path) would accept. Starting an execution therefore produced
 // a row the engine could never read back: split-brain schema.
 //
@@ -2634,7 +2607,7 @@ async fn cancel_timed_out_execution_rejected() {
 //      `resume_execution` performs.
 //   3. The deserialized `ExecutionStatus` is the canonical `Created`, not a synthetic "pending"
 //      variant.
-//   4. The `list_running` storage query — which filters on canonical status names — actually
+//   4. The storage status filter — which matches canonical status names — actually
 //      returns the newly-created execution ID (it did not before, because `"pending"` is not in the
 //      filter).
 #[tokio::test]
@@ -2784,15 +2757,14 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
         "#327 (and #311): workflow_input must be persisted so resume can replay entry nodes"
     );
 
-    // The list_running storage filter — which only accepts canonical statuses —
-    // must actually see the newly-created execution. Before the fix this list
-    // was empty because "pending" is not in the accepted set
-    // (created|running|paused|cancelling). The port lists running ids as
-    // their canonical opaque string form.
-    let running = handles.running_executions().await;
+    // The storage status filter — which only accepts canonical statuses —
+    // must actually see the newly-created execution among the active ones
+    // (created|running|paused|cancelling). The port lists ids in their
+    // canonical opaque string form.
+    let active = handles.active_executions().await;
     assert!(
-        running.contains(&execution_id.to_string()),
-        "#327: list_running must include the newly-created execution \
+        active.contains(&execution_id.to_string()),
+        "#327: the active-status filter must include the newly-created execution \
          (split-brain check — status is canonical and the filter matches)"
     );
 }
@@ -3087,7 +3059,7 @@ async fn test_execute_workflow_rejects_invalid_definition() {
         "rejected execute must not enqueue a Start signal"
     );
     assert!(
-        handles.running_executions().await.is_empty(),
+        handles.executions_in_scope().await.is_empty(),
         "rejected execute must not create a running execution"
     );
 }
@@ -3149,7 +3121,7 @@ async fn test_start_execution_rejects_invalid_definition() {
         "rejected start must not enqueue a Start signal"
     );
     assert!(
-        handles.running_executions().await.is_empty(),
+        handles.executions_in_scope().await.is_empty(),
         "rejected start must not create a running execution"
     );
 }
@@ -3208,7 +3180,7 @@ async fn execute_workflow_rejects_unactivated_workflow() {
         "rejected execute must not enqueue a Start signal"
     );
     assert!(
-        handles.running_executions().await.is_empty(),
+        handles.executions_in_scope().await.is_empty(),
         "rejected execute must not create a running execution"
     );
 }
@@ -3267,7 +3239,7 @@ async fn start_execution_rejects_unactivated_workflow() {
         "rejected start must not enqueue a Start signal"
     );
     assert!(
-        handles.running_executions().await.is_empty(),
+        handles.executions_in_scope().await.is_empty(),
         "rejected start must not create a running execution"
     );
 }
@@ -3320,7 +3292,7 @@ async fn execute_workflow_uses_activated_plan_when_authoring_definition_is_corru
         "one accepted start must be durably enqueued"
     );
     assert_eq!(
-        handles.running_executions().await.len(),
+        handles.executions_in_scope().await.len(),
         1,
         "one accepted start must materialize one running execution"
     );

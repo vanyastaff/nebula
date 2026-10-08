@@ -115,7 +115,7 @@ async fn cancelled_shutdown_preserves_outcome(outcome: TerminalOutcome) {
         Resident::new(ResidentConfig::default()),
     );
     let release_outcome = manager
-        .acquire_resident::<TerminalProvider>(&common::test_ctx(), &AcquireOptions::default())
+        .acquire::<TerminalProvider>(&common::test_ctx(), &AcquireOptions::default())
         .await
         .unwrap()
         .release()
@@ -230,11 +230,11 @@ async fn default_destroy_drops_instance_only_after_final_resident_owner() {
         Resident::new(ResidentConfig::default()),
     );
     let first = manager
-        .acquire_resident::<DefaultDropProvider>(&common::test_ctx(), &AcquireOptions::default())
+        .acquire::<DefaultDropProvider>(&common::test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     let second = manager
-        .acquire_resident::<DefaultDropProvider>(&common::test_ctx(), &AcquireOptions::default())
+        .acquire::<DefaultDropProvider>(&common::test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     assert_eq!(

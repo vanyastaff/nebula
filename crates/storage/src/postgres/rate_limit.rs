@@ -71,7 +71,7 @@ impl PgLimitStore {
         rate: &Rate,
     ) -> Result<(GcraState, Option<Rate>, u64), LimitStoreError> {
         let row = sqlx::query(concat!(
-            "INSERT INTO port_rate_limits (limit_key, tat_ns, seq, emission_ns, burst) ",
+            "INSERT INTO rate_limits (limit_key, tat_ns, seq, emission_ns, burst) ",
             "VALUES ($1, 0, 0, $2, $3) ",
             "ON CONFLICT (limit_key) DO UPDATE SET limit_key = EXCLUDED.limit_key ",
             "RETURNING tat_ns, seq, emission_ns, burst, ",
@@ -109,7 +109,7 @@ impl PgLimitStore {
         rate: &Rate,
     ) -> Result<(), LimitStoreError> {
         sqlx::query(
-            "UPDATE port_rate_limits SET tat_ns = $2, seq = $3, emission_ns = $4, burst = $5 \
+            "UPDATE rate_limits SET tat_ns = $2, seq = $3, emission_ns = $4, burst = $5 \
              WHERE limit_key = $1",
         )
         .bind(key.as_str())
@@ -138,9 +138,9 @@ impl PgLimitStore {
             return;
         }
         let swept = sqlx::query(concat!(
-            "WITH reservations AS (DELETE FROM port_rate_limit_reservations WHERE allow_at_ns <= ",
+            "WITH reservations AS (DELETE FROM rate_limit_reservations WHERE allow_at_ns <= ",
             now_ns!(),
-            ") DELETE FROM port_rate_limits WHERE tat_ns <= ",
+            ") DELETE FROM rate_limits WHERE tat_ns <= ",
             now_ns!()
         ))
         .execute(&self.pool)
@@ -205,7 +205,7 @@ impl LimitStore for PgLimitStore {
             && grant.allow_at > now
         {
             sqlx::query(
-                "INSERT INTO port_rate_limit_reservations \
+                "INSERT INTO rate_limit_reservations \
                  (limit_key, reservation_id, permits, allow_at_ns, end_tat_ns, seq) \
                  VALUES ($1, $2, $3, $4, $5, $6) \
                  ON CONFLICT (limit_key, reservation_id) DO UPDATE SET \
@@ -242,7 +242,7 @@ impl LimitStore for PgLimitStore {
         Self::write(&mut tx, key, next, &rate).await?;
         let until = now.saturating_add(nanos(retry_after.min(max_penalty)));
         sqlx::query(
-            "UPDATE port_rate_limits SET penalized_until_ns = GREATEST(penalized_until_ns, $2) \
+            "UPDATE rate_limits SET penalized_until_ns = GREATEST(penalized_until_ns, $2) \
              WHERE limit_key = $1",
         )
         .bind(key.as_str())
@@ -274,7 +274,7 @@ impl LimitStore for PgLimitStore {
         // schedule.
         let enforced = stored.unwrap_or(*rate);
         Self::write(&mut tx, key, next, &enforced).await?;
-        sqlx::query("DELETE FROM port_rate_limit_reservations WHERE limit_key = $1 AND seq = $2")
+        sqlx::query("DELETE FROM rate_limit_reservations WHERE limit_key = $1 AND seq = $2")
             .bind(key.as_str())
             .bind(seq_to_db(grant.seq))
             .execute(&mut *tx)
@@ -289,7 +289,7 @@ impl LimitStore for PgLimitStore {
         let left: Option<i64> = sqlx::query_scalar(concat!(
             "SELECT GREATEST(penalized_until_ns - ",
             now_ns!(),
-            ", 0) FROM port_rate_limits WHERE limit_key = $1"
+            ", 0) FROM rate_limits WHERE limit_key = $1"
         ))
         .bind(key.as_str())
         .fetch_optional(&self.pool)
@@ -308,7 +308,7 @@ impl PgLimitStore {
         now: u64,
     ) -> Result<Option<Grant>, LimitStoreError> {
         let row = sqlx::query(
-            "SELECT permits, allow_at_ns, end_tat_ns, seq FROM port_rate_limit_reservations \
+            "SELECT permits, allow_at_ns, end_tat_ns, seq FROM rate_limit_reservations \
              WHERE limit_key = $1 AND reservation_id = $2 AND allow_at_ns > $3",
         )
         .bind(key.as_str())

@@ -27,8 +27,13 @@ use super::{CredentialPersistenceConformance, ReferenceCredentialPersistence};
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+/// Owners the oracle files credentials under; SQL backends provision their
+/// tenants first, as required by the credential baseline's workspace ownership.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+const ORACLE_OWNERS: &[&str] = &["oracle-owner-a", "oracle-owner-b", "oracle-schedule-owner"];
+
 fn owner(value: &str) -> CredentialOwner {
-    CredentialOwner::from_canonical(value)
+    super::test_owner::owner(value)
 }
 
 fn selector(owner: &CredentialOwner, credential_id: CredentialId) -> CredentialSelector {
@@ -1188,6 +1193,7 @@ async fn sqlite_semantic_oracle() -> TestResult<()> {
     let path = directory.path().join("credential-oracle.sqlite3");
     let url = format!("sqlite://{}?mode=rwc", path.display());
     let store = SqliteCredentialPersistence::connect(&url).await?;
+    super::test_owner::provision(&store.tenant_provisioning_store(), ORACLE_OWNERS).await;
     run_semantic_oracle(&store).await
 }
 
@@ -1195,6 +1201,7 @@ async fn sqlite_semantic_oracle() -> TestResult<()> {
 #[tokio::test]
 async fn sqlite_memory_semantic_oracle() -> TestResult<()> {
     let store = SqliteCredentialPersistence::connect_memory().await?;
+    super::test_owner::provision(&store.tenant_provisioning_store(), ORACLE_OWNERS).await;
     run_semantic_oracle(&store).await
 }
 
@@ -1273,6 +1280,8 @@ mod postgres {
             return Ok(());
         };
         let store = PgCredentialPersistence::connect_with(database.options.clone()).await?;
+        super::super::test_owner::provision(&store.tenant_provisioning_store(), ORACLE_OWNERS)
+            .await;
         run_semantic_oracle(&store).await?;
         drop(store);
         database.cleanup().await;

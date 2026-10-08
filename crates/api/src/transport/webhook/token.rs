@@ -15,9 +15,9 @@
 //! 128-bit random (16 bytes of `Uuid::new_v4` hex-encoded as 32 chars),
 //! which already sits above the brute-force horizon.  A KDF would add
 //! latency on the hot inbound-webhook path without meaningful security gain.
-//! The sentinel value (`[0u8; 32]`) is excluded from the `token_hash` partial
-//! unique index on `port_webhook_activations`, so an uninitialized row can
-//! never match a real token.
+//! The sentinel value (`[0u8; 32]`) is stored as a NULL `token_hash` in
+//! `webhook_activations` (outside its unique constraint), so an uninitialized
+//! row can never match a real token.
 
 use sha2::{Digest, Sha256};
 

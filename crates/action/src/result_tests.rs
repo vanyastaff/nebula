@@ -428,7 +428,9 @@ fn success_binary_result() {
     use crate::output::{BinaryData, BinaryStorage};
     let r: ActionResult<i32> = ActionResult::success_binary(BinaryData {
         content_type: "image/png".into(),
-        data: BinaryStorage::Inline(vec![1, 2, 3]),
+        data: BinaryStorage::Inline {
+            bytes: vec![1, 2, 3],
+        },
         size: 3,
         metadata: None,
     });

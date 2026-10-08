@@ -14,12 +14,12 @@
 //! the un-consumed tokens a terminal execution leaves behind (e.g. it was
 //! cancelled while a node was parked on a signal). The engine calls it,
 //! best-effort, at its terminal sinks (W-S3e) so dead tokens are purged
-//! proactively; the `ON DELETE CASCADE` from `port_executions` remains the
+//! proactively; the `ON DELETE CASCADE` from `executions` remains the
 //! backstop for the crash window between the terminal commit and the revoke.
 //!
 //! See ADR-0099 W-S3c (this trait) and W-S3e (the engine wiring).
 use crate::Scope;
-use crate::dto::resume_token::{ResumeTokenRow, TokenHash};
+use crate::dto::{ResumeTokenRow, TokenHash};
 use crate::error::StorageError;
 
 /// Read and lifecycle operations for the resume-token store.
@@ -60,8 +60,8 @@ pub trait ResumeTokenStore: Send + Sync + std::fmt::Debug {
     /// cancel-of-parked cleanup) to clean up tokens that were never consumed
     /// (e.g. the execution was cancelled while a node was parked). The revoke
     /// is intentionally NOT atomic with the terminal transition; the
-    /// `ON DELETE CASCADE` constraint on `port_resume_tokens` (firing when the
-    /// `port_executions` row is deleted) backstops the crash window between
+    /// `ON DELETE CASCADE` constraint on `resume_tokens` (firing when the
+    /// `executions` row is deleted) backstops the crash window between
     /// the terminal commit and the revoke.
     ///
     /// The caller must already hold scope authority for the execution (owns

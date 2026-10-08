@@ -5,7 +5,7 @@ use nebula_api_contract::v1::{
         CredentialResponse, ReconcileCredentialRequest, ReconcileCredentialResponse,
         TestCredentialResponse,
     },
-    execution::{ExecutionResponse, StartExecutionRequest},
+    execution::{ExecutionDetailResponse, ExecutionResponse, StartExecutionRequest},
     problem::ProblemDetails,
     shared::{PaginatedResponse, PaginationParams},
     webhook::{RegisterWebhookRequest, RegisterWebhookResponse},
@@ -53,6 +53,20 @@ fn shared_transport_supports_both_endpoints_without_schema_traits() {
         serde_json::to_value(pagination).unwrap(),
         json!({"page":1,"page_size":10})
     );
+}
+
+#[test]
+fn execution_inspection_round_trips_optional_times_and_inline_null() {
+    round_trip::<ExecutionDetailResponse>(json!({
+        "id":"exe_01", "workflow_id":"wf_01", "status":"created",
+        "created_at":"2026-10-07T00:00:00.000000Z",
+        "updated_at":"2026-10-07T00:00:00.000000Z",
+        "snapshot_version":0, "total_retries":0, "total_output_bytes":4,
+        "nodes":{"step":{
+            "status":"pending", "attempts":[],
+            "output":{"type":"inline","value":null}
+        }}
+    }));
 }
 
 #[test]

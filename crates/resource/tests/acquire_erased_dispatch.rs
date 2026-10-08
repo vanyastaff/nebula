@@ -235,13 +235,13 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
     );
 
     let guard = manager
-        .acquire_resident_for_identity::<ProbeResource>(
+        .acquire_for_identity::<ProbeResource>(
             &ctx,
             &AcquireOptions::default(),
             &SlotIdentity::Unbound,
         )
         .await
-        .expect("typed acquire_resident_for");
+        .expect("typed acquire_for_identity");
     assert_eq!(guard.load(Ordering::Relaxed), 1);
     assert_eq!(
         org_count.load(Ordering::Relaxed),
@@ -252,11 +252,8 @@ async fn acquire_erased_and_typed_pick_org_not_global_fallback() {
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// AE4 — `acquire_erased` ↔ typed `acquire_*` parity on every collapsed
-// topology. The five former `run_*_acquire` wrappers are now one generic
-// `run_acquire`; the erased path (`acquire_erased` → registry hook →
-// `acquire_*_at_scope`) and the typed path (`acquire_*` / `acquire_*_for`)
-// must resolve the SAME registry row and run the SAME single pipeline, so
+// AE4 — erased `acquire_any` and typed `acquire` resolve the same registry
+// row and use the same pipeline for each built-in topology. Therefore,
 // for the single-runtime topologies the second acquire reuses the runtime
 // (no extra `Resource::create`) and both observe the same Global scope.
 //
@@ -338,7 +335,7 @@ mod pool_parity {
         }
     }
 
-    /// Erased acquire then typed `acquire_pooled` resolve the one Global
+    /// Erased acquire then typed `acquire` resolve the one Global
     /// pool row through the single `run_acquire`. The pooled instance is
     /// recycled on drop, so the second acquire reuses it: exactly one
     /// `Resource::create` across both paths.
@@ -388,7 +385,7 @@ mod pool_parity {
         // single `run_acquire` against the one Global pool row, so the
         // pool mints a distinct instance for each (max_size = 4).
         let typed = manager
-            .acquire_pooled::<PoolParity>(&ctx, &AcquireOptions::default())
+            .acquire::<PoolParity>(&ctx, &AcquireOptions::default())
             .await
             .expect("typed pooled acquire (single-tenant Global)");
         let typed_id: u64 = *typed;

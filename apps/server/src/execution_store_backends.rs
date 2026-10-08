@@ -1,42 +1,43 @@
 //! Backend-specific construction for the server execution authority.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
-use nebula_api::{ApiConfig, config::ExecutionBackendKind};
+use nebula_api::ApiConfig;
 use nebula_metrics::MetricsRegistry;
 
-use crate::compose::{ExecutionStoreBundle, TransportInitError};
 #[cfg(feature = "runtime-repair-red")]
-use crate::compose::{ProfileBackendLifecycle, WorkerStoreProjection};
+use crate::compose::ProfileBackendLifecycle;
+use crate::compose::WorkerStoreProjection;
+use crate::compose::{ExecutionStoreBundle, TransportInitError};
+use crate::deployment_database::DeploymentDatabase;
 
 pub(crate) async fn build_execution_stores(
     api_config: &ApiConfig,
     explicit_postgres_dsn: Option<&str>,
     metrics: &MetricsRegistry,
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
-    match api_config.execution.backend {
-        ExecutionBackendKind::Memory => {
-            warn_memory_outside_dev();
-            build_memory_execution_stores(metrics)
+    let database = DeploymentDatabase::open(&api_config.execution, explicit_postgres_dsn).await?;
+    Ok(match database {
+        DeploymentDatabase::Memory(pool) => build_memory_execution_stores(pool, metrics),
+        DeploymentDatabase::Sqlite(deployment) => {
+            build_sqlite_execution_stores(deployment, metrics)
         },
-        ExecutionBackendKind::Sqlite => build_sqlite_execution_stores(api_config, metrics).await,
-        ExecutionBackendKind::Postgres => {
-            build_postgres_execution_stores(explicit_postgres_dsn, metrics).await
-        },
-    }
+        #[cfg(feature = "postgres")]
+        DeploymentDatabase::Postgres(pool) => build_postgres_execution_stores(pool, metrics),
+    })
 }
 
 fn build_memory_execution_stores(
-    _metrics: &MetricsRegistry,
-) -> Result<ExecutionStoreBundle, TransportInitError> {
-    #[cfg(feature = "runtime-repair-red")]
+    deployment_database: sqlx::SqlitePool,
+    metrics: &MetricsRegistry,
+) -> ExecutionStoreBundle {
     use nebula_storage::inmem::{
         InMemoryCheckpointStore, InMemoryIdempotencyGuard, InMemoryOperationLedger,
     };
     use nebula_storage::inmem::{
-        InMemoryControlQueue, InMemoryExecutionStore, InMemoryIdentityDirectory,
-        InMemoryJournalReader, InMemoryNodeResultStore, InMemoryResourceStore,
-        InMemoryStartAcceptanceStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
+        InMemoryNodeResultStore, InMemoryResourceStore, InMemoryStartAcceptanceStore,
+        InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
 
     let execution_store = InMemoryExecutionStore::new();
@@ -49,7 +50,6 @@ fn build_memory_execution_stores(
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store =
         InMemoryWorkflowStore::new_with_versions(&workflow_versions, &execution_store);
-    let tenant_directory = InMemoryIdentityDirectory::new();
     // One row store: rows the API writes are the rows the worker activates.
     let resource_store = InMemoryResourceStore::new();
     // One status store: what the worker projection publishes, the API reads.
@@ -61,7 +61,6 @@ fn build_memory_execution_stores(
         nebula_storage::inmem::InMemoryTurnHandoff::new(&execution_store),
     );
 
-    #[cfg(feature = "runtime-repair-red")]
     let worker_projection = {
         let projected_execution: Arc<dyn nebula_storage_port::store::ExecutionStore> =
             Arc::new(execution_store.clone());
@@ -73,7 +72,7 @@ fn build_memory_execution_stores(
             Arc::new(resume_token_store.clone());
         WorkerStoreProjection {
             bundles: Arc::new(InMemoryStartAcceptanceStore::new(&execution_store)),
-            metrics: MetricsRegistry::new(),
+            metrics: metrics.clone(),
             revision_catalog: Arc::new(nebula_storage::InMemoryPlanFlavorCatalog::new(
                 &execution_store,
             )),
@@ -91,7 +90,7 @@ fn build_memory_execution_stores(
             turn_recovery: Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(
                 &execution_store,
             )),
-            resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+            resource_fanout: nebula_deployment::worker::ResourceFanoutInputs::from_runtime(
                 nebula_engine::WorkflowStores {
                     workflow: Arc::new(workflow_store.clone()),
                     versions: Arc::new(workflow_versions.clone()),
@@ -108,8 +107,11 @@ fn build_memory_execution_stores(
         "execution-stores: in-memory adapters wired"
     );
     let revision_catalog = Arc::new(execution_store.plan_flavor_catalog());
-    Ok(ExecutionStoreBundle {
-        tenant_directory: crate::tenant_directory::TenantDirectoryStores::memory(&tenant_directory),
+    ExecutionStoreBundle {
+        tenant_directory: crate::tenant_directory::TenantDirectoryStores::sqlite(
+            deployment_database.clone(),
+        ),
+        deployment_database: DeploymentDatabase::Memory(deployment_database),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store: Arc::new(workflow_store),
@@ -125,67 +127,24 @@ fn build_memory_execution_stores(
         start_reservation_maintenance: start_acceptance,
         resume_token_store: Arc::new(resume_token_store),
         resume_producer: Arc::new(resume_producer),
-        #[cfg(feature = "runtime-repair-red")]
         worker_projection,
         #[cfg(feature = "runtime-repair-red")]
         backend_lifecycle: ProfileBackendLifecycle::Memory,
-    })
-}
-
-fn warn_memory_outside_dev() {
-    let environment = std::env::var("NEBULA_ENV").unwrap_or_default();
-    if !matches!(environment.as_str(), "development" | "dev" | "local") {
-        tracing::warn!(
-            backend = "memory",
-            nebula_env = %environment,
-            component = "execution-stores",
-            "execution-stores: in-memory adapters selected — execution state is lost \
-             on restart and cannot be shared across processes; \
-             set API_EXECUTION_BACKEND=sqlite (single-process durable) or \
-             API_EXECUTION_BACKEND=postgres (multi-process) for production"
-        );
     }
 }
 
-async fn build_sqlite_execution_stores(
-    api_config: &ApiConfig,
+fn build_sqlite_execution_stores(
+    deployment: nebula_storage::sqlite::DeploymentPool,
     metrics: &MetricsRegistry,
-) -> Result<ExecutionStoreBundle, TransportInitError> {
+) -> ExecutionStoreBundle {
     use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::sqlite::{
         SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteResourceStore,
         SqliteResumeProducer, SqliteResumeTokenStore, SqliteStartAcceptanceStore,
-        SqliteTurnHandoff, SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
+        SqliteTurnHandoff, SqliteWorkflowStore, SqliteWorkflowVersionStore,
     };
-    #[cfg(feature = "runtime-repair-red")]
     use nebula_storage::sqlite::{SqliteIdempotencyGuard, SqliteOperationLedger};
-    use sqlx::sqlite::{
-        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-    };
-
-    let database_path = &api_config.execution.db_path;
-    let connection_options = SqliteConnectOptions::new()
-        .filename(database_path)
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(Duration::from_secs(5));
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(connection_options)
-        .await
-        .map_err(|error| {
-            TransportInitError::ExecutionDatabase(format!(
-                "SQLite: failed to open '{database_path}': {error}"
-            ))
-        })?;
-    init_schema(&pool).await.map_err(|error| {
-        TransportInitError::ExecutionDatabase(format!(
-            "SQLite: schema init failed for '{database_path}': {error}"
-        ))
-    })?;
-
-    tracing::info!(backend = "sqlite", db_path = %database_path, "execution-stores: SQLite migrations ready");
+    let pool = deployment.pool().clone();
     tracing::warn!(
         "the node-result store is in-memory (not persisted across restarts); \
          crash-recovery re-executes affected nodes via the reclaim sweep — \
@@ -207,9 +166,8 @@ async fn build_sqlite_execution_stores(
     let turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff> =
         Arc::new(SqliteTurnHandoff::new(pool.clone()));
 
-    #[cfg(feature = "runtime-repair-red")]
     let worker_projection = {
-        let worker_metrics = MetricsRegistry::new();
+        let worker_metrics = metrics.clone();
         WorkerStoreProjection {
             bundles: Arc::new(SqliteStartAcceptanceStore::new(pool.clone())),
             metrics: worker_metrics.clone(),
@@ -231,7 +189,7 @@ async fn build_sqlite_execution_stores(
             control_queue: Arc::clone(&control_queue),
             turn_handoff: Arc::clone(&turn_handoff),
             turn_recovery: Arc::new(SqliteTurnHandoff::new(pool.clone())),
-            resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+            resource_fanout: nebula_deployment::worker::ResourceFanoutInputs::from_runtime(
                 nebula_engine::WorkflowStores {
                     workflow: Arc::clone(&workflow_store),
                     versions: Arc::clone(&workflow_version_store),
@@ -254,8 +212,9 @@ async fn build_sqlite_execution_stores(
     ));
     let start_acceptance = Arc::new(SqliteStartAcceptanceStore::new(pool.clone()));
 
-    Ok(ExecutionStoreBundle {
+    ExecutionStoreBundle {
         tenant_directory: crate::tenant_directory::TenantDirectoryStores::sqlite(pool.clone()),
+        deployment_database: DeploymentDatabase::Sqlite(deployment),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store,
@@ -273,59 +232,24 @@ async fn build_sqlite_execution_stores(
         start_reservation_maintenance: start_acceptance,
         resume_token_store,
         resume_producer: Arc::new(SqliteResumeProducer::new(pool)),
-        #[cfg(feature = "runtime-repair-red")]
         worker_projection,
         #[cfg(feature = "runtime-repair-red")]
         backend_lifecycle,
-    })
+    }
 }
 
 #[cfg(feature = "postgres")]
-async fn build_postgres_execution_stores(
-    explicit_postgres_dsn: Option<&str>,
+fn build_postgres_execution_stores(
+    pool: sqlx::PgPool,
     metrics: &MetricsRegistry,
-) -> Result<ExecutionStoreBundle, TransportInitError> {
+) -> ExecutionStoreBundle {
     use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::postgres::{
         PgControlQueue, PgExecutionStore, PgJournalReader, PgResourceStore, PgResumeProducer,
         PgResumeTokenStore, PgStartAcceptanceStore, PgTurnHandoff, PgWorkflowStore,
-        PgWorkflowVersionStore, init_schema,
+        PgWorkflowVersionStore,
     };
-    #[cfg(feature = "runtime-repair-red")]
     use nebula_storage::postgres::{PgIdempotencyGuard, PgOperationLedger};
-    use sqlx::postgres::PgPoolOptions;
-
-    let environment_dsn;
-    let database_dsn = if let Some(explicit_dsn) = explicit_postgres_dsn {
-        explicit_dsn
-    } else {
-        environment_dsn = std::env::var("DATABASE_URL").map_err(|_| {
-            TransportInitError::ExecutionBackendUnavailable {
-                requested: "postgres",
-                requirement: "DATABASE_URL must be set when API_EXECUTION_BACKEND=postgres",
-            }
-        })?;
-        &environment_dsn
-    };
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .connect(database_dsn)
-        .await
-        .map_err(|error| {
-            TransportInitError::ExecutionDatabase(format!(
-                "Postgres: failed to connect to DATABASE_URL for execution stores: {error}"
-            ))
-        })?;
-    init_schema(&pool).await.map_err(|error| {
-        TransportInitError::ExecutionDatabase(format!(
-            "Postgres: execution-store schema init failed: {error}"
-        ))
-    })?;
-
-    tracing::info!(
-        backend = "postgres",
-        "execution-stores: Postgres migrations ready"
-    );
     tracing::warn!(
         "the node-result store is in-memory (not persisted across restarts); \
          crash-recovery re-executes affected nodes via the reclaim sweep — \
@@ -348,9 +272,8 @@ async fn build_postgres_execution_stores(
     let turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff> =
         Arc::new(PgTurnHandoff::new(pool.clone()));
 
-    #[cfg(feature = "runtime-repair-red")]
     let worker_projection = {
-        let worker_metrics = MetricsRegistry::new();
+        let worker_metrics = metrics.clone();
         WorkerStoreProjection {
             bundles: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
             metrics: worker_metrics.clone(),
@@ -372,7 +295,7 @@ async fn build_postgres_execution_stores(
             control_queue: Arc::clone(&control_queue),
             turn_handoff: Arc::clone(&turn_handoff),
             turn_recovery: Arc::new(PgTurnHandoff::new(pool.clone())),
-            resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+            resource_fanout: nebula_deployment::worker::ResourceFanoutInputs::from_runtime(
                 nebula_engine::WorkflowStores {
                     workflow: Arc::clone(&workflow_store),
                     versions: Arc::clone(&workflow_version_store),
@@ -399,8 +322,9 @@ async fn build_postgres_execution_stores(
     ));
     let start_acceptance = Arc::new(PgStartAcceptanceStore::new(pool.clone()));
 
-    Ok(ExecutionStoreBundle {
+    ExecutionStoreBundle {
         tenant_directory: crate::tenant_directory::TenantDirectoryStores::postgres(pool.clone()),
+        deployment_database: DeploymentDatabase::Postgres(pool.clone()),
         revision_catalog: revision_catalog.clone(),
         revision_installer: revision_catalog,
         workflow_store,
@@ -418,20 +342,8 @@ async fn build_postgres_execution_stores(
         start_reservation_maintenance: start_acceptance,
         resume_token_store,
         resume_producer: Arc::new(PgResumeProducer::new(pool)),
-        #[cfg(feature = "runtime-repair-red")]
         worker_projection,
         #[cfg(feature = "runtime-repair-red")]
         backend_lifecycle,
-    })
-}
-
-#[cfg(not(feature = "postgres"))]
-async fn build_postgres_execution_stores(
-    _explicit_postgres_dsn: Option<&str>,
-    _metrics: &MetricsRegistry,
-) -> Result<ExecutionStoreBundle, TransportInitError> {
-    Err(TransportInitError::ExecutionBackendUnavailable {
-        requested: "postgres",
-        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + Pg execution stores",
-    })
+    }
 }

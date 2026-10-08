@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use nebula_api::{
     ApiConfig, ApiConfigError, AppState, OAuthIdentityRuntime, OAuthRuntimeBuildError,
     TelemetryGuard, TelemetryInitError,
-    config::{AuthBackendKind, IdempotencyBackend, OAuthProvidersConfig, SmtpTlsMode},
+    config::{IdempotencyBackend, OAuthProvidersConfig, SmtpTlsMode},
     domain::auth::backend::{AuthBackend, InMemoryAuthBackend},
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
     ports::email::{EchoSink, EmailPort},
@@ -26,6 +26,7 @@ use nebula_storage::credential::KeyProvider;
 use crate::{
     credential_composition::{compose_first_party_runtime, resolve_first_party_keyring},
     credential_runtime::{ServerCredentialAuthority, ServerCredentialGateway},
+    deployment_database::{DeploymentDatabase, validate_idempotency_backend},
     email::{SmtpEmailPort, SmtpEmailPortBuildError},
     execution_binding_resolver::ServerExecutionBindingResolver,
     transport::ServerTransport,
@@ -37,6 +38,20 @@ pub(crate) enum ServerRunError {
     /// API configuration cannot be loaded from environment.
     #[error("failed to load API config")]
     Config(#[from] ApiConfigError),
+    #[error("separate workers require PostgreSQL deployment storage")]
+    SeparateWorkersRequirePostgres,
+    #[error("in-process worker assembly failed")]
+    WorkerComposition(#[source] Box<nebula_deployment::worker::ComposeError>),
+    #[error("in-process worker construction failed")]
+    WorkerBuild(#[from] nebula_worker::WorkerBuildError),
+    #[error("in-process worker failed")]
+    Worker(#[from] nebula_worker::WorkerRuntimeError),
+    #[error("in-process worker task failed")]
+    WorkerTask(#[source] tokio::task::JoinError),
+    #[error("in-process worker shutdown timed out")]
+    WorkerDrainTimedOut,
+    #[error(transparent)]
+    DatabaseClose(#[from] crate::deployment_database::DatabaseCloseTimedOut),
     /// Address override is present but invalid.
     #[error("{var_name} invalid")]
     InvalidBindAddress {
@@ -51,6 +66,14 @@ pub(crate) enum ServerRunError {
     /// Listener/runtime error from axum server.
     #[error("server failed")]
     Io(#[from] std::io::Error),
+    /// HTTP connections or requests did not drain before the HTTP deadline.
+    #[error(
+        "HTTP shutdown did not finish within {budget:?}; {active_requests} handlers remain active"
+    )]
+    HttpDrainTimedOut {
+        budget: Duration,
+        active_requests: u32,
+    },
     /// OTLP metrics pipeline failed to attach to the telemetry guard.
     ///
     /// Surfacing this as a hard error matches the fail-closed policy of the other OTLP
@@ -97,13 +120,6 @@ pub(crate) enum TransportInitError {
     },
     /// Failed to construct a transport app context.
     #[error("{0}")]
-    #[cfg_attr(
-        not(feature = "postgres"),
-        expect(
-            dead_code,
-            reason = "constructed only in the postgres-gated build_pg_idempotency_store / build_pg_auth_backend arms"
-        )
-    )]
     ContextFactory(String),
     /// `API_IDEMPOTENCY_BACKEND` selects a backend that the current build
     /// cannot satisfy.
@@ -111,30 +127,8 @@ pub(crate) enum TransportInitError {
     /// This fires when an operator selects a backend that the current build
     /// cannot provide. Per ADR-0048 fail-closed contract, the binary
     /// refuses to boot rather than silently fall back to in-memory dedup.
-    #[error(
-        "API_IDEMPOTENCY_BACKEND={requested} requires {requirement}; set API_IDEMPOTENCY_BACKEND=memory or land the missing wiring"
-    )]
+    #[error("API_IDEMPOTENCY_BACKEND={requested} requires {requirement}")]
     IdempotencyBackendUnavailable {
-        /// Backend the operator requested.
-        requested: &'static str,
-        /// What is missing for that backend to work.
-        requirement: &'static str,
-    },
-    /// `API_AUTH_BACKEND` selects an identity backend that the current
-    /// build cannot satisfy.
-    ///
-    /// Today this fires when an operator sets
-    /// `API_AUTH_BACKEND=postgres` without the `nebula-api/postgres`
-    /// cargo feature compiled in, or without `DATABASE_URL` reachable.
-    /// Mirrors the fail-closed posture of
-    /// [`Self::IdempotencyBackendUnavailable`] — silently falling back
-    /// to the in-memory identity backend would be a publicly-known
-    /// auth-bypass surface in any deployment that thought it had
-    /// requested durable identity.
-    #[error(
-        "API_AUTH_BACKEND={requested} requires {requirement}; set API_AUTH_BACKEND=memory or land the missing wiring"
-    )]
-    AuthBackendUnavailable {
         /// Backend the operator requested.
         requested: &'static str,
         /// What is missing for that backend to work.
@@ -228,6 +222,9 @@ pub(crate) enum TransportInitError {
 /// Webhook dispatch uses the composed `WorkflowStartService` and its shared
 /// start-acceptance port on every backend.
 pub(crate) struct ExecutionStoreBundle {
+    /// The deployment database behind the tenant directory. Credentials are
+    /// opened on it: a credential belongs to a live workspace there.
+    pub(super) deployment_database: DeploymentDatabase,
     /// Tenant-directory projections created from one backend authority.
     pub(super) tenant_directory: crate::tenant_directory::TenantDirectoryStores,
     pub(super) revision_catalog: Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
@@ -268,13 +265,11 @@ pub(crate) struct ExecutionStoreBundle {
     /// the burn and the enqueue across two backends — exactly the durability gap
     /// this seam closes.
     pub(super) resume_producer: Arc<dyn nebula_storage_port::store::ResumeProducer>,
-    #[cfg(feature = "runtime-repair-red")]
     pub(super) worker_projection: WorkerStoreProjection,
     #[cfg(feature = "runtime-repair-red")]
     pub(super) backend_lifecycle: ProfileBackendLifecycle,
 }
 
-#[cfg(feature = "runtime-repair-red")]
 #[derive(Clone)]
 pub(crate) struct WorkerStoreProjection {
     pub(crate) bundles: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
@@ -295,7 +290,7 @@ pub(crate) struct WorkerStoreProjection {
     /// Worker-only global discovery and acceptance of abandoned turns.
     pub(crate) turn_recovery: Arc<dyn nebula_storage_port::store::TurnRecovery>,
     /// Durable resource roles and workflow stores from the selected backend.
-    pub(crate) resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs,
+    pub(crate) resource_fanout: nebula_deployment::worker::ResourceFanoutInputs,
 }
 
 #[cfg(feature = "runtime-repair-red")]
@@ -340,9 +335,10 @@ pub(crate) use crate::execution_store_backends::build_execution_stores;
 pub(crate) async fn run_transport<T: ServerTransport>(
     transport: T,
     telemetry_guard: TelemetryGuard,
+    execution: crate::execution_runtime::ExecutionTopology,
 ) -> Result<(), ServerRunError> {
     ServerRuntime::new()
-        .run_transport(transport, telemetry_guard)
+        .run_transport(transport, telemetry_guard, execution)
         .await
 }
 
@@ -370,200 +366,269 @@ impl ServerRuntime {
         &self,
         transport: T,
         mut telemetry_guard: TelemetryGuard,
+        execution: crate::execution_runtime::ExecutionTopology,
     ) -> Result<(), ServerRunError> {
         let mut api_config = ApiConfig::from_env()?;
-        let metrics_registry = Arc::new(MetricsRegistry::new());
-        // Attach the OTLP metrics pipeline against the same registry the API will publish
-        // through. The guard owns the pipeline so it shuts down with the trace exporter when
-        // `axum::serve` returns. A `None` endpoint silently no-ops, matching the trace path.
-        telemetry_guard
-            .attach_metrics_exporter(Arc::clone(&metrics_registry))
-            .map_err(ServerRunError::MetricsExporter)?;
-        // Build the execution-store bundle inside the async context so the SQLite and
-        // Postgres paths can `await` pool construction.
-        let execution_bundle = build_execution_stores(&api_config, None, &metrics_registry).await?;
+        if matches!(
+            execution,
+            crate::execution_runtime::ExecutionTopology::SeparateWorkers
+        ) && api_config.execution.backend != nebula_api::config::ExecutionBackendKind::Postgres
+        {
+            return Err(ServerRunError::SeparateWorkersRequirePostgres);
+        }
+        // Reject startup inputs before opening or migrating deployment storage.
+        validate_idempotency_backend(&api_config)?;
+        let bind_address =
+            resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
         let registry =
             crate::transport::worker_registry(std::env::var("NEBULA_WORKER_ARTIFACT_SET_DIGEST"))
                 .map_err(TransportInitError::from)?;
-        // Compose credential persistence before workflow start so binding
-        // resolution and management routes share one service instance.
         let keyring = resolve_first_party_keyring()
             .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
-        // Identity must exist before tenant authority can be granted. Build
-        // the selected Plane-A backend before consuming the execution bundle,
-        // then let the opt-in bootstrap verify its stable owner against it.
         let email_port = build_email_port(&api_config)?;
-        let oauth_config = std::mem::take(&mut api_config.auth.oauth);
         let tenant_bootstrap = crate::tenant_bootstrap::TenantBootstrapConfig::from_env()
             .map_err(TransportInitError::from)?;
-        crate::tenant_bootstrap::validate_auth_backend(
+        crate::tenant_bootstrap::validate_deployment_backend(
             tenant_bootstrap.as_ref(),
-            &api_config.auth.backend,
+            &api_config.execution.backend,
         )
         .map_err(TransportInitError::from)?;
-        let auth_backend = build_auth_backend(
-            api_config.auth.backend.clone(),
-            oauth_config,
-            Arc::clone(&email_port),
-            Some(Arc::clone(&metrics_registry)),
-            keyring.current(),
-            keyring.identity_legacy(),
-        )
-        .await?;
-        let tenant_provisioner = execution_bundle.tenant_directory.provisioner();
-        crate::tenant_bootstrap::bootstrap_tenant(
-            tenant_bootstrap,
-            &auth_backend,
-            &tenant_provisioner,
-        )
-        .await
-        .map_err(TransportInitError::from)?;
-        let mut credential_runtime = compose_first_party_runtime(
-            keyring.current(),
-            keyring.credential_legacy(),
-            Arc::clone(&metrics_registry),
-        )
-        .await
-        .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
-        let credential_service = credential_runtime.service();
-        let binding_resolver: Arc<dyn nebula_engine::ExecutionBindingResolver> =
-            Arc::new(ServerExecutionBindingResolver::new(
-                Arc::clone(&credential_service),
-                Arc::clone(&execution_bundle.resource_store),
-                Arc::clone(&registry),
-            ));
-        let mut state = default_state(
-            &api_config,
-            Arc::clone(&metrics_registry),
-            execution_bundle,
-            registry,
-            Some(binding_resolver),
-        )?;
-        let bind_address =
-            resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
-        state = transport.prepare_state(state, bind_address)?;
-        // Attach the idempotency store inside the async context so the
-        // PG-backed path can await sqlx pool construction. Memory-backed
-        // builds resolve immediately; PG-backed builds also fail closed
-        // here when the feature is missing or `DATABASE_URL` is unset
-        // (per ADR-0048).
-        let idempotency_store = build_idempotency_store(&api_config).await?;
-        state = state.with_idempotency_store(idempotency_store);
-        // The webhook execution resolver and authenticated command controller
-        // share the same service instance. Only the resolver retains direct
-        // execution-plane access; AppState receives the API-owned gateway.
-        let webhook_secret_resolver = Arc::new(
-            crate::webhook_credential_resolver::CredentialBackedWebhookSecretResolver::new(
-                Arc::clone(&credential_service),
-            ),
-        );
-        state = state
-            .with_credential_schema(Arc::clone(&credential_runtime.catalog))
-            .with_webhook_secret_resolver(webhook_secret_resolver);
-        if state.membership_store.is_some() && state.workspace_resolver.is_some() {
-            let credential_authority: Arc<dyn CredentialTenantAuthority> =
-                Arc::new(ServerCredentialAuthority::new(
-                    state.membership_store.clone(),
-                    state.workspace_resolver.clone(),
-                ));
-            let credential_controller = Arc::new(CredentialController::new(
-                Arc::clone(&credential_service),
-                credential_authority,
-                Arc::clone(&credential_runtime.adjudicator),
-                Some(Arc::clone(&credential_runtime.audit_sink)),
-            ));
-            let credential_gateway = Arc::new(ServerCredentialGateway::new(credential_controller));
-            state = state.with_credential_gateway(credential_gateway);
-        } else {
-            tracing::warn!(
-                "credential management gateway is not mounted because tenant membership \
-                 authority is not provisioned"
-            );
-        }
-        state = state
-            .with_auth_backend(auth_backend)
-            .with_email_port(email_port);
-        // Captured before `state` is consumed by the router: the sweep needs
-        // the same store the start path writes reservations through.
-        let reservation_sweep = state.start_reservation_sweeper(
-            Duration::from_secs(api_config.idempotency.ttl_secs),
-            Duration::from_secs(api_config.idempotency.sweep_interval_secs),
-        );
-        let app = transport.build_router(state, &api_config)?;
-        // Bound the graceful drain. `axum::serve(...).with_graceful_shutdown`
-        // waits for in-flight requests without a deadline, so one handler
-        // parked on an unresponsive dependency keeps the process alive until
-        // the orchestrator's SIGKILL — telemetry flush, credential-runtime
-        // shutdown, and the reservation-sweep join below never run.
-        // `ShutdownGate` rejects new requests with 503 once closing and lets
-        // the composition root abandon the drain on its own budget.
-        let shutdown_gate = nebula_api::middleware::ShutdownGate::new();
-        let app = shutdown_gate.install(app);
 
+        // Acquire ingress before starting aggregate lifecycle tasks. A port
+        // conflict must not leave a worker consuming accepted commands.
         let listener = TcpListener::bind(bind_address).await?;
-        let local_address = listener.local_addr()?;
-        tracing::info!(transport = transport.name(), %local_address, "starting transport");
-        let shutdown = CancellationToken::new();
-        // Expire keyed-start reservations on the same cadence, and with the
-        // same retention, as the idempotency cache: a start key is an
-        // `Idempotency-Key` for the start endpoint, and two different answers
-        // to "how long may this be replayed?" would be a discrepancy no
-        // operator could see. Owned here so it lives and dies with the
-        // process's serving lifecycle rather than running unsupervised.
-        let reservation_sweep = reservation_sweep.map(|sweeper| {
-            let token = shutdown.clone();
-            tokio::spawn(async move { sweeper.run(token).await })
-        });
-        if reservation_sweep.is_none() {
-            tracing::warn!(
-                "start-key reservation sweep disabled (idempotency sweep interval is 0); \
-                 reservations will accumulate for the life of this deployment"
-            );
-        }
-
-        let serve_future = serve_prebound(app, listener, shutdown.clone().cancelled_owned());
-        tokio::pin!(serve_future);
-        let serve_result = tokio::select! {
-            result = &mut serve_future => result,
-            () = wait_for_shutdown_signal() => {
-                shutdown.cancel();
-                match shutdown_gate.close(SHUTDOWN_DRAIN_BUDGET).await {
-                    Ok(()) => {
-                        tracing::info!(
-                            "all in-flight requests drained within the shutdown budget"
-                        );
-                        serve_future.await
-                    },
-                    Err(timeout) => {
-                        // The gate budget is the drain deadline. Axum's own
-                        // graceful shutdown has no bound, so awaiting
-                        // `serve_future` here would reintroduce the unbounded
-                        // wait this gate exists to remove. Dropping it closes
-                        // remaining connections; the process is exiting anyway.
-                        tracing::warn!(
-                            active_requests = timeout.active_guards,
-                            budget_ms = timeout.timeout.as_millis() as u64,
-                            "shutdown drain budget elapsed; abandoning in-flight requests"
-                        );
-                        Ok(())
-                    },
+        let metrics_registry = Arc::new(MetricsRegistry::new());
+        telemetry_guard
+            .attach_metrics_exporter(Arc::clone(&metrics_registry))
+            .map_err(ServerRunError::MetricsExporter)?;
+        let execution_bundle = build_execution_stores(&api_config, None, &metrics_registry).await?;
+        let deployment_database = execution_bundle.deployment_database.clone();
+        // Close the admitted pool on every subsequent startup or serving result.
+        let result = async {
+            // Identity must exist before tenant authority can be granted. The
+            // opt-in bootstrap verifies its stable owner against this backend.
+            let oauth_config = std::mem::take(&mut api_config.auth.oauth);
+            let auth_backend = build_auth_backend(
+                &execution_bundle.deployment_database,
+                oauth_config,
+                Arc::clone(&email_port),
+                Some(Arc::clone(&metrics_registry)),
+                keyring.current(),
+                keyring.identity_legacy(),
+            )
+            .await?;
+            let idempotency_store =
+                build_idempotency_store(&api_config, &execution_bundle.deployment_database)?;
+            let tenant_provisioner = execution_bundle.tenant_directory.provisioner();
+            crate::tenant_bootstrap::bootstrap_tenant(
+                tenant_bootstrap,
+                &auth_backend,
+                &tenant_provisioner,
+            )
+            .await
+            .map_err(TransportInitError::from)?;
+            let mut credential_runtime = compose_first_party_runtime(
+                &execution_bundle.deployment_database,
+                keyring.current(),
+                keyring.credential_legacy(),
+                Arc::clone(&metrics_registry),
+            )
+            .await
+            .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
+            // Credential composition starts background owners. Every fallible stage
+            // below must return through their joined shutdown, including router setup.
+            let result = async {
+                let credential_service = credential_runtime.service();
+                let projection = execution_bundle.worker_projection.clone();
+                let artifact_set_digest = registry.revision().artifact_set_digest();
+                let binding_resolver: Arc<dyn nebula_engine::ExecutionBindingResolver> =
+                    Arc::new(ServerExecutionBindingResolver::new(
+                        Arc::clone(&credential_service),
+                        Arc::clone(&execution_bundle.resource_store),
+                        Arc::clone(&registry),
+                    ));
+                let mut state = default_state(
+                    &api_config,
+                    Arc::clone(&metrics_registry),
+                    execution_bundle,
+                    registry,
+                    Some(binding_resolver),
+                )?;
+                state = transport.prepare_state(state, bind_address)?;
+                state = state.with_idempotency_store(idempotency_store);
+                // The webhook execution resolver and authenticated command controller
+                // share the same service instance. Only the resolver retains direct
+                // execution-plane access; AppState receives the API-owned gateway.
+                let webhook_secret_resolver = Arc::new(
+                    crate::webhook_credential_resolver::CredentialBackedWebhookSecretResolver::new(
+                        Arc::clone(&credential_service),
+                    ),
+                );
+                state = state
+                    .with_credential_schema(Arc::clone(&credential_runtime.catalog))
+                    .with_webhook_secret_resolver(webhook_secret_resolver);
+                if state.membership_store.is_some() && state.workspace_resolver.is_some() {
+                    let credential_authority: Arc<dyn CredentialTenantAuthority> =
+                        Arc::new(ServerCredentialAuthority::new(
+                            state.membership_store.clone(),
+                            state.workspace_resolver.clone(),
+                        ));
+                    let credential_controller = Arc::new(CredentialController::new(
+                        Arc::clone(&credential_service),
+                        credential_authority,
+                        Arc::clone(&credential_runtime.adjudicator),
+                        Some(Arc::clone(&credential_runtime.audit_sink)),
+                    ));
+                    let credential_gateway =
+                        Arc::new(ServerCredentialGateway::new(credential_controller));
+                    state = state.with_credential_gateway(credential_gateway);
+                } else {
+                    tracing::warn!(
+                        "credential management gateway is not mounted because tenant membership \
+                 authority is not provisioned"
+                    );
                 }
-            },
-        };
-        // The token is already cancelled on every path out of the select, so
-        // this join is bounded by one sweep iteration.
-        shutdown.cancel();
-        if let Some(handle) = reservation_sweep
-            && let Err(error) = handle.await
-        {
-            tracing::warn!(%error, "start-key reservation sweep did not stop cleanly");
+                state = state
+                    .with_auth_backend(auth_backend)
+                    .with_email_port(email_port);
+                // Captured before `state` is consumed by the router: the sweep needs
+                // the same store the start path writes reservations through.
+                let reservation_sweep = state.start_reservation_sweeper(
+                    Duration::from_secs(api_config.idempotency.ttl_secs),
+                    Duration::from_secs(api_config.idempotency.sweep_interval_secs),
+                );
+                let app = transport.build_router(state, &api_config)?;
+                let worker_runtime = match execution {
+                    crate::execution_runtime::ExecutionTopology::InProcess => {
+                        let (builder, _, _) = nebula_deployment::worker::build_core_flavor_runtime(
+                            projection.execution_stores,
+                            projection.turn_handoff,
+                            projection.turn_recovery,
+                            *uuid::Uuid::new_v4().as_bytes(),
+                            nebula_deployment::worker::CoreFlavorRevisionInputs {
+                                metrics: projection.metrics,
+                                artifact_set_digest,
+                                catalog: projection.revision_catalog,
+                                bundles: projection.bundles,
+                                credential_resolver: credential_service.clone(),
+                            },
+                            projection.resource_fanout,
+                        )
+                        .map_err(|error| ServerRunError::WorkerComposition(Box::new(error)))?;
+                        Some(
+                            builder
+                                .with_control_queue(projection.control_queue)
+                                .build()?,
+                        )
+                    },
+                    crate::execution_runtime::ExecutionTopology::SeparateWorkers => None,
+                };
+                let shutdown = CancellationToken::new();
+                // Expire keyed-start reservations on the same cadence, and with the
+                // same retention, as the idempotency cache: a start key is an
+                // `Idempotency-Key` for the start endpoint, and two different answers
+                // to "how long may this be replayed?" would be a discrepancy no
+                // operator could see. Owned here so it lives and dies with the
+                // process's serving lifecycle rather than running unsupervised.
+                let reservation_sweep = reservation_sweep.map(|sweeper| {
+                    let token = shutdown.clone();
+                    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                        sweeper.run(token).await;
+                    }))
+                });
+                if reservation_sweep.is_none() {
+                    tracing::warn!(
+                        "start-key reservation sweep disabled (idempotency sweep interval is 0); \
+                 reservations will accumulate for the life of this deployment"
+                    );
+                }
+
+                let serve_result = crate::execution_runtime::serve(
+                    app,
+                    listener,
+                    worker_runtime,
+                    shutdown.clone(),
+                    wait_for_shutdown_signal(),
+                    SHUTDOWN_DRAIN_BUDGET,
+                    transport.name(),
+                )
+                .await;
+                // Stop background owners even when HTTP draining failed. Their cleanup
+                // is separate from the HTTP drain budget.
+                shutdown.cancel();
+                if let Some(handle) = reservation_sweep
+                    && let Err(error) = handle.await
+                {
+                    tracing::warn!(%error, "start-key reservation sweep did not stop cleanly");
+                }
+                serve_result
+            }
+            .await;
+            // This also runs when preparation failed after credential composition.
+            credential_runtime.shutdown().await;
+            drop(credential_runtime);
+            result
         }
-        // Stop every credential lifecycle task through its single owner after
-        // request handling has drained. Drop remains the fail-safe path.
-        credential_runtime.shutdown().await;
-        drop(credential_runtime);
-        serve_result?;
+        .await;
+        let close_result = deployment_database.close().await;
+        result?;
+        close_result?;
         Ok(())
+    }
+}
+
+/// Serve until an application shutdown request, then drain on the given budget.
+#[tracing::instrument(skip_all)]
+pub(crate) async fn serve_until_shutdown(
+    app: Router,
+    listener: TcpListener,
+    shutdown: CancellationToken,
+    signal: impl Future<Output = ()>,
+    drain_budget: Duration,
+) -> Result<(), ServerRunError> {
+    let _cancel_on_drop = shutdown.clone().drop_guard();
+    let shutdown_gate = nebula_api::middleware::ShutdownGate::new();
+    let app = shutdown_gate.install(app);
+    let serve_future = serve_prebound(app, listener, shutdown.clone().cancelled_owned());
+    tokio::pin!(serve_future);
+    let stop = async {
+        tokio::select! {
+            () = signal => {},
+            () = shutdown.cancelled() => {},
+        }
+    };
+    tokio::select! {
+        result = &mut serve_future => result.map_err(ServerRunError::from),
+        () = stop => {
+            let deadline = tokio::time::Instant::now() + drain_budget;
+            shutdown.cancel();
+            match shutdown_gate.close(drain_budget).await {
+                Ok(()) => {
+                    // The gate tracks handler completion. Streaming response
+                    // bodies and connection shutdown still share the deadline.
+                    if let Ok(result) = tokio::time::timeout_at(deadline, serve_future).await {
+                        result.map_err(ServerRunError::from)
+                    } else {
+                        tracing::error!(?drain_budget, "HTTP connections did not drain before shutdown deadline");
+                        Err(ServerRunError::HttpDrainTimedOut {
+                            budget: drain_budget,
+                            active_requests: shutdown_gate.active_requests(),
+                        })
+                    }
+                },
+                Err(timeout) => {
+                    tracing::error!(
+                        active_requests = timeout.active_guards,
+                        ?drain_budget,
+                        "shutdown drain budget elapsed; abandoning in-flight requests"
+                    );
+                    Err(ServerRunError::HttpDrainTimedOut {
+                        budget: drain_budget,
+                        active_requests: timeout.active_guards,
+                    })
+                },
+            }
+        },
     }
 }
 
@@ -682,11 +747,8 @@ pub(crate) fn default_state(
         registry.all_resources().map(|(_plugin, factory)| factory),
     )?);
 
-    // Plane-A identity backend is wired asynchronously by
-    // [`build_auth_backend`] inside [`ServerRuntime::run_transport`]
-    // so the PG-backed arm can `await` the sqlx pool. The selector
-    // (`AuthBackendKind::Memory` vs `Postgres`) is honored there with
-    // the same fail-closed contract `build_idempotency_store` uses.
+    // Identity is assembled by `build_auth_backend` on the admitted deployment
+    // database before serving; secret admission failure aborts startup.
 
     // Tenant directory projections are attached below from this same selected
     // backend. Startup deliberately does not seed an owner: authorization
@@ -863,27 +925,13 @@ pub(crate) fn build_email_port(
     }
 }
 
-/// Construct the Plane-A authentication backend from an owned OAuth config.
+/// Construct identity policy on the already-admitted deployment database.
 ///
-/// `Memory` builds an in-process [`InMemoryAuthBackend`] wired to the
-/// shared `email_port` so verification / reset mails flow through the
-/// same transport the rest of the app uses. `Postgres` requires the
-/// `nebula-api/postgres` cargo feature **and** a reachable
-/// `DATABASE_URL`; either missing component fails closed with
-/// [`TransportInitError::AuthBackendUnavailable`] (silent fallback to
-/// in-memory would be an undetected auth-bypass for any operator who
-/// thought they had requested durable identity).
-///
-/// Both arms receive the SAME `Arc<dyn EmailPort>` — the in-memory
-/// backend drops its built-in default echo sink in favour of the
-/// shared transport so callers can introspect deliveries against one
-/// known port instead of guessing which sink owns the inbox.
-///
-/// Today this builder constructs its own `sqlx::Pool<Postgres>`
-/// alongside the idempotency pool; consolidating the two onto one
-/// shared pool is a follow-up.
+/// SQLite and PostgreSQL share their existing pool with every identity repository.
+/// Internal Memory deployments use the reference backend. No independent identity
+/// database selection or fallback exists; all adapters share the supplied mail port.
 pub(crate) async fn build_auth_backend(
-    backend_kind: AuthBackendKind,
+    database: &DeploymentDatabase,
     oauth_config: OAuthProvidersConfig,
     email_port: Arc<dyn EmailPort>,
     metrics_registry: Option<Arc<MetricsRegistry>>,
@@ -893,8 +941,12 @@ pub(crate) async fn build_auth_backend(
     let oauth_runtime = OAuthIdentityRuntime::from_config(oauth_config)
         .map_err(|source| TransportInitError::OAuthRuntimeInit { source })?
         .map(Arc::new);
-    match backend_kind {
-        AuthBackendKind::Memory => {
+    tracing::info!(
+        backend = database.backend(),
+        "auth: deployment identity selected"
+    );
+    match database {
+        DeploymentDatabase::Memory(_) => {
             let backend = InMemoryAuthBackend::new()
                 .with_email_port(email_port)
                 .with_metrics(metrics_registry);
@@ -904,8 +956,21 @@ pub(crate) async fn build_auth_backend(
             };
             Ok(Arc::new(backend))
         },
-        AuthBackendKind::Postgres => {
+        #[cfg(feature = "postgres")]
+        DeploymentDatabase::Postgres(pool) => {
             build_pg_auth_backend(
+                pool,
+                email_port,
+                metrics_registry,
+                oauth_runtime,
+                key_provider,
+                legacy_keys,
+            )
+            .await
+        },
+        DeploymentDatabase::Sqlite(deployment) => {
+            build_sqlite_auth_backend(
+                deployment,
                 email_port,
                 metrics_registry,
                 oauth_runtime,
@@ -923,12 +988,11 @@ pub(crate) async fn build_auth_backend(
 /// "dedup state is lost on restart and across runners" failure mode is
 /// visible in operational logs (per ADR-0048).
 ///
-/// `Postgres` requires the `nebula-api/postgres` cargo feature **and** a
-/// reachable `DATABASE_URL`; either missing component fails closed with
-/// [`TransportInitError::IdempotencyBackendUnavailable`] (a silent
-/// fallback to memory is rejected: it would mask a misconfigured deployment).
-pub(crate) async fn build_idempotency_store(
+/// `Postgres` uses the admitted deployment pool. An incompatible database
+/// fails closed without falling back or opening an independent pool.
+pub(crate) fn build_idempotency_store(
     api_config: &ApiConfig,
+    database: &DeploymentDatabase,
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
     match api_config.idempotency.backend {
         IdempotencyBackend::Memory => {
@@ -940,7 +1004,7 @@ pub(crate) async fn build_idempotency_store(
             );
             Ok(Arc::new(store))
         },
-        IdempotencyBackend::Postgres => build_pg_idempotency_store(api_config).await,
+        IdempotencyBackend::Postgres => build_pg_idempotency_store(api_config, database),
     }
 }
 
@@ -966,32 +1030,23 @@ fn warn_short_sweep_interval(sweep_interval_secs: u64) {
 }
 
 #[cfg(feature = "postgres")]
-async fn build_pg_idempotency_store(
+fn build_pg_idempotency_store(
     api_config: &ApiConfig,
+    database: &DeploymentDatabase,
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
-    use nebula_storage::pg::PgIdempotencyStore;
-    use sqlx::postgres::PgPoolOptions;
+    use nebula_storage::http_idempotency::PgHttpIdempotencyStore;
 
     use nebula_api::middleware::idempotency::StorageBackedIdempotencyStore;
 
-    let url = std::env::var("DATABASE_URL").map_err(|_| {
-        TransportInitError::IdempotencyBackendUnavailable {
+    let DeploymentDatabase::Postgres(pool) = database else {
+        return Err(TransportInitError::IdempotencyBackendUnavailable {
             requested: "postgres",
-            requirement: "DATABASE_URL must be set when API_IDEMPOTENCY_BACKEND=postgres",
-        }
-    })?;
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .connect(&url)
-        .await
-        .map_err(|err| {
-            TransportInitError::ContextFactory(format!(
-                "idempotency: failed to connect to DATABASE_URL for PG-backed store: {err}"
-            ))
-        })?;
+            requirement: "an admitted PostgreSQL deployment pool",
+        });
+    };
     warn_short_sweep_interval(api_config.idempotency.sweep_interval_secs);
     tracing::info!(backend = "postgres", "idempotency: PG-backed store wired");
-    let pg_repo = Arc::new(PgIdempotencyStore::new(pool));
+    let pg_repo = Arc::new(PgHttpIdempotencyStore::new(pool.clone()));
     let store: Arc<dyn IdempotencyStore> = Arc::new(StorageBackedIdempotencyStore::new(
         pg_repo,
         Duration::from_secs(api_config.idempotency.ttl_secs),
@@ -1000,45 +1055,64 @@ async fn build_pg_idempotency_store(
 }
 
 #[cfg(not(feature = "postgres"))]
-async fn build_pg_idempotency_store(
+fn build_pg_idempotency_store(
     _api_config: &ApiConfig,
+    _database: &DeploymentDatabase,
 ) -> Result<Arc<dyn IdempotencyStore>, TransportInitError> {
     Err(TransportInitError::IdempotencyBackendUnavailable {
         requested: "postgres",
-        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + PgIdempotencyStore",
+        requirement: "the nebula-server/postgres cargo feature",
     })
 }
 
-#[cfg(feature = "postgres")]
-async fn build_pg_auth_backend(
+async fn build_sqlite_auth_backend(
+    deployment: &nebula_storage::sqlite::DeploymentPool,
     email_port: Arc<dyn EmailPort>,
     metrics_registry: Option<Arc<MetricsRegistry>>,
     oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,
     key_provider: Arc<dyn KeyProvider>,
     legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
-    use nebula_api::domain::auth::backend::PgAuthBackend;
-    use nebula_storage::{identity_secret::IdentitySecretCodec, pg::PgIdentitySecretMigrator};
-    use sqlx::postgres::PgPoolOptions;
-
-    let url =
-        std::env::var("DATABASE_URL").map_err(|_| TransportInitError::AuthBackendUnavailable {
-            requested: "postgres",
-            requirement: "DATABASE_URL must be set when API_AUTH_BACKEND=postgres",
-        })?;
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .connect(&url)
-        .await
-        .map_err(|err| {
+    use nebula_api::domain::auth::backend::DurableAuthBackend;
+    use nebula_storage::auth::{
+        AuthPersistence, identity_secret::IdentitySecretCodec, sqlite::admit_identity_secrets,
+    };
+    let identity_secrets = Arc::new(
+        IdentitySecretCodec::with_legacy_keys(key_provider, legacy_keys).map_err(|error| {
             TransportInitError::ContextFactory(format!(
-                "auth: failed to connect to DATABASE_URL for PG-backed backend: {err}"
+                "auth: identity codec initialization failed: {error}"
+            ))
+        })?,
+    );
+    admit_identity_secrets(deployment.pool(), &identity_secrets)
+        .await
+        .map_err(|error| {
+            TransportInitError::ContextFactory(format!(
+                "auth: identity secret admission failed: {error}"
             ))
         })?;
-    tracing::info!(
-        backend = "postgres",
-        "auth: PG-backed identity backend wired"
-    );
+    let persistence = AuthPersistence::sqlite(deployment, identity_secrets);
+    let backend = DurableAuthBackend::new(persistence, email_port, metrics_registry);
+    let backend = match oauth_runtime {
+        Some(runtime) => backend.with_oauth_runtime(runtime),
+        None => backend,
+    };
+    Ok(Arc::new(backend))
+}
+
+#[cfg(feature = "postgres")]
+async fn build_pg_auth_backend(
+    pool: &sqlx::PgPool,
+    email_port: Arc<dyn EmailPort>,
+    metrics_registry: Option<Arc<MetricsRegistry>>,
+    oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,
+    key_provider: Arc<dyn KeyProvider>,
+    legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
+) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
+    use nebula_api::domain::auth::backend::DurableAuthBackend;
+    use nebula_storage::auth::{
+        AuthPersistence, identity_secret::IdentitySecretCodec, postgres::PgIdentitySecretMigrator,
+    };
     let identity_secrets = Arc::new(
         IdentitySecretCodec::with_legacy_keys(key_provider, legacy_keys).map_err(|error| {
             TransportInitError::ContextFactory(format!(
@@ -1055,27 +1129,14 @@ async fn build_pg_auth_backend(
                     "auth: identity secret migration failed: {error}"
                 ))
             })?;
-    let backend = PgAuthBackend::new(pool, email_port, metrics_registry, identity_secrets);
+    let persistence = AuthPersistence::postgres(pool.clone(), identity_secrets);
+    let backend = DurableAuthBackend::new(persistence, email_port, metrics_registry);
     let backend = match oauth_runtime {
         Some(runtime) => backend.with_oauth_runtime(runtime),
         None => backend,
     };
     let backend: Arc<dyn AuthBackend> = Arc::new(backend);
     Ok(backend)
-}
-
-#[cfg(not(feature = "postgres"))]
-async fn build_pg_auth_backend(
-    _email_port: Arc<dyn EmailPort>,
-    _metrics_registry: Option<Arc<MetricsRegistry>>,
-    _oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,
-    _key_provider: Arc<dyn KeyProvider>,
-    _legacy_keys: Vec<(String, Arc<nebula_crypto::EncryptionKey>)>,
-) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
-    Err(TransportInitError::AuthBackendUnavailable {
-        requested: "postgres",
-        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + PgAuthBackend",
-    })
 }
 
 pub(crate) fn resolve_bind_address(
@@ -1109,6 +1170,196 @@ mod tests {
     use std::net::SocketAddr;
 
     use super::{ServerRunError, parse_bind_address, resolve_bind_address};
+
+    #[tokio::test]
+    async fn completed_http_request_allows_clean_shutdown() {
+        use std::time::Duration;
+        use tokio::{net::TcpListener, sync::oneshot};
+        use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
+
+        let app = axum::Router::new().route("/", axum::routing::get(|| async { "done" }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let (stop, stopped) = oneshot::channel();
+        let cancel = CancellationToken::new();
+        let server = AbortOnDropHandle::new(tokio::spawn(super::serve_until_shutdown(
+            app,
+            listener,
+            cancel.clone(),
+            async {
+                let _ = stopped.await;
+            },
+            Duration::from_secs(1),
+        )));
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .expect("client")
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect("response")
+            .text()
+            .await
+            .expect("body");
+        assert_eq!(response, "done");
+        stop.send(()).expect("request shutdown");
+        tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .expect("bounded shutdown")
+            .expect("server task")
+            .expect("clean drain");
+        assert!(cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn stalled_http_request_makes_shutdown_fail() {
+        use std::{sync::Arc, time::Duration};
+        use tokio::{
+            net::TcpListener,
+            sync::{Notify, oneshot},
+        };
+        use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
+
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let app = axum::Router::new().route(
+            "/park",
+            axum::routing::get({
+                let entered = entered.clone();
+                let release = release.clone();
+                move || {
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    async move {
+                        entered.notify_one();
+                        release.notified().await;
+                        "done"
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let (stop, stopped) = oneshot::channel();
+        let server = AbortOnDropHandle::new(tokio::spawn(super::serve_until_shutdown(
+            app,
+            listener,
+            CancellationToken::new(),
+            async {
+                let _ = stopped.await;
+            },
+            Duration::from_millis(20),
+        )));
+        let request = AbortOnDropHandle::new(tokio::spawn(async move {
+            reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .expect("client")
+                .get(format!("http://{address}/park"))
+                .send()
+                .await
+        }));
+        tokio::time::timeout(Duration::from_secs(3), entered.notified())
+            .await
+            .expect("handler entered");
+        stop.send(()).expect("request shutdown");
+        let result = tokio::time::timeout(Duration::from_secs(3), server)
+            .await
+            .expect("bounded serving shutdown")
+            .expect("server task");
+        release.notify_one();
+        let _response = request.await;
+        assert!(
+            matches!(
+                result,
+                Err(ServerRunError::HttpDrainTimedOut {
+                    active_requests: 1,
+                    ..
+                })
+            ),
+            "shutdown must report an unfinished HTTP request, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_response_makes_shutdown_fail_at_the_drain_deadline() {
+        use futures::StreamExt;
+        use std::{convert::Infallible, sync::Arc, time::Duration};
+        use tokio::{
+            net::TcpListener,
+            sync::{Notify, oneshot},
+        };
+        use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
+
+        let release = Arc::new(Notify::new());
+        let app = axum::Router::new().route(
+            "/stream",
+            axum::routing::get({
+                let release = release.clone();
+                move || {
+                    let release = release.clone();
+                    async move {
+                        let first = futures::stream::iter([Ok::<_, Infallible>("first")]);
+                        let last = futures::stream::once(async move {
+                            release.notified().await;
+                            Ok::<_, Infallible>("last")
+                        });
+                        axum::body::Body::from_stream(first.chain(last))
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let (stop, stopped) = oneshot::channel();
+        let mut server = AbortOnDropHandle::new(tokio::spawn(super::serve_until_shutdown(
+            app,
+            listener,
+            CancellationToken::new(),
+            async {
+                let _ = stopped.await;
+            },
+            Duration::from_millis(20),
+        )));
+        let mut response = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .expect("client")
+            .get(format!("http://{address}/stream"))
+            .send()
+            .await
+            .expect("streaming response");
+        assert_eq!(
+            response.chunk().await.expect("first chunk").expect("body"),
+            "first"
+        );
+        stop.send(()).expect("request shutdown");
+        let result = tokio::time::timeout(Duration::from_secs(1), &mut server).await;
+        // Complete the controlled response even when the old unbounded drain
+        // is reproduced, so the regression does not leave a connection alive.
+        release.notify_one();
+        let _body = response.bytes().await;
+        if result.is_err() {
+            server
+                .await
+                .expect("clean up the old unbounded server")
+                .expect("released stream");
+        }
+        assert!(
+            matches!(
+                result,
+                Ok(Ok(Err(ServerRunError::HttpDrainTimedOut {
+                    active_requests: 0,
+                    ..
+                })))
+            ),
+            "stream body must be bounded after the handler returned: {result:?}"
+        );
+    }
 
     /// The production `AppState` must carry the resource allowlist built from
     /// the plugin set; without it resource create/update answered 422

@@ -1,4 +1,4 @@
-//! SQLite operation ledger over ordered migration 0045.
+//! SQLite operation ledger in the execution baseline.
 //!
 //! Every operation runs under `BEGIN IMMEDIATE`, so the read that decides and
 //! the write that follows are one linearized operation against the single
@@ -116,7 +116,7 @@ async fn load_by_natural_key(
     let row = sqlx::query(
         "SELECT slot_id, operation_id, attempt_generation, destination, \
                 fingerprint_version, fingerprint, state \
-         FROM port_operation_ledger \
+         FROM operation_ledger \
          WHERE workspace_id = ? AND org_id = ? AND execution_id = ? \
            AND node_key = ? AND occurrence = ?",
     )
@@ -148,7 +148,7 @@ async fn load_visible(
     let row = sqlx::query(
         "SELECT slot_id, operation_id, attempt_generation, destination, \
                 fingerprint_version, fingerprint, state \
-         FROM port_operation_ledger \
+         FROM operation_ledger \
          WHERE slot_id = ? AND workspace_id = ? AND org_id = ?",
     )
     .bind(slot_id.as_bytes().as_slice())
@@ -160,6 +160,12 @@ async fn load_visible(
     .ok_or(OperationLedgerError::SlotUnprepared { slot_id })?;
 
     attach_protocol(tx, scope, decode_row(&row)?).await
+}
+
+/// The port reasons in milliseconds; the columns hold microseconds.
+fn micros(ms: i64) -> Result<i64, OperationLedgerError> {
+    ms.checked_mul(1000)
+        .ok_or(OperationLedgerError::Unavailable)
 }
 
 async fn backend_now(tx: &mut Transaction<'_, Sqlite>) -> Result<i64, OperationLedgerError> {
@@ -174,7 +180,7 @@ async fn attach_protocol(
     scope: &Scope,
     record: OperationRecord,
 ) -> Result<OperationRecord, OperationLedgerError> {
-    let payload: Option<String> = sqlx::query_scalar("SELECT payload FROM port_operation_protocol WHERE slot_id = ? AND workspace_id = ? AND org_id = ?")
+    let payload: Option<String> = sqlx::query_scalar("SELECT payload FROM operation_protocol_records WHERE slot_id = ? AND workspace_id = ? AND org_id = ?")
         .bind(record.operation().slot_id().as_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id)
         .fetch_optional(&mut **tx).await.map_err(driver_did_not_commit)?;
     attach_protocol_payload(record, payload.as_deref())
@@ -194,13 +200,13 @@ async fn load_node_occurrences(
         "SELECT l.slot_id, l.operation_id, l.attempt_generation, l.destination, \
                 l.fingerprint_version, l.fingerprint, l.state, l.occurrence, \
                 p.payload AS protocol_payload \
-         FROM port_operation_ledger l \
-         LEFT JOIN port_operation_protocol p \
+         FROM operation_ledger l \
+         LEFT JOIN operation_protocol_records p \
            ON p.slot_id = l.slot_id AND p.workspace_id = l.workspace_id \
           AND p.org_id = l.org_id \
          WHERE l.workspace_id = ? AND l.org_id = ? AND l.execution_id = ? \
            AND l.node_key = ? \
-         ORDER BY l.prepared_at_ms, l.occurrence",
+         ORDER BY l.prepared_at, l.occurrence",
     )
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
@@ -236,7 +242,7 @@ async fn insert_protocol(
 ) -> Result<(), OperationLedgerError> {
     let payload =
         serde_json::to_string(protocol).map_err(|_| OperationLedgerError::InvalidProtocol)?;
-    sqlx::query("INSERT INTO port_operation_protocol(slot_id, workspace_id, org_id, execution_id, payload) VALUES(?,?,?,?,?)")
+    sqlx::query("INSERT INTO operation_protocol_records(slot_id, workspace_id, org_id, execution_id, payload) VALUES(?,?,?,?,?)")
         .bind(slot.as_bytes().as_slice()).bind(&binding.scope.workspace_id).bind(&binding.scope.org_id).bind(binding.execution_id).bind(payload)
         .execute(&mut **tx).await.map_err(driver_did_not_commit)?;
     Ok(())
@@ -255,31 +261,33 @@ async fn persist_decision(
         .ok_or(OperationLedgerError::InvalidProtocol)?;
     let payload =
         serde_json::to_string(protocol).map_err(|_| OperationLedgerError::InvalidProtocol)?;
-    sqlx::query("UPDATE port_operation_protocol SET payload = ? WHERE slot_id = ? AND workspace_id = ? AND org_id = ?")
+    sqlx::query("UPDATE operation_protocol_records SET payload = ? WHERE slot_id = ? AND workspace_id = ? AND org_id = ?")
         .bind(payload).bind(slot.as_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id).execute(&mut **tx).await.map_err(driver_did_not_commit)?;
     if decision.journal.is_some() && decision.record.state() != OperationState::Prepared {
         write_state(tx, scope, slot, decision.record.state(), None, now_ms).await?;
     }
     if let Some(journal) = &decision.journal {
-        let execution: String = sqlx::query_scalar("SELECT execution_id FROM port_operation_ledger WHERE slot_id = ? AND workspace_id = ? AND org_id = ?")
+        let execution: String = sqlx::query_scalar("SELECT execution_id FROM operation_ledger WHERE slot_id = ? AND workspace_id = ? AND org_id = ?")
             .bind(slot.as_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id).fetch_one(&mut **tx).await.map_err(driver_did_not_commit)?;
         let sequence: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM port_execution_journal WHERE execution_id = ?",
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM execution_journal WHERE execution_id = ?",
         )
         .bind(&execution)
         .fetch_one(&mut **tx)
         .await
         .map_err(driver_did_not_commit)?;
-        sqlx::query("INSERT INTO port_execution_journal(execution_id, seq, payload) VALUES(?,?,?)")
-            .bind(execution)
-            .bind(sequence)
-            .bind(
-                serde_json::to_string(journal)
-                    .map_err(|_| OperationLedgerError::InvalidProtocol)?,
-            )
-            .execute(&mut **tx)
-            .await
-            .map_err(driver_did_not_commit)?;
+        sqlx::query(
+            "INSERT INTO execution_journal(org_id, workspace_id, execution_id, seq, payload) \
+             VALUES(?,?,?,?,?)",
+        )
+        .bind(&scope.org_id)
+        .bind(&scope.workspace_id)
+        .bind(execution)
+        .bind(sequence)
+        .bind(serde_json::to_string(journal).map_err(|_| OperationLedgerError::InvalidProtocol)?)
+        .execute(&mut **tx)
+        .await
+        .map_err(driver_did_not_commit)?;
     }
     Ok(())
 }
@@ -294,14 +302,14 @@ async fn write_state(
     now_ms: i64,
 ) -> Result<(), OperationLedgerError> {
     sqlx::query(
-        "UPDATE port_operation_ledger \
-         SET state = ?, outcome_at_ms = ?, adjudication_evidence = ?, adjudicated_at_ms = ? \
+        "UPDATE operation_ledger \
+         SET state = ?, outcome_at = ?, adjudication_evidence = ?, adjudicated_at = ? \
          WHERE slot_id = ? AND workspace_id = ? AND org_id = ?",
     )
     .bind(state_text(state))
-    .bind(now_ms)
+    .bind(micros(now_ms)?)
     .bind(evidence)
-    .bind(evidence.map(|_present| now_ms))
+    .bind(evidence.map(|_present| micros(now_ms)).transpose()?)
     .bind(slot_id.as_bytes().as_slice())
     .bind(&scope.workspace_id)
     .bind(&scope.org_id)
@@ -388,10 +396,10 @@ impl OperationLedger for SqliteOperationLedger {
             let slot_id = EffectSlotId::from_storage_bytes(*uuid::Uuid::new_v4().as_bytes());
             let operation_id = OperationId::from_bytes(*uuid::Uuid::new_v4().as_bytes());
             sqlx::query(
-                "INSERT INTO port_operation_ledger \
+                "INSERT INTO operation_ledger \
                  (slot_id, workspace_id, org_id, execution_id, node_key, occurrence, \
                   attempt_generation, fingerprint_version, fingerprint, destination, \
-                  operation_id, state, prepared_at_ms) \
+                  operation_id, state, prepared_at) \
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?)",
             )
             .bind(slot_id.as_bytes().as_slice())
@@ -405,7 +413,7 @@ impl OperationLedger for SqliteOperationLedger {
             .bind(binding.fingerprint.digest().as_slice())
             .bind(<&'static str>::from(binding.destination))
             .bind(operation_id.as_bytes().as_slice())
-            .bind(now_ms)
+            .bind(micros(now_ms)?)
             .execute(&mut *tx)
             .await
             .map_err(driver_did_not_commit)?;
@@ -551,7 +559,7 @@ async fn lock_slot_owner(
     slot_id: EffectSlotId,
     fencing: Option<FencingToken>,
 ) -> Result<(), OperationLedgerError> {
-    let execution: String = sqlx::query_scalar("SELECT execution_id FROM port_operation_ledger WHERE slot_id = ? AND workspace_id = ? AND org_id = ?")
+    let execution: String = sqlx::query_scalar("SELECT execution_id FROM operation_ledger WHERE slot_id = ? AND workspace_id = ? AND org_id = ?")
         .bind(slot_id.as_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id).fetch_optional(&mut **tx).await.map_err(driver_did_not_commit)?
         .ok_or(OperationLedgerError::SlotUnprepared { slot_id })?;
     lock_execution(tx, scope, &execution, fencing).await

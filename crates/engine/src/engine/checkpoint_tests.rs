@@ -81,16 +81,14 @@ async fn malformed_non_action_checkpoint_facts_reject_before_instantiation() {
             .unwrap();
         let outcome = stores
             .execution
-            .commit(
-                nebula_storage_port::TransitionBatch::builder()
-                    .scope(scope.clone())
-                    .execution_id(id.to_string())
-                    .expected_version(version)
-                    .fencing(fence)
-                    .new_state(state)
-                    .build()
-                    .unwrap(),
-            )
+            .commit(nebula_storage_port::TransitionBatch::new(
+                scope.clone(),
+                id.to_string(),
+                version,
+                fence,
+                state.clone(),
+                listing_of(&state),
+            ))
             .await
             .unwrap();
         assert!(matches!(
@@ -515,4 +513,17 @@ async fn failed_checkpoint_does_not_install_candidate_for_a_later_write() {
         .release_lease(&scope, &id.to_string(), fence)
         .await
         .unwrap();
+}
+
+/// Listing projection of a fixture snapshot read straight from its JSON: some
+/// fixtures store deliberately undecodable states, which list as `created`.
+fn listing_of(state: &serde_json::Value) -> nebula_storage_port::ExecutionListing {
+    fn field<T: serde::de::DeserializeOwned>(state: &serde_json::Value, key: &str) -> Option<T> {
+        serde_json::from_value(state.get(key)?.clone()).ok()
+    }
+    nebula_storage_port::ExecutionListing::new(
+        field(state, "status").unwrap_or(nebula_storage_port::ExecutionListingStatus::Created),
+        field(state, "started_at"),
+        field(state, "completed_at"),
+    )
 }

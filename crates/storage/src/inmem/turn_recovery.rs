@@ -32,7 +32,7 @@ pub(super) fn list(
     limit: u32,
 ) -> Result<RecoverableTurnPage, StorageError> {
     if !(1..=256).contains(&limit) {
-        return Err(StorageError::Configuration(
+        return Err(StorageError::InvalidInput(
             "recovery page limit must be in 1..=256".into(),
         ));
     }

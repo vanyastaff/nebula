@@ -33,6 +33,11 @@ const PROCESSOR_B: [u8; 16] = [0xb2; 16];
 #[path = "support/job_turn_handoff_fixture.rs"]
 mod handoff_fixture;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
+
 fn scope() -> Scope {
     Scope::new(
         nebula_core::WorkspaceId::from_bytes([0x11; 16]).to_string(),
@@ -76,6 +81,9 @@ async fn fresh_pool() -> SqlitePool {
     init_schema(&pool)
         .await
         .expect("apply the ordered SQLite migration catalog");
+    for workflow in [handoff_fixture::workflow_id().to_string(), "wf".to_owned()] {
+        pool.seed_execution_parents(&scope(), &workflow).await;
+    }
     pool
 }
 
@@ -188,17 +196,15 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
     let stale = fixture.seed(&execution).await;
 
     // Age the claim so the sweep is guaranteed to see it, rather than racing
-    // the clock. SQLite's reclaim predicate is `processed_at_ms < cutoff`
+    // the clock. SQLite's reclaim predicate is `processed_at < cutoff`
     // (strict) while the in-memory model uses `elapsed >= reclaim_after`
     // (inclusive), so a zero window reclaims immediately on one backend and
     // never on the other — a boundary divergence worth naming, and one this
     // test must not depend on either way.
-    sqlx::query(
-        "UPDATE port_job_dispatch_queue SET processed_at_ms = 0 WHERE status = 'Processing'",
-    )
-    .execute(&fixture.pool)
-    .await
-    .expect("the claim is backdated");
+    sqlx::query("UPDATE job_dispatch_queue SET processed_at = 0 WHERE status = 'Processing'")
+        .execute(&fixture.pool)
+        .await
+        .expect("the claim is backdated");
 
     // A reclaim sweep hands the row to someone else, bumping the generation.
     fixture

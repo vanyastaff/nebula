@@ -84,6 +84,40 @@ impl nebula_credential::CredentialSlotResolver for RuntimeRepairCredentialResolv
     > {
         Box::pin(async { Err(nebula_credential::CredentialSlotResolveError::SourceUnavailable) })
     }
+
+    fn as_availability_observer(
+        &self,
+    ) -> Option<&dyn nebula_credential::CredentialAvailabilityObserver> {
+        Some(self)
+    }
+
+    fn into_availability_observer(
+        self: Arc<Self>,
+    ) -> Option<Arc<dyn nebula_credential::CredentialAvailabilityObserver>> {
+        Some(self)
+    }
+}
+
+impl nebula_credential::CredentialAvailabilityObserver for RuntimeRepairCredentialResolver {
+    fn observe_availability<'a>(
+        &'a self,
+        _scope: &'a nebula_credential::TenantScope,
+        _credential_id: nebula_credential::CredentialId,
+        _expected_key: nebula_credential::CredentialKey,
+        _cancel: CancellationToken,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        nebula_credential::CredentialAvailabilityObservation,
+                        nebula_credential::CredentialObserveError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Err(nebula_credential::CredentialObserveError::Unavailable) })
+    }
 }
 
 /// Explicit closed configuration for the app-owned RED profile.
@@ -261,6 +295,7 @@ impl RuntimeRepairHarness {
             compose::build_execution_stores(&api_config, explicit_postgres_dsn, &metrics_registry)
                 .await
                 .map_err(ProfileErrorKind::Composition)?;
+        provision_closed_tenant(execution_bundle.tenant_directory.provisioner().as_ref()).await?;
         let worker_projection = execution_bundle.worker_projection();
         let backend_lifecycle = execution_bundle.backend_lifecycle();
         let registry = crate::transport::worker_registry(Ok("71".repeat(32)))
@@ -287,12 +322,12 @@ impl RuntimeRepairHarness {
         let execution_event_subscriber = execution_event_bus.subscribe();
         let engine_clock: Arc<dyn Clock> = self.evidence_controls.clock();
         let (worker_builder, _worker_metrics, _) =
-            nebula_worker_bin::compose::build_core_flavor_runtime_for_runtime_repair_red(
+            nebula_deployment::worker::build_core_flavor_runtime_for_runtime_repair_red(
                 worker_projection.execution_stores,
                 worker_projection.turn_handoff,
                 worker_projection.turn_recovery,
                 PROFILE_PROCESSOR_ID,
-                nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+                nebula_deployment::worker::CoreFlavorRevisionInputs {
                     metrics: worker_projection.metrics,
                     artifact_set_digest: nebula_core::ArtifactSetDigest::from_bytes([0x71; 32]),
                     catalog: worker_projection.revision_catalog,
@@ -300,7 +335,7 @@ impl RuntimeRepairHarness {
                     credential_resolver: Arc::new(RuntimeRepairCredentialResolver),
                 },
                 worker_projection.resource_fanout,
-                nebula_worker_bin::compose::RuntimeRepairEvidenceInputs {
+                nebula_deployment::worker::RuntimeRepairEvidenceInputs {
                     clock: engine_clock,
                     event_bus: execution_event_bus,
                 },
@@ -343,6 +378,50 @@ impl RuntimeRepairHarness {
             shutdown,
             supervisor: Some(supervisor),
         })
+    }
+}
+
+/// Seed only this evidence preset through the same aggregate port as operator
+/// bootstrap. The fixed fixture owner makes reopening the preset an exact replay;
+/// HTTP identity and its isolated membership authority are configured below.
+#[tracing::instrument(name = "runtime_repair.provision_tenant", skip_all)]
+async fn provision_closed_tenant(
+    provisioner: &dyn nebula_storage_port::store::TenantProvisioningStore,
+) -> Result<(), RuntimeRepairProfileError> {
+    use nebula_storage_port::dto::{
+        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningOutcome,
+        TenantProvisioningRequest,
+    };
+    let owner = "runtime-repair-fixture-owner";
+    let org = TenantOrgCreate::new(
+        PROFILE_ORG_ID.into(),
+        "runtime-repair".into(),
+        "Runtime Repair".into(),
+        owner.into(),
+        "free".into(),
+        None,
+        serde_json::json!({}),
+    )
+    .map_err(|_| ProfileErrorKind::InvalidClosedPreset)?;
+    let workspace = TenantDefaultWorkspaceCreate::new(
+        PROFILE_WORKSPACE_ID.into(),
+        "default".into(),
+        "Default".into(),
+        None,
+        owner.into(),
+        serde_json::json!({}),
+    )
+    .map_err(|_| ProfileErrorKind::InvalidClosedPreset)?;
+    let request =
+        TenantProvisioningRequest::new(org, workspace, PrincipalKind::User, owner.into(), None)
+            .map_err(|_| ProfileErrorKind::InvalidClosedPreset)?;
+    match provisioner
+        .provision_tenant(request)
+        .await
+        .map_err(|_| ProfileErrorKind::TenantProvisioning)?
+    {
+        TenantProvisioningOutcome::Created | TenantProvisioningOutcome::Replayed => Ok(()),
+        TenantProvisioningOutcome::Conflict(_) => Err(ProfileErrorKind::TenantProvisioning.into()),
     }
 }
 
@@ -450,7 +529,7 @@ enum ComponentSignal {
 #[derive(Debug)]
 enum ComponentExit {
     Http(Result<(), std::io::Error>),
-    Worker(Result<(), nebula_worker_bin::compose::WorkerRuntimeError>),
+    Worker(Result<(), nebula_deployment::worker::WorkerRuntimeError>),
     Observer(Result<(), EvidenceIntegrityError>),
     /// Shutdown arrived before the supervisor opened the start gate, so this
     /// component ended without ever entering its run phase.
@@ -472,9 +551,8 @@ async fn supervise_profile<WorkerFuture>(
     inputs: ProfileSupervisorInputs<WorkerFuture>,
 ) -> Result<(), RuntimeRepairProfileError>
 where
-    WorkerFuture: Future<Output = Result<(), nebula_worker_bin::compose::WorkerRuntimeError>>
-        + Send
-        + 'static,
+    WorkerFuture:
+        Future<Output = Result<(), nebula_deployment::worker::WorkerRuntimeError>> + Send + 'static,
 {
     let ProfileSupervisorInputs {
         router,
@@ -829,6 +907,8 @@ impl From<ProfileErrorKind> for RuntimeRepairProfileError {
 
 #[derive(Debug, Error)]
 enum ProfileErrorKind {
+    #[error("closed RED profile tenant provisioning failed")]
+    TenantProvisioning,
     #[error("closed RED profile state composition failed")]
     Composition(#[source] TransportInitError),
     #[error("closed RED profile authentication seed failed")]
@@ -838,7 +918,7 @@ enum ProfileErrorKind {
     #[error("closed RED profile constants are invalid")]
     InvalidClosedPreset,
     #[error("worker flavor composition failed")]
-    WorkerComposition(#[source] nebula_worker_bin::compose::ComposeError),
+    WorkerComposition(#[source] nebula_deployment::worker::ComposeError),
     #[error("worker runtime build rejected the closed preset")]
     WorkerBuild,
     #[error("profile listener setup failed")]
@@ -854,7 +934,7 @@ enum ProfileErrorKind {
     #[error("profile lifecycle observation component failed")]
     ObservationComponent(#[source] EvidenceIntegrityError),
     #[error("profile worker component failed")]
-    WorkerComponent(#[source] nebula_worker_bin::compose::WorkerRuntimeError),
+    WorkerComponent(#[source] nebula_deployment::worker::WorkerRuntimeError),
     #[error("a profile component panicked")]
     ComponentPanicked(#[source] JoinError),
     #[error("profile supervisor panicked")]

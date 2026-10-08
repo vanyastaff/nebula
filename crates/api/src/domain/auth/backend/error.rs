@@ -112,8 +112,8 @@ impl From<EmailError> for AuthError {
 }
 
 impl From<StorageError> for AuthError {
-    /// Translate storage-layer failures returned by the PG identity
-    /// repos into [`AuthError`] so `PgAuthBackend` can `?`-propagate
+    /// Translate storage-layer failures returned by identity
+    /// repos into [`AuthError`] so `DurableAuthBackend` can `?`-propagate
     /// cleanly. The mapping is deliberately small:
     ///
     /// - `Duplicate { entity: "user", .. }` →

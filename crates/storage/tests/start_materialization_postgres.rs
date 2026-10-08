@@ -9,6 +9,12 @@
 
 #[path = "support/start_materialization_common.rs"]
 mod common;
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "the oracle seeds through store handles, not through a raw pool"
+)]
+mod execution_parents;
 #[path = "support/start_materialization_oracle.rs"]
 mod oracle;
 
@@ -36,7 +42,13 @@ async fn postgres_materialization_contract() {
         pool.clone(),
         &nebula_metrics::MetricsRegistry::new(),
     );
-    let evidence = oracle::run(&starts, &executions, &queue, &catalog, &catalog).await;
+    let parents = oracle::Parents::new(Some((
+        std::sync::Arc::new(nebula_storage::postgres::PgTenantProvisioningStore::new(
+            pool.clone(),
+        )),
+        std::sync::Arc::new(nebula_storage::postgres::PgWorkflowStore::new(pool.clone())),
+    )));
+    let evidence = oracle::run(&starts, &executions, &queue, &catalog, &catalog, &parents).await;
     write_observations(
         "postgresql",
         "NEBULA_START_AUTHORITY_POSTGRES_OBSERVATIONS_PATH",
@@ -47,7 +59,7 @@ async fn postgres_materialization_contract() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    oracle::trigger_replay(&starts, &executions, &queue, &catalog, &catalog).await;
+    oracle::trigger_replay(&starts, &executions, &queue, &catalog, &catalog, &parents).await;
     pool.close().await;
     let options = url
         .parse::<sqlx::postgres::PgConnectOptions>()

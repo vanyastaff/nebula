@@ -12,6 +12,29 @@ use argon2::{
 
 use super::error::AuthError;
 
+/// Shared account admission policy for signup and offline operator enrollment.
+/// Returns the normalized email and trimmed display name without retaining a password.
+///
+/// # Errors
+/// Invalid account input is rejected before hashing or persistence.
+pub fn validate_registration<'a>(
+    email: &str,
+    password: &str,
+    display_name: &'a str,
+) -> Result<(String, &'a str), AuthError> {
+    let email = email.trim().to_lowercase();
+    let display_name = display_name.trim();
+    if email.is_empty()
+        || !email.contains('@')
+        || password.len() < 8
+        || display_name.is_empty()
+        || display_name.len() > 128
+    {
+        return Err(AuthError::InvalidCredentials);
+    }
+    Ok((email, display_name))
+}
+
 /// Hash `password` with Argon2id and return the encoded PHC string.
 pub fn hash_password(password: &str) -> Result<String, AuthError> {
     let salt = SaltString::generate(&mut OsRng);

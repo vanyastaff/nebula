@@ -20,6 +20,9 @@
 //! frontier loop synchronously to completion (park or terminal).  No wall-clock
 //! sleeps are needed — assertions follow immediately after the dispatch call.
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::HashMap,
     sync::{
@@ -48,7 +51,7 @@ use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
     FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
     dto::{ExecutionRecord, WorkflowVersionRecord},
-    store::{ExecutionStore, WorkflowVersionStore},
+    store::ExecutionStore,
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
@@ -282,20 +285,20 @@ impl SignalStores {
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -461,14 +464,14 @@ impl SignalHarness {
             .as_object_mut()
             .unwrap()
             .insert("status".to_owned(), serde_json::json!(status.to_string()));
-        let batch = TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(record.version)
-            .fencing(token)
-            .new_state(state)
-            .build()
-            .unwrap();
+        let batch = TransitionBatch::new(
+            scope.clone(),
+            &id,
+            record.version,
+            token,
+            state.clone(),
+            listing_of(&state),
+        );
         assert!(matches!(
             self.stores.execution.commit(batch).await.unwrap(),
             TransitionOutcome::Applied { .. }
@@ -1384,18 +1387,12 @@ impl ExecutionStore for CommitFenceInterceptor {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -1711,18 +1708,12 @@ impl ExecutionStore for CancelDuringSatisfyInterceptor {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -2210,18 +2201,12 @@ impl ExecutionStore for LeaseFailAfterArmInterceptor {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -2556,18 +2541,12 @@ impl ExecutionStore for CommitStatusRecorder {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -3050,14 +3029,14 @@ impl SignalHarness {
             .as_object_mut()
             .expect("a pinned execution state is a JSON object")
             .insert("node_states".to_owned(), body);
-        let batch = TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(record.version)
-            .fencing(token)
-            .new_state(state)
-            .build()
-            .unwrap();
+        let batch = TransitionBatch::new(
+            scope.clone(),
+            &id,
+            record.version,
+            token,
+            state.clone(),
+            listing_of(&state),
+        );
         assert!(matches!(
             self.stores.execution.commit(batch).await.unwrap(),
             TransitionOutcome::Applied { .. }
@@ -3201,4 +3180,17 @@ async fn cancel_of_a_row_whose_body_does_not_decode_never_quotes_the_stored_valu
         !reason.contains(MARKER),
         "a decode failure must not re-publish the stored value it refused: {reason}"
     );
+}
+
+/// Listing projection of a fixture snapshot read straight from its JSON: some
+/// fixtures store deliberately undecodable states, which list as `created`.
+fn listing_of(state: &serde_json::Value) -> nebula_storage_port::ExecutionListing {
+    fn field<T: serde::de::DeserializeOwned>(state: &serde_json::Value, key: &str) -> Option<T> {
+        serde_json::from_value(state.get(key)?.clone()).ok()
+    }
+    nebula_storage_port::ExecutionListing::new(
+        field(state, "status").unwrap_or(nebula_storage_port::ExecutionListingStatus::Created),
+        field(state, "started_at"),
+        field(state, "completed_at"),
+    )
 }

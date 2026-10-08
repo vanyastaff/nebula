@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use nebula_crypto::EncryptionKey;
-use nebula_storage::credential::{KeyProvider, KeySnapshot, ProviderError};
-use nebula_storage::identity_secret::{
+use nebula_storage::auth::identity_secret::{
     IdentitySecretCodec, OpenedIdentitySecret, TotpSecretPurpose,
 };
+use nebula_storage::credential::{KeyProvider, KeySnapshot, ProviderError};
 
 struct TestKeyProvider {
     key: Arc<EncryptionKey>,

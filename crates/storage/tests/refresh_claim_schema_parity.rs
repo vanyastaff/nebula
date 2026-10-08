@@ -1,330 +1,110 @@
-//! Schema parity check for refresh-claim migrations 0022, 0023, the
-//! incident-identity extension in 0039, the structural retry gate in 0040,
-//! the operator reconciliation record in 0053, and owner qualification in
-//! 0054.
+//! Credential authority and closed state shapes in the paired baseline.
 //!
-//! Both SQLite and Postgres dialects must define the same tables with the
-//! same logical column names. The driver-specific types differ
-//! (TEXT/INTEGER vs TIMESTAMPTZ/UUID/BIGSERIAL) — we match on the column
-//! identifiers, not their declared types.
-//!
-//! Per refresh-claim contract (SQLite vs Postgres column parity).
+//! Structural backend parity is exercised by `schema_parity_postgres`; these
+//! catalog checks pin the credential protocol's required identities and ranges.
 
-use std::{collections::BTreeSet, path::Path};
+use std::path::Path;
 
-fn read(path: &str) -> String {
-    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
-        .unwrap_or_else(|e| panic!("read {path}: {e}"))
-}
-
-/// Parse a CREATE TABLE block and return the set of column identifiers
-/// declared in it. Indices and constraints (CHECK, PRIMARY KEY clauses
-/// without column intro) are skipped.
-fn columns_of_table(sql: &str, table: &str) -> BTreeSet<String> {
-    let needle = format!("CREATE TABLE {table} (");
-    let start = sql
-        .find(&needle)
-        .unwrap_or_else(|| panic!("table {table} not found in:\n{sql}"));
-    let body_start = start + needle.len();
-    let body = &sql[body_start..];
-    let end = body.find(");").expect("missing ); for table");
-    let body = &body[..end];
-
-    // Strip line comments (-- ...) before splitting on commas — comments
-    // commonly contain commas that would otherwise confuse the splitter.
-    let body_no_comments: String = body
-        .lines()
-        .map(|l| match l.find("--") {
-            Some(idx) => &l[..idx],
-            None => l,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let mut cols = BTreeSet::new();
-    for raw in body_no_comments.split(',') {
-        let line = raw.trim();
-        if line.is_empty() {
-            continue;
-        }
-        // Skip standalone constraints — they don't start with an identifier
-        // we treat as a column name. Tolerate either `KW(` or `KW (` so a
-        // dialect that omits the space (e.g. `UNIQUE(col)`) is still
-        // detected as a constraint and not mis-parsed as a column.
-        let upper = line.to_uppercase();
-        let is_constraint = [
-            "CHECK",
-            "UNIQUE",
-            "PRIMARY KEY",
-            "FOREIGN KEY",
-            "CONSTRAINT",
-        ]
-        .iter()
-        .any(|kw| {
-            upper
-                .strip_prefix(kw)
-                .is_some_and(|rest| rest.starts_with('(') || rest.starts_with(' '))
-        });
-        if is_constraint {
-            continue;
-        }
-        // First whitespace-separated token is the column name.
-        let Some(col) = line.split_whitespace().next() else {
-            continue;
-        };
-        let col = col.trim_matches(|c: char| c == '"').to_string();
-        cols.insert(col);
-    }
-    cols
+fn catalogs() -> [(String, &'static str); 2] {
+    ["sqlite", "postgres"].map(|backend| {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("migrations/{backend}/0006_credentials.sql"));
+        let sql = std::fs::read_to_string(path).expect("read credential baseline");
+        (
+            sql.split_whitespace().collect::<Vec<_>>().join(" "),
+            backend,
+        )
+    })
 }
 
 #[test]
-fn refresh_claim_table_columns_match() {
-    let sqlite = read("migrations/sqlite/0022_credential_refresh_claims.sql");
-    let pg = read("migrations/postgres/0022_credential_refresh_claims.sql");
-
-    let s = columns_of_table(&sqlite, "credential_refresh_claims");
-    let p = columns_of_table(&pg, "credential_refresh_claims");
-
-    assert_eq!(
-        s, p,
-        "credential_refresh_claims columns differ between SQLite and Postgres"
-    );
-    assert!(s.contains("credential_id"));
-    assert!(s.contains("claim_id"));
-    assert!(s.contains("generation"));
-    assert!(s.contains("holder_replica_id"));
-    assert!(s.contains("acquired_at"));
-    assert!(s.contains("expires_at"));
-    assert!(s.contains("sentinel"));
-}
-
-#[test]
-fn sentinel_events_table_columns_match() {
-    let sqlite = read("migrations/sqlite/0023_credential_sentinel_events.sql");
-    let pg = read("migrations/postgres/0023_credential_sentinel_events.sql");
-
-    let s = columns_of_table(&sqlite, "credential_sentinel_events");
-    let p = columns_of_table(&pg, "credential_sentinel_events");
-
-    assert_eq!(
-        s, p,
-        "credential_sentinel_events columns differ between SQLite and Postgres"
-    );
-    assert!(s.contains("id"));
-    assert!(s.contains("credential_id"));
-    assert!(s.contains("detected_at"));
-    assert!(s.contains("crashed_holder"));
-    assert!(s.contains("generation"));
-}
-
-#[test]
-fn sentinel_incident_identity_is_paired_and_globally_unique() {
-    let sqlite = read("migrations/sqlite/0039_credentials_owner_and_record_state.sql");
-    let pg = read("migrations/postgres/0039_credentials_owner_and_record_state.sql");
-
-    for (backend, migration, data_type) in [
-        ("SQLite", sqlite.as_str(), "ADD COLUMN claim_id TEXT"),
-        ("Postgres", pg.as_str(), "ADD COLUMN claim_id UUID"),
-    ] {
-        assert!(
-            migration.contains("ALTER TABLE credential_sentinel_events"),
-            "{backend} 0039 must extend the sentinel event relation"
-        );
-        assert!(
-            migration.contains(data_type),
-            "{backend} 0039 must use its canonical claim-id type"
-        );
-        assert!(
-            migration.contains("CREATE UNIQUE INDEX idx_credential_sentinel_events_claim_id"),
-            "{backend} 0039 must enforce global incident identity"
-        );
-        assert!(
-            migration.contains("ON credential_sentinel_events(claim_id)")
-                && migration.contains("WHERE claim_id IS NOT NULL"),
-            "{backend} incident identity must be a partial single-column unique index"
-        );
-    }
-}
-
-#[test]
-fn credential_refresh_retry_gate_is_paired_and_closed() {
-    let sqlite = read("migrations/sqlite/0040_credential_refresh_retry_gate.sql");
-    let pg = read("migrations/postgres/0040_credential_refresh_retry_gate.sql");
-
-    for column in [
-        "material_epoch",
-        "refresh_retry_mode",
-        "refresh_retry_not_before",
-        "refresh_retry_phase",
-        "refresh_retry_kind",
-        "refresh_retry_diagnostic_code",
-    ] {
-        assert!(sqlite.contains(column), "SQLite 0040 misses `{column}`");
-        assert!(pg.contains(column), "Postgres 0040 misses `{column}`");
-    }
-    for closed_code in [
-        "never",
-        "not_before",
-        "before_dispatch",
-        "provider_confirmed_not_applied",
-        "transient_network",
-        "provider_unavailable",
-        "protocol_error",
-    ] {
-        assert!(
-            sqlite.contains(&format!("'{closed_code}'")),
-            "SQLite 0040 misses closed code `{closed_code}`"
-        );
-        assert!(
-            pg.contains(&format!("'{closed_code}'")),
-            "Postgres 0040 misses closed code `{closed_code}`"
-        );
-    }
-    for migration in [&sqlite, &pg] {
-        assert!(migration.contains("credentials_refresh_retry_gate_shape"));
-        assert!(migration.contains("credentials_material_epoch_range"));
-        assert!(migration.contains("credentials_record_shape"));
-        assert!(
-            !migration.contains("$.refresh_retry"),
-            "retry gate must not be encoded in user metadata"
-        );
-    }
-
-    assert!(
-        sqlite.contains("material_epoch                INTEGER NOT NULL")
-            && sqlite.contains("version,\n    material_epoch,")
-            && sqlite.contains("version,\n    1,"),
-        "SQLite 0040 must rebuild every legacy row at material epoch 1"
-    );
-    assert!(
-        pg.contains("ADD COLUMN material_epoch BIGINT NOT NULL DEFAULT 1")
-            && pg.contains("ALTER COLUMN material_epoch DROP DEFAULT")
-            && pg.contains("CHECK (material_epoch BETWEEN 1 AND 9223372036854775807)"),
-        "Postgres 0040 must backfill epoch 1, remove the write-time default, and close the range"
-    );
-    assert!(
-        sqlite.contains("refresh_retry_not_before      INTEGER")
-            && pg.contains("refresh_retry_not_before TIMESTAMPTZ"),
-        "retry deadlines must use each backend's canonical clock representation"
-    );
-}
-
-#[test]
-fn reconciliation_record_is_paired_and_optional_in_both_dialects() {
-    let sqlite = read("migrations/sqlite/0053_credential_reconciliation_decisions.sql");
-    let pg = read("migrations/postgres/0053_credential_reconciliation_decisions.sql");
-
-    for (backend, migration) in [("SQLite", &sqlite), ("Postgres", &pg)] {
-        for column in [
-            "adjudicated_at",
-            "adjudication_decision",
-            "adjudication_evidence",
-            "adjudication_evidence_digest",
+fn claims_and_incidents_have_scoped_authority_and_durable_incident_identity() {
+    for (sql, backend) in catalogs() {
+        for invariant in [
+            "CREATE TABLE credential_refresh_claims (",
+            "CREATE TABLE credential_refresh_incidents (",
+            "CONSTRAINT pk_credential_refresh_claims PRIMARY KEY (org_id, workspace_id, credential_id)",
+            "CONSTRAINT pk_credential_refresh_incidents PRIMARY KEY (claim_id)",
+            "CONSTRAINT fk_credential_refresh_claims__credentials",
+            "CONSTRAINT fk_credential_refresh_incidents__credentials",
+            "REFERENCES credentials (org_id, workspace_id, id) ON DELETE CASCADE",
+            "CONSTRAINT ck_credential_refresh_claims__generation CHECK (generation >= 0)",
+            "CONSTRAINT ck_credential_refresh_incidents__generation CHECK (generation >= 0)",
+            "ix_credential_refresh_claims__expires_at",
+            "ix_credential_refresh_incidents__credential_id_detected_at",
         ] {
             assert!(
-                migration.contains(&format!("ADD COLUMN {column} ")),
-                "{backend} 0053 must add `{column}` to the incident relation"
+                sql.contains(invariant),
+                "{backend} lacks credential authority invariant {invariant}"
             );
         }
-        assert_eq!(
-            migration
-                .matches("ALTER TABLE credential_sentinel_events")
-                .count(),
-            4,
-            "{backend} 0053 must extend only the incident relation"
-        );
-        assert!(
-            !migration.contains("NOT NULL"),
-            "{backend} every reconciliation column must stay optional: NULL is the \
-             fail-closed `no provider outcome is known` state, and pre-0053 incidents \
-             must stay unresolved"
-        );
     }
+}
 
-    for (backend, migration, digest_type) in
-        [("SQLite", &sqlite, "BLOB"), ("Postgres", &pg, "BYTEA")]
-    {
+#[test]
+fn retry_gate_and_material_epochs_are_structural_closed_state() {
+    for (sql, backend) in catalogs() {
+        for invariant in [
+            "CONSTRAINT ck_credentials__material_epoch",
+            "CONSTRAINT ck_credentials__admission_epoch",
+            "material_epoch >= 1",
+            "admission_epoch >= 1",
+            "CONSTRAINT ck_credentials__refresh_retry_gate CHECK (",
+            "CONSTRAINT ck_credentials__record_shape CHECK (",
+            "refresh_retry_not_before",
+            "refresh_retry_mode",
+            "refresh_retry_phase",
+            "refresh_retry_kind",
+            "refresh_retry_diagnostic_code",
+            "'never'",
+            "'not_before'",
+            "'before_dispatch'",
+            "'provider_confirmed_not_applied'",
+            "'transient_network'",
+            "'provider_unavailable'",
+            "'protocol_error'",
+        ] {
+            assert!(
+                sql.contains(invariant),
+                "{backend} lacks retry/material invariant {invariant}"
+            );
+        }
         assert!(
-            migration.contains(&format!("adjudication_evidence_digest {digest_type}")),
-            "{backend} must store the evidence digest as {digest_type}"
-        );
-    }
-    assert!(
-        sqlite.contains("adjudicated_at INTEGER") && pg.contains("adjudicated_at TIMESTAMPTZ"),
-        "the reconciliation instant must use each backend's canonical clock representation"
-    );
-    for closed_code in ["provider_applied", "provider_not_applied"] {
-        assert!(
-            !sqlite.contains(closed_code) && !pg.contains(closed_code),
-            "`{closed_code}` belongs to `RefreshOutcomeDecision`, not to a database CHECK: \
-             the column records the decision, the enum closes its spelling"
+            !sql.contains("$.refresh_retry"),
+            "{backend} user metadata must not grant retry authority"
         );
     }
 }
 
 #[test]
-fn refresh_claim_authority_is_owner_qualified_in_both_dialects() {
-    let sqlite = read("migrations/sqlite/0054_owner_qualified_refresh_incidents.sql");
-    let pg = read("migrations/postgres/0054_owner_qualified_refresh_incidents.sql");
-
-    for (backend, migration) in [("SQLite", &sqlite), ("Postgres", &pg)] {
+fn reconciliation_declares_unresolved_shape_and_decision_and_digest_checks() {
+    for (sql, backend) in catalogs() {
+        for invariant in [
+            "CONSTRAINT ck_credential_refresh_incidents__adjudication CHECK (",
+            "adjudicated_at IS NULL",
+            "adjudication_decision IS NULL",
+            "adjudication_evidence IS NULL",
+            "adjudication_evidence_digest IS NULL",
+            "adjudicated_at IS NOT NULL",
+            "adjudication_evidence IS NOT NULL",
+            "'provider_applied'",
+            "'provider_not_applied'",
+            "'provider_revoked'",
+            "'provider_not_revoked'",
+        ] {
+            assert!(
+                sql.contains(invariant),
+                "{backend} lacks reconciliation invariant {invariant}"
+            );
+        }
+        let digest_check = if backend == "postgres" {
+            "octet_length(adjudication_evidence_digest) = 32"
+        } else {
+            "length(adjudication_evidence_digest) = 32"
+        };
         assert!(
-            migration.contains("owner_id"),
-            "{backend} 0054 must persist the canonical owner"
-        );
-        assert!(
-            migration.contains("owner_id, credential_id"),
-            "{backend} claim identity must be owner-qualified"
-        );
-        assert!(
-            migration.contains("idx_sentinel_events_owner_cred_time"),
-            "{backend} threshold window must be owner-qualified"
-        );
-        assert!(
-            migration.contains("credential.owner_id") && migration.contains("credential.id"),
-            "{backend} owner backfill must come from the credential aggregate"
-        );
-    }
-
-    assert!(
-        sqlite.contains("owner_id         TEXT    NOT NULL")
-            && sqlite.contains("owner_id                        TEXT    NOT NULL"),
-        "SQLite rebuilt claim and incident relations must reject orphaned authority"
-    );
-    assert_eq!(
-        pg.matches("ALTER COLUMN owner_id SET NOT NULL").count(),
-        2,
-        "Postgres must reject orphaned claim and incident rows"
-    );
-}
-
-#[test]
-fn both_dialects_define_the_same_indices() {
-    let sqlite = format!(
-        "{}{}{}",
-        read("migrations/sqlite/0022_credential_refresh_claims.sql"),
-        read("migrations/sqlite/0023_credential_sentinel_events.sql"),
-        read("migrations/sqlite/0054_owner_qualified_refresh_incidents.sql")
-    );
-    let pg = format!(
-        "{}{}{}",
-        read("migrations/postgres/0022_credential_refresh_claims.sql"),
-        read("migrations/postgres/0023_credential_sentinel_events.sql"),
-        read("migrations/postgres/0054_owner_qualified_refresh_incidents.sql")
-    );
-
-    for index_name in [
-        "idx_refresh_claims_expires",
-        "idx_sentinel_events_owner_cred_time",
-    ] {
-        assert!(
-            sqlite.contains(index_name),
-            "SQLite missing index `{index_name}`"
-        );
-        assert!(
-            pg.contains(index_name),
-            "Postgres missing index `{index_name}`"
+            sql.contains(digest_check),
+            "{backend} evidence must carry a SHA-256 digest"
         );
     }
 }

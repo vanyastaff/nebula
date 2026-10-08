@@ -61,11 +61,6 @@ impl IdentityBackend for PostgresBackend {
     fn name(&self) -> &'static str {
         "Postgres"
     }
-    async fn user_store(&self) -> Arc<dyn UserStore> {
-        Arc::new(nebula_storage::postgres::PgUserStore::new(
-            self.pool().await,
-        ))
-    }
     async fn org_store(&self) -> Arc<dyn OrgStore> {
         Arc::new(nebula_storage::postgres::PgOrgStore::new(self.pool().await))
     }
@@ -94,22 +89,21 @@ impl IdentityBackend for PostgresBackend {
             self.pool().await,
         ))
     }
-    async fn quota_store(&self) -> Arc<dyn QuotaStore> {
-        Arc::new(nebula_storage::postgres::PgQuotaStore::new(
-            self.pool().await,
-        ))
+    async fn seed_trigger_parents(&self, scope: &Scope, workflow_id: &str) {
+        use execution_parents::SeedExecutionParents as _;
+        self.pool()
+            .await
+            .seed_execution_parents(scope, workflow_id)
+            .await;
     }
-    async fn audit_store(&self) -> Arc<dyn AuditStore> {
-        Arc::new(nebula_storage::postgres::PgAuditStore::new(
-            self.pool().await,
-        ))
-    }
-    async fn blob_store(&self) -> Arc<dyn BlobStore> {
-        Arc::new(nebula_storage::postgres::PgBlobStore::new(
-            self.pool().await,
-        ))
+    async fn seed_resource_parents(&self, scope: &Scope) {
+        execution_parents::provision_scope(self.tenant_provisioning_store().await.as_ref(), scope)
+            .await;
     }
 }
+
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
 
 // ── matrix ────────────────────────────────────────────────────────────────
 
@@ -125,22 +119,17 @@ macro_rules! identity_matrix {
     };
 }
 
-identity_matrix!(user_store_contract, assert_user_contract);
 identity_matrix!(org_store_contract, assert_org_contract);
 identity_matrix!(workspace_store_contract, assert_workspace_contract);
 identity_matrix!(membership_store_contract, assert_membership_contract);
 identity_matrix!(membership_snapshot, assert_membership_snapshot);
 identity_matrix!(
-    membership_live_and_deleted_workspace_aliases,
-    assert_membership_live_and_deleted_workspace_aliases
+    deleted_org_hides_its_memberships,
+    assert_deleted_org_hides_its_memberships
 );
 identity_matrix!(
     workspace_member_listing_and_org_removal_cleanup,
     assert_workspace_member_listing_and_org_removal_cleanup
-);
-identity_matrix!(
-    ambiguous_workspace_blocks_org_removal,
-    assert_ambiguous_workspace_blocks_org_removal
 );
 identity_matrix!(
     workspace_upsert_requires_org_membership_and_serializes_removal,
@@ -148,15 +137,240 @@ identity_matrix!(
 );
 identity_matrix!(membership_lockout, assert_membership_lockout);
 identity_matrix!(tenant_provisioning, assert_tenant_provisioning);
+identity_matrix!(
+    tenant_provisioning_competing_commands,
+    assert_tenant_provisioning_competing_commands
+);
+identity_matrix!(
+    tenant_provisioning_history,
+    assert_tenant_provisioning_history
+);
+identity_matrix!(
+    tenant_provisioning_json_identity,
+    assert_tenant_provisioning_json_identity
+);
 identity_matrix!(resource_store_contract, assert_resource_contract);
 identity_matrix!(trigger_store_contract, assert_trigger_contract);
-identity_matrix!(quota_store_contract, assert_quota_contract);
-identity_matrix!(audit_store_contract, assert_audit_contract);
-identity_matrix!(blob_store_contract, assert_blob_contract);
 
-/// Provisioning and ordinary workspace writes use the same per-org lock.
-/// Whichever transaction wins, the organization can retain only one live
-/// default workspace.
+#[tokio::test]
+async fn tenant_provisioning_replay_after_purge_postgres() {
+    let backend = PostgresBackend::default();
+    let store = backend.tenant_provisioning_store().await;
+    let pool = backend.pool().await;
+    let request = tenant_request("purged_org", "purged", "purged_workspace");
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    sqlx::query("DELETE FROM orgs WHERE id = 'purged_org'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("purged_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        backend
+            .workspace_store()
+            .await
+            .get("purged_org", "purged_workspace")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        backend
+            .membership_store()
+            .await
+            .get_tenant_membership(
+                "purged_org",
+                Some("purged_workspace"),
+                PrincipalKind::User,
+                "owner"
+            )
+            .await
+            .unwrap(),
+        TenantMembershipSnapshot {
+            org_role: None,
+            workspace_role: None
+        }
+    );
+    assert_eq!(
+        store
+            .provision_tenant(tenant_request("another_org", "another", "purged_workspace"))
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
+    );
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("another_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    cleanup_receipt_schema(&pool).await;
+}
+
+#[tokio::test]
+async fn tenant_provisioning_receipt_failure_rolls_back_postgres() {
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    let store = backend.tenant_provisioning_store().await;
+    let request = tenant_request("rollback_org", "rollback", "rollback_ws");
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_receipt() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'receipt unavailable' USING ERRCODE = '23514'; END $$;
+        CREATE TRIGGER reject_receipt BEFORE INSERT ON tenant_provisioning_receipts
+        FOR EACH ROW EXECUTE FUNCTION reject_receipt();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(store.provision_tenant(request.clone()).await.is_err());
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("rollback_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        backend
+            .workspace_store()
+            .await
+            .get("rollback_org", "rollback_ws")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        backend
+            .membership_store()
+            .await
+            .get_tenant_membership("rollback_org", None, PrincipalKind::User, "owner")
+            .await
+            .unwrap()
+            .org_role,
+        None
+    );
+    sqlx::raw_sql("DROP TRIGGER reject_receipt ON tenant_provisioning_receipts; DROP FUNCTION reject_receipt();")
+        .execute(&pool).await.unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    cleanup_receipt_schema(&pool).await;
+}
+
+#[tokio::test]
+async fn tenant_provisioning_migration_seals_preexisting_postgres() {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL required");
+    let pool = postgres_schema::connect_with_private_schema(&url, "nebula_receipt_upgrade")
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations/postgres")
+        .run_to(8, &pool)
+        .await
+        .unwrap();
+    let orgs = nebula_storage::postgres::PgOrgStore::new(pool.clone());
+    orgs.create(org_row("preexisting", "preexisting"))
+        .await
+        .unwrap();
+    let before = orgs.get("preexisting").await.unwrap();
+    nebula_storage::postgres::init_schema(&pool).await.unwrap();
+    assert_eq!(orgs.get("preexisting").await.unwrap(), before);
+    let store = nebula_storage::postgres::PgTenantProvisioningStore::new(pool.clone());
+    let request = tenant_request("preexisting", "preexisting", "preexisting_ws");
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant)
+    );
+    sqlx::query("DELETE FROM orgs WHERE id = 'preexisting'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant)
+    );
+    assert!(orgs.get("preexisting").await.unwrap().is_none());
+    cleanup_receipt_schema(&pool).await;
+}
+
+async fn cleanup_receipt_schema(pool: &sqlx::PgPool) {
+    let schema: String = sqlx::query_scalar("SELECT current_schema()")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert!(schema.starts_with("nebula_"));
+    assert!(
+        schema
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn tenant_provisioning_reads_historical_v1_postgres() {
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    let digest =
+        hex::decode("4d693d7b7db0e8411c230bc5627d512e133445adc3ba96480274df8c4a916b69").unwrap();
+    sqlx::query(
+        "INSERT INTO tenant_provisioning_receipts
+        (org_id, initial_workspace_id, request_version, request_digest, recorded_at)
+        VALUES ('json_org', 'json_ws', 1, $1, clock_timestamp())",
+    )
+    .bind(digest)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        backend
+            .tenant_provisioning_store()
+            .await
+            .provision_tenant(tenant_json_request(
+                serde_json::json!({"a": true, "b": [{"x": 1, "y": 2}]})
+            ))
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("json_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    cleanup_receipt_schema(&pool).await;
+}
+
+/// Provisioning races an ordinary default-workspace create. Whichever
+/// transaction wins, the organization retains only one live default
+/// workspace (`uq_workspaces__org_id__live_default`).
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postgres_provisioning_serializes_with_workspace_create() {
@@ -172,17 +386,18 @@ async fn postgres_provisioning_serializes_with_workspace_create() {
         provisioning.provision_tenant(request),
         workspaces.create(competing)
     );
+    // The competing create either precedes the org (no parent) or follows
+    // the provisioned default.
     match (provisioning_result, workspace_result) {
-        (Ok(TenantProvisioningOutcome::Created), Err(PortStorageError::Duplicate { .. }))
-        | (
-            Ok(TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)),
-            Ok(()),
+        (
+            Ok(TenantProvisioningOutcome::Created),
+            Err(PortStorageError::Duplicate { .. } | PortStorageError::NotFound { .. }),
         ) => {},
         outcomes => panic!("unexpected provisioning/workspace race outcomes: {outcomes:?}"),
     }
 
     let active_defaults: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM port_workspaces \
+        "SELECT COUNT(*) FROM workspaces \
          WHERE org_id = $1 AND is_default = TRUE AND deleted_at IS NULL",
     )
     .bind("org_default_race")
@@ -192,135 +407,166 @@ async fn postgres_provisioning_serializes_with_workspace_create() {
     assert_eq!(active_defaults, 1);
 }
 
-/// Alias creation and membership cleanup share the workspace-id lock. This
-/// prevents a new cross-org alias from appearing between the cascade's
-/// ambiguity check and its deletion of grants keyed only by workspace id.
+/// Seed one org with a live workspace and an owner grant for `principal`.
+#[cfg(feature = "postgres")]
+async fn seed_workspace(backend: &PostgresBackend, org: &str, workspace: &str, principal: &str) {
+    backend
+        .org_store()
+        .await
+        .create(org_row(org, org))
+        .await
+        .unwrap();
+    backend
+        .workspace_store()
+        .await
+        .create(workspace_row(workspace, org, workspace))
+        .await
+        .unwrap();
+    backend
+        .membership_store()
+        .await
+        .upsert_org_member_guarded(org_member(org, principal, OrgMembershipRole::Owner))
+        .await
+        .unwrap();
+}
+
+async fn workspace_grant_count(pool: &sqlx::PgPool, workspace: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM workspace_memberships WHERE workspace_id = $1")
+        .bind(workspace)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// A workspace grant serializes with a concurrent soft delete of its
+/// workspace: while the delete is uncommitted the grant waits on the
+/// workspace row, and once it commits the grant is refused — never written
+/// beneath a deleted workspace.
 #[cfg(feature = "postgres")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn postgres_workspace_alias_create_serializes_with_membership_cascade() {
+async fn postgres_workspace_grant_waits_for_a_concurrent_workspace_delete() {
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    seed_workspace(&backend, "org_ws_race", "ws_race", "owner").await;
+    let memberships = backend.membership_store().await;
+
+    let mut deleter = pool.begin().await.unwrap();
+    sqlx::query("UPDATE workspaces SET deleted_at = now() WHERE id = 'ws_race'")
+        .execute(&mut *deleter)
+        .await
+        .unwrap();
+    let grant =
+        memberships.upsert_workspace_member(workspace_member("org_ws_race", "ws_race", "owner"));
+    tokio::pin!(grant);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut grant)
+            .await
+            .is_err(),
+        "the grant must wait for the uncommitted workspace delete"
+    );
+    deleter.commit().await.unwrap();
+
+    assert!(matches!(
+        grant.await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert_eq!(workspace_grant_count(&pool, "ws_race").await, 0);
+}
+
+/// A workspace grant serializes with a concurrent removal of the principal's
+/// org grant: while the removal holds the org row the grant waits, and once
+/// it commits the grant is refused — never left without its org grant.
+#[cfg(feature = "postgres")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn postgres_workspace_grant_waits_for_a_concurrent_org_grant_removal() {
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    seed_workspace(&backend, "org_grant_race", "ws_grant_race", "owner").await;
+    let memberships = backend.membership_store().await;
+    memberships
+        .upsert_org_member_guarded(org_member(
+            "org_grant_race",
+            "target",
+            OrgMembershipRole::Member,
+        ))
+        .await
+        .unwrap();
+
+    // The guarded removal's critical section: org row lock, then delete.
+    let mut remover = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM orgs WHERE id = 'org_grant_race' FOR UPDATE")
+        .execute(&mut *remover)
+        .await
+        .unwrap();
+    sqlx::query(
+        "DELETE FROM org_memberships WHERE org_id = 'org_grant_race' AND principal_id = 'target'",
+    )
+    .execute(&mut *remover)
+    .await
+    .unwrap();
+    let grant = memberships.upsert_workspace_member(workspace_member(
+        "org_grant_race",
+        "ws_grant_race",
+        "target",
+    ));
+    tokio::pin!(grant);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(200), &mut grant)
+            .await
+            .is_err(),
+        "the grant must wait for the uncommitted org-grant removal"
+    );
+    remover.commit().await.unwrap();
+
+    assert!(matches!(
+        grant.await,
+        Err(PortStorageError::NotFound { .. })
+    ));
+    assert_eq!(workspace_grant_count(&pool, "ws_grant_race").await, 0);
+}
+
+/// Roles and principal kinds are closed vocabularies in the schema: a row
+/// outside them cannot be written, whatever the writer.
+#[cfg(feature = "postgres")]
+#[tokio::test]
+async fn postgres_membership_vocabularies_are_closed_by_the_schema() {
     let backend = PostgresBackend::default();
     let pool = backend.pool().await;
     let orgs = backend.org_store().await;
     let workspaces = backend.workspace_store().await;
-    let memberships = backend.membership_store().await;
-
-    orgs.create(org_row("org_alias_source", "alias-source"))
-        .await
-        .unwrap();
-    orgs.create(org_row("org_alias_target", "alias-target"))
-        .await
-        .unwrap();
+    let store = backend.membership_store().await;
+    orgs.create(org_row("org", "org")).await.unwrap();
     workspaces
-        .create(workspace_row("ws_alias_race", "org_alias_source", "source"))
+        .create(workspace_row("ws", "org", "ws"))
         .await
         .unwrap();
-    memberships
-        .upsert_org_member_guarded(org_member(
-            "org_alias_source",
-            "target",
-            OrgMembershipRole::Owner,
-        ))
+    store
+        .upsert_org_member_guarded(org_member("org", "owner", OrgMembershipRole::Owner))
         .await
         .unwrap();
-    memberships
-        .upsert_org_member_guarded(org_member(
-            "org_alias_source",
-            "admin",
-            OrgMembershipRole::Admin,
-        ))
+    store
+        .upsert_workspace_member(workspace_member("org", "ws", "owner"))
         .await
         .unwrap();
-    memberships
-        .upsert_workspace_member(workspace_member(
-            "org_alias_source",
-            "ws_alias_race",
-            "target",
-        ))
-        .await
-        .unwrap();
-
-    let mut blocker = pool.begin().await.unwrap();
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind("tenant-workspace-id:ws_alias_race")
-        .execute(&mut *blocker)
-        .await
-        .unwrap();
-
-    let alias_create =
-        workspaces.create(workspace_row("ws_alias_race", "org_alias_target", "target"));
-    let cascade =
-        memberships.remove_org_member_guarded("org_alias_source", PrincipalKind::User, "target");
-    tokio::pin!(alias_create, cascade);
-
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(200), &mut alias_create)
-            .await
-            .is_err(),
-        "alias creation must wait for the workspace-id lock"
-    );
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(200), &mut cascade)
-            .await
-            .is_err(),
-        "membership cascade must wait for the workspace-id lock"
-    );
-    blocker.commit().await.unwrap();
-
-    let (alias_result, cascade_result) = tokio::join!(alias_create, cascade);
-    alias_result.unwrap();
-    match cascade_result {
-        Ok(OrgMemberRemoveOutcome::Removed) => {
-            assert!(
-                memberships
-                    .get(
-                        ScopeKind::Org,
-                        "org_alias_source",
-                        PrincipalKind::User,
-                        "target"
-                    )
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-            assert!(
-                memberships
-                    .get(
-                        ScopeKind::Workspace,
-                        "ws_alias_race",
-                        PrincipalKind::User,
-                        "target"
-                    )
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
-        },
-        Err(PortStorageError::Serialization(_)) => {
-            assert!(
-                memberships
-                    .get(
-                        ScopeKind::Org,
-                        "org_alias_source",
-                        PrincipalKind::User,
-                        "target"
-                    )
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-            assert!(
-                memberships
-                    .get(
-                        ScopeKind::Workspace,
-                        "ws_alias_race",
-                        PrincipalKind::User,
-                        "target"
-                    )
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-        },
-        outcome => panic!("unexpected membership cascade outcome: {outcome:?}"),
+    for statement in [
+        "UPDATE org_memberships SET role = 'unknown'",
+        "UPDATE org_memberships SET role = 'WorkspaceAdmin'",
+        "UPDATE org_memberships SET principal_kind = 'robot'",
+        "UPDATE workspace_memberships SET role = 'OrgOwner'",
+    ] {
+        assert!(
+            sqlx::query(statement).execute(&pool).await.is_err(),
+            "the schema must reject `{statement}`"
+        );
     }
+    assert_eq!(
+        store
+            .get_tenant_membership("org", Some("ws"), PrincipalKind::User, "owner")
+            .await
+            .unwrap(),
+        TenantMembershipSnapshot {
+            org_role: Some(OrgMembershipRole::Owner),
+            workspace_role: Some(WorkspaceMembershipRole::Editor),
+        }
+    );
 }

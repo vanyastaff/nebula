@@ -54,6 +54,68 @@ async fn open_sqlite_pool_for_test(db_path: &str) -> sqlx::SqlitePool {
         .expect("SQLite pool must open for the durability test")
 }
 
+/// Provision the test tenant, a live workflow in it, and the execution
+/// `execution_id`: a control row belongs to its execution, which belongs to its
+/// workflow and workspace (migrations 0066–0069).
+async fn seed_execution(pool: &sqlx::SqlitePool, execution_id: &str) {
+    use nebula_storage::sqlite::{
+        SqliteExecutionStore, SqliteTenantProvisioningStore, SqliteWorkflowStore,
+    };
+    use nebula_storage_port::dto::{
+        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningRequest,
+        WorkflowRecord,
+    };
+    use nebula_storage_port::store::{ExecutionStore, TenantProvisioningStore, WorkflowStore};
+
+    let scope = test_scope();
+    let request = TenantProvisioningRequest::new(
+        TenantOrgCreate::new(
+            scope.org_id.clone(),
+            scope.org_id.clone(),
+            "Fixture".into(),
+            "fixture".into(),
+            "free".into(),
+            None,
+            serde_json::json!({}),
+        )
+        .expect("org values"),
+        TenantDefaultWorkspaceCreate::new(
+            scope.workspace_id.clone(),
+            "default".into(),
+            "Default".into(),
+            None,
+            "fixture".into(),
+            serde_json::json!({}),
+        )
+        .expect("workspace values"),
+        PrincipalKind::User,
+        "fixture-owner".into(),
+        None,
+    )
+    .expect("provisioning request");
+    SqliteTenantProvisioningStore::new(pool.clone())
+        .provision_tenant(request)
+        .await
+        .expect("provision the test tenant");
+    let workflow_id = "test-workflow-durability-proof";
+    SqliteWorkflowStore::new(pool.clone())
+        .create(
+            &scope,
+            WorkflowRecord {
+                id: workflow_id.into(),
+                scope: scope.clone(),
+                version: 1,
+                slug: workflow_id.into(),
+            },
+        )
+        .await
+        .expect("create the test workflow");
+    SqliteExecutionStore::new(pool.clone())
+        .create(&scope, execution_id, workflow_id, serde_json::json!({}))
+        .await
+        .expect("create the test execution");
+}
+
 /// Phase 1: open `db_path`, initialise schema, enqueue a Cancel command, flush WAL.
 ///
 /// Returns the `execution_id` string that was used so Phase 2 can query the same row.
@@ -65,6 +127,7 @@ async fn enqueue_and_close(db_path: &str) -> String {
 
     let control_queue = SqliteControlQueue::new(pool.clone());
     let execution_id = "test-execution-durability-proof".to_string();
+    seed_execution(&pool, &execution_id).await;
 
     let msg = ControlMsg {
         id: TEST_MSG_ID,

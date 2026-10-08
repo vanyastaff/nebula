@@ -16,6 +16,12 @@ use nebula_storage_port::store::{
 };
 #[path = "support/start_materialization_common.rs"]
 mod common;
+#[path = "support/execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "the oracle seeds through store handles, not through a raw pool"
+)]
+mod execution_parents;
 #[path = "support/start_materialization_oracle.rs"]
 mod oracle;
 
@@ -27,8 +33,25 @@ async fn in_memory_materialization_contract() {
     let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&executions);
     let queue = nebula_storage::inmem::InMemoryControlQueue::new(&executions);
     let catalog = executions.plan_flavor_catalog();
-    let oracle::RunEvidence { observations, .. } =
-        oracle::run(&starts, &executions, &queue, &catalog, &catalog).await;
+    let oracle::RunEvidence {
+        stored,
+        observations,
+    } = oracle::run(
+        &starts,
+        &executions,
+        &queue,
+        &catalog,
+        &catalog,
+        &oracle::Parents::new(None),
+    )
+    .await;
+    assert_eq!(
+        starts
+            .read_contract_bundle(stored.scope(), stored.execution_id())
+            .await
+            .unwrap(),
+        Some(stored)
+    );
     write_observations(
         "in-memory",
         "NEBULA_START_AUTHORITY_IN_MEMORY_OBSERVATIONS_PATH",
@@ -42,7 +65,15 @@ async fn in_memory_trigger_contract() {
     let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&executions);
     let catalog = executions.plan_flavor_catalog();
     let queue = nebula_storage::inmem::InMemoryControlQueue::new(&executions);
-    oracle::trigger_replay(&starts, &executions, &queue, &catalog, &catalog).await;
+    oracle::trigger_replay(
+        &starts,
+        &executions,
+        &queue,
+        &catalog,
+        &catalog,
+        &oracle::Parents::new(None),
+    )
+    .await;
 }
 
 #[cfg(feature = "sqlite")]
@@ -66,14 +97,22 @@ async fn sqlite_materialization_contract() {
         pool.clone(),
         &nebula_metrics::MetricsRegistry::new(),
     );
-    let evidence = oracle::run(&starts, &executions, &queue, &catalog, &catalog).await;
+    let parents = oracle::Parents::new(Some((
+        std::sync::Arc::new(nebula_storage::sqlite::SqliteTenantProvisioningStore::new(
+            pool.clone(),
+        )),
+        std::sync::Arc::new(nebula_storage::sqlite::SqliteWorkflowStore::new(
+            pool.clone(),
+        )),
+    )));
+    let evidence = oracle::run(&starts, &executions, &queue, &catalog, &catalog, &parents).await;
     write_observations(
         "sqlite",
         "NEBULA_START_AUTHORITY_SQLITE_OBSERVATIONS_PATH",
         evidence.observations,
     );
     let stored = evidence.stored;
-    oracle::trigger_replay(&starts, &executions, &queue, &catalog, &catalog).await;
+    oracle::trigger_replay(&starts, &executions, &queue, &catalog, &catalog, &parents).await;
     pool.close().await;
     let reopened = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)

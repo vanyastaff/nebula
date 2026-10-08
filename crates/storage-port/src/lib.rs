@@ -27,25 +27,17 @@ mod scope;
 pub mod store;
 
 pub use backend::StorageBackendKind;
-pub use batch::{
-    ExecutionReferenceTransition, TransitionBatch, TransitionBatchBuilder, TransitionOutcome,
-};
-pub use dto::credential::{
-    CredentialAdmissionEpoch, CredentialAdmissionEpochError, CredentialCommit, CredentialCreate,
-    CredentialMaterial, CredentialMaterialEpoch, CredentialMaterialEpochError,
-    CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
-    CredentialReplacementFence, CredentialSelector, CredentialTombstone, CredentialVersion,
-    CredentialVersionError, MaterialUpdate, SecretBytes, StoredCredential, StoredCredentialHead,
-    StoredLiveCredential, StoredTombstonedCredential,
-};
-pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
+pub use batch::{ExecutionReferenceTransition, TransitionBatch, TransitionOutcome};
 pub use dto::{
     AttemptGeneration, BeginDrainOutcome, CheckpointSaved, DestinationCapability,
     DestinationCapabilityParseError, EffectOccurrenceKey, EffectOccurrenceRecord,
-    EffectSlotBinding, EffectSlotId, ExecutablePlanRecordFormat, IterationCheckpoint,
-    IterationCheckpointError, IterationCheckpointKey, KnownOutcome, MAX_CHECKPOINT_ITERATION,
-    MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES, MAX_ITERATION_CHECKPOINT_STATE_BYTES,
-    MAX_OCCURRENCE_LABEL_BYTES, MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES, OccurrenceLabelViolation,
+    EffectSlotBinding, EffectSlotId, ExecutablePlanRecordFormat, ExecutionHistoryCursor,
+    ExecutionHistoryPage, ExecutionHistoryPageSize, ExecutionHistoryPageSizeError,
+    ExecutionHistoryQuery, ExecutionListing, ExecutionListingStatus, ExecutionStatusSet,
+    ExecutionSummary, IterationCheckpoint, IterationCheckpointError, IterationCheckpointKey,
+    KnownOutcome, MAX_CHECKPOINT_ITERATION, MAX_ITERATION_CHECKPOINT_KEY_PART_BYTES,
+    MAX_ITERATION_CHECKPOINT_STATE_BYTES, MAX_OCCURRENCE_LABEL_BYTES,
+    MAX_PROVIDER_IDEMPOTENCY_KEY_BYTES, MicrosInstant, OccurrenceLabelViolation,
     OperationLedgerError, OperationProtocolViolation, OperationRecord, OperationState,
     PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget, PrepareOutcome,
     PreparedEffectContract, PreparedEffectPolicy, PreparedEffectPolicyBuilder, PreparedOperation,
@@ -54,8 +46,18 @@ pub use dto::{
     RefreshRetryDiagnosticCodeError, RefreshRetryEvidence, RefreshRetryGate, RefreshRetryKind,
     RefreshRetryPhase, RefreshRetryProjection, RefreshRetrySnapshot, RefreshRetryTransition,
     RequestFingerprint, RevisionCatalogError, RevisionInsertOutcome, RevisionRecordBytes,
-    RevisionReferenceCounts, WorkerFlavorRecordFormat, WorkerFlavorRevisionRecord,
+    RevisionReferenceCounts, UnknownExecutionStatus, WorkerFlavorRecordFormat,
+    WorkerFlavorRevisionRecord,
 };
+pub use dto::{
+    CredentialAdmissionEpoch, CredentialAdmissionEpochError, CredentialCommit, CredentialCreate,
+    CredentialMaterial, CredentialMaterialEpoch, CredentialMaterialEpochError,
+    CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
+    CredentialReplacementFence, CredentialSelector, CredentialTombstone, CredentialVersion,
+    CredentialVersionError, MaterialUpdate, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredLiveCredential, StoredTombstonedCredential,
+};
+pub use dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use error::StorageError;
 pub use ids::{CredentialId, FencingToken, OperationCallId, OperationId};
 pub use scope::Scope;

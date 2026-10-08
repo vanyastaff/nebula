@@ -123,7 +123,7 @@ async fn acquire(resource: DummyResource) -> (Manager, ResourceGuard<DummyResour
         })
         .unwrap();
     let guard = manager
-        .acquire_pooled::<DummyResource>(&watchdog_test_ctx(), &AcquireOptions::default())
+        .acquire::<DummyResource>(&watchdog_test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
     (manager, guard)
@@ -216,7 +216,7 @@ async fn panicking_cleanup_returns_capacity_after_settlement() {
     let (manager, guard) = acquire(resource).await;
     assert!(guard.release().await.is_err());
     let next = manager
-        .acquire_pooled::<DummyResource>(&watchdog_test_ctx(), &AcquireOptions::default())
+        .acquire::<DummyResource>(&watchdog_test_ctx(), &AcquireOptions::default())
         .await
         .expect("the failed cleanup must release the sole permit");
     assert_eq!(next.value, 42);

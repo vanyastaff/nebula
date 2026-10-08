@@ -47,6 +47,16 @@ impl CredentialOwner {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The tenant scope this partition was derived from, or `None` when the
+    /// key is not the canonical key of any scope.
+    ///
+    /// Relational storage files a credential under its owning workspace;
+    /// a partition that names no scope owns no stored credential.
+    #[must_use]
+    pub fn scope(&self) -> Option<Scope> {
+        Scope::from_credential_owner_id(&self.0)
+    }
 }
 
 impl fmt::Debug for CredentialOwner {

@@ -411,15 +411,23 @@ async fn refresh_through_resolver(
     let expires_at = state.expires_at;
     let data = serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))
         .expect("serialize OAuth2 test state into the trusted persistence fixture");
+    let pool = nebula_storage::sqlite::open_memory_deployment()
+        .await
+        .expect("open isolated deployment database");
     let store = Arc::new(
-        SqliteCredentialPersistence::connect_memory()
+        SqliteCredentialPersistence::connect_pool(pool.clone())
             .await
             .expect("open isolated credential store"),
     );
     let selector = CredentialSelector::new(
-        CredentialOwner::from_canonical("server-transport-test"),
+        // Credentials are filed under the workspace their owner names.
+        CredentialOwner::from_scope(&nebula_storage_port::Scope::new(
+            "ws-server-transport-test",
+            "org-server-transport-test",
+        )),
         CredentialId::new(),
     );
+    crate::credential_composition::provision_owner_on_pool(&pool, selector.owner()).await;
     store
         .create(
             &selector,

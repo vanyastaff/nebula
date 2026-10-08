@@ -56,7 +56,7 @@ use nebula_api::{
             CredentialCommandGateway, CredentialGatewayCommand, CredentialGatewayError,
             CredentialGatewayResult, test_gateway_from_service_with_reconciliation,
         },
-        credential_service_factory::with_store,
+        credential_service_factory::{TenantProvisionedStore, with_store},
     },
 };
 use nebula_core::{CredentialId, UserId};
@@ -134,17 +134,6 @@ impl ReconciliationFixture {
         let claim_store: Arc<dyn RefreshClaimStore> = repo.clone();
         let adjudicator: Arc<dyn RefreshClaimAdjudicator> = repo;
 
-        let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte key"));
-        let service: Arc<CredentialService> =
-            with_store(store, key).expect("the credential service composes");
-
-        let audit = Arc::new(RecordingAuditSink::default());
-        let gateway = test_gateway_from_service_with_reconciliation(
-            service,
-            adjudicator,
-            Some(Arc::clone(&audit) as Arc<dyn AuditSink>),
-        );
-
         let options = SqliteConnectOptions::from_str(&url)
             .expect("the credential database URL parses")
             .create_if_missing(true);
@@ -153,6 +142,25 @@ impl ReconciliationFixture {
             .connect_with(options)
             .await
             .expect("the fixture pool joins the credential database");
+
+        // The service auto-provisions each credential's workspace through
+        // the fixture pool, on the same deployment database.
+        let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte key"));
+        let service: Arc<CredentialService> = with_store(
+            TenantProvisionedStore::new(
+                store,
+                nebula_storage::sqlite::SqliteTenantProvisioningStore::new(pool.clone()),
+            ),
+            key,
+        )
+        .expect("the credential service composes");
+
+        let audit = Arc::new(RecordingAuditSink::default());
+        let gateway = test_gateway_from_service_with_reconciliation(
+            service,
+            adjudicator,
+            Some(Arc::clone(&audit) as Arc<dyn AuditSink>),
+        );
 
         Self {
             gateway,
@@ -248,7 +256,7 @@ impl ReconciliationFixture {
             .mark_sentinel(&claim.token)
             .await
             .expect("the holder may mark provider egress");
-        let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_millis();
+        let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_micros();
         sqlx::query(
             "UPDATE credential_refresh_claims SET expires_at = ?1 WHERE credential_id = ?2",
         )
@@ -283,14 +291,14 @@ impl ReconciliationFixture {
     /// How many of `credential`'s incidents carry a recorded resolution.
     ///
     /// The adjudication port has no read of what it recorded — it answers with a
-    /// verdict and nothing else — so this queries `credential_sentinel_events`
+    /// verdict and nothing else — so this queries `credential_refresh_incidents`
     /// directly. `adjudicated_at` is the column the resolution write stamps, and
     /// reading it is what tells a *recorded resolution* from an incident that
     /// merely exists. The reclaimer's internal threshold count is
     /// resolution-blind by design, so it cannot stand in for this assertion.
     async fn recorded_resolution_count(&self, credential: &CredentialId) -> i64 {
         let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM credential_sentinel_events \
+            "SELECT COUNT(*) FROM credential_refresh_incidents \
              WHERE credential_id = ?1 AND adjudicated_at IS NOT NULL",
         )
         .bind(credential.to_string())
@@ -762,7 +770,7 @@ async fn a_retried_reconciliation_never_resolves_a_newer_incident() {
     );
     // `attempt` took the claim; release is not needed because `poison` below
     // reclaims an expired row in place.
-    let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_millis();
+    let expired_at = (Utc::now() - ChronoDuration::seconds(1)).timestamp_micros();
     sqlx::query("UPDATE credential_refresh_claims SET expires_at = ?1 WHERE credential_id = ?2")
         .bind(expired_at)
         .bind(credential.to_string())

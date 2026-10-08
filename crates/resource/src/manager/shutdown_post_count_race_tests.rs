@@ -17,7 +17,7 @@
 //! The race window (`lookup` → `InFlightCounter::new`) has no `.await`,
 //! so this test reproduces the interleave deterministically by splitting
 //! it at exactly that seam: resolve the managed row via the same private
-//! lookup `acquire_resident` uses (while `shutting_down == false`), then
+//! lookup `acquire` uses (while `shutting_down == false`), then
 //! run `graceful_shutdown`'s Phase 1–3 (signal + drain-sees-`0` because
 //! the counter increment has not happened yet + `registry.clear()`),
 //! then drive the private post-lookup tail (`run_acquire`) with that
@@ -500,7 +500,7 @@ async fn run_acquire_rejects_when_drain_completed_after_lookup_passed() {
 
     // Step 1: the acquire passes `lookup()` (Defense A) while
     // `shutting_down == false`. This is the same private resolution
-    // `acquire_resident` performs before `run_acquire`.
+    // `acquire` performs before `run_acquire`.
     let managed = manager
         .lookup_for_acquire_scope::<ShutdownRaceResident>(&acquire_ctx)
         .expect("lookup must succeed before shutdown starts");

@@ -71,7 +71,7 @@ impl<const ID: u8> Provider for FailingRetirementResource<ID> {
 
 async fn instantiate<const ID: u8>(manager: &Manager) {
     let guard = manager
-        .acquire_resident::<FailingRetirementResource<ID>>(&test_ctx(), &AcquireOptions::default())
+        .acquire::<FailingRetirementResource<ID>>(&test_ctx(), &AcquireOptions::default())
         .await
         .expect("test resource acquires");
     assert_eq!(
@@ -309,7 +309,7 @@ async fn acquire_emits_success_event() {
 
     let ctx = test_ctx();
     let _handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -348,7 +348,7 @@ async fn drop_guard_emits_released_event() {
 
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -465,7 +465,7 @@ async fn metrics_track_acquire_release_create_destroy() {
     // Acquire.
     let ctx = test_ctx();
     let handle: ResourceGuard<ResidentTestResource> = manager
-        .acquire_resident(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("acquire should succeed");
 
@@ -534,7 +534,7 @@ async fn registry_backed_metrics_record_operations() {
     // Acquire the pooled resource once.
     let ctx = test_ctx();
     let handle: ResourceGuard<PoolTestResource> = manager
-        .acquire_pooled(&ctx, &AcquireOptions::default())
+        .acquire(&ctx, &AcquireOptions::default())
         .await
         .expect("pool acquire should succeed");
     drop(handle);

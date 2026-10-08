@@ -5,9 +5,14 @@ surface to one of three ingress transports (`api`, `webhook`,
 `realtime`, or `all`) and instantiates the currently configured runtime ports
 (storage adapters, idempotency store, identity backend, tenant directory,
 email transport, metrics + telemetry exporters). The tenant directory uses
-the same selected memory, SQLite, or PostgreSQL backend as execution storage.
+the same selected SQLite or PostgreSQL backend as execution storage.
 Startup does not create an organization, workspace, or privileged member;
-durable tenants are provisioned explicitly through the operator bootstrap path.
+durable tenants are provisioned explicitly through operator setup or bootstrap.
+
+Linked plugin release selection is shared with the standalone worker through
+`apps/deployment`. Both ordinary launch and the evidence profile use that
+package's runtime assembly; the server does not depend on the worker executable
+package. Ordinary launch serves HTTP and runs executions in one process.
 
 Run the default profile locally:
 
@@ -18,10 +23,73 @@ cargo run -p nebula-server -- --transport webhook
 cargo run -p nebula-server -- --transport realtime
 ```
 
-All operator-facing configuration lives in environment variables; the
+`nebula-server --help` and `--version` work without deployment configuration.
+Argument errors are reported before telemetry or database initialization.
+Credential keys, worker artifact identity, tenant bootstrap settings and the
+selected bind-address override are checked before opening deployment storage.
+Identity follows `API_EXECUTION_BACKEND` and reuses the admitted deployment pool.
+PostgreSQL HTTP replay also requires that deployment backend. Incompatible replay
+selection and the removed `API_AUTH_BACKEND` variable fail before storage creation;
+these adapters never open independent connections from `DATABASE_URL`.
+
+Deployment configuration lives in environment variables; the
 canonical registry is `crates/api/src/config/env.rs`. The composition
-root in `apps/server/src/compose.rs` is the only place those values
-turn into concrete `Arc<dyn …>` ports.
+root selects concrete ports. Serving and operator setup share the deployment
+database opener and storage-selection parser.
+
+HTTP shutdown gives handlers and response connections one ten-second drain
+budget. An unfinished handler or streaming response makes shutdown fail rather
+than report a clean exit. Credential and reservation owners are cleaned up before
+that error returns; their cleanup is separate from the HTTP budget. Pool cleanup
+has a five-second limit so a connection retained by a timed-out handler cannot
+hide the original failure indefinitely. The process
+supervisor still needs an overall termination deadline. A timed-out HTTP drain
+does not assert that every connection task has already stopped.
+
+## Offline first owner
+
+Run setup with operator access to the deployment database, before opening signup
+or starting other writers. The same commands work in a native process or through
+`docker exec -i` in a locally or remotely operated container. Use the same database
+configuration and mounted data directory as the server. Desktop lifecycle ownership
+is independent of whether the server runs natively or in Docker.
+
+```bash
+export API_EXECUTION_BACKEND=sqlite
+export API_EXECUTION_DB_PATH=/path/to/nebula.db
+read -r -s -p 'Initial password: ' owner_password
+printf '%s' "$owner_password" | nebula-server setup begin \
+  --email owner@example.test --display-name Owner --organization-name Workflows
+unset owner_password
+nebula-server setup status
+nebula-server setup resume
+```
+
+PostgreSQL uses `API_EXECUTION_BACKEND=postgres` and the deployment's `DATABASE_URL`
+with a PostgreSQL-enabled binary. Setup needs neither mail, HTTP/JWT configuration,
+credential encryption keys, worker artifacts nor cloud access. It does not start a
+listener. Serving still has its own required configuration and runtime prerequisites.
+
+The password is one UTF-8 value from piped stdin, at most 4096 bytes; a final newline
+is removed, other spaces are preserved. Terminal input is rejected to avoid echo.
+Do not place passwords in command arguments, exported variables or shell history.
+The example reads into an unexported shell variable and clears it immediately.
+
+`begin` creates an unverified account, then an organization, its default workspace,
+and the organization-owner grant. Ordinary password login works without mail; setup
+does not fabricate email verification or issue a session. Identity and tenant writes
+commit separately. After interruption, `resume` uses only the saved command and never
+replaces the password. `status` admits and updates the database catalog, then reports
+`available`, `sealed`, `pending`, `owner-unavailable`, `accepted`, or `conflict`.
+Here `accepted` proves historical completion, not current access: replay never
+restores removed tenants, revoked grants or deleted accounts. A missing/archived
+account before acceptance prevents granting ownership. Repeated `begin` is rejected.
+
+Existing deployments are sealed by migration 0010; ordinary account creation also
+permanently closes first-owner enrollment. This creates an organization owner, not a
+global server administrator. It is an operator command, never a public first-visitor
+HTTP endpoint. Stop older writers before upgrading; mixed-version writers are not
+supported. Setup is not a migration/import or recovery mechanism for existing users.
 
 Credential composition admits the complete registry and exports its catalog before
 starting runtime maintenance. Registration or schema-export failure propagates as
@@ -75,12 +143,11 @@ and fixed-width digests. Secret-bearing and raw-business-payload
 classifications are rejected before an artifact entry can be constructed; no
 caller-provided text or arbitrary payload is retained or printed by `Debug`.
 
-The worker runtime currently spawns its durable timer scanner internally and
-drops that nested `JoinHandle`. Profile cancellation and pool close stop its
-work, but a scanner-only panic is not yet join-visible to the app supervisor.
-HTTP, the worker pull loop, and lifecycle observer are owned and joined. This
-residual must be closed in the worker runtime before the profile can claim
-complete nested structured-concurrency evidence.
+The worker runtime owns its durable timer scanner through an abort-on-drop
+handle and propagates scanner join failures to its supervisor. HTTP, the worker
+pull loop, and lifecycle observer are also owned and joined. Forced shutdown
+still needs an external process deadline; this ownership does not prove that
+non-yielding tasks or every borrowed connection have stopped.
 
 Run the passing infrastructure-integrity slice independently:
 
@@ -98,8 +165,9 @@ profile uses one shared `InMemoryIdentityDirectory`. Tenant changes are visible
 to RBAC and the credential authority through the same durable source.
 
 Composition never creates an implicit owner or tenant. A fresh database has an
-empty directory until the operator bootstrap path provisions stable organization,
-workspace, and owner IDs for an already-authenticatable user. Missing membership
+empty directory until explicit operator provisioning: `setup begin` creates the
+first account and tenant as described above, while the older environment-driven
+bootstrap provisions a tenant for an existing verified account. Missing membership
 denies access, while storage and malformed-data failures remain redacted as 503.
 
 Bootstrap is opt-in and runs before the HTTP listener starts. Set all eight
@@ -116,16 +184,26 @@ variables or none of them:
 | `NEBULA_BOOTSTRAP_WORKSPACE_NAME` | Default workspace display name. |
 | `NEBULA_BOOTSTRAP_OWNER_USER_ID` | Existing `usr_<ULID>` identity with verified email. |
 
-Bootstrap requires `API_AUTH_BACKEND=postgres`. The process-local memory
+Bootstrap requires a durable deployment (`API_EXECUTION_BACKEND=sqlite` or
+`postgres`), whose database also holds identity. The process-local memory
 backend starts empty and cannot contain a pre-existing verified owner before
 the listener starts, so enabling bootstrap with it fails during startup.
 
-Create and verify the owner in the selected `API_AUTH_BACKEND` first. Startup
-then writes the organization, default workspace, and `OrgOwner` membership in
-one storage transaction. Restarting with exactly the same values is a safe
-replay. Partial configuration, changed values, pre-existing partial state, an
-unknown owner, or an unverified owner aborts startup. A replay never restores a
-membership that an operator removed or downgraded.
+For this bootstrap path, create and verify the owner in the deployment database
+first. Offline first-owner setup does not require verification and does not use
+these environment variables. Environment-driven bootstrap at startup writes
+the organization, default workspace, `OrgOwner` membership and a
+permanent request receipt in one storage transaction. Restarting with exactly
+the same values acknowledges historical acceptance; it does not assert present
+membership or recreate an archived/purged tenant. Partial configuration, changed
+request values, pre-existing partial state, an unknown owner, or an unverified
+owner aborts startup. Replay never restores a removed or downgraded membership.
+
+Migration 0009 seals organizations already present without inventing their
+original provisioning request. Stop older server/worker processes before upgrading;
+mixed versions do not share this receipt protocol. Remove `NEBULA_BOOTSTRAP_*`
+settings for those organizations before upgraded startup. Their data and ordinary
+access are preserved.
 
 ## Webhook credential bridge
 
@@ -144,25 +222,36 @@ credential-runtime or integration surface.
 ## Execution-store backend
 
 The server's execution engine (workflow execution rows, control queue, journal)
-is backed by one of three selectable stores. Choose based on your deployment needs.
+uses SQLite by default, or PostgreSQL when explicitly selected. Memory adapters
+are internal test/reference implementations and cannot be selected for deployment.
+
+`--execution in-process` (default, also `NEBULA_EXECUTION=in-process`) starts the
+execution worker on the same admitted pool and exact linked release as HTTP.
+The server waits for worker startup admission before serving requests and fails
+if that mandatory runtime fails. Admission confirms installed supervised loops;
+it does not claim the initial recovery sweep has completed or ongoing DB health.
+
+`--execution separate-workers` requires PostgreSQL and leaves command consumption
+to independently supervised workers. This selection is independent of native or
+Docker launch and local or remote endpoint location. It does not discover whether
+an external worker is currently available.
 
 ### Behaviour contract
 
 | `API_EXECUTION_BACKEND` | Store | When to use |
 |-------------------------|-------|-------------|
-| **unset** / `memory`    | In-memory (dev default) | Local development. Execution state is lost on restart. Cannot be shared across processes. |
-| `sqlite`                | WAL-mode SQLite file | Single-process production. State survives restarts. Not shareable across hosts or concurrent writers. |
+| **unset** / `sqlite`     | WAL-mode SQLite file | Single-process deployment with in-process execution. State survives restart. |
 | `postgres`              | PostgreSQL (build with `--features postgres`) | Multi-process or multi-host production. State is shared across all replicas that point at the same database. |
 
-Without an explicit `API_EXECUTION_BACKEND`, the server uses in-memory adapters
-and emits a `tracing::warn!` at startup when `NEBULA_ENV` is not `dev` / `development`
-/ `local`. This matches the idempotency-store convention.
+Without an explicit `API_EXECUTION_BACKEND`, serving and operator setup open the
+same SQLite file. `memory` is rejected before creating storage.
 
 ### Env vars
 
 | Variable | Type | Default | Notes |
 |----------|------|---------|-------|
-| `API_EXECUTION_BACKEND` | enum | `memory` | Case-insensitive: `memory`, `sqlite`, `postgres`. |
+| `API_EXECUTION_BACKEND` | enum | `sqlite` | Case-insensitive: `sqlite`, `postgres`. |
+| `NEBULA_EXECUTION` | enum | `in-process` | `in-process` or `separate-workers`; CLI `--execution` takes precedence. |
 | `API_EXECUTION_DB_PATH` | string | `nebula-server-execution.db` | SQLite only. Path relative to the working directory. |
 | `DATABASE_URL` | string | — | Postgres only. Standard sqlx DSN (`postgres://user:pass@host/db`). Required when `API_EXECUTION_BACKEND=postgres`. |
 
@@ -178,7 +267,7 @@ last persisted state.
 `CheckpointStore` follows the execution backend (`SqliteCheckpointStore`,
 `PgCheckpointStore`, or the in-memory reference model sharing the in-memory
 execution store): iteration checkpoints of journaled stateful actions are fenced by
-the execution lease, so they live beside the execution row (migration `0062`).
+the execution lease, so they live beside the execution row (`0004_executions.sql`).
 
 ### Example: SQLite single-process production
 
@@ -202,15 +291,26 @@ cargo build --release -p nebula-server --features postgres
 
 ## Identity backend and Plane-A OAuth
 
-`API_AUTH_BACKEND` selects the Plane-A identity store independently from the
-execution and idempotency stores. The selection is fail-closed: requesting
-Postgres without the feature, `DATABASE_URL`, or a reachable database aborts
-startup instead of silently losing users, sessions, or PATs into memory.
+`API_EXECUTION_BACKEND` selects the deployment database for execution, tenancy,
+credentials and Plane-A identity. Identity is derived from the admitted database;
+there is no independent identity-store selector. Remove `API_AUTH_BACKEND` from
+existing configuration: setting it is an error, even when its value matches the
+deployment backend. The diagnostic never repeats the submitted value.
 
-| `API_AUTH_BACKEND` | Identity backend | Durability |
+PostgreSQL identity shares the admitted deployment pool. Missing feature support
+or unavailable storage aborts startup without a memory fallback. SQLite uses its
+existing pool and persists users, sessions, PATs, MFA and OAuth state in the
+deployment file. `setup begin` and subsequent ordinary server startup therefore
+use the same identity database when given the same deployment configuration.
+Startup authenticates stored identity envelopes before exposing the backend;
+explicitly configured old keys permit rotation, never plaintext adoption.
+Offline first-owner enrollment is available through `setup`; serving defaults
+to the in-process execution runtime.
+
+| `API_EXECUTION_BACKEND` | Identity backend | Durability |
 |--------------------|------------------|------------|
-| **unset** / `memory` | `InMemoryAuthBackend` | Process-local; lost on restart and not shared across replicas |
-| `postgres` | `PgAuthBackend` (build with `--features postgres`) | Users, sessions, PATs, verification/OAuth state, and external identity links survive restart and are shared through `DATABASE_URL` |
+| **unset** / `sqlite` | `DurableAuthBackend` with SQLite persistence | Identity survives restart in the execution deployment file; shares its pool and shutdown |
+| `postgres` | `DurableAuthBackend` with PostgreSQL persistence (build with `--features postgres`) | Users, sessions, PATs, verification/OAuth state, and external identity links survive restart and share the admitted deployment pool |
 
 ### PostgreSQL identity-authority upgrade runbook
 
@@ -227,7 +327,7 @@ cutover; mixed old/new auth nodes are unsupported.
    credential-owner deep admission. It closes the general pool before that
    fallback, and every failure is closed and redacted. All schema changes come
    from immutable numbered migrations.
-3. Start the new server. Before `PgAuthBackend` is exposed, the startup
+3. Start the new server. Before `DurableAuthBackend` is exposed, the startup
    migrator serializes replicas with an advisory lock, converts canonical
    historical TOTP seeds in bounded CAS batches, authenticates active and
    pending envelopes with user/purpose-bound AAD, and fails closed on a safe
@@ -297,9 +397,10 @@ lifecycle:
 2. `OAuthIdentityRuntime::from_config` returns `None` for an empty provider set;
    no OAuth HTTP client or egress capability exists in that process.
 3. A non-empty set is moved out of `ApiConfig` into exactly one opaque runtime
-   before the Memory/Postgres branch. The router config retains an empty OAuth
-   map; the selected backend receives the same `Arc`, and neither backend
-   constructs a client or retains raw/duplicate provider secrets.
+   before selecting the admitted deployment's identity adapter. The router
+   config retains an empty OAuth map; the selected backend receives the same
+   `Arc`, and no backend constructs a client or retains raw/duplicate provider
+   secrets.
 
 The runtime fixes the production egress policy: rustls HTTPS only; redirects,
 retries, and proxies disabled; every literal/DNS address must be globally
@@ -341,7 +442,7 @@ retain and replay the matching `Set-Cookie`. A start request carrying eight
 Nebula transaction-cookie names is rejected with 429 before state creation;
 this is a request-local Cookie-header bound, not a globally atomic browser
 quota. The independent hard admission gate permits at most 10,000 live OAuth
-states per Memory process or shared PostgreSQL deployment; full or contended
+states per Memory process or shared SQLite/PostgreSQL deployment; full or contended
 admission returns 429 without state, PKCE, or cookie creation.
 
 Callback persistence and network work are deliberately separated: matching
@@ -363,33 +464,24 @@ authority through the selected execution storage backend described above.
 
 ## Credential persistence backend
 
-`NEBULA_CRED_DB` independently selects the Plane-B credential database. It
-does not inherit `DATABASE_URL` and never reuses the execution/auth pool:
-credential schema admission, migrations, rows, refresh claims, and sentinel
-evidence have one credential-owned readiness lifecycle.
+Plane-B credentials live in the deployment database the execution backend
+selects (`API_EXECUTION_BACKEND`), beside tenancy: a credential and a pending
+interactive flow belong to a live workspace and are purged with it. There is no
+separate credential database.
 
-| `NEBULA_CRED_DB` | Backend | Deployment |
-|------------------|---------|------------|
-| **unset** | `sqlite://nebula-credentials.db?mode=rwc` | Durable single-process default |
-| `sqlite://…`, `sqlite::memory:`, or a bare relative/absolute/Windows path | SQLite | Single process; the memory form is test/development only |
-| `postgres://…` or `postgresql://…` | PostgreSQL (build with `--features postgres`) | Shared multi-replica production |
+| `API_EXECUTION_BACKEND` | Credential database | Deployment |
+|-------------------------|---------------------|------------|
+| **unset** / `sqlite` | the `API_EXECUTION_DB_PATH` file | Durable single process |
+| `postgres` | `DATABASE_URL` (build with `--features postgres`) | Shared multi-replica production |
 
-An explicit unsupported URL scheme aborts startup. A malformed PostgreSQL
-locator such as `postgres:…` / `postgresql:…` also aborts instead of being
-interpreted as a SQLite path. Requesting PostgreSQL from a build without the
-`postgres` feature likewise aborts; none of these cases falls back to SQLite or
-memory. Startup diagnostics expose only the backend class and closed error
-taxonomy—database URLs, credentials, and tenant-specific paths are never
-logged.
+The credential store opens on the execution backend's own pool — there is no
+second pool on the deployment database and no credential-specific pool size —
+and runs the same schema admission on it. Startup diagnostics expose only the
+backend class and closed error taxonomy—database URLs, credentials, and
+tenant-specific paths are never logged.
 
-`NEBULA_CRED_DB_MAX_CONNECTIONS` (default `10`) bounds the PostgreSQL credential
-pool. Every credential admission reads the material and its operation status
-through it in one statement, so it caps how many admissions one process runs
-against PostgreSQL at once; past it admissions queue. A value that is not a
-positive integer aborts startup. It has no effect on SQLite.
-
-Plane-B credential persistence and refresh coordination share the same admitted
-private pool for either supported backend. The server creates a unique
+Plane-B credential persistence and refresh coordination share that deployment
+pool for every backend. The server creates a unique
 `nebula-server:<uuid>` replica identity on each process start and retains one
 credential lifecycle runtime until `serve` exits. It immediately reclaims stale
 claims at startup and scans backend-clock expiry pages for refresh work using

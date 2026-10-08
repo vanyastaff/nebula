@@ -327,20 +327,10 @@ impl ResourceStatusPublisher {
         published: &mut HashMap<PublishedKey, ResourceStatusSnapshot>,
     ) {
         let Some(mut renewed) = self.renew(published).await else {
-            // Status is diagnostic, retiring deleted rows is not: a status
-            // store that is down must not keep deleted runtimes alive.
-            engine.retire_deleted_resources().await;
             return;
         };
-        // Deleted rows go first, so this tick already withdraws their status.
-        engine.retire_deleted_resources().await;
-        // That sweep reads storage; a slow one must not outlive the lease.
-        if renewed.elapsed() >= self.interval {
-            let Some(now) = self.renew(published).await else {
-                return;
-            };
-            renewed = now;
-        }
+        // Lifecycle maintenance belongs to the worker's independent task.
+        // This projection may lag a retirement until its next successful tick.
         let view = engine.resource_status_snapshot();
         let mut seen: HashSet<PublishedKey> =
             HashSet::with_capacity(view.live.len() + view.busy.len());

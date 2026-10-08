@@ -26,6 +26,9 @@
 //! there is no wall-clock-flakiness window. Lease TTLs that gate crash recovery
 //! likewise use the in-mem store's clamp floor (1s) under real time.
 
+#[path = "support/workflow_fixture.rs"]
+mod workflow_fixture;
+
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -266,20 +269,20 @@ impl WtStores {
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
-        self.versions
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                WorkflowVersionRecord {
-                    activation: None,
-                    workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(wf).unwrap(),
-                },
-            )
-            .await
-            .unwrap();
+        workflow_fixture::save_version(
+            &self.versions,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            WorkflowVersionRecord {
+                activation: None,
+                workflow_id: wf.id.to_string(),
+                number: 0,
+                published: true,
+                pinned: false,
+                definition: serde_json::to_value(wf).unwrap(),
+            },
+        )
+        .await
+        .unwrap();
     }
 
     async fn persist_created_execution(&self, workflow_id: nebula_core::WorkflowId) -> ExecutionId {
@@ -807,18 +810,12 @@ impl ExecutionStore for FenceArmStore {
         self.inner.list_all_running().await
     }
 
-    async fn list_running(&self, scope: &Scope) -> Result<Vec<String>, StorageError> {
-        self.inner.list_running(scope).await
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         scope: &Scope,
-        workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        self.inner
-            .list_running_for_workflow(scope, workflow_id)
-            .await
+        query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        self.inner.list_history(scope, query).await
     }
 
     async fn count(&self, scope: &Scope, workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -1457,14 +1454,14 @@ async fn arm_wait_for_completion(stores: &WtStores, execution_id: ExecutionId) {
         }
     }
     state.version += 1;
-    let batch = TransitionBatch::builder()
-        .scope(scope.clone())
-        .execution_id(&id)
-        .expected_version(record.version)
-        .fencing(token)
-        .new_state(serde_json::to_value(&state).unwrap())
-        .build()
-        .unwrap();
+    let batch = TransitionBatch::new(
+        scope.clone(),
+        &id,
+        record.version,
+        token,
+        serde_json::to_value(&state).unwrap(),
+        nebula_engine::execution_listing(&state),
+    );
     assert!(matches!(
         stores.execution.commit(batch).await.unwrap(),
         TransitionOutcome::Applied { .. }
@@ -2044,20 +2041,20 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
     // Persist + save the workflow through the same scope the engine reads.
     let scope = nebula_engine::store_seam::single_tenant_scope();
     let wf = make_workflow(/* with_error_port */ true, timeout);
-    versions
-        .create(
-            &scope,
-            WorkflowVersionRecord {
-                activation: None,
-                workflow_id: wf.id.to_string(),
-                number: 0,
-                published: true,
-                pinned: false,
-                definition: serde_json::to_value(&wf).unwrap(),
-            },
-        )
-        .await
-        .unwrap();
+    workflow_fixture::save_version(
+        &versions,
+        &scope,
+        WorkflowVersionRecord {
+            activation: None,
+            workflow_id: wf.id.to_string(),
+            number: 0,
+            published: true,
+            pinned: false,
+            definition: serde_json::to_value(&wf).unwrap(),
+        },
+    )
+    .await
+    .unwrap();
     let execution_id = ExecutionId::new();
     {
         let mut exec_state = ExecutionState::new(execution_id, wf.id, &[]);

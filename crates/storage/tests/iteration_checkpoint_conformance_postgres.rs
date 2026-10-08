@@ -12,6 +12,10 @@
 #[path = "support/iteration_checkpoint_oracle.rs"]
 mod oracle;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
 use nebula_storage::postgres::{PgCheckpointStore, PgExecutionStore, init_schema};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
@@ -49,6 +53,9 @@ async fn pool() -> Option<PgPool> {
             init_schema(&pool)
                 .await
                 .expect("apply the ordered PostgreSQL migration catalog");
+            for scope in [oracle::scope(), oracle::other_scope()] {
+                pool.seed_execution_parents(&scope, oracle::WORKFLOW).await;
+            }
         })
         .await;
     Some(pool)

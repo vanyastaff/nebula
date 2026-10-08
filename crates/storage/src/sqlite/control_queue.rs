@@ -1,11 +1,12 @@
-//! SQLite `ControlQueue` + `ExecutionJournalReader` over the port-scoped
-//! schema.
+//! SQLite `ControlQueue` + `ExecutionJournalReader` over
+//! `execution_control_queue` and `execution_journal`.
 //!
 //! The queue is a single-consumer status flip (no `FOR UPDATE SKIP
 //! LOCKED` equivalent — spec §5 SQLite boundary, documented not hidden).
 //! Ids are the raw 16-byte ULID (`BLOB`), never UTF-8-of-ULID. `enqueue`
 //! carries the tenant `Scope`; `mark_*` are fenced by the claiming
-//! processor.
+//! processor. Claim and reclaim instants are integer microseconds from
+//! SQLite's clock ([`NOW_MICROS`]), the clock execution leases use.
 
 use std::time::Duration;
 
@@ -17,26 +18,93 @@ use nebula_storage_port::store::{
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
 
-use super::execution::conn_err;
+use crate::sql_error::{foreign_key_not_found, storage_error};
 
-fn decode_message(row: &sqlx::sqlite::SqliteRow, id: [u8; 16]) -> Result<ControlMsg, StorageError> {
-    let resume_target = row
-        .try_get::<Option<String>, _>("resume_target")
-        .map_err(conn_err)?
+/// The current instant as integer microseconds since the Unix epoch.
+pub(super) const NOW_MICROS: &str =
+    "CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER)";
+
+/// `age` in microseconds for a `NOW_MICROS - ?` cutoff (saturating).
+pub(super) fn age_micros(age: Duration) -> i64 {
+    i64::try_from(age.as_micros()).unwrap_or(i64::MAX)
+}
+
+/// Decode a stored `reclaim_count`; a negative or oversized value is corrupt.
+pub(super) fn decode_reclaim_count(value: i64) -> Result<u32, StorageError> {
+    u32::try_from(value)
+        .map_err(|_| StorageError::Corrupt("column `reclaim_count` is out of range".into()))
+}
+
+/// Decode a nullable `resume_target` JSON column.
+pub(super) fn decode_resume_target<T: serde::de::DeserializeOwned>(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<Option<T>, StorageError> {
+    row.try_get::<Option<String>, _>("resume_target")
+        .map_err(storage_error)?
         .as_deref()
         .map(serde_json::from_str)
         .transpose()
-        .map_err(|error| StorageError::Serialization(error.to_string()))?;
+        .map_err(|_| StorageError::Corrupt("column `resume_target` is not a resume target".into()))
+}
+
+/// Insert one `Pending` control message — the single insert shape of
+/// `enqueue`, the execution outbox and the resume producer. A message that
+/// names no execution in its tenant is `NotFound { entity: "execution" }`;
+/// a taken id is `Duplicate { entity: "control_queue" }`.
+pub(super) async fn insert_control_message<'e, E>(
+    executor: E,
+    msg: &ControlMsg,
+) -> Result<(), StorageError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let resume_target = msg
+        .resume_target
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(StorageError::from)?;
+    sqlx::query(
+        "INSERT INTO execution_control_queue \
+         (org_id, workspace_id, execution_id, id, command, status, \
+          resume_target, w3c_traceparent, reclaim_count) \
+         VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)",
+    )
+    .bind(&msg.scope.org_id)
+    .bind(&msg.scope.workspace_id)
+    .bind(&msg.execution_id)
+    .bind(msg.id.as_slice())
+    .bind(msg.command.as_str())
+    .bind(resume_target)
+    .bind(msg.w3c_traceparent.as_deref())
+    .bind(i64::from(msg.reclaim_count))
+    .execute(executor)
+    .await
+    .map_err(
+        |error| match foreign_key_not_found(error, "execution", &msg.execution_id) {
+            StorageError::Duplicate { detail, .. } => StorageError::Duplicate {
+                entity: "control_queue",
+                detail,
+            },
+            other => other,
+        },
+    )?;
+    Ok(())
+}
+
+fn decode_message(row: &sqlx::sqlite::SqliteRow, id: [u8; 16]) -> Result<ControlMsg, StorageError> {
+    let resume_target = decode_resume_target(row)?;
     Ok(ControlMsg {
         id,
-        execution_id: row.try_get("execution_id").map_err(conn_err)?,
+        execution_id: row.try_get("execution_id").map_err(storage_error)?,
         scope: Scope::new(
-            row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-            row.try_get::<String, _>("org_id").map_err(conn_err)?,
+            row.try_get::<String, _>("workspace_id")
+                .map_err(storage_error)?,
+            row.try_get::<String, _>("org_id").map_err(storage_error)?,
         ),
-        command: decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
-        w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
-        reclaim_count: row.try_get::<i64, _>("reclaim_count").map_err(conn_err)? as u32,
+        command: decode_command(&row.try_get::<String, _>("command").map_err(storage_error)?)?,
+        w3c_traceparent: row.try_get("w3c_traceparent").map_err(storage_error)?,
+        reclaim_count: decode_reclaim_count(row.try_get("reclaim_count").map_err(storage_error)?)?,
         resume_target,
     })
 }
@@ -65,7 +133,7 @@ impl SqliteControlQueue {
         claim: &ControlClaimToken,
     ) -> Result<StorageError, StorageError> {
         let exists: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM port_control_queue \
+            "SELECT 1 FROM execution_control_queue \
                  WHERE id = ? AND workspace_id = ? AND org_id = ?",
         )
         .bind(claim.row_id().as_slice())
@@ -73,7 +141,7 @@ impl SqliteControlQueue {
         .bind(&claim.scope().org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "control_queue",
@@ -134,9 +202,9 @@ fn decode_command(s: &str) -> Result<nebula_storage_port::dto::ControlCommand, S
         "Terminate" => Ok(C::Terminate),
         "Resume" => Ok(C::Resume),
         "Restart" => Ok(C::Restart),
-        other => Err(StorageError::Serialization(format!(
-            "unknown control command: {other}"
-        ))),
+        _ => Err(StorageError::Serialization(
+            "column `command` holds an unknown control command".into(),
+        )),
     }
 }
 
@@ -152,30 +220,7 @@ fn decode_id(bytes: &[u8]) -> Result<[u8; 16], StorageError> {
 #[async_trait::async_trait]
 impl ControlQueue for SqliteControlQueue {
     async fn enqueue(&self, msg: &ControlMsg) -> Result<(), StorageError> {
-        let resume_target_json = msg
-            .resume_target
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        sqlx::query(
-            "INSERT INTO port_control_queue \
-             (id, execution_id, workspace_id, org_id, command, status, \
-              w3c_traceparent, reclaim_count, resume_target) \
-             VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?)",
-        )
-        .bind(msg.id.as_slice())
-        .bind(&msg.execution_id)
-        .bind(&msg.scope.workspace_id)
-        .bind(&msg.scope.org_id)
-        .bind(msg.command.as_str())
-        .bind(msg.w3c_traceparent.as_deref())
-        .bind(i64::from(msg.reclaim_count))
-        .bind(resume_target_json)
-        .execute(&self.pool)
-        .await
-        .map_err(conn_err)?;
-        Ok(())
+        insert_control_message(&self.pool, msg).await
     }
 
     async fn claim_pending(
@@ -183,20 +228,20 @@ impl ControlQueue for SqliteControlQueue {
         processor: &[u8; 16],
         batch_size: u32,
     ) -> Result<Vec<ControlClaim>, StorageError> {
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         let rows = sqlx::query(
             "SELECT id, execution_id, workspace_id, org_id, command, \
                     w3c_traceparent, reclaim_count, resume_target \
-             FROM port_control_queue WHERE status = 'Pending' \
+             FROM execution_control_queue WHERE status = 'Pending' \
              ORDER BY id LIMIT ?",
         )
         .bind(i64::from(batch_size.clamp(1, 256)))
         .fetch_all(&mut *tx)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         let mut claimed = Vec::with_capacity(rows.len());
         for row in rows {
-            let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
+            let id_bytes: Vec<u8> = row.try_get("id").map_err(storage_error)?;
             let id = decode_id(&id_bytes)?;
             // The claim flip is conditional on the row still being
             // `Pending`: a concurrent consumer or a reclaim sweep can
@@ -210,20 +255,20 @@ impl ControlQueue for SqliteControlQueue {
             // makes the row `Processing`, and `RETURNING` hands back the value
             // this claim minted — no separate read a concurrent claim could
             // interleave with.
-            let minted: Option<i64> = sqlx::query_scalar(
-                "UPDATE port_control_queue \
+            let claim = format!(
+                "UPDATE execution_control_queue \
                  SET status = 'Processing', processed_by = ?, \
-                     processed_at_ms = ?, \
+                     processed_at = {NOW_MICROS}, \
                      claim_generation = claim_generation + 1 \
                  WHERE id = ? AND status = 'Pending' \
-                 RETURNING claim_generation",
-            )
-            .bind(processor.as_slice())
-            .bind(chrono::Utc::now().timestamp_millis())
-            .bind(id_bytes.as_slice())
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(conn_err)?;
+                 RETURNING claim_generation"
+            );
+            let minted: Option<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(claim))
+                .bind(processor.as_slice())
+                .bind(id_bytes.as_slice())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(storage_error)?;
             let Some(generation) = minted else {
                 continue;
             };
@@ -232,7 +277,7 @@ impl ControlQueue for SqliteControlQueue {
                 ControlClaimToken::new(id, decode_generation(generation, &id)?, msg.scope.clone());
             claimed.push(ControlClaim { msg, token });
         }
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         Ok(claimed)
     }
 
@@ -246,35 +291,34 @@ impl ControlQueue for SqliteControlQueue {
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(conn_err)?;
-        let rows = sqlx::query(
-            "UPDATE port_control_queue SET status = 'Processing', \
-                 processed_by = ?, processed_at_ms = ?, \
+            .map_err(storage_error)?;
+        let claim = format!(
+            "UPDATE execution_control_queue SET status = 'Processing', \
+                 processed_by = ?, processed_at = {NOW_MICROS}, \
                  claim_generation = claim_generation + 1 \
              WHERE status = 'Pending' AND id IN ( \
-                 SELECT c.id FROM port_control_queue c \
+                 SELECT c.id FROM execution_control_queue c \
                  WHERE c.status = 'Pending' AND EXISTS ( \
-                     SELECT 1 FROM port_execution_revision_refs r \
-                     JOIN port_executions e ON e.id = r.execution_id \
-                     WHERE r.execution_id = c.execution_id \
-                       AND e.workspace_id = c.workspace_id AND e.org_id = c.org_id \
+                     SELECT 1 FROM execution_revision_references r \
+                     WHERE r.org_id = c.org_id AND r.workspace_id = c.workspace_id \
+                       AND r.execution_id = c.execution_id \
                        AND r.worker_flavor_id = ? AND r.reference_state = 'live' \
                  ) ORDER BY c.id LIMIT ? \
              ) RETURNING id, execution_id, workspace_id, org_id, command, \
-                 w3c_traceparent, reclaim_count, resume_target, claim_generation",
-        )
-        .bind(processor.as_slice())
-        .bind(chrono::Utc::now().timestamp_millis())
-        .bind(worker_flavor.as_bytes().as_slice())
-        .bind(i64::from(batch_size.clamp(1, 256)))
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(conn_err)?;
+                 w3c_traceparent, reclaim_count, resume_target, claim_generation"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(claim))
+            .bind(processor.as_slice())
+            .bind(worker_flavor.as_bytes().as_slice())
+            .bind(i64::from(batch_size.clamp(1, 256)))
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(storage_error)?;
         let claims = rows
             .into_iter()
             .map(|row| {
-                let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(conn_err)?)?;
-                let generation = row.try_get("claim_generation").map_err(conn_err)?;
+                let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(storage_error)?)?;
+                let generation = row.try_get("claim_generation").map_err(storage_error)?;
                 let msg = decode_message(&row, id)?;
                 let token = ControlClaimToken::new(
                     id,
@@ -284,7 +328,7 @@ impl ControlQueue for SqliteControlQueue {
                 Ok(ControlClaim { msg, token })
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
-        tx.commit().await.map_err(conn_err)?;
+        tx.commit().await.map_err(storage_error)?;
         tracing::debug!(
             claimed = claims.len(),
             "claimed exact-flavor control commands"
@@ -294,7 +338,7 @@ impl ControlQueue for SqliteControlQueue {
 
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
         let rows_updated = sqlx::query(
-            "UPDATE port_control_queue SET status = 'Completed' \
+            "UPDATE execution_control_queue SET status = 'Completed' \
              WHERE id = ? AND workspace_id = ? AND org_id = ? \
                AND status = 'Processing' AND claim_generation = ?",
         )
@@ -304,7 +348,7 @@ impl ControlQueue for SqliteControlQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -318,7 +362,7 @@ impl ControlQueue for SqliteControlQueue {
         error: &str,
     ) -> Result<(), StorageError> {
         let rows_updated = sqlx::query(
-            "UPDATE port_control_queue \
+            "UPDATE execution_control_queue \
              SET status = 'Failed', error_message = ? \
              WHERE id = ? AND workspace_id = ? AND org_id = ? \
                AND status = 'Processing' AND claim_generation = ?",
@@ -330,7 +374,7 @@ impl ControlQueue for SqliteControlQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -339,14 +383,14 @@ impl ControlQueue for SqliteControlQueue {
     }
 
     async fn release_claim(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
-        // Clear `processed_by` / `processed_at_ms` along with the status: a row
+        // Clear `processed_by` / `processed_at` along with the status: a row
         // returned to `Pending` must look unclaimed, or an immediate re-claim
         // would carry stale bookkeeping into the reclaim sweep's staleness
         // check. `reclaim_count` is deliberately untouched — this is a retry,
         // not a symptom of a stuck row.
         let rows_updated = sqlx::query(
-            "UPDATE port_control_queue \
-             SET status = 'Pending', processed_by = NULL, processed_at_ms = NULL \
+            "UPDATE execution_control_queue \
+             SET status = 'Pending', processed_by = NULL, processed_at = NULL \
              WHERE id = ? AND workspace_id = ? AND org_id = ? \
                AND status = 'Processing' AND claim_generation = ?",
         )
@@ -356,7 +400,7 @@ impl ControlQueue for SqliteControlQueue {
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?
+        .map_err(storage_error)?
         .rows_affected();
         if rows_updated == 0 {
             return Err(self.unacknowledgeable(claim).await?);
@@ -369,9 +413,10 @@ impl ControlQueue for SqliteControlQueue {
         reclaim_after: Duration,
         max_reclaim_count: u32,
     ) -> Result<ReclaimOutcome, StorageError> {
-        let cutoff = chrono::Utc::now().timestamp_millis()
-            - i64::try_from(reclaim_after.as_millis()).unwrap_or(i64::MAX);
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
+        // A claim is stuck once SQLite's clock passed its claim instant by
+        // `reclaim_after`; the same clock stamped `processed_at`.
+        let reclaim_after = age_micros(reclaim_after);
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
         // Exhausted rows (past the reclaim budget) → Failed.
         //
         // A `command = 'Resume'` row is EXEMPT (ADR-0099 W-S3b): a Resume does
@@ -381,39 +426,41 @@ impl ControlQueue for SqliteControlQueue {
         // for a parked Resume. The paired REDELIVER branch widens to catch the
         // exempt Resume at `reclaim_count >= max`, so it keeps redelivering
         // (observably) rather than wedging in `Processing`.
-        let exhausted = sqlx::query(
-            "UPDATE port_control_queue \
+        let exhaust = format!(
+            "UPDATE execution_control_queue \
              SET status = 'Failed', \
                  error_message = 'reclaim exhausted: presumed dead' \
-             WHERE status = 'Processing' AND processed_at_ms < ? \
-               AND reclaim_count >= ? AND command <> 'Resume'",
-        )
-        .bind(cutoff)
-        .bind(i64::from(max_reclaim_count))
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?
-        .rows_affected();
+             WHERE status = 'Processing' AND processed_at < {NOW_MICROS} - ? \
+               AND reclaim_count >= ? AND command <> 'Resume'"
+        );
+        let exhausted = sqlx::query(sqlx::AssertSqlSafe(exhaust))
+            .bind(reclaim_after)
+            .bind(i64::from(max_reclaim_count))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
         // Remaining stale rows → back to Pending, bump reclaim_count. A
         // `command = 'Resume'` row redelivers regardless of `reclaim_count`
         // (the `OR command = 'Resume'` clause), the budget-exemption complement
         // of the exhaust branch above (ADR-0099 W-S3b) — without it an exempt
         // Resume at `reclaim_count >= max` would match neither branch and stay
         // stuck `Processing` forever.
-        let reclaimed = sqlx::query(
-            "UPDATE port_control_queue \
+        let reclaim = format!(
+            "UPDATE execution_control_queue \
              SET status = 'Pending', reclaim_count = reclaim_count + 1, \
-                 processed_by = NULL, processed_at_ms = NULL \
-             WHERE status = 'Processing' AND processed_at_ms < ? \
-               AND (reclaim_count < ? OR command = 'Resume')",
-        )
-        .bind(cutoff)
-        .bind(i64::from(max_reclaim_count))
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?
-        .rows_affected();
-        tx.commit().await.map_err(conn_err)?;
+                 processed_by = NULL, processed_at = NULL \
+             WHERE status = 'Processing' AND processed_at < {NOW_MICROS} - ? \
+               AND (reclaim_count < ? OR command = 'Resume')"
+        );
+        let reclaimed = sqlx::query(sqlx::AssertSqlSafe(reclaim))
+            .bind(reclaim_after)
+            .bind(i64::from(max_reclaim_count))
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?
+            .rows_affected();
+        tx.commit().await.map_err(storage_error)?;
         Ok(ReclaimOutcome {
             reclaimed,
             exhausted,
@@ -422,8 +469,8 @@ impl ControlQueue for SqliteControlQueue {
 
     async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
         // Terminal rows are pruned by the consumer's retention sweep;
-        // there is no enqueue timestamp column in the port-scoped schema,
-        // so age-based pruning is a no-op here.
+        // `execution_control_queue` has no enqueue instant and its rows are
+        // purged with their execution, so age-based pruning is a no-op here.
         Ok(0)
     }
 }
@@ -447,7 +494,7 @@ impl SqliteJournalReader {
     /// then yields an empty journal, never another tenant's entries.
     async fn scope_ok(&self, scope: &Scope, execution_id: &str) -> Result<bool, StorageError> {
         let row = sqlx::query(
-            "SELECT 1 AS ok FROM port_executions \
+            "SELECT 1 AS ok FROM executions \
              WHERE id = ? AND workspace_id = ? AND org_id = ?",
         )
         .bind(execution_id)
@@ -455,7 +502,7 @@ impl SqliteJournalReader {
         .bind(&scope.org_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         Ok(row.is_some())
     }
 }
@@ -471,18 +518,18 @@ impl ExecutionJournalReader for SqliteJournalReader {
             return Ok(Vec::new());
         }
         let rows = sqlx::query(
-            "SELECT seq, payload FROM port_execution_journal \
+            "SELECT seq, payload FROM execution_journal \
              WHERE execution_id = ? ORDER BY seq",
         )
         .bind(execution_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.into_iter()
             .map(|r| {
-                let payload: String = r.try_get("payload").map_err(conn_err)?;
+                let payload: String = r.try_get("payload").map_err(storage_error)?;
                 Ok(JournalEntry {
-                    seq: Some(r.try_get::<i64, _>("seq").map_err(conn_err)? as u64),
+                    seq: Some(r.try_get::<i64, _>("seq").map_err(storage_error)? as u64),
                     payload: serde_json::from_str(&payload)?,
                 })
             })
@@ -499,19 +546,19 @@ impl ExecutionJournalReader for SqliteJournalReader {
             return Ok(Vec::new());
         }
         let rows = sqlx::query(
-            "SELECT seq, payload FROM port_execution_journal \
+            "SELECT seq, payload FROM execution_journal \
              WHERE execution_id = ? AND seq > ? ORDER BY seq",
         )
         .bind(execution_id)
         .bind(i64::try_from(after).unwrap_or(i64::MAX))
         .fetch_all(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(storage_error)?;
         rows.into_iter()
             .map(|r| {
-                let payload: String = r.try_get("payload").map_err(conn_err)?;
+                let payload: String = r.try_get("payload").map_err(storage_error)?;
                 Ok(JournalEntry {
-                    seq: Some(r.try_get::<i64, _>("seq").map_err(conn_err)? as u64),
+                    seq: Some(r.try_get::<i64, _>("seq").map_err(storage_error)? as u64),
                     payload: serde_json::from_str(&payload)?,
                 })
             })

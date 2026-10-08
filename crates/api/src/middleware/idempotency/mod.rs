@@ -74,7 +74,7 @@
 //!
 //! [`memory::InMemoryIdempotencyStore`] is the dev / single-process default;
 //! [`store::StorageBackedIdempotencyStore`] adapts a layer-1
-//! `nebula_storage::repos::IdempotencyStoreRepo` (PG-backed in
+//! `nebula_storage::http_idempotency::IdempotencyStoreRepo` (PG-backed in
 //! production deployments) onto this trait. Selection is driven by
 //! `ApiConfig.idempotency.backend` per **idempotency backend**: the in-memory
 //! backend loses dedup state across restart and across runners, so

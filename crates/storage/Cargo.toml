@@ -62,7 +62,6 @@ sqlx = { workspace = true, optional = true, features = [
   "chrono",
 ] }
 hex = { version = "0.4", optional = true }
-rmp-serde = { version = "1", optional = true }
 # Exact plan/flavor catalog counters, enabled with either SQL backend.
 # Optional because the in-memory adapter is a reference/conformance model that
 # no scraper observes, so a default-feature build exports no catalog series and
@@ -105,15 +104,10 @@ postgres = [
   "dep:nebula-metrics",
   "dep:nebula-resilience",
 ]
-sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:nebula-metrics"]
-msgpack-storage = ["dep:rmp-serde"]
+sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:nebula-metrics", "dep:hex"]
 
 [dev-dependencies]
-# The conformance fixtures name a job by its id in error text regardless of
-# which backend feature is on, while the library's own `hex` is gated behind
-# `postgres`. A dev-dependency keeps the SQLite-only test build compiling
-# without widening the library's feature surface; the package is already in
-# the graph, so this adds nothing to the lockfile.
+# Conformance fixtures use hex even when neither SQL backend is enabled.
 hex = { workspace = true }
 # The conformance oracle computes the evidence digest independently of the
 # adapters, so a shared case fails if a backend starts returning a different
@@ -147,13 +141,6 @@ doctest = false
 [[test]]
 name = "credential_operation_runtime"
 required-features = ["credential-in-memory", "sqlite"]
-
-[package.metadata.cargo-shear]
-# Optional backend deps: declared under feature flags (`redis`, `s3`)
-# whose backend implementations live behind the feature guard. Kept
-# declared so the backend surface is stable even while implementation
-# is landing incrementally.
-ignored = []
 
 [package.metadata.docs.rs]
 # Render feature-gated items on docs.rs (build with every feature).

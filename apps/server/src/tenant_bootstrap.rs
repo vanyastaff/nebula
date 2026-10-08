@@ -6,13 +6,13 @@
 
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc};
 
-use nebula_api::config::AuthBackendKind;
+use nebula_api::config::ExecutionBackendKind;
 use nebula_api::domain::auth::backend::{AuthBackend, AuthError, UserProfile};
 use nebula_core::{OrgId, Slug, SlugKind, UserId, WorkspaceId};
 use nebula_storage_port::{
     dto::{
-        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningOutcome,
-        TenantProvisioningRequest,
+        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningConflict,
+        TenantProvisioningOutcome, TenantProvisioningRequest,
     },
     store::TenantProvisioningStore,
 };
@@ -150,8 +150,8 @@ pub(crate) enum TenantBootstrapError {
     InvalidValue(&'static str),
     #[error("tenant bootstrap request is invalid")]
     InvalidRequest,
-    #[error("tenant bootstrap requires API_AUTH_BACKEND=postgres")]
-    DurableAuthRequired,
+    #[error("tenant bootstrap requires API_EXECUTION_BACKEND=sqlite or postgres")]
+    DurableDeploymentRequired,
     #[error("tenant bootstrap owner does not exist in the selected authentication backend")]
     OwnerNotFound,
     #[error("tenant bootstrap owner must have a verified email")]
@@ -162,14 +162,18 @@ pub(crate) enum TenantBootstrapError {
     StorageFailed,
     #[error("tenant bootstrap conflicts with existing durable state")]
     Conflict,
+    #[error(
+        "tenant predates provisioning receipts; remove NEBULA_BOOTSTRAP_* settings for this existing tenant"
+    )]
+    PreexistingTenant,
 }
 
-pub(crate) fn validate_auth_backend(
+pub(crate) fn validate_deployment_backend(
     config: Option<&TenantBootstrapConfig>,
-    backend: &AuthBackendKind,
+    backend: &ExecutionBackendKind,
 ) -> Result<(), TenantBootstrapError> {
-    if config.is_some() && matches!(backend, AuthBackendKind::Memory) {
-        return Err(TenantBootstrapError::DurableAuthRequired);
+    if config.is_some() && matches!(backend, ExecutionBackendKind::Memory) {
+        return Err(TenantBootstrapError::DurableDeploymentRequired);
     }
     Ok(())
 }
@@ -228,8 +232,11 @@ async fn provision_verified_tenant(
             Ok(())
         },
         TenantProvisioningOutcome::Replayed => {
-            tracing::info!(org.id = %config.org_id, workspace.id = %config.workspace_id, "tenant bootstrap matched existing durable authority");
+            tracing::info!(org.id = %config.org_id, workspace.id = %config.workspace_id, "tenant bootstrap acknowledged historical acceptance; current authority unchanged");
             Ok(())
+        },
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant) => {
+            Err(TenantBootstrapError::PreexistingTenant)
         },
         TenantProvisioningOutcome::Conflict(_) => Err(TenantBootstrapError::Conflict),
     }
@@ -265,7 +272,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use nebula_storage_port::{StorageError, dto::TenantProvisioningConflict};
+    use nebula_storage_port::StorageError;
 
     use super::*;
 
@@ -326,18 +333,21 @@ mod tests {
     }
 
     #[test]
-    fn enabled_bootstrap_requires_durable_authentication() {
+    fn enabled_bootstrap_requires_a_durable_deployment() {
         let values = complete_values();
         let config = TenantBootstrapConfig::from_lookup(|name| values.get(name).cloned())
             .unwrap()
             .unwrap();
 
         assert!(matches!(
-            validate_auth_backend(Some(&config), &AuthBackendKind::Memory),
-            Err(TenantBootstrapError::DurableAuthRequired)
+            validate_deployment_backend(Some(&config), &ExecutionBackendKind::Memory),
+            Err(TenantBootstrapError::DurableDeploymentRequired)
         ));
-        assert!(validate_auth_backend(Some(&config), &AuthBackendKind::Postgres).is_ok());
-        assert!(validate_auth_backend(None, &AuthBackendKind::Memory).is_ok());
+        assert!(
+            validate_deployment_backend(Some(&config), &ExecutionBackendKind::Postgres).is_ok()
+        );
+        assert!(validate_deployment_backend(Some(&config), &ExecutionBackendKind::Sqlite).is_ok());
+        assert!(validate_deployment_backend(None, &ExecutionBackendKind::Memory).is_ok());
     }
 
     #[test]
@@ -472,6 +482,21 @@ mod tests {
         assert!(matches!(
             provision_verified_tenant(&config, &store).await,
             Err(TenantBootstrapError::Conflict)
+        ));
+    }
+
+    #[tokio::test]
+    async fn preexisting_tenant_requires_removing_bootstrap_configuration() {
+        let values = complete_values();
+        let config = TenantBootstrapConfig::from_lookup(|name| values.get(name).cloned())
+            .unwrap()
+            .unwrap();
+        let store: Arc<dyn TenantProvisioningStore> = Arc::new(FixedProvisioner(
+            TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant),
+        ));
+        assert!(matches!(
+            provision_verified_tenant(&config, &store).await,
+            Err(TenantBootstrapError::PreexistingTenant)
         ));
     }
 }

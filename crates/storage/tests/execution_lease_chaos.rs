@@ -123,14 +123,14 @@ async fn concurrent_acquire_release_preserves_unique_holder_and_fencing() {
                         .await
                         .expect("stale release must be rejected")
                 );
-                let batch = TransitionBatch::builder()
-                    .scope(scope.clone())
-                    .execution_id(id.clone())
-                    .expected_version(before.version)
-                    .fencing(stale)
-                    .new_state(serde_json::json!({"stale_write": true}))
-                    .build()
-                    .expect("stale transition must be well formed");
+                let batch = TransitionBatch::new(
+                    scope.clone(),
+                    id.clone(),
+                    before.version,
+                    stale,
+                    serde_json::json!({"stale_write": true}),
+                    nebula_storage_port::ExecutionListing::CREATED,
+                );
                 assert!(matches!(
                     store
                         .commit(batch)

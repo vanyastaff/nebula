@@ -426,11 +426,7 @@ async fn setup(
             CancellationToken::new(),
         );
         let _g = mgr
-            .acquire_resident_for_identity::<SecretBearingResource>(
-                &ctx,
-                &AcquireOptions::default(),
-                &id,
-            )
+            .acquire_for_identity::<SecretBearingResource>(&ctx, &AcquireOptions::default(), &id)
             .await
             .expect("warm tenant runtime");
 

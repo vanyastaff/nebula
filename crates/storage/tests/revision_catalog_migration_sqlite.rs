@@ -1,4 +1,5 @@
-//! SQLite acceptance evidence for the dormant plan/flavor revision catalog.
+//! SQLite acceptance evidence for the plan/flavor revision catalog and the
+//! execution revision references at the migration head.
 
 #![cfg(feature = "sqlite")]
 
@@ -12,6 +13,12 @@ use sqlx::{
 #[path = "support/canonical_head.rs"]
 mod canonical_head;
 
+#[path = "support/execution_parents.rs"]
+mod execution_parents;
+
+use execution_parents::SeedExecutionParents;
+use nebula_storage_port::Scope;
+
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -20,9 +27,6 @@ const LIVE_EXECUTION_ID: &str = "exe_01JAZ000000000000000000001";
 const ROLLBACK_EXECUTION_ID: &str = "exe_01JAZ000000000000000000002";
 const RELEASED_LIVE_EXECUTION_ID: &str = "exe_01JAZ000000000000000000003";
 const RELEASED_ROLLBACK_EXECUTION_ID: &str = "exe_01JAZ000000000000000000004";
-const INVALID_EXECUTION_ID: &str = "exe_81JAZ000000000000000000005";
-const LOWERCASE_EXECUTION_ID: &str = "exe_01JaZ000000000000000000006";
-const SUBMILLISECOND_EXECUTION_ID: &str = "exe_01JAZ000000000000000000007";
 const MISSING_EXECUTION_ID: &str = "exe_01JAZ000000000000000000099";
 
 fn revision_id(byte: u8) -> Vec<u8> {
@@ -47,17 +51,22 @@ async fn file_pool(path: &Path) -> SqlitePool {
         .expect("temporary SQLite database must open")
 }
 
+fn scope() -> Scope {
+    Scope::new("workspace-a", "org-a")
+}
+
 async fn seed_execution(pool: &SqlitePool, execution_id: &str, marker: &str) -> TestResult<()> {
+    pool.seed_execution_parents(&scope(), "workflow-a").await;
     sqlx::query(
-        "INSERT INTO port_executions (
+        "INSERT INTO executions (
              id, workspace_id, org_id, workflow_id, status, state,
              version, created_at, updated_at
-         ) VALUES (?, 'workspace-a', 'org-a', 'workflow-a', 'Pending', ?, 7, ?, ?)",
+         ) VALUES (?, 'workspace-a', 'org-a', 'workflow-a', 'created', ?, 7, ?, ?)",
     )
     .bind(execution_id)
     .bind(format!(r#"{{"marker":"{marker}"}}"#))
-    .bind("2026-07-27T00:00:00Z")
-    .bind("2026-07-27T00:00:01Z")
+    .bind(1_785_110_400_000_000_i64)
+    .bind(1_785_110_401_000_000_i64)
     .execute(pool)
     .await?;
     Ok(())
@@ -71,7 +80,7 @@ async fn insert_worker_flavor(
     record_bytes: Option<Vec<u8>>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO port_worker_flavor_revisions (
+        "INSERT INTO worker_flavor_revisions (
              worker_flavor_id, record_format, lifecycle, record_bytes
          ) VALUES (?, ?, ?, ?)",
     )
@@ -93,7 +102,7 @@ async fn insert_executable_plan(
     record_bytes: Option<Vec<u8>>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO port_executable_plan_revisions (
+        "INSERT INTO executable_plan_revisions (
              executable_plan_id, worker_flavor_id, record_format, lifecycle, record_bytes
          ) VALUES (?, ?, ?, ?, ?)",
     )
@@ -119,13 +128,14 @@ async fn insert_revision_reference(
     worker_flavor_id: Vec<u8>,
     reference_state: &str,
     rollback_window_id: Option<Vec<u8>>,
-    retain_until_ms: Option<i64>,
+    retain_until_us: Option<i64>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO port_execution_revision_refs (
-             execution_id, execution_contract_bundle_id, executable_plan_id,
-             worker_flavor_id, reference_state, rollback_window_id, retain_until_ms
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO execution_revision_references (
+             org_id, workspace_id, execution_id, execution_contract_bundle_id,
+             executable_plan_id, worker_flavor_id, reference_state, rollback_window_id,
+             retain_until
+         ) VALUES ('org-a', 'workspace-a', ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(execution_id)
     .bind(execution_contract_bundle_id)
@@ -133,7 +143,7 @@ async fn insert_revision_reference(
     .bind(worker_flavor_id)
     .bind(reference_state)
     .bind(rollback_window_id)
-    .bind(retain_until_ms)
+    .bind(retain_until_us)
     .execute(pool)
     .await?;
     Ok(())
@@ -295,7 +305,7 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
 
     let deleted_plan = sqlx::query(
         "SELECT worker_flavor_id, record_format, record_bytes
-         FROM port_executable_plan_revisions
+         FROM executable_plan_revisions
          WHERE executable_plan_id = ?",
     )
     .bind(revision_id(0x32))
@@ -322,43 +332,10 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
         ROLLBACK_EXECUTION_ID,
         RELEASED_LIVE_EXECUTION_ID,
         RELEASED_ROLLBACK_EXECUTION_ID,
-        INVALID_EXECUTION_ID,
-        LOWERCASE_EXECUTION_ID,
-        SUBMILLISECOND_EXECUTION_ID,
     ] {
         seed_execution(pool, execution_id, execution_id).await?;
     }
 
-    assert!(
-        insert_revision_reference(
-            pool,
-            INVALID_EXECUTION_ID,
-            opaque_id(0x41),
-            revision_id(0x31),
-            revision_id(0x11),
-            "live",
-            None,
-            None,
-        )
-        .await
-        .is_err(),
-        "execution references accept only canonical execution ids"
-    );
-    assert!(
-        insert_revision_reference(
-            pool,
-            LOWERCASE_EXECUTION_ID,
-            opaque_id(0x41),
-            revision_id(0x31),
-            revision_id(0x11),
-            "live",
-            None,
-            None,
-        )
-        .await
-        .is_err(),
-        "execution references reject lowercase Crockford characters"
-    );
     assert!(
         insert_revision_reference(
             pool,
@@ -435,7 +412,7 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
         "a reference must name the plan's exact worker flavor"
     );
 
-    for (reference_state, rollback_window_id, retain_until_ms, reason) in [
+    for (reference_state, rollback_window_id, retain_until_us, reason) in [
         ("unknown", None, None, "reference state is closed"),
         (
             "live",
@@ -477,7 +454,7 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
                 revision_id(0x11),
                 reference_state,
                 rollback_window_id,
-                retain_until_ms,
+                retain_until_us,
             )
             .await
             .is_err(),
@@ -531,8 +508,8 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
     .await?;
 
     let released_rollback = sqlx::query_as::<_, (Vec<u8>, i64)>(
-        "SELECT rollback_window_id, retain_until_ms
-         FROM port_execution_revision_refs
+        "SELECT rollback_window_id, retain_until
+         FROM execution_revision_references
          WHERE execution_id = ?",
     )
     .bind(RELEASED_ROLLBACK_EXECUTION_ID)
@@ -561,18 +538,18 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
 
     let blocks_before_expiry: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
-         FROM port_execution_revision_refs
+         FROM execution_revision_references
          WHERE reference_state = 'rollback'
-           AND ? < retain_until_ms",
+           AND ? < retain_until",
     )
     .bind(999_i64)
     .fetch_one(pool)
     .await?;
     let blocks_at_expiry: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
-         FROM port_execution_revision_refs
+         FROM execution_revision_references
          WHERE reference_state = 'rollback'
-           AND ? < retain_until_ms",
+           AND ? < retain_until",
     )
     .bind(1_000_i64)
     .fetch_one(pool)
@@ -580,38 +557,11 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
     assert_eq!(
         (blocks_before_expiry, blocks_at_expiry),
         (1, 0),
-        "the integer-millisecond retention boundary is blocking before, but expired at, equality"
-    );
-
-    let sub_millisecond_expiry = sqlx::query(
-        "INSERT INTO port_execution_revision_refs (
-             execution_id, execution_contract_bundle_id, executable_plan_id,
-             worker_flavor_id, reference_state, rollback_window_id, retain_until_ms
-         ) VALUES (?, ?, ?, ?, 'rollback', ?, ?)",
-    )
-    .bind(SUBMILLISECOND_EXECUTION_ID)
-    .bind(opaque_id(0x45))
-    .bind(revision_id(0x31))
-    .bind(revision_id(0x11))
-    .bind(opaque_id(0x55))
-    .bind(1_000.5_f64)
-    .execute(pool)
-    .await;
-    assert!(
-        sub_millisecond_expiry.is_err(),
-        "SQLite must not silently retain sub-millisecond REAL values in the millisecond column"
+        "the integer-microsecond retention boundary is blocking before, but expired at, equality"
     );
 
     assert!(
-        sqlx::query("DELETE FROM port_executions WHERE id = ?")
-            .bind(LIVE_EXECUTION_ID)
-            .execute(pool)
-            .await
-            .is_err(),
-        "execution aggregate deletion is restrictive while an exact revision reference exists"
-    );
-    assert!(
-        sqlx::query("DELETE FROM port_executable_plan_revisions WHERE executable_plan_id = ?",)
+        sqlx::query("DELETE FROM executable_plan_revisions WHERE executable_plan_id = ?",)
             .bind(revision_id(0x31))
             .execute(pool)
             .await
@@ -619,19 +569,34 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
         "plan deletion is restrictive while exact revision references exist"
     );
     assert!(
-        sqlx::query("DELETE FROM port_worker_flavor_revisions WHERE worker_flavor_id = ?",)
+        sqlx::query("DELETE FROM worker_flavor_revisions WHERE worker_flavor_id = ?",)
             .bind(revision_id(0x11))
             .execute(pool)
             .await
             .is_err(),
         "flavor deletion is restrictive while plans depend on it"
     );
+    // The reference belongs to its execution and is purged with it.
+    sqlx::query("DELETE FROM executions WHERE id = ?")
+        .bind(LIVE_EXECUTION_ID)
+        .execute(pool)
+        .await?;
+    let orphaned: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM execution_revision_references WHERE execution_id = ?",
+    )
+    .bind(LIVE_EXECUTION_ID)
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(
+        orphaned, 0,
+        "an execution's revision reference cascades with it"
+    );
 
     let index_rows = sqlx::query_as::<_, (String, String)>(
         "SELECT name, sql
          FROM sqlite_schema
          WHERE type = 'index'
-           AND name LIKE 'idx_port_%revision%'
+           AND name LIKE 'ix_%revision%'
          ORDER BY name",
     )
     .fetch_all(pool)
@@ -643,19 +608,18 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
     assert_eq!(
         index_names,
         [
-            "idx_port_executable_plan_revisions_worker_flavor",
-            "idx_port_execution_revision_refs_live_flavor",
-            "idx_port_execution_revision_refs_live_plan",
-            "idx_port_execution_revision_refs_rollback_flavor",
-            "idx_port_execution_revision_refs_rollback_plan",
+            "ix_executable_plan_revisions__worker_flavor_id__undeleted",
+            "ix_execution_revision_references__executable_plan__rollback",
+            "ix_execution_revision_references__executable_plan_id__live",
+            "ix_execution_revision_references__worker_flavor__rollback",
+            "ix_execution_revision_references__worker_flavor_execution__live",
         ],
-        "the dormant catalog carries only the five blocker/dependency indexes"
+        "the catalog carries only the five blocker/dependency indexes"
     );
     for (index_name, definition) in index_rows {
-        let expected_predicate = if index_name == "idx_port_executable_plan_revisions_worker_flavor"
-        {
+        let expected_predicate = if index_name.starts_with("ix_executable_plan_revisions__") {
             "WHERE lifecycle <> 'deleted'"
-        } else if index_name.contains("_live_") {
+        } else if index_name.ends_with("__live") {
             "WHERE reference_state = 'live'"
         } else {
             "WHERE reference_state = 'rollback'"
@@ -690,148 +654,5 @@ async fn clean_catalog_reaches_head_and_enforces_closed_shapes() -> TestResult<(
     );
 
     assert_closed_catalog_constraints(&pool).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn migration_0041_preserves_0040_state_and_is_idempotent() -> TestResult<()> {
-    let directory = tempfile::tempdir()?;
-    let pool = file_pool(&directory.path().join("revision-catalog-upgrade.sqlite")).await;
-
-    MIGRATOR.run_to(40, &pool).await?;
-    let pre_upgrade_head: i64 =
-        sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success = 1")
-            .fetch_one(&pool)
-            .await?;
-    assert_eq!(
-        pre_upgrade_head, 40,
-        "the fixture must be a real N-1 database"
-    );
-
-    seed_execution(&pool, LIVE_EXECUTION_ID, "preserved").await?;
-    sqlx::query(
-        "INSERT INTO port_execution_journal (execution_id, seq, payload)
-         VALUES (?, 1, ?)",
-    )
-    .bind(LIVE_EXECUTION_ID)
-    .bind(r#"{"event":"preserved"}"#)
-    .execute(&pool)
-    .await?;
-
-    let catalog_tables_before: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*)
-         FROM sqlite_schema
-         WHERE type = 'table'
-           AND name IN (
-               'port_worker_flavor_revisions',
-               'port_executable_plan_revisions',
-               'port_execution_revision_refs'
-           )",
-    )
-    .fetch_one(&pool)
-    .await?;
-    assert_eq!(
-        catalog_tables_before, 0,
-        "the N-1 fixture must not contain migration 0041 objects"
-    );
-
-    let ledger_count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
-        .fetch_one(&pool)
-        .await?;
-    MIGRATOR.run_to(41, &pool).await?;
-
-    let migration = sqlx::query_as::<_, (i64, String, bool, Vec<u8>)>(
-        "SELECT version, description, success, checksum
-         FROM _sqlx_migrations
-         WHERE version = 41",
-    )
-    .fetch_one(&pool)
-    .await?;
-    let embedded_checksum = MIGRATOR
-        .iter()
-        .find(|candidate| candidate.version == 41)
-        .expect("the embedded SQLite catalog must contain migration 0041")
-        .checksum
-        .as_ref();
-    assert_eq!(
-        migration,
-        (
-            41,
-            "port plan flavor revision catalog".to_owned(),
-            true,
-            embedded_checksum.to_vec(),
-        ),
-        "the ledger must record the exact embedded 0041 description and checksum"
-    );
-
-    let preserved_execution = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT status, state, version
-         FROM port_executions
-         WHERE id = ?",
-    )
-    .bind(LIVE_EXECUTION_ID)
-    .fetch_one(&pool)
-    .await?;
-    assert_eq!(
-        preserved_execution,
-        (
-            "Pending".to_owned(),
-            r#"{"marker":"preserved"}"#.to_owned(),
-            7,
-        ),
-        "0041 must preserve the existing execution aggregate byte-for-byte"
-    );
-    let preserved_journal: String = sqlx::query_scalar(
-        "SELECT payload
-         FROM port_execution_journal
-         WHERE execution_id = ? AND seq = 1",
-    )
-    .bind(LIVE_EXECUTION_ID)
-    .fetch_one(&pool)
-    .await?;
-    assert_eq!(preserved_journal, r#"{"event":"preserved"}"#);
-
-    let schema_before_rerun = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT type, name, sql
-             FROM sqlite_schema
-             WHERE name LIKE 'port_%revision%'
-                OR name LIKE 'idx_port_%revision%'
-             ORDER BY type, name",
-    )
-    .fetch_all(&pool)
-    .await?;
-    let ledger_count_after_upgrade: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
-            .fetch_one(&pool)
-            .await?;
-    assert_eq!(
-        ledger_count_after_upgrade,
-        ledger_count_before + 1,
-        "the upgrade must append exactly one migration ledger row"
-    );
-
-    MIGRATOR.run_to(41, &pool).await?;
-
-    let schema_after_rerun = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT type, name, sql
-             FROM sqlite_schema
-             WHERE name LIKE 'port_%revision%'
-                OR name LIKE 'idx_port_%revision%'
-             ORDER BY type, name",
-    )
-    .fetch_all(&pool)
-    .await?;
-    let ledger_count_after_rerun: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
-        .fetch_one(&pool)
-        .await?;
-    assert_eq!(
-        schema_after_rerun, schema_before_rerun,
-        "a second run must not rewrite the 0041 schema"
-    );
-    assert_eq!(
-        ledger_count_after_rerun, ledger_count_after_upgrade,
-        "a second run must not append a duplicate ledger row"
-    );
-
     Ok(())
 }

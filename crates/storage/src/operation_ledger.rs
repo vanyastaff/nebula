@@ -4,7 +4,7 @@
 //! ledger question identically, so the questions are answered once here. Row
 //! plumbing stays in each adapter; the decisions do not.
 //!
-//! Durable state text is the vocabulary ordered migration 0045 constrains with
+//! Durable state text is the vocabulary the execution baseline constrains with
 //! `CHECK` clauses. Destination text conversions live with the typed value.
 
 use nebula_core::{OperationCallId, OperationId};
@@ -28,7 +28,7 @@ pub(crate) const STATE_FAILED: &str = "failed";
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const STATE_OUTCOME_UNKNOWN: &str = "outcome_unknown";
 
-/// Render an operation state as the text migration 0045 admits.
+/// Render an operation state as the text the execution baseline admits.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const fn state_text(state: OperationState) -> &'static str {
     match state {

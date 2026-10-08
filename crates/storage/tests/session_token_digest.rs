@@ -1,4 +1,4 @@
-use nebula_storage::session_token::session_token_digest;
+use nebula_storage::auth::session_token::session_token_digest;
 
 #[test]
 fn lookup_digest_is_stable_domain_separated_sha256() {

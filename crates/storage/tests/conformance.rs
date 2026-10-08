@@ -29,19 +29,22 @@ use harness::{
     assert_control_queue_release_returns_row_for_redelivery,
     assert_control_queue_same_processor_aba_is_fenced, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
-    assert_expired_rollbacks_are_released, assert_get_published_is_highest_numbered,
-    assert_idempotency_first_writer_wins, assert_idempotency_store_cross_scope_isolated,
-    assert_idempotency_store_first_writer, assert_job_dispatch_exact_flavor,
-    assert_job_dispatch_fencing, assert_job_dispatch_requires_primary_plugin,
-    assert_job_dispatch_routes_by_plugin, assert_job_dispatch_routes_by_plugin_superset,
+    assert_deleted_workflow_hides_its_versions, assert_expired_rollbacks_are_released,
+    assert_get_published_is_highest_numbered, assert_history_is_scope_isolated,
+    assert_history_orders_filters_and_pages, assert_idempotency_first_writer_wins,
+    assert_job_dispatch_exact_flavor, assert_job_dispatch_fencing,
+    assert_job_dispatch_requires_primary_plugin, assert_job_dispatch_routes_by_plugin,
+    assert_job_dispatch_routes_by_plugin_superset,
     assert_job_dispatch_same_processor_aba_is_fenced, assert_journal_visibility_and_scope,
     assert_live_lease_blocks_acquire, assert_non_resume_row_still_exhausts,
     assert_resume_row_exempt_from_reclaim_budget, assert_resume_target_survives_queue_round_trip,
     assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
+    assert_status_projection_follows_commit,
     assert_terminal_commit_rejects_incompatible_reference_transition,
     assert_terminal_commit_releases_live_reference, assert_terminal_commit_retains_rollback_window,
     assert_webhook_activation_and_scope, assert_webhook_system_surface,
-    assert_workflow_store_contract, skip_reason,
+    assert_workflow_store_contract, assert_workspace_owned_rows_require_their_workspace,
+    skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -88,6 +91,59 @@ macro_rules! matrix {
     };
 }
 
+/// Invariants the relational schema enforces across aggregates. The
+/// in-memory backend keeps every aggregate's own invariants but not
+/// references between aggregates (`docs/database-standard.md`, "Backends"),
+/// so these run on SQL only.
+macro_rules! relational_matrix {
+    ($name:ident, $assertion:path) => {
+        #[rstest]
+        #[case::sqlite(sqlite())]
+        #[case::postgres(postgres())]
+        #[tokio::test]
+        async fn $name(#[case] backend: Box<dyn Backend>) {
+            run(backend, |b| async move { $assertion(b.as_ref()).await }).await;
+        }
+    };
+}
+
+relational_matrix!(
+    workspace_owned_rows_require_their_workspace,
+    assert_workspace_owned_rows_require_their_workspace
+);
+relational_matrix!(
+    queue_rows_require_their_execution,
+    harness::assert_queue_rows_require_their_execution
+);
+relational_matrix!(
+    queue_rows_cascade_with_their_execution,
+    harness::assert_queue_rows_cascade_with_their_execution
+);
+relational_matrix!(
+    dispatch_writes_require_live_parents,
+    harness::assert_dispatch_writes_require_live_parents
+);
+relational_matrix!(
+    triggers_cascade_with_their_workflow,
+    harness::assert_triggers_cascade_with_their_workflow
+);
+relational_matrix!(
+    resources_require_a_live_workspace,
+    harness::resources::assert_resources_require_a_live_workspace
+);
+relational_matrix!(
+    resource_status_needs_a_live_resource,
+    harness::resources::assert_resource_status_needs_a_live_resource
+);
+relational_matrix!(
+    resource_rows_cascade_with_their_owner,
+    harness::resources::assert_resource_rows_cascade_with_their_owner
+);
+
+matrix!(
+    deleted_workflow_hides_its_versions,
+    assert_deleted_workflow_hides_its_versions
+);
 matrix!(create_get_roundtrip, assert_create_get_roundtrip);
 matrix!(cas_conflict_returns_actual, assert_cas_conflict);
 matrix!(
@@ -126,18 +182,19 @@ matrix!(
     assert_journal_visibility_and_scope
 );
 matrix!(
-    idempotency_store_first_writer,
-    assert_idempotency_store_first_writer
-);
-matrix!(
-    idempotency_store_cross_scope_isolated,
-    assert_idempotency_store_cross_scope_isolated
-);
-matrix!(
     webhook_activation_and_scope,
     assert_webhook_activation_and_scope
 );
 matrix!(webhook_system_surface, assert_webhook_system_surface);
+matrix!(
+    status_projection_follows_commit,
+    assert_status_projection_follows_commit
+);
+matrix!(
+    history_orders_filters_and_pages,
+    assert_history_orders_filters_and_pages
+);
+matrix!(history_is_scope_isolated, assert_history_is_scope_isolated);
 matrix!(workflow_store_contract, assert_workflow_store_contract);
 matrix!(
     save_with_published_version_is_atomic,
@@ -359,6 +416,14 @@ macro_rules! scoped_matrix {
 }
 
 scoped_matrix!(scoped_create_get_roundtrip, assert_create_get_roundtrip);
+scoped_matrix!(
+    scoped_status_projection_follows_commit,
+    assert_status_projection_follows_commit
+);
+scoped_matrix!(
+    scoped_history_orders_filters_and_pages,
+    assert_history_orders_filters_and_pages
+);
 scoped_matrix!(scoped_cas_conflict_returns_actual, assert_cas_conflict);
 scoped_matrix!(
     scoped_stale_fencing_is_fenced_out,
@@ -376,10 +441,6 @@ scoped_matrix!(
 scoped_matrix!(
     scoped_control_queue_outbox_and_fencing,
     assert_control_queue_outbox_and_fencing
-);
-scoped_matrix!(
-    scoped_idempotency_store_first_writer,
-    assert_idempotency_store_first_writer
 );
 scoped_matrix!(
     scoped_workflow_store_contract,

@@ -177,7 +177,7 @@ async fn acquire<const ID: usize>(
     manager: &Manager,
 ) -> nebula_resource::ResourceGuard<ResidentNode<ID>> {
     manager
-        .acquire_resident::<ResidentNode<ID>>(&context(), &AcquireOptions::default())
+        .acquire::<ResidentNode<ID>>(&context(), &AcquireOptions::default())
         .await
         .unwrap()
 }
@@ -238,7 +238,7 @@ async fn idle_pooled_parent_releases_same_manager_child_during_graceful_shutdown
         })
         .unwrap();
     let release_outcome = manager
-        .acquire_pooled::<PooledParent>(&context(), &AcquireOptions::default())
+        .acquire::<PooledParent>(&context(), &AcquireOptions::default())
         .await
         .unwrap()
         .release()

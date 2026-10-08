@@ -2,6 +2,12 @@
 
 mod capture;
 mod evidence;
+#[path = "../execution_parents.rs"]
+#[expect(
+    dead_code,
+    reason = "admission seeds through store handles, not through a raw pool"
+)]
+mod execution_parents;
 mod fixture;
 mod metrics;
 mod takeover;

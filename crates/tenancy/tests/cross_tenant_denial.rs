@@ -28,13 +28,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nebula_core::WorkerFlavorRevisionId;
-use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::dto::{
-    AcceptResourceEventRequest, AcquireResourceSourceLeaseRequest, CachedRecord,
-    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, CompleteResourceDeliveryRequest,
-    ControlCommand, ControlMsg, EffectOccurrenceKey, EffectOccurrenceRecord, EffectSlotBinding,
-    EffectSlotId, EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace, ExecutionRecord,
-    FrozenOutcomeEvidence, HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
+    AcceptResourceEventRequest, AcquireResourceSourceLeaseRequest, ClaimResourceDeliveriesRequest,
+    ClaimResourceHandoffsRequest, CompleteResourceDeliveryRequest, ControlCommand, ControlMsg,
+    EffectOccurrenceKey, EffectOccurrenceRecord, EffectSlotBinding, EffectSlotId, EventEnvelope,
+    EventOccurrenceKey, EventOccurrenceNamespace, ExecutionRecord, FrozenOutcomeEvidence,
+    HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
     HeartbeatResourceSourceLeaseRequest, KnownOutcome, MaterializedStart, OperationAdvance,
     OperationCommand, OperationLedgerError, OperationRecord, OutcomeEvidenceSource, PrepareOutcome,
     PutResourceSubscriptionRequest, ReleaseResourceDeliveryRequest,
@@ -47,10 +46,11 @@ use nebula_storage_port::dto::{
     ResourceSubscriptionVersion, SharedResourceId, SharedResourceIdentity, StartReservation,
     StoredContractBundle, TransitionResourceSubscriptionRequest, TriggerRow,
 };
+use nebula_storage_port::dto::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::store::{
     CheckpointStore, ClaimGeneration, ControlQueue, ControlStartAcceptance, ControlStartHandoff,
     ControlTurnCommit, ControlTurnCommitOutcome, ExecutionStore, ExecutionTurnHandoff,
-    IdempotencyStore, JobClaimToken, OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome,
+    JobClaimToken, OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome,
     ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceSourceLeaseStore,
     ResourceStore, ResourceSubscriptionStore, SharedResourceStore, StartAcceptanceStore,
     StartMaterialization, StartMaterializationError, TriggerStore, TurnAcceptance, TurnHandoff,
@@ -62,10 +62,10 @@ use nebula_storage_port::{
 };
 use nebula_tenancy::{
     ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionStore, ScopedExecutionTurnHandoff,
-    ScopedIdempotencyStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
-    ScopedResourceEventFanoutStore, ScopedResourceExecutionHandoffStore,
-    ScopedResourceSourceLeaseStore, ScopedResourceStore, ScopedResourceSubscriptionStore,
-    ScopedSharedResourceStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
+    ScopedOperationLedger, ScopedOperationLedgerAdjudicator, ScopedResourceEventFanoutStore,
+    ScopedResourceExecutionHandoffStore, ScopedResourceSourceLeaseStore, ScopedResourceStore,
+    ScopedResourceSubscriptionStore, ScopedSharedResourceStore, ScopedStartAcceptanceStore,
+    ScopedTriggerStore,
 };
 
 fn scope_a() -> Scope {
@@ -200,12 +200,12 @@ impl ExecutionStore for MockExecStore {
             workflow_id: workflow_id.to_string(),
             scope: scope.clone(),
             version: 0,
-            status: "created".into(),
+            status: nebula_storage_port::ExecutionListingStatus::Created,
             state: initial_state,
             lease_holder: None,
             fencing: None,
-            created_at: "2026-01-01T00:00:00Z".into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
+            created_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+            updated_at: "2026-01-01T00:00:00Z".parse().unwrap(),
         };
         self.rows
             .lock()
@@ -273,75 +273,15 @@ impl ExecutionStore for MockExecStore {
         Ok(vec![])
     }
 
-    async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         _scope: &Scope,
-        _workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
+        _query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        Ok(nebula_storage_port::ExecutionHistoryPage::empty())
     }
 
     async fn count(&self, _scope: &Scope, _workflow_id: Option<&str>) -> Result<u64, StorageError> {
-        Ok(0)
-    }
-}
-
-// ── Mock idempotency store ────────────────────────────────────────────────
-// Keyed by `{ws}:{org}:{cache_key}` like the real backends: the store
-// folds the scope in, and the decorator substitutes its bound scope before
-// the call lands here, so two tenants' keyspaces are disjoint.
-
-#[derive(Default)]
-struct MockIdemStore {
-    rows: Mutex<HashMap<String, CachedRecord>>,
-}
-
-impl std::fmt::Debug for MockIdemStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("MockIdemStore")
-    }
-}
-
-fn idem_key(scope: &Scope, cache_key: &str) -> String {
-    format!("{}:{}:{}", scope.workspace_id, scope.org_id, cache_key)
-}
-
-#[async_trait::async_trait]
-impl IdempotencyStore for MockIdemStore {
-    async fn get(
-        &self,
-        scope: &Scope,
-        cache_key: &str,
-    ) -> Result<Option<CachedRecord>, StorageError> {
-        Ok(self
-            .rows
-            .lock()
-            .expect("mock lock")
-            .get(&idem_key(scope, cache_key))
-            .cloned())
-    }
-
-    async fn put(
-        &self,
-        scope: &Scope,
-        cache_key: String,
-        record: CachedRecord,
-        _ttl: Duration,
-    ) -> Result<(), StorageError> {
-        // First-writer-wins, like the real stores.
-        self.rows
-            .lock()
-            .expect("mock lock")
-            .entry(idem_key(scope, &cache_key))
-            .or_insert(record);
-        Ok(())
-    }
-
-    async fn evict_expired(&self) -> Result<u64, StorageError> {
         Ok(0)
     }
 }
@@ -446,16 +386,6 @@ impl ControlQueue for MockControlQueue {
     }
 }
 
-fn cached(body: &[u8]) -> CachedRecord {
-    CachedRecord {
-        status: 200,
-        headers: b"h".to_vec(),
-        body: body.to_vec(),
-        fingerprint: b"fp".to_vec(),
-        expires_at: "2999-01-01T00:00:00Z".into(),
-    }
-}
-
 // ── Abuse case 1: confused deputy / cross-tenant row access ───────────────
 
 #[tokio::test]
@@ -502,14 +432,14 @@ async fn cross_tenant_commit_never_applies() {
     // Tenant B builds a batch *explicitly targeting A's scope* and A's
     // execution id — the confused-deputy attack. The decorator rebinds the
     // batch to B's scope before it reaches the store, so the CAS misses.
-    let attack = TransitionBatch::builder()
-        .scope(scope_a())
-        .execution_id("exe_y")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(0))
-        .new_state(serde_json::json!({"s": "hijacked"}))
-        .build()
-        .expect("batch");
+    let attack = TransitionBatch::new(
+        scope_a(),
+        "exe_y",
+        0,
+        FencingToken::from_generation(0),
+        serde_json::json!({"s": "hijacked"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    );
     let outcome = tenant_b.commit(attack).await.expect("commit returns");
     assert!(
         !matches!(outcome, TransitionOutcome::Applied { .. }),
@@ -524,59 +454,6 @@ async fn cross_tenant_commit_never_applies() {
         .expect("A row present");
     assert_eq!(row.version, 0, "victim row must be unmodified");
     assert_eq!(row.state, serde_json::json!({}), "victim state intact");
-}
-
-// ── Abuse case 2: idempotency replay-oracle ───────────────────────────────
-
-#[tokio::test]
-async fn cross_tenant_idempotency_keys_are_isolated() {
-    let mock: Arc<MockIdemStore> = Arc::new(MockIdemStore::default());
-    let tenant_a = ScopedIdempotencyStore::new(mock.clone(), scope_a());
-    let tenant_b = ScopedIdempotencyStore::new(mock.clone(), scope_b());
-
-    // Both tenants use the *same raw key*, and each passes the *other
-    // tenant's* scope as the per-call arg — proving the decorator ignores
-    // it and substitutes its bound scope, so the stored keys still differ.
-    tenant_a
-        .put(
-            &scope_b(),
-            "POST /pay:idem-1".into(),
-            cached(b"A-response"),
-            Duration::from_mins(1),
-        )
-        .await
-        .expect("A put");
-
-    // B probes the same raw key: must be a clean miss (no replay oracle).
-    let probe = tenant_b
-        .get(&scope_a(), "POST /pay:idem-1")
-        .await
-        .expect("B get must not error");
-    assert!(
-        probe.is_none(),
-        "tenant B must not observe tenant A's dedup entry"
-    );
-
-    // B poisons its own namespace with the same raw key; A's entry must
-    // survive untouched (no cross-tenant poisoning).
-    tenant_b
-        .put(
-            &scope_a(),
-            "POST /pay:idem-1".into(),
-            cached(b"B-poison"),
-            Duration::from_mins(1),
-        )
-        .await
-        .expect("B put");
-    let a_entry = tenant_a
-        .get(&scope_b(), "POST /pay:idem-1")
-        .await
-        .expect("A get")
-        .expect("A entry present");
-    assert_eq!(
-        a_entry.body, b"A-response",
-        "tenant A's response must be unpoisoned by tenant B"
-    );
 }
 
 // ── Abuse case 3: control-queue confused deputy ───────────────────────────
@@ -651,8 +528,8 @@ async fn cross_tenant_control_enqueue_is_stamped_with_bound_scope() {
 
 // ── Abuse case 5: ResourceStore / TriggerStore BOLA/IDOR ──────────────────
 // `ResourceStore`/`TriggerStore` take a caller-supplied `&Scope` exactly
-// like `ExecutionStore`. The real adapters partition `port_resources` /
-// `port_triggers` solely by that argument's `(workspace_id, org_id)` and
+// like `ExecutionStore`. The real adapters partition `resources` /
+// `triggers` solely by that argument's `(org_id, workspace_id)` and
 // never read `row.workspace_id` for the key — so the mocks below key the
 // same way. Without a `Scoped*` wrapper a non-HTTP consumer could pass an
 // arbitrary scope: cross-tenant read on `get`/`list`, cross-tenant write
@@ -1182,16 +1059,12 @@ impl ExecutionStore for TokenCapturingExecStore {
         Ok(vec![])
     }
 
-    async fn list_running(&self, _scope: &Scope) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
-    }
-
-    async fn list_running_for_workflow(
+    async fn list_history(
         &self,
         _scope: &Scope,
-        _workflow_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
-        Ok(vec![])
+        _query: &nebula_storage_port::ExecutionHistoryQuery,
+    ) -> Result<nebula_storage_port::ExecutionHistoryPage, StorageError> {
+        Ok(nebula_storage_port::ExecutionHistoryPage::empty())
     }
 
     async fn count(&self, _scope: &Scope, _workflow_id: Option<&str>) -> Result<u64, StorageError> {
@@ -1228,15 +1101,15 @@ async fn scoped_execution_store_rebind_carries_resume_tokens() {
         None,
     );
 
-    let batch = TransitionBatch::builder()
-        .scope(scope_b()) // caller's scope — ignored by decorator
-        .execution_id("exe-rebind-test")
-        .expected_version(0)
-        .fencing(FencingToken::from_generation(1))
-        .new_state(serde_json::json!({"s": "waiting"}))
-        .resume_tokens(vec![token_row])
-        .build()
-        .expect("well-formed batch must build");
+    let batch = TransitionBatch::new(
+        scope_b(), // caller's scope — ignored by decorator
+        "exe-rebind-test",
+        0,
+        FencingToken::from_generation(1),
+        serde_json::json!({"s": "waiting"}),
+        nebula_storage_port::ExecutionListing::CREATED,
+    )
+    .with_resume_tokens(vec![token_row]);
 
     let outcome = scoped.commit(batch).await.expect("commit must not error");
     assert!(

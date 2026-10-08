@@ -38,6 +38,46 @@ use tokio::sync::Notify;
 use super::*;
 
 const TEST_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+
+/// Credentials belong to a live workspace in the deployment database:
+/// provision `scope`'s org with `scope`'s workspace as its default one.
+async fn provision_workspace(
+    tenants: &dyn nebula_storage_port::store::TenantProvisioningStore,
+    scope: &Scope,
+) {
+    use nebula_storage_port::dto::{
+        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningRequest,
+    };
+    let request = TenantProvisioningRequest::new(
+        TenantOrgCreate::new(
+            scope.org_id.clone(),
+            scope.org_id.clone(),
+            "Fixture".into(),
+            "fixture".into(),
+            "free".into(),
+            None,
+            serde_json::json!({}),
+        )
+        .expect("org values"),
+        TenantDefaultWorkspaceCreate::new(
+            scope.workspace_id.clone(),
+            "default".into(),
+            "Default".into(),
+            None,
+            "fixture".into(),
+            serde_json::json!({}),
+        )
+        .expect("workspace values"),
+        PrincipalKind::User,
+        "fixture-owner".into(),
+        None,
+    )
+    .expect("provisioning request");
+    tenants
+        .provision_tenant(request)
+        .await
+        .expect("provision the fixture workspace");
+}
 const BEARER_KIND: &str = "activation.bearer";
 
 /// One `bearer_token` credential slot, projected as the real runtime
@@ -500,6 +540,8 @@ impl SqliteFixture {
             )
             .await
             .expect("inspection pool");
+        // Tenancy shares the deployment database the credential store opened.
+        let tenants = nebula_storage::sqlite::SqliteTenantProvisioningStore::new(sql_pool.clone());
         let claims = raw.refresh_claim_repo();
         let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("test key"));
         let outage = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -564,6 +606,7 @@ impl SqliteFixture {
             WorkspaceId::new().to_string(),
             nebula_core::OrgId::new().to_string(),
         );
+        provision_workspace(&tenants, &scope).await;
         let credential_id = CredentialId::new();
         let token = SecretToken::new(SecretString::new("sqlite-acceptance-token"));
         let data = nebula_credential::serde_secret::expose_for_serialization(|| {
