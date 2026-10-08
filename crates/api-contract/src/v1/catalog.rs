@@ -38,6 +38,10 @@ pub struct ActionDetailResponse {
     pub version: String,
     /// Isolation level name
     pub isolation_level: String,
+    /// Input parameters in the `nebula-schema` wire format (`{"fields": [...]}`), so an editor can
+    /// render a form for the node. Absent when the schema cannot be encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
 }
 
 /// Summary entry in the plugin list.

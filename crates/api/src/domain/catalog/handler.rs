@@ -67,8 +67,8 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
 
 /// Get detail for a specific action by key.
 ///
-/// Returns the action's metadata including description, version, and
-/// isolation level.
+/// Returns the action's metadata including description, version, isolation
+/// level, and its input parameter schema for editors.
 ///
 /// # Errors
 ///
@@ -114,6 +114,8 @@ pub async fn get_action(
         version: meta.base().version().to_string(),
         // IsolationLevel does not implement Display; {:?} produces the variant name.
         isolation_level: format!("{:?}", meta.isolation_level()),
+        // The admitted schema serializes to its public wire format; editors build node forms from it.
+        parameters: serde_json::to_value(meta.base().schema()).ok(),
     }))
 }
 
