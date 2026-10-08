@@ -53,7 +53,7 @@ pub(crate) const SPACE_XL: f32 = 28.0;
 pub(crate) const RADIUS_SM: u8 = 6;
 pub(crate) const RADIUS_MD: u8 = 10;
 
-/// Layouts at least this wide show the navigator and runs as side panels.
+/// Layouts at least this wide show the workflow sidebar and runs as side panels.
 pub(crate) const WIDE_LAYOUT_MIN: f32 = 760.0;
 
 /// Pages stop widening at this width and are centered, so wide windows keep readable line lengths.

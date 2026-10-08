@@ -79,12 +79,24 @@ fn sign_in_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Inte
     );
     ui.add_space(theme::SPACE_MD);
     ui.add_enabled_ui(!workbench.session.busy(), |ui| {
-        // The address rarely changes, so it sits behind a collapsed header that still names the server.
-        egui::CollapsingHeader::new(format!("Server: {}", workbench.form.endpoint))
+        // The address rarely changes, so it sits behind a collapsed header. While collapsed the address is
+        // shown as a caption, which wraps; a header line would not, and would widen the card on phones.
+        let server = egui::CollapsingHeader::new("Server")
             .id_salt("server-address")
             .show(ui, |ui| {
                 widgets::labeled_field(ui, "Server address", &mut workbench.form.endpoint, false);
             });
+        if server.body_returned.is_none() {
+            let address = workbench.form.endpoint.trim();
+            widgets::caption(
+                ui,
+                if address.is_empty() {
+                    "No server address yet."
+                } else {
+                    address
+                },
+            );
+        }
         ui.add_space(theme::SPACE_SM);
         let mut mode = workbench.form.mode;
         widgets::segmented(

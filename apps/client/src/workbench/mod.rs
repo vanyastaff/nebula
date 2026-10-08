@@ -202,6 +202,8 @@ pub(crate) struct Workbench {
     pub(crate) feedback: Feedback,
     /// Lets the user return to the workspace form while a workspace is open.
     pub(crate) workspace_form_open: bool,
+    /// Narrow layouts show the workflow list as a page while this is set. Wide layouts always show it.
+    pub(crate) sidebar_open: bool,
     /// Node shown in the inspector. Cleared with the rest of the selection.
     pub(crate) selected_node: Option<String>,
     /// Name being edited for the selected node.
@@ -281,6 +283,7 @@ impl Workbench {
                 failure: false,
             },
             workspace_form_open: false,
+            sidebar_open: true,
             selected_node: None,
             rename: String::new(),
             link_from: None,
@@ -324,6 +327,7 @@ impl Workbench {
         self.navigator.page = 1;
         self.clear_selection();
         self.workspace_form_open = false;
+        self.sidebar_open = true;
         true
     }
 
@@ -337,6 +341,8 @@ impl Workbench {
             workflow: workflow.into(),
         });
         self.clear_selection();
+        // On narrow layouts the list is a page, so opening a workflow hands the page back to the editor.
+        self.sidebar_open = false;
         true
     }
 

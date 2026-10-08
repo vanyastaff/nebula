@@ -47,12 +47,13 @@ pub(crate) fn labeled_field(ui: &mut egui::Ui, label: &str, value: &mut String, 
 }
 
 /// Picks one of a few options. The chosen option is drawn selected, so a mode switch reads as a control.
+/// Options wrap on narrow windows instead of widening their container.
 pub(crate) fn segmented<T: Copy + PartialEq>(
     ui: &mut egui::Ui,
     current: &mut T,
     options: &[(T, &str)],
 ) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for &(value, label) in options {
             if ui
                 .add(egui::Button::new(label).selected(*current == value))

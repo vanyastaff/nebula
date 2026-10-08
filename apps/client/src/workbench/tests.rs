@@ -287,6 +287,17 @@ fn a_completed_sign_in_clears_every_secret() {
 }
 
 #[test]
+fn choosing_a_workflow_hands_the_narrow_page_back_to_the_editor() {
+    let mut workbench = Workbench::new(SERVER.into());
+    open_workspace_session(&mut workbench);
+    workbench.sidebar_open = true;
+
+    assert!(workbench.select_workflow("wf_test"));
+
+    assert!(!workbench.sidebar_open);
+}
+
+#[test]
 fn switching_modes_wipes_the_secrets_of_the_mode_being_left() {
     let mut form = ConnectionForm::new(SERVER.into());
     form.password = "fixture-secret".into();

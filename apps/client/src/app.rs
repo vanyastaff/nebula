@@ -6,6 +6,7 @@ use crate::{
     theme,
     transport::{Connection, SignIn},
     views::{Intent, Intents, connection, editor, navigator, runs, shell},
+    widgets,
     workbench::{SignInMode, Workbench},
 };
 use eframe::egui;
@@ -138,7 +139,7 @@ impl eframe::App for ClientApp {
             self.dispatch(ui.ctx(), Operation::List(1));
         }
         let wide = ui.available_width() >= theme::WIDE_LAYOUT_MIN;
-        let connected = self.workbench.workspace_open() && !self.workbench.workspace_form_open;
+        let workspace = self.workbench.workspace_open() && !self.workbench.workspace_form_open;
         let has_draft = self.workbench.session.draft().is_some();
         let mut intents = Intents::new();
         let workbench = &mut self.workbench;
@@ -146,18 +147,18 @@ impl eframe::App for ClientApp {
         egui::Panel::top("header")
             .frame(theme::panel(theme::SURFACE))
             .show(ui, |ui| {
-                shell::header(ui, workbench);
+                shell::header(ui, workbench, wide);
                 shell::feedback(ui, workbench);
             });
-        if connected && wide {
-            egui::Panel::left("navigation")
-                .default_size(250.0)
-                .size_range(200.0..=330.0)
+        if workspace && wide {
+            egui::Panel::left("sidebar")
+                .default_size(260.0)
+                .size_range(220.0..=340.0)
                 .resizable(true)
                 .frame(theme::panel(theme::SIDEBAR))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
-                        .id_salt("navigation")
+                        .id_salt("sidebar")
                         .show(ui, |ui| navigator::show(ui, workbench, &mut intents));
                 });
             if has_draft {
@@ -179,23 +180,27 @@ impl eframe::App for ClientApp {
                 egui::ScrollArea::vertical()
                     .id_salt("document")
                     .show(ui, |ui| {
-                        if connected {
-                            if !wide {
-                                ui.collapsing("Workflows", |ui| {
+                        if !workspace {
+                            connection::show(ui, workbench, &mut intents);
+                        } else if !wide && workbench.sidebar_open {
+                            // Narrow layouts swap the page for the workflow list until one is opened.
+                            widgets::page_column(ui, theme::PAGE_MAX_WIDTH, |ui| {
+                                theme::card_block(ui, |ui| {
                                     navigator::show(ui, workbench, &mut intents);
                                 });
-                            }
-                            theme::card_block(ui, |ui| {
-                                editor::show(ui, workbench, &mut intents);
                             });
-                            if !wide && has_draft {
-                                ui.add_space(theme::SPACE_MD);
-                                theme::card_block(ui, |ui| {
-                                    runs::show(ui, workbench, &mut intents);
-                                });
-                            }
                         } else {
-                            connection::show(ui, workbench, &mut intents);
+                            widgets::page_column(ui, theme::PAGE_MAX_WIDTH, |ui| {
+                                theme::card_block(ui, |ui| {
+                                    editor::show(ui, workbench, &mut intents);
+                                });
+                                if !wide && has_draft {
+                                    ui.add_space(theme::SPACE_MD);
+                                    theme::card_block(ui, |ui| {
+                                        runs::show(ui, workbench, &mut intents);
+                                    });
+                                }
+                            });
                         }
                     });
             });
