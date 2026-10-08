@@ -56,6 +56,9 @@ pub(crate) const RADIUS_MD: u8 = 10;
 /// Layouts at least this wide show the navigator and runs as side panels.
 pub(crate) const WIDE_LAYOUT_MIN: f32 = 760.0;
 
+/// Pages stop widening at this width and are centered, so wide windows keep readable line lengths.
+pub(crate) const PAGE_MAX_WIDTH: f32 = 1040.0;
+
 /// Frame for a top, side or bottom panel with a flat fill.
 pub(crate) fn panel(fill: Color32) -> egui::Frame {
     egui::Frame::new()

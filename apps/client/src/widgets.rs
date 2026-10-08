@@ -69,6 +69,17 @@ pub(crate) fn title(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(22.0).strong());
 }
 
+/// Large heading for a landing page, above the title scale. It shrinks on narrow windows so it does not
+/// fill the first screen by itself.
+pub(crate) fn headline(ui: &mut egui::Ui, text: &str) {
+    let size = if ui.available_width() >= theme::WIDE_LAYOUT_MIN {
+        30.0
+    } else {
+        24.0
+    };
+    ui.label(RichText::new(text).size(size).strong());
+}
+
 /// Heading of a group inside a view.
 pub(crate) fn section(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(17.0).strong());
@@ -118,4 +129,21 @@ pub(crate) fn empty_state(ui: &mut egui::Ui, heading: &str, body: &str) {
     ui.add_space(theme::SPACE_XL);
     section(ui, heading);
     caption(ui, body);
+}
+
+/// Centers a column no wider than `max_width`. Narrower windows use the full width the page offers.
+pub(crate) fn page_column(
+    ui: &mut egui::Ui,
+    max_width: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let width = max_width.min(ui.available_width());
+    let inset = ((ui.available_width() - width) / 2.0).max(0.0);
+    ui.horizontal(|ui| {
+        ui.add_space(inset);
+        ui.vertical(|ui| {
+            ui.set_width(width);
+            add_contents(ui);
+        });
+    });
 }

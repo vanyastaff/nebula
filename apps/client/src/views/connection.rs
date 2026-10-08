@@ -1,29 +1,74 @@
-//! Sign-in, then workspace selection. Shown as one centered card while no workspace is open.
+//! Signed-out welcome with the sign-in card, then the workspace choice. Both are centered pages.
 use super::{Intent, Intents};
 use crate::{
     theme, widgets,
     workbench::{SignInMode, Workbench},
 };
-use eframe::egui;
+use eframe::egui::{self, RichText};
 
-const FORM_WIDTH: f32 = 440.0;
+/// Width of the single-card page: the workspace choice, and sign-in on narrow windows.
+const CARD_WIDTH: f32 = 440.0;
 
 pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
     ui.add_space(theme::SPACE_XL);
-    let inset = ((ui.available_width() - FORM_WIDTH) / 2.0).max(0.0);
-    ui.horizontal(|ui| {
-        ui.add_space(inset);
-        ui.vertical(|ui| {
-            ui.set_width(FORM_WIDTH.min(ui.available_width()));
-            theme::card().show(ui, |ui| {
-                if workbench.is_signed_in() {
-                    workspace_form(ui, workbench, intents);
-                } else {
-                    sign_in_form(ui, workbench, intents);
-                }
+    if workbench.is_signed_in() {
+        widgets::page_column(ui, CARD_WIDTH, |ui| {
+            theme::card_block(ui, |ui| workspace_form(ui, workbench, intents));
+        });
+    } else {
+        widgets::page_column(ui, theme::PAGE_MAX_WIDTH, |ui| {
+            welcome(ui, workbench, intents);
+        });
+    }
+}
+
+/// The introduction sits beside the sign-in card on wide windows and above it on narrow ones.
+fn welcome(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
+    if ui.available_width() >= theme::WIDE_LAYOUT_MIN {
+        // A wider gap than the default keeps the introduction from running into the card.
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = theme::SPACE_XL;
+            ui.columns(2, |columns| {
+                introduction(&mut columns[0]);
+                theme::card_block(&mut columns[1], |ui| sign_in_form(ui, workbench, intents));
             });
         });
-    });
+    } else {
+        introduction(ui);
+        ui.add_space(theme::SPACE_XL);
+        theme::card_block(ui, |ui| sign_in_form(ui, workbench, intents));
+    }
+}
+
+fn introduction(ui: &mut egui::Ui) {
+    widgets::headline(ui, "Design and run workflows on your Nebula server");
+    ui.add_space(theme::SPACE_SM);
+    widgets::caption(
+        ui,
+        "The workbench edits the workflows stored on a Nebula server. Sign in, choose a workspace, then work through its workflows.",
+    );
+    ui.add_space(theme::SPACE_LG);
+    feature(
+        ui,
+        "Canvas",
+        "Drag nodes, connect their ports and add actions.",
+    );
+    feature(
+        ui,
+        "Drafts",
+        "Save changes, review a newer server version and reapply your edits.",
+    );
+    feature(
+        ui,
+        "Runs",
+        "Publish a version, execute it and read each node's output.",
+    );
+}
+
+fn feature(ui: &mut egui::Ui, heading: &str, body: &str) {
+    ui.label(RichText::new(heading).strong());
+    widgets::caption(ui, body);
+    ui.add_space(theme::SPACE_MD);
 }
 
 fn sign_in_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
@@ -89,7 +134,10 @@ fn password_fields(ui: &mut egui::Ui, workbench: &mut Workbench) {
 }
 
 fn workspace_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
-    widgets::title(ui, "Open a workspace");
+    widgets::title(ui, "Choose a workspace");
+    if let Some(profile) = &workbench.profile {
+        widgets::caption(ui, format!("Signed in as {}.", profile.email));
+    }
     widgets::caption(
         ui,
         "Enter the organization and workspace slug or ID provided by your server.",
