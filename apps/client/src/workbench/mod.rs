@@ -15,10 +15,20 @@ use nebula_api_contract::v1::{
 };
 use zeroize::Zeroize;
 
+/// How the sign-in form authenticates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SignInMode {
+    #[default]
+    Password,
+    Token,
+}
+
 /// Sign-in and workspace selection. Secrets are wiped when the form is dropped or consumed.
 pub(crate) struct ConnectionForm {
     pub(crate) endpoint: String,
-    pub(crate) use_token: bool,
+    pub(crate) mode: SignInMode,
+    /// Set when the server asked for a second factor. The code field stays until sign-in completes.
+    pub(crate) mfa_required: bool,
     pub(crate) email: String,
     pub(crate) password: String,
     pub(crate) totp: String,
@@ -31,7 +41,8 @@ impl ConnectionForm {
     pub(crate) fn new(endpoint: String) -> Self {
         Self {
             endpoint,
-            use_token: false,
+            mode: SignInMode::default(),
+            mfa_required: false,
             email: String::new(),
             password: String::new(),
             totp: String::new(),
@@ -41,10 +52,53 @@ impl ConnectionForm {
         }
     }
 
+    /// Sign-in is offered only once the server address and the chosen credentials are filled in.
+    pub(crate) fn can_sign_in(&self) -> bool {
+        if self.endpoint.trim().is_empty() {
+            return false;
+        }
+        match self.mode {
+            SignInMode::Token => !self.token.trim().is_empty(),
+            SignInMode::Password => {
+                !self.email.trim().is_empty()
+                    && !self.password.is_empty()
+                    && (!self.mfa_required || !self.totp.trim().is_empty())
+            },
+        }
+    }
+
+    /// Both slugs are needed; an empty one would fail every workspace request before it reaches the server.
+    pub(crate) fn can_open_workspace(&self) -> bool {
+        !self.organization.trim().is_empty() && !self.workspace.trim().is_empty()
+    }
+
+    /// Switching modes wipes the secrets of the mode being left, so neither mode inherits the other's.
+    pub(crate) fn set_mode(&mut self, mode: SignInMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        match mode {
+            SignInMode::Password => self.token.zeroize(),
+            SignInMode::Token => {
+                self.password.zeroize();
+                self.totp.zeroize();
+                self.mfa_required = false;
+            },
+        }
+    }
+
+    /// The server wants a code. The password stays, so the retry does not ask for it again.
+    pub(crate) fn require_second_factor(&mut self) {
+        self.mfa_required = true;
+        self.totp.zeroize();
+    }
+
     pub(crate) fn clear_secrets(&mut self) {
         self.password.zeroize();
         self.totp.zeroize();
         self.token.zeroize();
+        self.mfa_required = false;
     }
 }
 
@@ -256,7 +310,7 @@ impl Workbench {
         let (Some(connection), Some(profile)) = (&self.connection, &self.profile) else {
             return false;
         };
-        if self.form.organization.trim().is_empty() || self.form.workspace.trim().is_empty() {
+        if !self.form.can_open_workspace() {
             return false;
         }
         self.session.switch(Some(SessionContext {
@@ -326,7 +380,22 @@ impl Workbench {
         }
     }
 
+    /// A second-factor request is a question for the user, so it is shown as information, not a failure.
+    fn receive_sign_in_failure(&mut self, error: Failure) {
+        if error == Failure::MfaRequired {
+            self.form.require_second_factor();
+            self.feedback.info(error.to_string());
+        } else {
+            self.form.clear_secrets();
+            self.feedback.error(error.to_string());
+        }
+    }
+
     fn receive_failure(&mut self, kind: RequestKind, error: Failure) {
+        if kind == RequestKind::Connect {
+            self.receive_sign_in_failure(error);
+            return;
+        }
         if kind == RequestKind::Catalog {
             self.catalog = Catalog::Unavailable;
         }
@@ -359,6 +428,7 @@ impl Workbench {
             Reply::Connected(signed_in) => {
                 self.connection = Some(signed_in.connection);
                 self.profile = Some(signed_in.profile);
+                self.form.clear_secrets();
                 self.feedback
                     .info("Signed in. Enter your organization and workspace slug or ID.");
             },

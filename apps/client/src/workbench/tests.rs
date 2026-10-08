@@ -1,7 +1,21 @@
 use super::*;
-use crate::document::tests::snapshot;
+use crate::{document::tests::snapshot, transport::SignedIn};
 use nebula_api_contract::v1::{catalog::ListActionsResponse, workflow::ListWorkflowsResponse};
 use serde_json::json;
+
+const SERVER: &str = "http://127.0.0.1:8080";
+
+fn fixture_profile() -> MeResponse {
+    serde_json::from_value(json!({
+        "user_id": "user_fixture",
+        "email": "fixture@example.test",
+        "display_name": "Fixture",
+        "email_verified": true,
+        "mfa_enabled": false,
+        "tokens_count": 1
+    }))
+    .unwrap()
+}
 
 fn open_workspace_session(workbench: &mut Workbench) {
     workbench.session.switch(Some(SessionContext {
@@ -173,23 +187,120 @@ fn a_published_catalog_is_kept_for_the_add_node_form() {
 #[test]
 fn a_blank_slug_never_opens_a_workspace() {
     let mut workbench = Workbench::new(String::new());
-    workbench.begin_sign_in(Connection::new("http://127.0.0.1:8080").unwrap());
-    workbench.profile = Some(
-        serde_json::from_value(json!({
-            "user_id": "user_fixture",
-            "email": "fixture@example.test",
-            "display_name": "Fixture",
-            "email_verified": true,
-            "mfa_enabled": false,
-            "tokens_count": 1
-        }))
-        .unwrap(),
-    );
+    workbench.begin_sign_in(Connection::new(SERVER).unwrap());
+    workbench.profile = Some(fixture_profile());
     workbench.form.organization = "personal".into();
     workbench.form.workspace = "   ".into();
 
     assert!(!workbench.open_workspace());
     assert!(!workbench.workspace_open());
+}
+
+#[test]
+fn sign_in_waits_for_the_server_address_and_the_chosen_credentials() {
+    let mut form = ConnectionForm::new(SERVER.into());
+    assert!(!form.can_sign_in());
+    form.email = "fixture@example.test".into();
+    assert!(!form.can_sign_in());
+    form.password = "fixture-secret".into();
+    assert!(form.can_sign_in());
+    form.endpoint = "   ".into();
+    assert!(!form.can_sign_in());
+
+    form.endpoint = SERVER.into();
+    form.set_mode(SignInMode::Token);
+    assert!(!form.can_sign_in());
+    form.token = "nbt_fixture".into();
+    assert!(form.can_sign_in());
+}
+
+#[test]
+fn a_workspace_needs_both_slugs() {
+    let mut form = ConnectionForm::new(String::new());
+    form.organization = "personal".into();
+    assert!(!form.can_open_workspace());
+    form.workspace = "  ".into();
+    assert!(!form.can_open_workspace());
+    form.workspace = "main".into();
+    assert!(form.can_open_workspace());
+}
+
+#[test]
+fn a_second_factor_request_keeps_the_password_and_asks_for_a_code() {
+    let mut workbench = Workbench::new(SERVER.into());
+    workbench.form.email = "fixture@example.test".into();
+    workbench.form.password = "fixture-secret".into();
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(stamp, RequestKind::Connect, Err(Failure::MfaRequired));
+
+    assert!(workbench.form.mfa_required);
+    assert_eq!(workbench.form.password, "fixture-secret");
+    assert!(!workbench.form.can_sign_in());
+    assert!(!workbench.feedback.failure);
+    workbench.form.totp = "123456".into();
+    assert!(workbench.form.can_sign_in());
+}
+
+#[test]
+fn a_rejected_sign_in_wipes_the_password_and_says_why() {
+    let mut workbench = Workbench::new(SERVER.into());
+    workbench.form.email = "fixture@example.test".into();
+    workbench.form.password = "fixture-secret".into();
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(stamp, RequestKind::Connect, Err(Failure::Unauthorized));
+
+    assert!(workbench.form.password.is_empty());
+    assert!(!workbench.form.mfa_required);
+    assert!(workbench.feedback.failure);
+    assert_eq!(
+        workbench.feedback.message,
+        Failure::Unauthorized.to_string()
+    );
+}
+
+#[test]
+fn a_completed_sign_in_clears_every_secret() {
+    let mut workbench = Workbench::new(SERVER.into());
+    workbench.form.email = "fixture@example.test".into();
+    workbench.form.password = "fixture-secret".into();
+    let stamp = workbench.session.begin().unwrap();
+    workbench.receive(stamp, RequestKind::Connect, Err(Failure::MfaRequired));
+    workbench.form.totp = "123456".into();
+    let connection = Connection::new(SERVER).unwrap();
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(
+        stamp,
+        RequestKind::Connect,
+        Ok(Reply::Connected(SignedIn {
+            connection,
+            profile: fixture_profile(),
+        })),
+    );
+
+    assert!(workbench.is_signed_in());
+    assert!(workbench.form.password.is_empty());
+    assert!(workbench.form.totp.is_empty());
+    assert!(!workbench.form.mfa_required);
+}
+
+#[test]
+fn switching_modes_wipes_the_secrets_of_the_mode_being_left() {
+    let mut form = ConnectionForm::new(SERVER.into());
+    form.password = "fixture-secret".into();
+    form.require_second_factor();
+    form.totp = "123456".into();
+
+    form.set_mode(SignInMode::Token);
+
+    assert!(form.password.is_empty());
+    assert!(form.totp.is_empty());
+    assert!(!form.mfa_required);
+    form.token = "nbt_fixture".into();
+    form.set_mode(SignInMode::Password);
+    assert!(form.token.is_empty());
 }
 
 #[test]

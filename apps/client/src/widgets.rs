@@ -46,6 +46,24 @@ pub(crate) fn labeled_field(ui: &mut egui::Ui, label: &str, value: &mut String, 
     ui.add(field(value).password(password));
 }
 
+/// Picks one of a few options. The chosen option is drawn selected, so a mode switch reads as a control.
+pub(crate) fn segmented<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    current: &mut T,
+    options: &[(T, &str)],
+) {
+    ui.horizontal(|ui| {
+        for &(value, label) in options {
+            if ui
+                .add(egui::Button::new(label).selected(*current == value))
+                .clicked()
+            {
+                *current = value;
+            }
+        }
+    });
+}
+
 /// Page-level heading.
 pub(crate) fn title(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(22.0).strong());

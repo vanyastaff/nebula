@@ -6,7 +6,7 @@ use crate::{
     theme,
     transport::{Connection, SignIn},
     views::{Intent, Intents, connection, editor, navigator, runs, shell},
-    workbench::Workbench,
+    workbench::{SignInMode, Workbench},
 };
 use eframe::egui;
 use nebula_api_contract::v1::auth::{LoginRequest, SecretString};
@@ -110,14 +110,15 @@ impl ClientApp {
                 return;
             },
         };
-        let intent = if form.use_token {
-            SignIn::Token(Zeroizing::new(std::mem::take(&mut form.token)))
-        } else {
-            SignIn::Password(LoginRequest {
+        let intent = match form.mode {
+            SignInMode::Token => SignIn::Token(Zeroizing::new(std::mem::take(&mut form.token))),
+            // The password and code stay in the form until sign-in completes, so a second-factor retry
+            // does not ask for the password again. `clear_secrets` wipes them on success or failure.
+            SignInMode::Password => SignIn::Password(LoginRequest {
                 email: form.email.clone(),
-                password: SecretString::new(std::mem::take(&mut form.password)),
-                totp: (!form.totp.is_empty()).then(|| std::mem::take(&mut form.totp)),
-            })
+                password: SecretString::new(form.password.clone()),
+                totp: (!form.totp.is_empty()).then(|| form.totp.clone()),
+            }),
         };
         self.workbench.begin_sign_in(connection);
         self.dispatch(context, Operation::Connect(intent));
