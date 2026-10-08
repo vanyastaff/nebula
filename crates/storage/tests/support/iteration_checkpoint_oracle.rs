@@ -18,17 +18,24 @@ use nebula_storage_port::{
     IterationCheckpointKey, MAX_ITERATION_CHECKPOINT_STATE_BYTES, Scope,
 };
 
-/// Per-process namespace folded into every execution identity.
+/// Per-process namespace for tenants and executions, including provisioning
+/// history. No case may adopt fixed tenant IDs left by an earlier test run.
 static NAMESPACE: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| uuid::Uuid::new_v4().simple().to_string());
 
 pub(crate) fn scope() -> Scope {
-    Scope::new("ws-checkpoint", "org-checkpoint")
+    Scope::new(
+        format!("ws-checkpoint-{}", *NAMESPACE),
+        format!("org-checkpoint-{}", *NAMESPACE),
+    )
 }
 
 /// A second tenant, used to prove one tenant cannot reach another's rows.
 pub(crate) fn other_scope() -> Scope {
-    Scope::new("ws-checkpoint-other", "org-checkpoint-other")
+    Scope::new(
+        format!("ws-checkpoint-other-{}", *NAMESPACE),
+        format!("org-checkpoint-other-{}", *NAMESPACE),
+    )
 }
 
 pub(crate) fn execution_id(seed: u8) -> String {

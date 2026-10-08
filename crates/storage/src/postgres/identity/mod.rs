@@ -172,7 +172,7 @@ async fn cas_disambiguate(
 ) -> Result<(), StorageError> {
     // `table` is a fixed internal literal (never user input), so the
     // format here cannot be an injection vector.
-    let sql = format!("SELECT version FROM {table} WHERE id = $1");
+    let sql = format!("SELECT version FROM {table} WHERE id = $1 AND deleted_at IS NULL");
     let current = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(pool)

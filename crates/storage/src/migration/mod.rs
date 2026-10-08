@@ -149,10 +149,10 @@ fn record_setup_failure(error: &impl SchemaSetupFailure) {
 
 /// Log why the migrator stopped, so an `Unavailable` setup is explainable.
 ///
-/// The error event carries value-free fields only: the failing version, the
-/// SQLSTATE and the table and constraint the database names. The database's
-/// own message can quote row values (a failed backfill), so it goes to a
-/// separate `debug` event for local diagnosis.
+/// Record the failing version, SQLSTATE and database-reported schema-object
+/// labels. These labels describe the operator-controlled schema, not row data.
+/// Never format the driver error at any log level: its message can quote stored
+/// values even when the failure arose while recording the migration receipt.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn record_migration_failure(backend: &'static str, error: &sqlx::migrate::MigrateError) {
     let (version, database) = match error {
@@ -170,13 +170,6 @@ fn record_migration_failure(backend: &'static str, error: &sqlx::migrate::Migrat
         table = ?database.and_then(sqlx::error::DatabaseError::table),
         constraint = ?database.and_then(sqlx::error::DatabaseError::constraint),
         "schema migration failed"
-    );
-    tracing::debug!(
-        target: "nebula_storage::migration",
-        backend,
-        version = ?version,
-        diagnostic = %error,
-        "schema migration failure diagnostic (may quote stored values)"
     );
 }
 

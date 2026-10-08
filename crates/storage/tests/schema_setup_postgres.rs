@@ -19,6 +19,37 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+#[derive(Clone, Default)]
+struct MigrationEvents(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl tracing::Subscriber for MigrationEvents {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.target() == "nebula_storage::migration"
+    }
+
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write;
+                write!(&mut self.0, "{}={value:?};", field.name()).unwrap();
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.0.lock().unwrap().push(fields.0);
+    }
+}
+
 struct IsolatedSchema {
     admin: PgPool,
     pool: PgPool,
@@ -209,4 +240,68 @@ async fn abort_while_migration_blocked_releases_setup_lock_and_retry_succeeds() 
 
     database.cleanup().await;
     Ok(())
+}
+
+#[tokio::test]
+async fn migration_failure_diagnostics_never_log_stored_values() {
+    use tracing::instrument::WithSubscriber;
+
+    let database = IsolatedSchema::connect()
+        .await
+        .expect("SETUP: live PostgreSQL required for migration diagnostics evidence");
+    // Keep the canonical prefix unchanged. A database-side failure while the
+    // next migration records its receipt can include arbitrary stored values.
+    MIGRATOR.run_to(9, &database.pool).await.unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE migration_diagnostic_fixture (secret TEXT NOT NULL);
+         CREATE FUNCTION reject_migration_receipt() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+         DECLARE stored_secret TEXT;
+         BEGIN
+             SELECT secret INTO stored_secret FROM migration_diagnostic_fixture;
+             RAISE EXCEPTION 'migration receipt rejected: %', stored_secret;
+         END;
+         $$;
+         CREATE TRIGGER reject_migration_receipt BEFORE INSERT ON _sqlx_migrations
+         FOR EACH ROW WHEN (NEW.version = 10)
+         EXECUTE FUNCTION reject_migration_receipt();",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    let canary = "stored-migration-secret-CANARY-2c54";
+    sqlx::query("INSERT INTO migration_diagnostic_fixture (secret) VALUES ($1)")
+        .bind(canary)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    let direct_error = sqlx::query(
+        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+         VALUES (10, 'diagnostic probe', TRUE, ''::bytea, 0)",
+    )
+    .execute(&database.pool)
+    .await
+    .unwrap_err();
+    assert!(direct_error.to_string().contains(canary));
+
+    let capture = MigrationEvents::default();
+    let result = init_schema(&database.pool)
+        .with_subscriber(capture.clone())
+        .await;
+    let events = capture.0.lock().unwrap().join("\n");
+    let head = sqlx::query_scalar::<_, i64>("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    database.cleanup().await;
+
+    assert!(matches!(result, Err(StorageError::Connection(_))));
+    assert_eq!(head, 9, "failed migration must not advance the ledger");
+    assert!(
+        events.contains("schema migration failed"),
+        "capture must observe the public setup failure"
+    );
+    assert!(
+        !events.contains(canary),
+        "migration events must never include stored values, including DEBUG diagnostics"
+    );
 }

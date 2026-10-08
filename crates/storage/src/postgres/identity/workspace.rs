@@ -162,7 +162,7 @@ impl WorkspaceStore for PgWorkspaceStore {
             return Ok(());
         }
         let current = sqlx::query_scalar::<_, i64>(
-            "SELECT version FROM workspaces WHERE org_id = $1 AND id = $2",
+            "SELECT version FROM workspaces WHERE org_id = $1 AND id = $2 AND deleted_at IS NULL",
         )
         .bind(&row.org_id)
         .bind(&row.id)

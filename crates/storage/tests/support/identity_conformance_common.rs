@@ -224,6 +224,17 @@ async fn assert_org_contract(b: &dyn IdentityBackend) {
     s.soft_delete("org_1").await.expect("soft_delete");
     assert!(s.get("org_1").await.unwrap().is_none());
     assert!(s.get_by_slug("acme").await.unwrap().is_none());
+    for expected_version in [0, 7] {
+        let mut archived = org_row("org_1", "archived-edit");
+        archived.version = expected_version + 1;
+        let result = s.update(archived, expected_version).await;
+        assert!(
+            matches!(&result, Err(PortStorageError::NotFound { .. })),
+            "an archived org is absent to updates even with a stale version: {result:?}"
+        );
+    }
+    assert!(s.get("org_1").await.unwrap().is_none());
+    assert!(s.get_by_slug("archived-edit").await.unwrap().is_none());
     s.create(org_row("org_2", "acme"))
         .await
         .expect("a deleted org frees its slug");
@@ -350,6 +361,22 @@ async fn assert_workspace_contract(b: &dyn IdentityBackend) {
     s.soft_delete("org_1", "ws_1").await.expect("soft_delete");
     assert!(s.get("org_1", "ws_1").await.unwrap().is_none());
     assert!(s.get_by_slug("org_1", "main").await.unwrap().is_none());
+    for expected_version in [1, 7] {
+        let mut archived = workspace_row("ws_1", "org_1", "archived-edit");
+        archived.version = expected_version + 1;
+        let result = s.update(archived, expected_version).await;
+        assert!(
+            matches!(&result, Err(PortStorageError::NotFound { .. })),
+            "an archived workspace is absent to updates even with a stale version: {result:?}"
+        );
+    }
+    assert!(s.get("org_1", "ws_1").await.unwrap().is_none());
+    assert!(
+        s.get_by_slug("org_1", "archived-edit")
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(s.list_for_org("org_1").await.unwrap().len(), 0);
 }
 

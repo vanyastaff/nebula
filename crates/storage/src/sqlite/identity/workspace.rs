@@ -164,7 +164,7 @@ impl WorkspaceStore for SqliteWorkspaceStore {
             return Ok(());
         }
         let current = sqlx::query_scalar::<_, i64>(
-            "SELECT version FROM workspaces WHERE org_id = ? AND id = ?",
+            "SELECT version FROM workspaces WHERE org_id = ? AND id = ? AND deleted_at IS NULL",
         )
         .bind(&row.org_id)
         .bind(&row.id)
