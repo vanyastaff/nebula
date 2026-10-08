@@ -1,4 +1,4 @@
-//! Top bar and feedback strip shared by every layout.
+//! Top bar and toasts shared by every layout.
 use crate::{
     theme,
     widgets::{self, Tone},
@@ -12,32 +12,65 @@ pub(crate) fn header(ui: &mut egui::Ui, workbench: &mut Workbench, wide: bool) {
     if wide {
         ui.horizontal(|ui| {
             location(ui, workbench, wide);
+            // A right-to-left layout puts the first item at the right edge, so it gets the items reversed.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // Nested so the account actions keep their reading order inside the right-aligned slot.
-                ui.horizontal(|ui| account(ui, workbench));
+                for item in ACCOUNT.iter().rev() {
+                    account_item(ui, workbench, *item);
+                }
             });
         });
     } else {
         ui.horizontal_wrapped(|ui| {
             location(ui, workbench, wide);
-            account(ui, workbench);
+            for item in ACCOUNT {
+                account_item(ui, workbench, item);
+            }
         });
     }
 }
 
-fn location(ui: &mut egui::Ui, workbench: &mut Workbench, wide: bool) {
-    ui.label(
-        RichText::new("Nebula")
-            .size(22.0)
-            .strong()
-            .color(theme::ACCENT),
+#[derive(Clone, Copy)]
+enum AccountItem {
+    /// A spinner while a request is in flight, so work in progress never needs a message.
+    Activity,
+    Email,
+    SwitchWorkspace,
+    SignOut,
+}
+
+/// Account entries in reading order.
+const ACCOUNT: [AccountItem; 4] = [
+    AccountItem::Activity,
+    AccountItem::Email,
+    AccountItem::SwitchWorkspace,
+    AccountItem::SignOut,
+];
+
+/// How long an informational toast stays. Failures stay until dismissed.
+const TOAST_SECONDS: f64 = 4.0;
+const TOAST_WIDTH: f32 = 360.0;
+
+fn brand(ui: &mut egui::Ui) {
+    let (mark, _) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(mark, theme::RADIUS_SM, theme::ACCENT);
+    ui.painter().text(
+        mark.center(),
+        egui::Align2::CENTER_CENTER,
+        "N",
+        egui::FontId::proportional(14.0),
+        egui::Color32::WHITE,
     );
-    match &workbench.session.context {
-        Some(context) => {
-            let place = format!("{} / {}", context.organization, context.workspace_selector);
-            ui.label(RichText::new(place).color(theme::TEXT).strong());
-        },
-        None => widgets::caption(ui, "Workflow workbench"),
+    ui.label(RichText::new("Nebula").size(17.0).strong());
+}
+
+fn location(ui: &mut egui::Ui, workbench: &mut Workbench, wide: bool) {
+    brand(ui);
+    if let Some(context) = &workbench.session.context {
+        ui.separator();
+        ui.label(RichText::new(&context.organization).color(theme::TEXT_MUTED));
+        widgets::caption(ui, "/");
+        ui.label(RichText::new(&context.workspace_selector).strong());
     }
     // Phones have no room for the sidebar beside the page, so its list opens from here instead.
     if !wide && workbench.workspace_open() && !workbench.workspace_form_open {
@@ -48,29 +81,73 @@ fn location(ui: &mut egui::Ui, workbench: &mut Workbench, wide: bool) {
     }
 }
 
-fn account(ui: &mut egui::Ui, workbench: &mut Workbench) {
-    if let Some(profile) = &workbench.profile {
-        widgets::caption(ui, profile.email.as_str());
-    }
-    if workbench.workspace_open() && ui.button("Switch workspace").clicked() {
-        workbench.workspace_form_open = !workbench.workspace_form_open;
-    }
-    if workbench.is_signed_in() && ui.button("Sign out").clicked() {
-        workbench.disconnect();
+fn account_item(ui: &mut egui::Ui, workbench: &mut Workbench, item: AccountItem) {
+    match item {
+        AccountItem::Activity => {
+            if workbench.session.busy() {
+                ui.spinner();
+            }
+        },
+        AccountItem::Email => {
+            if let Some(profile) = &workbench.profile {
+                widgets::caption(ui, profile.email.as_str());
+            }
+        },
+        AccountItem::SwitchWorkspace => {
+            if workbench.workspace_open() && ui.button("Switch workspace").clicked() {
+                workbench.workspace_form_open = !workbench.workspace_form_open;
+            }
+        },
+        AccountItem::SignOut => {
+            if workbench.is_signed_in() && ui.button("Sign out").clicked() {
+                workbench.disconnect();
+            }
+        },
     }
 }
 
-/// Latest outcome of the last action, plus a spinner while a request is in flight.
-pub(crate) fn feedback(ui: &mut egui::Ui, workbench: &Workbench) {
-    let tone = if workbench.feedback.failure {
-        Tone::Danger
-    } else {
-        Tone::Neutral
-    };
-    ui.vertical(|ui| {
-        if workbench.session.busy() {
-            ui.spinner();
+/// The outcome of the last action as a toast in the bottom-right corner. Information fades after a few
+/// seconds; a failure stays until the user dismisses it, so it cannot be missed.
+pub(crate) fn toast(context: &egui::Context, workbench: &mut Workbench) {
+    if workbench.feedback.message.is_empty() {
+        return;
+    }
+    let now = context.input(|input| input.time);
+    let serial = workbench.feedback.serial;
+    // The clock of a message starts on the first frame that shows it.
+    let shown = context.data_mut(|data| {
+        let clock = data.get_temp_mut_or(egui::Id::new("toast-clock"), (serial, now));
+        if clock.0 != serial {
+            *clock = (serial, now);
         }
-        widgets::banner(ui, tone, &workbench.feedback.message);
+        clock.1
     });
+    let failure = workbench.feedback.failure;
+    if !failure {
+        let left = TOAST_SECONDS - (now - shown);
+        if left <= 0.0 {
+            return;
+        }
+        context.request_repaint_after(std::time::Duration::from_secs_f64(left));
+    }
+    let tone = if failure { Tone::Danger } else { Tone::Neutral };
+    egui::Area::new(egui::Id::new("toast"))
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            [-theme::SPACE_LG, -theme::SPACE_LG],
+        )
+        .order(egui::Order::Foreground)
+        .show(context, |ui| {
+            ui.set_max_width(TOAST_WIDTH);
+            widgets::banner(ui, tone, &workbench.feedback.message);
+            if failure
+                && ui
+                    .with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        ui.small_button("Dismiss").clicked()
+                    })
+                    .inner
+            {
+                workbench.feedback.dismiss();
+            }
+        });
 }

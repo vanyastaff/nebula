@@ -287,6 +287,20 @@ fn a_completed_sign_in_clears_every_secret() {
 }
 
 #[test]
+fn a_repeated_message_is_a_new_toast_and_dismissing_clears_it() {
+    let mut feedback = Feedback::default();
+    feedback.info("Workflow loaded.");
+    let first = feedback.serial;
+    feedback.info("Workflow loaded.");
+    assert!(feedback.serial > first);
+
+    feedback.error("Server unreachable.");
+    feedback.dismiss();
+    assert!(feedback.message.is_empty());
+    assert!(!feedback.failure);
+}
+
+#[test]
 fn choosing_a_workflow_hands_the_narrow_page_back_to_the_editor() {
     let mut workbench = Workbench::new(SERVER.into());
     open_workspace_session(&mut workbench);

@@ -36,7 +36,6 @@ impl ClientApp {
         let Some(stamp) = self.workbench.session.begin() else {
             return;
         };
-        self.workbench.feedback.info("Waiting for the server…");
         let session = self.workbench.session.context.clone();
         self.effects
             .start(context, stamp, connection, session, operation);
@@ -145,11 +144,8 @@ impl eframe::App for ClientApp {
         let workbench = &mut self.workbench;
 
         egui::Panel::top("header")
-            .frame(theme::panel(theme::SURFACE))
-            .show(ui, |ui| {
-                shell::header(ui, workbench, wide);
-                shell::feedback(ui, workbench);
-            });
+            .frame(theme::bar())
+            .show(ui, |ui| shell::header(ui, workbench, wide));
         if workspace && wide {
             egui::Panel::left("sidebar")
                 .default_size(260.0)
@@ -204,6 +200,8 @@ impl eframe::App for ClientApp {
                         }
                     });
             });
+
+        shell::toast(ui.ctx(), workbench);
 
         for intent in intents {
             self.run_intent(ui.ctx(), intent);

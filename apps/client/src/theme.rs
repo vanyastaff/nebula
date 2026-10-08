@@ -66,6 +66,13 @@ pub(crate) fn panel(fill: Color32) -> egui::Frame {
         .inner_margin(egui::Margin::same(SPACE_LG as i8))
 }
 
+/// Frame for the top bar: one compact row, so the page keeps the height.
+pub(crate) fn bar() -> egui::Frame {
+    egui::Frame::new()
+        .fill(SURFACE)
+        .inner_margin(egui::Margin::symmetric(SPACE_LG as i8, SPACE_SM as i8))
+}
+
 /// Frame for the page behind the workbench content.
 pub(crate) fn canvas() -> egui::Frame {
     panel(CANVAS)

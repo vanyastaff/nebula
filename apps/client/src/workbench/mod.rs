@@ -164,21 +164,32 @@ impl Drop for ParameterSelection {
     }
 }
 
+/// Outcome of the last action. The view shows it as a toast: information fades, a failure stays until
+/// dismissed.
 #[derive(Default)]
 pub(crate) struct Feedback {
     pub(crate) message: String,
     pub(crate) failure: bool,
+    /// Bumped by every message, so a repeated text still counts as new.
+    pub(crate) serial: u64,
 }
 
 impl Feedback {
     pub(crate) fn info(&mut self, message: impl Into<String>) {
         self.message = message.into();
         self.failure = false;
+        self.serial += 1;
     }
 
     pub(crate) fn error(&mut self, message: impl Into<String>) {
         self.message = message.into();
         self.failure = true;
+        self.serial += 1;
+    }
+
+    pub(crate) fn dismiss(&mut self) {
+        self.message.clear();
+        self.failure = false;
     }
 
     /// Shows the outcome of a local command: the success text, or the error that stopped it.
@@ -278,10 +289,7 @@ impl Workbench {
             parameter: ParameterSelection::default(),
             status: None,
             history: None,
-            feedback: Feedback {
-                message: "Connect to an existing Nebula server to open a workspace.".into(),
-                failure: false,
-            },
+            feedback: Feedback::default(),
             workspace_form_open: false,
             sidebar_open: true,
             selected_node: None,
