@@ -14,6 +14,17 @@ pub(crate) const BORDER: Color32 = Color32::from_rgb(42, 45, 58);
 // Text
 pub(crate) const TEXT: Color32 = Color32::from_rgb(231, 232, 238);
 pub(crate) const TEXT_MUTED: Color32 = Color32::from_rgb(138, 143, 163);
+/// Text and marks drawn on an accent fill, such as a node badge or a switch knob.
+pub(crate) const ON_ACCENT: Color32 = Color32::WHITE;
+
+// Type sizes for text set inline, from small capitals over a group to the page title.
+pub(crate) const SIZE_OVERLINE: f32 = 11.0;
+pub(crate) const SIZE_SMALL: f32 = 12.0;
+pub(crate) const SIZE_BODY: f32 = 13.0;
+pub(crate) const SIZE_LABEL: f32 = 14.0;
+pub(crate) const SIZE_PANEL_TITLE: f32 = 16.0;
+pub(crate) const SIZE_BRAND: f32 = 17.0;
+pub(crate) const SIZE_TITLE: f32 = 18.0;
 
 // Accent and status tones. Each tone has a bright foreground and a dim background for badges and banners.
 pub(crate) const ACCENT: Color32 = Color32::from_rgb(99, 102, 241);
@@ -78,7 +89,7 @@ pub(crate) fn canvas() -> egui::Frame {
     panel(CANVAS)
 }
 
-/// A bordered white surface that groups related controls.
+/// A bordered surface, one step lighter than the page, that groups related controls.
 pub(crate) fn card() -> egui::Frame {
     egui::Frame::new()
         .fill(SURFACE)

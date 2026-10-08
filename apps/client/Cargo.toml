@@ -51,6 +51,8 @@ web-sys = { version = "0.3", features = ["Window", "Location", "Document", "Html
 
 [dev-dependencies]
 wiremock = "0.6"
+# Contract tests read schemas as the server serializes them; the client itself reads the wire format.
+nebula-schema = { path = "../../crates/schema" }
 
 [lints]
 workspace = true

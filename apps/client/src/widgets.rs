@@ -27,7 +27,7 @@ impl Tone {
 
 /// Main action of a view. At most one per visible group.
 pub(crate) fn primary_button(label: &str) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(label).color(Color32::WHITE).strong()).fill(theme::ACCENT)
+    egui::Button::new(RichText::new(label).color(theme::ON_ACCENT).strong()).fill(theme::ACCENT)
 }
 
 /// Destructive action, such as discarding unsaved edits.
@@ -48,7 +48,11 @@ pub(crate) fn labeled_field(
     value: &mut String,
     password: bool,
 ) -> egui::Response {
-    ui.label(RichText::new(label).color(theme::TEXT_MUTED).size(13.0));
+    ui.label(
+        RichText::new(label)
+            .color(theme::TEXT_MUTED)
+            .size(theme::SIZE_BODY),
+    );
     ui.add(field(value).password(password))
 }
 
@@ -85,7 +89,7 @@ pub(crate) fn mark(ui: &mut egui::Ui, letter: &str, color: Color32, side: f32) {
         egui::Align2::CENTER_CENTER,
         letter,
         egui::FontId::proportional(side * 0.58),
-        Color32::WHITE,
+        theme::ON_ACCENT,
     );
 }
 
@@ -146,14 +150,25 @@ pub(crate) fn headline(ui: &mut egui::Ui, text: &str) {
 
 /// Heading of a group inside a view.
 pub(crate) fn section(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).size(17.0).strong());
+    ui.label(RichText::new(text).size(theme::SIZE_BRAND).strong());
+}
+
+/// A small frameless text button, as for a field's Fixed / Expression / Reset switch. The active one is
+/// drawn in the accent colour.
+pub(crate) fn link(ui: &mut egui::Ui, text: &str, active: bool) -> egui::Response {
+    let color = if active {
+        theme::ACCENT
+    } else {
+        theme::TEXT_MUTED
+    };
+    ui.add(egui::Button::new(RichText::new(text).size(theme::SIZE_SMALL).color(color)).frame(false))
 }
 
 pub(crate) fn caption(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(
         RichText::new(text.into())
             .color(theme::TEXT_MUTED)
-            .size(13.0),
+            .size(theme::SIZE_BODY),
     );
 }
 
@@ -167,7 +182,7 @@ pub(crate) fn badge(ui: &mut egui::Ui, text: impl Into<String>, tone: Tone) {
             ui.label(
                 RichText::new(text.into())
                     .color(foreground)
-                    .size(13.0)
+                    .size(theme::SIZE_BODY)
                     .strong(),
             );
         });

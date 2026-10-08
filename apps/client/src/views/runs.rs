@@ -7,7 +7,9 @@ use crate::{
     workbench::Workbench,
 };
 use eframe::egui::{self, Align, Layout, RichText};
-use nebula_api_contract::v1::execution::{ExecutionNodeOutput, ExecutionStatus};
+use nebula_api_contract::v1::execution::{
+    ExecutionNodeOutput, ExecutionNodeStatus, ExecutionStatus,
+};
 
 /// Panels at least this wide show the chosen run beside the list instead of under it.
 const SIDE_BY_SIDE_MIN: f32 = 720.0;
@@ -132,6 +134,21 @@ fn status_label(status: ExecutionStatus) -> &'static str {
     }
 }
 
+/// A node's state in a run, in words.
+pub(crate) const fn node_status_label(status: ExecutionNodeStatus) -> &'static str {
+    match status {
+        ExecutionNodeStatus::Pending => "Pending",
+        ExecutionNodeStatus::Ready => "Ready",
+        ExecutionNodeStatus::Running => "Running",
+        ExecutionNodeStatus::Completed => "Completed",
+        ExecutionNodeStatus::Failed => "Failed",
+        ExecutionNodeStatus::Skipped => "Skipped",
+        ExecutionNodeStatus::Cancelled => "Cancelled",
+        ExecutionNodeStatus::WaitingRetry => "Retry scheduled",
+        ExecutionNodeStatus::Waiting => "Waiting",
+    }
+}
+
 /// `2026-10-08T12:34:56.123456Z` as `2026-10-08 12:34:56`, the precision a person reads.
 fn readable_time(rfc3339: &str) -> String {
     rfc3339.get(..19).unwrap_or(rfc3339).replace('T', " ")
@@ -217,7 +234,7 @@ fn status(ui: &mut egui::Ui, workbench: &Workbench) {
     for (name, node) in &status.nodes {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(name).strong());
-            widgets::caption(ui, format!("{:?}", node.status));
+            widgets::caption(ui, node_status_label(node.status));
         });
         if let Some(ExecutionNodeOutput::Inline { value }) = &node.output {
             let text = value.to_string();

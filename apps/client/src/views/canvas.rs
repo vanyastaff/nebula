@@ -6,7 +6,7 @@ use crate::{
     theme,
     workbench::{NodeDrag, Workbench},
 };
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use std::collections::HashMap;
 
 /// Side of the square card that holds the node badge, in canvas units (before zoom).
@@ -230,7 +230,7 @@ pub(crate) fn show(
                     canvas.center(),
                     Align2::CENTER_CENTER,
                     "This workflow has no nodes yet. Use Add node to place the first one.",
-                    FontId::proportional(14.0),
+                    FontId::proportional(theme::SIZE_LABEL),
                     theme::TEXT_MUTED,
                 );
                 return;
@@ -342,7 +342,7 @@ pub(crate) fn show(
                     plus_center,
                     Align2::CENTER_CENTER,
                     "+",
-                    FontId::proportional(14.0 * zoom),
+                    FontId::proportional(theme::SIZE_LABEL * zoom),
                     theme::TEXT,
                 );
                 let add = ui.interact(
@@ -462,22 +462,22 @@ fn paint_node(painter: &egui::Painter, card: Rect, node: &NodeView, zoom: f32, s
         badge.center(),
         Align2::CENTER_CENTER,
         initial,
-        FontId::proportional(18.0 * zoom),
-        Color32::WHITE,
+        FontId::proportional(theme::SIZE_TITLE * zoom),
+        theme::ON_ACCENT,
     );
     let below = 8.0f32.mul_add(zoom, card.bottom());
     painter.text(
         Pos2::new(card.center().x, below),
         Align2::CENTER_TOP,
         &node.name,
-        FontId::proportional(13.0 * zoom),
+        FontId::proportional(theme::SIZE_BODY * zoom),
         theme::TEXT,
     );
     painter.text(
         Pos2::new(card.center().x, 18.0f32.mul_add(zoom, below)),
         Align2::CENTER_TOP,
         &node.action,
-        FontId::proportional(11.0 * zoom),
+        FontId::proportional(theme::SIZE_OVERLINE * zoom),
         theme::TEXT_MUTED,
     );
     painter.circle_filled(in_port(card), PORT_RADIUS * zoom, theme::TEXT_MUTED);

@@ -1,7 +1,7 @@
 //! The node sidebar, which slides in from the right when a node is selected. Parameters are a form built
 //! from the action's schema; Settings hold the name, connections, removal and the raw parameter JSON;
 //! Output shows what the node produced in the chosen run. Every change here is a local draft command.
-use super::{Intent, Intents, form};
+use super::{Intent, Intents, form, runs};
 use crate::{
     document::{Draft, Link, catalog_key, expression, literal},
     schema::display,
@@ -124,7 +124,11 @@ fn header(ui: &mut egui::Ui, node: &NodeView) -> bool {
         widgets::mark(ui, &letter, theme::node_accent(&node.action), 32.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            ui.label(RichText::new(&node.name).size(16.0).strong());
+            ui.label(
+                RichText::new(&node.name)
+                    .size(theme::SIZE_PANEL_TITLE)
+                    .strong(),
+            );
             widgets::caption(ui, node.action.as_str());
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -155,6 +159,13 @@ fn parameters(
             loading(ui);
         },
         Some(SchemaState::Loading) => loading(ui),
+        Some(SchemaState::Ready(schema)) if schema.free_form => {
+            widgets::caption(
+                ui,
+                "This action takes free-form input that no form describes. Edit it as JSON.",
+            );
+            raw_parameters(ui, workbench, node);
+        },
         Some(SchemaState::Ready(schema)) => {
             if schema.fields.is_empty() {
                 widgets::caption(ui, "This action takes no parameters.");
@@ -279,7 +290,7 @@ fn output(ui: &mut egui::Ui, workbench: &Workbench, node: &NodeView) {
         widgets::caption(ui, "The chosen run did not reach this node.");
         return;
     };
-    widgets::badge(ui, format!("{:?}", result.status), Tone::Neutral);
+    widgets::badge(ui, runs::node_status_label(result.status), Tone::Neutral);
     ui.add_space(theme::SPACE_SM);
     match &result.output {
         Some(ExecutionNodeOutput::Inline { value }) => {

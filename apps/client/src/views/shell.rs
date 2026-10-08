@@ -52,7 +52,7 @@ const TOAST_WIDTH: f32 = 360.0;
 
 fn brand(ui: &mut egui::Ui) {
     widgets::mark(ui, "N", theme::ACCENT, 24.0);
-    ui.label(RichText::new("Nebula").size(17.0).strong());
+    ui.label(RichText::new("Nebula").size(theme::SIZE_BRAND).strong());
 }
 
 fn location(ui: &mut egui::Ui, workbench: &mut Workbench, wide: bool) {

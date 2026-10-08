@@ -26,15 +26,18 @@ client does not start a server or worker.
   use the "+" after a port to add a connected node. Zoom, Add node and Execute workflow float
   over the canvas. A side panel shows the add-node palette (the action catalog when the
   server publishes one, or a typed action key) or the inspector of the selected node: rename,
-  literal parameters as JSON, connections, removal.
+  literal parameters as JSON, connections with their ports, removal.
 - **Node sidebar.** Selecting a node slides in a panel with Parameters, Settings and Output.
   Parameters is a form built from the action's schema (`GET /actions/{key}/parameters`, the
   `nebula-schema` wire format): every field kind and widget, groups, conditional visibility and
-  requirement, Fixed/Expression per field, Reset to the default, a readiness line and inline
-  checks. A field type newer than the client stays editable as JSON; without a schema the tab says
-  why and offers the parameters as JSON.
-- **Runs.** Recent runs load when a workflow opens and after every start. The chosen run is
-  followed until it ends, with each node's status, output preview and failure reason.
+  requirement evaluated as the server evaluates them, Fixed/Expression per field, Reset to the
+  default, a readiness line, checks from the field's rules and advice from its format hint. Typed
+  text reaches the draft as it is typed, and one focus is one undo step. A field type newer than
+  the client stays editable as JSON; an action with free-form input, or without a schema, gets the
+  parameters as JSON with the reason.
+- **Runs.** Recent runs and the chosen run load when a workflow opens and after every start. The
+  chosen run is followed until it ends, with each node's status, output preview and failure
+  reason. A read that fails says so in the panel.
 - **Keyboard.** Ctrl+S saves, Ctrl+Enter runs, Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y undo and redo,
   Delete removes the selected node, Escape closes the side panel.
 - **Layouts.** Below 760 points the sidebar becomes a page behind a Workflows toggle and the
@@ -48,9 +51,9 @@ The bundled server lists the actions of its plugin release at `/actions`, so the
 them and every node gets its form. A server without a catalog answers 503: the palette then asks
 for a typed key and the node form falls back to JSON.
 
-Not in this release: template and reference parameters (shown, edited as JSON), select options
-and inputs that a server loader resolves, file uploads, managed local launch, packaging and
-updates.
+Not in this release: editing template and reference parameters (they are named, and Reset
+replaces them), select options and inputs that a server loader resolves, file uploads, managed
+local launch, packaging and updates.
 
 ## Structure
 

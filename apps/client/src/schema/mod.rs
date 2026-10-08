@@ -12,6 +12,40 @@ use serde_json::{Map, Value};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Form {
     pub(crate) fields: Vec<Field>,
+    /// The action takes one free-form value (`kind: any`, or a scalar root) that no field describes.
+    pub(crate) free_form: bool,
+}
+
+/// What conditions read: the node's fixed parameter values from the root, as the server's predicate
+/// context holds them, and the parameters whose value is only known when the node runs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Values {
+    fixed: Map<String, Value>,
+    pending: Vec<String>,
+}
+
+impl Values {
+    /// Literal entries are fixed values; expressions and other entries are pending. An absent
+    /// parameter reads as its declared default, the value the form shows for it, and is otherwise
+    /// missing.
+    pub(crate) fn of(form: &Form, entries: &Map<String, Value>) -> Self {
+        let mut values = Self::default();
+        for (key, entry) in entries {
+            if entry["type"] == "literal" {
+                values.fixed.insert(key.clone(), entry["value"].clone());
+            } else {
+                values.pending.push(key.clone());
+            }
+        }
+        for field in &form.fields {
+            if let Some(default) = &field.default
+                && !entries.contains_key(&field.key)
+            {
+                values.fixed.insert(field.key.clone(), default.clone());
+            }
+        }
+        values
+    }
 }
 
 /// One declared input.
@@ -224,11 +258,12 @@ pub(crate) enum Kind {
 }
 
 impl Form {
-    /// Reads `{"fields": [...]}`. Entries that are not objects with a string `key` are skipped, since
-    /// they cannot be bound to a parameter.
+    /// Reads `{"fields": [...]}`; a record root carries no `kind`, a union root one mode field. Entries
+    /// that are not objects with a string `key` are skipped, since they cannot be bound to a parameter.
     pub(crate) fn parse(schema: &Value) -> Self {
         Self {
             fields: fields_of(&schema["fields"]),
+            free_form: matches!(word(schema, "kind"), "any" | "scalar"),
         }
     }
 }
@@ -253,18 +288,11 @@ impl Field {
         let key = text(&value["key"])?;
         let type_name = word(value, "type").to_owned();
         let kind = Kind::parse(&type_name, value);
-        // A computed field only ever holds an expression; the others follow the declared mode.
-        let expression = match word(value, "expression") {
-            "forbidden" => ExpressionMode::Forbidden,
-            "required" => ExpressionMode::Required,
-            _ if matches!(kind, Kind::Computed { .. }) => ExpressionMode::Required,
-            _ if matches!(
-                kind,
-                Kind::Boolean { .. } | Kind::Select { .. } | Kind::Notice { .. }
-            ) =>
-            {
-                ExpressionMode::Forbidden
-            },
+        // The wire omits the default mode, `allowed`. A computed field only ever holds an expression
+        // and a notice holds no value, whatever is declared.
+        let expression = match (&kind, word(value, "expression")) {
+            (Kind::Computed { .. }, _) | (_, "required") => ExpressionMode::Required,
+            (Kind::Notice { .. }, _) | (_, "forbidden") => ExpressionMode::Forbidden,
             _ => ExpressionMode::Allowed,
         };
         Some(Self {
@@ -333,21 +361,21 @@ impl Field {
         }
     }
 
-    /// Whether the field takes part in the form given its siblings' values. An unreadable condition
-    /// shows the field, so a newer rule never hides an input a person needs.
-    pub(crate) fn is_visible(&self, siblings: &Map<String, Value>) -> bool {
+    /// Whether the field takes part in the form given the node's values. A condition the client cannot
+    /// judge shows the field, so a newer rule or a run-time value never hides an input a person needs.
+    pub(crate) fn is_visible(&self, values: &Values) -> bool {
         match &self.visible {
             Condition::Always => true,
             Condition::Never => false,
-            Condition::When(rule) => holds(rule, siblings).unwrap_or(true),
+            Condition::When(rule) => holds(rule, values).unwrap_or(true),
         }
     }
 
-    pub(crate) fn is_required(&self, siblings: &Map<String, Value>) -> bool {
+    pub(crate) fn is_required(&self, values: &Values) -> bool {
         match &self.required {
             Condition::Always => true,
             Condition::Never => false,
-            Condition::When(rule) => holds(rule, siblings).unwrap_or(false),
+            Condition::When(rule) => holds(rule, values).unwrap_or(false),
         }
     }
 
@@ -370,12 +398,12 @@ impl Field {
             if let Some(min) = bounds.min
                 && number < min
             {
-                return Some(format!("At least {}.", trim_number(min)));
+                return Some(format!("At least {}.", format_number(min)));
             }
             if let Some(max) = bounds.max
                 && number > max
             {
-                return Some(format!("At most {}.", trim_number(max)));
+                return Some(format!("At most {}.", format_number(max)));
             }
         }
         if let Some(text) = value.as_str() {
@@ -390,20 +418,11 @@ impl Field {
             {
                 return Some(format!("At most {max} characters."));
             }
-            let hint = match self.kind {
-                Kind::Text { hint, .. } => hint,
-                _ => Hint::Text,
-            };
-            if (bounds.email || hint == Hint::Email) && !looks_like_email(text) {
+            if bounds.email && !looks_like_email(text) {
                 return Some("Enter an email address.".to_owned());
             }
-            if (bounds.url || hint == Hint::Url) && !looks_like_url(text) {
+            if bounds.url && !looks_like_url(text) {
                 return Some("Enter a URL starting with http:// or https://.".to_owned());
-            }
-            if let Some(format) = date_format(hint)
-                && !matches_digits(text, format)
-            {
-                return Some(format!("Use the format {format}."));
             }
         }
         if let (
@@ -428,6 +447,24 @@ impl Field {
             }
         }
         None
+    }
+
+    /// The shape the field's hint expects, when typed text does not have it. A hint only guides how
+    /// an input is drawn, and the server accepts other text, so this is advice rather than a problem.
+    pub(crate) fn advice(&self, value: &Value) -> Option<String> {
+        let text = value.as_str().filter(|text| !text.is_empty())?;
+        let Kind::Text { hint, .. } = self.kind else {
+            return None;
+        };
+        match hint {
+            Hint::Email if !looks_like_email(text) => Some("Looks unlike an email address.".into()),
+            Hint::Url if !looks_like_url(text) => {
+                Some("Usually a URL starting with http:// or https://.".into())
+            },
+            _ => date_format(hint)
+                .filter(|format| !matches_digits(text, format))
+                .map(|format| format!("Usually written as {format}.")),
+        }
     }
 }
 
@@ -491,7 +528,8 @@ fn looks_like_url(text: &str) -> bool {
     })
 }
 
-fn trim_number(number: f64) -> String {
+/// A number as a person writes it: `3`, not `3.0`.
+pub(crate) fn format_number(number: f64) -> String {
     if number.fract() == 0.0 && number.abs() < 1e15 {
         format!("{number:.0}")
     } else {
@@ -529,21 +567,37 @@ impl Bounds {
     fn parse(rules: &Value) -> Self {
         let mut bounds = Self::default();
         for rule in rules.as_array().into_iter().flatten() {
-            let Some((name, argument)) = rule.as_object().and_then(|rule| rule.iter().next())
-            else {
-                continue;
-            };
-            match name.as_str() {
-                "min" => bounds.min = argument.as_f64(),
-                "max" => bounds.max = argument.as_f64(),
-                "min_length" => bounds.min_length = argument.as_u64(),
-                "max_length" => bounds.max_length = argument.as_u64(),
-                "email" => bounds.email = true,
-                "url" => bounds.url = true,
-                _ => {},
-            }
+            bounds.read(rule);
         }
         bounds
+    }
+
+    /// One value rule. Rules without an argument travel as a bare name (`"email"`), the others as a
+    /// one-key object (`{"min_length": 3}`), and a rule with a custom message as `described`.
+    fn read(&mut self, rule: &Value) {
+        if let Some(name) = rule.as_str() {
+            match name {
+                "email" => self.email = true,
+                "url" => self.url = true,
+                _ => {},
+            }
+            return;
+        }
+        let Some((name, argument)) = rule.as_object().and_then(|rule| rule.iter().next()) else {
+            return;
+        };
+        match name.as_str() {
+            "min" => self.min = argument.as_f64(),
+            "max" => self.max = argument.as_f64(),
+            "min_length" => self.min_length = argument.as_u64(),
+            "max_length" => self.max_length = argument.as_u64(),
+            "described" => {
+                if let Some(inner) = argument.as_array().and_then(|pair| pair.first()) {
+                    self.read(inner);
+                }
+            },
+            _ => {},
+        }
     }
 }
 
@@ -704,43 +758,51 @@ pub(crate) fn display(value: &Value) -> String {
         .map_or_else(|| value.to_string(), str::to_owned)
 }
 
-/// Evaluates a `nebula-validator` rule against sibling values. `None` means the rule uses something
-/// this client cannot judge, such as a regular expression, or a sibling that holds an expression.
-pub(crate) fn holds(rule: &Value, siblings: &Map<String, Value>) -> Option<bool> {
+/// Evaluates a `nebula-validator` rule against the node's values, as the server does: a missing
+/// value makes `ne` and `empty` true and every other predicate false. `None` means the client cannot
+/// judge the rule: it reads a value only known when the node runs, or a rule this client does not
+/// know, such as a regular expression.
+pub(crate) fn holds(rule: &Value, values: &Values) -> Option<bool> {
     let (name, argument) = rule.as_object()?.iter().next()?;
-    let at = |path: &Value| path.as_str().and_then(|path| lookup(siblings, path));
+    // `?` gives up on a value not known yet; what remains is the value, or `None` when missing.
+    let at = |path: &Value| match lookup(values, path.as_str()?) {
+        Lookup::Found(value) => Some(Some(value)),
+        Lookup::Missing => Some(None),
+        Lookup::Unknown => None,
+    };
     let pair = || {
         let pair = argument.as_array()?;
         Some((pair.first()?, pair.get(1)?))
     };
     let compare = |order: fn(f64, f64) -> bool| -> Option<bool> {
         let (path, bound) = pair()?;
+        let bound = bound.as_f64()?;
         Some(
             at(path)?
-                .as_f64()
-                .is_some_and(|value| order(value, bound.as_f64().unwrap_or(f64::NAN))),
+                .and_then(Value::as_f64)
+                .is_some_and(|value| order(value, bound)),
         )
     };
     match name.as_str() {
         "eq" => {
             let (path, expected) = pair()?;
-            Some(at(path).unwrap_or(&Value::Null) == expected)
+            Some(at(path)? == Some(expected))
         },
         "ne" => {
             let (path, expected) = pair()?;
-            Some(at(path).unwrap_or(&Value::Null) != expected)
+            Some(at(path)?.is_none_or(|value| value != expected))
         },
         "gt" => compare(|value, bound| value > bound),
         "gte" => compare(|value, bound| value >= bound),
         "lt" => compare(|value, bound| value < bound),
         "lte" => compare(|value, bound| value <= bound),
-        "is_true" => Some(at(argument) == Some(&Value::Bool(true))),
-        "is_false" => Some(at(argument) == Some(&Value::Bool(false))),
-        "set" => Some(at(argument).is_some_and(|value| !is_empty(value))),
-        "empty" => Some(at(argument).is_none_or(is_empty)),
+        "is_true" => Some(at(argument)?.and_then(Value::as_bool) == Some(true)),
+        "is_false" => Some(at(argument)?.and_then(Value::as_bool) == Some(false)),
+        "set" => Some(at(argument)?.is_some_and(|value| !is_empty(value))),
+        "empty" => Some(at(argument)?.is_none_or(is_empty)),
         "contains" => {
             let (path, needle) = pair()?;
-            Some(match at(path) {
+            Some(match at(path)? {
                 Some(Value::Array(items)) => items.contains(needle),
                 Some(Value::String(text)) => {
                     needle.as_str().is_some_and(|needle| text.contains(needle))
@@ -750,47 +812,69 @@ pub(crate) fn holds(rule: &Value, siblings: &Map<String, Value>) -> Option<bool>
         },
         "in" => {
             let (path, allowed) = pair()?;
-            let value = at(path).unwrap_or(&Value::Null);
-            Some(
-                allowed
-                    .as_array()
-                    .is_some_and(|allowed| allowed.contains(value)),
-            )
+            let allowed = allowed.as_array()?;
+            Some(at(path)?.is_some_and(|value| allowed.contains(value)))
         },
         "all" => {
             let mut all = true;
             for child in argument.as_array()? {
-                all &= holds(child, siblings)?;
+                all &= holds(child, values)?;
             }
             Some(all)
         },
         "any" => {
             let mut any = false;
             for child in argument.as_array()? {
-                any |= holds(child, siblings)?;
+                any |= holds(child, values)?;
             }
             Some(any)
         },
-        "not" => holds(argument, siblings).map(|inner| !inner),
-        "described" => holds(argument.as_array()?.first()?, siblings),
+        "not" => holds(argument, values).map(|inner| !inner),
+        "described" => holds(argument.as_array()?.first()?, values),
         _ => None,
     }
 }
 
-/// Paths travel as JSON Pointers (`/auth/kind`), relative to the sibling values.
-fn lookup<'a>(siblings: &'a Map<String, Value>, path: &str) -> Option<&'a Value> {
-    let mut parts = path
-        .strip_prefix('/')?
+/// What a condition path finds among the node's values.
+enum Lookup<'a> {
+    Found(&'a Value),
+    Missing,
+    /// A malformed path, or one that starts at a value only known when the node runs.
+    Unknown,
+}
+
+/// Paths travel as JSON Pointers (`/auth/kind`) from the root of the node's values, also for fields
+/// nested in an object.
+fn lookup<'a>(values: &'a Values, path: &str) -> Lookup<'a> {
+    let Some(rest) = path.strip_prefix('/') else {
+        return Lookup::Unknown;
+    };
+    let mut parts = rest
         .split('/')
         .map(|part| part.replace("~1", "/").replace("~0", "~"));
-    let mut current = siblings.get(&parts.next()?)?;
-    for part in parts {
-        current = match current {
-            Value::Array(items) => items.get(part.parse::<usize>().ok()?)?,
-            other => other.get(&part)?,
-        };
+    let Some(first) = parts.next() else {
+        return Lookup::Unknown;
+    };
+    if values.pending.contains(&first) {
+        return Lookup::Unknown;
     }
-    Some(current)
+    let Some(mut current) = values.fixed.get(&first) else {
+        return Lookup::Missing;
+    };
+    for part in parts {
+        let next = match current {
+            Value::Array(items) => part
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get(index)),
+            other => other.get(&part),
+        };
+        let Some(next) = next else {
+            return Lookup::Missing;
+        };
+        current = next;
+    }
+    Lookup::Found(current)
 }
 
 #[cfg(test)]

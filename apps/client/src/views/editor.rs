@@ -237,7 +237,7 @@ fn action_bar(
 }
 
 fn identity(ui: &mut egui::Ui, view: &DraftView, busy: bool) {
-    ui.label(RichText::new(&view.name).size(18.0).strong());
+    ui.label(RichText::new(&view.name).size(theme::SIZE_TITLE).strong());
     // While a write is in flight its outcome is still open; only a settled failure is unknown.
     let (state, tone) = if view.uncertain && busy {
         ("Saving…", Tone::Accent)

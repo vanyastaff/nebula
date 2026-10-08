@@ -9,12 +9,12 @@
 use crate::{
     schema::{
         self, BooleanWidget, Choice, ExpressionMode, Field, Form, Hint, Kind, ListWidget,
-        NumberWidget, ObjectWidget, SelectWidget, Severity,
+        NumberWidget, ObjectWidget, SelectWidget, Severity, Values,
     },
     theme,
     widgets::{self, Tone},
 };
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, RichText};
 use serde_json::{Map, Value, json};
 
 /// Room a slider leaves for its value box and the gap before it. Rows that measure their own widths
@@ -38,25 +38,13 @@ pub(crate) fn show(
     entries: &Map<String, Value>,
     scope: egui::Id,
 ) -> Vec<FormEdit> {
-    // Conditions read the fixed values of the other parameters, or their defaults.
-    let siblings: Map<String, Value> = form
-        .fields
-        .iter()
-        .filter_map(|field| {
-            let value = match entries.get(&field.key) {
-                Some(entry) if entry["type"] == "literal" => entry["value"].clone(),
-                Some(_) => return None,
-                None => field.initial(),
-            };
-            Some((field.key.clone(), value))
-        })
-        .collect();
+    let values = Values::of(form, entries);
     let visible: Vec<&Field> = form
         .fields
         .iter()
-        .filter(|field| field.is_visible(&siblings))
+        .filter(|field| field.is_visible(&values))
         .collect();
-    readiness(ui, &visible, entries, &siblings);
+    readiness(ui, &visible, entries, &values);
     let mut edits = Vec::new();
     let mut group: Option<&str> = None;
     for field in visible {
@@ -66,8 +54,9 @@ pub(crate) fn show(
                 section_header(ui, name);
             }
         }
-        let required = field.is_required(&siblings);
-        if let Some(edit) = top_field(ui, field, entries.get(&field.key), required, scope) {
+        let required = field.is_required(&values);
+        if let Some(edit) = top_field(ui, field, entries.get(&field.key), required, scope, &values)
+        {
             edits.push(edit);
         }
         ui.add_space(theme::SPACE_MD);
@@ -77,15 +66,10 @@ pub(crate) fn show(
 
 /// Whether the node is ready to publish as far as the form can tell: every required input visible
 /// right now holds a value. Shown first, so a person knows at a glance what is left.
-fn readiness(
-    ui: &mut egui::Ui,
-    fields: &[&Field],
-    entries: &Map<String, Value>,
-    siblings: &Map<String, Value>,
-) {
+fn readiness(ui: &mut egui::Ui, fields: &[&Field], entries: &Map<String, Value>, values: &Values) {
     let required: Vec<&&Field> = fields
         .iter()
-        .filter(|field| !matches!(field.kind, Kind::Notice { .. }) && field.is_required(siblings))
+        .filter(|field| !matches!(field.kind, Kind::Notice { .. }) && field.is_required(values))
         .collect();
     if required.is_empty() {
         return;
@@ -94,10 +78,12 @@ fn readiness(
         .iter()
         .filter(|field| match entries.get(&field.key) {
             None => true,
+            Some(entry) if entry["type"] == "literal" => schema::is_empty(&entry["value"]),
             Some(entry) if entry["type"] == "expression" => entry["expr"]
                 .as_str()
                 .is_none_or(|text| text.trim().is_empty()),
-            Some(entry) => schema::is_empty(&entry["value"]),
+            // A template or a reference is set; the server judges it when the node runs.
+            Some(_) => false,
         })
         .map(|field| field.title())
         .collect();
@@ -124,7 +110,7 @@ fn section_header(ui: &mut egui::Ui, name: &str) {
     ui.add_space(theme::SPACE_SM);
     ui.label(
         RichText::new(name.to_uppercase())
-            .size(11.0)
+            .size(theme::SIZE_OVERLINE)
             .strong()
             .extra_letter_spacing(1.2)
             .color(theme::TEXT_MUTED),
@@ -145,6 +131,7 @@ fn top_field(
     entry: Option<&Value>,
     required: bool,
     scope: egui::Id,
+    values: &Values,
 ) -> Option<FormEdit> {
     if let Kind::Notice { severity } = field.kind {
         notice(ui, field, severity);
@@ -155,6 +142,7 @@ fn top_field(
         .and_then(|entry| entry["type"].as_str())
         .unwrap_or("literal");
     let expression = kind_of_entry == "expression" || field.expression == ExpressionMode::Required;
+    let literal = kind_of_entry == "literal" && !expression;
     let mut edit = None;
     ui.horizontal(|ui| {
         label(ui, field, required);
@@ -162,7 +150,7 @@ fn top_field(
             ui.spacing_mut().item_spacing.x = theme::SPACE_SM;
             // Read right to left: Expression is added first so Fixed sits on its left, then Reset.
             if field.expression == ExpressionMode::Allowed {
-                if link(ui, "Expression", expression)
+                if widgets::link(ui, "Expression", expression)
                     .on_hover_text("Compute the value when the node runs")
                     .clicked()
                     && !expression
@@ -173,17 +161,17 @@ fn top_field(
                         .unwrap_or_default();
                     edit = Some(FormEdit::Expression(field.key.clone(), start));
                 }
-                if link(ui, "Fixed", !expression)
+                if widgets::link(ui, "Fixed", literal)
                     .on_hover_text("Enter the value itself")
                     .clicked()
-                    && expression
+                    && !literal
                 {
-                    edit = Some(FormEdit::Literal(field.key.clone(), field.initial()));
+                    edit = Some(fixed(&field.key, field.initial()));
                 }
             }
             if entry.is_some()
                 && field.expression != ExpressionMode::Required
-                && link(ui, "Reset", false)
+                && widgets::link(ui, "Reset", false)
                     .on_hover_text("Remove the value, so the action's default applies")
                     .clicked()
             {
@@ -214,19 +202,26 @@ fn top_field(
         },
         "literal" => {
             let mut value = entry.map_or_else(|| field.initial(), |entry| entry["value"].clone());
-            let changed = control(ui, field, &mut value, id);
+            let changed = control(ui, field, &mut value, id, values);
             // An untouched field is only reminded that it needs a value; checks apply once one is set.
             match (entry, field.problem(&value, required)) {
                 (None, Some(_)) if required => needed(ui),
                 (Some(_), Some(text)) => problem(ui, &text),
-                _ => {},
+                _ => {
+                    if let Some(text) = field.advice(&value) {
+                        hint(ui, &text);
+                    }
+                },
             }
-            changed.then(|| FormEdit::Literal(field.key.clone(), value))
+            changed.then(|| fixed(&field.key, value))
         },
         other => {
             widgets::caption(
                 ui,
-                format!("This parameter is a {other}; edit it as JSON in the Settings tab."),
+                format!(
+                    "This parameter is a {other}, which this form does not edit. Reset it to \
+                     enter a value here."
+                ),
             );
             None
         },
@@ -236,6 +231,16 @@ fn top_field(
         hint(ui, description);
     }
     result
+}
+
+/// A fixed value for a parameter. An empty value (`null`) is no value: the parameter is removed, since
+/// the server rejects a literal null for a typed input and treats an absent one as unset.
+fn fixed(key: &str, value: Value) -> FormEdit {
+    if value.is_null() {
+        FormEdit::Clear(key.to_owned())
+    } else {
+        FormEdit::Literal(key.to_owned(), value)
+    }
 }
 
 /// A full-width ghost button in the accent colour, for growing a list. Disabled at the list's limit.
@@ -249,7 +254,11 @@ fn add_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
 }
 
 fn hint(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).size(12.0).color(theme::TEXT_MUTED));
+    ui.label(
+        RichText::new(text)
+            .size(theme::SIZE_SMALL)
+            .color(theme::TEXT_MUTED),
+    );
 }
 
 /// An expression input: an `fx` mark and an accent-tinted field, so a computed value never passes
@@ -283,7 +292,11 @@ fn label(ui: &mut egui::Ui, field: &Field, required: bool) {
 }
 
 fn problem(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).color(theme::DANGER).size(12.0));
+    ui.label(
+        RichText::new(text)
+            .color(theme::DANGER)
+            .size(theme::SIZE_SMALL),
+    );
 }
 
 /// A required field still waiting for its value: a reminder, not yet an error.
@@ -291,18 +304,8 @@ fn needed(ui: &mut egui::Ui) {
     ui.label(
         RichText::new("Needs a value before the workflow is published.")
             .color(theme::WARNING)
-            .size(12.0),
+            .size(theme::SIZE_SMALL),
     );
-}
-
-/// A small frameless text button for the field row; the active one is drawn in the accent colour.
-fn link(ui: &mut egui::Ui, text: &str, active: bool) -> egui::Response {
-    let color = if active {
-        theme::ACCENT
-    } else {
-        theme::TEXT_MUTED
-    };
-    ui.add(egui::Button::new(RichText::new(text).size(12.0).color(color)).frame(false))
 }
 
 fn notice(ui: &mut egui::Ui, field: &Field, severity: Severity) {
@@ -320,8 +323,15 @@ fn notice(ui: &mut egui::Ui, field: &Field, severity: Severity) {
     widgets::banner(ui, tone, &text);
 }
 
-/// The control for one value. Returns true when the value changed and should be committed.
-fn control(ui: &mut egui::Ui, field: &Field, value: &mut Value, id: egui::Id) -> bool {
+/// The control for one value. Returns true when the value changed and should be committed. `values`
+/// are the node's values from the root, which conditions of nested fields read.
+fn control(
+    ui: &mut egui::Ui,
+    field: &Field,
+    value: &mut Value,
+    id: egui::Id,
+    values: &Values,
+) -> bool {
     match &field.kind {
         Kind::Text { hint, multiline } => text_control(ui, field, *hint, *multiline, value, id),
         Kind::Secret { multiline } => secret_control(ui, field, *multiline, value, id),
@@ -352,7 +362,7 @@ fn control(ui: &mut egui::Ui, field: &Field, value: &mut Value, id: egui::Id) ->
             value,
             id,
         ),
-        Kind::Object { fields, widget } => object_control(ui, fields, *widget, value, id),
+        Kind::Object { fields, widget } => object_control(ui, fields, *widget, value, id, values),
         Kind::List {
             item,
             min_items,
@@ -370,11 +380,12 @@ fn control(ui: &mut egui::Ui, field: &Field, value: &mut Value, id: egui::Id) ->
             },
             value,
             id,
+            values,
         ),
         Kind::Mode {
             variants,
             default_variant: _,
-        } => mode_control(ui, variants, value, id),
+        } => mode_control(ui, variants, value, id, values),
         Kind::Code { language, simple } => code_control(ui, language, *simple, value, id),
         Kind::File {
             accept,
@@ -469,6 +480,21 @@ fn buffered_input(
         ui.data_mut(|data| data.insert_temp(egui::Id::new(TYPING), session));
     }
     Some(text)
+}
+
+/// A typed tag as the list's item type: a number list takes numbers, so text that is not one is not
+/// added. Other items are text.
+fn tag_value(item: &Field, text: &str) -> Option<Value> {
+    match item.kind {
+        Kind::Number { integer: true, .. } => text.parse::<i64>().ok().map(Value::from),
+        Kind::Number { .. } => text
+            .replace(',', ".")
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        _ => Some(Value::from(text)),
+    }
 }
 
 /// A box for a new list entry, added when Enter is pressed or focus leaves. Unlike `buffered`, its
@@ -584,6 +610,7 @@ fn number_control(
     id: egui::Id,
 ) -> bool {
     let current = value.as_f64();
+    let declared_step = step;
     let step = step.unwrap_or(1.0);
     let store = |value: &mut Value, number: f64| {
         *value = if integer {
@@ -606,7 +633,11 @@ fn number_control(
             // The slider takes the row; egui otherwise draws a short default track.
             // The track takes the row minus the value box beside it and the gap between them.
             ui.spacing_mut().slider_width = (ui.available_width() - SLIDER_VALUE_ROOM).max(80.0);
-            let slider = egui::Slider::new(&mut number, min..=max).step_by(step);
+            let mut slider = egui::Slider::new(&mut number, min..=max);
+            // Without a declared step a fractional range stays continuous, so 0–1 is not just 0 or 1.
+            if let Some(step) = declared_step {
+                slider = slider.step_by(step);
+            }
             let response = ui.add(if integer { slider.integer() } else { slider });
             if response.dragged() {
                 ui.data_mut(|data| data.insert_temp(drag_id, number));
@@ -638,8 +669,8 @@ fn number_control(
                     ui.painter().text(
                         response.rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        format_number(number),
-                        egui::FontId::proportional(15.0),
+                        schema::format_number(number),
+                        egui::FontId::proportional(theme::SIZE_LABEL),
                         theme::TEXT,
                     );
                     response
@@ -658,17 +689,14 @@ fn number_control(
         | NumberWidget::Currency
         | NumberWidget::Duration
         | NumberWidget::Bytes => {
-            let (prefix, suffix) = match widget {
+            let suffix = match widget {
                 // The schema names no currency or time unit, so none is invented here.
-                NumberWidget::Percent => ("", "%"),
-                NumberWidget::Bytes => ("", "bytes"),
-                _ => ("", ""),
+                NumberWidget::Percent => "%",
+                NumberWidget::Bytes => "bytes",
+                _ => "",
             };
-            let shown = current.map(format_number).unwrap_or_default();
+            let shown = current.map(schema::format_number).unwrap_or_default();
             ui.horizontal(|ui| {
-                if !prefix.is_empty() {
-                    ui.label(RichText::new(prefix).color(theme::TEXT_MUTED));
-                }
                 let error_id = id.with("unparsed");
                 // Leave room for the unit after the field.
                 ui.scope(|ui| {
@@ -715,14 +743,6 @@ fn number_control(
         },
     }
     changed
-}
-
-fn format_number(number: f64) -> String {
-    if number.fract() == 0.0 && number.abs() < 1e15 {
-        format!("{number:.0}")
-    } else {
-        number.to_string()
-    }
 }
 
 fn human_bytes(bytes: f64) -> String {
@@ -789,7 +809,7 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool, id: egui::Id) {
         egui::StrokeKind::Inside,
     );
     let x = egui::lerp((rect.left() + 10.0)..=(rect.right() - 10.0), position);
-    painter.circle_filled(egui::pos2(x, rect.center().y), 7.0, Color32::WHITE);
+    painter.circle_filled(egui::pos2(x, rect.center().y), 7.0, theme::ON_ACCENT);
 }
 
 struct SelectSpec<'a> {
@@ -895,7 +915,7 @@ fn select_control(
     }
     if spec.allow_custom {
         let known = spec.options.iter().any(|choice| &choice.value == value);
-        let current = if known {
+        let current = if known || value.is_null() {
             String::new()
         } else {
             schema::display(value)
@@ -978,34 +998,41 @@ fn chip(ui: &mut egui::Ui, text: &str) -> bool {
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = theme::SPACE_XS;
-                ui.label(RichText::new(text).size(13.0));
+                ui.label(RichText::new(text).size(theme::SIZE_BODY));
                 remove = ui.small_button("×").on_hover_text("Remove").clicked();
             });
         });
     remove
 }
 
-/// Nested fields of an object, each against the object's own values. Returns true on any change.
+/// Nested fields of an object. Their conditions name paths from the root of the node's values, as the
+/// server reads them. Returns true on any change.
 fn fields_block(
     ui: &mut egui::Ui,
     fields: &[&Field],
     map: &mut Map<String, Value>,
     id: egui::Id,
+    values: &Values,
 ) -> bool {
-    let siblings = map.clone();
     let mut changed = false;
-    for field in fields.iter().filter(|field| field.is_visible(&siblings)) {
+    for field in fields.iter().filter(|field| field.is_visible(values)) {
         if let Kind::Notice { severity } = field.kind {
             notice(ui, field, severity);
             continue;
         }
-        let required = field.is_required(&siblings);
+        let required = field.is_required(values);
         ui.horizontal(|ui| label(ui, field, required));
         let mut value = map
             .get(&field.key)
             .cloned()
             .unwrap_or_else(|| field.initial());
-        if control(ui, field, &mut value, id.with(&field.key)) {
+        if control(
+            ui,
+            field,
+            &mut value,
+            id.with(("field", &field.key)),
+            values,
+        ) {
             map.insert(field.key.clone(), value.clone());
             changed = true;
         }
@@ -1014,6 +1041,8 @@ fn fields_block(
             needed(ui);
         } else if let Some(text) = field.problem(&value, required) {
             problem(ui, &text);
+        } else if let Some(text) = field.advice(&value) {
+            hint(ui, &text);
         }
         if let Some(description) = &field.description {
             hint(ui, description);
@@ -1047,25 +1076,26 @@ fn object_control(
     widget: ObjectWidget,
     value: &mut Value,
     id: egui::Id,
+    values: &Values,
 ) -> bool {
     let mut map = value.as_object().cloned().unwrap_or_default();
     let all: Vec<&Field> = fields.iter().collect();
     let changed = match widget {
-        ObjectWidget::Inline => nested(ui, |ui| fields_block(ui, &all, &mut map, id)),
+        ObjectWidget::Inline => nested(ui, |ui| fields_block(ui, &all, &mut map, id, values)),
         ObjectWidget::Collapsed => egui::CollapsingHeader::new(match fields.len() {
             1 => "1 field".to_owned(),
             count => format!("{count} fields"),
         })
         .id_salt(id.with("collapsed"))
         .default_open(false)
-        .show(ui, |ui| fields_block(ui, &all, &mut map, id))
+        .show(ui, |ui| fields_block(ui, &all, &mut map, id, values))
         .body_returned
         .unwrap_or(false),
         ObjectWidget::Sections => nested(ui, |ui| {
             let mut changed = false;
             for (group, members) in grouped(fields) {
                 ui.label(RichText::new(group).strong().color(theme::TEXT_MUTED));
-                changed |= fields_block(ui, &members, &mut map, id);
+                changed |= fields_block(ui, &members, &mut map, id, values);
             }
             changed
         }),
@@ -1085,7 +1115,7 @@ fn object_control(
             });
             ui.data_mut(|data| data.insert_temp(tab_id, tab));
             groups.get(tab).is_some_and(|(_, members)| {
-                nested(ui, |ui| fields_block(ui, members, &mut map, id))
+                nested(ui, |ui| fields_block(ui, members, &mut map, id, values))
             })
         },
         ObjectWidget::PickFields => nested(ui, |ui| {
@@ -1093,7 +1123,7 @@ fn object_control(
                 .iter()
                 .filter(|field| map.contains_key(&field.key))
                 .collect();
-            let mut changed = fields_block(ui, &present, &mut map, id);
+            let mut changed = fields_block(ui, &present, &mut map, id, values);
             let mut removed = None;
             if !present.is_empty() {
                 ui.horizontal_wrapped(|ui| {
@@ -1160,6 +1190,7 @@ fn list_control(
     spec: &ListSpec,
     value: &mut Value,
     id: egui::Id,
+    values: &Values,
 ) -> bool {
     let Some(item) = item else {
         widgets::caption(ui, "This list declares no item shape; enter it as JSON.");
@@ -1170,7 +1201,14 @@ fn list_control(
     let count = items.len() as u64;
     let can_remove = count > spec.min;
     let can_add = count < spec.max;
-    match spec.widget {
+    // Key/value rows need object items to have columns; any other item is listed plainly.
+    let widget = if spec.widget == ListWidget::KeyValue && !matches!(item.kind, Kind::Object { .. })
+    {
+        ListWidget::Plain
+    } else {
+        spec.widget
+    };
+    match widget {
         ListWidget::Tags => {
             ui.horizontal_wrapped(|ui| {
                 let mut removed = None;
@@ -1183,8 +1221,11 @@ fn list_control(
                     items.remove(index);
                 }
             });
-            if can_add && let Some(text) = entry_box(ui, id.with("new"), "Type and press Enter") {
-                items.push(Value::from(text));
+            if can_add
+                && let Some(text) = entry_box(ui, id.with("new"), "Type and press Enter")
+                && let Some(entry) = tag_value(item, &text)
+            {
+                items.push(entry);
             }
         },
         ListWidget::KeyValue => {
@@ -1204,16 +1245,14 @@ fn list_control(
                     for column in &columns {
                         ui.scope(|ui| {
                             ui.set_width(width);
-                            let current = map
+                            // Each column keeps its own type, so a number column stores numbers.
+                            let mut cell = map
                                 .get(&column.key)
-                                .map(schema::display)
-                                .unwrap_or_default();
-                            if let Some(text) =
-                                buffered(ui, id.with((index, &column.key)), &current, |edit| {
-                                    edit.hint_text(column.title())
-                                })
-                            {
-                                map.insert(column.key.clone(), Value::from(text));
+                                .cloned()
+                                .unwrap_or_else(|| column.initial());
+                            let cell_id = id.with(("cell", index, &column.key));
+                            if control(ui, column, &mut cell, cell_id, values) {
+                                map.insert(column.key.clone(), cell);
                                 *entry = Value::Object(map.clone());
                             }
                         });
@@ -1251,7 +1290,7 @@ fn list_control(
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(format!("Item {}", index + 1))
-                                    .size(12.0)
+                                    .size(theme::SIZE_SMALL)
                                     .color(theme::TEXT_MUTED),
                             );
                             ui.with_layout(
@@ -1266,7 +1305,7 @@ fn list_control(
                                 },
                             );
                         });
-                        if control(ui, item, entry, row_id) {
+                        if control(ui, item, entry, row_id, values) {
                             action = action.take().or(Some(ListAction::Edited));
                         }
                         ui.add_space(theme::SPACE_SM);
@@ -1278,7 +1317,7 @@ fn list_control(
                             (ui.available_width() - room - ui.spacing().item_spacing.x).max(40.0);
                         ui.scope(|ui| {
                             ui.set_width(width);
-                            if control(ui, item, entry, row_id) {
+                            if control(ui, item, entry, row_id, values) {
                                 action = action.take().or(Some(ListAction::Edited));
                             }
                         });
@@ -1372,6 +1411,7 @@ fn mode_control(
     variants: &[schema::Variant],
     value: &mut Value,
     id: egui::Id,
+    values: &Values,
 ) -> bool {
     let current_key = value["mode"].as_str().unwrap_or_default().to_owned();
     let mut chosen = current_key.clone();
@@ -1414,8 +1454,8 @@ fn mode_control(
     let Some(variant) = variants.iter().find(|variant| variant.key == current_key) else {
         return false;
     };
-    // A variant without a visible payload, such as "none", has nothing more to fill in.
-    if !variant.field.is_visible(&Map::new()) {
+    // A variant whose payload is never shown, such as "none", has nothing more to fill in.
+    if variant.field.visible == schema::Condition::Never || !variant.field.is_visible(values) {
         return false;
     }
     let mut payload = value["value"].clone();
@@ -1423,7 +1463,13 @@ fn mode_control(
         payload = variant.field.initial();
     }
     let changed = nested(ui, |ui| {
-        control(ui, &variant.field, &mut payload, id.with(&variant.key))
+        control(
+            ui,
+            &variant.field,
+            &mut payload,
+            id.with(("variant", &variant.key)),
+            values,
+        )
     });
     if changed {
         *value = json!({"mode": current_key, "value": payload});
@@ -1509,4 +1555,30 @@ fn json_control(ui: &mut egui::Ui, value: &mut Value, id: egui::Id) -> bool {
         problem(ui, "Not valid JSON; the last valid value is kept.");
     }
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_fixed_value_removes_the_parameter() {
+        assert!(matches!(fixed("count", Value::Null), FormEdit::Clear(key) if key == "count"));
+        assert!(matches!(
+            fixed("count", json!(0)),
+            FormEdit::Literal(key, value) if key == "count" && value == json!(0)
+        ));
+    }
+
+    #[test]
+    fn a_tag_takes_the_list_item_type() {
+        let numbers = Form::parse(&json!({"fields": [
+            {"type": "number", "key": "item", "integer": true}
+        ]}));
+        let item = &numbers.fields[0];
+        assert_eq!(tag_value(item, "42"), Some(json!(42)));
+        assert_eq!(tag_value(item, "many"), None);
+        let words = Form::parse(&json!({"fields": [{"type": "string", "key": "item"}]}));
+        assert_eq!(tag_value(&words.fields[0], "42"), Some(json!("42")));
+    }
 }

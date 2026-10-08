@@ -4292,6 +4292,7 @@ version = "0.33.0"
 dependencies = [
  "eframe",
  "nebula-api-contract",
+ "nebula-schema",
  "reqwest",
  "serde",
  "serde-wasm-bindgen",

@@ -119,7 +119,9 @@ fn rows(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents, bus
             .as_ref()
             .is_some_and(|key| key.workflow == id);
         let marker = if workbench.has_unsaved(&id) {
-            RichText::new("Unsaved").color(theme::WARNING).size(12.0)
+            RichText::new("Unsaved")
+                .color(theme::WARNING)
+                .size(theme::SIZE_SMALL)
         } else {
             RichText::new("")
         };
