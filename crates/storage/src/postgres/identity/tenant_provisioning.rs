@@ -1,6 +1,6 @@
 //! Atomic tenant provisioning: org + default workspace + owner grant in one
-//! transaction under the org-id and org-slug advisory locks, replay-safe for
-//! an identical request.
+//! transaction under ordered org-id, slug and workspace-id advisory locks.
+//! Permanent request receipts keep replay independent of current tenant state.
 
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::{
@@ -8,13 +8,13 @@ use nebula_storage_port::dto::{
     TenantProvisioningRequest,
 };
 use nebula_storage_port::store::TenantProvisioningStore;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
-use super::membership::org_role;
-use super::org::{decode_org, insert_org};
-use super::workspace::{decode_workspace, insert_workspace};
-use super::{advisory_xact_lock, optional};
+use super::advisory_xact_lock;
+use super::org::insert_org;
+use super::workspace::insert_workspace;
 use crate::sql_error::storage_error;
+use crate::tenant_provisioning::{REQUEST_VERSION, replay_outcome, request_digest};
 
 /// PostgreSQL atomic tenant-provisioning store.
 #[derive(Clone, Debug)]
@@ -42,6 +42,7 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
     ) -> Result<TenantProvisioningOutcome, StorageError> {
         let org_values = request.org();
         let workspace_values = request.default_workspace();
+        let digest = request_digest(&request)?;
         let mut tx = self.pool.begin().await.map_err(storage_error)?;
         // Backend-authored instants come from the transaction clock, as every
         // other PostgreSQL write here (`now()`).
@@ -51,64 +52,49 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
             .map_err(storage_error)?;
         let org = org_values.materialize(created_at);
         let workspace = workspace_values.materialize(org.id.clone(), created_at);
-        // Sorted so concurrent provisioners acquire the pair in one order.
+        // Stable order also serializes attempts to reuse a purged workspace ID.
         let mut lock_keys = [
             format!("tenant-provisioning:id:{}", org.id),
             format!("tenant-provisioning:slug:{}", org.slug),
+            format!("tenant-provisioning:workspace:{}", workspace.id),
         ];
         lock_keys.sort();
         for key in &lock_keys {
             advisory_xact_lock(&mut tx, key).await?;
         }
-        let org_rows = sqlx::query(
-            "SELECT * FROM orgs WHERE id = $1 OR (slug = $2 AND deleted_at IS NULL) FOR UPDATE",
+        let receipt = sqlx::query(
+            "SELECT request_version, request_digest, initial_workspace_id \
+             FROM tenant_provisioning_receipts WHERE org_id = $1",
         )
         .bind(&org.id)
-        .bind(&org.slug)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage_error)?;
-        let workspace_rows = sqlx::query(
-            "SELECT * FROM workspaces \
-             WHERE id = $2 OR (org_id = $1 AND (slug = $3 OR is_default) AND deleted_at IS NULL) \
-             FOR UPDATE",
-        )
-        .bind(&org.id)
-        .bind(&workspace.id)
-        .bind(&workspace.slug)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage_error)?;
-        let owner_row = sqlx::query(
-            "SELECT role, added_by FROM org_memberships \
-             WHERE org_id = $1 AND principal_kind = $2 AND principal_id = $3 FOR UPDATE",
-        )
-        .bind(&org.id)
-        .bind(request.owner_principal_kind().as_str())
-        .bind(request.owner_principal_id())
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage_error)?;
-
-        let exact_org = match org_rows.as_slice() {
-            [only] => org_values.matches_persisted(&decode_org(only)?),
-            _ => false,
-        };
-        let exact_workspace = match workspace_rows.as_slice() {
-            [only] => workspace_values.matches_persisted(&org.id, &decode_workspace(only)?),
-            _ => false,
-        };
-        let exact_owner = match &owner_row {
-            Some(row) => {
-                org_role(row)? == OrgMembershipRole::Owner
-                    && optional::<String>(row, "added_by")?.as_deref() == request.owner_added_by()
-            },
-            None => false,
-        };
-        if exact_org && exact_workspace && exact_owner {
-            return Ok(TenantProvisioningOutcome::Replayed);
+        if let Some(receipt) = receipt {
+            return replay_outcome(
+                receipt.try_get("request_version").map_err(storage_error)?,
+                receipt.try_get("request_digest").map_err(storage_error)?,
+                receipt
+                    .try_get("initial_workspace_id")
+                    .map_err(storage_error)?,
+                &digest,
+            );
         }
-        if !org_rows.is_empty() || !workspace_rows.is_empty() || owner_row.is_some() {
+        // A fresh org cannot have children: the tenant FKs already enforce it.
+        // Ordinary writers need not acquire our advisory locks; unique indexes
+        // arbitrate any collision that occurs after this snapshot.
+        let occupied: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM orgs WHERE id = $1 OR (slug = $2 AND deleted_at IS NULL)) \
+                OR EXISTS (SELECT 1 FROM workspaces WHERE id = $3) \
+                OR EXISTS (SELECT 1 FROM tenant_provisioning_receipts WHERE initial_workspace_id = $3)",
+        )
+        .bind(&org.id)
+        .bind(&org.slug)
+        .bind(&workspace.id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage_error)?;
+        if occupied {
             return Ok(EXISTING_STATE);
         }
 
@@ -133,6 +119,19 @@ impl TenantProvisioningStore for PgTenantProvisioningStore {
         .bind(request.owner_principal_id())
         .bind(OrgMembershipRole::Owner.as_str())
         .bind(request.owner_added_by())
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage_error)?;
+        sqlx::query(
+            "INSERT INTO tenant_provisioning_receipts \
+             (org_id, initial_workspace_id, request_version, request_digest, recorded_at) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(&org.id)
+        .bind(&workspace.id)
+        .bind(REQUEST_VERSION)
+        .bind(digest.as_slice())
         .bind(created_at)
         .execute(&mut *tx)
         .await

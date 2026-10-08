@@ -58,12 +58,16 @@ pub trait WorkspaceStore: Send + Sync + std::fmt::Debug {
 /// permits ownerless or workspace-less tenants after a partial failure.
 #[async_trait::async_trait]
 pub trait TenantProvisioningStore: Send + Sync + std::fmt::Debug {
-    /// Create all initial tenant records in one transaction or critical section.
+    /// Create all initial tenant records and their receipt in one atomic operation.
     ///
     /// An exact retry returns [`TenantProvisioningOutcome::Replayed`] without
-    /// rewriting any record or refreshing the owner grant. Any partial state,
-    /// semantic mismatch, id collision, or active-slug collision returns a
-    /// conflict outcome and leaves all existing state unchanged.
+    /// rewriting any record or refreshing the owner grant, even after archive
+    /// or purge. The receipt reserves the organization and initial workspace IDs
+    /// permanently. Replay reports historical acceptance, not current authority.
+    /// A different command for that organization, preexisting tenant without
+    /// request evidence, partial state or occupied identity/active slug conflicts.
+    /// Errors, including uncertain commit outcomes, can be retried with the same
+    /// command; they never authorize reconstructing a missing owner grant.
     async fn provision_tenant(
         &self,
         request: TenantProvisioningRequest,

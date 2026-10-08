@@ -20,6 +20,7 @@ use parking_lot::Mutex;
 use super::membership::InMemoryMembershipStore;
 use super::org::InMemoryOrgStore;
 use super::workspace::InMemoryWorkspaceStore;
+use crate::tenant_provisioning::{compare_digest, request_digest};
 
 /// Grant key: `(scope_id, principal_kind, principal_id)`, where the scope is
 /// the organization or the workspace.
@@ -37,7 +38,6 @@ pub(super) fn grant_key(
 #[derive(Debug, Clone)]
 pub(super) struct OrgGrant {
     pub(super) role: OrgMembershipRole,
-    pub(super) added_by: Option<String>,
 }
 
 /// A workspace grant; `org_id` is the workspace's organization.
@@ -55,6 +55,8 @@ pub(super) struct DirectoryState {
     pub(super) workspaces: HashMap<String, WorkspaceRow>,
     pub(super) org_grants: HashMap<GrantKey, OrgGrant>,
     pub(super) workspace_grants: HashMap<GrantKey, WorkspaceGrant>,
+    /// Historical receipt: org ID -> (initial workspace ID, request digest).
+    provisioning_receipts: HashMap<String, (String, [u8; 32])>,
 }
 
 impl DirectoryState {
@@ -124,9 +126,13 @@ impl TenantProvisioningStore for InMemoryIdentityDirectory {
         &self,
         request: TenantProvisioningRequest,
     ) -> Result<TenantProvisioningOutcome, StorageError> {
+        let digest = request_digest(&request)?;
         let mut state = self.inner.lock();
         let org_request = request.org();
         let workspace_request = request.default_workspace();
+        if let Some((_, recorded_digest)) = state.provisioning_receipts.get(org_request.id()) {
+            return Ok(compare_digest(recorded_digest, &digest));
+        }
         let owner_key = grant_key(
             org_request.id(),
             request.owner_principal_kind(),
@@ -145,24 +151,15 @@ impl TenantProvisioningStore for InMemoryIdentityDirectory {
                 && row.deleted_at.is_none()
                 && (row.slug == workspace_request.slug() || row.is_default)
         });
-        if org.is_some_and(|row| org_request.matches_persisted(row))
-            && workspace
-                .is_some_and(|row| workspace_request.matches_persisted(org_request.id(), row))
-            && owner.is_some_and(|grant| {
-                grant.role == OrgMembershipRole::Owner
-                    && grant.added_by.as_deref() == request.owner_added_by()
-            })
-            && !active_org_collision
-            && !active_workspace_collision
-        {
-            return Ok(TenantProvisioningOutcome::Replayed);
-        }
-
         if org.is_some()
             || workspace.is_some()
             || owner.is_some()
             || active_org_collision
             || active_workspace_collision
+            || state
+                .provisioning_receipts
+                .values()
+                .any(|(id, _)| id == workspace_request.id())
         {
             return Ok(TenantProvisioningOutcome::Conflict(
                 TenantProvisioningConflict::ExistingState,
@@ -182,8 +179,11 @@ impl TenantProvisioningStore for InMemoryIdentityDirectory {
             owner_key,
             OrgGrant {
                 role: OrgMembershipRole::Owner,
-                added_by: request.owner_added_by().map(ToOwned::to_owned),
             },
+        );
+        state.provisioning_receipts.insert(
+            org_request.id().to_owned(),
+            (workspace_request.id().to_owned(), digest),
         );
         Ok(TenantProvisioningOutcome::Created)
     }

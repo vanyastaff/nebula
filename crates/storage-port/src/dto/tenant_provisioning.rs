@@ -93,19 +93,6 @@ impl TenantOrgCreate {
         &self.settings
     }
 
-    /// Compare the caller-owned semantic fields of a persisted live row.
-    #[must_use]
-    pub fn matches_persisted(&self, row: &OrgRow) -> bool {
-        row.id == self.id
-            && row.slug == self.slug
-            && row.display_name == self.display_name
-            && row.created_by == self.created_by
-            && row.plan == self.plan
-            && row.billing_email == self.billing_email
-            && row.settings == self.settings
-            && row.deleted_at.is_none()
-    }
-
     /// Materialize a new live organization row with backend-authored time.
     #[must_use]
     pub fn materialize(&self, created_at: DateTime<Utc>) -> OrgRow {
@@ -199,20 +186,6 @@ impl TenantDefaultWorkspaceCreate {
         &self.settings
     }
 
-    /// Compare the caller-owned semantic fields of a persisted live default row.
-    #[must_use]
-    pub fn matches_persisted(&self, org_id: &str, row: &WorkspaceRow) -> bool {
-        row.id == self.id
-            && row.org_id == org_id
-            && row.slug == self.slug
-            && row.display_name == self.display_name
-            && row.description == self.description
-            && row.created_by == self.created_by
-            && row.is_default
-            && row.settings == self.settings
-            && row.deleted_at.is_none()
-    }
-
     /// Materialize a new live default workspace row with backend-authored time.
     #[must_use]
     pub fn materialize(&self, org_id: String, created_at: DateTime<Utc>) -> WorkspaceRow {
@@ -303,14 +276,21 @@ pub struct TenantProvisioningRequestError;
 pub enum TenantProvisioningConflict {
     /// Some durable identity or active slug is already bound differently.
     ExistingState,
+    /// The organization already accepted a different provisioning command.
+    RequestMismatch,
+    /// Migration sealed an existing tenant without evidence of its original command.
+    PreexistingTenant,
 }
 
 /// Result of an atomic tenant-provisioning attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TenantProvisioningOutcome {
-    /// All three tenant records were created atomically.
+    /// All three tenant records and their durable receipt were created atomically.
     Created,
-    /// All three records already matched the exact semantic request.
+    /// The exact command was accepted before; no records were changed.
+    ///
+    /// This historical result does not assert that the tenant or owner grant
+    /// still exists. Replay never restores edited, revoked, archived or purged state.
     Replayed,
     /// Existing state prevented creation and no state was changed.
     Conflict(TenantProvisioningConflict),

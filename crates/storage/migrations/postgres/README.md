@@ -19,9 +19,18 @@ belongs to the executions and dispatch aggregates; it has no separate empty migr
 | `0006_credentials.sql` | Credentials, refresh claims, refresh incidents, pending authorization states |
 | `0007_resources.sql` | Resources, status heartbeats and snapshots, shared resources, subscriptions, source leases, events, deliveries, execution handoffs |
 | `0008_platform.sql` | HTTP response replay cache and PostgreSQL shared GCRA rate-limit state |
+| `0009_tenant_provisioning_receipts.sql` | Permanent provisioning request receipts and identity seals for existing organizations |
 
 `credential_migration_catalog` checks this inventory against the SQL files, including
 future additions. The baseline is a fixed named prefix, not the maximum catalog size.
+
+Migration 0009 retains historical provisioning acceptance independently of tenant
+purge. Stop older server/worker versions before applying it; older writers do not
+participate in the receipt protocol. Existing organizations are sealed without
+fabricating an original request; remove their `NEBULA_BOOTSTRAP_*` configuration
+before starting the upgraded server.
+Ordinary startup and existing tenant data remain unchanged. New accepted requests
+replay from receipts and never restore revoked grants or deleted tenants.
 
 ## Dialect and ownership
 

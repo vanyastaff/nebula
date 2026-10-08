@@ -77,6 +77,7 @@ mod resource_status;
 /// validity, lifecycle vocabulary.
 mod revision_catalog;
 mod start_materialization;
+mod tenant_provisioning;
 mod workflow_activation;
 
 // ── SQL plumbing shared by the SQL backends ─────────────────────────────────

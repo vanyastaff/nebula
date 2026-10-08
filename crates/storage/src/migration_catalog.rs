@@ -9,4 +9,4 @@
 
 /// The newest migration whose setup admission has been reviewed. Setup tests
 /// fail until a new migration is acknowledged here.
-pub const REVIEWED_HEAD: i64 = 8;
+pub const REVIEWED_HEAD: i64 = 9;

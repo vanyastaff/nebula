@@ -13,8 +13,7 @@ use nebula_storage_port::dto::{
     WorkspaceMembershipRole, WorkspaceRow,
 };
 use nebula_storage_port::store::{
-    MembershipStore, OrgStore, ResourceStore, TenantProvisioningStore, TriggerStore,
-    WorkspaceStore,
+    MembershipStore, OrgStore, ResourceStore, TenantProvisioningStore, TriggerStore, WorkspaceStore,
 };
 use nebula_storage_port::{Scope, StorageError as PortStorageError};
 
@@ -37,7 +36,6 @@ trait IdentityBackend: Send + Sync {
     /// backend's foreign key; nothing in memory.
     async fn seed_resource_parents(&self, _scope: &Scope) {}
 }
-
 
 // ── row builders ──────────────────────────────────────────────────────────
 
@@ -191,7 +189,12 @@ async fn workspace_role_of(
     principal_id: &str,
 ) -> Option<WorkspaceMembershipRole> {
     store
-        .get_tenant_membership(org_id, Some(workspace_id), PrincipalKind::User, principal_id)
+        .get_tenant_membership(
+            org_id,
+            Some(workspace_id),
+            PrincipalKind::User,
+            principal_id,
+        )
         .await
         .unwrap()
         .workspace_role
@@ -283,7 +286,8 @@ async fn assert_workspace_contract(b: &dyn IdentityBackend) {
     orgs.create(org_row("org_gone", "gone")).await.unwrap();
     orgs.soft_delete("org_gone").await.unwrap();
     assert!(matches!(
-        s.create(workspace_row("ws_in_gone", "org_gone", "main")).await,
+        s.create(workspace_row("ws_in_gone", "org_gone", "main"))
+            .await,
         Err(PortStorageError::NotFound { .. })
     ));
     // `update` rewrites the editable columns only.
@@ -503,7 +507,10 @@ async fn assert_membership_snapshot(b: &dyn IdentityBackend) {
             .await
             .unwrap()
     );
-    assert_eq!(workspace_role_of(&s, "org_a", "missing", "same").await, None);
+    assert_eq!(
+        workspace_role_of(&s, "org_a", "missing", "same").await,
+        None
+    );
     workspaces.soft_delete("org_a", "ws_a").await.unwrap();
     assert_eq!(workspace_role_of(&s, "org_a", "ws_a", "same").await, None);
     assert!(matches!(
@@ -853,16 +860,25 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
          members={observed_members:?}"
     );
     let persisted_org = orgs.get("org_bootstrap").await.unwrap().unwrap();
-    assert!(request.org().matches_persisted(&persisted_org));
+    assert_eq!(
+        persisted_org,
+        OrgRow {
+            created_at: persisted_org.created_at,
+            ..org_row("org_bootstrap", "bootstrap")
+        }
+    );
     let persisted_workspace = workspaces
         .get("org_bootstrap", "ws_bootstrap")
         .await
         .unwrap()
         .unwrap();
-    assert!(
-        request
-            .default_workspace()
-            .matches_persisted("org_bootstrap", &persisted_workspace)
+    assert_eq!(
+        persisted_workspace,
+        WorkspaceRow {
+            created_at: persisted_workspace.created_at,
+            is_default: true,
+            ..workspace_row("ws_bootstrap", "org_bootstrap", "default")
+        }
     );
     assert_eq!(
         persisted_org.created_at, persisted_workspace.created_at,
@@ -899,7 +915,8 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
         .unwrap();
     assert_eq!(
         store.provision_tenant(request.clone()).await.unwrap(),
-        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
+        TenantProvisioningOutcome::Replayed,
+        "historical acceptance does not assert current owner authority"
     );
     assert_eq!(
         org_role_of(&memberships, "org_bootstrap", "owner").await,
@@ -1047,6 +1064,160 @@ async fn assert_tenant_provisioning(b: &dyn IdentityBackend) {
     assert!(orgs.get("org_invalid").await.unwrap().is_none());
 }
 
+async fn assert_tenant_provisioning_history(b: &dyn IdentityBackend) {
+    let store = b.tenant_provisioning_store().await;
+    let orgs = b.org_store().await;
+    let workspaces = b.workspace_store().await;
+    let request = tenant_request("history", "history", "history_ws");
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+
+    let mut renamed = orgs.get("history").await.unwrap().unwrap();
+    renamed.display_name = "Renamed after provisioning".into();
+    orgs.update(renamed, 0).await.unwrap();
+    let renamed = orgs.get("history").await.unwrap().unwrap();
+    let mut workspace = workspaces
+        .get("history", "history_ws")
+        .await
+        .unwrap()
+        .unwrap();
+    workspace.description = Some("Edited after provisioning".into());
+    workspaces.update(workspace, 0).await.unwrap();
+    let workspace = workspaces
+        .get("history", "history_ws")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert_eq!(orgs.get("history").await.unwrap(), Some(renamed));
+    assert_eq!(
+        workspaces.get("history", "history_ws").await.unwrap(),
+        Some(workspace)
+    );
+
+    let changed_owner = TenantProvisioningRequest::new(
+        request.org().clone(),
+        request.default_workspace().clone(),
+        PrincipalKind::User,
+        "replacement-owner".into(),
+        request.owner_added_by().map(str::to_owned),
+    )
+    .unwrap();
+    assert_eq!(
+        store.provision_tenant(changed_owner).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::RequestMismatch)
+    );
+    assert_eq!(
+        org_role_of(&b.membership_store().await, "history", "replacement-owner").await,
+        None
+    );
+    orgs.soft_delete("history").await.unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert!(orgs.get("history").await.unwrap().is_none());
+    assert_eq!(
+        org_role_of(&b.membership_store().await, "history", "owner").await,
+        None
+    );
+}
+
+fn tenant_json_request(settings: serde_json::Value) -> TenantProvisioningRequest {
+    TenantProvisioningRequest::new(
+        TenantOrgCreate::new(
+            "json_org".into(),
+            "json".into(),
+            "JSON".into(),
+            "owner".into(),
+            "free".into(),
+            None,
+            settings,
+        )
+        .unwrap(),
+        TenantDefaultWorkspaceCreate::new(
+            "json_ws".into(),
+            "default".into(),
+            "Default".into(),
+            None,
+            "owner".into(),
+            serde_json::json!({}),
+        )
+        .unwrap(),
+        PrincipalKind::User,
+        "owner".into(),
+        None,
+    )
+    .unwrap()
+}
+
+async fn assert_tenant_provisioning_json_identity(b: &dyn IdentityBackend) {
+    let first =
+        tenant_json_request(serde_json::from_str(r#"{"b":[{"y":2,"x":1}],"a":true}"#).unwrap());
+    let reordered =
+        tenant_json_request(serde_json::from_str(r#"{"a":true,"b":[{"x":1,"y":2}]}"#).unwrap());
+    let changed =
+        tenant_json_request(serde_json::from_str(r#"{"a":true,"b":[{"x":1,"y":3}]}"#).unwrap());
+    let store = b.tenant_provisioning_store().await;
+    assert_eq!(
+        store.provision_tenant(first).await.unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    assert_eq!(
+        store.provision_tenant(reordered).await.unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert_eq!(
+        store.provision_tenant(changed).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::RequestMismatch)
+    );
+}
+
+async fn assert_tenant_provisioning_competing_commands(b: &dyn IdentityBackend) {
+    let store = b.tenant_provisioning_store().await;
+    let first = tenant_request("race_org", "race", "race_ws");
+    let second = TenantProvisioningRequest::new(
+        first.org().clone(),
+        first.default_workspace().clone(),
+        PrincipalKind::User,
+        "other-owner".into(),
+        first.owner_added_by().map(str::to_owned),
+    )
+    .unwrap();
+    let (a, b_result) = tokio::join!(
+        store.provision_tenant(first.clone()),
+        store.provision_tenant(second.clone())
+    );
+    let mismatch = TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::RequestMismatch);
+    let (winner, loser) = match (a.unwrap(), b_result.unwrap()) {
+        (TenantProvisioningOutcome::Created, outcome) if outcome == mismatch => (first, second),
+        (outcome, TenantProvisioningOutcome::Created) if outcome == mismatch => (second, first),
+        outcomes => panic!("one creation and one mismatched request required: {outcomes:?}"),
+    };
+    assert_eq!(
+        b.membership_store()
+            .await
+            .list_org_members("race_org")
+            .await
+            .unwrap(),
+        [OrgMembership {
+            principal_kind: PrincipalKind::User,
+            principal_id: winner.owner_principal_id().into(),
+            role: OrgMembershipRole::Owner,
+        }]
+    );
+    assert_eq!(
+        store.provision_tenant(winner).await.unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert_eq!(store.provision_tenant(loser).await.unwrap(), mismatch);
+}
+
 async fn assert_resource_contract(b: &dyn IdentityBackend) {
     let s = b.resource_store().await;
     let a = Scope::new("ws_a", "org_a");
@@ -1110,4 +1281,3 @@ async fn assert_trigger_contract(b: &dyn IdentityBackend) {
     s.soft_delete(&a, "trg_1").await.expect("soft_delete");
     assert!(s.get(&a, "trg_1").await.unwrap().is_none());
 }
-

@@ -137,8 +137,236 @@ identity_matrix!(
 );
 identity_matrix!(membership_lockout, assert_membership_lockout);
 identity_matrix!(tenant_provisioning, assert_tenant_provisioning);
+identity_matrix!(
+    tenant_provisioning_competing_commands,
+    assert_tenant_provisioning_competing_commands
+);
+identity_matrix!(
+    tenant_provisioning_history,
+    assert_tenant_provisioning_history
+);
+identity_matrix!(
+    tenant_provisioning_json_identity,
+    assert_tenant_provisioning_json_identity
+);
 identity_matrix!(resource_store_contract, assert_resource_contract);
 identity_matrix!(trigger_store_contract, assert_trigger_contract);
+
+#[tokio::test]
+async fn tenant_provisioning_replay_after_purge_postgres() {
+    let backend = PostgresBackend::default();
+    let store = backend.tenant_provisioning_store().await;
+    let pool = backend.pool().await;
+    let request = tenant_request("purged_org", "purged", "purged_workspace");
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    sqlx::query("DELETE FROM orgs WHERE id = 'purged_org'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("purged_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        backend
+            .workspace_store()
+            .await
+            .get("purged_org", "purged_workspace")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        backend
+            .membership_store()
+            .await
+            .get_tenant_membership(
+                "purged_org",
+                Some("purged_workspace"),
+                PrincipalKind::User,
+                "owner"
+            )
+            .await
+            .unwrap(),
+        TenantMembershipSnapshot {
+            org_role: None,
+            workspace_role: None
+        }
+    );
+    assert_eq!(
+        store
+            .provision_tenant(tenant_request("another_org", "another", "purged_workspace"))
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::ExistingState)
+    );
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("another_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    cleanup_receipt_schema(&pool).await;
+}
+
+#[tokio::test]
+async fn tenant_provisioning_receipt_failure_rolls_back_postgres() {
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    let store = backend.tenant_provisioning_store().await;
+    let request = tenant_request("rollback_org", "rollback", "rollback_ws");
+    sqlx::raw_sql(
+        "CREATE FUNCTION reject_receipt() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'receipt unavailable' USING ERRCODE = '23514'; END $$;
+        CREATE TRIGGER reject_receipt BEFORE INSERT ON tenant_provisioning_receipts
+        FOR EACH ROW EXECUTE FUNCTION reject_receipt();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(store.provision_tenant(request.clone()).await.is_err());
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("rollback_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        backend
+            .workspace_store()
+            .await
+            .get("rollback_org", "rollback_ws")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        backend
+            .membership_store()
+            .await
+            .get_tenant_membership("rollback_org", None, PrincipalKind::User, "owner")
+            .await
+            .unwrap()
+            .org_role,
+        None
+    );
+    sqlx::raw_sql("DROP TRIGGER reject_receipt ON tenant_provisioning_receipts; DROP FUNCTION reject_receipt();")
+        .execute(&pool).await.unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Created
+    );
+    cleanup_receipt_schema(&pool).await;
+}
+
+#[tokio::test]
+async fn tenant_provisioning_migration_seals_preexisting_postgres() {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL required");
+    let pool = postgres_schema::connect_with_private_schema(&url, "nebula_receipt_upgrade")
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations/postgres")
+        .run_to(8, &pool)
+        .await
+        .unwrap();
+    let orgs = nebula_storage::postgres::PgOrgStore::new(pool.clone());
+    orgs.create(org_row("preexisting", "preexisting"))
+        .await
+        .unwrap();
+    let before = orgs.get("preexisting").await.unwrap();
+    nebula_storage::postgres::init_schema(&pool).await.unwrap();
+    assert_eq!(orgs.get("preexisting").await.unwrap(), before);
+    let store = nebula_storage::postgres::PgTenantProvisioningStore::new(pool.clone());
+    let request = tenant_request("preexisting", "preexisting", "preexisting_ws");
+    assert_eq!(
+        store.provision_tenant(request.clone()).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant)
+    );
+    sqlx::query("DELETE FROM orgs WHERE id = 'preexisting'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.provision_tenant(request).await.unwrap(),
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant)
+    );
+    assert!(orgs.get("preexisting").await.unwrap().is_none());
+    cleanup_receipt_schema(&pool).await;
+}
+
+async fn cleanup_receipt_schema(pool: &sqlx::PgPool) {
+    let schema: String = sqlx::query_scalar("SELECT current_schema()")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert!(schema.starts_with("nebula_"));
+    assert!(
+        schema
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    );
+    sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        .execute(pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn tenant_provisioning_reads_historical_v1_postgres() {
+    let backend = PostgresBackend::default();
+    let pool = backend.pool().await;
+    let digest =
+        hex::decode("4d693d7b7db0e8411c230bc5627d512e133445adc3ba96480274df8c4a916b69").unwrap();
+    sqlx::query(
+        "INSERT INTO tenant_provisioning_receipts
+        (org_id, initial_workspace_id, request_version, request_digest, recorded_at)
+        VALUES ('json_org', 'json_ws', 1, $1, clock_timestamp())",
+    )
+    .bind(digest)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        backend
+            .tenant_provisioning_store()
+            .await
+            .provision_tenant(tenant_json_request(
+                serde_json::json!({"a": true, "b": [{"x": 1, "y": 2}]})
+            ))
+            .await
+            .unwrap(),
+        TenantProvisioningOutcome::Replayed
+    );
+    assert!(
+        backend
+            .org_store()
+            .await
+            .get("json_org")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    cleanup_receipt_schema(&pool).await;
+}
 
 /// Provisioning races an ordinary default-workspace create. Whichever
 /// transaction wins, the organization retains only one live default

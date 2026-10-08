@@ -7,13 +7,13 @@ use nebula_storage_port::dto::{
     TenantProvisioningRequest,
 };
 use nebula_storage_port::store::TenantProvisioningStore;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
-use super::membership::org_role;
-use super::org::{decode_org, insert_org};
-use super::workspace::{decode_workspace, insert_workspace};
-use super::{encode_instant, optional};
+use super::encode_instant;
+use super::org::insert_org;
+use super::workspace::insert_workspace;
 use crate::sql_error::storage_error;
+use crate::tenant_provisioning::{REQUEST_VERSION, replay_outcome, request_digest};
 
 /// SQLite atomic tenant-provisioning store.
 #[derive(Clone, Debug)]
@@ -38,6 +38,7 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
     ) -> Result<TenantProvisioningOutcome, StorageError> {
         let org_values = request.org();
         let workspace_values = request.default_workspace();
+        let digest = request_digest(&request)?;
         let created_at = chrono::Utc::now();
         let org = org_values.materialize(created_at);
         let workspace = workspace_values.materialize(org.id.clone(), created_at);
@@ -46,53 +47,37 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(storage_error)?;
-        let org_rows =
-            sqlx::query("SELECT * FROM orgs WHERE id = ?1 OR (slug = ?2 AND deleted_at IS NULL)")
-                .bind(&org.id)
-                .bind(&org.slug)
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(storage_error)?;
-        let workspace_rows = sqlx::query(
-            "SELECT * FROM workspaces \
-             WHERE id = ?2 OR (org_id = ?1 AND (slug = ?3 OR is_default = 1) AND deleted_at IS NULL)",
+        let receipt = sqlx::query(
+            "SELECT request_version, request_digest, initial_workspace_id \
+             FROM tenant_provisioning_receipts WHERE org_id = ?1",
         )
         .bind(&org.id)
-        .bind(&workspace.id)
-        .bind(&workspace.slug)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage_error)?;
-        let owner_row = sqlx::query(
-            "SELECT role, added_by FROM org_memberships \
-             WHERE org_id = ?1 AND principal_kind = ?2 AND principal_id = ?3",
-        )
-        .bind(&org.id)
-        .bind(request.owner_principal_kind().as_str())
-        .bind(request.owner_principal_id())
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage_error)?;
-
-        let exact_org = match org_rows.as_slice() {
-            [only] => org_values.matches_persisted(&decode_org(only)?),
-            _ => false,
-        };
-        let exact_workspace = match workspace_rows.as_slice() {
-            [only] => workspace_values.matches_persisted(&org.id, &decode_workspace(only)?),
-            _ => false,
-        };
-        let exact_owner = match &owner_row {
-            Some(row) => {
-                org_role(row)? == OrgMembershipRole::Owner
-                    && optional::<String>(row, "added_by")?.as_deref() == request.owner_added_by()
-            },
-            None => false,
-        };
-        if exact_org && exact_workspace && exact_owner {
-            return Ok(TenantProvisioningOutcome::Replayed);
+        if let Some(receipt) = receipt {
+            return replay_outcome(
+                receipt.try_get("request_version").map_err(storage_error)?,
+                receipt.try_get("request_digest").map_err(storage_error)?,
+                receipt
+                    .try_get("initial_workspace_id")
+                    .map_err(storage_error)?,
+                &digest,
+            );
         }
-        if !org_rows.is_empty() || !workspace_rows.is_empty() || owner_row.is_some() {
+        // A fresh org cannot have children: the tenant FKs already enforce it.
+        let occupied: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM orgs WHERE id = ?1 OR (slug = ?2 AND deleted_at IS NULL)) \
+                OR EXISTS (SELECT 1 FROM workspaces WHERE id = ?3) \
+                OR EXISTS (SELECT 1 FROM tenant_provisioning_receipts WHERE initial_workspace_id = ?3)",
+        )
+        .bind(&org.id)
+        .bind(&org.slug)
+        .bind(&workspace.id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage_error)?;
+        if occupied {
             return Ok(TenantProvisioningOutcome::Conflict(
                 TenantProvisioningConflict::ExistingState,
             ));
@@ -110,6 +95,19 @@ impl TenantProvisioningStore for SqliteTenantProvisioningStore {
         .bind(request.owner_principal_id())
         .bind(OrgMembershipRole::Owner.as_str())
         .bind(request.owner_added_by())
+        .bind(encode_instant(created_at))
+        .execute(&mut *tx)
+        .await
+        .map_err(storage_error)?;
+        sqlx::query(
+            "INSERT INTO tenant_provisioning_receipts \
+             (org_id, initial_workspace_id, request_version, request_digest, recorded_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(&org.id)
+        .bind(&workspace.id)
+        .bind(REQUEST_VERSION)
+        .bind(digest.as_slice())
         .bind(encode_instant(created_at))
         .execute(&mut *tx)
         .await

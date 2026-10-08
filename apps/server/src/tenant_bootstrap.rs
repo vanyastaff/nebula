@@ -11,8 +11,8 @@ use nebula_api::domain::auth::backend::{AuthBackend, AuthError, UserProfile};
 use nebula_core::{OrgId, Slug, SlugKind, UserId, WorkspaceId};
 use nebula_storage_port::{
     dto::{
-        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningOutcome,
-        TenantProvisioningRequest,
+        PrincipalKind, TenantDefaultWorkspaceCreate, TenantOrgCreate, TenantProvisioningConflict,
+        TenantProvisioningOutcome, TenantProvisioningRequest,
     },
     store::TenantProvisioningStore,
 };
@@ -162,6 +162,10 @@ pub(crate) enum TenantBootstrapError {
     StorageFailed,
     #[error("tenant bootstrap conflicts with existing durable state")]
     Conflict,
+    #[error(
+        "tenant predates provisioning receipts; remove NEBULA_BOOTSTRAP_* settings for this existing tenant"
+    )]
+    PreexistingTenant,
 }
 
 pub(crate) fn validate_auth_backend(
@@ -228,8 +232,11 @@ async fn provision_verified_tenant(
             Ok(())
         },
         TenantProvisioningOutcome::Replayed => {
-            tracing::info!(org.id = %config.org_id, workspace.id = %config.workspace_id, "tenant bootstrap matched existing durable authority");
+            tracing::info!(org.id = %config.org_id, workspace.id = %config.workspace_id, "tenant bootstrap acknowledged historical acceptance; current authority unchanged");
             Ok(())
+        },
+        TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant) => {
+            Err(TenantBootstrapError::PreexistingTenant)
         },
         TenantProvisioningOutcome::Conflict(_) => Err(TenantBootstrapError::Conflict),
     }
@@ -265,7 +272,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use nebula_storage_port::{StorageError, dto::TenantProvisioningConflict};
+    use nebula_storage_port::StorageError;
 
     use super::*;
 
@@ -473,6 +480,21 @@ mod tests {
         assert!(matches!(
             provision_verified_tenant(&config, &store).await,
             Err(TenantBootstrapError::Conflict)
+        ));
+    }
+
+    #[tokio::test]
+    async fn preexisting_tenant_requires_removing_bootstrap_configuration() {
+        let values = complete_values();
+        let config = TenantBootstrapConfig::from_lookup(|name| values.get(name).cloned())
+            .unwrap()
+            .unwrap();
+        let store: Arc<dyn TenantProvisioningStore> = Arc::new(FixedProvisioner(
+            TenantProvisioningOutcome::Conflict(TenantProvisioningConflict::PreexistingTenant),
+        ));
+        assert!(matches!(
+            provision_verified_tenant(&config, &store).await,
+            Err(TenantBootstrapError::PreexistingTenant)
         ));
     }
 }

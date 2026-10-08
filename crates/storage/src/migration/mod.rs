@@ -1228,6 +1228,11 @@ mod tests {
     /// Before acknowledging a future head, review both backend SQL, affected
     /// aggregate invariants and admission from each supported prefix. Add the
     /// migration to `migration_catalog::REVIEWED_HEAD` only after that review.
+    ///
+    /// 0009 adds permanent tenant-provisioning receipts. Every older prefix
+    /// reaches the same baseline before existing org IDs are sealed without
+    /// inventing an original request. No rows are deleted or authority granted;
+    /// configured bootstrap on a sealed tenant must be removed explicitly.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         use crate::migration_catalog::REVIEWED_HEAD;

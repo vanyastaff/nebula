@@ -135,11 +135,18 @@ backend starts empty and cannot contain a pre-existing verified owner before
 the listener starts, so enabling bootstrap with it fails during startup.
 
 Create and verify the owner in the selected `API_AUTH_BACKEND` first. Startup
-then writes the organization, default workspace, and `OrgOwner` membership in
-one storage transaction. Restarting with exactly the same values is a safe
-replay. Partial configuration, changed values, pre-existing partial state, an
-unknown owner, or an unverified owner aborts startup. A replay never restores a
-membership that an operator removed or downgraded.
+then writes the organization, default workspace, `OrgOwner` membership and a
+permanent request receipt in one storage transaction. Restarting with exactly
+the same values acknowledges historical acceptance; it does not assert present
+membership or recreate an archived/purged tenant. Partial configuration, changed
+request values, pre-existing partial state, an unknown owner, or an unverified
+owner aborts startup. Replay never restores a removed or downgraded membership.
+
+Migration 0009 seals organizations already present without inventing their
+original provisioning request. Stop older server/worker processes before upgrading;
+mixed versions do not share this receipt protocol. Remove `NEBULA_BOOTSTRAP_*`
+settings for those organizations before upgraded startup. Their data and ordinary
+access are preserved.
 
 ## Webhook credential bridge
 

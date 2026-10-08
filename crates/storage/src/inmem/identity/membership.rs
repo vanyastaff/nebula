@@ -160,10 +160,7 @@ impl MembershipStore for InMemoryMembershipStore {
                 request.principal_kind,
                 &request.principal_id,
             ),
-            OrgGrant {
-                role: request.role,
-                added_by: request.added_by,
-            },
+            OrgGrant { role: request.role },
         );
         Ok(OrgMemberUpsertOutcome::Applied)
     }
