@@ -1,5 +1,10 @@
 use super::*;
-use crate::{document::tests::snapshot, transport::SignedIn};
+use crate::{
+    document::tests::snapshot,
+    transport::SignedIn,
+    views::{Intent, Intents},
+};
+use eframe::egui;
 use nebula_api_contract::v1::{catalog::ListActionsResponse, workflow::ListWorkflowsResponse};
 use serde_json::{Value, json};
 
@@ -432,19 +437,73 @@ fn signing_out_forgets_the_schemas_of_that_server() {
     assert!(workbench.schemas.is_empty());
 }
 
-#[test]
-fn a_started_run_asks_for_the_recent_runs_again() {
-    let mut workbench = Workbench::new(String::new());
-    open_workspace_session(&mut workbench);
+/// Opens a workspace with one workflow draft selected, as after loading it.
+fn open_draft(workbench: &mut Workbench) -> DraftKey {
+    open_workspace_session(workbench);
     let context = workbench.session.context.clone().unwrap();
     let key = DraftKey {
         context,
         workflow: "wf_test".into(),
     };
-    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
-    draft.start_key = Some("start-1".into());
-    workbench.session.drafts.insert(key.clone(), draft);
+    workbench
+        .session
+        .drafts
+        .insert(key.clone(), Draft::new(snapshot(1, 7)).unwrap());
     workbench.session.selected = Some(key.clone());
+    key
+}
+
+/// Draws the runs panel for one frame and returns what it asked for.
+fn show_runs(workbench: &mut Workbench) -> Intents {
+    let mut intents = Vec::new();
+    let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
+        crate::views::runs::show(ui, workbench, &mut intents);
+    });
+    // No renderer uploads the font atlas here.
+    output.textures_delta.clear();
+    intents
+}
+
+#[test]
+fn recent_runs_are_marked_read_only_when_their_request_starts() {
+    let mut workbench = Workbench::new(String::new());
+    assert_eq!(workbench.begin_recent_runs(), None);
+    assert!(!workbench.history_requested);
+
+    open_draft(&mut workbench);
+    let workflow = workbench.session.draft().unwrap().base.workflow.id.clone();
+
+    assert_eq!(workbench.begin_recent_runs(), Some(workflow));
+    assert!(workbench.history_requested);
+}
+
+#[test]
+fn the_runs_panel_asks_again_when_its_request_was_dropped() {
+    let mut workbench = Workbench::new(String::new());
+    open_draft(&mut workbench);
+
+    let asked = |intents: &Intents| {
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::LoadRecentRuns))
+    };
+    // The app dropped the first ask because another request started in the same frame.
+    assert!(asked(&show_runs(&mut workbench)));
+    assert!(!workbench.history_requested);
+    assert!(asked(&show_runs(&mut workbench)));
+
+    // Once the read starts, the panel waits for its answer.
+    workbench.begin_recent_runs();
+    assert!(!asked(&show_runs(&mut workbench)));
+}
+
+#[test]
+fn a_started_run_asks_for_the_recent_runs_again() {
+    let mut workbench = Workbench::new(String::new());
+    let key = open_draft(&mut workbench);
+    if let Some(draft) = workbench.session.drafts.get_mut(&key) {
+        draft.start_key = Some("start-1".into());
+    }
     workbench.history_requested = true;
     let workflow = workbench.session.drafts[&key].base.workflow.id.clone();
     let receipt = serde_json::from_value(json!({

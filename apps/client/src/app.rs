@@ -96,12 +96,9 @@ impl ClientApp {
                 self.dispatch(context, Operation::Run(workflow, key));
             },
             Intent::LoadRecentRuns => {
-                let Some(draft) = self.workbench.session.draft() else {
-                    return;
-                };
-                let id = draft.base.workflow.id.clone();
-                self.workbench.history_requested = true;
-                self.dispatch(context, Operation::History(id));
+                if let Some(id) = self.workbench.begin_recent_runs() {
+                    self.dispatch(context, Operation::History(id));
+                }
             },
             Intent::LoadExecution(id) => self.dispatch(context, Operation::Status(id)),
             Intent::LoadCatalog => self.dispatch(context, Operation::Actions),

@@ -403,6 +403,15 @@ impl Workbench {
         true
     }
 
+    /// Marks the recent runs of the open workflow as being read and returns its id. Called when the
+    /// request starts, not when the runs panel asks, so an intent dropped behind another request
+    /// leaves the panel free to ask again.
+    pub(crate) fn begin_recent_runs(&mut self) -> Option<String> {
+        let workflow = self.session.draft()?.base.workflow.id.clone();
+        self.history_requested = true;
+        Some(workflow)
+    }
+
     fn receive_schema(&mut self, action: String, schema: &ActionParametersResponse) {
         self.schemas
             .insert(action, SchemaState::Ready(Form::parse(&schema.parameters)));

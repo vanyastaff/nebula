@@ -23,7 +23,8 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
     let execution = draft.execution_id.clone();
     let busy = workbench.session.busy();
     // The list loads once per opened workflow and again after a start, without a click. The app marks
-    // it requested only when the request starts, so losing a frame to another request asks again.
+    // it requested when the read starts (`Workbench::begin_recent_runs`), so an intent dropped behind
+    // another request is asked again next frame.
     if !workbench.history_requested && !busy {
         intents.push(Intent::LoadRecentRuns);
     }
