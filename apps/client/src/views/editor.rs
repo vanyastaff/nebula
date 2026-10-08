@@ -5,7 +5,7 @@ use crate::{
     document::Draft,
     theme,
     widgets::{self, Tone},
-    workbench::{AddNodeForm, DraftGate, Workbench, draft_gate},
+    workbench::{AddNodeForm, CATALOG_UNAVAILABLE, Catalog, DraftGate, Workbench, draft_gate},
 };
 use eframe::egui;
 use serde_json::Value;
@@ -91,7 +91,7 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         widgets::section(ui, "Graph");
         canvas::show(ui, workbench);
         run_button(ui, &view, intents);
-        add_node_form(ui, workbench);
+        add_node_form(ui, workbench, intents);
         ui.add_space(theme::SPACE_LG);
         inspector::show(ui, workbench);
     });
@@ -198,7 +198,7 @@ fn run_button(ui: &mut egui::Ui, view: &DraftView, intents: &mut Intents) {
     });
 }
 
-fn add_node_form(ui: &mut egui::Ui, workbench: &mut Workbench) {
+fn add_node_form(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
     // A "+" on the canvas asks for the form to open once, so the user sees where the new node goes.
     let open = std::mem::take(&mut workbench.add_node.open_requested);
     egui::CollapsingHeader::new("Add node")
@@ -216,8 +216,44 @@ fn add_node_form(ui: &mut egui::Ui, workbench: &mut Workbench) {
                     }
                 });
             }
+            catalog(ui, workbench, intents);
             add_node_fields(ui, workbench);
         });
+}
+
+/// The server's action catalog, when it publishes one. Choosing an action fills the form with its key and
+/// name; without a catalog the key is typed by hand.
+fn catalog(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
+    match &workbench.catalog {
+        Catalog::NotRequested => {
+            if ui.button("Browse server actions").clicked() {
+                intents.push(Intent::LoadCatalog);
+            }
+        },
+        Catalog::Unavailable => {
+            ui.horizontal_wrapped(|ui| {
+                widgets::caption(ui, CATALOG_UNAVAILABLE);
+                if ui.button("Check again").clicked() {
+                    intents.push(Intent::LoadCatalog);
+                }
+            });
+        },
+        Catalog::Ready(actions) => {
+            widgets::caption(ui, "Pick an action to fill the form.");
+            egui::ScrollArea::vertical()
+                .id_salt("action-catalog")
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    for action in actions {
+                        let label = format!("{}  ·  {}", action.key, action.name);
+                        if ui.button(label).clicked() {
+                            workbench.add_node.action_key.clone_from(&action.key);
+                            workbench.add_node.name.clone_from(&action.name);
+                        }
+                    }
+                });
+        },
+    }
 }
 
 fn add_node_fields(ui: &mut egui::Ui, workbench: &mut Workbench) {

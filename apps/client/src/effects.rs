@@ -7,6 +7,7 @@ use crate::{
 };
 use eframe::egui;
 use nebula_api_contract::v1::{
+    catalog::ListActionsResponse,
     execution::{ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse},
     workflow::{
         CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowDocumentRequest,
@@ -25,6 +26,7 @@ pub(crate) enum Operation {
     Run(String, String),
     History(String),
     Status(String),
+    Actions,
 }
 
 /// What a completed request was for. Reducers use it to decide what a failure means for a draft.
@@ -36,6 +38,7 @@ pub(crate) enum RequestKind {
     Publish,
     Run,
     Connect,
+    Catalog,
 }
 
 impl Operation {
@@ -46,6 +49,7 @@ impl Operation {
             Self::Save(..) => RequestKind::Save,
             Self::Publish(..) => RequestKind::Publish,
             Self::Run(..) => RequestKind::Run,
+            Self::Actions => RequestKind::Catalog,
             Self::List(_) | Self::Load(_) | Self::History(_) | Self::Status(_) => RequestKind::Read,
         }
     }
@@ -61,6 +65,7 @@ pub(crate) enum Reply {
     Started(ExecutionResponse),
     History(ListExecutionsResponse),
     Status(Box<ExecutionDetailResponse>),
+    Actions(ListActionsResponse),
 }
 
 pub(crate) type Completion = (RequestStamp, RequestKind, Result<Reply, Failure>);
@@ -110,6 +115,7 @@ async fn perform(
             .status(org, workspace, &id)
             .await
             .map(|detail| Reply::Status(Box::new(detail))),
+        Operation::Actions => connection.actions().await.map(Reply::Actions),
     }
 }
 

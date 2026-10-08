@@ -96,6 +96,7 @@ impl ClientApp {
                 self.dispatch(context, Operation::History(id));
             },
             Intent::LoadExecution(id) => self.dispatch(context, Operation::Status(id)),
+            Intent::LoadCatalog => self.dispatch(context, Operation::Actions),
         }
     }
 

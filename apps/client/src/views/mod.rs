@@ -21,6 +21,7 @@ pub(crate) enum Intent {
     RunDraft,
     LoadRecentRuns,
     LoadExecution(String),
+    LoadCatalog,
 }
 
 pub(crate) type Intents = Vec<Intent>;

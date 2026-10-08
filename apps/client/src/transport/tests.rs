@@ -352,3 +352,51 @@ async fn old_servers_without_document_revision_are_explicitly_unsupported() {
         Failure::Unsupported
     );
 }
+
+#[tokio::test]
+async fn a_server_without_an_action_registry_answers_503_for_the_catalog() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/actions"))
+        .respond_with(
+            ResponseTemplate::new(503).set_body_raw(
+                serde_json::to_vec(&serde_json::json!({
+                    "type": "https://nebula.dev/problems/service-unavailable",
+                    "title": "Service Unavailable",
+                    "status": 503,
+                    "detail": "Action registry not configured"
+                }))
+                .unwrap(),
+                "application/problem+json",
+            ),
+        )
+        .mount(&server)
+        .await;
+    assert_eq!(
+        Connection::new(&server.uri())
+            .unwrap()
+            .actions()
+            .await
+            .unwrap_err(),
+        Failure::Rejected(503)
+    );
+}
+
+#[tokio::test]
+async fn the_catalog_lists_the_actions_the_server_publishes() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/actions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "actions": [{"key": "json_transform", "name": "JSON transform", "version": "1.0"}]
+        })))
+        .mount(&server)
+        .await;
+    let catalog = Connection::new(&server.uri())
+        .unwrap()
+        .actions()
+        .await
+        .unwrap();
+    assert_eq!(catalog.actions.len(), 1);
+    assert_eq!(catalog.actions[0].key, "json_transform");
+}

@@ -8,6 +8,7 @@ use crate::{
     transport::{Connection, Failure, PAGE_SIZE},
 };
 use nebula_api_contract::v1::{
+    catalog::ActionSummary,
     execution::{ExecutionDetailResponse, ExecutionResponse, ListExecutionsResponse},
     me::MeResponse,
     workflow::{WorkflowDocumentResponse, WorkflowResponse},
@@ -158,6 +159,7 @@ pub(crate) struct Workbench {
     /// Canvas scale. Purely visual, so it is not part of the draft or its history.
     pub(crate) zoom: f32,
     pub(crate) add_node: AddNodeForm,
+    pub(crate) catalog: Catalog,
 }
 
 /// A card being dragged. The offset is in screen pixels, so the card follows the pointer.
@@ -165,6 +167,19 @@ pub(crate) struct Workbench {
 pub(crate) struct NodeDrag {
     pub(crate) node: String,
     pub(crate) offset: [f32; 2],
+}
+
+pub(crate) const CATALOG_UNAVAILABLE: &str =
+    "This server publishes no action catalog. Type the action key instead.";
+
+/// What the server's action catalog answered the last time it was asked.
+#[derive(Default)]
+pub(crate) enum Catalog {
+    #[default]
+    NotRequested,
+    Ready(Vec<ActionSummary>),
+    /// The server has no action registry (503) or the request failed.
+    Unavailable,
 }
 
 /// Action and display name for the next node to add.
@@ -218,6 +233,7 @@ impl Workbench {
             node_drag: None,
             zoom: 1.0,
             add_node: AddNodeForm::default(),
+            catalog: Catalog::NotRequested,
         }
     }
 
@@ -309,7 +325,14 @@ impl Workbench {
     }
 
     fn receive_failure(&mut self, kind: RequestKind, error: Failure) {
-        self.feedback.error(error.to_string());
+        if kind == RequestKind::Catalog {
+            self.catalog = Catalog::Unavailable;
+        }
+        if kind == RequestKind::Catalog && error == Failure::Rejected(503) {
+            self.feedback.error(CATALOG_UNAVAILABLE);
+        } else {
+            self.feedback.error(error.to_string());
+        }
         if let Some(draft) = self.session.draft_mut() {
             // A definite conflict or rejection leaves the draft for review; an uncertain write
             // keeps its flag until the server is read.
@@ -361,6 +384,12 @@ impl Workbench {
                 self.status = Some(status);
                 self.feedback
                     .info("Execution snapshot read from persisted server state.");
+            },
+            Reply::Actions(list) => {
+                let count = list.actions.len();
+                self.catalog = Catalog::Ready(list.actions);
+                self.feedback
+                    .info(format!("{count} actions in the server catalog."));
             },
         }
     }

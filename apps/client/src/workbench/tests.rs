@@ -1,6 +1,6 @@
 use super::*;
 use crate::document::tests::snapshot;
-use nebula_api_contract::v1::workflow::ListWorkflowsResponse;
+use nebula_api_contract::v1::{catalog::ListActionsResponse, workflow::ListWorkflowsResponse};
 use serde_json::json;
 
 fn open_workspace_session(workbench: &mut Workbench) {
@@ -137,6 +137,37 @@ fn conflict_marks_the_draft_for_review_without_discarding_it() {
             can_run: false,
         })
     );
+}
+
+#[test]
+fn a_catalog_without_a_registry_is_a_state_and_says_so() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(stamp, RequestKind::Catalog, Err(Failure::Rejected(503)));
+
+    assert!(matches!(workbench.catalog, Catalog::Unavailable));
+    assert_eq!(workbench.feedback.message, CATALOG_UNAVAILABLE);
+    assert!(workbench.feedback.failure);
+}
+
+#[test]
+fn a_published_catalog_is_kept_for_the_add_node_form() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    let stamp = workbench.session.begin().unwrap();
+    let catalog: ListActionsResponse = serde_json::from_value(json!({
+        "actions": [{"key": "json_transform", "name": "JSON transform", "version": "1.0"}]
+    }))
+    .unwrap();
+
+    workbench.receive(stamp, RequestKind::Catalog, Ok(Reply::Actions(catalog)));
+
+    match &workbench.catalog {
+        Catalog::Ready(actions) => assert_eq!(actions[0].key, "json_transform"),
+        _ => panic!("the catalog should be ready"),
+    }
 }
 
 #[test]
