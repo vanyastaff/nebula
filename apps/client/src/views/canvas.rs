@@ -84,6 +84,27 @@ pub(crate) fn layout(ids: &[String], edges: &[(String, String)]) -> Vec<(String,
         .collect()
 }
 
+/// Moves laid-out cards down a row at a time until they overlap no card already standing, so a card
+/// placed by hand never hides one the layout placed. Each settled card stands for the next.
+fn clear_of(standing: &[Pos2], laid_out: Vec<(String, Pos2)>) -> Vec<(String, Pos2)> {
+    let footprint = |at: Pos2| Rect::from_min_size(at, Vec2::new(CARD, CARD + LABEL_HEIGHT));
+    let mut taken: Vec<Rect> = standing.iter().map(|at| footprint(*at)).collect();
+    laid_out
+        .into_iter()
+        .map(|(id, mut at)| {
+            // One row per card that could stand in the way is always enough.
+            for _ in 0..=taken.len() {
+                if !taken.iter().any(|rect| rect.intersects(footprint(at))) {
+                    break;
+                }
+                at.y += CARD + LABEL_HEIGHT + ROW_GAP;
+            }
+            taken.push(footprint(at));
+            (id, at)
+        })
+        .collect()
+}
+
 /// The canvas size in canvas units that holds every card and its label.
 fn extent(positions: &[Pos2]) -> Vec2 {
     let far = positions.iter().fold(Pos2::ZERO, |far, at| {
@@ -190,17 +211,22 @@ pub(crate) fn show(
         })
         .collect();
     let ids: Vec<String> = nodes.iter().map(|node| node.id.clone()).collect();
-    let laid_out: HashMap<String, Pos2> = layout(&ids, &edges).into_iter().collect();
-    // A placement the user made wins over the layout; the layout only places the rest.
-    let base: HashMap<String, Pos2> = ids
+    // A placement the user made wins over the layout; the layout only places the rest, clear of them.
+    let placed: Vec<(String, Pos2)> = ids
         .iter()
-        .map(|id| {
-            let at = draft.placed_position(id).map_or_else(
-                || laid_out.get(id).copied().unwrap_or(Pos2::ZERO),
-                |(x, y)| Pos2::new(x as f32, y as f32),
-            );
-            (id.clone(), at)
+        .filter_map(|id| {
+            let (x, y) = draft.placed_position(id)?;
+            Some((id.clone(), Pos2::new(x as f32, y as f32)))
         })
+        .collect();
+    let laid_out: Vec<(String, Pos2)> = layout(&ids, &edges)
+        .into_iter()
+        .filter(|(id, _)| !placed.iter().any(|(placed_id, _)| placed_id == id))
+        .collect();
+    let standing: Vec<Pos2> = placed.iter().map(|(_, at)| *at).collect();
+    let base: HashMap<String, Pos2> = placed
+        .into_iter()
+        .chain(clear_of(&standing, laid_out))
         .collect();
     let base_positions: Vec<Pos2> = base.values().copied().collect();
     let graph = extent(&base_positions);
@@ -539,6 +565,26 @@ mod tests {
         let positions: HashMap<String, Pos2> = layout(&ids(&["x", "y"]), &[]).into_iter().collect();
         assert_eq!(positions["x"].x, positions["y"].x);
         assert!(positions["x"].y < positions["y"].y);
+    }
+
+    #[test]
+    fn a_laid_out_card_moves_clear_of_a_placed_one() {
+        let footprint = |at: Pos2| Rect::from_min_size(at, Vec2::new(CARD, CARD + LABEL_HEIGHT));
+        let placed = Pos2::new(PADDING + 30.0, PADDING + 10.0);
+        let settled = clear_of(
+            &[placed],
+            vec![
+                ("a".into(), Pos2::new(PADDING, PADDING)),
+                ("b".into(), Pos2::new(PADDING, PADDING)),
+                ("far".into(), Pos2::new(900.0, 900.0)),
+            ],
+        );
+        let at: HashMap<String, Pos2> = settled.into_iter().collect();
+        assert!(!footprint(at["a"]).intersects(footprint(placed)));
+        assert!(!footprint(at["b"]).intersects(footprint(at["a"])));
+        assert!(!footprint(at["b"]).intersects(footprint(placed)));
+        // A card with room where the layout put it stays there.
+        assert_eq!(at["far"], Pos2::new(900.0, 900.0));
     }
 
     #[test]
