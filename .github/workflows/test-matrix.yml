@@ -329,15 +329,18 @@ jobs:
             revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \
             schema_setup_postgres \
-            schema_parity_postgres \
-            platform_constraints \
-            credential_incident_constraints \
             revision_record_constraints \
             turn_handoff_conformance_postgres \
             workflow_activation_postgres
           do
             cargo nextest run "${common[@]}" --test "$suite"
           done
+
+          # These suites compare both deployment backends in one test body.
+          cargo nextest run "${common[@]}" --features sqlite \
+            --test schema_parity_postgres \
+            --test platform_constraints \
+            --test credential_incident_constraints
 
           cargo nextest run -p nebula-storage --no-default-features \
             --features sqlite,postgres,credential-in-memory --test credential_operation_runtime \
