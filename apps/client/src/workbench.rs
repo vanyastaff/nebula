@@ -311,8 +311,13 @@ impl Workbench {
                 self.navigator.workflows = page.workflows;
                 self.navigator.total = page.total;
                 self.navigator.page = page.page;
+                let noun = if page.total == 1 {
+                    "workflow"
+                } else {
+                    "workflows"
+                };
                 self.feedback
-                    .info(format!("{} workflows in this workspace.", page.total));
+                    .info(format!("{} {noun} in this workspace.", page.total));
             },
             Reply::Created(document) => self.receive_created(document),
             Reply::Loaded(document) => self.receive_loaded(document),

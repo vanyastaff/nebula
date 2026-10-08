@@ -14,12 +14,17 @@ serve the static build (`task client:web:build`) under the same origin as `/api/
 client does not start a server or worker.
 
 Sign in with email/password (optional TOTP) or a PAT. Enter organization and workspace
-slugs/IDs, create a blank workflow or select one, expand a node, select a literal parameter,
-edit its JSON value and apply. Undo/redo operates on local commands. Save changes, publish,
-run the server's current publication, then read persisted execution status. Recent runs make
-accepted work discoverable after reconnect. A new workflow starts with an empty graph.
-Adding and removing nodes and edges, expression/template editing, managed local launch,
-packaging and updates are subsequent slices.
+slugs/IDs, then create a blank workflow or select one. The graph canvas shows nodes and
+connections. Add a node by action key, drag from an output port onto an input port to connect,
+select a node to rename it, edit its literal parameters, disconnect it or remove it. Undo and
+redo cover every graph and parameter edit. Save changes, publish, run the server's current
+publication, then read persisted execution status. Recent runs make accepted work discoverable
+after reconnect. A rejected save or publication names the server's first validation paths.
+
+Not in this release: moving nodes on the canvas (positions are derived from connections),
+editing expression or template parameters, choosing actions from a catalog (the server does
+not attach an action registry in its current composition, so the catalog answers 503 and
+action keys are typed), managed local launch, packaging and updates.
 
 ## Structure
 
