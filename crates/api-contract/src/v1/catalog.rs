@@ -42,15 +42,19 @@ pub struct ActionDetailResponse {
 
 /// Input parameter schema of an action, for `GET /actions/{key}/parameters`.
 ///
-/// Editors render a node's parameter form from it. A separate response keeps
-/// [`ActionDetailResponse`] unchanged for existing consumers.
+/// Editors render a node's parameter form from it. Kept apart from
+/// [`ActionDetailResponse`] so the schema is fetched only when a form needs it.
+///
+/// `parameters` embeds `nebula-schema`'s own serialization of the admitted
+/// schema, so a change to that format is a change to this response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct ActionParametersResponse {
     /// Action key (e.g. `"core.json_transform"`)
     pub key: String,
-    /// Admitted input schema in the `nebula-schema` wire format
-    /// (`{"fields": [...]}`).
+    /// Admitted input schema in the `nebula-schema` wire format. A record
+    /// schema is `{"fields": [...]}`; other roots carry a `kind` (`"union"`,
+    /// `"any"`, `"scalar"`), and `policy_version` and `root_rules` may appear.
     pub parameters: serde_json::Value,
 }
 

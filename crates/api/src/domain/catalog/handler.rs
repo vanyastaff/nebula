@@ -95,17 +95,7 @@ pub async fn get_action(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> ApiResult<Json<ActionDetailResponse>> {
-    let registry = state
-        .action_registry
-        .as_ref()
-        .ok_or_else(|| ApiError::ServiceUnavailable("Action registry not configured".into()))?;
-
-    let action_key = nebula_core::ActionKey::new(&key)
-        .map_err(|e| ApiError::validation_message(format!("Invalid action key: {e}")))?;
-
-    let (meta, _) = registry
-        .get_factory(&action_key)
-        .ok_or_else(|| ApiError::NotFound(format!("Action '{key}' not found")))?;
+    let meta = admitted_action(&state, &key)?;
 
     Ok(Json(ActionDetailResponse {
         key: meta.base().key().as_str().to_string(),
@@ -141,6 +131,7 @@ pub async fn get_action(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to the catalog.", body = ProblemDetails),
         (status = 404, description = "Action key is not registered.", body = ProblemDetails),
+        (status = 500, description = "The admitted schema could not be encoded.", body = ProblemDetails),
         (status = 503, description = "Action registry is not configured on this instance.", body = ProblemDetails),
     ),
 )]
@@ -148,19 +139,10 @@ pub async fn get_action_parameters(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> ApiResult<Json<ActionParametersResponse>> {
-    let registry = state
-        .action_registry
-        .as_ref()
-        .ok_or_else(|| ApiError::ServiceUnavailable("Action registry not configured".into()))?;
+    let meta = admitted_action(&state, &key)?;
 
-    let action_key = nebula_core::ActionKey::new(&key)
-        .map_err(|e| ApiError::validation_message(format!("Invalid action key: {e}")))?;
-
-    let (meta, _) = registry
-        .get_factory(&action_key)
-        .ok_or_else(|| ApiError::NotFound(format!("Action '{key}' not found")))?;
-
-    // The admitted schema serializes to its public wire format.
+    // The whole admitted schema, rules included: an editor needs the visibility and requirement
+    // rules to draw the form, and only an authenticated caller reaches this route.
     let parameters = serde_json::to_value(meta.base().schema())
         .map_err(|_| ApiError::Internal("Action parameter schema could not be encoded".into()))?;
 
@@ -168,6 +150,31 @@ pub async fn get_action_parameters(
         key: meta.base().key().as_str().to_string(),
         parameters,
     }))
+}
+
+/// The admitted metadata of a registered action.
+///
+/// # Errors
+///
+/// [`ApiError::ServiceUnavailable`] without an action registry,
+/// [`ApiError::Validation`] for a malformed key, [`ApiError::NotFound`] for an
+/// unregistered one.
+fn admitted_action(
+    state: &AppState,
+    key: &str,
+) -> ApiResult<std::sync::Arc<nebula_action::ActionMetadata>> {
+    let registry = state
+        .action_registry
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("Action registry not configured".into()))?;
+
+    let action_key = nebula_core::ActionKey::new(key)
+        .map_err(|e| ApiError::validation_message(format!("Invalid action key: {e}")))?;
+
+    registry
+        .get_factory(&action_key)
+        .map(|(meta, _)| meta)
+        .ok_or_else(|| ApiError::NotFound(format!("Action '{key}' not found")))
 }
 
 /// List all registered plugins.
