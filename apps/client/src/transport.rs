@@ -9,8 +9,8 @@ use nebula_api_contract::v1::{
     me::MeResponse,
     problem::ProblemDetails,
     workflow::{
-        ListWorkflowsResponse, UpdateWorkflowDocumentRequest, WorkflowDocumentResponse,
-        WorkflowResponse,
+        CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowDocumentRequest,
+        WorkflowDocumentResponse, WorkflowResponse,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -242,6 +242,28 @@ impl Connection {
             return Err(Failure::InvalidResponse);
         }
         Ok(document)
+    }
+    /// Creation is never replayed automatically: a lost reply leaves the outcome unknown.
+    pub(crate) async fn create(
+        &self,
+        org: &str,
+        workspace: &str,
+        request: &CreateWorkflowRequest,
+    ) -> Result<WorkflowDocumentResponse, Failure> {
+        let created: WorkflowResponse = self
+            .write(
+                "POST",
+                self.url(&["orgs", org, "workspaces", workspace, "workflows"])?,
+                request,
+                None,
+                &[201],
+            )
+            .await?;
+        // The create reply has no revision, so the editor reads the new document back.
+        // The workflow may already exist if this read fails, so report it as uncertain.
+        self.load(org, workspace, &created.id)
+            .await
+            .map_err(|_| Failure::OutcomeUnknown)
     }
     pub(crate) async fn save(
         &self,
@@ -599,7 +621,7 @@ mod tests {
     use super::*;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{header, method, path},
+        matchers::{body_partial_json, header, method, path},
     };
 
     /// Uses only an isolated, operator-enrolled test deployment; never a production account.
@@ -824,6 +846,68 @@ mod tests {
                 .id,
             "exe_one"
         );
+    }
+    #[tokio::test]
+    async fn create_posts_a_blank_graph_then_reads_back_the_editable_document() {
+        use crate::document::{Draft, new_workflow_request};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/orgs/org/workspaces/ws/workflows"))
+            .and(body_partial_json(serde_json::json!({
+                "name": "Blank",
+                "definition": {"nodes": [], "connections": []}
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(
+                serde_json::json!({"id":"wf_blank","name":"Blank","created_at":0,"updated_at":0}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/orgs/org/workspaces/ws/workflows/wf_blank"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id":"wf_blank","name":"Blank","created_at":0,"updated_at":0,"revision":1,
+                "definition":{"id":"wf_blank","nodes":[],"connections":[]}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let document = Connection::new(&server.uri())
+            .unwrap()
+            .create("org", "ws", &new_workflow_request("Blank"))
+            .await
+            .unwrap();
+        assert_eq!(document.workflow.id, "wf_blank");
+        assert_eq!(document.revision, 1);
+        assert!(Draft::new(document).is_ok());
+        server.verify().await;
+    }
+    #[tokio::test]
+    async fn created_workflow_that_cannot_be_read_back_is_an_uncertain_write() {
+        use crate::document::new_workflow_request;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/orgs/org/workspaces/ws/workflows"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(
+                serde_json::json!({"id":"wf_lost","name":"Lost","created_at":0,"updated_at":0}),
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/orgs/org/workspaces/ws/workflows/wf_lost"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            Connection::new(&server.uri())
+                .unwrap()
+                .create("org", "ws", &new_workflow_request("Lost"))
+                .await
+                .unwrap_err(),
+            Failure::OutcomeUnknown
+        );
+        server.verify().await;
     }
     #[tokio::test]
     async fn old_servers_without_document_revision_are_explicitly_unsupported() {

@@ -1,7 +1,7 @@
 //! Egui presentation and host scheduling. Session/draft invariants live below this module.
 
 use crate::{
-    document::Draft,
+    document::{Draft, new_workflow_request},
     session::{DraftKey, RequestStamp, Session, SessionContext},
     theme,
     transport::{Connection, Failure, SignIn, SignedIn},
@@ -15,8 +15,8 @@ use nebula_api_contract::v1::{
     },
     me::MeResponse,
     workflow::{
-        ListWorkflowsResponse, UpdateWorkflowDocumentRequest, WorkflowDocumentResponse,
-        WorkflowResponse,
+        CreateWorkflowRequest, ListWorkflowsResponse, UpdateWorkflowDocumentRequest,
+        WorkflowDocumentResponse, WorkflowResponse,
     },
 };
 use std::sync::mpsc;
@@ -25,6 +25,7 @@ use zeroize::{Zeroize, Zeroizing};
 enum Operation {
     Connect(SignIn),
     List(usize),
+    Create(CreateWorkflowRequest),
     Load(String),
     Save(String, UpdateWorkflowDocumentRequest),
     Publish(String, u64),
@@ -37,6 +38,7 @@ enum Operation {
 enum RequestKind {
     Read,
     Save,
+    Create,
     Publish,
     Run,
     Connect,
@@ -47,6 +49,7 @@ impl Operation {
         match self {
             Self::Connect(_) => RequestKind::Connect,
             Self::Save(..) => RequestKind::Save,
+            Self::Create(_) => RequestKind::Create,
             Self::Publish(..) => RequestKind::Publish,
             Self::Run(..) => RequestKind::Run,
             _ => RequestKind::Read,
@@ -58,6 +61,7 @@ enum Reply {
     Connected(SignedIn),
     Listed(ListWorkflowsResponse),
     Loaded(WorkflowDocumentResponse),
+    Created(WorkflowDocumentResponse),
     Saved(WorkflowDocumentResponse),
     Published(WorkflowDocumentResponse),
     Started(ExecutionResponse),
@@ -86,6 +90,10 @@ async fn perform(
             .load(org, workspace, &id)
             .await
             .map(Reply::Loaded),
+        Operation::Create(request) => connection
+            .create(org, workspace, &request)
+            .await
+            .map(Reply::Created),
         Operation::Save(id, request) => connection
             .save(org, workspace, &id, &request)
             .await
@@ -123,6 +131,9 @@ pub struct ClientApp {
     organization: String,
     workspace: String,
     workflows: Vec<WorkflowResponse>,
+    new_workflow_name: String,
+    /// Set when a workflow was created; the next frame re-reads the first list page.
+    refresh_workflows: bool,
     page: usize,
     total: usize,
     selected_node: String,
@@ -163,6 +174,8 @@ impl ClientApp {
             organization: String::new(),
             workspace: String::new(),
             workflows: Vec::new(),
+            new_workflow_name: String::new(),
+            refresh_workflows: false,
             page: 1,
             total: 0,
             selected_node: String::new(),
@@ -298,6 +311,30 @@ impl ClientApp {
                     }
                     self.selected_parameter.clear();
                     self.parameter_text.zeroize();
+                },
+                Ok(Reply::Created(document)) => {
+                    let Some(context) = self.session.context.clone() else {
+                        continue;
+                    };
+                    // The server already stored the workflow, even if the editor cannot open it.
+                    self.refresh_workflows = true;
+                    let key = DraftKey {
+                        context,
+                        workflow: document.workflow.id.clone(),
+                    };
+                    match Draft::new(document) {
+                        Ok(draft) => {
+                            self.session.drafts.insert(key.clone(), draft);
+                            self.session.selected = Some(key);
+                            self.clear_selection();
+                            self.new_workflow_name.clear();
+                            self.message = "Workflow created with an empty graph.".into();
+                        },
+                        Err(error) => {
+                            self.message = error.to_string();
+                            self.failure = true;
+                        },
+                    }
                 },
                 Ok(Reply::Saved(document)) => {
                     if let Some(draft) = self.session.draft_mut() {
@@ -486,6 +523,18 @@ impl ClientApp {
                     .clicked()
                 {
                     self.dispatch(ui.ctx(), Operation::List(self.page + 1));
+                }
+            });
+            egui::CollapsingHeader::new("New workflow").show(ui, |ui| {
+                ui.label("Workflow name");
+                ui.add(theme::field(&mut self.new_workflow_name));
+                let name_ready = !self.new_workflow_name.trim().is_empty();
+                if ui
+                    .add_enabled(name_ready, theme::primary("Create workflow"))
+                    .clicked()
+                {
+                    let request = new_workflow_request(&self.new_workflow_name);
+                    self.dispatch(ui.ctx(), Operation::Create(request));
                 }
             });
             for workflow in self.workflows.clone() {
@@ -851,6 +900,10 @@ impl ClientApp {
 impl eframe::App for ClientApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.receive();
+        // Nothing else is pending when a create is accepted, so this refresh is never dropped.
+        if std::mem::take(&mut self.refresh_workflows) {
+            self.dispatch(ui.ctx(), Operation::List(1));
+        }
         ui.set_style(ui.ctx().global_style());
         let wide = ui.available_width() >= 760.0;
         let connected = self.session.context.is_some() && !self.show_connection;

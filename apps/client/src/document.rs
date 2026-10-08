@@ -1,7 +1,8 @@
 //! Workflow editing commands and draft recovery, independent of presentation.
 
 use nebula_api_contract::v1::workflow::{
-    UpdateWorkflowDocumentRequest, UpdateWorkflowRequest, WorkflowDocumentResponse,
+    CreateWorkflowRequest, UpdateWorkflowDocumentRequest, UpdateWorkflowRequest,
+    WorkflowDocumentResponse,
 };
 use serde_json::{Value, json};
 
@@ -35,6 +36,15 @@ pub(crate) struct Draft {
     /// Set before dispatch; retained through disconnect until a receipt is known.
     pub(crate) start_key: Option<String>,
     pub(crate) execution_id: Option<String>,
+}
+
+/// A new workflow starts with an empty graph. The server assigns identity, version and timestamps.
+pub(crate) fn new_workflow_request(name: &str) -> CreateWorkflowRequest {
+    CreateWorkflowRequest {
+        name: name.trim().into(),
+        description: None,
+        definition: json!({"nodes": [], "connections": []}),
+    }
 }
 
 fn parameter_mut<'a>(
@@ -214,6 +224,12 @@ pub(crate) mod tests {
             draft.definition["nodes"][0]["parameters"]["message"]["value"],
             8
         );
+    }
+    #[test]
+    fn blank_workflow_request_trims_the_name_and_sends_a_loadable_empty_graph() {
+        let request = new_workflow_request("  Echo  ");
+        assert_eq!(request.name, "Echo");
+        assert_eq!(request.definition, json!({"nodes": [], "connections": []}));
     }
     #[test]
     fn deleted_node_during_conflict_does_not_destroy_local_draft() {
