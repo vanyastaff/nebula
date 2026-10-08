@@ -289,11 +289,9 @@ impl Connection {
                 .expected_revision
                 .and_then(|value| value.checked_add(1))
                 != Some(document.revision)
-            || request
-                .update
-                .definition
-                .as_ref()
-                .is_some_and(|patch| patch["nodes"] != document.definition["nodes"])
+            || request.update.definition.as_ref().is_some_and(|patch| {
+                !crate::document::parameters_match(&patch["nodes"], &document.definition["nodes"])
+            })
         {
             return Err(Failure::OutcomeUnknown);
         }

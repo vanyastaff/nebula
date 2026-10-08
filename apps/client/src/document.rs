@@ -38,6 +38,21 @@ pub(crate) struct Draft {
     pub(crate) execution_id: Option<String>,
 }
 
+/// Whether the server stores the parameters we sent. Activation canonicalizes node fields with
+/// defaults, such as `retry_policy`, so whole-node equality would reject a correct write.
+pub(crate) fn parameters_match(local: &Value, stored: &Value) -> bool {
+    let (Some(local), Some(stored)) = (local.as_array(), stored.as_array()) else {
+        return false;
+    };
+    local.len() == stored.len()
+        && local.iter().all(|node| {
+            stored
+                .iter()
+                .find(|candidate| candidate["id"] == node["id"])
+                .is_some_and(|candidate| candidate["parameters"] == node["parameters"])
+        })
+}
+
 /// A new workflow starts with an empty graph. The server assigns identity, version and timestamps.
 pub(crate) fn new_workflow_request(name: &str) -> CreateWorkflowRequest {
     CreateWorkflowRequest {
@@ -224,6 +239,15 @@ pub(crate) mod tests {
             draft.definition["nodes"][0]["parameters"]["message"]["value"],
             8
         );
+    }
+    #[test]
+    fn parameters_match_accepts_server_defaults_but_rejects_a_changed_parameter() {
+        let local = json!([{"id": "t", "parameters": {"data": {"type": "literal", "value": {"value": 2}}}}]);
+        let canonical = json!([{"id": "t", "enabled": true, "retry_policy": null, "parameters": {"data": {"type": "literal", "value": {"value": 2}}}}]);
+        let changed = json!([{"id": "t", "parameters": {"data": {"type": "literal", "value": {"value": 3}}}}]);
+        assert!(parameters_match(&local, &canonical));
+        assert!(!parameters_match(&local, &changed));
+        assert!(!parameters_match(&local, &json!([])));
     }
     #[test]
     fn blank_workflow_request_trims_the_name_and_sends_a_loadable_empty_graph() {

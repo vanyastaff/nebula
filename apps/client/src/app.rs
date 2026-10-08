@@ -183,12 +183,12 @@ impl eframe::App for ClientApp {
                                     navigator::show(ui, workbench, &mut intents);
                                 });
                             }
-                            theme::card().show(ui, |ui| {
+                            theme::card_block(ui, |ui| {
                                 editor::show(ui, workbench, &mut intents);
                             });
                             if !wide && has_draft {
                                 ui.add_space(theme::SPACE_MD);
-                                theme::card().show(ui, |ui| {
+                                theme::card_block(ui, |ui| {
                                     runs::show(ui, workbench, &mut intents);
                                 });
                             }

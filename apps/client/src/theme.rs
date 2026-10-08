@@ -55,6 +55,14 @@ pub(crate) fn card() -> egui::Frame {
         .inner_margin(egui::Margin::same(SPACE_LG as i8))
 }
 
+/// A card that spans the full width of its parent. A frame otherwise shrinks to its content.
+pub(crate) fn card_block(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+    card().show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        add_contents(ui);
+    });
+}
+
 pub(crate) fn install(context: &egui::Context) {
     context.set_fonts(fonts());
     context.set_global_style(style());

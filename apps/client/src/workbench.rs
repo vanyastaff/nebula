@@ -2,7 +2,7 @@
 //! reducer is testable with fabricated replies.
 
 use crate::{
-    document::Draft,
+    document::{Draft, parameters_match},
     effects::{Reply, RequestKind},
     session::{DraftKey, RequestStamp, Session, SessionContext},
     transport::{Connection, Failure, PAGE_SIZE},
@@ -373,7 +373,7 @@ impl Workbench {
         let Some(draft) = self.session.draft_mut() else {
             return;
         };
-        if draft.definition["nodes"] == document.definition["nodes"] {
+        if parameters_match(&draft.definition["nodes"], &document.definition["nodes"]) {
             draft.saved(document);
             self.feedback
                 .info("Workflow published. Run uses the server's current publication.");

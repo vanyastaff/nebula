@@ -58,6 +58,7 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         );
         return;
     };
+    let busy = workbench.session.busy();
     let view = DraftView::of(draft);
     widgets::title(ui, &view.name);
     ui.horizontal_wrapped(|ui| {
@@ -67,7 +68,10 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         } else {
             widgets::badge(ui, "Saved", Tone::Success);
         }
-        if view.uncertain {
+        // While a write is in flight its outcome is still open; only a settled failure is unknown.
+        if view.uncertain && busy {
+            widgets::badge(ui, "Write in progress", Tone::Accent);
+        } else if view.uncertain {
             widgets::badge(ui, "Save outcome unknown", Tone::Danger);
         }
         if view.conflict {
@@ -179,7 +183,7 @@ fn node_card(ui: &mut egui::Ui, workbench: &mut Workbench, node: &Value) {
     let node_id = node["id"].as_str().unwrap_or_default();
     let title = node["name"].as_str().unwrap_or(node_id);
     let action = node["action_key"].as_str().unwrap_or_default();
-    theme::card().show(ui, |ui| {
+    theme::card_block(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(title).strong().size(16.0));
             widgets::caption(ui, action);
@@ -237,7 +241,7 @@ fn inspector(ui: &mut egui::Ui, workbench: &mut Workbench) {
         return;
     }
     ui.add_space(theme::SPACE_LG);
-    theme::card().show(ui, |ui| {
+    theme::card_block(ui, |ui| {
         widgets::section(ui, &workbench.parameter.parameter);
         widgets::caption(
             ui,
