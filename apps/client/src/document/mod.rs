@@ -93,9 +93,17 @@ impl Draft {
     #[tracing::instrument(name = "client.document.apply", skip_all)]
     pub(crate) fn apply(&mut self, edit: Edit) -> Result<(), EditError> {
         let change = capture(&self.definition, edit)?;
-        if let Change::Parameter { before, after, .. } = &change
-            && before == after
-        {
+        // Re-placing a node where it already is is not a change, so it leaves no undo entry.
+        let unchanged = match &change {
+            Change::Parameter { before, after, .. } => before == after,
+            Change::Position {
+                before: Some(before),
+                after,
+                ..
+            } => before == after,
+            _ => false,
+        };
+        if unchanged {
             return Ok(());
         }
         replay(&mut self.definition, &change, true)?;
@@ -163,6 +171,21 @@ impl Draft {
         })
     }
 
+    /// Places a node on the canvas at the given top-left corner, in canvas coordinates.
+    pub(crate) fn move_node(&mut self, node: &str, x: f64, y: f64) -> Result<(), EditError> {
+        self.apply(Edit::MoveNode {
+            node: node.into(),
+            x,
+            y,
+        })
+    }
+
+    /// The canvas position the user chose for a node, or `None` when the layout places it.
+    pub(crate) fn placed_position(&self, node: &str) -> Option<(f64, f64)> {
+        let position = graph::saved_position(&self.definition, node)?;
+        Some((position["x"].as_f64()?, position["y"].as_f64()?))
+    }
+
     pub(crate) fn undo(&mut self) -> Result<(), EditError> {
         let Some(change) = self.undo.last().cloned() else {
             return Ok(());
@@ -184,16 +207,23 @@ impl Draft {
     }
 
     pub(crate) fn save_request(&self) -> UpdateWorkflowDocumentRequest {
-        // Nodes and connections are the editable graph. Every other server field is preserved verbatim.
+        // The graph, its connections and canvas placement are the editable parts. Every other server
+        // field is preserved verbatim, because the server merges top-level keys of the patch.
+        let mut patch = json!({
+            "nodes": self.definition["nodes"],
+            "connections": connections_of(&self.definition),
+        });
+        if let (Some(placement), Some(object)) =
+            (self.definition.get("ui_metadata"), patch.as_object_mut())
+        {
+            object.insert("ui_metadata".into(), placement.clone());
+        }
         UpdateWorkflowDocumentRequest {
             expected_revision: Some(self.base.revision),
             update: UpdateWorkflowRequest {
                 name: None,
                 description: None,
-                definition: Some(json!({
-                    "nodes": self.definition["nodes"],
-                    "connections": connections_of(&self.definition),
-                })),
+                definition: Some(patch),
             },
         }
     }

@@ -166,6 +166,48 @@ fn parameters_match_accepts_server_defaults_but_rejects_a_changed_parameter() {
 }
 
 #[test]
+fn undoing_the_first_placement_leaves_the_definition_exactly_as_it_was() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    draft.move_node("echo", 10.0, 20.0).unwrap();
+    assert_eq!(draft.placed_position("echo"), Some((10.0, 20.0)));
+    assert!(draft.dirty());
+    draft.undo().unwrap();
+    assert_eq!(draft.placed_position("echo"), None);
+    assert!(draft.definition.get("ui_metadata").is_none());
+    assert!(!draft.dirty());
+}
+
+#[test]
+fn placements_are_sent_with_the_save_patch() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    draft.move_node("echo", 10.0, 20.0).unwrap();
+    let request = draft.save_request();
+    let patch = request.update.definition.unwrap();
+    assert_eq!(patch["ui_metadata"]["node_positions"]["echo"]["x"], 10.0);
+    assert_eq!(patch["ui_metadata"]["node_positions"]["echo"]["y"], 20.0);
+}
+
+#[test]
+fn placing_a_node_where_it_already_is_is_not_an_undo_step() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    draft.move_node("echo", 10.0, 20.0).unwrap();
+    draft.move_node("echo", 10.0, 20.0).unwrap();
+    draft.undo().unwrap();
+    assert_eq!(draft.placed_position("echo"), None);
+    assert!(!draft.can_undo());
+}
+
+#[test]
+fn a_placement_survives_a_replay_onto_a_newer_revision() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    draft.move_node("echo", 10.0, 20.0).unwrap();
+    draft.remote = Some(snapshot(2, 8));
+    draft.reapply().unwrap();
+    assert_eq!(draft.placed_position("echo"), Some((10.0, 20.0)));
+    assert_eq!(draft.base.revision, 2);
+}
+
+#[test]
 fn blank_workflow_request_trims_the_name_and_sends_a_loadable_empty_graph() {
     let request = new_workflow_request("  Echo  ");
     assert_eq!(request.name, "Echo");

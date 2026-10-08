@@ -153,7 +153,18 @@ pub(crate) struct Workbench {
     pub(crate) rename: String,
     /// Output port being dragged on the canvas; the drop target decides the connection.
     pub(crate) link_from: Option<String>,
+    /// Card being dragged on the canvas; its placement is recorded when the drag ends.
+    pub(crate) node_drag: Option<NodeDrag>,
+    /// Canvas scale. Purely visual, so it is not part of the draft or its history.
+    pub(crate) zoom: f32,
     pub(crate) add_node: AddNodeForm,
+}
+
+/// A card being dragged. The offset is in screen pixels, so the card follows the pointer.
+#[derive(Clone)]
+pub(crate) struct NodeDrag {
+    pub(crate) node: String,
+    pub(crate) offset: [f32; 2],
 }
 
 /// Action and display name for the next node to add.
@@ -200,6 +211,8 @@ impl Workbench {
             selected_node: None,
             rename: String::new(),
             link_from: None,
+            node_drag: None,
+            zoom: 1.0,
             add_node: AddNodeForm::default(),
         }
     }
@@ -257,6 +270,7 @@ impl Workbench {
         self.parameter.close();
         self.selected_node = None;
         self.link_from = None;
+        self.node_drag = None;
         self.status = None;
         self.history = None;
     }

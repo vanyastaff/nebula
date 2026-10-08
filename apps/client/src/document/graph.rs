@@ -49,6 +49,12 @@ pub(crate) enum Edit {
         from: String,
         to: String,
     },
+    /// Places a node on the editor canvas. Positions live in `ui_metadata`, not in the graph itself.
+    MoveNode {
+        node: String,
+        x: f64,
+        y: f64,
+    },
 }
 
 /// An applied edit with the state needed to reverse and redo it. `index` positions keep undo exact.
@@ -82,6 +88,12 @@ pub(super) enum Change {
     ConnectionRemoved {
         connection: Value,
         index: usize,
+    },
+    /// `before` is the position entry the node had, or `None` when it had none.
+    Position {
+        node: String,
+        before: Option<Value>,
+        after: Value,
     },
 }
 
@@ -129,6 +141,11 @@ impl Change {
             Self::ConnectionRemoved { connection, .. } => {
                 let (from, to) = endpoints(connection);
                 Edit::Disconnect { from, to }
+            },
+            Self::Position { node, after, .. } => Edit::MoveNode {
+                node: node.clone(),
+                x: after["x"].as_f64().unwrap_or_default(),
+                y: after["y"].as_f64().unwrap_or_default(),
             },
         }
     }
@@ -226,6 +243,14 @@ pub(super) fn capture(definition: &Value, edit: Edit) -> Result<Change, EditErro
                 .ok_or(EditError::ConnectionNotFound)?;
             Change::ConnectionRemoved { connection, index }
         },
+        Edit::MoveNode { node, x, y } => {
+            require_node(definition, &node)?;
+            Change::Position {
+                before: saved_position(definition, &node),
+                after: json!({"x": x, "y": y}),
+                node,
+            }
+        },
     })
 }
 
@@ -301,6 +326,71 @@ pub(super) fn replay(
                 stored.remove(position);
             } else {
                 stored.insert((*index).min(stored.len()), connection.clone());
+            }
+        },
+        Change::Position {
+            node,
+            before,
+            after,
+        } => {
+            let target = if forward {
+                Some(after)
+            } else {
+                before.as_ref()
+            };
+            set_saved_position(definition, node, target)?;
+        },
+    }
+    Ok(())
+}
+
+/// The saved canvas position entry for a node, if the node has been placed by hand.
+pub(super) fn saved_position(definition: &Value, node: &str) -> Option<Value> {
+    definition
+        .get("ui_metadata")
+        .and_then(|metadata| metadata.get("node_positions"))
+        .and_then(|positions| positions.get(node))
+        .cloned()
+}
+
+/// Writes or clears one node's saved position. Clearing removes empty containers again, so an undone
+/// first placement leaves the definition exactly as it was.
+fn set_saved_position(
+    definition: &mut Value,
+    node: &str,
+    position: Option<&Value>,
+) -> Result<(), EditError> {
+    let root = definition
+        .as_object_mut()
+        .ok_or(EditError::UnsupportedDocument)?;
+    match position {
+        Some(position) => {
+            let metadata = root
+                .entry("ui_metadata")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or(EditError::UnsupportedDocument)?;
+            metadata
+                .entry("node_positions")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or(EditError::UnsupportedDocument)?
+                .insert(node.into(), position.clone());
+        },
+        None => {
+            if let Some(metadata) = root.get_mut("ui_metadata").and_then(Value::as_object_mut) {
+                if let Some(positions) = metadata
+                    .get_mut("node_positions")
+                    .and_then(Value::as_object_mut)
+                {
+                    positions.remove(node);
+                    if positions.is_empty() {
+                        metadata.remove("node_positions");
+                    }
+                }
+                if metadata.is_empty() {
+                    root.remove("ui_metadata");
+                }
             }
         },
     }
