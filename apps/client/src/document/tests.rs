@@ -6,7 +6,7 @@ pub(crate) fn snapshot(revision: u64, value: i64) -> WorkflowDocumentResponse {
 
 fn two_node_draft() -> Draft {
     let mut draft = Draft::new(snapshot(1, 7)).unwrap();
-    draft.add_node("http.request", "HTTP request").unwrap();
+    draft.add_node("core.http_request", "HTTP request").unwrap();
     draft.connect("echo", "http_request").unwrap();
     draft
 }
@@ -22,9 +22,39 @@ fn two_node_snapshot(revision: u64, connections: Value) -> WorkflowDocumentRespo
 }
 
 #[test]
+fn a_catalog_key_is_stored_as_plugin_and_action_and_read_back() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+
+    let id = draft
+        .add_node("core.json_transform", "JSON Transform")
+        .unwrap();
+
+    let node = draft.definition["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == id.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(node["plugin_key"], "core");
+    assert_eq!(node["action_key"], "json_transform");
+    assert_eq!(catalog_key(&node), "core.json_transform");
+}
+
+#[test]
+fn a_bare_action_key_belongs_to_the_default_plugin() {
+    assert_eq!(
+        split_catalog_key("json_transform"),
+        ("core", "json_transform")
+    );
+    assert_eq!(split_catalog_key("slack.post"), ("slack", "post"));
+    assert_eq!(split_catalog_key(".odd"), ("core", ".odd"));
+}
+
+#[test]
 fn a_parameter_the_node_lacks_can_be_set_and_undone_to_absence() {
     let mut draft = Draft::new(snapshot(1, 7)).unwrap();
-    draft.add_node("http.request", "HTTP request").unwrap();
+    draft.add_node("core.http_request", "HTTP request").unwrap();
 
     draft
         .set_literal("http_request", "url", json!("https://example.test"))
@@ -124,11 +154,11 @@ fn removing_a_node_drops_its_connections_and_undo_restores_both_in_place() {
 fn node_ids_stay_unique_and_names_are_validated() {
     let mut draft = Draft::new(snapshot(1, 7)).unwrap();
     assert_eq!(
-        draft.add_node("http.request", "HTTP").unwrap(),
+        draft.add_node("core.http_request", "HTTP").unwrap(),
         "http_request"
     );
     assert_eq!(
-        draft.add_node("http.request", "HTTP").unwrap(),
+        draft.add_node("core.http_request", "HTTP").unwrap(),
         "http_request_2"
     );
     assert_eq!(draft.rename_node("echo", "   "), Err(EditError::EmptyName));

@@ -236,10 +236,15 @@ fn initial_values_follow_defaults_and_shapes() {
     assert_eq!(field(&form, "count").initial(), Value::Null);
     assert_eq!(field(&form, "extras").initial(), json!({}));
     assert_eq!(field(&form, "days").initial(), json!([]));
-    assert_eq!(
-        field(&form, "address").initial(),
-        json!({"city": "", "zip": ""})
+    // An object starts with its declared defaults only; other keys are written when filled in.
+    assert_eq!(field(&form, "address").initial(), json!({}));
+    let with_defaults = Form::parse(
+        &json!({"fields": [{"type": "object", "key": "o", "fields": [
+            {"type": "string", "key": "sep", "default": "."},
+            {"type": "string", "key": "from"}
+        ]}]}),
     );
+    assert_eq!(with_defaults.fields[0].initial(), json!({"sep": "."}));
     assert_eq!(
         field(&form, "auth").initial(),
         json!({"mode": "none", "value": ""})

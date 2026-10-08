@@ -3,7 +3,7 @@
 //! Output shows what the node produced in the chosen run. Every change here is a local draft command.
 use super::{Intent, Intents, form};
 use crate::{
-    document::Draft,
+    document::{Draft, catalog_key},
     schema::display,
     theme,
     widgets::{self, Tone},
@@ -25,6 +25,8 @@ struct NodeView {
     id: String,
     name: String,
     action: String,
+    /// `plugin.action`, the key the catalog knows the action by.
+    catalog: String,
     parameters: Map<String, Value>,
     links: Vec<Link>,
 }
@@ -39,6 +41,7 @@ impl NodeView {
             id: id.to_owned(),
             name: node["name"].as_str().unwrap_or(id).to_owned(),
             action: node["action_key"].as_str().unwrap_or_default().to_owned(),
+            catalog: catalog_key(node),
             parameters: node["parameters"].as_object().cloned().unwrap_or_default(),
             links: draft
                 .links(id)
@@ -131,11 +134,11 @@ fn parameters(
     node: &NodeView,
     intents: &mut Intents,
 ) {
-    let state = workbench.schemas.get(&node.action).cloned();
+    let state = workbench.schemas.get(&node.catalog).cloned();
     match state {
         None => {
             // Asked once per action; the app drops the request while another one runs and asks again.
-            intents.push(Intent::LoadSchema(node.action.clone()));
+            intents.push(Intent::LoadSchema(node.catalog.clone()));
             loading(ui);
         },
         Some(SchemaState::Loading) => loading(ui),

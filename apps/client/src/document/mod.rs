@@ -16,8 +16,23 @@ use nebula_api_contract::v1::workflow::{
 };
 use serde_json::{Value, json};
 
-/// Plugin for nodes added from the action catalog. The catalog does not report plugins yet.
-const CATALOG_PLUGIN_KEY: &str = "core";
+/// Plugin assumed for a bare action key, such as one typed by hand without a plugin prefix.
+const DEFAULT_PLUGIN_KEY: &str = "core";
+
+/// Splits a catalog key such as `core.json_transform` into the plugin and the action a node stores
+/// separately. A key without a plugin prefix belongs to the default plugin.
+pub(crate) fn split_catalog_key(key: &str) -> (&str, &str) {
+    key.split_once('.')
+        .filter(|(plugin, action)| !plugin.is_empty() && !action.is_empty())
+        .unwrap_or((DEFAULT_PLUGIN_KEY, key))
+}
+
+/// The catalog key of a node, `plugin.action`, which `GET /actions/{key}` resolves.
+pub(crate) fn catalog_key(node: &Value) -> String {
+    let action = node["action_key"].as_str().unwrap_or_default();
+    let plugin = node["plugin_key"].as_str().unwrap_or(DEFAULT_PLUGIN_KEY);
+    format!("{plugin}.{action}")
+}
 
 pub(crate) struct Draft {
     pub(crate) base: WorkflowDocumentResponse,
@@ -172,19 +187,17 @@ impl Draft {
         })
     }
 
-    /// Adds a node with no parameters. Required inputs are validated by the server at publication.
-    pub(crate) fn add_node(
-        &mut self,
-        action_key: &str,
-        action_name: &str,
-    ) -> Result<String, EditError> {
-        let id = next_node_id(&self.definition, action_key);
+    /// Adds a node with no parameters. `key` is a catalog key (`core.json_transform`) or a bare
+    /// action of the default plugin. Required inputs are validated by the server at publication.
+    pub(crate) fn add_node(&mut self, key: &str, action_name: &str) -> Result<String, EditError> {
+        let (plugin, action) = split_catalog_key(key);
+        let id = next_node_id(&self.definition, action);
         self.apply(Edit::InsertNode {
             node: json!({
                 "id": id,
                 "name": action_name,
-                "plugin_key": CATALOG_PLUGIN_KEY,
-                "action_key": action_key,
+                "plugin_key": plugin,
+                "action_key": action,
                 "parameters": {},
             }),
         })?;

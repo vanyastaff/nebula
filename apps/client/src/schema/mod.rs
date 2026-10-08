@@ -304,11 +304,16 @@ impl Field {
                 widget: ObjectWidget::PickFields,
                 ..
             } => Value::Object(Map::new()),
+            // Only declared defaults are written up front. Other keys appear once a person fills
+            // them, so a tagged object such as a "pick" operation never carries another variant's
+            // empty fields that the action would reject.
             Kind::Object { fields, .. } => Value::Object(
                 fields
                     .iter()
-                    .filter(|field| !matches!(field.kind, Kind::Notice { .. }))
-                    .map(|field| (field.key.clone(), field.initial()))
+                    .filter_map(|field| {
+                        let default = field.default.clone()?;
+                        Some((field.key.clone(), default))
+                    })
                     .collect(),
             ),
             Kind::Mode {

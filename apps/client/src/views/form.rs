@@ -385,13 +385,13 @@ fn control(ui: &mut egui::Ui, field: &Field, value: &mut Value, id: egui::Id) ->
         },
         Kind::Computed { .. } => false,
         Kind::Dynamic { loader } => {
-            widgets::caption(
-                ui,
-                format!(
-                    "The server builds this input with its {} loader; enter its value as JSON.",
-                    loader.as_deref().unwrap_or("dynamic")
-                ),
-            );
+            // A free-form value: the field's own description says what shape the action expects.
+            if let Some(loader) = loader {
+                hint(
+                    ui,
+                    &format!("The server's “{loader}” loader shapes this input; enter it as JSON."),
+                );
+            }
             json_control(ui, value, id)
         },
         Kind::Notice { .. } => false,
@@ -1193,40 +1193,57 @@ fn list_control(
         ListWidget::Plain | ListWidget::Sortable | ListWidget::Accordion => {
             let mut action = None;
             let last = items.len().saturating_sub(1);
+            let sortable = spec.widget == ListWidget::Sortable;
+            // An item that holds several inputs gets its own block under a header row; a single value
+            // shares one row with its buttons.
+            let compound = matches!(
+                item.kind,
+                Kind::Object { .. } | Kind::List { .. } | Kind::Mode { .. } | Kind::Code { .. }
+            );
             for (index, entry) in items.iter_mut().enumerate() {
                 let row_id = id.with(index);
                 let mut body = |ui: &mut egui::Ui| {
-                    ui.horizontal(|ui| {
-                        if spec.widget == ListWidget::Sortable {
-                            if ui
-                                .add_enabled(index > 0, egui::Button::new("↑").small())
-                                .clicked()
-                            {
-                                action = Some(ListAction::Up(index));
-                            }
-                            if ui
-                                .add_enabled(index < last, egui::Button::new("↓").small())
-                                .clicked()
-                            {
-                                action = Some(ListAction::Down(index));
-                            }
+                    if compound {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!("Item {}", index + 1))
+                                    .size(12.0)
+                                    .color(theme::TEXT_MUTED),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    // Right to left: remove sits at the edge, the arrows before it.
+                                    if let Some(chosen) =
+                                        row_buttons(ui, index, last, sortable, can_remove)
+                                    {
+                                        action = Some(chosen);
+                                    }
+                                },
+                            );
+                        });
+                        if control(ui, item, entry, row_id) {
+                            action = action.take().or(Some(ListAction::Edited));
                         }
+                        ui.add_space(theme::SPACE_SM);
+                        return;
+                    }
+                    ui.horizontal(|ui| {
+                        let room = ROW_BUTTON_ROOM * if sortable { 3.0 } else { 1.0 };
                         let width =
-                            (ui.available_width() - ROW_BUTTON_ROOM - ui.spacing().item_spacing.x)
-                                .max(40.0);
+                            (ui.available_width() - room - ui.spacing().item_spacing.x).max(40.0);
                         ui.scope(|ui| {
                             ui.set_width(width);
                             if control(ui, item, entry, row_id) {
                                 action = action.take().or(Some(ListAction::Edited));
                             }
                         });
-                        if ui
-                            .add_enabled(can_remove, egui::Button::new("×"))
-                            .on_hover_text("Remove item")
-                            .clicked()
-                        {
-                            action = Some(ListAction::Remove(index));
-                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(chosen) = row_buttons(ui, index, last, sortable, can_remove)
+                            {
+                                action = Some(chosen);
+                            }
+                        });
                     });
                 };
                 if spec.widget == ListWidget::Accordion {
@@ -1264,6 +1281,39 @@ fn list_control(
         return true;
     }
     false
+}
+
+/// Remove, then move down and up, added right to left so they read ↑ ↓ × at the row's end.
+fn row_buttons(
+    ui: &mut egui::Ui,
+    index: usize,
+    last: usize,
+    sortable: bool,
+    can_remove: bool,
+) -> Option<ListAction> {
+    let mut chosen = ui
+        .add_enabled(can_remove, egui::Button::new("×").small())
+        .on_hover_text("Remove item")
+        .on_disabled_hover_text("The list is at its minimum size")
+        .clicked()
+        .then_some(ListAction::Remove(index));
+    if sortable {
+        if ui
+            .add_enabled(index < last, egui::Button::new("↓").small())
+            .on_hover_text("Move down")
+            .clicked()
+        {
+            chosen = Some(ListAction::Down(index));
+        }
+        if ui
+            .add_enabled(index > 0, egui::Button::new("↑").small())
+            .on_hover_text("Move up")
+            .clicked()
+        {
+            chosen = Some(ListAction::Up(index));
+        }
+    }
+    chosen
 }
 
 enum ListAction {
