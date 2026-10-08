@@ -9,7 +9,8 @@ use nebula_api_contract::v1::{
     me::MeResponse,
     problem::ProblemDetails,
     workflow::{
-        ListWorkflowsResponse, UpdateWorkflowRequest, WorkflowDocumentResponse, WorkflowResponse,
+        ListWorkflowsResponse, UpdateWorkflowDocumentRequest, WorkflowDocumentResponse,
+        WorkflowResponse,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -247,7 +248,7 @@ impl Connection {
         org: &str,
         workspace: &str,
         workflow: &str,
-        request: &UpdateWorkflowRequest,
+        request: &UpdateWorkflowDocumentRequest,
     ) -> Result<WorkflowDocumentResponse, Failure> {
         let document: WorkflowDocumentResponse = self
             .write(
@@ -264,6 +265,7 @@ impl Connection {
                 .and_then(|value| value.checked_add(1))
                 != Some(document.revision)
             || request
+                .update
                 .definition
                 .as_ref()
                 .is_some_and(|patch| patch["nodes"] != document.definition["nodes"])
@@ -644,7 +646,7 @@ mod tests {
         let mut draft = Draft::new(loaded).unwrap();
         draft.edit("transform", "data", r#"{"value":2}"#).unwrap();
         let mut competing = draft.save_request();
-        competing.definition.as_mut().unwrap()["nodes"][0]["parameters"]["data"]["value"] =
+        competing.update.definition.as_mut().unwrap()["nodes"][0]["parameters"]["data"]["value"] =
             serde_json::json!({"value":3});
         connection
             .save("personal", "default", &created.id, &competing)

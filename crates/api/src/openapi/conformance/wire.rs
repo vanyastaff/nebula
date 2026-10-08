@@ -118,6 +118,9 @@ pub(super) fn decode(name: &str, value: Value) -> Option<bool> {
         "RegisterWebhookResponse" => decode::<v1::webhook::RegisterWebhookResponse>(value),
         "CreateWorkflowRequest" => decode::<v1::workflow::CreateWorkflowRequest>(value),
         "UpdateWorkflowRequest" => decode::<v1::workflow::UpdateWorkflowRequest>(value),
+        "UpdateWorkflowDocumentRequest" => {
+            decode::<v1::workflow::UpdateWorkflowDocumentRequest>(value)
+        },
         "WorkflowResponse" => decode::<v1::workflow::WorkflowResponse>(value),
         "WorkflowDocumentResponse" => decode::<v1::workflow::WorkflowDocumentResponse>(value),
         "ListWorkflowsResponse" => decode::<v1::workflow::ListWorkflowsResponse>(value),

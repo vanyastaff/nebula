@@ -1,6 +1,8 @@
 //! Workflow editing commands and draft recovery, independent of presentation.
 
-use nebula_api_contract::v1::workflow::{UpdateWorkflowRequest, WorkflowDocumentResponse};
+use nebula_api_contract::v1::workflow::{
+    UpdateWorkflowDocumentRequest, UpdateWorkflowRequest, WorkflowDocumentResponse,
+};
 use serde_json::{Value, json};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -126,13 +128,15 @@ impl Draft {
         Ok(())
     }
 
-    pub(crate) fn save_request(&self) -> UpdateWorkflowRequest {
+    pub(crate) fn save_request(&self) -> UpdateWorkflowDocumentRequest {
         // Only the nodes field is edited. Preserve every other server field verbatim.
-        UpdateWorkflowRequest {
+        UpdateWorkflowDocumentRequest {
             expected_revision: Some(self.base.revision),
-            name: None,
-            description: None,
-            definition: Some(json!({"nodes": self.definition["nodes"]})),
+            update: UpdateWorkflowRequest {
+                name: None,
+                description: None,
+                definition: Some(json!({"nodes": self.definition["nodes"]})),
+            },
         }
     }
 
@@ -185,7 +189,7 @@ pub(crate) mod tests {
         let request = draft.save_request();
         assert_eq!(request.expected_revision, Some(1));
         assert_eq!(
-            request.definition.unwrap()["nodes"][0]["parameters"]["message"]["value"],
+            request.update.definition.unwrap()["nodes"][0]["parameters"]["message"]["value"],
             8
         );
         assert_eq!(draft.definition["unknown_future_field"], true);

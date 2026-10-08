@@ -24,7 +24,7 @@ use crate::{
         shared::PaginationParams,
         workflow::dto::{
             ActivateWorkflowParams, CreateWorkflowRequest, ListWorkflowsResponse,
-            UpdateWorkflowRequest, WorkflowDocumentResponse, WorkflowResponse,
+            UpdateWorkflowDocumentRequest, WorkflowDocumentResponse, WorkflowResponse,
             WorkflowValidateResponse,
         },
     },
@@ -333,7 +333,7 @@ pub async fn create_workflow(
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
         ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
     ),
-    request_body = UpdateWorkflowRequest,
+    request_body = UpdateWorkflowDocumentRequest,
     responses(
         (status = 200, description = "Workflow saved with its new revision.", body = WorkflowDocumentResponse),
         (status = 400, description = "Validation error or attempt to mutate immutable identity field.", body = ProblemDetails),
@@ -348,7 +348,7 @@ pub async fn update_workflow(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
-    ApiJson(payload): ApiJson<UpdateWorkflowRequest>,
+    ApiJson(payload): ApiJson<UpdateWorkflowDocumentRequest>,
 ) -> ApiResult<Json<WorkflowDocumentResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     // Parse workflow ID
@@ -369,6 +369,8 @@ pub async fn update_workflow(
             "Workflow was modified by another request".into(),
         ));
     }
+
+    let payload = payload.update;
 
     // Current timestamp — `chrono::Utc::now()` is monotonic through time
     // shifts and does not panic on clocks set before 1970, unlike

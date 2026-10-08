@@ -15,7 +15,8 @@ use nebula_api_contract::v1::{
     },
     me::MeResponse,
     workflow::{
-        ListWorkflowsResponse, UpdateWorkflowRequest, WorkflowDocumentResponse, WorkflowResponse,
+        ListWorkflowsResponse, UpdateWorkflowDocumentRequest, WorkflowDocumentResponse,
+        WorkflowResponse,
     },
 };
 use std::sync::mpsc;
@@ -25,7 +26,7 @@ enum Operation {
     Connect(SignIn),
     List(usize),
     Load(String),
-    Save(String, UpdateWorkflowRequest),
+    Save(String, UpdateWorkflowDocumentRequest),
     Publish(String, u64),
     Run(String, String),
     History(String),

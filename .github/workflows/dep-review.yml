@@ -65,10 +65,15 @@ jobs:
           # test-matrix.yml, codspeed.yml, cross-platform.yml and
           # nightly-chaos.yml, so it is established policy — a workflow that
           # newly references it only re-trips the added-dependency check.
+          # Egui's bundled fonts have OFL/Ubuntu font licenses. Mirror the
+          # epaint_default_fonts@=0.36.2 exception in deny.toml; retain notices
+          # in apps/client/licenses. This action ignores PURL versions, so
+          # cargo-deny remains responsible for enforcing the exact version.
           allow-dependencies-licenses: >-
             pkg:cargo/brotli-decompressor,
             pkg:cargo/futures-timer,
             pkg:cargo/generator,
             pkg:cargo/rustc-demangle,
+            pkg:cargo/epaint_default_fonts,
             pkg:githubactions/Swatinem/rust-cache
           comment-summary-in-pr: on-failure

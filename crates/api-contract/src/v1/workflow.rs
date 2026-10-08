@@ -32,10 +32,6 @@ pub struct CreateWorkflowRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct UpdateWorkflowRequest {
-    /// Revision observed by the editor. A stale revision returns 409 without writing.
-    /// Omitted only by legacy clients, which retain server-side race protection.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_revision: Option<u64>,
     /// Workflow name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -51,6 +47,20 @@ pub struct UpdateWorkflowRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub definition: Option<serde_json::Value>,
+}
+
+/// Editable workflow update with an optional revision fence.
+/// Flattening preserves the existing update wire shape and Rust request type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+pub struct UpdateWorkflowDocumentRequest {
+    /// Existing workflow update fields.
+    #[serde(flatten)]
+    pub update: UpdateWorkflowRequest,
+    /// Revision observed by the editor. A stale revision returns 409 without writing.
+    /// Legacy callers may omit it and retain server-side race protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<u64>,
 }
 
 /// Workflow response
