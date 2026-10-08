@@ -154,6 +154,33 @@ fn conflict_marks_the_draft_for_review_without_discarding_it() {
 }
 
 #[test]
+fn a_publish_remembers_the_revision_it_made_live() {
+    let mut workbench = Workbench::new(String::new());
+    open_workspace_session(&mut workbench);
+    let context = workbench.session.context.clone().unwrap();
+    let key = DraftKey {
+        context,
+        workflow: "wf_test".into(),
+    };
+    workbench
+        .session
+        .drafts
+        .insert(key.clone(), Draft::new(snapshot(1, 7)).unwrap());
+    workbench.session.selected = Some(key.clone());
+    let stamp = workbench.session.begin().unwrap();
+
+    workbench.receive(
+        stamp,
+        RequestKind::Publish,
+        Ok(Reply::Published(snapshot(2, 7))),
+    );
+
+    let draft = &workbench.session.drafts[&key];
+    assert_eq!(draft.published_revision, Some(2));
+    assert_eq!(draft.base.revision, 2);
+}
+
+#[test]
 fn a_catalog_without_a_registry_is_a_state_and_says_so() {
     let mut workbench = Workbench::new(String::new());
     open_workspace_session(&mut workbench);
@@ -163,7 +190,7 @@ fn a_catalog_without_a_registry_is_a_state_and_says_so() {
 
     assert!(matches!(workbench.catalog, Catalog::Unavailable));
     assert_eq!(workbench.feedback.message, CATALOG_UNAVAILABLE);
-    assert!(workbench.feedback.failure);
+    assert!(!workbench.feedback.failure);
 }
 
 #[test]

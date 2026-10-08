@@ -125,6 +125,18 @@ pub(crate) fn banner(ui: &mut egui::Ui, tone: Tone, text: &str) {
         });
 }
 
+/// Title row of a side panel with Close at the right edge. Returns true when Close was clicked.
+pub(crate) fn panel_header(ui: &mut egui::Ui, text: &str) -> bool {
+    ui.horizontal(|ui| {
+        section(ui, text);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.button("Close").clicked()
+        })
+        .inner
+    })
+    .inner
+}
+
 /// Placeholder for a view that has nothing to show yet.
 pub(crate) fn empty_state(ui: &mut egui::Ui, heading: &str, body: &str) {
     ui.add_space(theme::SPACE_XL);

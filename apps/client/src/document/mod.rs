@@ -31,6 +31,9 @@ pub(crate) struct Draft {
     /// Set before dispatch; retained through disconnect until a receipt is known.
     pub(crate) start_key: Option<String>,
     pub(crate) execution_id: Option<String>,
+    /// Revision this app saw the server publish. The API does not report publication, so it is unknown
+    /// until a publish succeeds here, and stale once a later save moves the revision on.
+    pub(crate) published_revision: Option<u64>,
 }
 
 /// A new workflow starts with an empty graph. The server assigns identity, version and timestamps.
@@ -60,6 +63,7 @@ impl Draft {
             save_conflict: false,
             start_key: None,
             execution_id: None,
+            published_revision: None,
         })
     }
 

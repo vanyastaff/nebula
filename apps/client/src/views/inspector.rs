@@ -41,52 +41,54 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench) {
         })
         .collect();
 
-    theme::card_block(ui, |ui| {
-        widgets::section(ui, &name);
-        widgets::caption(ui, format!("{action} · id {node_id}"));
-        ui.add_space(theme::SPACE_SM);
-        widgets::labeled_field(ui, "Name", &mut workbench.rename, false);
+    if widgets::panel_header(ui, &name) {
+        workbench.selected_node = None;
+        workbench.parameter.close();
+        return;
+    }
+    widgets::caption(ui, format!("{action} · {node_id}"));
+    ui.add_space(theme::SPACE_SM);
+    widgets::labeled_field(ui, "Name", &mut workbench.rename, false);
+    ui.horizontal_wrapped(|ui| {
+        let renamed = workbench.rename.trim().to_owned();
+        let changed = !renamed.is_empty() && renamed != name;
+        if ui
+            .add_enabled(changed, egui::Button::new("Rename"))
+            .clicked()
+        {
+            rename(workbench, &node_id, &renamed);
+        }
+        if ui.add(widgets::danger_button("Remove node")).clicked() {
+            remove(workbench, &node_id, &name);
+        }
+    });
+
+    ui.add_space(theme::SPACE_MD);
+    widgets::section(ui, "Parameters");
+    if parameters.is_empty() {
+        widgets::caption(ui, "This node has no configurable parameters.");
+    }
+    for (parameter, value) in &parameters {
+        parameter_row(ui, workbench, &node_id, parameter, value);
+    }
+    parameter_editor(ui, workbench);
+
+    ui.add_space(theme::SPACE_MD);
+    widgets::section(ui, "Connections");
+    if links.is_empty() {
+        widgets::caption(
+            ui,
+            "Not connected. Drag from an output port to another node's input port.",
+        );
+    }
+    for link in &links {
         ui.horizontal_wrapped(|ui| {
-            let renamed = workbench.rename.trim().to_owned();
-            let changed = !renamed.is_empty() && renamed != name;
-            if ui
-                .add_enabled(changed, egui::Button::new("Rename"))
-                .clicked()
-            {
-                rename(workbench, &node_id, &renamed);
-            }
-            if ui.add(widgets::danger_button("Remove node")).clicked() {
-                remove(workbench, &node_id, &name);
+            widgets::caption(ui, &link.label);
+            if ui.small_button("Disconnect").clicked() {
+                disconnect(workbench, &link.from, &link.to);
             }
         });
-
-        ui.add_space(theme::SPACE_SM);
-        widgets::section(ui, "Connections");
-        if links.is_empty() {
-            widgets::caption(
-                ui,
-                "Not connected. Drag from an output port to another node's input port.",
-            );
-        }
-        for link in &links {
-            ui.horizontal_wrapped(|ui| {
-                widgets::caption(ui, &link.label);
-                if ui.button("Disconnect").clicked() {
-                    disconnect(workbench, &link.from, &link.to);
-                }
-            });
-        }
-
-        ui.add_space(theme::SPACE_SM);
-        widgets::section(ui, "Parameters");
-        if parameters.is_empty() {
-            widgets::caption(ui, "This node has no configurable parameters.");
-        }
-        for (parameter, value) in &parameters {
-            parameter_row(ui, workbench, &node_id, parameter, value);
-        }
-        parameter_editor(ui, workbench);
-    });
+    }
 }
 
 fn find_node(draft: &Draft, id: &str) -> Option<Value> {

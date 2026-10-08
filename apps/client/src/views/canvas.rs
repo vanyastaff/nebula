@@ -20,7 +20,8 @@ const PADDING: f32 = 40.0;
 const PORT_RADIUS: f32 = 5.0;
 const PORT_HIT: f32 = 22.0;
 const GRID: f32 = 24.0;
-const CANVAS_HEIGHT: f32 = 320.0;
+/// A card dropped closer than this to where it started, in screen points, was clicked rather than moved.
+const CLICK_SLOP: f32 = 4.0;
 pub(crate) const MIN_ZOOM: f32 = 0.5;
 pub(crate) const MAX_ZOOM: f32 = 1.5;
 const ZOOM_STEP: f32 = 0.1;
@@ -34,10 +35,23 @@ pub(crate) struct NodeView {
 
 /// User intents expressed on the canvas. They are applied to the draft after drawing.
 enum Gesture {
-    Select { id: String, name: String },
-    Connect { from: String, to: String },
-    Place { id: String, at: Pos2 },
-    AddAfter { id: String, name: String },
+    Select {
+        id: String,
+        name: String,
+    },
+    /// A click on the empty canvas, which clears the selection as in other node editors.
+    Deselect,
+    Connect {
+        from: String,
+        to: String,
+    },
+    Place {
+        id: String,
+        at: Pos2,
+    },
+    AddAfter {
+        id: String,
+    },
 }
 
 /// Top-left corners of the cards, in canvas units. Columns follow the longest path from any source. The
@@ -127,10 +141,21 @@ fn paint_grid(painter: &egui::Painter, canvas: Rect, zoom: f32) {
     }
 }
 
-pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench) {
-    let Some(draft) = workbench.session.draft() else {
-        return;
-    };
+/// Where the canvas landed on screen, so the editor can float its controls over it.
+pub(crate) struct CanvasFrame {
+    /// The visible part of the canvas.
+    pub(crate) viewport: Rect,
+    /// Width of the whole graph in canvas units, for fitting it to the viewport.
+    pub(crate) graph_width: f32,
+}
+
+/// Draws the graph in a scrollable canvas `height` tall that fills the available width.
+pub(crate) fn show(
+    ui: &mut egui::Ui,
+    workbench: &mut Workbench,
+    height: f32,
+) -> Option<CanvasFrame> {
+    let draft = workbench.session.draft()?;
     let nodes: Vec<NodeView> = draft.definition["nodes"]
         .as_array()
         .map(|nodes| {
@@ -181,15 +206,22 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench) {
     let graph = extent(&base_positions);
 
     let zoom = workbench.zoom;
-    controls(ui, workbench, graph.x);
+    // The canvas covers at least the visible area, so the grid and background never stop short. One
+    // point less than the viewport keeps a canvas that just fits from growing a scroll bar.
+    let visible = Vec2::new(ui.available_width(), height) - Vec2::splat(1.0);
 
     let drag = workbench.node_drag.clone();
     let mut gestures = Vec::new();
-    egui::ScrollArea::both()
+    let output = egui::ScrollArea::both()
         .id_salt("workflow-canvas")
-        .max_height(CANVAS_HEIGHT)
+        .auto_shrink([false, false])
+        .max_height(height)
         .show(ui, |ui| {
-            let (canvas, _) = ui.allocate_exact_size(graph * zoom, Sense::hover());
+            let (canvas, background) =
+                ui.allocate_exact_size((graph * zoom).max(visible), Sense::click());
+            if background.clicked() {
+                gestures.push(Gesture::Deselect);
+            }
             let painter = ui.painter_at(canvas);
             painter.rect_filled(canvas, theme::RADIUS_MD, theme::SIDEBAR);
             paint_grid(&painter, canvas, zoom);
@@ -197,7 +229,7 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench) {
                 painter.text(
                     canvas.center(),
                     Align2::CENTER_CENTER,
-                    "No nodes yet. Add one below.",
+                    "This workflow has no nodes yet. Use Add node to place the first one.",
                     FontId::proportional(14.0),
                     theme::TEXT_MUTED,
                 );
@@ -275,13 +307,22 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench) {
                 if body.drag_stopped()
                     && let Some(drag) = workbench.node_drag.take()
                 {
-                    // The card moves by the screen offset divided by zoom, in canvas units, and never
-                    // above or left of the canvas origin.
-                    let at = (base[&node.id] + Vec2::from(drag.offset) / zoom).max(Pos2::ZERO);
-                    gestures.push(Gesture::Place {
-                        id: node.id.clone(),
-                        at,
-                    });
+                    let offset = Vec2::from(drag.offset);
+                    if offset.length() < CLICK_SLOP {
+                        // Pointer jitter during a click is a selection, not a move worth an undo step.
+                        gestures.push(Gesture::Select {
+                            id: node.id.clone(),
+                            name: node.name.clone(),
+                        });
+                    } else {
+                        // The card moves by the screen offset divided by zoom, in canvas units, and never
+                        // above or left of the canvas origin.
+                        let at = (base[&node.id] + offset / zoom).max(Pos2::ZERO);
+                        gestures.push(Gesture::Place {
+                            id: node.id.clone(),
+                            at,
+                        });
+                    }
                 }
                 // The "+" after the output port adds a node that connects to this one.
                 let plus_center = out_port(card) + Vec2::new(22.0 * zoom, 0.0);
@@ -312,7 +353,6 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench) {
                 if add.clicked() {
                     gestures.push(Gesture::AddAfter {
                         id: node.id.clone(),
-                        name: node.name.clone(),
                     });
                 }
                 let out = ui.interact(
@@ -354,32 +394,43 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench) {
                 workbench.selected_node = Some(id);
                 workbench.rename = name;
                 workbench.parameter.close();
+                // The side panel shows the node now, not the palette.
+                workbench.add_node.close();
+            },
+            Gesture::Deselect => {
+                workbench.selected_node = None;
+                workbench.parameter.close();
             },
             Gesture::Connect { from, to } => connect(workbench, &from, &to),
             Gesture::Place { id, at } => place(workbench, &id, at),
-            Gesture::AddAfter { id, name } => {
-                workbench.add_node.connect_from = Some(id);
-                workbench.add_node.open_requested = true;
-                workbench
-                    .feedback
-                    .info(format!("The next node you add will connect after {name}."));
+            Gesture::AddAfter { id } => {
+                workbench.selected_node = None;
+                workbench.add_node.open_after(Some(id));
             },
         }
     }
+    Some(CanvasFrame {
+        viewport: output.inner_rect,
+        graph_width: graph.x,
+    })
 }
 
-/// Zoom buttons above the canvas. Fit scales the graph to the visible width, never above 100%.
-fn controls(ui: &mut egui::Ui, workbench: &mut Workbench, graph_width: f32) {
+/// Zoom buttons. Fit scales the graph to the visible width, never above 100%.
+pub(crate) fn zoom_controls(ui: &mut egui::Ui, workbench: &mut Workbench, frame: &CanvasFrame) {
     ui.horizontal(|ui| {
-        if ui.button("−").clicked() {
+        if ui.button("−").on_hover_text("Zoom out").clicked() {
             workbench.zoom = (workbench.zoom - ZOOM_STEP).max(MIN_ZOOM);
         }
         ui.label(format!("{:.0}%", workbench.zoom * 100.0));
-        if ui.button("+").clicked() {
+        if ui.button("+").on_hover_text("Zoom in").clicked() {
             workbench.zoom = (workbench.zoom + ZOOM_STEP).min(MAX_ZOOM);
         }
-        if ui.button("Fit").clicked() {
-            workbench.zoom = fit_zoom(graph_width, ui.available_width());
+        if ui
+            .button("Fit")
+            .on_hover_text("Fit the graph to the canvas width")
+            .clicked()
+        {
+            workbench.zoom = fit_zoom(frame.graph_width, frame.viewport.width());
         }
     });
 }

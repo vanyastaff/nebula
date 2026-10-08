@@ -249,15 +249,28 @@ pub(crate) enum Catalog {
     Unavailable,
 }
 
-/// Action and display name for the next node to add.
+/// The add-node palette: whether it is open, its catalog filter, and the hand-typed action for servers
+/// without a catalog.
 #[derive(Default)]
 pub(crate) struct AddNodeForm {
+    pub(crate) open: bool,
+    pub(crate) filter: String,
     pub(crate) action_key: String,
     pub(crate) name: String,
     /// Node the new one connects after, set by the "+" on an output port.
     pub(crate) connect_from: Option<String>,
-    /// Asks the form to open for one frame, so the "+" on the canvas reveals it.
-    pub(crate) open_requested: bool,
+}
+
+impl AddNodeForm {
+    /// Opens the palette for a node that follows `after`, or for a free node when it is `None`.
+    pub(crate) fn open_after(&mut self, after: Option<String>) {
+        self.open = true;
+        self.connect_from = after;
+    }
+
+    pub(crate) fn close(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// Which draft commands are safe to offer. Views disable the rest.
@@ -359,8 +372,8 @@ impl Workbench {
         self.selected_node = None;
         self.link_from = None;
         self.node_drag = None;
-        // A "connect after" target belongs to the workflow that was open, so it cannot outlive it.
-        self.add_node.connect_from = None;
+        // The palette and its "connect after" target belong to the workflow that was open.
+        self.add_node.close();
         self.status = None;
         self.history = None;
     }
@@ -414,7 +427,8 @@ impl Workbench {
             self.catalog = Catalog::Unavailable;
         }
         if kind == RequestKind::Catalog && error == Failure::Rejected(503) {
-            self.feedback.error(CATALOG_UNAVAILABLE);
+            // The palette asks on its own and shows this state itself, so it is news, not a failure.
+            self.feedback.info(CATALOG_UNAVAILABLE);
         } else {
             self.feedback.error(error.to_string());
         }
@@ -537,6 +551,7 @@ impl Workbench {
             return;
         };
         if parameters_match(&draft.definition["nodes"], &document.definition["nodes"]) {
+            draft.published_revision = Some(document.revision);
             draft.saved(document);
             self.feedback
                 .info("Workflow published. Run uses the server's current publication.");

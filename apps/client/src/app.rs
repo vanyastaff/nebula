@@ -159,8 +159,8 @@ impl eframe::App for ClientApp {
                 });
             if has_draft {
                 egui::Panel::bottom("runs")
-                    .default_size(300.0)
-                    .size_range(220.0..=440.0)
+                    .default_size(200.0)
+                    .size_range(120.0..=440.0)
                     .resizable(true)
                     .frame(theme::panel(theme::SIDEBAR))
                     .show(ui, |ui| {
@@ -169,16 +169,33 @@ impl eframe::App for ClientApp {
                             .show(ui, |ui| runs::show(ui, workbench, &mut intents));
                     });
             }
+            if editor::has_side_panel(workbench) {
+                egui::Panel::right("side")
+                    .default_size(340.0)
+                    .size_range(280.0..=520.0)
+                    .resizable(true)
+                    .frame(theme::panel(theme::SIDEBAR))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("side")
+                            .show(ui, |ui| editor::side(ui, workbench, &mut intents));
+                    });
+            }
         }
         egui::CentralPanel::default()
             .frame(theme::canvas())
             .show(ui, |ui| {
+                if workspace && wide {
+                    // The editor takes the whole page, so the canvas can use the height left under its bar.
+                    editor::show(ui, workbench, &mut intents, false);
+                    return;
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("document")
                     .show(ui, |ui| {
                         if !workspace {
                             connection::show(ui, workbench, &mut intents);
-                        } else if !wide && workbench.sidebar_open {
+                        } else if workbench.sidebar_open {
                             // Narrow layouts swap the page for the workflow list until one is opened.
                             widgets::page_column(ui, theme::PAGE_MAX_WIDTH, |ui| {
                                 theme::card_block(ui, |ui| {
@@ -186,17 +203,19 @@ impl eframe::App for ClientApp {
                                 });
                             });
                         } else {
-                            widgets::page_column(ui, theme::PAGE_MAX_WIDTH, |ui| {
+                            editor::show(ui, workbench, &mut intents, true);
+                            if editor::has_side_panel(workbench) {
+                                ui.add_space(theme::SPACE_MD);
                                 theme::card_block(ui, |ui| {
-                                    editor::show(ui, workbench, &mut intents);
+                                    editor::side(ui, workbench, &mut intents);
                                 });
-                                if !wide && has_draft {
-                                    ui.add_space(theme::SPACE_MD);
-                                    theme::card_block(ui, |ui| {
-                                        runs::show(ui, workbench, &mut intents);
-                                    });
-                                }
-                            });
+                            }
+                            if has_draft {
+                                ui.add_space(theme::SPACE_MD);
+                                theme::card_block(ui, |ui| {
+                                    runs::show(ui, workbench, &mut intents);
+                                });
+                            }
                         }
                     });
             });
