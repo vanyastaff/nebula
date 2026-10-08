@@ -231,7 +231,10 @@ fn an_undecided_condition_shows_the_field() {
 #[test]
 fn initial_values_follow_defaults_and_shapes() {
     let form = Form::parse(&every_field());
-    assert_eq!(field(&form, "method").initial(), json!("GET"));
+    // Without a declared default a choice and a number start empty instead of guessing.
+    assert_eq!(field(&form, "method").initial(), Value::Null);
+    assert_eq!(field(&form, "count").initial(), Value::Null);
+    assert_eq!(field(&form, "extras").initial(), json!({}));
     assert_eq!(field(&form, "days").initial(), json!([]));
     assert_eq!(
         field(&form, "address").initial(),
@@ -244,6 +247,13 @@ fn initial_values_follow_defaults_and_shapes() {
     let with_default =
         Form::parse(&json!({"fields": [{"type": "number", "key": "n", "default": 5}]}));
     assert_eq!(with_default.fields[0].initial(), json!(5));
+}
+
+#[test]
+fn a_field_without_a_label_reads_its_key_as_words() {
+    let form = Form::parse(&every_field());
+    assert_eq!(field(&form, "api_key").title(), "Api key");
+    assert_eq!(field(&form, "name").title(), "Name");
 }
 
 #[test]

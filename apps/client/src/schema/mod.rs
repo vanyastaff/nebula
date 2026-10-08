@@ -286,22 +286,24 @@ impl Field {
     }
 
     /// The label a person reads: the declared label, or the key when there is none.
-    pub(crate) fn title(&self) -> &str {
-        self.label.as_deref().unwrap_or(&self.key)
+    pub(crate) fn title(&self) -> String {
+        self.label.clone().unwrap_or_else(|| humanize(&self.key))
     }
 
-    /// The value the field starts from when the node does not set it.
+    /// The value the field starts from when the node does not set it. Without a declared default a
+    /// number or a single choice starts empty, since the action decides what an absent value means.
     pub(crate) fn initial(&self) -> Value {
         if let Some(default) = &self.default {
             return default.clone();
         }
         match &self.kind {
-            Kind::Number { .. } => Value::from(0),
             Kind::Boolean { .. } => Value::Bool(false),
             Kind::Select { multiple: true, .. } | Kind::List { .. } => Value::Array(Vec::new()),
-            Kind::Select { options, .. } => options
-                .first()
-                .map_or(Value::Null, |choice| choice.value.clone()),
+            // Fields are picked one by one, so none is there to begin with.
+            Kind::Object {
+                widget: ObjectWidget::PickFields,
+                ..
+            } => Value::Object(Map::new()),
             Kind::Object { fields, .. } => Value::Object(
                 fields
                     .iter()
@@ -422,6 +424,15 @@ impl Field {
         }
         None
     }
+}
+
+/// `api_key` as `Api key`, for fields that declare no label.
+fn humanize(key: &str) -> String {
+    let words = key.replace(['_', '-', '.'], " ");
+    let mut letters = words.trim().chars();
+    letters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(letters).collect()
+    })
 }
 
 /// A placeholder that shows the expected shape, for hints with a fixed format.

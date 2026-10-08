@@ -72,7 +72,7 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
         return;
     }
     ui.add_space(theme::SPACE_SM);
-    widgets::segmented(
+    widgets::tabs(
         ui,
         &mut workbench.inspector_tab,
         &[
@@ -81,12 +81,24 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
             (InspectorTab::Output, "Output"),
         ],
     );
-    ui.separator();
-    match workbench.inspector_tab {
-        InspectorTab::Parameters => parameters(ui, workbench, &node, intents),
-        InspectorTab::Settings => settings(ui, workbench, &node),
-        InspectorTab::Output => output(ui, workbench, &node),
-    }
+    // Only the tab body scrolls; the node and its tabs stay at the top of the panel.
+    let tab = workbench.inspector_tab;
+    egui::ScrollArea::vertical()
+        .id_salt(("inspector", tab as u8))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            // Room on the right for the floating scroll bar, so it never covers an input's edge.
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    right: theme::SPACE_MD as i8,
+                    ..egui::Margin::ZERO
+                })
+                .show(ui, |ui| match tab {
+                    InspectorTab::Parameters => parameters(ui, workbench, &node, intents),
+                    InspectorTab::Settings => settings(ui, workbench, &node),
+                    InspectorTab::Output => output(ui, workbench, &node),
+                });
+        });
 }
 
 /// The node's badge, name and action, with Close. Returns true when Close was clicked.
@@ -100,7 +112,13 @@ fn header(ui: &mut egui::Ui, node: &NodeView) -> bool {
             widgets::caption(ui, node.action.as_str());
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.button("Close").on_hover_text("Close (Esc)").clicked()
+            ui.add(
+                egui::Button::new(RichText::new("×").size(20.0).color(theme::TEXT_MUTED))
+                    .frame_when_inactive(false)
+                    .min_size(egui::vec2(28.0, 28.0)),
+            )
+            .on_hover_text("Close (Esc)")
+            .clicked()
         })
         .inner
     })

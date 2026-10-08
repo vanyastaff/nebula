@@ -185,10 +185,9 @@ impl eframe::App for ClientApp {
                     .resizable(true)
                     .drag_to_open(false)
                     .frame(theme::panel(theme::SIDEBAR))
+                    // The panel scrolls its own body, so its header and tabs stay in view.
                     .show_collapsible(ui, &mut open, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("side")
-                            .show(ui, |ui| editor::side(ui, workbench, &mut intents));
+                        editor::side(ui, workbench, &mut intents);
                     });
                 if was_open && !open {
                     editor::close_side_panel(workbench);

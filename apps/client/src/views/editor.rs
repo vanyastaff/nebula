@@ -16,6 +16,9 @@ use serde_json::Value;
 const STACKED_CANVAS_HEIGHT: f32 = 360.0;
 /// Least canvas height on wide layouts, so a short window still shows a usable graph.
 const MIN_CANVAS_HEIGHT: f32 = 240.0;
+/// Canvases narrower than this keep Execute workflow at the right, away from the zoom controls: the
+/// centred button needs the zoom row (about 220 points) clear on both sides of its own 180.
+const CENTRED_RUN_MIN: f32 = 660.0;
 /// Narrower pages put the action bar's commands on a second row instead of over the title.
 const SINGLE_ROW_BAR_MIN: f32 = 720.0;
 
@@ -81,11 +84,11 @@ pub(crate) fn show(
         no_workflow(ui, workbench);
         return;
     };
-    let busy = workbench.session.busy();
     let view = DraftView::of(draft);
+    let locked = edits_locked(workbench);
     shortcuts(ui, workbench, &view, intents);
     action_bar(ui, workbench, &view, intents, stacked);
-    ui.add_enabled_ui(!busy, |ui| {
+    ui.add_enabled_ui(!locked, |ui| {
         if let Some(remote) = &view.remote {
             reconciliation(ui, workbench, remote);
         }
@@ -114,7 +117,7 @@ fn shortcuts(ui: &egui::Ui, workbench: &mut Workbench, view: &DraftView, intents
     if pressed(Modifiers::COMMAND, Key::Enter) && idle && (view.gate.can_run || view.pending_run) {
         intents.push(Intent::RunDraft);
     }
-    if ui.ctx().text_edit_focused() || !idle {
+    if ui.ctx().text_edit_focused() || edits_locked(workbench) {
         return;
     }
     // Shortcut matching ignores an extra Shift, so redo is checked before undo.
@@ -176,11 +179,13 @@ fn graph(
         workbench,
         &frame,
     );
-    run_button(
-        &mut overlay(ui, Layout::bottom_up(Align::Center)),
-        view,
-        intents,
-    );
+    // Centred like other node editors; a narrow canvas moves it right so it clears the zoom controls.
+    let align = if inset.width() >= CENTRED_RUN_MIN {
+        Align::Center
+    } else {
+        Align::Max
+    };
+    run_button(&mut overlay(ui, Layout::bottom_up(align)), view, intents);
 }
 
 /// Commands of the action bar, in reading order.
@@ -407,6 +412,17 @@ fn run_button(ui: &mut egui::Ui, view: &DraftView, intents: &mut Intents) {
     }
 }
 
+/// Edits wait only while a save or publish is in flight: its reply replaces the definition, so an
+/// edit made meanwhile would be lost. Background reads such as runs, schemas or the catalog leave the
+/// draft alone, so they never freeze the editor.
+pub(crate) fn edits_locked(workbench: &Workbench) -> bool {
+    workbench.session.busy()
+        && workbench
+            .session
+            .draft()
+            .is_some_and(|draft| draft.uncertain_save)
+}
+
 /// Closes whatever the side panel shows, as Escape does.
 pub(crate) fn close_side_panel(workbench: &mut Workbench) {
     if workbench.add_node.open {
@@ -419,11 +435,21 @@ pub(crate) fn close_side_panel(workbench: &mut Workbench) {
 
 /// The side panel: the add-node palette while it is open, otherwise the selected node.
 pub(crate) fn side(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
-    if workbench.add_node.open {
-        palette(ui, workbench, intents);
-    } else {
-        inspector::show(ui, workbench, intents);
+    // The panel keeps the width a person gave it. The body draws in a child of exactly that size and
+    // the panel reserves only that rectangle, so a control that measures a little wider is clipped
+    // instead of widening a resizable panel frame after frame.
+    let rect = ui.available_rect_before_wrap();
+    let mut body = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(*ui.layout()));
+    body.set_clip_rect(rect.intersect(ui.clip_rect()));
+    if edits_locked(workbench) {
+        body.disable();
     }
+    if workbench.add_node.open {
+        palette(&mut body, workbench, intents);
+    } else {
+        inspector::show(&mut body, workbench, intents);
+    }
+    ui.allocate_rect(rect, egui::Sense::hover());
 }
 
 fn palette(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) {
@@ -444,13 +470,19 @@ fn palette(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut Intents) 
         });
     }
     ui.add_space(theme::SPACE_SM);
-    if let Some((key, name)) = catalog(ui, workbench, intents) {
-        add_node(workbench, &key, &name);
-        return;
-    }
-    ui.add_space(theme::SPACE_MD);
-    ui.separator();
-    add_node_fields(ui, workbench);
+    // The header stays put; the catalog and the typed form scroll under it.
+    egui::ScrollArea::vertical()
+        .id_salt("palette")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if let Some((key, name)) = catalog(ui, workbench, intents) {
+                add_node(workbench, &key, &name);
+                return;
+            }
+            ui.add_space(theme::SPACE_MD);
+            ui.separator();
+            add_node_fields(ui, workbench);
+        });
 }
 
 /// The server's action catalog, asked for the first time the palette opens. Returns the key and name of

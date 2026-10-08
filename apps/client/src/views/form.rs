@@ -16,6 +16,12 @@ use crate::{
 use eframe::egui::{self, Color32, RichText};
 use serde_json::{Map, Value, json};
 
+/// Room a slider leaves for its value box and the gap before it. Rows that measure their own widths
+/// must stay inside the panel: anything wider would widen a resizable panel on every frame.
+const SLIDER_VALUE_ROOM: f32 = 110.0;
+/// Room for a row's trailing remove button.
+const ROW_BUTTON_ROOM: f32 = 36.0;
+
 /// A change to one top-level parameter of the node.
 pub(crate) enum FormEdit {
     Literal(String, Value),
@@ -44,23 +50,19 @@ pub(crate) fn show(
             Some((field.key.clone(), value))
         })
         .collect();
-    let mut edits = Vec::new();
-    let mut group: Option<&str> = None;
-    for field in form
+    let visible: Vec<&Field> = form
         .fields
         .iter()
         .filter(|field| field.is_visible(&siblings))
-    {
+        .collect();
+    readiness(ui, &visible, entries, &siblings);
+    let mut edits = Vec::new();
+    let mut group: Option<&str> = None;
+    for field in visible {
         if field.group.as_deref() != group {
             group = field.group.as_deref();
             if let Some(name) = group {
-                ui.add_space(theme::SPACE_SM);
-                ui.label(
-                    RichText::new(name.to_uppercase())
-                        .size(11.0)
-                        .color(theme::TEXT_MUTED),
-                );
-                ui.separator();
+                section_header(ui, name);
             }
         }
         let required = field.is_required(&siblings);
@@ -70,6 +72,69 @@ pub(crate) fn show(
         ui.add_space(theme::SPACE_MD);
     }
     edits
+}
+
+/// Whether the node is ready to publish as far as the form can tell: every required input visible
+/// right now holds a value. Shown first, so a person knows at a glance what is left.
+fn readiness(
+    ui: &mut egui::Ui,
+    fields: &[&Field],
+    entries: &Map<String, Value>,
+    siblings: &Map<String, Value>,
+) {
+    let required: Vec<&&Field> = fields
+        .iter()
+        .filter(|field| !matches!(field.kind, Kind::Notice { .. }) && field.is_required(siblings))
+        .collect();
+    if required.is_empty() {
+        return;
+    }
+    let missing: Vec<String> = required
+        .iter()
+        .filter(|field| match entries.get(&field.key) {
+            None => true,
+            Some(entry) if entry["type"] == "expression" => entry["expr"]
+                .as_str()
+                .is_none_or(|text| text.trim().is_empty()),
+            Some(entry) => schema::is_empty(&entry["value"]),
+        })
+        .map(|field| field.title())
+        .collect();
+    let (tone, text) = match missing.len() {
+        0 => (Tone::Success, "All required inputs are set.".to_owned()),
+        1 => (
+            Tone::Warning,
+            format!("{} still needs a value.", missing[0]),
+        ),
+        count => (
+            Tone::Warning,
+            format!(
+                "{count} required inputs need a value: {}.",
+                missing.join(", ")
+            ),
+        ),
+    };
+    widgets::banner(ui, tone, &text);
+    ui.add_space(theme::SPACE_MD);
+}
+
+/// The heading of a group of fields: small capitals over a hairline, with air above it.
+fn section_header(ui: &mut egui::Ui, name: &str) {
+    ui.add_space(theme::SPACE_SM);
+    ui.label(
+        RichText::new(name.to_uppercase())
+            .size(11.0)
+            .strong()
+            .extra_letter_spacing(1.2)
+            .color(theme::TEXT_MUTED),
+    );
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().hline(
+        rect.x_range(),
+        rect.top(),
+        egui::Stroke::new(1.0, theme::BORDER),
+    );
+    ui.add_space(theme::SPACE_MD);
 }
 
 /// A top-level field: its label row with the fixed/expression switch, then its control.
@@ -93,37 +158,42 @@ fn top_field(
     ui.horizontal(|ui| {
         label(ui, field, required);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if entry.is_some()
-                && field.expression != ExpressionMode::Required
-                && ui
-                    .small_button("Reset")
-                    .on_hover_text("Remove the value, so the action's default applies")
-                    .clicked()
-            {
-                edit = Some(FormEdit::Clear(field.key.clone()));
-            }
+            ui.spacing_mut().item_spacing.x = theme::SPACE_SM;
+            // Read right to left: Expression is added first so Fixed sits on its left, then Reset.
             if field.expression == ExpressionMode::Allowed {
-                // Read right to left: Expression is added first so Fixed sits on its left.
-                if ui.selectable_label(expression, "Expression").clicked() && !expression {
+                if link(ui, "Expression", expression)
+                    .on_hover_text("Compute the value when the node runs")
+                    .clicked()
+                    && !expression
+                {
                     let start = entry
                         .filter(|entry| entry["type"] == "literal")
                         .map(|entry| schema::display(&entry["value"]))
                         .unwrap_or_default();
                     edit = Some(FormEdit::Expression(field.key.clone(), start));
                 }
-                if ui.selectable_label(!expression, "Fixed").clicked() && expression {
+                if link(ui, "Fixed", !expression)
+                    .on_hover_text("Enter the value itself")
+                    .clicked()
+                    && expression
+                {
                     edit = Some(FormEdit::Literal(field.key.clone(), field.initial()));
                 }
             }
+            if entry.is_some()
+                && field.expression != ExpressionMode::Required
+                && link(ui, "Reset", false)
+                    .on_hover_text("Remove the value, so the action's default applies")
+                    .clicked()
+            {
+                edit = Some(FormEdit::Clear(field.key.clone()));
+            }
         });
     });
-    if let Some(description) = &field.description {
-        widgets::caption(ui, description.as_str());
-    }
     if edit.is_some() {
         return edit;
     }
-    match kind_of_entry {
+    let result = match kind_of_entry {
         _ if expression => {
             let current = entry
                 .and_then(|entry| entry["expr"].as_str())
@@ -134,20 +204,21 @@ fn top_field(
                 },
                 _ => "Evaluated when the node runs, for example {{ $input.name }}.".to_owned(),
             };
-            let typed = buffered(ui, id, current, |edit| {
-                edit.font(egui::TextStyle::Monospace).hint_text("{{ }}")
-            });
+            let typed = expression_input(ui, id, current);
             widgets::caption(ui, note);
             if required && current.trim().is_empty() {
-                problem(ui, "Required.");
+                needed(ui);
             }
             typed.map(|text| FormEdit::Expression(field.key.clone(), text))
         },
         "literal" => {
             let mut value = entry.map_or_else(|| field.initial(), |entry| entry["value"].clone());
             let changed = control(ui, field, &mut value, id);
-            if let Some(text) = field.problem(&value, required) {
-                problem(ui, &text);
+            // An untouched field is only reminded that it needs a value; checks apply once one is set.
+            match (entry, field.problem(&value, required)) {
+                (None, Some(_)) if required => needed(ui),
+                (Some(_), Some(text)) => problem(ui, &text),
+                _ => {},
             }
             changed.then(|| FormEdit::Literal(field.key.clone(), value))
         },
@@ -158,7 +229,48 @@ fn top_field(
             );
             None
         },
+    };
+    // Help reads under the input, where the eye goes after typing.
+    if let Some(description) = &field.description {
+        hint(ui, description);
     }
+    result
+}
+
+/// A full-width ghost button in the accent colour, for growing a list. Disabled at the list's limit.
+fn add_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> bool {
+    let button = egui::Button::new(RichText::new(text).color(theme::ACCENT))
+        .frame_when_inactive(false)
+        .min_size(egui::vec2(ui.available_width(), 30.0));
+    ui.add_enabled(enabled, button)
+        .on_disabled_hover_text("The list is at its maximum size")
+        .clicked()
+}
+
+fn hint(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).size(12.0).color(theme::TEXT_MUTED));
+}
+
+/// An expression input: an `fx` mark and an accent-tinted field, so a computed value never passes
+/// for a fixed one.
+fn expression_input(ui: &mut egui::Ui, id: egui::Id, current: &str) -> Option<String> {
+    egui::Frame::new()
+        .fill(theme::ACCENT_SOFT)
+        .stroke(egui::Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.5)))
+        .corner_radius(theme::RADIUS_SM)
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("fx").italics().strong().color(theme::ACCENT));
+                buffered(ui, id, current, |edit| {
+                    edit.font(egui::TextStyle::Monospace)
+                        .hint_text("{{ $input.value }}")
+                        .frame(egui::Frame::NONE)
+                })
+            })
+            .inner
+        })
+        .inner
 }
 
 fn label(ui: &mut egui::Ui, field: &Field, required: bool) {
@@ -171,6 +283,25 @@ fn label(ui: &mut egui::Ui, field: &Field, required: bool) {
 
 fn problem(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).color(theme::DANGER).size(12.0));
+}
+
+/// A required field still waiting for its value: a reminder, not yet an error.
+fn needed(ui: &mut egui::Ui) {
+    ui.label(
+        RichText::new("Needs a value before the workflow is published.")
+            .color(theme::WARNING)
+            .size(12.0),
+    );
+}
+
+/// A small frameless text button for the field row; the active one is drawn in the accent colour.
+fn link(ui: &mut egui::Ui, text: &str, active: bool) -> egui::Response {
+    let color = if active {
+        theme::ACCENT
+    } else {
+        theme::TEXT_MUTED
+    };
+    ui.add(egui::Button::new(RichText::new(text).size(12.0).color(color)).frame(false))
 }
 
 fn notice(ui: &mut egui::Ui, field: &Field, severity: Severity) {
@@ -426,6 +557,9 @@ fn number_control(
                 .data(|data| data.get_temp::<f64>(drag_id))
                 .or(current)
                 .unwrap_or(min);
+            // The slider takes the row; egui otherwise draws a short default track.
+            // The track takes the row minus the value box beside it and the gap between them.
+            ui.spacing_mut().slider_width = (ui.available_width() - SLIDER_VALUE_ROOM).max(80.0);
             let slider = egui::Slider::new(&mut number, min..=max).step_by(step);
             let response = ui.add(if integer { slider.integer() } else { slider });
             if response.dragged() {
@@ -479,9 +613,8 @@ fn number_control(
         | NumberWidget::Duration
         | NumberWidget::Bytes => {
             let (prefix, suffix) = match widget {
+                // The schema names no currency or time unit, so none is invented here.
                 NumberWidget::Percent => ("", "%"),
-                NumberWidget::Currency => ("¤", ""),
-                NumberWidget::Duration => ("", "s"),
                 NumberWidget::Bytes => ("", "bytes"),
                 _ => ("", ""),
             };
@@ -819,9 +952,6 @@ fn fields_block(
         }
         let required = field.is_required(&siblings);
         ui.horizontal(|ui| label(ui, field, required));
-        if let Some(description) = &field.description {
-            widgets::caption(ui, description.as_str());
-        }
         let mut value = map
             .get(&field.key)
             .cloned()
@@ -830,27 +960,36 @@ fn fields_block(
             map.insert(field.key.clone(), value.clone());
             changed = true;
         }
-        if let Some(text) = field.problem(&value, required) {
+        // An empty required value is a reminder; anything typed that breaks a rule is an error.
+        if required && schema::is_empty(&value) {
+            needed(ui);
+        } else if let Some(text) = field.problem(&value, required) {
             problem(ui, &text);
+        }
+        if let Some(description) = &field.description {
+            hint(ui, description);
         }
         ui.add_space(theme::SPACE_SM);
     }
     changed
 }
 
-/// An indented block with a rule on its left, so nesting reads at a glance.
+/// A group of inputs that form one value, set off from its neighbours.
 fn nested<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let inner = ui.horizontal(|ui| {
-        ui.add_space(theme::SPACE_XS);
-        ui.vertical(|ui| add(ui)).inner
-    });
-    let rect = inner.response.rect;
-    ui.painter().vline(
-        rect.left(),
-        rect.y_range(),
-        egui::Stroke::new(2.0, theme::BORDER),
-    );
-    inner.inner
+    // A quiet card one step lighter than the panel: the group reads as one value without shouting.
+    let frame = egui::Frame::new()
+        .fill(theme::SURFACE)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .corner_radius(theme::RADIUS_MD)
+        .inner_margin(egui::Margin::same(theme::SPACE_MD as i8));
+    // Measured before the frame and net of its margins, so the card never widens its panel.
+    let width = (ui.available_width() - frame.total_margin().sum().x).max(0.0);
+    frame
+        .show(ui, |ui| {
+            ui.set_width(width);
+            add(ui)
+        })
+        .inner
 }
 
 fn object_control(
@@ -864,12 +1003,15 @@ fn object_control(
     let all: Vec<&Field> = fields.iter().collect();
     let changed = match widget {
         ObjectWidget::Inline => nested(ui, |ui| fields_block(ui, &all, &mut map, id)),
-        ObjectWidget::Collapsed => egui::CollapsingHeader::new(format!("{} fields", fields.len()))
-            .id_salt(id.with("collapsed"))
-            .default_open(false)
-            .show(ui, |ui| fields_block(ui, &all, &mut map, id))
-            .body_returned
-            .unwrap_or(false),
+        ObjectWidget::Collapsed => egui::CollapsingHeader::new(match fields.len() {
+            1 => "1 field".to_owned(),
+            count => format!("{count} fields"),
+        })
+        .id_salt(id.with("collapsed"))
+        .default_open(false)
+        .show(ui, |ui| fields_block(ui, &all, &mut map, id))
+        .body_returned
+        .unwrap_or(false),
         ObjectWidget::Sections => nested(ui, |ui| {
             let mut changed = false;
             for (group, members) in grouped(fields) {
@@ -1010,7 +1152,11 @@ fn list_control(
             for (index, entry) in items.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     let mut map = entry.as_object().cloned().unwrap_or_default();
-                    let width = (ui.available_width() - 40.0) / columns.len().max(1) as f32;
+                    // Columns share the row after the remove button and the gaps between them.
+                    let gaps = ui.spacing().item_spacing.x * columns.len() as f32;
+                    let width = ((ui.available_width() - ROW_BUTTON_ROOM - gaps)
+                        / columns.len().max(1) as f32)
+                        .max(40.0);
                     for column in &columns {
                         ui.scope(|ui| {
                             ui.set_width(width);
@@ -1040,10 +1186,7 @@ fn list_control(
             if let Some(index) = removed {
                 items.remove(index);
             }
-            if ui
-                .add_enabled(can_add, egui::Button::new("+ Add row"))
-                .clicked()
-            {
+            if add_button(ui, "+ Add row", can_add) {
                 items.push(item.initial());
             }
         },
@@ -1068,7 +1211,9 @@ fn list_control(
                                 action = Some(ListAction::Down(index));
                             }
                         }
-                        let width = ui.available_width() - 36.0;
+                        let width =
+                            (ui.available_width() - ROW_BUTTON_ROOM - ui.spacing().item_spacing.x)
+                                .max(40.0);
                         ui.scope(|ui| {
                             ui.set_width(width);
                             if control(ui, item, entry, row_id) {
@@ -1100,10 +1245,7 @@ fn list_control(
                 Some(ListAction::Down(index)) => items.swap(index, index + 1),
                 Some(ListAction::Edited) | None => {},
             }
-            if ui
-                .add_enabled(can_add, egui::Button::new("+ Add item"))
-                .clicked()
-            {
+            if add_button(ui, "+ Add item", can_add) {
                 items.push(item.initial());
             }
         },
@@ -1140,16 +1282,19 @@ fn mode_control(
     let current_key = value["mode"].as_str().unwrap_or_default().to_owned();
     let mut chosen = current_key.clone();
     if variants.len() <= 4 {
-        ui.horizontal_wrapped(|ui| {
-            for variant in variants {
-                if ui
-                    .selectable_label(chosen == variant.key, &variant.label)
-                    .clicked()
-                {
-                    chosen.clone_from(&variant.key);
-                }
-            }
-        });
+        let options: Vec<(usize, &str)> = variants
+            .iter()
+            .enumerate()
+            .map(|(index, variant)| (index, variant.label.as_str()))
+            .collect();
+        let mut index = variants
+            .iter()
+            .position(|variant| variant.key == chosen)
+            .unwrap_or(usize::MAX);
+        widgets::segmented(ui, &mut index, &options);
+        if let Some(variant) = variants.get(index) {
+            chosen.clone_from(&variant.key);
+        }
     } else {
         let selected = variants
             .iter()

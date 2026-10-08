@@ -89,6 +89,45 @@ pub(crate) fn mark(ui: &mut egui::Ui, letter: &str, color: Color32, side: f32) {
     );
 }
 
+/// Tabs as words over a hairline; the open tab is underlined in the accent colour.
+pub(crate) fn tabs<T: Copy + PartialEq>(ui: &mut egui::Ui, current: &mut T, options: &[(T, &str)]) {
+    let row = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::SPACE_LG;
+        for &(value, label) in options {
+            let active = *current == value;
+            let color = if active {
+                theme::TEXT
+            } else {
+                theme::TEXT_MUTED
+            };
+            let text = RichText::new(label).color(color);
+            let response = ui.add(
+                egui::Button::new(if active { text.strong() } else { text })
+                    .frame(false)
+                    .min_size(egui::vec2(0.0, 30.0)),
+            );
+            if active {
+                let rect = response.rect;
+                ui.painter().hline(
+                    rect.x_range(),
+                    rect.bottom() + 3.0,
+                    Stroke::new(2.0, theme::ACCENT),
+                );
+            }
+            if response.clicked() {
+                *current = value;
+            }
+        }
+    });
+    let rect = row.response.rect;
+    ui.painter().hline(
+        ui.max_rect().x_range(),
+        rect.bottom() + 4.0,
+        Stroke::new(1.0, theme::BORDER),
+    );
+    ui.add_space(theme::SPACE_SM);
+}
+
 /// Page-level heading.
 pub(crate) fn title(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(22.0).strong());
@@ -137,16 +176,18 @@ pub(crate) fn badge(ui: &mut egui::Ui, text: impl Into<String>, tone: Tone) {
 /// Full-width message for feedback or a warning that needs attention.
 pub(crate) fn banner(ui: &mut egui::Ui, tone: Tone, text: &str) {
     let (foreground, background) = tone.colors();
-    egui::Frame::new()
+    let frame = egui::Frame::new()
         .fill(background)
         .stroke(Stroke::new(1.0, foreground.gamma_multiply(0.3)))
         .corner_radius(theme::RADIUS_MD)
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .show(ui, |ui| {
-            // Long messages wrap inside the available width instead of widening the page.
-            ui.set_max_width(ui.available_width());
-            ui.colored_label(foreground, text);
-        });
+        .inner_margin(egui::Margin::symmetric(12, 8));
+    // A banner spans its column and wraps long messages. The width is measured before the frame and
+    // net of its margins and stroke: filling the inner width would grow a resizable panel every frame.
+    let width = (ui.available_width() - frame.total_margin().sum().x).max(0.0);
+    frame.show(ui, |ui| {
+        ui.set_width(width);
+        ui.colored_label(foreground, text);
+    });
 }
 
 /// Title row of a side panel with Close at the right edge. Returns true when Close was clicked.
