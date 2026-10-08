@@ -476,19 +476,6 @@ fn show_runs(workbench: &mut Workbench) -> Intents {
 }
 
 #[test]
-fn recent_runs_are_marked_read_only_when_their_request_starts() {
-    let mut workbench = Workbench::new(String::new());
-    assert_eq!(workbench.begin_recent_runs(), None);
-    assert!(!workbench.history_requested);
-
-    open_draft(&mut workbench);
-    let workflow = workbench.session.draft().unwrap().base.workflow.id.clone();
-
-    assert_eq!(workbench.begin_recent_runs(), Some(workflow));
-    assert!(workbench.history_requested);
-}
-
-#[test]
 fn the_runs_panel_asks_again_when_its_request_was_dropped() {
     let mut workbench = Workbench::new(String::new());
     open_draft(&mut workbench);
@@ -496,7 +483,7 @@ fn the_runs_panel_asks_again_when_its_request_was_dropped() {
     let asked = |intents: &Intents| {
         intents
             .iter()
-            .any(|intent| matches!(intent, Intent::LoadRecentRuns))
+            .any(|intent| matches!(intent, Intent::RefreshRuns))
     };
     // The app dropped the first ask because another request started in the same frame.
     assert!(asked(&show_runs(&mut workbench)));
@@ -504,7 +491,7 @@ fn the_runs_panel_asks_again_when_its_request_was_dropped() {
     assert!(asked(&show_runs(&mut workbench)));
 
     // Once the read starts, the panel waits for its answer.
-    workbench.begin_recent_runs();
+    workbench.recent_runs_requested();
     assert!(!asked(&show_runs(&mut workbench)));
 }
 
@@ -536,7 +523,7 @@ fn runs_page() -> ListExecutionsResponse {
 fn a_failed_read_of_recent_runs_is_shown_instead_of_waiting() {
     let mut workbench = Workbench::new(String::new());
     open_draft(&mut workbench);
-    workbench.begin_recent_runs();
+    workbench.recent_runs_requested();
     let stamp = workbench.session.begin().unwrap();
 
     workbench.receive(stamp, RequestKind::History, Err(Failure::Rejected(500)));

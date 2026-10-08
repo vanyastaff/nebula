@@ -22,11 +22,11 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
     };
     let execution = draft.execution_id.clone();
     let busy = workbench.session.busy();
-    // The list loads once per opened workflow and again after a start, without a click. The app marks
-    // it requested when the read starts (`Workbench::begin_recent_runs`), so an intent dropped behind
-    // another request is asked again next frame.
+    // The list, with the chosen run, loads once per opened workflow and again after a start, without
+    // a click. The app marks it requested when the read starts (`Workbench::recent_runs_requested`),
+    // so an intent dropped behind another request is asked again next frame.
     if !workbench.history_requested && !busy {
-        intents.push(Intent::LoadRecentRuns);
+        intents.push(Intent::RefreshRuns);
     }
     follow(ui, workbench, execution.as_deref(), intents, busy);
     ui.horizontal(|ui| {
@@ -54,8 +54,9 @@ pub(crate) fn show(ui: &mut egui::Ui, workbench: &mut Workbench, intents: &mut I
 }
 
 /// Keeps the chosen run current: it is read once chosen, then every few seconds until it ends, and the
-/// list is read again while its row still shows an older status. Reads stay spaced out even when they
-/// fail, so a server in trouble is not asked every frame.
+/// list is read again while its row still shows an older status. Reads are spaced from when the last
+/// one started (`Workbench::runs_read_at`), even when it failed, so a server in trouble is not asked
+/// every frame.
 fn follow(
     ui: &egui::Ui,
     workbench: &Workbench,
@@ -83,12 +84,10 @@ fn follow(
     }
     let context = ui.ctx();
     let now = context.input(|input| input.time);
-    let clock = egui::Id::new(("run-follow", id));
-    let due = context
-        .data(|data| data.get_temp::<f64>(clock))
+    let due = workbench
+        .runs_read_at
         .is_none_or(|last| now - last >= FOLLOW_SECONDS);
     if due && !busy {
-        context.data_mut(|data| data.insert_temp(clock, now));
         intents.push(if ended {
             Intent::LoadRecentRuns
         } else {

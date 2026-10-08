@@ -356,6 +356,7 @@ impl Draft {
         }
         next.start_key.clone_from(&self.start_key);
         next.execution_id.clone_from(&self.execution_id);
+        next.published_revision = self.published_revision;
         *self = next;
         Ok(())
     }

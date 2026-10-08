@@ -416,11 +416,7 @@ fn run_button(ui: &mut egui::Ui, view: &DraftView, intents: &mut Intents) {
 /// edit made meanwhile would be lost. Background reads such as runs, schemas or the catalog leave the
 /// draft alone, so they never freeze the editor.
 pub(crate) fn edits_locked(workbench: &Workbench) -> bool {
-    workbench.session.busy()
-        && workbench
-            .session
-            .draft()
-            .is_some_and(|draft| draft.uncertain_save)
+    workbench.session.writing()
 }
 
 /// Closes whatever the side panel shows, as Escape does.

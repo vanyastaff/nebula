@@ -138,6 +138,9 @@ pub(super) enum Change {
         index: usize,
         /// Connections that touched the node, with their positions before removal.
         connections: Vec<(usize, Value)>,
+        /// The node's saved canvas position, removed with it so a later node with the same id does
+        /// not inherit it.
+        placed: Option<Value>,
     },
     ConnectionAdded {
         connection: Value,
@@ -276,6 +279,7 @@ pub(super) fn capture(definition: &Value, edit: Edit) -> Result<Change, EditErro
                 .map(|(position, connection)| (position, connection.clone()))
                 .collect();
             Change::NodeRemoved {
+                placed: saved_position(definition, &id),
                 node,
                 index,
                 connections,
@@ -349,19 +353,23 @@ pub(super) fn replay(
             node,
             index,
             connections,
+            placed,
         } => {
+            let id = node_id(node)?;
+            let nodes = nodes_mut(definition)?;
             if forward {
-                let id = node_id(node)?;
-                let nodes = nodes_mut(definition)?;
                 let position = node_position(nodes, id).ok_or(EditError::NodeNotFound)?;
                 nodes.remove(position);
                 connections_mut(definition)?.retain(|connection| !touches(connection, id));
+                set_saved_position(definition, id, None)?;
             } else {
-                let nodes = nodes_mut(definition)?;
                 nodes.insert((*index).min(nodes.len()), node.clone());
                 let stored = connections_mut(definition)?;
                 for (position, connection) in connections {
                     stored.insert((*position).min(stored.len()), connection.clone());
+                }
+                if placed.is_some() {
+                    set_saved_position(definition, id, placed.as_ref())?;
                 }
             }
         },

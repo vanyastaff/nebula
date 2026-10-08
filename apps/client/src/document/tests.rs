@@ -279,6 +279,24 @@ fn replay_counts_a_removal_the_remote_already_made_as_applied() {
 }
 
 #[test]
+fn a_removed_node_takes_its_canvas_position_with_it() {
+    let mut draft = Draft::new(snapshot(1, 7)).unwrap();
+    let id = draft.add_node("core.http_request", "HTTP").unwrap();
+    draft.move_node(&id, 40.0, 50.0).unwrap();
+
+    draft.remove_node(&id).unwrap();
+    assert_eq!(draft.placed_position(&id), None);
+    // A new node of the same action reuses the id, and the layout places it.
+    let again = draft.add_node("core.http_request", "HTTP").unwrap();
+    assert_eq!(again, id);
+    assert_eq!(draft.placed_position(&again), None);
+
+    draft.undo().unwrap();
+    draft.undo().unwrap();
+    assert_eq!(draft.placed_position(&id), Some((40.0, 50.0)));
+}
+
+#[test]
 fn links_on_different_ports_are_separate_edges() {
     let mut draft = Draft::new(two_node_snapshot(
         1,

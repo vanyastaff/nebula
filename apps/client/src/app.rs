@@ -36,16 +36,33 @@ impl ClientApp {
         })
     }
 
-    fn dispatch(&mut self, context: &egui::Context, operation: Operation) {
+    /// Starts the request, or returns false when it cannot start: no server, or one already in
+    /// flight. Callers change state for a request only after it started, so a dropped intent never
+    /// leaves a "loading" or "uncertain" mark behind.
+    fn dispatch(&mut self, context: &egui::Context, operation: Operation) -> bool {
         let Some(connection) = self.workbench.connection.clone() else {
-            return;
+            return false;
         };
-        let Some(stamp) = self.workbench.session.begin() else {
-            return;
+        let writes = matches!(operation, Operation::Save(..) | Operation::Publish(..));
+        let stamp = if writes {
+            self.workbench.session.begin_write()
+        } else {
+            self.workbench.session.begin()
         };
+        let Some(stamp) = stamp else {
+            return false;
+        };
+        if matches!(operation, Operation::History(..) | Operation::Status(_)) {
+            self.workbench.runs_read_at = Some(context.input(|input| input.time));
+        }
         let session = self.workbench.session.context.clone();
         self.effects
             .start(context, stamp, connection, session, operation);
+        true
+    }
+
+    fn open_workflow(&self) -> Option<String> {
+        Some(self.workbench.session.draft()?.base.workflow.id.clone())
     }
 
     fn run_intent(&mut self, context: &egui::Context, intent: Intent) {
@@ -60,67 +77,88 @@ impl ClientApp {
                     self.dispatch(context, Operation::List(1));
                 }
             },
-            Intent::ListWorkflows(page) => self.dispatch(context, Operation::List(page)),
+            Intent::ListWorkflows(page) => {
+                self.dispatch(context, Operation::List(page));
+            },
             Intent::CreateWorkflow => {
                 let request = new_workflow_request(&self.workbench.navigator.new_name);
                 self.dispatch(context, Operation::Create(request));
             },
-            Intent::LoadWorkflow(id) => self.dispatch(context, Operation::Load(id)),
+            Intent::LoadWorkflow(id) => {
+                self.dispatch(context, Operation::Load(id));
+            },
             Intent::SaveDraft => {
-                let Some(draft) = self.workbench.session.draft_mut() else {
+                let Some(draft) = self.workbench.session.draft() else {
                     return;
                 };
                 let request = draft.save_request();
-                draft.uncertain_save = true;
                 let id = draft.base.workflow.id.clone();
-                self.dispatch(context, Operation::Save(id, request));
+                if self.dispatch(context, Operation::Save(id, request))
+                    && let Some(draft) = self.workbench.session.draft_mut()
+                {
+                    draft.uncertain_save = true;
+                }
             },
             Intent::PublishDraft => {
-                let Some(draft) = self.workbench.session.draft_mut() else {
+                let Some(draft) = self.workbench.session.draft() else {
                     return;
                 };
-                draft.uncertain_save = true;
                 let id = draft.base.workflow.id.clone();
                 let revision = draft.base.revision;
-                self.dispatch(context, Operation::Publish(id, revision));
+                if self.dispatch(context, Operation::Publish(id, revision))
+                    && let Some(draft) = self.workbench.session.draft_mut()
+                {
+                    draft.uncertain_save = true;
+                }
             },
             Intent::RunDraft => {
-                let Some(draft) = self.workbench.session.draft_mut() else {
+                let Some(draft) = self.workbench.session.draft() else {
                     return;
                 };
                 let workflow = draft.base.workflow.id.clone();
+                // A retry after an unknown outcome reuses the key, so the server can replay it.
                 let key = draft
                     .start_key
-                    .get_or_insert_with(|| uuid::Uuid::new_v4().to_string())
-                    .clone();
-                self.dispatch(context, Operation::Run(workflow, key));
-            },
-            Intent::LoadRecentRuns => {
-                if let Some(id) = self.workbench.begin_recent_runs() {
-                    self.dispatch(context, Operation::History(id, None));
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                if self.dispatch(context, Operation::Run(workflow, key.clone()))
+                    && let Some(draft) = self.workbench.session.draft_mut()
+                {
+                    draft.start_key = Some(key);
                 }
             },
-            Intent::RefreshRuns => {
-                let execution = self
-                    .workbench
-                    .session
-                    .draft()
-                    .and_then(|draft| draft.execution_id.clone());
-                if let Some(id) = self.workbench.begin_recent_runs() {
-                    self.dispatch(context, Operation::History(id, execution));
-                }
+            Intent::LoadRecentRuns => self.read_runs(context, false),
+            Intent::RefreshRuns => self.read_runs(context, true),
+            Intent::LoadExecution(id) => {
+                self.dispatch(context, Operation::Status(id));
             },
-            Intent::LoadExecution(id) => self.dispatch(context, Operation::Status(id)),
-            Intent::LoadCatalog => self.dispatch(context, Operation::Actions),
+            Intent::LoadCatalog => {
+                self.dispatch(context, Operation::Actions);
+            },
             Intent::LoadSchema(action) => {
-                if self.workbench.begin_schema(&action) {
-                    self.dispatch(context, Operation::Action(action));
+                if !self.workbench.schemas.contains_key(&action)
+                    && self.dispatch(context, Operation::Action(action.clone()))
+                {
+                    self.workbench.begin_schema(&action);
                 }
             },
         }
     }
 
-    /// Moves the sign-in secrets out of the form before the request starts.
+    /// Reads the open workflow's recent runs, and with `with_status` the chosen run as well.
+    fn read_runs(&mut self, context: &egui::Context, with_status: bool) {
+        let Some(workflow) = self.open_workflow() else {
+            return;
+        };
+        let execution = with_status
+            .then(|| self.workbench.session.draft()?.execution_id.clone())
+            .flatten();
+        if self.dispatch(context, Operation::History(workflow, execution)) {
+            self.workbench.recent_runs_requested();
+        }
+    }
+
+    /// Builds the sign-in request. A token leaves the form; a password stays until sign-in completes.
     fn sign_in(&mut self, context: &egui::Context) {
         let form = &mut self.workbench.form;
         let connection = match Connection::new(&form.endpoint) {

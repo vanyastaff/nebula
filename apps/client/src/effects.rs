@@ -89,6 +89,7 @@ async fn perform(
     context: Option<SessionContext>,
     operation: Operation,
 ) -> Result<Reply, Failure> {
+    // Signing in is the one request made before a workspace is chosen.
     if let Operation::Connect(intent) = operation {
         return connection.sign_in(intent).await.map(Reply::Connected);
     }
@@ -96,6 +97,7 @@ async fn perform(
     let org = context.organization.as_str();
     let workspace = context.workspace_selector.as_str();
     match operation {
+        // Handled above; listed only because the match must name every operation.
         Operation::Connect(_) => Err(Failure::Configuration),
         Operation::List(page) => connection
             .list(org, workspace, page)

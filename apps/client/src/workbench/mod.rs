@@ -259,6 +259,8 @@ pub(crate) struct Workbench {
     pub(crate) history_requested: bool,
     /// Why the last read of recent runs failed, shown in place of the list until a read succeeds.
     pub(crate) history_error: Option<String>,
+    /// When a read of runs last started, in UI seconds. Following a run spaces its reads from it.
+    pub(crate) runs_read_at: Option<f64>,
     pub(crate) feedback: Feedback,
     /// Lets the user return to the workspace form while a workspace is open.
     pub(crate) workspace_form_open: bool,
@@ -378,6 +380,7 @@ impl Workbench {
             history: None,
             history_requested: false,
             history_error: None,
+            runs_read_at: None,
             feedback: Feedback::default(),
             workspace_form_open: false,
             sidebar_open: true,
@@ -406,13 +409,10 @@ impl Workbench {
         true
     }
 
-    /// Marks the recent runs of the open workflow as being read and returns its id. Called when the
-    /// request starts, not when the runs panel asks, so an intent dropped behind another request
-    /// leaves the panel free to ask again.
-    pub(crate) fn begin_recent_runs(&mut self) -> Option<String> {
-        let workflow = self.session.draft()?.base.workflow.id.clone();
+    /// Marks the recent runs as being read. Called when the request starts, not when the runs panel
+    /// asks, so an intent dropped behind another request leaves the panel free to ask again.
+    pub(crate) fn recent_runs_requested(&mut self) {
         self.history_requested = true;
-        Some(workflow)
     }
 
     fn receive_schema(&mut self, action: String, schema: &ActionParametersResponse) {
@@ -483,9 +483,15 @@ impl Workbench {
 
     pub(crate) fn begin_sign_in(&mut self, connection: Connection) {
         self.session.switch(None);
+        self.forget_server();
+        self.connection = Some(connection);
+    }
+
+    /// Forgets what was read about the server's actions; the next server may publish others.
+    fn forget_server(&mut self) {
+        self.catalog = Catalog::NotRequested;
         self.schemas.clear();
         self.schema_request = None;
-        self.connection = Some(connection);
     }
 
     /// Scopes the session to the form's workspace. Returns false until a sign-in has completed and both
@@ -549,6 +555,7 @@ impl Workbench {
         self.history = None;
         self.history_requested = false;
         self.history_error = None;
+        self.runs_read_at = None;
     }
 
     pub(crate) fn disconnect(&mut self) {
@@ -560,10 +567,7 @@ impl Workbench {
         self.navigator.total = 0;
         self.form.clear_secrets();
         self.clear_selection();
-        // The next sign-in may reach another server, whose actions differ.
-        self.catalog = Catalog::NotRequested;
-        self.schemas.clear();
-        self.schema_request = None;
+        self.forget_server();
         self.feedback
             .info("Disconnected. Your drafts remain available in this app session.");
     }
