@@ -254,6 +254,7 @@ same SQLite file. `memory` is rejected before creating storage.
 | `NEBULA_EXECUTION` | enum | `in-process` | `in-process` or `separate-workers`; CLI `--execution` takes precedence. |
 | `API_EXECUTION_DB_PATH` | string | `nebula-server-execution.db` | SQLite only. Path relative to the working directory. |
 | `DATABASE_URL` | string | — | Postgres only. Standard sqlx DSN (`postgres://user:pass@host/db`). Required when `API_EXECUTION_BACKEND=postgres`. |
+| `API_EXECUTION_MAX_CONNECTIONS` | integer | `8` | Postgres only. Size of the one pool every store, the control consumer and HTTP handlers share; 1 to 1000. |
 
 ### NodeResult and Checkpoint stores
 

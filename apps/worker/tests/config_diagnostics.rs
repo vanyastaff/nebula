@@ -12,6 +12,7 @@ fn worker_config_debug_redacts_the_entire_database_url() {
                 .to_owned(),
         ),
         db_path: "worker.db".to_owned(),
+        db_max_connections: nebula_worker_bin::config::DEFAULT_DB_MAX_CONNECTIONS,
         processor_id: [0x42; 16],
     };
 

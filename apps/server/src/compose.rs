@@ -1369,7 +1369,7 @@ mod tests {
         let mut api_config = nebula_api::ApiConfig::for_test();
         api_config.execution = nebula_api::config::ExecutionStoreConfig {
             backend: nebula_api::config::ExecutionBackendKind::Memory,
-            db_path: String::new(),
+            ..nebula_api::config::ExecutionStoreConfig::default()
         };
         let metrics = std::sync::Arc::new(nebula_metrics::MetricsRegistry::new());
         let stores = super::build_execution_stores(&api_config, None, &metrics)
