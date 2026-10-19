@@ -22,7 +22,11 @@ ignore = [
   # the fix ships in zip 9. Its build.rs writes entries itself through
   # `enclosed_name()` and never calls `ZipArchive::extract` /
   # `ZipStreamReader::extract`, so no archive symlink is created or followed.
-  # Drop both once utoipa-swagger-ui accepts zip >= 9.
+  # 0367 (SUID/SGID bits kept on extract): that build.rs copies `unix_mode()`
+  # itself, so a zip upgrade would not change it; the only archive it reads is
+  # the swagger-ui release (or SWAGGER_UI_DOWNLOAD_URL), unpacked into OUT_DIR
+  # by the build user. Drop all three once utoipa-swagger-ui accepts zip >= 9.
+  { id = "RUSTSEC-2026-0367", reason = "zip 3 build-only via utoipa-swagger-ui; extract API never called, build.rs sets modes itself on the swagger-ui dist" },
   { id = "RUSTSEC-2026-0368", reason = "zip 3 build-only via utoipa-swagger-ui; ZipArchive::extract never called" },
   { id = "RUSTSEC-2026-0369", reason = "zip 3 build-only via utoipa-swagger-ui; ZipArchive/ZipStreamReader::extract never called" },
   # RUSTSEC-2026-0097 / -0098 ignores were dropped 2026-04-28: rand bumped to
