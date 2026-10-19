@@ -123,6 +123,17 @@ cargo nextest run --workspace
 
 Requires **Rust 1.97+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) for test runs.
 
+### Run the Server
+
+```bash
+task server:dev     # http://127.0.0.1:8080, state in ./nebula-server-execution.db
+```
+
+This sets `NEBULA_ENV=development`, a fixed development credential key and a
+placeholder worker artifact digest. A deployment instead sets
+`NEBULA_CRED_MASTER_KEY`, `API_JWT_SECRET` and the manifest's
+`NEBULA_WORKER_ARTIFACT_SET_DIGEST`; see [`apps/server/README.md`](apps/server/README.md).
+
 ### Local Infrastructure
 
 ```bash

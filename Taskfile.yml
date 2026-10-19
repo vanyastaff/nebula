@@ -21,12 +21,10 @@ env:
 vars:
   CARGO_FLAGS: '--workspace'
   COMPOSE_LOCAL: 'deploy/docker/docker-compose.yml'
-  COMPOSE_SELFHOSTED: 'deploy/docker/docker-compose.selfhosted.yml'
   COMPOSE_OBSERVABILITY: 'deploy/docker/docker-compose.observability.yml'
-  DOCKERFILE: 'deploy/docker/Dockerfile.api'
-  IMAGE_NAME: 'nebula-api'
-  IMAGE_TAG:
-    sh: git describe --tags --always --dirty 2>{{if eq OS "windows"}}nul{{else}}/dev/null{{end}} || echo dev
+  # Any 64-hex value admits the linked plugin release; production takes it
+  # from the deployment manifest.
+  DEV_ARTIFACT_SET_DIGEST: '0000000000000000000000000000000000000000000000000000000000000000'
   DESKTOP_DIR: 'apps/desktop'
 
 # ── Help ──────────────────────────────────────────────────────────────────────
@@ -88,7 +86,16 @@ tasks:
   build:api:
     desc: Build the API server binary (release)
     cmds:
-      - cargo build -p nebula-api --bin unified_server --release
+      - cargo build -p nebula-server --bin nebula-server --release
+
+  server:dev:
+    desc: Run nebula-server locally (SQLite file, development credential key)
+    env:
+      NEBULA_ENV: development
+      NEBULA_CRED_DEV_KEY: '1'
+      NEBULA_WORKER_ARTIFACT_SET_DIGEST: '{{.DEV_ARTIFACT_SET_DIGEST}}'
+    cmds:
+      - cargo run -p nebula-server -- {{.CLI_ARGS}}
 
   check:
     desc: Type-check all crates and targets without codegen
@@ -269,52 +276,6 @@ tasks:
       - sqlx database create
       - sqlx migrate run --source crates/storage/migrations/postgres
 
-  # ── Docker ────────────────────────────────────────────────────────────────
-
-  docker:build:
-    desc: Build the production Docker image
-    cmds:
-      - docker build
-          --file {{.DOCKERFILE}}
-          --target production
-          --tag {{.IMAGE_NAME}}:{{.IMAGE_TAG}}
-          --tag {{.IMAGE_NAME}}:latest
-          .
-
-  docker:build:dev:
-    desc: Build the development Docker image stage
-    cmds:
-      - docker build
-          --file {{.DOCKERFILE}}
-          --target development
-          --tag {{.IMAGE_NAME}}:dev
-          .
-
-  infra:up:
-    desc: Start self-hosted stack (Postgres + Redis + API)
-    cmds:
-      - docker compose -f {{.COMPOSE_SELFHOSTED}} up -d --build
-
-  infra:down:
-    desc: Stop and remove self-hosted stack containers
-    cmds:
-      - docker compose -f {{.COMPOSE_SELFHOSTED}} down
-
-  infra:logs:
-    desc: Tail logs from the self-hosted stack
-    cmds:
-      - docker compose -f {{.COMPOSE_SELFHOSTED}} logs -f
-
-  infra:ps:
-    desc: Show status of self-hosted stack services
-    cmds:
-      - docker compose -f {{.COMPOSE_SELFHOSTED}} ps
-
-  infra:shell:
-    desc: Open a shell in the running API container
-    cmds:
-      - docker compose -f {{.COMPOSE_SELFHOSTED}} exec api sh
-
   obs:up:
     desc: Start observability stack (Jaeger + OTEL collector)
     cmds:
@@ -389,5 +350,5 @@ tasks:
   clean:docker:
     desc: Remove stopped containers and dangling Docker images
     cmds:
-      - docker compose -f {{.COMPOSE_SELFHOSTED}} down --volumes --remove-orphans
+      - docker compose -f {{.COMPOSE_LOCAL}} down --volumes --remove-orphans
       - docker image prune -f

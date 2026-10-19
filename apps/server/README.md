@@ -14,9 +14,15 @@ Linked plugin release selection is shared with the standalone worker through
 package's runtime assembly; the server does not depend on the worker executable
 package. Ordinary launch serves HTTP and runs executions in one process.
 
-Run the default profile locally:
+Run the default profile locally with `task server:dev`, or set the three
+variables it sets yourself. Without them startup stops: outside development
+mode `API_JWT_SECRET` and `NEBULA_CRED_MASTER_KEY` are required, and the worker
+artifact digest is always required.
 
 ```bash
+export NEBULA_ENV=development              # dev JWT secret; admits the dev key
+export NEBULA_CRED_DEV_KEY=1               # fixed insecure credential key
+export NEBULA_WORKER_ARTIFACT_SET_DIGEST=0000000000000000000000000000000000000000000000000000000000000000
 cargo run -p nebula-server                       # NEBULA_TRANSPORT=all
 cargo run -p nebula-server -- --transport api    # REST only
 cargo run -p nebula-server -- --transport webhook
