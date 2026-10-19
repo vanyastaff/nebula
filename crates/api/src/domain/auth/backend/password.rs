@@ -51,7 +51,7 @@ async fn off_runtime<T: Send + 'static>(
     .map_err(|e| AuthError::Crypto(format!("argon2 task: {e}")))?
 }
 
-/// [`hash_password`] on the blocking pool; see [`off_runtime`].
+/// [`hash_password`] on the blocking pool, under the process-wide Argon2 permit.
 ///
 /// # Errors
 /// Returns [`AuthError::Crypto`] if hashing fails or the task cannot run.
@@ -60,7 +60,7 @@ pub async fn hash_password_async(password: &str) -> Result<String, AuthError> {
     off_runtime(move || hash_password(&password)).await
 }
 
-/// [`verify_password`] on the blocking pool; see [`off_runtime`].
+/// [`verify_password`] on the blocking pool, under the process-wide Argon2 permit.
 ///
 /// # Errors
 /// Returns [`AuthError::Crypto`] if the stored hash is malformed or the task
