@@ -554,6 +554,12 @@ impl AuthBackend for DurableAuthBackend {
                         .await?;
                     return Err(AuthError::InvalidCredentials);
                 }
+                // A reset may have replaced the hash while Argon2 waited for
+                // a permit; only the hash that was verified may authenticate.
+                let current = self.persistence.users().get(&user.id).await?;
+                if current.and_then(|row| row.password_hash).as_deref() != Some(stored_hash) {
+                    return Err(AuthError::InvalidCredentials);
+                }
 
                 // record_login_success ONLY; no `update` call — a profile
                 // update would CAS-conflict with concurrent patches and

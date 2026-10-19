@@ -257,18 +257,29 @@ pub(crate) fn add_problem_response_contract(openapi: &mut utoipa::openapi::OpenA
 fn add_layer_failure(operation: &mut Operation, status: &str, description: &str) {
     use std::collections::btree_map::Entry;
 
-    use utoipa::openapi::RefOr;
+    use utoipa::openapi::{ContentBuilder, Ref, RefOr};
 
     match operation.responses.responses.entry(status.to_owned()) {
         Entry::Vacant(slot) => {
             slot.insert(problem_response(description));
         },
         Entry::Occupied(mut slot) if status == "503" => {
-            if let RefOr::T(response) = slot.get_mut()
-                && !response.description.contains(description)
-            {
+            let RefOr::T(response) = slot.get_mut() else {
+                return;
+            };
+            if !response.description.contains(description) {
                 response.description = format!("{} Also: {description}", response.description);
             }
+            // The layer answers with a problem body even where the endpoint's
+            // own 503 carries another schema (readiness).
+            response
+                .content
+                .entry("application/problem+json".to_owned())
+                .or_insert_with(|| {
+                    ContentBuilder::new()
+                        .schema(Some(Ref::from_schema_name("ProblemDetails")))
+                        .build()
+                });
         },
         Entry::Occupied(_) => {},
     }
@@ -381,6 +392,46 @@ mod tests {
                 .matches("concurrent request limit")
                 .count(),
             1,
+            "{}",
+            response.description
+        );
+    }
+
+    #[test]
+    fn a_readiness_503_also_documents_the_problem_body() {
+        use utoipa::openapi::{
+            ContentBuilder, OpenApiBuilder, PathItem, PathsBuilder, Ref, ResponseBuilder,
+            ResponsesBuilder, path::OperationBuilder,
+        };
+
+        let readiness = ResponseBuilder::new()
+            .description("Not ready.")
+            .content(
+                "application/json",
+                ContentBuilder::new()
+                    .schema(Some(Ref::from_schema_name("ReadinessResponse")))
+                    .build(),
+            )
+            .build();
+        let operation = OperationBuilder::new()
+            .responses(ResponsesBuilder::new().response("503", readiness))
+            .build();
+        let mut openapi = OpenApiBuilder::new()
+            .paths(PathsBuilder::new().path(
+                "/ready",
+                PathItem::new(utoipa::openapi::HttpMethod::Get, operation),
+            ))
+            .build();
+        add_problem_response_contract(&mut openapi);
+
+        let operation = openapi.paths.paths["/ready"].get.as_ref().expect("get");
+        let utoipa::openapi::RefOr::T(response) = &operation.responses.responses["503"] else {
+            panic!("503 stays an inline response");
+        };
+        assert!(response.content.contains_key("application/json"));
+        assert!(response.content.contains_key("application/problem+json"));
+        assert!(
+            response.description.contains("deadline"),
             "{}",
             response.description
         );

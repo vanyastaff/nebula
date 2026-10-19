@@ -598,6 +598,15 @@ impl AuthBackend for InMemoryAuthBackend {
                     });
                     return Err(AuthError::InvalidCredentials);
                 }
+                // A reset may have replaced the hash while Argon2 waited for
+                // a permit; only the hash that was verified may authenticate.
+                let current = self
+                    .users
+                    .get(&user.id)
+                    .and_then(|u| u.password_hash.clone());
+                if current.as_ref() != Some(stored_hash) {
+                    return Err(AuthError::InvalidCredentials);
+                }
 
                 // Reset failure counter on success.
                 self.users.alter(&user.id, |_, mut u| {

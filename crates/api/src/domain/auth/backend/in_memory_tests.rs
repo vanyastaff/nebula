@@ -197,6 +197,27 @@ async fn a_cancelled_password_reset_keeps_the_token() {
 }
 
 #[tokio::test]
+async fn a_login_verified_against_a_replaced_hash_is_refused() {
+    let b = InMemoryAuthBackend::new();
+    b.register_user(signup_req("r@e.f")).await.unwrap();
+    b.default_echo
+        .as_ref()
+        .expect("default echo sink is wired when no custom port is injected")
+        .drain();
+    b.request_password_reset("r@e.f").await.unwrap();
+    let token = b.emails()[0].body.clone();
+
+    // Park the login inside Argon2 with the old hash, then reset under it.
+    let login = b.authenticate_password("r@e.f", "hunter22", None);
+    tokio::pin!(login);
+    assert!(futures::poll!(&mut login).is_pending());
+    b.complete_password_reset(&token, "newpass1").await.unwrap();
+
+    let err = login.await.unwrap_err();
+    assert!(matches!(err, AuthError::InvalidCredentials));
+}
+
+#[tokio::test]
 async fn mfa_enrollment_then_login_with_code() {
     let b = InMemoryAuthBackend::new();
     let profile = b.register_user(signup_req("m@e.f")).await.unwrap();
