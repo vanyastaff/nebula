@@ -23,7 +23,8 @@
 //! | `NEBULA_CRED_MASTER_KEY` | required | Base64-encoded 32-byte credential encryption key. |
 //! | `NEBULA_CRED_LEGACY_MASTER_KEYS` | unset | Up to eight comma-separated base64 AES-256 keys accepted only for decrypting historical credential envelopes. |
 //! | `NEBULA_CRED_LEGACY_EMPTY_ID_MASTER_KEY` | unset | One base64 AES-256 decrypt-only key for credential envelopes written by the historical empty-key-ID format. |
-//! | `NEBULA_CRED_DEV_KEY` | unset | Set to `1` only for an insecure fixed development key. |
+//! | `NEBULA_CRED_DEV_KEY` | unset | Set to `1` only for an insecure fixed development key; refused unless `NEBULA_ENV` is `development`, `dev` or `local`. |
+//! | `NEBULA_ENV` | unset | Deployment mode; only `development`, `dev` or `local` admit `NEBULA_CRED_DEV_KEY`. |
 //! | `RUST_LOG` | `info` | `tracing` subscriber filter |
 //!
 //! [`WorkflowEngine`]: nebula_engine::WorkflowEngine

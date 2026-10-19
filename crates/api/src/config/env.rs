@@ -64,6 +64,7 @@ pub(crate) mod tests {
         "API_JWT_SECRET",
         "API_BIND_ADDRESS",
         "API_REQUEST_TIMEOUT",
+        "API_MAX_CONCURRENT_REQUESTS",
         "API_MAX_BODY_SIZE",
         "API_CORS_ORIGINS",
         "API_ENABLE_COMPRESSION",

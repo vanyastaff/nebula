@@ -509,7 +509,7 @@ impl AuthBackend for InMemoryAuthBackend {
                 if self.users_by_email.contains_key(&email) {
                     return Err(AuthError::EmailAlreadyRegistered);
                 }
-                let hash = password::hash_password(req.password.expose())?;
+                let hash = password::hash_password_async(req.password.expose()).await?;
                 let id = UserId::new();
                 let record = UserRecord {
                     id,
@@ -586,7 +586,7 @@ impl AuthBackend for InMemoryAuthBackend {
                     .password_hash
                     .as_ref()
                     .ok_or(AuthError::InvalidCredentials)?;
-                if !password::verify_password(stored_hash, password_input)? {
+                if !password::verify_password_async(stored_hash, password_input).await? {
                     self.users.alter(&user.id, |_, mut u| {
                         u.failed_login_count += 1;
                         if u.failed_login_count >= LOCKOUT_THRESHOLD {
@@ -902,7 +902,7 @@ impl AuthBackend for InMemoryAuthBackend {
                 if new_password.len() < 8 {
                     return Err(AuthError::InvalidCredentials);
                 }
-                let new_hash = password::hash_password(new_password)?;
+                let new_hash = password::hash_password_async(new_password).await?;
                 self.users.alter(&entry.user_id, |_, mut u| {
                     u.password_hash = Some(new_hash.clone());
                     u.failed_login_count = 0;

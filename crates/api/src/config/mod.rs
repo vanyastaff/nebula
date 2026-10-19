@@ -61,14 +61,33 @@ use crate::middleware::idempotency::{
 /// payloads.
 pub const REST_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 
+/// Default for [`ApiConfig::max_concurrent_requests`].
+///
+/// High enough that ordinary traffic never meets it; low enough that a
+/// stalled dependency cannot accumulate requests without bound.
+pub const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 1024;
+
+const fn default_max_concurrent_requests() -> usize {
+    DEFAULT_MAX_CONCURRENT_REQUESTS
+}
+
 /// API Server Configuration
 #[derive(Serialize, Deserialize)]
 pub struct ApiConfig {
     /// Host and port to bind (e.g. "0.0.0.0:8080")
     pub bind_address: SocketAddr,
 
-    /// Request timeout
+    /// Deadline for producing a response (`API_REQUEST_TIMEOUT`, seconds).
+    ///
+    /// Enforced by [`crate::middleware::RequestLimits`]; must be positive.
     pub request_timeout: Duration,
+
+    /// Requests the process runs at once (`API_MAX_CONCURRENT_REQUESTS`).
+    ///
+    /// Requests over the cap get `503` with `Retry-After`; see
+    /// [`crate::middleware::RequestLimits`]. Must be positive.
+    #[serde(default = "default_max_concurrent_requests")]
+    pub max_concurrent_requests: usize,
 
     /// Maximum request body size (bytes) for REST endpoints.
     ///
@@ -169,6 +188,7 @@ impl std::fmt::Debug for ApiConfig {
         f.debug_struct("ApiConfig")
             .field("bind_address", &self.bind_address)
             .field("request_timeout", &self.request_timeout)
+            .field("max_concurrent_requests", &self.max_concurrent_requests)
             .field("max_body_size", &self.max_body_size)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("enable_compression", &self.enable_compression)
@@ -240,14 +260,15 @@ impl ApiConfig {
             .parse()
             .map_err(ApiConfigError::BindAddress)?;
 
-        let request_timeout = std::env::var("API_REQUEST_TIMEOUT")
-            .unwrap_or_else(|_| "30".to_string())
-            .parse::<u64>()
-            .map(Duration::from_secs)
-            .map_err(|source| ApiConfigError::ParseInt {
-                var: "REQUEST_TIMEOUT",
-                source,
-            })?;
+        // A zero deadline would refuse every request.
+        let request_timeout = Duration::from_secs(parse_positive_u64_env("REQUEST_TIMEOUT", 30)?);
+        let max_concurrent_requests =
+            parse_usize_env("MAX_CONCURRENT_REQUESTS", DEFAULT_MAX_CONCURRENT_REQUESTS)?;
+        if max_concurrent_requests == 0 {
+            return Err(ApiConfigError::ZeroValue {
+                var: "MAX_CONCURRENT_REQUESTS",
+            });
+        }
 
         let max_body_size = std::env::var("API_MAX_BODY_SIZE")
             .ok()
@@ -332,6 +353,7 @@ impl ApiConfig {
         Ok(Self {
             bind_address,
             request_timeout,
+            max_concurrent_requests,
             max_body_size,
             cors_allowed_origins: cors_allowed_origins.clone(),
             enable_compression,
@@ -533,6 +555,7 @@ impl ApiConfig {
         Self {
             bind_address: SocketAddr::from(([127, 0, 0, 1], 0)),
             request_timeout: Duration::from_secs(30),
+            max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
             max_body_size: REST_BODY_LIMIT_BYTES,
             cors_allowed_origins: vec!["*".to_string()],
             enable_compression: false,

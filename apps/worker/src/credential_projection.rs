@@ -67,6 +67,13 @@ pub enum CredentialProjectionCompositionError {
     /// The process credential key could not be loaded.
     #[error("credential key provider initialization failed")]
     KeyProvider(#[source] ProviderError),
+    /// `NEBULA_CRED_DEV_KEY=1` was set while `NEBULA_ENV` (carried here) is
+    /// not a development mode.
+    #[error(
+        "NEBULA_CRED_DEV_KEY=1 is refused outside development (NEBULA_ENV={0:?}); \
+         set NEBULA_CRED_MASTER_KEY"
+    )]
+    DevelopmentKeyOutsideDevelopment(String),
     /// The bounded decrypt-only keyring configuration was rejected.
     #[error("credential legacy master-key configuration is invalid")]
     Keyring(#[source] CredentialKeyringError),
@@ -82,7 +89,8 @@ pub enum CredentialProjectionCompositionError {
 ///
 /// Prepare this before opening the deployment database. Key loading uses
 /// `NEBULA_CRED_MASTER_KEY`, except when `NEBULA_CRED_DEV_KEY=1` explicitly
-/// opts into the shared fixed development key. The same bounded decrypt-only
+/// opts into the shared fixed development key, which only a development
+/// `NEBULA_ENV` admits. The same bounded decrypt-only
 /// legacy keyring as the server is installed for projection.
 pub struct CredentialProjectionConfig {
     keyring: CredentialKeyring,
@@ -182,12 +190,30 @@ where
     Ok(Arc::new(projection))
 }
 
+/// Whether `NEBULA_CRED_DEV_KEY=1` selects the fixed development key.
+///
+/// Same rule as the server: the key is public, so it is honoured only when
+/// `NEBULA_ENV` names a development mode (`development`, `dev`, `local`).
+/// Anywhere else, including an unset `NEBULA_ENV`, the request is refused
+/// with the mode as `Err`.
+fn development_key_requested() -> Result<bool, String> {
+    if std::env::var("NEBULA_CRED_DEV_KEY").as_deref() != Ok("1") {
+        return Ok(false);
+    }
+    let mode = std::env::var("NEBULA_ENV").unwrap_or_default();
+    if matches!(mode.as_str(), "development" | "dev" | "local") {
+        Ok(true)
+    } else {
+        Err(mode)
+    }
+}
+
 fn resolve_first_party_keyring() -> Result<CredentialKeyring, CredentialProjectionCompositionError>
 {
     let span = tracing::info_span!("credential_keyring_resolution", process = "worker");
     let _guard = span.enter();
-    let current: Arc<dyn KeyProvider> = if std::env::var("NEBULA_CRED_DEV_KEY").as_deref()
-        == Ok("1")
+    let current: Arc<dyn KeyProvider> = if development_key_requested()
+        .map_err(CredentialProjectionCompositionError::DevelopmentKeyOutsideDevelopment)?
     {
         tracing::warn!(
             "security: NEBULA_CRED_DEV_KEY=1 - using a fixed development key; credential secrets are not securely encrypted"

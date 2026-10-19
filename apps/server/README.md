@@ -321,7 +321,8 @@ cutover; mixed old/new auth nodes are unsupported.
    pre-upgrade backup, then treat that backup and its WAL as plaintext-MFA
    sensitive material.
 2. Configure one stable base64 AES-256 `NEBULA_CRED_MASTER_KEY` (or explicitly
-   opt into the insecure local-only `NEBULA_CRED_DEV_KEY=1` policy). Run
+   opt into the insecure local-only `NEBULA_CRED_DEV_KEY=1` policy, which is
+   refused unless `NEBULA_ENV` is `development`, `dev` or `local`). Run
    `task db:migrate`; the server-owned operator first attempts catalog-only
    admission, then falls back only from a typed configuration rejection to
    credential-owner deep admission. It closes the general pool before that

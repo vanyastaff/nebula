@@ -70,12 +70,26 @@ async fn malformed_credential_key_does_not_create_database() {
 async fn malformed_legacy_key_does_not_create_database() {
     rejected_startup(
         &[
+            ("NEBULA_ENV", "development"),
             ("NEBULA_CRED_DEV_KEY", "1"),
             ("NEBULA_CRED_LEGACY_MASTER_KEYS", "submitted-secret-canary"),
         ],
         "legacy master-key configuration",
     )
     .await;
+}
+
+#[tokio::test]
+async fn development_key_is_refused_outside_development() {
+    for mode in [None, Some("production")] {
+        let mut overrides = vec![("NEBULA_CRED_DEV_KEY", "1")];
+        overrides.extend(mode.map(|mode| ("NEBULA_ENV", mode)));
+        rejected_startup(
+            &overrides,
+            "NEBULA_CRED_DEV_KEY=1 is refused outside development",
+        )
+        .await;
+    }
 }
 
 #[tokio::test]

@@ -61,6 +61,15 @@ async fn rejected_startup(overrides: &[(&str, &str)], diagnostic: &str) {
 }
 
 #[tokio::test]
+async fn development_key_is_refused_outside_development() {
+    rejected_startup(
+        &[("NEBULA_ENV", "production")],
+        "NEBULA_CRED_DEV_KEY=1 is refused outside development",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn memory_is_not_a_deployment_backend() {
     rejected_startup(
         &[("API_EXECUTION_BACKEND", "memory")],

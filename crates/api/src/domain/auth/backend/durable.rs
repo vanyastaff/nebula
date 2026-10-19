@@ -444,7 +444,7 @@ impl AuthBackend for DurableAuthBackend {
 
                 // Argon2id outside the tx — the work is slow and the row-level
                 // lock window must stay short.
-                let password_hash = password::hash_password(req.password.expose())?;
+                let password_hash = password::hash_password_async(req.password.expose()).await?;
 
                 let user_id = UserId::new();
                 let user_bytes = user_id.as_bytes();
@@ -547,7 +547,7 @@ impl AuthBackend for DurableAuthBackend {
                     .password_hash
                     .as_deref()
                     .ok_or(AuthError::InvalidCredentials)?;
-                if !password::verify_password(stored_hash, password_input)? {
+                if !password::verify_password_async(stored_hash, password_input).await? {
                     self.persistence
                         .users()
                         .record_login_failure(&user.id)
@@ -923,10 +923,27 @@ impl AuthBackend for DurableAuthBackend {
                 if new_password.len() < MIN_PASSWORD_LEN {
                     return Err(AuthError::InvalidCredentials);
                 }
+                let token_hash = sha256_token(token);
+                // This route is unauthenticated and Argon2id costs real CPU
+                // and memory, so a token that cannot succeed is refused before
+                // hashing. The read decides nothing: the atomic reset below
+                // re-checks the token and stays the serialization point.
+                let live = self
+                    .persistence
+                    .verification_tokens()
+                    .get_by_hash(&token_hash)
+                    .await?
+                    .is_some_and(|row| {
+                        row.kind == KIND_PASSWORD_RESET
+                            && row.consumed_at.is_none()
+                            && row.expires_at > Utc::now()
+                    });
+                if !live {
+                    return Err(AuthError::InvalidToken);
+                }
                 // Argon2id BEFORE the tx so the slow work stays outside the
                 // row-lock window.
-                let new_hash = password::hash_password(new_password)?;
-                let token_hash = sha256_token(token);
+                let new_hash = password::hash_password_async(new_password).await?;
 
                 account_token_result(
                     self.persistence

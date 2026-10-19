@@ -33,8 +33,9 @@
 //! ## Validation
 //!
 //! - `for`: `amount` must be `> 0` (a zero delay is no Delay node; negative is
-//!   nonsensical) and `amount × unit` must not overflow. The computed wait is
-//!   clamped to a 24-hour ceiling ([`MAX_DELAY_MILLIS`]).
+//!   nonsensical) and `amount × unit` must not overflow. A computed wait above
+//!   the 24-hour ceiling ([`MAX_DELAY_MILLIS`]) is rejected; use `until` for a
+//!   later instant.
 //! - `until`: the timestamp must be offset-aware RFC3339 (naive strings are
 //!   rejected). A timestamp in the past is **not** an error — the engine wakes
 //!   the node on the next scheduler tick.
@@ -63,10 +64,11 @@ use crate::actions::datetime::DurationUnit;
 
 /// Maximum duration `core.delay` will park for: 24 hours, in milliseconds.
 ///
-/// A `for` delay whose computed duration exceeds this ceiling is clamped to it
-/// (with a `warn`). This bounds a single timer-park so a mis-specified workflow
-/// cannot pin a node in `Waiting` for an unbounded span. It is the wait ceiling
-/// for this action specifically — unrelated to any storage TTL constant.
+/// A `for` delay whose computed duration exceeds this ceiling fails the node.
+/// It used to be shortened to the ceiling instead, which silently ran the
+/// workflow on a schedule its author never asked for. An instant further out
+/// is expressed with `until`. It is the wait ceiling for this action
+/// specifically — unrelated to any storage TTL constant.
 pub const MAX_DELAY_MILLIS: u64 = 86_400_000;
 
 // ── Config types ──────────────────────────────────────────────────────────────
@@ -81,7 +83,7 @@ pub const MAX_DELAY_MILLIS: u64 = 86_400_000;
 pub enum DelaySpec {
     /// Park for `amount × unit`.
     ///
-    /// `amount` must be `> 0`. The computed wait is clamped to
+    /// `amount` must be `> 0`, and the computed wait must not exceed
     /// [`MAX_DELAY_MILLIS`].
     For {
         /// Number of `unit`s to wait. Must be strictly positive.
@@ -158,7 +160,7 @@ fn build_delay_input_schema() -> Result<ValidSchema, ValidationReport> {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Build the wait duration (in milliseconds) for a `for` spec, applying
-/// validation and the 24h clamp.
+/// validation and the 24h ceiling.
 fn build_delay_millis(amount: i64, unit: DurationUnit) -> Result<u64, ActionError> {
     if amount < 0 {
         return Err(ActionError::fatal(format!(
@@ -184,13 +186,10 @@ fn build_delay_millis(amount: i64, unit: DurationUnit) -> Result<u64, ActionErro
         ))
     })?;
     if requested_millis > MAX_DELAY_MILLIS {
-        tracing::warn!(
-            target = "core.delay",
-            requested_millis,
-            clamped_to = MAX_DELAY_MILLIS,
-            "delay exceeds 24h ceiling; clamping"
-        );
-        return Ok(MAX_DELAY_MILLIS);
+        return Err(ActionError::fatal(format!(
+            "core.delay: a `for` delay may not exceed 24 hours (got {requested_millis} \
+             milliseconds); use mode `until` to resume at a later instant"
+        )));
     }
     Ok(requested_millis)
 }

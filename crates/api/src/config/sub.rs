@@ -549,6 +549,36 @@ mod tests {
     }
 
     #[test]
+    fn from_env_rejects_zero_request_limits() {
+        for var in ["REQUEST_TIMEOUT", "MAX_CONCURRENT_REQUESTS"] {
+            let mut env = env_guard();
+            env.set("NEBULA_ENV", "production");
+            env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+            env.set(&format!("API_{var}"), "0");
+
+            match ApiConfig::from_env() {
+                Err(crate::config::ApiConfigError::ZeroValue { var: rejected }) => {
+                    assert_eq!(rejected, var);
+                },
+                other => panic!("API_{var}=0 must be ZeroValue, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn from_env_reads_request_limits() {
+        let mut env = env_guard();
+        env.set("NEBULA_ENV", "production");
+        env.set("API_JWT_SECRET", "this-is-a-32-byte-minimum-secret!!");
+        env.set("API_REQUEST_TIMEOUT", "7");
+        env.set("API_MAX_CONCURRENT_REQUESTS", "64");
+
+        let cfg = ApiConfig::from_env().expect("config must load");
+        assert_eq!(cfg.request_timeout, std::time::Duration::from_secs(7));
+        assert_eq!(cfg.max_concurrent_requests, 64);
+    }
+
+    #[test]
     fn authentication_config_has_no_independent_storage_selector() {
         let mut env = env_guard();
         env.set("NEBULA_ENV", "production");

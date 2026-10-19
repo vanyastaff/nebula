@@ -10,7 +10,59 @@ use argon2::{
     password_hash::{SaltString, rand_core::OsRng},
 };
 
+use std::sync::LazyLock;
+
+use tokio::sync::Semaphore;
+use zeroize::Zeroizing;
+
 use super::error::AuthError;
+
+/// Bounds concurrent Argon2 work across the process.
+///
+/// Each hash or verify takes about 19 MiB and one core for tens of
+/// milliseconds. Unbounded, a burst of logins or signups would fill the
+/// blocking pool and grow memory with every request in flight; one permit per
+/// core keeps the work at what the machine can actually run.
+static ARGON2_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| {
+    Semaphore::new(std::thread::available_parallelism().map_or(2, std::num::NonZero::get))
+});
+
+/// Run Argon2 work on the blocking pool, under [`ARGON2_PERMITS`].
+///
+/// Calling [`hash_password`] or [`verify_password`] directly from an async
+/// handler stalls a runtime worker for the whole computation, and every task
+/// scheduled on that worker with it.
+async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, AuthError> + Send + 'static,
+) -> Result<T, AuthError> {
+    let _permit = ARGON2_PERMITS
+        .acquire()
+        .await
+        .map_err(|e| AuthError::Crypto(format!("argon2 permits: {e}")))?;
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| AuthError::Crypto(format!("argon2 task: {e}")))?
+}
+
+/// [`hash_password`] on the blocking pool; see [`off_runtime`].
+///
+/// # Errors
+/// Returns [`AuthError::Crypto`] if hashing fails or the task cannot run.
+pub async fn hash_password_async(password: &str) -> Result<String, AuthError> {
+    let password = Zeroizing::new(password.to_owned());
+    off_runtime(move || hash_password(&password)).await
+}
+
+/// [`verify_password`] on the blocking pool; see [`off_runtime`].
+///
+/// # Errors
+/// Returns [`AuthError::Crypto`] if the stored hash is malformed or the task
+/// cannot run.
+pub async fn verify_password_async(hash: &str, password: &str) -> Result<bool, AuthError> {
+    let hash = hash.to_owned();
+    let password = Zeroizing::new(password.to_owned());
+    off_runtime(move || verify_password(&hash, &password)).await
+}
 
 /// Shared account admission policy for signup and offline operator enrollment.
 /// Returns the normalized email and trimmed display name without retaining a password.
@@ -80,6 +132,13 @@ mod tests {
     fn verify_rejects_malformed_hash() {
         let err = verify_password("not-a-phc-string", "any").unwrap_err();
         assert!(matches!(err, AuthError::Crypto(_)));
+    }
+
+    #[tokio::test]
+    async fn async_variants_round_trip() {
+        let h = hash_password_async("off the runtime").await.unwrap();
+        assert!(verify_password_async(&h, "off the runtime").await.unwrap());
+        assert!(!verify_password_async(&h, "off the runtimE").await.unwrap());
     }
 
     #[test]

@@ -149,24 +149,22 @@ async fn for_milliseconds_parks_sub_second() {
     }
 }
 
-/// > 24h clamps to the 86 400 000 ms ceiling.
+/// > 24h is refused rather than shortened.
 ///
-/// RED witness: drop the clamp branch in `build_delay_millis` → the duration
-/// would be 172 800 000 ms and this assertion would fail.
+/// RED witness: restore the old clamp in `build_delay_millis` → the action
+/// returns a 24h `Wait` and this `unwrap_err` panics.
 #[tokio::test]
-async fn for_over_24h_clamps_to_ceiling() {
-    let (condition, _) = expect_wait(run(for_input(2, DurationUnit::Days)).await.unwrap());
-    match condition {
-        WaitCondition::Duration { duration } => {
-            assert_eq!(duration, StdDuration::from_millis(MAX_DELAY_MILLIS));
-        },
-        other => panic!("expected clamped Duration, got: {other:?}"),
-    }
+async fn for_over_24h_is_fatal() {
+    let err = run(for_input(2, DurationUnit::Days)).await.unwrap_err();
+    assert!(
+        matches!(err, ActionError::Fatal { .. }),
+        "expected Fatal for a delay over the ceiling; got: {err:?}"
+    );
 }
 
-/// Exactly 24h is at the ceiling and is NOT clamped down.
+/// Exactly 24h is at the ceiling and is accepted unchanged.
 #[tokio::test]
-async fn for_exactly_24h_is_not_clamped() {
+async fn for_exactly_24h_is_accepted() {
     let (condition, _) = expect_wait(run(for_input(24, DurationUnit::Hours)).await.unwrap());
     match condition {
         WaitCondition::Duration { duration } => {
@@ -176,29 +174,22 @@ async fn for_exactly_24h_is_not_clamped() {
     }
 }
 
-/// Just over the ceiling expressed in ms clamps down to it.
-///
-/// RED witness: `MAX_DELAY_MILLIS + 1` ms must clamp; without the clamp the
-/// duration would be 86 400 001 ms.
+/// One millisecond over the ceiling is already refused.
 #[tokio::test]
-async fn for_just_over_ceiling_millis_clamps() {
+async fn for_just_over_ceiling_millis_is_fatal() {
     let over = i64::try_from(MAX_DELAY_MILLIS + 1).expect("ceiling+1 fits in i64");
-    let (condition, _) = expect_wait(
-        run(for_input(over, DurationUnit::Milliseconds))
-            .await
-            .unwrap(),
+    let err = run(for_input(over, DurationUnit::Milliseconds))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ActionError::Fatal { .. }),
+        "expected Fatal one millisecond over the ceiling; got: {err:?}"
     );
-    match condition {
-        WaitCondition::Duration { duration } => {
-            assert_eq!(duration, StdDuration::from_millis(MAX_DELAY_MILLIS));
-        },
-        other => panic!("expected clamped Duration, got: {other:?}"),
-    }
 }
 
-/// Exactly the ceiling expressed in ms is NOT clamped.
+/// Exactly the ceiling expressed in ms is accepted.
 #[tokio::test]
-async fn for_exactly_ceiling_millis_is_not_clamped() {
+async fn for_exactly_ceiling_millis_is_accepted() {
     let at = i64::try_from(MAX_DELAY_MILLIS).expect("ceiling fits in i64");
     let (condition, _) = expect_wait(
         run(for_input(at, DurationUnit::Milliseconds))
