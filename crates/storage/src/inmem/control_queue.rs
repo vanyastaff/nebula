@@ -380,11 +380,20 @@ impl ControlQueue for InMemoryControlQueue {
         Ok(outcome)
     }
 
-    async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
-        // In-memory rows carry monotonic `Instant`s, not wall-clock
-        // timestamps, so age-based pruning is a no-op (parity with the
-        // legacy in-memory control queue).
-        Ok(0)
+    async fn cleanup(&self, retention: Duration) -> Result<u64, StorageError> {
+        // A terminal row keeps the `processed_at` of its last claim, as in the
+        // SQL backends; retention counts from it on the same tokio clock.
+        let mut st = self.inner.lock();
+        let now = Instant::now();
+        let before = st.queue.len();
+        st.queue.retain(|_, q| {
+            let terminal = q.status == "Completed" || q.status == "Failed";
+            let expired = q
+                .processed_at
+                .is_some_and(|at| now.duration_since(at) >= retention);
+            !(terminal && expired)
+        });
+        Ok(u64::try_from(before - st.queue.len()).unwrap_or(u64::MAX))
     }
 }
 
