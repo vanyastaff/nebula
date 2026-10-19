@@ -1233,6 +1233,14 @@ mod tests {
     /// enrollment or an ordinary identity insertion closes it. The insert trigger
     /// changes only identity admission in the same transaction; account and tenant
     /// rows are never deleted, rewritten or granted authority by this migration.
+    ///
+    /// 0011 adds the execution-owned node-result tables (`node_outputs`,
+    /// `node_results`, `workflow_inputs`). They are new, empty children of
+    /// `executions` that cascade with it; no existing row is read, rewritten or
+    /// deleted, so every admitted older prefix reaches 0010 and then only gains
+    /// empty tables. Nodes of executions that were in flight across the upgrade
+    /// have no stored results and re-execute, as they did with the previous
+    /// process-local store.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         use crate::migration_catalog::REVIEWED_HEAD;

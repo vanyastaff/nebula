@@ -257,12 +257,15 @@ same SQLite file. `memory` is rejected before creating storage.
 
 ### NodeResult and Checkpoint stores
 
-`NodeResultStore` always uses an in-memory adapter regardless of
-`API_EXECUTION_BACKEND`. It holds transient per-execution node output slots that
-are written and read within a single execution lifetime. Durability is provided by
-the `ExecutionStore` state machine (one JSON blob per execution row); on a crash the
-reclaim sweep re-delivers the job and the engine re-executes affected nodes from the
-last persisted state.
+`NodeResultStore` follows the execution backend (`SqliteNodeResultStore` or
+`PgNodeResultStore`, migration `0011_node_results.sql`): node outputs, typed node
+results and workflow inputs are rows beside their execution, survive a restart, are
+shared by every server and worker on the same database, and are purged with the
+execution. The authoritative execution state remains the `ExecutionStore` row.
+
+Webhook trigger configs (`TriggerStore`) follow the execution backend as well
+(`SqliteTriggerStore` or `PgTriggerStore` over the `triggers` table), so they survive
+a restart and every replica on one database serves the same triggers.
 
 `CheckpointStore` follows the execution backend (`SqliteCheckpointStore`,
 `PgCheckpointStore`, or the in-memory reference model sharing the in-memory

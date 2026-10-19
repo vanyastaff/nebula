@@ -67,6 +67,8 @@ mod execution_state;
 /// Iteration-checkpoint decisions: monotone upsert, exact recommit, conflict
 /// and regress.
 mod iteration_checkpoint;
+/// Node-result rules: the schema-version gate and the per-node slots.
+mod node_result;
 /// Operation-ledger decisions: state vocabulary, fence comparison, and
 /// outcome write-once rules.
 mod operation_ledger;

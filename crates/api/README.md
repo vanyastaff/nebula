@@ -25,7 +25,7 @@ Versioned HTTP request/response types and RFC 9457 bodies live in `nebula-api-co
 Execution GET detail projects one canonical persisted snapshot through
 `domain/execution/inspection.rs`: typed status, RFC3339 times, storage revision,
 node states, attempts, framework failure records and outputs. It does not read
-the process-local node-result cache. Creation has no start time; corrupt state
+the node-result store. Creation has no start time; corrupt state
 returns a payload-free problem. External output records expose size/MIME only,
 not backend keys or downloaded content. Replay checkpoints and command identities
 are not transport fields. Start/cancel acknowledgements remain separate receipts.

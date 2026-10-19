@@ -62,7 +62,7 @@
 
 - **Layout.** A new port store gets one file with the same name in `inmem/`, `sqlite/`
   and `postgres/`. Existing exceptions: the journal reader lives in `inmem/journal.rs` but
-  `*/control_queue.rs` in SQL, `inmem/node_result.rs` has no SQL twin, `postgres/rate_limit.rs`
+  `*/control_queue.rs` in SQL, `postgres/rate_limit.rs`
   is PostgreSQL-only by design, and credential persistence lives in `src/credential/`. When a file grows to hold several aggregates, it becomes a directory
   (`identity/`): `mod.rs` keeps the shared decoders and helpers, one file per aggregate.
   Code that is not a port adapter goes in a module named for what it is (`auth/`,

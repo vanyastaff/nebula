@@ -236,7 +236,14 @@ pub(crate) struct ExecutionStoreBundle {
     /// Runtime status the workers publish for activated resource rows.
     pub(super) resource_status_store: Arc<dyn nebula_storage_port::store::ResourceStatusStore>,
     pub(super) execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore>,
+    /// Node outputs, typed results and workflow inputs, on the same
+    /// deployment database as `execution_store` (their rows reference the
+    /// execution); the worker projection shares this handle.
     pub(super) node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore>,
+    /// Undecorated trigger-config store on the deployment database the
+    /// workflow store uses (a trigger belongs to its live workflow). The API
+    /// scopes it per call with `ScopedTriggerStore`.
+    pub(super) trigger_store: Arc<dyn nebula_storage_port::store::TriggerStore>,
     pub(super) journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader>,
     pub(super) control_queue: Arc<dyn nebula_storage_port::store::ControlQueue>,
     /// Owner of keyed start acceptance — the reservation, the execution
@@ -770,15 +777,14 @@ pub(crate) fn default_state(
             reason: e.reason,
         })?;
 
-    // Wire the trigger config store (ADR-0096 READ path). The undecorated
-    // `InMemoryTriggerStore` is the correct local-first backing —
-    // `TriggerStoreSpecLookup` applies `ScopedTriggerStore` per call so
-    // tenant isolation is structural. The same Arc is shared between the
-    // AppState trigger-store slot and the spec-lookup so they see the same
-    // rows in tests and dev.
-    let trigger_store = Arc::new(nebula_storage::inmem::InMemoryTriggerStore::new());
+    // Wire the trigger config store (ADR-0096 READ path) selected with the
+    // execution backend, so webhook trigger configs survive a restart and are
+    // shared by every replica on the same database. `TriggerStoreSpecLookup`
+    // applies `ScopedTriggerStore` per call so tenant isolation is
+    // structural; the same handle backs the AppState trigger-store slot.
+    let trigger_store = Arc::clone(&execution_bundle.trigger_store);
     let trigger_spec_lookup = Arc::new(
-        nebula_api::transport::webhook::TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as _),
+        nebula_api::transport::webhook::TriggerStoreSpecLookup::new(Arc::clone(&trigger_store)),
     );
 
     // Activation and start admission share these selected backend handles

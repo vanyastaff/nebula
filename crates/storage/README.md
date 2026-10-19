@@ -276,8 +276,14 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   (issue #311). `save_node_result` / `load_node_result` / `load_all_results` persist the full
   `ActionResult<Value>` variant per node attempt (issue #299) so resume can replay edge
   decisions through `evaluate_edge` (foundation for #324, #336). `NodeResultRecord` carries a
-  `schema_version`; an unknown version surfaces as `StorageError::UnknownSchemaVersion`
-  rather than a silent fall-back. Engine consumers land in downstream chips B2 / B3 / B4.
+  `schema_version`; an unknown version is refused on save and surfaces on load as
+  `StorageError::UnknownSchemaVersion` rather than a silent fall-back. The deployment
+  adapters `SqliteNodeResultStore` / `PgNodeResultStore` keep the three slots in
+  `node_outputs`, `node_results` and `workflow_inputs` (`0011_node_results.sql`), children
+  of their execution row that cascade with it; a save for an execution the database does
+  not hold is `NotFound`. `InMemoryNodeResultStore` is the reference model; oracle
+  `tests/support/node_result_oracle.rs`. Engine consumers land in downstream chips
+  B2 / B3 / B4.
 
 - **[L2-§12.2]** The `execution_control_queue` outbox is written in the **same logical
   operation** as the state transition it accompanies. Cancel signals must be enqueued atomically
@@ -470,6 +476,7 @@ only control-command outbox.
 | `execution_journal` (append-only) | **Durable** | Replayable history; appended in the same commit as state. Written by the execution-control owner and the operation ledger; `TransitionBatch::journal` rows have no producer yet (#1013) |
 | `execution_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2); rows cascade with their execution |
 | iteration checkpoints (`iteration_checkpoints`) | **Durable + fenced** (SQLite/PostgreSQL; in-memory reference shares the execution store) | Saved under the live execution lease, monotone per `(tenant, execution, node, action key, action version)`, cascades with its execution. An unavailable save only skips the optimisation (the next attempt replays from an earlier checkpoint or iteration 0); never authority over effects — the operation ledger is. Verified by `iteration_checkpoint_conformance_{inmem,sqlite,postgres}` and the engine `journal_checkpoint` suite |
+| node outputs, results and workflow inputs (`node_outputs`, `node_results`, `workflow_inputs`) | **Durable** (SQLite/PostgreSQL; in-memory reference is standalone) | Latest write wins per `(tenant, execution, node)` slot; rows reference and cascade with their execution; a record of an unknown schema version is refused on save and fails closed on load. A technical cache for idempotent replay — the execution state row stays authoritative. Verified by `node_result_conformance_{inmem,sqlite,postgres}` |
 | operation ledger slots (`operation_ledger` + `operation_protocol_records`) | **Durable + fenced** | One slot per journaled effect occurrence; prepare, grant, explain and outcome written under the live execution lease. Verified by `operation_ledger_conformance_{inmem,sqlite,postgres}` and the engine `effect_protocol` suite |
 | recorded-read answers (observation slots of the operation ledger) | **Durable + fenced** | A model's or retrieval's answer an agent or action observed (`Effect::RecordedRead`), kept as plaintext JSON evidence (at most 1 MiB) in the slot's protocol record; the prompt is digested, never stored. **May contain user data** (whatever the model was asked about and answered): it is retained and removed with its execution like effect outputs, never logged or put in spans or metric labels, and not encrypted at rest beyond the backend's own storage encryption. The `observation` flag is an optional protocol field (no migration): a build from before 0.32.0 refuses to decode an observation's record |
 | agent turn checkpoints (`iteration_checkpoints`, turn number as the iteration) | **Durable + fenced** | The iteration checkpoint row, unchanged, for an agent's turn state (at most 1 MiB of JSON; larger is not saved and the agent replays from turn 0) after every passed `Continue`. An optimisation, as for iterations: recorded answers and effects replay from the ledger without a provider call |
