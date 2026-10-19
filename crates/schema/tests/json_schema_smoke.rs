@@ -121,7 +121,12 @@ fn json_schema_x_nebula_extension_set_is_frozen() {
                 .variant_empty("none", "None")
                 .default_variant("none"),
         )
-        .root_rule(nebula_schema::Rule::custom("engine.check").expect("rule"))
+        .root_rule(
+            nebula_schema::Rule::predicate(
+                nebula_schema::Predicate::eq("/provider", json!("github")).expect("predicate"),
+            )
+            .expect("rule"),
+        )
         .build()
         .expect("build");
 

@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use serde_json::Value;
 
-use nebula_validator::{Rule, RuleView, ValueRule};
+use nebula_validator::{DeferredRule, Rule, RuleView, ValueRule};
 
 use crate::{FieldKey, SerdeTagging};
 
@@ -64,12 +64,19 @@ pub(super) fn check_rules(
                 RuleView::Predicate(_) | RuleView::Deferred(_) if context_free => {
                     return Err(AdmissionIssue::InapplicableFacet);
                 },
-                RuleView::Predicate(_) | RuleView::Deferred(_) => {},
+                RuleView::Predicate(_) => {},
+                RuleView::Deferred(deferred) if deferred_rule_applies(deferred, target) => {},
                 _ => return Err(AdmissionIssue::InapplicableFacet),
             }
         }
     }
     Ok(())
+}
+
+/// A deferred rule that can only fail on its target is not admitted, just as
+/// an inapplicable value rule is not.
+fn deferred_rule_applies(rule: &DeferredRule, target: &Body) -> bool {
+    matches!((target, rule), (Body::Array(_), DeferredRule::UniqueBy(_)))
 }
 
 fn value_rule_applies(rule: &ValueRule, target: &Body) -> bool {

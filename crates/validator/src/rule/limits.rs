@@ -387,7 +387,6 @@ fn account_node(node: &RuleNode, budget: &mut RuleBudgetState) -> Result<(), Rul
         RuleNode::Predicate(predicate) => account_predicate(predicate, budget),
         RuleNode::All(children) | RuleNode::Any(children) => budget.add_operands(children.len()),
         RuleNode::Not(_) => budget.add_operands(1),
-        RuleNode::Deferred(DeferredRule::Custom(expression)) => budget.add_text(expression),
         RuleNode::Deferred(DeferredRule::UniqueBy(path)) => budget.add_text(path.as_str()),
         RuleNode::Described { message, .. } => {
             budget.add_operands(1)?;
