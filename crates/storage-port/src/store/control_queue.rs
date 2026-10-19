@@ -93,6 +93,10 @@ pub trait ControlQueue: Send + Sync + std::fmt::Debug {
     /// `processor`. Postgres uses `FOR UPDATE SKIP LOCKED`; SQLite uses a
     /// single-consumer status flip.
     ///
+    /// Interrupt commands ([`ControlCommand::is_interrupt`](crate::dto::ControlCommand::is_interrupt)) are claimed
+    /// ahead of the others; within each group the oldest id comes first. A
+    /// backlog of `Start` rows therefore cannot hold a `Cancel` back.
+    ///
     /// `processor` is recorded for observability only; it carries no
     /// authority. The returned [`ControlClaimToken`] is what acknowledges the
     /// row.
@@ -111,11 +115,31 @@ pub trait ControlQueue: Send + Sync + std::fmt::Debug {
     /// admit a new delivery. Missing or released references never fall back to
     /// unfiltered claiming or fields decoded from execution JSON.
     ///
+    /// Orders interrupts first, as [`Self::claim_pending`] does.
+    ///
     /// # Errors
     ///
     /// Returns [`StorageError`] when the exact-flavor claim cannot be read or
     /// durably acquired.
     async fn claim_pending_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, StorageError>;
+
+    /// [`Self::claim_pending_for_flavor`] restricted to interrupt commands
+    /// ([`ControlCommand::is_interrupt`](crate::dto::ControlCommand::is_interrupt)).
+    ///
+    /// The consumer calls this when every regular slot holds a dispatch. Those
+    /// dispatches can be runs parked on a durable wait, and the command most
+    /// likely to be waiting behind them is the `Cancel` for one of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the claim cannot be read or durably
+    /// acquired.
+    async fn claim_pending_interrupts_for_flavor(
         &self,
         processor: &[u8; 16],
         batch_size: u32,

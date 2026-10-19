@@ -112,6 +112,19 @@ impl ControlQueue for TestControlQueue {
         self.inner.claim_pending(processor, batch_size).await
     }
 
+    async fn claim_pending_interrupts_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, nebula_storage_port::StorageError> {
+        self.claimed_flavors
+            .lock()
+            .expect("poisoned")
+            .push(worker_flavor);
+        self.inner.claim_pending_interrupts(processor, batch_size)
+    }
+
     async fn mark_completed(
         &self,
         claim: &ControlClaimToken,
@@ -1069,4 +1082,80 @@ async fn reclaim_sweep_emits_counter_metric_per_outcome() {
         .get();
     assert_eq!(reclaimed, 2, "reclaimed counter bumps by row count");
     assert_eq!(exhausted, 1, "exhausted counter bumps by row count");
+}
+
+/// Every regular slot holds a parked `Start`. A `Cancel` still reaches its
+/// execution through the interrupt lane, and a further `Start` stays queued.
+#[tokio::test]
+async fn cancel_is_delivered_while_every_slot_holds_a_parked_start() {
+    let (_store, queue) = port_queue();
+    let flaky = FlakyDispatch::new();
+    let dispatch: Arc<dyn ControlDispatch> = flaky.clone();
+
+    let parked: Vec<ExecutionId> = (0..4).map(|_| ExecutionId::new()).collect();
+    for (row, execution) in (1u8..).zip(&parked) {
+        queue
+            .enqueue(&port_msg(execution, ControlCommand::Start, row))
+            .await
+            .unwrap();
+    }
+
+    let consumer = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch,
+        proc16(b"full-runner"),
+        worker_flavor(),
+    )
+    .with_batch_size(4)
+    .with_poll_interval(Duration::from_millis(5));
+    let handle = consumer.spawn(CancellationToken::new());
+
+    // The first invocation per execution parks forever, so all four slots
+    // stay held once the starts are claimed.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while queue
+            .snapshot_detailed()
+            .iter()
+            .any(|(_, status, _)| status == "Pending")
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the consumer claims all four starts");
+
+    let queued_start = ExecutionId::new();
+    queue
+        .enqueue(&port_msg(&queued_start, ControlCommand::Start, 0x50))
+        .await
+        .unwrap();
+    queue
+        .enqueue(&port_msg(&parked[0], ControlCommand::Cancel, 0x60))
+        .await
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !flaky
+            .snapshot()
+            .contains(&(ControlCommand::Cancel, parked[0]))
+        {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the cancel is dispatched although every regular slot is held");
+
+    let start_status = queue
+        .snapshot_detailed()
+        .into_iter()
+        .find(|(message, _, _)| message.id == [0x50; 16])
+        .map(|(_, status, _)| status);
+    assert_eq!(
+        start_status.as_deref(),
+        Some("Pending"),
+        "the interrupt lane must not admit another start"
+    );
+
+    // The parked dispatches never finish; drop the consumer outright.
+    handle.abort();
 }

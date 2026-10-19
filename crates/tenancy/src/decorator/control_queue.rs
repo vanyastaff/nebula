@@ -83,6 +83,17 @@ impl ControlQueue for ScopedControlQueue {
             .await
     }
 
+    async fn claim_pending_interrupts_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, StorageError> {
+        self.inner
+            .claim_pending_interrupts_for_flavor(processor, batch_size, worker_flavor)
+            .await
+    }
+
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
         self.inner.mark_completed(self.admit_claim(claim)?).await
     }

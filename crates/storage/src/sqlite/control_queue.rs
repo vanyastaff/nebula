@@ -122,6 +122,68 @@ impl SqliteControlQueue {
         Self { pool }
     }
 
+    /// Exact-flavor claim, interrupts first; `interrupts_only` drops every
+    /// other command from the candidate set.
+    async fn claim_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+        interrupts_only: bool,
+    ) -> Result<Vec<ControlClaim>, StorageError> {
+        let mut tx = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(storage_error)?;
+        let claim = format!(
+            "UPDATE execution_control_queue SET status = 'Processing', \
+                 processed_by = ?, processed_at = {NOW_MICROS}, \
+                 claim_generation = claim_generation + 1 \
+             WHERE status = 'Pending' AND id IN ( \
+                 SELECT c.id FROM execution_control_queue c \
+                 WHERE c.status = 'Pending' \
+                   AND (? = 0 OR c.command IN ('Cancel', 'Terminate')) \
+                   AND EXISTS ( \
+                     SELECT 1 FROM execution_revision_references r \
+                     WHERE r.org_id = c.org_id AND r.workspace_id = c.workspace_id \
+                       AND r.execution_id = c.execution_id \
+                       AND r.worker_flavor_id = ? AND r.reference_state = 'live' \
+                 ) ORDER BY c.command IN ('Cancel', 'Terminate') DESC, c.id LIMIT ? \
+             ) RETURNING id, execution_id, workspace_id, org_id, command, \
+                 w3c_traceparent, reclaim_count, resume_target, claim_generation"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(claim))
+            .bind(processor.as_slice())
+            .bind(interrupts_only)
+            .bind(worker_flavor.as_bytes().as_slice())
+            .bind(i64::from(batch_size.clamp(1, 256)))
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(storage_error)?;
+        let claims = rows
+            .into_iter()
+            .map(|row| {
+                let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(storage_error)?)?;
+                let generation = row.try_get("claim_generation").map_err(storage_error)?;
+                let msg = decode_message(&row, id)?;
+                let token = ControlClaimToken::new(
+                    id,
+                    decode_generation(generation, &id)?,
+                    msg.scope.clone(),
+                );
+                Ok(ControlClaim { msg, token })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        tx.commit().await.map_err(storage_error)?;
+        tracing::debug!(
+            claimed = claims.len(),
+            interrupts_only,
+            "claimed exact-flavor control commands"
+        );
+        Ok(claims)
+    }
+
     /// Explain why a fenced acknowledgement matched no row.
     ///
     /// The fenced `UPDATE` reports only "zero rows", which conflates "the row
@@ -233,7 +295,7 @@ impl ControlQueue for SqliteControlQueue {
             "SELECT id, execution_id, workspace_id, org_id, command, \
                     w3c_traceparent, reclaim_count, resume_target \
              FROM execution_control_queue WHERE status = 'Pending' \
-             ORDER BY id LIMIT ?",
+             ORDER BY command IN ('Cancel', 'Terminate') DESC, id LIMIT ?",
         )
         .bind(i64::from(batch_size.clamp(1, 256)))
         .fetch_all(&mut *tx)
@@ -287,53 +349,18 @@ impl ControlQueue for SqliteControlQueue {
         batch_size: u32,
         worker_flavor: nebula_core::WorkerFlavorRevisionId,
     ) -> Result<Vec<ControlClaim>, StorageError> {
-        let mut tx = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
+        self.claim_for_flavor(processor, batch_size, worker_flavor, false)
             .await
-            .map_err(storage_error)?;
-        let claim = format!(
-            "UPDATE execution_control_queue SET status = 'Processing', \
-                 processed_by = ?, processed_at = {NOW_MICROS}, \
-                 claim_generation = claim_generation + 1 \
-             WHERE status = 'Pending' AND id IN ( \
-                 SELECT c.id FROM execution_control_queue c \
-                 WHERE c.status = 'Pending' AND EXISTS ( \
-                     SELECT 1 FROM execution_revision_references r \
-                     WHERE r.org_id = c.org_id AND r.workspace_id = c.workspace_id \
-                       AND r.execution_id = c.execution_id \
-                       AND r.worker_flavor_id = ? AND r.reference_state = 'live' \
-                 ) ORDER BY c.id LIMIT ? \
-             ) RETURNING id, execution_id, workspace_id, org_id, command, \
-                 w3c_traceparent, reclaim_count, resume_target, claim_generation"
-        );
-        let rows = sqlx::query(sqlx::AssertSqlSafe(claim))
-            .bind(processor.as_slice())
-            .bind(worker_flavor.as_bytes().as_slice())
-            .bind(i64::from(batch_size.clamp(1, 256)))
-            .fetch_all(&mut *tx)
+    }
+
+    async fn claim_pending_interrupts_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, StorageError> {
+        self.claim_for_flavor(processor, batch_size, worker_flavor, true)
             .await
-            .map_err(storage_error)?;
-        let claims = rows
-            .into_iter()
-            .map(|row| {
-                let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(storage_error)?)?;
-                let generation = row.try_get("claim_generation").map_err(storage_error)?;
-                let msg = decode_message(&row, id)?;
-                let token = ControlClaimToken::new(
-                    id,
-                    decode_generation(generation, &id)?,
-                    msg.scope.clone(),
-                );
-                Ok(ControlClaim { msg, token })
-            })
-            .collect::<Result<Vec<_>, StorageError>>()?;
-        tx.commit().await.map_err(storage_error)?;
-        tracing::debug!(
-            claimed = claims.len(),
-            "claimed exact-flavor control commands"
-        );
-        Ok(claims)
     }
 
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {

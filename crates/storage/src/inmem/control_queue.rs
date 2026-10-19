@@ -105,20 +105,24 @@ impl InMemoryControlQueue {
         processor: &[u8; 16],
         batch_size: u32,
         worker_flavor: Option<nebula_core::WorkerFlavorRevisionId>,
+        interrupts_only: bool,
     ) -> Result<Vec<ControlClaim>, StorageError> {
         let mut state = self.inner.lock();
-        let mut ids: Vec<_> = state
+        // Interrupts first, then oldest id — the order the SQL backends use.
+        let mut candidates: Vec<_> = state
             .queue
             .iter()
             .filter(|(_, queued)| {
                 queued.status == "Pending"
+                    && (!interrupts_only || queued.msg.command.is_interrupt())
                     && worker_flavor
                         .is_none_or(|flavor| matches_flavor(&state, &queued.msg, flavor))
             })
-            .map(|(id, _)| *id)
+            .map(|(id, queued)| (!queued.msg.command.is_interrupt(), *id))
             .collect();
-        ids.sort_unstable();
-        ids.truncate(batch_size.clamp(1, 256) as usize);
+        candidates.sort_unstable();
+        candidates.truncate(batch_size.clamp(1, 256) as usize);
+        let ids: Vec<_> = candidates.into_iter().map(|(_, id)| id).collect();
         for id in &ids {
             if state.queue[id].claim_generation == u64::MAX {
                 return Err(StorageError::Internal(format!(
@@ -206,6 +210,17 @@ impl InMemoryControlQueue {
             .collect()
     }
 
+    /// Test-only interrupt-lane claim without the flavor predicate, for
+    /// consumer tests whose queue double does not model flavor routing.
+    #[doc(hidden)]
+    pub fn claim_pending_interrupts(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+    ) -> Result<Vec<ControlClaim>, StorageError> {
+        self.claim_filtered(processor, batch_size, None, true)
+    }
+
     /// Test-only seed of an already-`Processing` row owned by a (dead)
     /// `processor`, claimed `stale_for` ago, with a given prior
     /// `reclaim_count`. Reproduces a crashed-runner orphan for reclaim
@@ -272,7 +287,7 @@ impl ControlQueue for InMemoryControlQueue {
         processor: &[u8; 16],
         batch_size: u32,
     ) -> Result<Vec<ControlClaim>, StorageError> {
-        self.claim_filtered(processor, batch_size, None)
+        self.claim_filtered(processor, batch_size, None, false)
     }
 
     async fn claim_pending_for_flavor(
@@ -281,7 +296,16 @@ impl ControlQueue for InMemoryControlQueue {
         batch_size: u32,
         worker_flavor: nebula_core::WorkerFlavorRevisionId,
     ) -> Result<Vec<ControlClaim>, StorageError> {
-        self.claim_filtered(processor, batch_size, Some(worker_flavor))
+        self.claim_filtered(processor, batch_size, Some(worker_flavor), false)
+    }
+
+    async fn claim_pending_interrupts_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, StorageError> {
+        self.claim_filtered(processor, batch_size, Some(worker_flavor), true)
     }
 
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
@@ -397,5 +421,62 @@ mod tests {
             })
         ));
         queue.mark_completed(&claim.token).await.unwrap();
+    }
+
+    fn message(id: u8, command: ControlCommand) -> ControlMsg {
+        let mut bytes = [0; 16];
+        bytes[15] = id;
+        ControlMsg {
+            id: bytes,
+            execution_id: format!("execution-{id}"),
+            command,
+            scope: Scope::new("workspace", "organization"),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn interrupts_are_claimed_ahead_of_a_start_backlog() {
+        let store = InMemoryExecutionStore::new();
+        let queue = InMemoryControlQueue::new(&store);
+        for id in 0..40 {
+            queue
+                .enqueue(&message(id, ControlCommand::Start))
+                .await
+                .unwrap();
+        }
+        queue
+            .enqueue(&message(200, ControlCommand::Cancel))
+            .await
+            .unwrap();
+
+        let claimed = queue.claim_pending(&[2; 16], 1).await.unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].msg.command, ControlCommand::Cancel);
+
+        let next = queue.claim_pending(&[2; 16], 2).await.unwrap();
+        let ids: Vec<u8> = next.iter().map(|claim| claim.msg.id[15]).collect();
+        assert_eq!(ids, [0, 1], "the rest keeps oldest-first order");
+    }
+
+    #[tokio::test]
+    async fn the_interrupt_lane_claims_nothing_else() {
+        let store = InMemoryExecutionStore::new();
+        let queue = InMemoryControlQueue::new(&store);
+        for (id, command) in [
+            (1, ControlCommand::Start),
+            (2, ControlCommand::Resume),
+            (3, ControlCommand::Restart),
+            (4, ControlCommand::Terminate),
+            (5, ControlCommand::Cancel),
+        ] {
+            queue.enqueue(&message(id, command)).await.unwrap();
+        }
+
+        let lane = queue.claim_filtered(&[2; 16], 16, None, true).unwrap();
+        let ids: Vec<u8> = lane.iter().map(|claim| claim.msg.id[15]).collect();
+        assert_eq!(ids, [4, 5]);
     }
 }

@@ -1100,6 +1100,15 @@ impl nebula_storage_port::store::ControlQueue for AlwaysFailControlQueue {
     {
         self.claim_pending(processor, batch_size).await
     }
+    async fn claim_pending_interrupts_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        _: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, nebula_storage_port::StorageError>
+    {
+        self.claim_pending(processor, batch_size).await
+    }
     async fn enqueue(
         &self,
         _msg: &nebula_storage_port::dto::ControlMsg,

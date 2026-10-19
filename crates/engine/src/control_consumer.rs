@@ -45,6 +45,14 @@ use tracing::Instrument;
 /// not round-trip to storage per command.
 pub const DEFAULT_BATCH_SIZE: u32 = 32;
 
+/// Extra dispatch slots kept for interrupt commands (`Cancel`, `Terminate`).
+///
+/// Every regular slot can be held by a run parked on a durable wait. Without
+/// this lane the consumer stops claiming at that point, and the `Cancel` meant
+/// for one of those runs waits until some run finishes on its own. Interrupt
+/// dispatches only signal or terminalize, so a handful of slots is enough.
+const INTERRUPT_LANE: usize = 8;
+
 /// Default poll interval when the queue is empty.
 ///
 /// Short enough that a cancel feels interactive in the in-memory / SQLite
@@ -556,9 +564,10 @@ impl ControlConsumer {
             let claim_sleep = tokio::time::sleep_until(claim_deadline);
             tokio::pin!(claim_sleep);
 
-            // At the ceiling there is nothing useful to claim, so wait for a
-            // dispatch to land instead of spinning on a full set.
-            let at_capacity = inflight.len() >= self.max_inflight();
+            // Past the regular ceiling only interrupts are claimed (see
+            // `tick`); once their lane is full too, wait for a dispatch to land
+            // instead of spinning on a full set.
+            let at_capacity = inflight.len() >= self.max_inflight() + INTERRUPT_LANE;
 
             tokio::select! {
                 biased;
@@ -687,10 +696,29 @@ impl ControlConsumer {
         // Claim raw rows. A malformed `execution_id` must fail only
         // *that* row (mark it failed, continue) — not the whole batch —
         // so the decode happens per row in `handle_entry`, not here.
-        let claimed = self
-            .queue
-            .claim_pending_for_flavor(&self.processor_id, self.batch_size, self.worker_flavor)
-            .await;
+        //
+        // Claim no more than there are free slots: a claimed row waits in
+        // `Processing` until it is dispatched, out of reach of every other
+        // runner. With the regular slots full, only interrupts are claimed.
+        let regular_room = self.max_inflight().saturating_sub(inflight.len());
+        let claimed = if regular_room > 0 {
+            self.queue
+                .claim_pending_for_flavor(
+                    &self.processor_id,
+                    slots_to_batch(regular_room),
+                    self.worker_flavor,
+                )
+                .await
+        } else {
+            let lane_room = (self.max_inflight() + INTERRUPT_LANE).saturating_sub(inflight.len());
+            self.queue
+                .claim_pending_interrupts_for_flavor(
+                    &self.processor_id,
+                    slots_to_batch(lane_room),
+                    self.worker_flavor,
+                )
+                .await
+        };
         let claimed: Result<Vec<RawClaimed>, String> = claimed
             .map(|claims| claims.into_iter().map(RawClaimed).collect())
             .map_err(|e| e.to_string());
@@ -953,6 +981,11 @@ impl ControlConsumer {
             );
         }
     }
+}
+
+/// A claim's batch size for `slots` free dispatch slots.
+fn slots_to_batch(slots: usize) -> u32 {
+    u32::try_from(slots).unwrap_or(u32::MAX)
 }
 
 /// Exponential backoff for repeated `claim_pending` storage errors.

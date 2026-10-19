@@ -347,6 +347,15 @@ impl ControlQueue for MockControlQueue {
         Ok(Vec::new())
     }
 
+    async fn claim_pending_interrupts_for_flavor(
+        &self,
+        _processor: &[u8; 16],
+        _batch_size: u32,
+        _worker_flavor: WorkerFlavorRevisionId,
+    ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, StorageError> {
+        Ok(Vec::new())
+    }
+
     async fn mark_completed(
         &self,
         claim: &nebula_storage_port::store::ControlClaimToken,
