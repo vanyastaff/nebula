@@ -163,7 +163,8 @@ See `docs/MATURITY.md` row for `nebula-execution`.
 - Revision, frozen-flavor, and bundle primitives are default-public but remain `partial`: they
   define a closed immutable epoch with zero production consumer until compiler, admission,
   persisted routing, and exact-flavor dispatch consume the contract end to end.
-- Layer 1 lease enforcement (`lease_holder`/`lease_expires_at`) shipped via M2.2 — heartbeat-driven via `acquire_and_heartbeat_lease` (see `DEFAULT_EXECUTION_LEASE_TTL` / `DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`), verified by `crates/engine/tests/lease_takeover.rs`, `crates/storage/tests/execution_lease_pg_integration.rs`, and the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`. Layer 2 (`claimed_by`/`claimed_until` from `migrations/postgres/0011_executions.sql`) remains Sprint E (1.1) scaffolding — see the durability matrix below.
+- Layer 1 lease enforcement (`lease_holder`/`lease_expires_at`) shipped via M2.2 — heartbeat-driven via `acquire_and_heartbeat_lease` (see `DEFAULT_EXECUTION_LEASE_TTL` / `DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`), verified by `crates/engine/tests/lease_takeover.rs`, the backend conformance matrix in `crates/storage/tests/conformance.rs`
+(PostgreSQL included when `DATABASE_URL` is set), and the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`. Layer 2 (`claimed_by`/`claimed_until` from `migrations/postgres/0011_executions.sql`) remains Sprint E (1.1) scaffolding — see the durability matrix below.
 - Integration tests include the Graph-v1 bundle wire/fingerprint contract; state machine and plan
   coverage also comes from unit tests and engine-level integration tests.
 - 5 `panic!` sites in `transition` and `status` modules serve as state-machine invariant

@@ -8,7 +8,7 @@
 
 Nebula is a DAG-based workflow automation engine &mdash; in the same space as n8n, Zapier, and Temporal &mdash; built from composable Rust libraries rather than as a monolithic platform. First-party deployment roots live under `apps/`; downstream embedding becomes supported only through the curated SDK runtime builder when that surface ships. Integration authors extend Nebula through `nebula-sdk`, the sole supported Rust façade.
 
-**Current status:** core crates are stable and well-tested; the execution engine and API layer are in active development. Not production-ready yet.
+**Current status:** alpha. Most crates, the core layer included, are `frontier` in [docs/MATURITY.md](docs/MATURITY.md): their APIs are still moving. Not production-ready yet.
 
 ---
 
@@ -148,7 +148,7 @@ This enables local hooks from `lefthook.yml`: fast checks on `pre-commit` and fu
 
 ## Status
 
-Nebula is in **active alpha development**. The core layer, credential system, resilience patterns, schema system, and error infrastructure are stable and well-tested. The execution engine and API layer are actively being wired together.
+Nebula is in **active alpha development**. [docs/MATURITY.md](docs/MATURITY.md) is the per-crate source of truth: `nebula-core`, `nebula-schema`, `nebula-validator`, the engine and the API layer are `frontier`; `nebula-error`, `nebula-log` and `nebula-resilience` are `stable`.
 
 APIs will change. Not production-ready yet. See [CHANGELOG.md](CHANGELOG.md) for the 0.6 breaking migration and [AGENTS.md](AGENTS.md) for the workspace map, common commands, and contribution workflow.
 

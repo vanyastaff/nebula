@@ -21,8 +21,10 @@ or `init_with`, and the subscriber is configured, including the runtime reload h
 
 ## Role
 
-**Structured Tracing Initialization** — the single entry point for `tracing` subscriber setup
-across all Nebula binaries and integration tests. Cross-cutting infrastructure (no upward
+**Structured Tracing Initialization** — the intended single entry point for `tracing`
+subscriber setup. No binary calls it yet: `apps/server` initializes tracing through
+`nebula-api`'s `telemetry_init`, and `apps/worker` builds a `tracing_subscriber` directly. The
+only workspace consumer is `nebula-expression`, which uses the re-exported `tracing` macros. Cross-cutting infrastructure (no upward
 dependencies). The canon observability contract (§4.6, §12.5) is enforced at the logging
 boundary: no secrets in log output, structured events with typed event kinds.
 
@@ -55,7 +57,7 @@ boundary: no secrets in log output, structured events with typed event kinds.
 
 See `docs/MATURITY.md` row for `nebula-log`.
 
-- API stability: `stable` — `auto_init`, `init_with`, `Config`, and `LoggerGuard` are in active use; runtime reload and file rolling are stable.
+- API stability: `stable` — `auto_init`, `init_with`, `Config`, `LoggerGuard`, runtime reload and file rolling are covered by this crate's tests, but no workspace binary uses them yet (see Role).
 - OTLP (`telemetry` feature) and Sentry (`sentry` feature) integrations are functional but depend on external services; treat as `partial` until tested end-to-end in CI.
 
 ## Related

@@ -227,6 +227,9 @@ jobs:
         # pub(crate) types, module docs) are link-checked too — broken internal
         # links rot silently otherwise and degrade `cargo doc` for contributors.
         run: cargo doc --no-deps --workspace --document-private-items
+      - name: Check Markdown links
+        # Relative links in tracked Markdown must resolve to a file or directory.
+        run: cargo xtask doc-links
 
   # ── Benchmarks ─────────────────────────────────────────────────────────────
   bench:
