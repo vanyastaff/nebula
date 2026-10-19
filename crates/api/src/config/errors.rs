@@ -43,6 +43,14 @@ pub enum ApiConfigError {
         source: std::num::ParseIntError,
     },
 
+    /// An `API_TRUSTED_PROXIES` entry is neither an address nor a CIDR block.
+    #[error("API_TRUSTED_PROXIES invalid")]
+    TrustedProxy {
+        #[source]
+        /// Underlying parse error, naming the entry.
+        source: crate::middleware::rate_limit::InvalidTrustedProxy,
+    },
+
     /// An `API_*` boolean env var failed to parse.
     #[error("API_{var} invalid")]
     ParseBool {

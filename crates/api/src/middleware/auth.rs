@@ -276,17 +276,24 @@ async fn authenticate(state: &AppState, mut request: Request) -> Result<Request,
         let key = DecodingKey::from_secret(state.jwt_secret.as_bytes());
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
+        if let Some(issuer) = state.jwt_issuer.as_deref() {
+            validation.set_issuer(&[issuer]);
+            validation.required_spec_claims.insert("iss".to_owned());
+        }
+        if let Some(audience) = state.jwt_audience.as_deref() {
+            validation.set_audience(&[audience]);
+            validation.required_spec_claims.insert("aud".to_owned());
+        }
         let token_data = decode::<Claims>(bearer_value, &key, &validation)
             .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
+        // A bearer JWT authenticates a user and nothing else. A subject that
+        // is not a user id — a token minted for another service that shares
+        // the signing secret — used to fall through to the `System`
+        // principal, which no tenant or permission check constrains.
         let user_id_str = token_data.claims.sub;
-        let principal = if let Ok(uid) = UserId::from_str(&user_id_str) {
-            nebula_core::Principal::User(uid)
-        } else {
-            // Compatibility lane for technical JWTs whose subject predates
-            // typed user IDs. This is independent of precedence hardening.
-            nebula_core::Principal::System
-        };
+        let uid = UserId::from_str(&user_id_str).map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let principal = nebula_core::Principal::User(uid);
         let authentication_binding = pending_authentication_binding("jwt", bearer_value);
         insert_authenticated_extensions(
             &mut request,
@@ -745,5 +752,72 @@ mod tests {
             super::extract_single_bearer(&duplicate_bearer),
             Err(StatusCode::UNAUTHORIZED)
         );
+    }
+
+    async fn jwt_status(state: crate::state::AppState, claims: serde_json::Value) -> StatusCode {
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(ApiConfig::for_test().jwt_secret.as_bytes()),
+        )
+        .expect("encode JWT");
+        Router::new()
+            .route("/", post(auth_kind))
+            .layer(middleware::from_fn_with_state(state, auth_middleware))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("JWT request"),
+            )
+            .await
+            .expect("auth response")
+            .status()
+    }
+
+    fn live_claims(sub: &str) -> serde_json::Value {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time after epoch")
+            .as_secs();
+        serde_json::json!({ "sub": sub, "exp": now + 3_600, "iat": now })
+    }
+
+    #[tokio::test]
+    async fn a_jwt_whose_subject_is_not_a_user_is_refused() {
+        let state = crate::state::test_state_with_in_memory_stores();
+        assert_eq!(
+            jwt_status(state.clone(), live_claims("billing-service")).await,
+            StatusCode::UNAUTHORIZED,
+            "a non-user subject must not authenticate as the system principal"
+        );
+        assert_eq!(
+            jwt_status(state, live_claims(&nebula_core::UserId::new().to_string())).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_issuer_and_audience_are_required() {
+        let state = crate::state::test_state_with_in_memory_stores()
+            .with_jwt_claims(Some("nebula-idp".to_owned()), Some("nebula-api".to_owned()));
+        let user = nebula_core::UserId::new().to_string();
+        let mut claims = live_claims(&user);
+        assert_eq!(
+            jwt_status(state.clone(), claims.clone()).await,
+            StatusCode::UNAUTHORIZED,
+            "a token without iss/aud must be refused once they are configured"
+        );
+        claims["iss"] = "nebula-idp".into();
+        claims["aud"] = "another-api".into();
+        assert_eq!(
+            jwt_status(state.clone(), claims.clone()).await,
+            StatusCode::UNAUTHORIZED,
+            "a token for another audience must be refused"
+        );
+        claims["aud"] = "nebula-api".into();
+        assert_eq!(jwt_status(state, claims).await, StatusCode::OK);
     }
 }

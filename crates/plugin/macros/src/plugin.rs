@@ -32,11 +32,14 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 
     let attrs = PluginAttrs::parse(&attr_args, struct_name, description_fallback)?;
     let manifest_expr = attrs.manifest_builder_expr();
+    let key_assertion = attrs.key_assertion();
 
     let expanded = quote! {
         impl #impl_generics ::nebula_plugin::Plugin for #struct_name #ty_generics #where_clause {
             fn manifest(&self) -> &::nebula_plugin::PluginManifest {
                 use ::std::sync::OnceLock;
+
+                #key_assertion
 
                 static MANIFEST: OnceLock<::nebula_plugin::PluginManifest> = OnceLock::new();
                 MANIFEST.get_or_init(|| #manifest_expr)

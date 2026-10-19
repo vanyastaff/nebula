@@ -273,6 +273,14 @@ pub struct AppState {
     /// shape as the previous `Arc<str>`.
     pub jwt_secret: JwtSecret,
 
+    /// Issuer and audience a bearer JWT must carry, when configured
+    /// (`API_JWT_ISSUER`, `API_JWT_AUDIENCE`). `None` leaves that claim
+    /// unchecked.
+    pub jwt_issuer: Option<Arc<str>>,
+
+    /// See [`Self::jwt_issuer`].
+    pub jwt_audience: Option<Arc<str>>,
+
     /// Static API keys accepted via `X-API-Key` header.
     ///
     /// Each key must use the `nbl_sk_` prefix. Compared in constant time.
@@ -635,6 +643,8 @@ impl AppState {
     ) -> Self {
         Self {
             jwt_secret,
+            jwt_issuer: None,
+            jwt_audience: None,
             api_keys: Arc::new(Vec::new()),
             metrics_registry: None,
             action_registry: None,
@@ -1009,6 +1019,15 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_api_keys(mut self, keys: Vec<String>) -> Self {
         self.api_keys = Arc::new(keys);
+        self
+    }
+
+    /// Require bearer JWTs to name this issuer and audience. `None` leaves
+    /// the claim unchecked.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_jwt_claims(mut self, issuer: Option<String>, audience: Option<String>) -> Self {
+        self.jwt_issuer = issuer.map(Arc::from);
+        self.jwt_audience = audience.map(Arc::from);
         self
     }
 

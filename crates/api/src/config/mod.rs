@@ -113,8 +113,23 @@ pub struct ApiConfig {
     /// known-dev placeholder) is unrepresentable.
     pub jwt_secret: JwtSecret,
 
+    /// Issuer a bearer JWT must carry (`API_JWT_ISSUER`); unchecked when unset.
+    #[serde(default)]
+    pub jwt_issuer: Option<String>,
+
+    /// Audience a bearer JWT must carry (`API_JWT_AUDIENCE`); unchecked when unset.
+    #[serde(default)]
+    pub jwt_audience: Option<String>,
+
     /// Rate limiting: requests per second per IP
     pub rate_limit_per_second: u32,
+
+    /// Peers whose `X-Forwarded-For` / `X-Real-IP` the rate limiter believes
+    /// (`API_TRUSTED_PROXIES`, comma-separated addresses or CIDR blocks).
+    ///
+    /// Empty by default: every client is limited by its TCP peer address.
+    #[serde(default)]
+    pub trusted_proxies: Vec<crate::middleware::rate_limit::TrustedProxy>,
 
     /// Static API keys accepted via `X-API-Key` header.
     ///
@@ -194,7 +209,10 @@ impl std::fmt::Debug for ApiConfig {
             .field("enable_compression", &self.enable_compression)
             .field("enable_tracing", &self.enable_tracing)
             .field("jwt_secret", &self.jwt_secret)
+            .field("jwt_issuer", &self.jwt_issuer)
+            .field("jwt_audience", &self.jwt_audience)
             .field("rate_limit_per_second", &self.rate_limit_per_second)
+            .field("trusted_proxies", &self.trusted_proxies)
             .field("api_keys", &"[REDACTED]")
             .field("public_url", &self.public_url)
             .field("request_timeout_secs", &self.request_timeout_secs)
@@ -317,6 +335,27 @@ impl ApiConfig {
                 source,
             })?;
 
+        let jwt_claim = |var: &str| {
+            std::env::var(var)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        let jwt_issuer = jwt_claim("API_JWT_ISSUER");
+        let jwt_audience = jwt_claim("API_JWT_AUDIENCE");
+
+        let trusted_proxies = std::env::var("API_TRUSTED_PROXIES")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| {
+                entry
+                    .parse()
+                    .map_err(|source| ApiConfigError::TrustedProxy { source })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         // API keys: comma-separated list in `API_KEYS` env var.
         let api_keys = std::env::var("API_KEYS")
             .unwrap_or_default()
@@ -365,7 +404,10 @@ impl ApiConfig {
             enable_compression,
             enable_tracing,
             jwt_secret,
+            jwt_issuer,
+            jwt_audience,
             rate_limit_per_second,
+            trusted_proxies,
             api_keys,
             public_url,
             request_timeout_secs,
@@ -569,7 +611,10 @@ impl ApiConfig {
             jwt_secret: JwtSecret::for_test_unchecked(
                 "test-secret-for-integration-tests-0123456789",
             ),
+            jwt_issuer: None,
+            jwt_audience: None,
             rate_limit_per_second: 100,
+            trusted_proxies: Vec::new(),
             api_keys: Vec::new(),
             public_url: "http://127.0.0.1:0".to_string(),
             request_timeout_secs: 30,

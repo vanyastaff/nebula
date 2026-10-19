@@ -241,6 +241,17 @@ fn seeded_jitter_is_deterministic_for_same_attempt() {
     );
 }
 
+/// `Duration::MAX.as_secs_f64()` rounds up past `Duration::MAX`, so clamping
+/// the jittered total to it used to panic in `Duration::from_secs_f64`.
+#[test]
+fn jitter_on_the_largest_delay_saturates_instead_of_panicking() {
+    let jitter = JitterConfig::Additive {
+        max_fraction: 1.0,
+        seed: Some(7),
+    };
+    assert_eq!(apply_jitter(Duration::MAX, &jitter, 0), Duration::MAX);
+}
+
 #[test]
 fn seeded_jitter_varies_across_attempts() {
     let delay = Duration::from_millis(100);

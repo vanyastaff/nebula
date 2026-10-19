@@ -17,7 +17,10 @@
 //! per stub endpoint policy. The deprecation lint is silenced at
 //! module level — that handler is intentionally mounted so the route
 //! table stays in sync with the published spec.
-#![allow(deprecated)]
+#![expect(
+    deprecated,
+    reason = "the stub restart handler stays mounted so the route table matches the published spec"
+)]
 
 use axum::middleware;
 use nebula_core::Permission;

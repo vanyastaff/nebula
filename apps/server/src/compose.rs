@@ -848,6 +848,10 @@ pub(crate) fn default_state(
     )))
     .with_resource_registrars(resource_registrars)
     .with_api_keys(api_config.api_keys.clone())
+    .with_jwt_claims(
+        api_config.jwt_issuer.clone(),
+        api_config.jwt_audience.clone(),
+    )
     .with_metrics_registry(metrics_registry)
     // Public URL is required for Plane-A OAuth `redirect_uri`
     // derivation per ADR-0085 D-3. Boot-time validation above rejects

@@ -120,8 +120,11 @@ impl Modify for SecuritySchemes {
             "api_key",
             SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
                 "X-API-Key",
-                "Static API key with the `nbl_sk_` prefix. Compared in \
-                 constant time. Tenant-scoped.",
+                "Static operator key with the `nbl_sk_` prefix (`API_KEYS`), \
+                 compared in constant time. Every key authenticates the same \
+                 system principal, not a user or a tenant: organization and \
+                 workspace routes admit it only where that principal holds a \
+                 membership, and answer 404 otherwise.",
             ))),
         );
 

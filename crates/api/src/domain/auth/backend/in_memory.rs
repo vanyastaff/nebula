@@ -544,9 +544,20 @@ impl AuthBackend for InMemoryAuthBackend {
                 // reset token. Rolling back the user on transient transport
                 // failure would silently destroy the durable account on every
                 // retry and is the wrong default for a bring-up backend.
+                // The account exists from here on, so a failed send is logged,
+                // not returned: a 500 would invite a retry that can only
+                // answer "email already registered".
                 let token = self.issue_verification_token(id, VerificationKind::EmailVerify)?;
-                self.record_email(&email, &token, EmailKind::Verification)
-                    .await?;
+                if let Err(err) = self
+                    .record_email(&email, &token, EmailKind::Verification)
+                    .await
+                {
+                    tracing::error!(
+                        error = %err,
+                        user_id = %id,
+                        "failed to deliver verification email after user creation",
+                    );
+                }
 
                 tracing::info!(user_id = %id, "user registered");
                 Ok(profile)
